@@ -1,0 +1,168 @@
+'use client';
+
+import { useParams, useRouter } from 'next/navigation';
+import { MouseEventHandler, useState } from 'react';
+import { LeadshipTypes } from '../../Components/Types/Types';
+
+type ImageType = {
+    id: number;
+    img: string;
+};
+
+
+
+export default function ProjectDetailPage() {
+
+    const [viewState,setViewState]=useState("normal");
+
+    const getContainerClasses = () => {
+        switch (viewState) {
+          case 'maximized':
+            return 'fixed inset-0 z-40 w-[60vw] h-[30vh] bg-white'; 
+        }
+      };
+
+    const params = useParams();
+    const router = useRouter();
+    const projectId = params?.id ? Number(params.id) : null;
+    
+
+    // Sample data - in a real app, you'd fetch this based on the ID
+    const projects: LeadshipTypes[] = [
+        {id:1, Projectname:"Bharath D", stage:"Active", createdAt:"2023-01-01", updatedAt:"2023-01-02"},
+        {id:2, Projectname:"Shivram", stage:"Active", createdAt:"2023-02-01", updatedAt:"2023-02-02"},
+        {id:3, Projectname:"Gokul", stage:"Ina", createdAt:"2023-03-01", updatedAt:"2023-03-02"}
+    ];
+    
+    const [image, setImage] = useState<ImageType[]>([
+        {id:1, img:"/profile1.jpg"},
+        {id:2, img:"/profile2.jpg"},
+        {id:3, img:"/profile3.jpg"},
+        {id:4, img:"/profile4.jpg"},
+    ]);
+
+    const project = projects.find(p => p.id === projectId);
+                                                                                               
+    if (!project) {
+        return (
+            <div className="xl:p-8">
+                <h1 className="xl:text-2xl xl:font-bold xl:mb-4">Project Not Found</h1>
+                <button 
+                    onClick={() => router.push('/')}
+                    className="xl:px-4 xl:py-2 xl:bg-green-400 xl:text-white xl:rounded-lg hover:xl:bg-green-500"
+                >
+                    Go Back
+                </button>
+            </div>
+        );
+    }
+
+    const handleImageAdding = () => {
+        const maxId = Math.max(...image.map(img => img.id), 0);
+        const newImage: ImageType = {
+            id: maxId + 1,
+            img: "/profile1.jpg" // Default image or you can make this dynamic
+        };
+        setImage([...image, newImage]);
+    }
+
+    function handleMaxMin():MouseEventHandler<HTMLButtonElement> | undefined {
+       if(viewState==="normal"){
+        setViewState("maximized");
+       }
+       else {
+        if (viewState === "maximized") {
+            setViewState("normal");
+        }
+       }
+        return;
+    }
+
+    return (
+        <div className='bg-blue-50 h-screen'>
+            <div className='xl:w-full xl:h-[23vh] '>
+                <div className='xl:grid xl:grid-cols-5 '>
+                    <div className='xl:col-span-3  h-[23vh] mt-2 flex '>
+                        <div>
+                            <p className=" w-[10vw] h-[4vh] xl:ml-2 xl:font-bold  xl:pt-5 xl:pl-6 xl:text-green-900"><strong className='text-gray-400'>PID:</strong> {project.id}</p>
+                            <p className=" w-[20vw] h-[4vh] xl:ml-2 xl:font-bold xl:pt-5 xl:pl-6 xl:text-green-900"><strong className='text-gray-400'>Project Name:</strong> {project.Projectname}</p>
+                            <div className='xl:flex  xl:gap-4 xl:mt-20 xl:ml-15 '>
+                                <div className=' xl:w-[10vw] xl:h-[4vh] xl:text-center xl:pt-1 xl:text-gray-400 xl:hover:border-b-2 xl:hover:text-green-900 xl:hover:bg-linear-to-b from-purple-100 to-purple-50 xl:font-bold'>Overview</div>
+                                <div className=' xl:w-[10vw] xl:h-[4vh] xl:text-center xl:pt-1 xl:text-gray-400 xl:hover:border-b-2 xl:hover:text-green-900 xl:hover:bg-linear-to-b from-purple-100 to-purple-50 xl:font-bold'>BOQ</div>
+                                <div className=' xl:w-[10vw] xl:h-[4vh] xl:text-center xl:pt-1 xl:text-gray-400 xl:hover:border-b-2 xl:hover:text-green-900 xl:hover:bg-linear-to-b from-purple-100 to-purple-50 xl:font-bold'>Payment</div>
+                                <div className=' xl:w-[10vw] xl:h-[4vh] xl:text-center xl:pt-1 xl:text-gray-400 xl:hover:border-b-2 xl:hover:text-green-900 xl:hover:bg-linear-to-b from-purple-100 to-purple-50 xl:font-bold'>Escalation</div>
+                            </div>
+                        </div>
+                        <div className=" xl:-ml-50 xl:w-[20vw] xl:xl:pt-8 xl:pl-6 xl:h-[4vh] xl:pt-1 xl:text-green-900 xl:font-bold"><span className='text-gray-400'>Stages:</span> {project.stage}</div>
+
+                    </div>
+
+
+                    <div className='xl:col-span-2 xl:h-[23vh] xl:mt-2'>
+                        <div>
+                            <div className='xl:grid xl:grid-cols-4 '>
+                                <div className='xl:col-span-3 xl:ml-10'>
+                                    <div className='xl:w-[10vw] xl:h-[4vh] xl:border xl:border-gray-400 xl:text-center xl:pt-1 xl:mt-5 xl:font-bold xl:text-black xl:hover:text-green-900 xl:hover:bg-purple-50'>Prolance</div>
+                                    <div className='xl:mt-15 xl:flex'>
+                                        {image.map((imgdata) => {
+                                            return (
+                                                <div key={imgdata.id} className={`-ml-4 ${imgdata.id === 1 ? 'ml-0' : ''} ${imgdata.id > 2 ? 'z-20' : 'z-10'}`}>
+                                                    <img src={imgdata.img} alt="profile" className='w-[3.5vw] h-[6vh] rounded-full border border-black' />
+                                                </div>
+                                            );
+                                        })}
+                                        <button onClick={handleImageAdding} className='w-[3.5vw] h-[6vh] border border-black text-center  ml-10'>+</button>
+                                    </div>
+                                </div>
+                                <div className='xl:col-span-1 mt-8'>
+                                <div className='w-[6vw] h-[6vh] border border-gray-400 text-center pt-3 font-bold xl:hover:text-green-900 xl:hover:bg-purple-50'>HOLD</div>
+                                <div className='w-[6vw] h-[6vh] border border-gray-400 text-center pt-3 mt-4 font-bold xl:hover:text-green-900 xl:hover:bg-purple-50'>RESUME</div>
+                            </div>
+                            </div>
+                           
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <main className={`${getContainerClasses()} xl:grid xl:grid-cols-7 xl:gap-5 xl:m-4`}>
+               {viewState !== 'maximized' &&(<div className='xl:col-span-3 xl:bg-white xl:h-[70vh] xl:text-center xl:font-bold xl:pt-8 xl:rounded-3xl text-gray-400'>Milestones
+                    <div>
+                    <button className='' onClick={handleMaxMin}><img src="/maximize.png" alt="min-max" className='xl:w-[1.5vw] xl:ml-130 xl:-mt-12' /></button>
+                    </div>
+                </div>)
+
+        }
+
+
+
+
+
+               {viewState !== 'maximized' && (<div className=' xl:col-span-2 xl:xl:bg-white xl:h-full xl:text-center xl:font-bold xl:pt-8 xl:rounded-3xl text-gray-400'>History
+                    <div>
+                    <button className='' onClick={handleMaxMin}><img src="/maximize.png" alt="min-max" className='xl:w-[1.5vw] xl:ml-80 xl:-mt-12' /></button>
+                    </div>
+                </div>)}
+
+
+
+                <div className=' xl:col-span-2 xl:h-full xl:text-center xl:font-bold'>
+                    <div className='xl:grid xl:grid-rows-2 xl:h-full xl:gap-4'>
+                       {viewState !== 'maximized' && (<div className='xl:rounded-3xl xl:bg-white xl:row-span-1 xl:text-center xl:font-bold xl:pt-8 text-gray-400'>Files uploaded
+                        <div>
+                        <button className='' onClick={handleMaxMin}><img src="/maximize.png" alt="min-max" className='xl:w-[1.5vw] xl:ml-80 xl:-mt-12' /></button>
+                        </div>
+                        </div>)}
+
+
+
+                        {viewState !== 'maximized' &&(<div className='xl:rounded-3xl xl:bg-white xl:row-span-1 xl:text-center xl:font-bold xl:pt-8 text-gray-400'>ChatBox
+                            <div>
+                            <button className='xl:text-purple-50' onClick={handleMaxMin}><img src="/maximize.png" alt="min-max" className='xl:w-[1.5vw] xl:ml-80 xl:-mt-12 ' /></button>
+                            </div>
+                        </div>)}
+                    </div>
+                </div>
+            </main>
+        </div>
+    );
+}
