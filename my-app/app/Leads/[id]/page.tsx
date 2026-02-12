@@ -1,7 +1,7 @@
 'use client';
 
 import { useParams, useRouter } from 'next/navigation';
-import { JSXElementConstructor, Key, ReactElement, ReactNode, ReactPortal, useState } from 'react';
+import { Key, useState } from 'react';
 // Assuming types are imported correctly. If not, I defined a mock below.
 import { LeadshipTypes } from '../../Components/Types/Types';
 import MileStonesArray from '@/app/Components/Types/MileStoneArray';
@@ -23,11 +23,11 @@ export default function ProjectDetailPage() {
     // State to track WHICH card is maximized (null = none)
     const [activeCard, setActiveCard] = useState<string | null>(null);
 
-    // Sample data
+    // Sample data (matches LeadshipTypes: projectName, projectStage, createAt, updateAt)
     const projects: LeadshipTypes[] = [
-        {id:1, Projectname:"Bharath D", stage:"Active", createdAt:"2023-01-01", updatedAt:"2023-01-02"},
-        {id:2, Projectname:"Shivram", stage:"Active", createdAt:"2023-02-01", updatedAt:"2023-02-02"},
-        {id:3, Projectname:"Gokul", stage:"Ina", createdAt:"2023-03-01", updatedAt:"2023-03-02"}
+        {id:1, pid:"", projectName:"Bharath D", projectStage:"Active", createAt:"2023-01-01", updateAt:"2023-01-02"},
+        {id:2, pid:"", projectName:"Shivram", projectStage:"Active", createAt:"2023-02-01", updateAt:"2023-02-02"},
+        {id:3, pid:"", projectName:"Gokul", projectStage:"Ina", createAt:"2023-03-01", updateAt:"2023-03-02"}
     ];
     
     const [image, setImage] = useState<ImageType[]>([
@@ -87,14 +87,14 @@ export default function ProjectDetailPage() {
                     <div className='xl:col-span-3 h-[23vh] mt-2 flex'>
                         <div>
                             <p className="w-[10vw] h-[4vh] xl:ml-2 xl:font-bold xl:pt-5 xl:pl-6 xl:text-green-900"><strong className='text-gray-400'>PID:</strong> {project.id}</p>
-                            <p className="w-[20vw] h-[4vh] xl:ml-2 xl:font-bold xl:pt-5 xl:pl-6 xl:text-green-900"><strong className='text-gray-400'>Project Name:</strong> {project.Projectname}</p>
+                            <p className="w-[20vw] h-[4vh] xl:ml-2 xl:font-bold xl:pt-5 xl:pl-6 xl:text-green-900"><strong className='text-gray-400'>Project Name:</strong> {project.projectName}</p>
                             <div className='xl:flex xl:gap-4 xl:mt-20 xl:ml-15'>
                                 {['Overview', 'BOQ', 'Payment', 'Escalation'].map((tab) => (
                                     <div key={tab} className='xl:w-[10vw] xl:h-[4vh] xl:text-center xl:pt-1 xl:text-gray-400 xl:hover:border-b-2 xl:hover:text-green-900 xl:hover:bg-purple-50 xl:font-bold cursor-pointer'>{tab}</div>
                                 ))}
                             </div>
                         </div>
-                        <div className="xl:-ml-50 xl:w-[20vw] xl:pt-8 xl:pl-6 xl:h-[4vh] xl:text-green-900 xl:font-bold"><span className='text-gray-400'>Stages:</span> {project.stage}</div>
+                        <div className="xl:-ml-50 xl:w-[20vw] xl:pt-8 xl:pl-6 xl:h-[4vh] xl:text-green-900 xl:font-bold"><span className='text-gray-400'>Stages:</span> {project.projectStage}</div>
                     </div>
 
                     <div className='xl:col-span-2 xl:h-[23vh] xl:mt-2'>
