@@ -3,116 +3,79 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 
-type ImageOption = {
-    id: number;
-    src: string;
-    alt: string;
-    css: string;
-    text: string;
-};
-
-type AnswerEntry = {
-    question: string;
-    selected: ImageOption | null;
-    optionLabel?: string;
-};
-
 export default function DesignQAResultPage() {
-    const [answers, setAnswers] = useState<AnswerEntry[]>([]);
+    const [submitted, setSubmitted] = useState(false);
     const [loaded, setLoaded] = useState(false);
 
+    // Only read the flag; do not clear it here (avoids Strict Mode double-mount clearing before state updates)
     useEffect(() => {
         if (typeof window === 'undefined') return;
         try {
-            const raw = sessionStorage.getItem('designQAAnswers');
-            if (raw) {
-                const parsed = JSON.parse(raw) as AnswerEntry[];
-                setAnswers(Array.isArray(parsed) ? parsed : []);
-            }
+            const flag = sessionStorage.getItem('designQASubmitted');
+            setSubmitted(flag === 'true');
         } finally {
             setLoaded(true);
         }
     }, []);
 
+    // Clear the flag only after we've shown the thank-you state, so a refresh doesn't show thank-you again
+    useEffect(() => {
+        if (submitted && typeof window !== 'undefined') {
+            sessionStorage.removeItem('designQASubmitted');
+        }
+    }, [submitted]);
+
     if (!loaded) {
         return (
-            <div className="bg-white min-h-screen flex items-center justify-center">
-                <p className="text-gray-500">Loading your choices...</p>
+            <div className="bg-white min-h-screen flex items-center justify-center p-4">
+                <p className="text-gray-500 text-sm sm:text-base">Loading...</p>
             </div>
         );
     }
 
-    if (answers.length === 0) {
+    if (!submitted) {
         return (
-            <div className="bg-white min-h-screen flex flex-col items-center justify-center gap-6 p-8">
-                <h1 className="text-2xl font-bold text-gray-800">No design choices found</h1>
-                <p className="text-gray-600 text-center">Complete the design questionnaire first.</p>
-                <Link
-                    href="/DesignQA"
-                    className="px-6 py-3 rounded-xl bg-green-800 text-white font-semibold hover:bg-green-700"
-                >
-                    Start questionnaire
-                </Link>
+            <div className="bg-white min-h-screen flex flex-col items-center justify-center p-4 sm:p-6 md:p-8">
+                <div className="w-full max-w-lg mx-auto bg-[#f1f2f6] rounded-3xl border-2 border-green-900 shadow-xl overflow-hidden p-6 sm:p-8 md:p-10 text-center">
+                    <h1 className="text-xl sm:text-2xl md:text-3xl font-bold text-gray-800 mb-3 sm:mb-4">
+                        Complete the questionnaire
+                    </h1>
+                    <p className="text-gray-600 text-sm sm:text-base mb-6 sm:mb-8">
+                        Please complete the design questionnaire first.
+                    </p>
+                    <Link
+                        href="/DesignQA"
+                        className="inline-block px-5 py-2.5 sm:px-6 sm:py-3 rounded-xl bg-green-800 text-white font-semibold text-sm sm:text-base hover:bg-green-700 transition-colors"
+                    >
+                        Start questionnaire
+                    </Link>
+                </div>
+                <div className="mt-6 w-full max-w-[200px] sm:max-w-[240px]">
+                    <img src="/LOGOHOWs.png" alt="Logo" className="w-full" />
+                </div>
             </div>
         );
     }
 
     return (
-        <div className="bg-white min-h-screen">
-            <main>
-                <div className="xl:w-[16%] xl:z-10 xl:-ml-16">
-                    <img src="/LOGOHOWs.png" alt="Logo" />
-                </div>
-
-                <div className="xl:mx-auto xl:w-[75%] xl:bg-[#f1f2f6] xl:rounded-4xl xl:border-3 xl:border-green-900 xl:shadow-2xl xl:overflow-hidden">
-                    <h1 className="xl:text-black xl:text-2xl xl:font-bold xl:text-center pt-10 pb-2">
-                        Your design choices
-                    </h1>
-                    <p className="text-center text-gray-600 pb-8">
-                        Summary of all {answers.length} questions
-                    </p>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-8 p-12">
-                        {answers.map((entry, index) => (
-                            <div
-                                key={index}
-                                className="bg-white rounded-2xl border-2 border-gray-200 overflow-hidden shadow-md hover:shadow-lg transition-shadow"
-                            >
-                                <p className="px-4 pt-4 pb-2 font-semibold text-gray-800 text-sm border-b border-gray-100">
-                                    Q{index + 1}: {entry.question}
-                                </p>
-                                {entry.selected ? (
-                                    <>
-                                        {entry.selected.src ? (
-                                            <div className="aspect-video w-full overflow-hidden">
-                                                <img
-                                                    src={entry.selected.src}
-                                                    alt={entry.selected.alt}
-                                                    className="w-full h-full object-cover"
-                                                />
-                                            </div>
-                                        ) : null}
-                                        <p className={`px-4 font-bold text-sm ${entry.selected.src ? 'py-3 text-green-800' : 'pt-4 pb-3 text-green-800'}`}>
-                                            {entry.optionLabel ?? entry.selected.text}
-                                        </p>
-                                    </>
-                                ) : (
-                                    <p className="px-4 py-6 text-gray-400">No selection</p>
-                                )}
-                            </div>
-                        ))}
-                    </div>
-
-                    <div className="flex justify-center pb-12">
-                        <Link
-                            href="/DesignQA"
-                            className="px-6 py-3 rounded-xl border-2 border-green-800 text-green-800 font-semibold hover:bg-green-50"
-                        >
-                            Start over
-                        </Link>
-                    </div>
-                </div>
-            </main>
+        <div className="bg-white min-h-screen flex flex-col items-center p-4 sm:p-6">
+            <div className="w-full max-w-[200px] sm:max-w-[240px] mb-4 sm:mb-6">
+                <img src="/LOGOHOWs.png" alt="Logo" className="w-full" />
+            </div>
+            <div className="w-full max-w-2xl mx-auto bg-[#f1f2f6] rounded-3xl border-2 border-green-900 shadow-xl overflow-hidden flex flex-col items-center justify-center py-10 sm:py-12 md:py-16 px-6 sm:px-8">
+                <h1 className="text-xl sm:text-2xl md:text-3xl font-bold text-gray-800 text-center mb-3 sm:mb-4">
+                    You have completed the questionnaire
+                </h1>
+                <p className="text-gray-700 text-base sm:text-lg text-center mb-8 sm:mb-10">
+                    Thank you for submitting.
+                </p>
+                <Link
+                    href="/DesignQA"
+                    className="inline-block px-5 py-2.5 sm:px-6 sm:py-3 rounded-xl bg-green-800 text-white font-semibold text-sm sm:text-base hover:bg-green-700 transition-colors"
+                >
+                    Back to home
+                </Link>
+            </div>
         </div>
     );
 }
