@@ -5,6 +5,15 @@ import { useRouter } from "next/navigation";
 import { LeadshipTypes } from "./Types/Types";
 import { useEffect, useState } from "react";
 
+// Fake projects data for when backend is unavailable
+const FAKE_PROJECTS: LeadshipTypes[] = [
+    { id: 1, pid: "P001", projectName: "Bharath D", projectStage: "Active", createAt: "2023-01-01T10:00:00.000Z", updateAt: "2023-01-02T14:30:00.000Z" },
+    { id: 2, pid: "P002", projectName: "Shivram", projectStage: "Active", createAt: "2023-02-01T09:15:00.000Z", updateAt: "2023-02-02T11:00:00.000Z" },
+    { id: 3, pid: "P003", projectName: "Gokulnath", projectStage: "Inactive", createAt: "2023-03-01T08:00:00.000Z", updateAt: "2023-03-02T16:45:00.000Z" },
+    { id: 4, pid: "P004", projectName: "Riverside", projectStage: "Pre 10%", createAt: "2024-01-15T10:30:00.000Z", updateAt: "2024-02-01T09:00:00.000Z" },
+    { id: 5, pid: "P005", projectName: "Downtown", projectStage: "10-20%", createAt: "2024-03-10T14:00:00.000Z", updateAt: "2024-04-05T11:20:00.000Z" },
+];
+
 // Helper to format backend date strings (ISO) to "dd/MM/yyyy h:mm A"
 function formatDateTime(value: string): string {
     if (!value) return "";
@@ -26,18 +35,21 @@ function formatDateTime(value: string): string {
 
 export default function Dashboard() {
 
-    const [projects, setProjects] = useState<LeadshipTypes[]>([]);
+    const [projects, setProjects] = useState<LeadshipTypes[]>(FAKE_PROJECTS);
 
-    useEffect(() => {
-        fetch("http://localhost:8080/api/v1/projects/all")
-        .then((res) => res.json())
-        .then((json) => {
-            setProjects(json.data ?? []);
-        })
-        .catch((err) => {
-            console.error("Error fetching projects:", err);
-        });
-    }, []);
+    // useEffect(() => {
+    //     fetch("http://localhost:8080/api/v1/projects/all")
+    //     .then((res) => res.json())
+    //     .then((json) => {
+    //         if (Array.isArray(json?.data) && json.data.length > 0) {
+    //             setProjects(json.data);
+    //         }
+    //     })
+    //     .catch((err) => {
+    //         console.error("Error fetching projects:", err);
+    //         // Keep using FAKE_PROJECTS when backend is unavailable
+    //     });
+    // }, []);
     
     
     const allTypes = Object.values(SideDashboard);
