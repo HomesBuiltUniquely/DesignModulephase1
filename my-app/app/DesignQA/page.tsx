@@ -250,7 +250,7 @@ export default function DesignQAPage() {
 
         if (isLastStep) {
             setSubmitting(true);
-            const apiUrl = process.env.NEXT_PUBLIC_DESIGN_QA_API_URL || 'http://192.168.68.121:8081/api/design-qa';
+            const apiUrl = process.env.NEXT_PUBLIC_DESIGN_QA_API_URL || 'http://localhost:8081/api/design-qa';
             try {
                 const res = await fetch(apiUrl, {
                     method: 'POST',
