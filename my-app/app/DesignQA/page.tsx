@@ -1,118 +1,365 @@
-import React from 'react';
+'use client';
+
+import React, { useState } from 'react';
+import { useRouter } from 'next/navigation';
+
+type ImageOption = {
+    id: number;
+    src: string;
+    alt: string;
+    css: string;
+    text: string;
+};
+
+// Order A–H: Scandinavian, European Classic, Industrial, Farmhouse, Bohemian, Modern Contemporary, Minimalistic, Wabi-Sabi
+const IMAGE_OPTIONS: ImageOption[] = [
+    { id: 1, src: "/scandanavian.png", alt: "Scandinavian", css: "w-full h-64", text: "Scandinavian" },
+    { id: 2, src: "/Europeanclassic.png", alt: "European Classic", css: "w-full h-64", text: "European Classic" },
+    { id: 3, src: "/Industrial.png", alt: "Industrial", css: "w-full h-64", text: "Industrial" },
+    { id: 4, src: "/farmhouse.png", alt: "Farmhouse", css: "w-full h-64", text: "Farmhouse" },
+    { id: 5, src: "/bohemian.png", alt: "Bohemian", css: "w-full h-64", text: "Bohemian" },
+    { id: 6, src: "/modernContemporary.png", alt: "Modern Contemporary", css: "w-full h-64", text: "Modern Contemporary" },
+    { id: 7, src: "/Minimalistic.png", alt: "Minimalistic", css: "w-full h-64", text: "Minimalistic" },
+    { id: 8, src: "/WabiSabi.png", alt: "Wabi-Sabi", css: "w-full h-64", text: "Wabi-Sabi" },
+];
+
+// Question 2: chair images from public folder (filenames with spaces → URL-encoded)
+const QUESTION_2_IMAGES: ImageOption[] = [
+    { id: 1, src: "/A.%20A%20soft%20oak%20Scandinavian%20lounge%20chair.png", alt: "A soft oak Scandinavian lounge chair", css: "w-full h-64", text: "A soft oak Scandinavian lounge chair" },
+    { id: 2, src: "/B.%20A%20tufted%20European%20armchair%20with%20carved%20details.png", alt: "A tufted European armchair with carved details", css: "w-full h-64", text: "A tufted European armchair with carved details" },
+    { id: 3, src: "/C.%20A%20metal-frame%20industrial%20accent%20chair.png", alt: "A metal-frame industrial accent chair", css: "w-full h-64", text: "A metal-frame industrial accent chair" },
+    { id: 4, src: "/D.%20A%20rustic%20wooden%20farmhouse%20rocking%20chair.png", alt: "A rustic wooden farmhouse rocking chair", css: "w-full h-64", text: "A rustic wooden farmhouse rocking chair" },
+    { id: 5, src: "/E.%20A%20rattan%20bohemian%20papasan%20chair.png", alt: "A rattan bohemian papasan chair", css: "w-full h-64", text: "A rattan bohemian papasan chair" },
+    { id: 6, src: "/F.%20A%20sleek%20modern%20contemporary%20accent%20chair.png", alt: "A sleek modern contemporary accent chair", css: "w-full h-64", text: "A sleek modern contemporary accent chair" },
+    { id: 7, src: "/G.%20A%20clean%20minimalistic%20low-profile%20chair.png", alt: "A clean minimalistic low-profile chair", css: "w-full h-64", text: "A clean minimalistic low-profile chair" },
+    { id: 8, src: "/H.%20A%20raw%2C%20imperfect%20Wabi-Sabi%20wooden%20chair.png", alt: "A raw, imperfect Wabi-Sabi wooden chair", css: "w-full h-64", text: "A raw, imperfect Wabi-Sabi wooden chair" },
+];
+
+// Question 3: fabric texture images from public folder
+const QUESTION_3_IMAGES: ImageOption[] = [
+    { id: 1, src: "/A.%20Soft%20cotton-weave%20neutrals.png", alt: "Soft cotton-weave neutrals (Scandinavian)", css: "w-full h-64", text: "Soft cotton-weave neutrals (Scandinavian)" },
+    { id: 2, src: "/B.%20Velvet%20or%20brocade%20(European%20Classic).png", alt: "Velvet or brocade (European Classic)", css: "w-full h-64", text: "Velvet or brocade (European Classic)" },
+    { id: 3, src: "/C.%20Distressed%20leather%20(Industrial).png", alt: "Distressed leather (Industrial)", css: "w-full h-64", text: "Distressed leather (Industrial)" },
+    { id: 4, src: "/D.%20Natural%20jutelinen%20(Farmhouse).png", alt: "Natural jute/linen (Farmhouse)", css: "w-full h-64", text: "Natural jute/linen (Farmhouse)" },
+    { id: 5, src: "/E.%20Colorful%20patterned%20textiles%20(Bohemian).png", alt: "Colorful patterned textiles (Bohemian)", css: "w-full h-64", text: "Colorful patterned textiles (Bohemian)" },
+    { id: 6, src: "/F.%20Smooth%20matte%20upholstery%20(Modern%20Contemporary).png", alt: "Smooth matte upholstery (Modern Contemporary)", css: "w-full h-64", text: "Smooth matte upholstery (Modern Contemporary)" },
+    { id: 7, src: "/G.%20Ultra-smooth%20monochrome%20fabrics%20(Minimalistic).png", alt: "Ultra-smooth monochrome fabrics (Minimalistic)", css: "w-full h-64", text: "Ultra-smooth monochrome fabrics (Minimalistic)" },
+    { id: 8, src: "/H.%20Raw%2C%20organic%2C%20unprocessed%20textures%20(Wabi-Sabi).png", alt: "Raw, organic, unprocessed textures (Wabi-Sabi)", css: "w-full h-64", text: "Raw, organic, unprocessed textures (Wabi-Sabi)" },
+];
+
+// Question 4: kitchen images from public folder
+const QUESTION_4_IMAGES: ImageOption[] = [
+    { id: 1, src: "/A.%20Light-toned%20Scandinavian%20kitchen.png", alt: "Light-toned Scandinavian kitchen", css: "w-full h-64", text: "Light-toned Scandinavian kitchen" },
+    { id: 2, src: "/B.%20Elegant%20European%20Classic%20kitchen%20with%20molding.png", alt: "Elegant European Classic kitchen with molding", css: "w-full h-64", text: "Elegant European Classic kitchen with molding" },
+    { id: 3, src: "/C.%20Industrial%20kitchen%20with%20metal%20and%20concrete.png", alt: "Industrial kitchen with metal and concrete", css: "w-full h-64", text: "Industrial kitchen with metal and concrete" },
+    { id: 4, src: "/D.%20Warm%20farmhouse%20kitchen%20with%20wooden%20cabinets.png", alt: "Warm farmhouse kitchen with wooden cabinets", css: "w-full h-64", text: "Warm farmhouse kitchen with wooden cabinets" },
+    { id: 5, src: "/E.%20Bohemian%20kitchen%20with%20mixed%20patterns.png", alt: "Bohemian kitchen with mixed patterns", css: "w-full h-64", text: "Bohemian kitchen with mixed patterns" },
+    { id: 6, src: "/F.%20Modern%20contemporary%20kitchen%20with%20clean%20lines.png", alt: "Modern contemporary kitchen with clean lines", css: "w-full h-64", text: "Modern contemporary kitchen with clean lines" },
+    { id: 7, src: "/G.%20Minimalistic%20all-white%20clutter-free%20kitchen.png", alt: "Minimalistic all-white clutter-free kitchen", css: "w-full h-64", text: "Minimalistic all-white clutter-free kitchen" },
+    { id: 8, src: "/H.%20Wabi-Sabi%20kitchen%20with%20imperfect%20ceramics.png", alt: "Wabi-Sabi kitchen with imperfect ceramics", css: "w-full h-64", text: "Wabi-Sabi kitchen with imperfect ceramics" },
+];
+
+// Question 5: artwork images from public folder
+const QUESTION_5_IMAGES: ImageOption[] = [
+    { id: 1, src: "/A.%20Minimal%20abstract%20Scandinavian%20prints.png", alt: "Minimal abstract Scandinavian prints", css: "w-full h-64", text: "Minimal abstract Scandinavian prints" },
+    { id: 2, src: "/B.%20Classical%20European%20paintings.png", alt: "Classical European paintings", css: "w-full h-64", text: "Classical European paintings" },
+    { id: 3, src: "/C.%20Industrial%20metal%20wall%20art.png", alt: "Industrial metal wall art", css: "w-full h-64", text: "Industrial metal wall art" },
+    { id: 4, src: "/D.%20Rustic%20botanical%20farmhouse%20illustrations.png", alt: "Rustic botanical farmhouse illustrations", css: "w-full h-64", text: "Rustic botanical farmhouse illustrations" },
+    { id: 5, src: "/E.%20Eclectic%20boho%20collage.png", alt: "Eclectic boho collage", css: "w-full h-64", text: "Eclectic boho collage" },
+    { id: 6, src: "/F.%20Modern%20geometric%20contemporary%20art.png", alt: "Modern geometric contemporary art", css: "w-full h-64", text: "Modern geometric contemporary art" },
+    { id: 7, src: "/G.%20Minimalistic%20line%20drawings.png", alt: "Minimalistic line drawings", css: "w-full h-64", text: "Minimalistic line drawings" },
+    { id: 8, src: "/H.%20Wabi-Sabi%20handmade%20imperfect%20art.png", alt: "Wabi-Sabi handmade imperfect art", css: "w-full h-64", text: "Wabi-Sabi handmade imperfect art" },
+];
+
+// Question 6: flooring images from public folder
+const QUESTION_6_IMAGES: ImageOption[] = [
+    { id: 1, src: "/A.%20Light%20ash%20Scandinavian%20wood%20flooring.png", alt: "Light ash Scandinavian wood flooring", css: "w-full h-64", text: "Light ash Scandinavian wood flooring" },
+    { id: 2, src: "/B.%20European%20herringbone%20parquet.png", alt: "European herringbone parquet", css: "w-full h-64", text: "European herringbone parquet" },
+    { id: 3, src: "/C.%20Industrial%20concrete.png", alt: "Industrial concrete", css: "w-full h-64", text: "Industrial concrete" },
+    { id: 4, src: "/D.%20Warm%20farmhouse%20oak%20planks.png", alt: "Warm farmhouse oak planks", css: "w-full h-64", text: "Warm farmhouse oak planks" },
+    { id: 5, src: "/E.%20Patterned%20bohemian%20rugs.png", alt: "Patterned bohemian rugs", css: "w-full h-64", text: "Patterned bohemian rugs" },
+    { id: 6, src: "/F.%20Sleek%20stone%20or%20tile%20flooring.png", alt: "Sleek stone or tile flooring", css: "w-full h-64", text: "Sleek stone or tile flooring" },
+    { id: 7, src: "/G.%20Polished%20minimalistic%20whitegray.png", alt: "Polished minimalistic white/gray", css: "w-full h-64", text: "Polished minimalistic white/gray" },
+    { id: 8, src: "/H.%20Wabi-Sabi%20raw%20textured%20cement.png", alt: "Wabi-Sabi raw textured cement", css: "w-full h-64", text: "Wabi-Sabi raw textured cement" },
+];
+
+// Question 7: bedroom images from public folder
+const QUESTION_7_IMAGES: ImageOption[] = [
+    { id: 1, src: "/A.%20Cozy%20Scandinavian%20bedroom.png", alt: "Cozy Scandinavian bedroom", css: "w-full h-64", text: "Cozy Scandinavian bedroom" },
+    { id: 2, src: "/B.%20Soft%20pastel%20European%20Classic%20bedroom.png", alt: "Soft pastel European Classic bedroom", css: "w-full h-64", text: "Soft pastel European Classic bedroom" },
+    { id: 3, src: "/C.%20Dark-toned%20Industrial%20bedroom.png", alt: "Dark-toned Industrial bedroom", css: "w-full h-64", text: "Dark-toned Industrial bedroom" },
+    { id: 4, src: "/D.%20Warm%20and%20rustic%20farmhouse%20bedroom.png", alt: "Warm and rustic farmhouse bedroom", css: "w-full h-64", text: "Warm and rustic farmhouse bedroom" },
+    { id: 5, src: "/E.%20Colorful%20and%20layered%20bohemian%20bedroom.png", alt: "Colorful and layered bohemian bedroom", css: "w-full h-64", text: "Colorful and layered bohemian bedroom" },
+    { id: 6, src: "/F.%20Clean-lined%20modern%20contemporary%20bedroom.png", alt: "Clean-lined modern contemporary bedroom", css: "w-full h-64", text: "Clean-lined modern contemporary bedroom" },
+    { id: 7, src: "/G.%20Neutral%2C%20clutter-free%20minimalistic%20bedroom.png", alt: "Neutral, clutter-free minimalistic bedroom", css: "w-full h-64", text: "Neutral, clutter-free minimalistic bedroom" },
+    { id: 8, src: "/H.%20Zen-like%20Wabi-Sabi%20bedroom%20with%20natural%20imperfections.png", alt: "Zen-like Wabi-Sabi bedroom with natural imperfections", css: "w-full h-64", text: "Zen-like Wabi-Sabi bedroom with natural imperfections" },
+];
+
+// Question 8: lighting images from public folder
+const QUESTION_8_IMAGES: ImageOption[] = [
+    { id: 1, src: "/A.%20Soft%20warm%20Scandinavian%20pendants.png", alt: "Soft warm Scandinavian pendants", css: "w-full h-64", text: "Soft warm Scandinavian pendants" },
+    { id: 2, src: "/B.%20Classic%20chandeliers.png", alt: "Classic chandeliers", css: "w-full h-64", text: "Classic chandeliers" },
+    { id: 3, src: "/C.%20Industrial%20cage%20lights.png", alt: "Industrial cage lights", css: "w-full h-64", text: "Industrial cage lights" },
+    { id: 4, src: "/D.%20Farmhouse%20lantern.png", alt: "Farmhouse lantern lights", css: "w-full h-64", text: "Farmhouse lantern lights" },
+    { id: 5, src: "/E.%20Bohemian%20string%20lights%20%20woven%20fixtures.png", alt: "Bohemian string lights / woven fixtures", css: "w-full h-64", text: "Bohemian string lights / woven fixtures" },
+    { id: 6, src: "/F.%20Sleek%20linear%20modern%20lighting.png", alt: "Sleek linear modern lighting", css: "w-full h-64", text: "Sleek linear modern lighting" },
+    { id: 7, src: "/G.%20Minimalistic%20recessed%20lighting.png", alt: "Minimalistic recessed lighting", css: "w-full h-64", text: "Minimalistic recessed lighting" },
+    { id: 8, src: "/H.%20Handmade%20organic%20ceramic%20lamps%20(Wabi-Sabi).png", alt: "Handmade organic ceramic lamps (Wabi-Sabi)", css: "w-full h-64", text: "Handmade organic ceramic lamps (Wabi-Sabi)" },
+];
+
+// Question 9: bathroom images from public folder
+const QUESTION_9_IMAGES: ImageOption[] = [
+    { id: 1, src: "/A.%20Scandinavian%20bright%20bathroom.png", alt: "Scandinavian bright bathroom", css: "w-full h-64", text: "Scandinavian bright bathroom" },
+    { id: 2, src: "/B.%20European%20marble%20bathroom.png", alt: "European marble bathroom", css: "w-full h-64", text: "European marble bathroom" },
+    { id: 3, src: "/C.%20Industrial%20metal%20%2B%20stone%20bathroom.png", alt: "Industrial metal + stone bathroom", css: "w-full h-64", text: "Industrial metal + stone bathroom" },
+    { id: 4, src: "/D.%20Farmhouse%20white%20rustic%20bathroom.png", alt: "Farmhouse white rustic bathroom", css: "w-full h-64", text: "Farmhouse white rustic bathroom" },
+    { id: 5, src: "/E.%20Bohemian%20colorful%20tiles.png", alt: "Bohemian colorful tiles", css: "w-full h-64", text: "Bohemian colorful tiles" },
+    { id: 6, src: "/F.%20Modern%20monochrome%20bathroom.png", alt: "Modern monochrome bathroom", css: "w-full h-64", text: "Modern monochrome bathroom" },
+    { id: 7, src: "/G.%20Minimalistic%20all-neutral%20bathroom.png", alt: "Minimalistic all-neutral bathroom", css: "w-full h-64", text: "Minimalistic all-neutral bathroom" },
+    { id: 8, src: "/H.%20Wabi-Sabi%20stone%20%2B%20raw%20wood%20bathroom.png", alt: "Wabi-Sabi stone + raw wood bathroom", css: "w-full h-64", text: "Wabi-Sabi stone + raw wood bathroom" },
+];
+
+// Question 10: outdoor seating images from public folder
+const QUESTION_10_IMAGES: ImageOption[] = [
+    { id: 1, src: "/A.%20Nordic%20wooden%20balcony.png", alt: "Nordic wooden balcony", css: "w-full h-64", text: "Nordic wooden balcony" },
+    { id: 2, src: "/B.%20European%20garden%20patio%20please%20imagine.png", alt: "European garden patio", css: "w-full h-64", text: "European garden patio" },
+    { id: 3, src: "/C.%20Industrial%20rooftop.png", alt: "Industrial rooftop", css: "w-full h-64", text: "Industrial rooftop" },
+    { id: 4, src: "/D.%20Farmhouse%20porch%20with%20rocking%20chairs.png", alt: "Farmhouse porch with rocking chairs", css: "w-full h-64", text: "Farmhouse porch with rocking chairs" },
+    { id: 5, src: "/E.%20Bohemian%20cushioned%20outdoor%20lounge.png", alt: "Bohemian cushioned outdoor lounge", css: "w-full h-64", text: "Bohemian cushioned outdoor lounge" },
+    { id: 6, src: "/F.%20Modern%20clean-lined%20patio.png", alt: "Modern clean-lined patio", css: "w-full h-64", text: "Modern clean-lined patio" },
+    { id: 7, src: "/G.%20Minimalistic%20zen-balcony.png", alt: "Minimalistic zen-balcony", css: "w-full h-64", text: "Minimalistic zen-balcony" },
+    { id: 8, src: "/H.%20Wabi-Sabi%20natural%20stone%20garden%20corner.png", alt: "Wabi-Sabi natural stone garden corner", css: "w-full h-64", text: "Wabi-Sabi natural stone garden corner" },
+];
+
+// Question 11: décor accent images from public folder (é encoded as %C3%A9 in filenames)
+const QUESTION_11_IMAGES: ImageOption[] = [
+    { id: 1, src: "/A.%20Scandinavian%20ceramics.png", alt: "Scandinavian ceramics", css: "w-full h-64", text: "Scandinavian ceramics" },
+    { id: 2, src: "/B.%20European%20candle%20stands.png", alt: "European candle stands", css: "w-full h-64", text: "European candle stands" },
+    { id: 3, src: "/C.%20Industrial%20metal%20d%C3%A9cor.png", alt: "Industrial metal décor", css: "w-full h-64", text: "Industrial metal décor" },
+    { id: 4, src: "/D.%20Farmhouse%20baskets.png", alt: "Farmhouse baskets", css: "w-full h-64", text: "Farmhouse baskets" },
+    { id: 5, src: "/E.%20Boho%20macram%C3%A9.png", alt: "Boho macramé", css: "w-full h-64", text: "Boho macramé" },
+    { id: 6, src: "/F.%20Modern%20sculptural%20d%C3%A9cor%20pieces.png", alt: "Modern sculptural décor pieces", css: "w-full h-64", text: "Modern sculptural décor pieces" },
+    { id: 7, src: "/G.%20Minimalistic%20mono-color%20vases.png", alt: "Minimalistic mono-color vases", css: "w-full h-64", text: "Minimalistic mono-color vases" },
+    { id: 8, src: "/H.%20Wabi-Sabi%20raw%20clay%20artifacts.png", alt: "Wabi-Sabi raw clay artifacts", css: "w-full h-64", text: "Wabi-Sabi raw clay artifacts" },
+];
+
+// Question 12: color palette images from public folder
+const QUESTION_12_IMAGES: ImageOption[] = [
+    { id: 1, src: "/A.%20Soft%20neutrals%20%2B%20muted%20tones%20(Scandinavian).png", alt: "Soft neutrals + muted tones (Scandinavian)", css: "w-full h-64", text: "Soft neutrals + muted tones (Scandinavian)" },
+    { id: 2, src: "/B.%20Pastels%20%2B%20warm%20creams%20(European%20Classic).png", alt: "Pastels + warm creams (European Classic)", css: "w-full h-64", text: "Pastels + warm creams (European Classic)" },
+    { id: 3, src: "/C.%20Dark%20greys%20%2B%20brick%20tones%20(Industrial).png", alt: "Dark greys + brick tones (Industrial)", css: "w-full h-64", text: "Dark greys + brick tones (Industrial)" },
+    { id: 4, src: "/D.%20Earthy%20browns%20%2B%20greens%20(Farmhouse).png", alt: "Earthy browns + greens (Farmhouse)", css: "w-full h-64", text: "Earthy browns + greens (Farmhouse)" },
+    { id: 5, src: "/E.%20Vibrant%20warm%20hues%20(Bohemian).png", alt: "Vibrant warm hues (Bohemian)", css: "w-full h-64", text: "Vibrant warm hues (Bohemian)" },
+    { id: 6, src: "/F.%20Black%20%2B%20beige%20%2B%20muted%20contrasts%20(Modern%20Contemporary).png", alt: "Black + beige + muted contrasts (Modern Contemporary)", css: "w-full h-64", text: "Black + beige + muted contrasts (Modern Contemporary)" },
+    { id: 7, src: "/G.%20Pure%20whites%20%2B%20monotones%20(Minimalistic).png", alt: "Pure whites + monotones (Minimalistic)", css: "w-full h-64", text: "Pure whites + monotones (Minimalistic)" },
+    { id: 8, src: "/H.%20Earth%20%2B%20sand%20%2B%20stone%20(Wabi-Sabi).png", alt: "Earth + sand + stone (Wabi-Sabi)", css: "w-full h-64", text: "Earth + sand + stone (Wabi-Sabi)" },
+];
+
+/** For text-only steps (13–16), build a synthetic option so we can reuse handleSelect and result page. */
+function getTextOption(stepIndex: number, optionIndex: number): ImageOption {
+    const text = OPTION_LABELS[stepIndex]?.[optionIndex] ?? '';
+    return { id: optionIndex + 1, src: '', alt: text, css: '', text };
+}
+
+function getImagesForStep(step: number): ImageOption[] {
+    switch (step) {
+        case 2: return QUESTION_2_IMAGES;
+        case 3: return QUESTION_3_IMAGES;
+        case 4: return QUESTION_4_IMAGES;
+        case 5: return QUESTION_5_IMAGES;
+        case 6: return QUESTION_6_IMAGES;
+        case 7: return QUESTION_7_IMAGES;
+        case 8: return QUESTION_8_IMAGES;
+        case 9: return QUESTION_9_IMAGES;
+        case 10: return QUESTION_10_IMAGES;
+        case 11: return QUESTION_11_IMAGES;
+        case 12: return QUESTION_12_IMAGES;
+        default: return IMAGE_OPTIONS; // step 1: living room
+    }
+}
+
+const QUESTIONS: string[] = [
+    "Choose the living room you'd love to walk into",
+    "Pick a chair you feel naturally drawn to",
+    "Choose a fabric texture that feels most \"you\"",
+    "Pick the kitchen you'd enjoy cooking in",
+    "Choose the artwork you'd hang in your home",
+    "Pick a flooring style you prefer",
+    "Choose the bedroom that feels peaceful to you",
+    "Pick a lighting style you prefer",
+    "Pick the bathroom vibe you'd enjoy",
+    "Choose an outdoor seating area",
+    "Select a décor accent you naturally gravitate towards",
+    "Choose a color palette that feels like home",
+    "What matters MOST to you in a home?",
+    "How do you prefer your home to feel when guests walk in?",
+    "Which statement describes your lifestyle best?",
+    "What is your relationship with \"things\" at home?",
+];
+
+// For each question, option labels A–H (same order as IMAGE_OPTIONS)
+const OPTION_LABELS: string[][] = [
+    ["Scandinavian", "European Classic", "Industrial", "Farmhouse", "Bohemian", "Modern Contemporary", "Minimalistic", "Wabi-Sabi"],
+    ["A soft oak Scandinavian lounge chair", "A tufted European armchair with carved details", "A metal-frame industrial accent chair", "A rustic wooden farmhouse rocking chair", "A rattan bohemian papasan chair", "A sleek modern contemporary accent chair", "A clean minimalistic low-profile chair", "A raw, imperfect Wabi-Sabi wooden chair"],
+    ["Soft cotton-weave neutrals (Scandinavian)", "Velvet or brocade (European Classic)", "Distressed leather (Industrial)", "Natural jute/linen (Farmhouse)", "Colorful patterned textiles (Bohemian)", "Smooth matte upholstery (Modern Contemporary)", "Ultra-smooth monochrome fabrics (Minimalistic)", "Raw, organic, unprocessed textures (Wabi-Sabi)"],
+    ["Light-toned Scandinavian kitchen", "Elegant European Classic kitchen with molding", "Industrial kitchen with metal and concrete", "Warm farmhouse kitchen with wooden cabinets", "Bohemian kitchen with mixed patterns", "Modern contemporary kitchen with clean lines", "Minimalistic all-white clutter-free kitchen", "Wabi-Sabi kitchen with imperfect ceramics"],
+    ["Minimal abstract Scandinavian prints", "Classical European paintings", "Industrial metal wall art", "Rustic botanical farmhouse illustrations", "Eclectic boho collage", "Modern geometric contemporary art", "Minimalistic line drawings", "Wabi-Sabi handmade imperfect art"],
+    ["Light ash Scandinavian wood flooring", "European herringbone parquet", "Industrial concrete", "Warm farmhouse oak planks", "Patterned bohemian rugs", "Sleek stone or tile flooring", "Polished minimalistic white/gray", "Wabi-Sabi raw textured cement"],
+    ["Cozy Scandinavian bedroom", "Soft pastel European Classic bedroom", "Dark-toned Industrial bedroom", "Warm and rustic farmhouse bedroom", "Colorful and layered bohemian bedroom", "Clean-lined modern contemporary bedroom", "Neutral, clutter-free minimalistic bedroom", "Zen-like Wabi-Sabi bedroom with natural imperfections"],
+    ["Soft warm Scandinavian pendants", "Classic chandeliers", "Industrial cage lights", "Farmhouse lantern lights", "Bohemian string lights / woven fixtures", "Sleek linear modern lighting", "Minimalistic recessed lighting", "Handmade organic ceramic lamps (Wabi-Sabi)"],
+    ["Scandinavian bright bathroom", "European marble bathroom", "Industrial metal + stone bathroom", "Farmhouse white rustic bathroom", "Bohemian colorful tiles", "Modern monochrome bathroom", "Minimalistic all-neutral bathroom", "Wabi-Sabi stone + raw wood bathroom"],
+    ["Nordic wooden balcony", "European garden patio", "Industrial rooftop", "Farmhouse porch with rocking chairs", "Bohemian cushioned outdoor lounge", "Modern clean-lined patio", "Minimalistic zen-balcony", "Wabi-Sabi natural stone garden corner"],
+    ["Scandinavian ceramics", "European candle stands", "Industrial metal décor", "Farmhouse baskets", "Boho macramé", "Modern sculptural décor pieces", "Minimalistic mono-color vases", "Wabi-Sabi raw clay artifacts"],
+    ["Soft neutrals + muted tones (Scandinavian)", "Pastels + warm creams (European Classic)", "Dark greys + brick tones (Industrial)", "Earthy browns + greens (Farmhouse)", "Vibrant warm hues (Bohemian)", "Black + beige + muted contrasts (Modern Contemporary)", "Pure whites + monotones (Minimalistic)", "Earth + sand + stone (Wabi-Sabi)"],
+    // Q13–Q16: text-only options (no images)
+    ["Calmness and simplicity (Minimalistic)", "Timeless elegance (European Classic)", "Functionality and clean lines (Modern Contemporary)", "Natural textures and grounding elements (Wabi-Sabi)", "Warmth and comfort (Farmhouse)", "Creativity and self-expression (Bohemian)", "Practicality and strong materials (Industrial)", "Soft, cozy, balanced aesthetics (Scandinavian)"],
+    ["Peaceful and uncluttered", "Grand and impressive", "Sleek and stylish", "Natural and earthy", "Warm and welcoming", "Vibrant and full of personality", "Bold and modern", "Cozy, soft, and home-like"],
+    ["I like things minimal — no excess.", "I appreciate classics and structure.", "I enjoy modern living and efficiency.", "I embrace imperfections and nature.", "I prefer slow, warm living with comfort.", "I love colours, patterns, and artistic vibes.", "I'm practical and prefer functional spaces.", "I love calm, neutral, airy spaces."],
+    ["I keep only what I need (Minimalistic)", "I cherish heirlooms/artifacts (European Classic)", "I buy quality, sleek items (Modern Contemporary)", "I love handmade, raw, imperfect objects (Wabi-Sabi)", "I enjoy rustic, lived-in objects (Farmhouse)", "I love collecting expressive, colourful décor (Bohemian)", "I prioritise durability over aesthetics (Industrial)", "I prefer functional, simple, soft décor (Scandinavian)"],
+];
+
+const TOTAL_STEPS = 16;
+
+const OPTION_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'] as const;
+
+type AnswerEntry = {
+    question: string;
+    selected: ImageOption | null;
+    optionLabel?: string; // label shown for this question (e.g. "A soft oak Scandinavian lounge chair")
+};
 
 export default function DesignQAPage() {
-    
-    type Images = {
-        id: number;
-        css: string | undefined;
-        src: string;
-        alt: string;
-        text: string;
-    }
+    const router = useRouter();
+    const [currentStep, setCurrentStep] = useState(1);
+    const [answers, setAnswers] = useState<AnswerEntry[]>(() =>
+        QUESTIONS.map((q) => ({ question: q, selected: null }))
+    );
 
-    const img: Images[] = [
-        {
-            id: 1,      
-            src: "scandanavian.png",
-            alt: "A beautiful view of Paris",
-            css:  "w-full h-64",
-            text: "Scandinavian"
-        },
-        {
-            id: 2,
-            src: "Industrial.png",
-            alt: " European Classic",
-            css: "w-full h-64",
-            text: "Industrial"
-        },
-        {
-            id: 3,
-            src: "farmhouse.png",
-            alt: "A beautiful view of Paris",
-            css: "w-full h-64",
-            text: "Farmhouse"
-        },
-        {
-            id: 4,
-            src: "bohemian.png",
-            alt: "A beautiful view of Paris",
-            css: "w-full h-64",
-            text: "Bohemian"
-        },
-        {
-            id: 5,
-            src: "modernContemporary.png",
-            alt: "A beautiful view of Paris",
-            css: "w-full h-64",
-            text: "Modern Contemporary"
-        },
-        {
-            id: 6,
-            src: "Minimalistic.png",
-            alt: "A beautiful view of Paris",
-            css: "w-full h-64",
-            text: "Minimalistic"
-        },
-        {
-            id: 7,
-            src: "WabiSabi.png",
-            alt: "A beautiful view of Paris",
-            css: "w-full h-64",
-            text: " Wabi-Sabi"
-        },
-        {
-            id: 8,
-            src: "Europeanclassic.png",
-            alt: "A beautiful view of Paris",
-            css: "w-full h-64",
-            text: "European Classic"
+    const currentQuestion = QUESTIONS[currentStep - 1];
+    const currentAnswer = answers[currentStep - 1];
+    const isLastStep = currentStep === TOTAL_STEPS;
+
+    const handleSelect = (image: ImageOption, optionIndex: number) => {
+        const newAnswers = [...answers];
+        const optionLabel = OPTION_LABELS[currentStep - 1]?.[optionIndex] ?? image.text;
+        newAnswers[currentStep - 1] = { ...newAnswers[currentStep - 1], selected: image, optionLabel };
+        setAnswers(newAnswers);
+
+        if (isLastStep) {
+            if (typeof window !== 'undefined') {
+                sessionStorage.setItem('designQAAnswers', JSON.stringify(newAnswers));
+            }
+            router.push('/DesignQA/result');
+        } else {
+            setCurrentStep((s) => s + 1);
         }
-    ];
+    };
+
+    const handleBack = () => {
+        setCurrentStep((s) => Math.max(1, s - 1));
+    };
 
     return (
-        <div className="bg-white min-h-screen">
-            <main>
-               {/* Main Outer Container */}
-               <div className='xl:w-[16%] xl:z-10 xl:-ml-16'><img src="/LOGOHOWs.png" alt="" /></div>
-               <div className="xl:mx-auto xl:w-[75%] xl:bg-[#f1f2f6] xl:rounded-4xl xl:border-3 xl:border-green-900 xl:shadow-2xl xl:overflow-hidden">
-               <h1 className='xl:text-black xl:text-2xl xl:font-bold xl:text-center pt-10'>Choose the living room you’d love to walk into</h1>
-                    {/* Grid Layout */}
-                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-8 p-12 text-center">
+        <div className="bg-white min-h-screen h-screen overflow-hidden flex flex-col items-center justify-center relative">
+            {/* Logo - fixed on the left */}
+            <div className="absolute left-4 xl:-left-8 top-4  z-10 xl:w-[12%]">
+                <img src="/LOGOHOWs.png" alt="Logo" className="w-[200px] max-w-[240px]" />
+                <div className='text-md text-black font-bold absolute left-4 xl:left-320 top-5  z-10 xl:w-[200px]'>Interior Personality Quiz ?</div>
+            </div>
 
-                            
-                            
-                            {img.map((image) => (
-                                /* 'group' allows children to react when this div is hovered */
-                                <div key={image.id} className="group relative flex flex-col items-center cursor-pointer">
-                                    
-                                    {/* Image Section */}
-                                    <div className="overflow-hidden rounded-4xl border-3 border-transparent transition-all duration-300 group-hover:border-blue-500 group-hover:shadow-lg">
-                                        <img 
-                                            src={image.src} 
-                                            alt={image.alt} 
-                                            className={`${image.css} object-cover transition-transform duration-500 group-hover:scale-110`}
-                                        />
-                                    </div>
-
-                                    {/* Animated Text Box */}
-                                    <p className="
-                                        /* Basic Styling */
-                                        w-[80%] bg-white py-4 px-2 rounded-2xl text-black font-bold text-sm shadow-xl
-                                        border-b-1 border-green-900
-                                        
-                                        /* Positioning: Pull it up over the image */
-                                        absolute -bottom-4
-                                        
-                                        /* Hover Animation logic */
-                                         transition-all duration-300 ease-out
-                                        group-hover:opacity-100 
-                                    ">
-                                        {image.text}
-                                    </p>
-                                </div>
-                            ))}
+            <main className="w-full xl:w-[75%] xl:max-w-5xl flex flex-col items-center justify-center px-4 py-4 mt-15">
+                {/* Progress bar - outside and above the card */}
+                <div className="w-full mb-6">
+                    <div className="flex justify-between text-sm text-gray-600 mb-2">
+                        <span>Steps {currentStep} of {TOTAL_STEPS}</span>
+                        <span>{Math.round((currentStep / TOTAL_STEPS) * 100)}%</span>
                     </div>
-               </div>
+                    <div className=' text-xl text-black font-bold mb-3'>Define your space</div>
+                    <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+                        <div
+                            className="h-full bg-green-700 transition-all duration-300"
+                            style={{ width: `${(currentStep / TOTAL_STEPS) * 100}%` }}
+                        />
+                    </div>
+                </div>
+
+                <div className="w-full bg-[#f1f2f6] rounded-4xl border-3 border-green-900 shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+                    <h1 className="text-black text-xl xl:text-2xl font-bold text-center pt-4 pb-2 flex-shrink-0 px-4">
+                        {currentQuestion}
+                    </h1>
+
+                    {currentStep >= 13 ? (
+                        /* Text-only options for Q13–Q16 */
+                        <div className="flex flex-col gap-3 p-6 xl:p-8 flex-1 min-h-0 overflow-auto">
+                            {OPTION_LETTERS.map((letter, index) => {
+                                const label = OPTION_LABELS[currentStep - 1]?.[index] ?? '';
+                                const option = getTextOption(currentStep - 1, index);
+                                const isSelected = currentAnswer?.selected?.id === option.id;
+                                return (
+                                    <div
+                                        key={letter}
+                                        onClick={() => handleSelect(option, index)}
+                                        className={`flex items-center gap-4 p-4 rounded-2xl border-2 cursor-pointer transition-all duration-300 ${
+                                            isSelected
+                                                ? 'border-green-600 bg-green-50 ring-2 ring-green-600 ring-offset-2'
+                                                : 'border-gray-200 bg-white hover:border-green-400 hover:bg-gray-50'
+                                        }`}
+                                    >
+                                        <span className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm ${isSelected ? 'bg-green-600 text-white' : 'bg-gray-200 text-gray-700'}`}>
+                                            {letter}
+                                        </span>
+                                        <p className="text-black font-medium text-sm xl:text-base">{label}</p>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    ) : (
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 xl:gap-6 p-6 xl:p-8 text-center flex-1 min-h-0 overflow-auto">
+                            {getImagesForStep(currentStep).map((image, index) => {
+                                const isSelected = currentAnswer?.selected?.id === image.id;
+                                const optionLabel = OPTION_LABELS[currentStep - 1]?.[index] ?? image.text;
+                                return (
+                                    <div
+                                        key={image.id}
+                                        onClick={() => handleSelect(image, index)}
+                                        className={`group relative flex flex-col items-center cursor-pointer rounded-3xl transition-all duration-300 ${
+                                            isSelected
+                                                ? 'ring-4 ring-green-600 ring-offset-2 scale-[1.02]'
+                                                : ''
+                                        }`}
+                                    >
+                                        <div className={`overflow-hidden rounded-3xl border-3 transition-all duration-300 w-full ${
+                                            isSelected ? 'border-green-600 shadow-lg' : 'border-transparent group-hover:border-blue-500 group-hover:shadow-lg'
+                                        }`}>
+                                            <img
+                                                src={image.src}
+                                                alt={image.alt}
+                                                className="w-full h-56 xl:h-72 object-cover transition-transform duration-500 group-hover:scale-110"
+                                            />
+                                        </div>
+                                        <p
+                                            className="w-[85%] bg-white py-2 px-2 rounded-xl text-black font-bold text-xs xl:text-sm shadow-lg border-b border-green-900 absolute -bottom-3 transition-all duration-300 group-hover:opacity-100"
+                                        >
+                                            {optionLabel}
+                                        </p>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+
+                    {/* Navigation - Back only */}
+                    <div className="flex items-center px-6 xl:px-8 pb-6 pt-2 flex-shrink-0">
+                        <button
+                            type="button"
+                            onClick={handleBack}
+                            disabled={currentStep === 1}
+                            className="px-5 py-2.5 rounded-xl border-2 border-gray-300 font-semibold text-gray-700 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-100"
+                        >
+                            Back
+                        </button>
+                    </div>
+                </div>
             </main>
         </div>
     );
