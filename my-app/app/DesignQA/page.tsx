@@ -252,7 +252,7 @@ function DesignQAFormContent({ linkIdentifiers }: { linkIdentifiers: LinkIdentif
 
         if (isLastStep) {
             setSubmitting(true);
-            const apiUrl = process.env.NEXT_PUBLIC_DESIGN_QA_API_URL || 'http://localhost:8081/api/design-qa';
+            const apiUrl = process.env.NEXT_PUBLIC_DESIGN_QA_API_URL || 'http://localhost:8081/api/design-qa/{leadId}';
             const payload: { answers: AnswerEntry[]; leadId?: string; token?: string; submittedAt?: string } = {
                 answers: newAnswers,
                 submittedAt: new Date().toISOString(),
