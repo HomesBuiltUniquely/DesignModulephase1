@@ -228,7 +228,7 @@ type AnswerEntry = {
     optionLabel?: string; // label shown for this question (e.g. "A soft oak Scandinavian lounge chair")
 };
 
-type LinkIdentifiers = { leadId?: string; token?: string };
+type LinkIdentifiers = { id?: string; leadId?: string; token?: string };
 
 function DesignQAFormContent({ linkIdentifiers }: { linkIdentifiers: LinkIdentifiers }) {
     const router = useRouter();
@@ -252,11 +252,12 @@ function DesignQAFormContent({ linkIdentifiers }: { linkIdentifiers: LinkIdentif
 
         if (isLastStep) {
             setSubmitting(true);
-            const apiUrl = process.env.NEXT_PUBLIC_DESIGN_QA_API_URL || 'http://localhost:8081/api/design-qa/{leadId}';
-            const payload: { answers: AnswerEntry[]; leadId?: string; token?: string; submittedAt?: string } = {
+            const apiUrl = process.env.NEXT_PUBLIC_DESIGN_QA_API_URL || 'http://localhost:8081/api/design-qa';
+            const payload: { answers: AnswerEntry[]; id?: string; leadId?: string; token?: string; submittedAt?: string } = {
                 answers: newAnswers,
                 submittedAt: new Date().toISOString(),
             };
+            if (linkIdentifiers.id) payload.id = linkIdentifiers.id;
             if (linkIdentifiers.leadId) payload.leadId = linkIdentifiers.leadId;
             if (linkIdentifiers.token) payload.token = linkIdentifiers.token;
             try {
@@ -407,9 +408,11 @@ function DesignQAPageWithParams() {
     const [linkIdentifiers, setLinkIdentifiers] = useState<LinkIdentifiers>({});
 
     useEffect(() => {
+        // Backend suggestion: use ?id=AL-HNAD4KCOAS to identify the lead
+        const id = searchParams.get('id') ?? undefined;
         const leadId = searchParams.get('leadId') ?? searchParams.get('lead_id') ?? undefined;
         const token = searchParams.get('token') ?? searchParams.get('invite') ?? undefined;
-        setLinkIdentifiers({ leadId: leadId ?? undefined, token: token ?? undefined });
+        setLinkIdentifiers({ id: id ?? undefined, leadId: leadId ?? undefined, token: token ?? undefined });
     }, [searchParams]);
 
     return <DesignQAFormContent linkIdentifiers={linkIdentifiers} />;
