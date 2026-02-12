@@ -228,23 +228,16 @@ type AnswerEntry = {
     optionLabel?: string; // label shown for this question (e.g. "A soft oak Scandinavian lounge chair")
 };
 
-export default function DesignQAPage() {
+type LinkIdentifiers = { leadId?: string; token?: string };
+
+function DesignQAFormContent({ linkIdentifiers }: { linkIdentifiers: LinkIdentifiers }) {
     const router = useRouter();
-    const searchParams = useSearchParams();
     const [currentStep, setCurrentStep] = useState(1);
     const [answers, setAnswers] = useState<AnswerEntry[]>(() =>
         QUESTIONS.map((q) => ({ question: q, selected: null }))
     );
     const [submitting, setSubmitting] = useState(false);
     const [submitError, setSubmitError] = useState<string | null>(null);
-    // User identifier from link (so you know who sent the response)
-    const [linkIdentifiers, setLinkIdentifiers] = useState<{ leadId?: string; token?: string }>({});
-
-    useEffect(() => {
-        const leadId = searchParams.get('leadId') ?? searchParams.get('lead_id') ?? undefined;
-        const token = searchParams.get('token') ?? searchParams.get('invite') ?? undefined;
-        setLinkIdentifiers({ leadId: leadId ?? undefined, token: token ?? undefined });
-    }, [searchParams]);
 
     const currentQuestion = QUESTIONS[currentStep - 1];
     const currentAnswer = answers[currentStep - 1];
@@ -259,7 +252,7 @@ export default function DesignQAPage() {
 
         if (isLastStep) {
             setSubmitting(true);
-            const apiUrl = process.env.NEXT_PUBLIC_DESIGN_QA_API_URL || 'https://localhost:8081/api/design-qa/{leadId}';
+            const apiUrl = process.env.NEXT_PUBLIC_DESIGN_QA_API_URL || 'http://localhost:8081/api/design-qa';
             const payload: { answers: AnswerEntry[]; leadId?: string; token?: string; submittedAt?: string } = {
                 answers: newAnswers,
                 submittedAt: new Date().toISOString(),
@@ -406,5 +399,26 @@ export default function DesignQAPage() {
                 </div>
             </main>
         </div>
+    );
+}
+
+function DesignQAPageWithParams() {
+    const searchParams = useSearchParams();
+    const [linkIdentifiers, setLinkIdentifiers] = useState<LinkIdentifiers>({});
+
+    useEffect(() => {
+        const leadId = searchParams.get('leadId') ?? searchParams.get('lead_id') ?? undefined;
+        const token = searchParams.get('token') ?? searchParams.get('invite') ?? undefined;
+        setLinkIdentifiers({ leadId: leadId ?? undefined, token: token ?? undefined });
+    }, [searchParams]);
+
+    return <DesignQAFormContent linkIdentifiers={linkIdentifiers} />;
+}
+
+export default function DesignQAPage() {
+    return (
+        <React.Suspense fallback={<div className="min-h-screen flex items-center justify-center bg-white"><p className="text-gray-500">Loading...</p></div>}>
+            <DesignQAPageWithParams />
+        </React.Suspense>
     );
 }
