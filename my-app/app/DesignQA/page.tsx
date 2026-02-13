@@ -252,7 +252,14 @@ function DesignQAFormContent({ linkIdentifiers }: { linkIdentifiers: LinkIdentif
 
         if (isLastStep) {
             setSubmitting(true);
-            const apiUrl = process.env.NEXT_PUBLIC_DESIGN_QA_API_URL || 'http://localhost:8081/api/design-qa';
+            const baseUrl = process.env.NEXT_PUBLIC_DESIGN_QA_API_URL || 'http://localhost:8081/api/design-qa';
+            const leadIdForApi = linkIdentifiers.id ?? linkIdentifiers.leadId;
+            if (!leadIdForApi) {
+                setSubmitError('Missing lead link. Please use the link from your email.');
+                setSubmitting(false);
+                return;
+            }
+            const apiUrl = `${baseUrl}?id=${encodeURIComponent(leadIdForApi)}`;
             const payload: { answers: AnswerEntry[]; id?: string; leadId?: string; token?: string; submittedAt?: string } = {
                 answers: newAnswers,
                 submittedAt: new Date().toISOString(),
