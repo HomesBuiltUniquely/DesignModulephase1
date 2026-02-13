@@ -54,7 +54,7 @@ export default function ProjectDetailPage() {
         };
         setImage([...image, newImage]);
     }
-
+   
     // Toggle function: If clicking the same card, close it. If new card, open it.
     const toggleMaximize = (cardName: string) => {
         if (activeCard === cardName) {
