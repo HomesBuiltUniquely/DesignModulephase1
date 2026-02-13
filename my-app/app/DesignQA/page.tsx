@@ -252,7 +252,7 @@ function DesignQAFormContent({ linkIdentifiers }: { linkIdentifiers: LinkIdentif
 
         if (isLastStep) {
             setSubmitting(true);
-            const baseUrl = process.env.NEXT_PUBLIC_DESIGN_QA_API_URL || 'http://localhost:8081/api/design-qa';
+            const baseUrl = process.env.NEXT_PUBLIC_DESIGN_QA_API_URL || 'http://hows.hubinterior.com/api/design-qa';
             const leadIdForApi = linkIdentifiers.id ?? linkIdentifiers.leadId;
             if (!leadIdForApi) {
                 setSubmitError('Missing lead link. Please use the link from your email.');
