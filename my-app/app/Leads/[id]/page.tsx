@@ -142,7 +142,7 @@ export default function ProjectDetailPage() {
                         <div className='' >
                             {
                                 MileStonesArray.MilestonesName.map((milestone, index) => {
-                                    if (index === 0) {
+                                    if (index === 1) {
                                         return milestone.taskList.map((task: string, taskIndex: Key) => (
                                             <div key={taskIndex} className = {`${milestone.Css}`}>
                                                 <button onClick={handleClick} className='xl:w-full xl:h-full  xl:py-4 xl:px-4 '>{task}</button>
@@ -198,38 +198,19 @@ export default function ProjectDetailPage() {
 
             {/* Popup / Modal */}
             {showPopup && (
-                <div 
-                    className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50"
-                    onClick={closePopup}
-                >
-                    <div 
-                        className="bg-white rounded-2xl shadow-2xl  xl:h-[80vh] flex flex-col xl:w-[40vw]"
-                        onClick={(e) => e.stopPropagation()}
-                    >
-                        <div className="flex justify-between items-center mb-4 pt-6 px-6">
-                            <h3 className="text-lg font-bold text-gray-900">Measurement Required<div className='text-sm text-gray-500 pt-2'>Schedule site vist and assign measurement <p>responsibility</p> </div></h3>
-                            <button 
-                                onClick={closePopup}
-                                className="text-gray-700 bg-gray-100 hover:text-gray-700 text-2xl leading-none border border-gray-300 rounded-md p-2 font-bold text-sm mb-6"
-                            >
-                                Close
-                            </button>
-                        </div>
-                        <div className=' h-[1px] bg-gray-200 w-full'></div>
-                        <div className="flex items-center gap-2 px-6 py-5">
-                            <div >
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="size-4">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25m-18 0A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75m-18 0v-7.5A2.25 2.25 0 0 1 5.25 9h13.5A2.25 2.25 0 0 1 21 11.25v7.5" />
-                            </svg>
-                            </div>
-                            <p className='text-[12px] text-gray-400'>SCHEDULE DETAILS</p>
-                        </div>
-                        <div className='flex items-center justify-between gap-2 px-6 py-2'>
-                            <div>
-                                <div className='font-bold text-sm'>Measurement Date</div>
-                                <input type="date" className='w-[250px] border border-gray-300 rounded-md p-2 mt-2' />
-                            </div>
-                            <div>
+                <>
+                <div className='fixed inset-0 z-[100] flex items-center justify-center bg-black/50' onClick={closePopup}>
+                <div className='bg-white rounded-2xl shadow-2xl xl:max-h-[80vh] flex flex-col xl:w-[40vw] overflow-hidden' onClick={(e) => e.stopPropagation()}>
+                <div className='flex justify-between items-center mb-4 pt-6 px-6'>
+                    <h3 className='text-lg font-bold text-gray-900'>{MileStonesArray.MilestonesName[2]?.name}</h3>
+                    <button onClick={closePopup} className='text-gray-700 bg-gray-100 hover:text-gray-700 text-2xl leading-none border border-gray-300 rounded-md p-2 font-bold text-sm mb-6'>Close</button>
+                </div>
+                <div className='flex items-center justify-between gap-2 px-6 py-2'>
+                    <div>
+                        <div className='font-bold text-sm'>Measurement Date</div>
+                        <input type="date" className='w-[250px] border border-gray-300 rounded-md p-2 mt-2' />
+                    </div>
+                    <div>
                                 <div className='font-bold text-sm'>Measurement Time</div>
                                 <input type="time" className='w-[250px] border border-gray-300 rounded-md p-2 mt-2' />
                             </div>
@@ -280,8 +261,9 @@ export default function ProjectDetailPage() {
                             </div>
                             </div>
                         </div>
-                    </div>
                 </div>
+                </div>
+                </>
             )}
         </div>
     );
