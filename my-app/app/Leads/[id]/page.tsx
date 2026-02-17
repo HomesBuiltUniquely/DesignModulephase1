@@ -1,7 +1,7 @@
 'use client';
 
 import { useParams, useRouter } from 'next/navigation';
-import { Key, useState } from 'react';
+import { Key, useRef, useState } from 'react';
 // Assuming types are imported correctly. If not, I defined a mock below.
 import { LeadshipTypes } from '../../Components/Types/Types';
 import MileStonesArray from '@/app/Components/Types/MileStoneArray';
@@ -22,7 +22,15 @@ export default function ProjectDetailPage() {
 
     // State to track WHICH card is maximized (null = none)
     const [activeCard, setActiveCard] = useState<string | null>(null);
-    const [showPopup, setShowPopup] = useState(false);
+    // Which milestone is shown in the card (change this to switch title + tasks + which popup opens)
+    const [selectedMilestoneIndex, setSelectedMilestoneIndex] = useState(0);
+    // Which milestone popup is open (null = closed). Lets you show different popup content per milestone/task.
+    const [popupContext, setPopupContext] = useState<{ milestoneIndex: number; milestoneName: string; taskName: string } | null>(null);
+    // For "DQC 1 approval" task: show different popup content based on Approved vs Rejected (set when user picks in popup).
+    const [dqc1ApprovalChoice, setDqc1ApprovalChoice] = useState<'approved' | 'rejected' | null>(null);
+    // Design upload (First cut design popup): selected files
+    const [designUploadFiles, setDesignUploadFiles] = useState<File[]>([]);
+    const designFileInputRef = useRef<HTMLInputElement>(null);
 
     // Fake projects data (same as Dashboard for now)
     const projects: LeadshipTypes[] = [
@@ -80,8 +88,38 @@ export default function ProjectDetailPage() {
         return defaultClasses;
     };
 
-    const handleClick = () => setShowPopup(true);
-    const closePopup = () => setShowPopup(false);
+    const openTaskPopup = (milestoneIndex: number, taskName: string) => {
+        const milestone = MileStonesArray.MilestonesName[milestoneIndex];
+        if (milestone) {
+            setPopupContext({ milestoneIndex, milestoneName: milestone.name, taskName });
+            setDqc1ApprovalChoice(null); // reset so user picks again when opening "DQC 1 approval"
+        }
+    };
+    const closePopup = () => {
+        setPopupContext(null);
+        setDqc1ApprovalChoice(null);
+        setDesignUploadFiles([]);
+    };
+
+    // Design file upload: open file picker with accept type
+    const openDesignFileUpload = (accept: string) => {
+        designFileInputRef.current?.setAttribute('accept', accept);
+        designFileInputRef.current?.click();
+    };
+    const onDesignFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const files = e.target.files ? Array.from(e.target.files) : [];
+        setDesignUploadFiles((prev) => [...prev, ...files]);
+        e.target.value = '';
+    };
+    const onDesignDrop = (e: React.DragEvent) => {
+        e.preventDefault();
+        const files = e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
+        setDesignUploadFiles((prev) => [...prev, ...files]);
+    };
+    const onDesignDragOver = (e: React.DragEvent) => e.preventDefault();
+    const removeDesignFile = (index: number) => {
+        setDesignUploadFiles((prev) => prev.filter((_, i) => i !== index));
+    };
 
     return (
         <div className='bg-blue-50 min-h-screen'>
@@ -133,25 +171,32 @@ export default function ProjectDetailPage() {
                 
                 {/* 1. MILESTONES CARD */}
                 <div className={getCardClass('milestones', 'xl:col-span-3 xl:bg-white xl:h-[70vh] xl:text-center xl:font-bold xl:pt-8 xl:rounded-3xl text-gray-400 relative')}>
-                    <h2 className='mb-10  '>{MileStonesArray.MilestonesName.map((milestone,index)=>(index===0 && (milestone.name)))}</h2>
+                    <h2 className='mb-10  '>{MileStonesArray.MilestonesName[selectedMilestoneIndex]?.name}</h2>
                     <button onClick={() => toggleMaximize('milestones')} className='absolute top-4 right-4 p-2  rounded hover:bg-gray-200'>
                         {activeCard === 'milestones' ? <img src="/maximize.png" className='w-[1.5vw]'></img> : <img src="/maximize.png" className='w-[1.5vw]'></img> }
                     </button>
+                    {/* Change milestone: title, task list, and popup all use selectedMilestoneIndex */}
+                    <select
+                        value={selectedMilestoneIndex}
+                        onChange={(e) => setSelectedMilestoneIndex(Number(e.target.value))}
+                        className='xl:mb-4 text-sm border border-gray-300 rounded-md px-3 py-1.5 text-gray-700 font-normal'
+                    >
+                        {MileStonesArray.MilestonesName.map((m, i) => (
+                            <option key={m.id} value={i}>{m.name}</option>
+                        ))}
+                    </select>
                     {/* milestone Creations*/}
                     <div className='xl:w-[60%] xl:h-[80%] xl:border-3 xl:border-solid xl:border-gray-300 xl:mx-auto xl:rounded-4xl '>
                         <div className='' >
-                            {
-                                MileStonesArray.MilestonesName.map((milestone, index) => {
-                                    if (index === 1) {
-                                        return milestone.taskList.map((task: string, taskIndex: Key) => (
-                                            <div key={taskIndex} className = {`${milestone.Css}`}>
-                                                <button onClick={handleClick} className='xl:w-full xl:h-full  xl:py-4 xl:px-4 '>{task}</button>
-                                            </div>
-                                        ));
-                                    }
-                                    return null;
-                                })
-                            }
+                            {MileStonesArray.MilestonesName[selectedMilestoneIndex]?.taskList.map((task: string, taskIndex: Key) => {
+                                const milestone = MileStonesArray.MilestonesName[selectedMilestoneIndex];
+                                if (!milestone) return null;
+                                return (
+                                    <div key={taskIndex} className={`${milestone.Css}`}>
+                                        <button onClick={() => openTaskPopup(selectedMilestoneIndex, task)} className='xl:w-full xl:h-full  xl:py-4 xl:px-4 '>{task}</button>
+                                    </div>
+                                );
+                            })}
                         </div>
 
                     </div>
@@ -196,15 +241,19 @@ export default function ProjectDetailPage() {
 
             </main>
 
-            {/* Popup / Modal */}
-            {showPopup && (
+            {/* Popup / Modal – section below by milestone index to add different popups */}
+            {popupContext && (
                 <>
                 <div className='fixed inset-0 z-[100] flex items-center justify-center bg-black/50' onClick={closePopup}>
-                <div className='bg-white rounded-2xl shadow-2xl xl:max-h-[80vh] flex flex-col xl:w-[40vw] overflow-hidden' onClick={(e) => e.stopPropagation()}>
-                <div className='flex justify-between items-center mb-4 pt-6 px-6'>
-                    <h3 className='text-lg font-bold text-gray-900'>{MileStonesArray.MilestonesName[2]?.name}</h3>
-                    <button onClick={closePopup} className='text-gray-700 bg-gray-100 hover:text-gray-700 text-2xl leading-none border border-gray-300 rounded-md p-2 font-bold text-sm mb-6'>Close</button>
+                <div className='bg-white rounded-2xl shadow-2xl xl:max-h-[85vh] flex flex-col xl:w-[40vw] overflow-hidden' onClick={(e) => e.stopPropagation()}>
+                <div className='flex justify-between items-center pt-6 px-6 pb-2 flex-shrink-0'>
+                    <h3 className='text-lg font-bold text-gray-900'>{popupContext.milestoneIndex === 1 ? 'First Cut Design Discussion' : popupContext.milestoneName}</h3>
+                    <button onClick={closePopup} className='text-gray-700 bg-gray-100 hover:text-gray-700 text-2xl leading-none border border-gray-300 rounded-md p-2 font-bold text-sm'>Close</button>
                 </div>
+                <div className='flex-1 overflow-y-auto min-h-0'>
+                {/* ---------- Milestone 0: D1 SITE MEASUREMENT (your existing popup – do not change design) ---------- */}
+                {popupContext.milestoneIndex === 0 && (
+                <>
                 <div className='flex items-center justify-between gap-2 px-6 py-2'>
                     <div>
                         <div className='font-bold text-sm'>Measurement Date</div>
@@ -261,6 +310,227 @@ export default function ProjectDetailPage() {
                             </div>
                             </div>
                         </div>
+                </>
+                )}
+
+                {/* ---------- Milestone 1: DQC1 – different popup per task ---------- */}
+                {/* Task: First cut design + quotation discussion meeting request */}
+                {popupContext.milestoneIndex === 1 && popupContext.taskName === 'First cut design + quotation discussion meeting request' && (
+                    <div className='w-full min-h-[100vh]'>
+                            <div>
+                                <div className='w-full border border-gray-200 mt-2'></div>
+                                <div className='flex items-center gap-2 py-4 px-6'>
+                                    <div><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="size-5 text-blue-500">
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25m-18 0A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75m-18 0v-7.5A2.25 2.25 0 0 1 5.25 9h13.5A2.25 2.25 0 0 1 21 11.25v7.5" />
+                                    </svg>
+                                    </div>
+                                    <div className='text-[14px] font-bold text-black'>MEETING SCHEDULE</div>
+                                </div>
+                                {/* second section */}
+                                <div>
+                                <div className='flex items-center justify-between gap-2 px-6 py-2'>
+                                <div>
+                                    <div className='font-bold text-sm text-black placeholder-text-black'>Date</div>
+                                    <input type="date" className='w-[250px] border border-gray-300 rounded-md p-2 mt-2' />
+                                </div>
+                                <div>
+                                    <div className='font-bold text-sm text-black'>Time</div>
+                                    <input type="time" className='w-[250px] border border-gray-300 rounded-md p-2 mt-2' />
+                                </div>
+                                </div>
+                                </div>
+                                {/* Third Section */}
+                                <div>
+                                <div className='flex items-center gap-2 py-4 px-6'>
+                                    <div><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="size-5 text-blue-500">
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="m15.75 10.5 4.72-4.72a.75.75 0 0 1 1.28.53v11.38a.75.75 0 0 1-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25h-9A2.25 2.25 0 0 0 2.25 7.5v9a2.25 2.25 0 0 0 2.25 2.25Z" />
+                                            </svg>
+                                    </div>
+                                    <div className='text-[14px] font-bold text-black'>MEETING MODE</div>
+                                </div>
+                                </div>
+                                <div className='flex  justify-around gap-4 bg-gray-200 w-47 h-12 rounded-md ml-5'>
+                                <div className='text-blue-400 bg-white w-20 h-[4.5vh] text-center font-bold mt-1.5 pt-1.5 ml-1.5 rounded-md'>Online</div>
+                                <div className='w-20 h-[4.5vh] text-center text-gray-400 font-bold mt-1.5 pt-1.5'>Offline</div>
+                                </div>
+                                {/* Fourth section */}
+                                <div>
+                                    <h1 className='pl-6 pt-4 font-semibold text-black'>Meeting Link</h1>
+                                    <div className='relative w-138.75 mt-4 ml-4'>
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="size-6 absolute left-3 top-3 text-gray-400">
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244" />
+                                    </svg>
+                                        <input className='w-full h-12.5 border border-gray-300 rounded-xl placeholder-gray-500 font-medium text-[18px] pl-13' placeholder={`https://zoom.us/j/...`}></input>
+                                    </div>
+                                </div>
+                                {/* fifth Section */}
+                                <div>
+                                <div className='flex items-center gap-2 py-4 px-6 mt-4'>
+                                    <div><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="size-6 text-blue-400">
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 16.5V9.75m0 0 3 3m-3-3-3 3M6.75 19.5a4.5 4.5 0 0 1-1.41-8.775 5.25 5.25 0 0 1 10.233-2.33 3 3 0 0 1 3.758 3.848A3.752 3.752 0 0 1 18 19.5H6.75Z" />
+                                        </svg>
+
+                                    </div>
+                                    <div className='text-[14px] text-black font-bold'>DESIGN UPLOAD</div>
+                                </div>
+                                </div>
+                                {/* Sixth Section – Design file upload */}
+                                <div className="px-6 pb-6">
+                                    <input
+                                        ref={designFileInputRef}
+                                        type="file"
+                                        className="hidden"
+                                        multiple
+                                        onChange={onDesignFilesSelected}
+                                    />
+                                    <div
+                                        className="w-full max-w-[540px] border-2 border-dashed border-gray-300 rounded-xl bg-white p-8 flex flex-col items-center justify-center min-h-[220px] cursor-pointer hover:border-blue-400 hover:bg-blue-50/30 transition-colors"
+                                        onClick={() => openDesignFileUpload('.pdf,.jpg,.jpeg,.png,.fig,.psd')}
+                                        onDrop={onDesignDrop}
+                                        onDragOver={onDesignDragOver}
+                                        role="button"
+                                        tabIndex={0}
+                                        onKeyDown={(e) => e.key === 'Enter' && openDesignFileUpload('.pdf,.jpg,.jpeg,.png,.fig,.psd')}
+                                    >
+                                        <div className="w-14 h-14 rounded-full border-2 border-blue-200 bg-blue-50 flex items-center justify-center mb-4">
+                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-7 h-7 text-blue-600">
+                                                <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5" />
+                                            </svg>
+                                        </div>
+                                        <p className="text-base font-semibold text-gray-800 mb-1">Click or drag design file to upload</p>
+                                        <p className="text-sm text-gray-500 mb-6">Upload first design version for discussion</p>
+                                        <div className="flex items-center justify-center gap-4 flex-wrap">
+                                            <button type="button" onClick={(e) => { e.stopPropagation(); openDesignFileUpload('.pdf'); }} className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 text-red-600 font-medium text-sm">
+                                                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+                                                PDF
+                                            </button>
+                                            <button type="button" onClick={(e) => { e.stopPropagation(); openDesignFileUpload('.jpg,.jpeg,.png'); }} className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 text-blue-600 font-medium text-sm">
+                                                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" strokeLinecap="round" strokeLinejoin="round"/><circle cx="8.5" cy="8.5" r="1.5"/><path strokeLinecap="round" strokeLinejoin="round" d="M21 15l-5-5L5 21"/></svg>
+                                                JPG/PNG
+                                            </button>
+                                            <button type="button" onClick={(e) => { e.stopPropagation(); openDesignFileUpload('.fig,.psd'); }} className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 text-purple-600 font-medium text-sm">
+                                                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3 3m-2.25-2.25a4.5 4.5 0 11-6.364 6.364 4.5 4.5 0 016.364-6.364zm-4.5 4.5l4.5 4.5"/></svg>
+                                                FIG/PSD
+                                            </button>
+                                        </div>
+                                    </div>
+                                    {designUploadFiles.length > 0 && (
+                                        <div className="mt-3 space-y-2 max-w-[540px]">
+                                            <p className="text-sm font-medium text-gray-700">Selected files ({designUploadFiles.length})</p>
+                                            {designUploadFiles.map((file, index) => (
+                                                <div key={`${file.name}-${index}`} className="flex items-center justify-between text-sm bg-gray-100 rounded-lg px-3 py-2">
+                                                    <span className="text-gray-700 truncate flex-1">{file.name}</span>
+                                                    <button type="button" onClick={() => removeDesignFile(index)} className="text-red-600 hover:underline ml-2 flex-shrink-0">Remove</button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                                <div className=' w-full border border-gray-200 mt-4'></div>
+                                {/* Seventh Section */}
+                                <div className='flex justify-between bg-gray-100'>
+                                <div className='flex items-center gap-2 py-4 px-4 '>
+                                       <div><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="size-5 text-black">
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z" />
+                                        </svg>
+                                        </div>
+                                       <div className='text-[13px] text-black w-75 '>Customer will receive calender invite automatically</div>
+                                </div>
+                                <div className='flex items-center justify-between gap-6 mr-5 py-6 '>
+                                       <div className='text-[16px] text-gray-600'>Cancel</div>
+                                       <button className='bg-blue-500 text-white w-35 h-9 rounded-md flex pl-3 pt-1.5 gap-2 font-bold'>Send Invite <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="size-6 ">
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" />
+                                        </svg>
+                                       </button>
+                                </div>
+                                </div>
+                        </div>
+                    </div>
+                )}
+                {/* Task: meeting completed */}
+                {popupContext.milestoneIndex === 1 && popupContext.taskName === 'meeting completed' && (
+                    <div className='px-6 pb-6'>
+                        hi this is meeting completed
+                    </div>
+                )}
+                {/* Task: Material selection meeting + quotation discussion */}
+                {popupContext.milestoneIndex === 1 && popupContext.taskName === 'Material selection meeting + quotation discussion' && (
+                    <div className='px-6 pb-6'>
+                        {/* Add your popup content for "Material selection meeting + quotation discussion" here */}
+                    </div>
+                )}
+                {/* Task: DQC 1 submission - dwg + quotation */}
+                {popupContext.milestoneIndex === 1 && popupContext.taskName === 'DQC 1 submission - dwg + quotation' && (
+                    <div className='px-6 pb-6'>
+                        Hi from DQC 1 submission - dwg + quotation
+                    </div>
+                )}
+
+                {/* ---------- Milestone 2: 10% PAYMENT – different popup per task ---------- */}
+                {/* Task: 10% payment collection */}
+                {popupContext.milestoneIndex === 2 && popupContext.taskName === '10% payment collection' && (
+                    <div className='px-6 pb-6'>
+                        {/* Add your popup content for "10% payment collection" here */}
+                    </div>
+                )}
+                {/* Task: DQC 1 approval – different content for Approved vs Rejected */}
+                {popupContext.milestoneIndex === 2 && popupContext.taskName === 'DQC 1 approval' && (
+                    <div className='px-6 pb-6'>
+                        {dqc1ApprovalChoice === null ? (
+                            <div>
+                                <p className='text-sm text-gray-600 mb-3'>Select outcome:</p>
+                                <div className='flex gap-3'>
+                                    <button type='button' onClick={() => setDqc1ApprovalChoice('approved')} className='px-4 py-2 rounded-md bg-green-100 text-green-800 font-medium hover:bg-green-200'>Approved</button>
+                                    <button type='button' onClick={() => setDqc1ApprovalChoice('rejected')} className='px-4 py-2 rounded-md bg-red-100 text-red-800 font-medium hover:bg-red-200'>Rejected</button>
+                                </div>
+                            </div>
+                        ) : (
+                            <>
+                                {dqc1ApprovalChoice === 'approved' && (
+                                    <div>
+                                        {/* Add your popup content for DQC 1 approval – APPROVED flow here */}
+                                    </div>
+                                )}
+                                {dqc1ApprovalChoice === 'rejected' && (
+                                    <div>
+                                        {/* Add your popup content for DQC 1 approval – REJECTED flow here */}
+                                    </div>
+                                )}
+                                <button type='button' onClick={() => setDqc1ApprovalChoice(null)} className='mt-3 text-sm text-gray-500 underline'>Change selection</button>
+                            </>
+                        )}
+                    </div>
+                )}
+
+                {/* ---------- Milestone 3: D2 SITE MASKING – add your popup content below ---------- */}
+                {popupContext.milestoneIndex === 3 && (
+                    <div className='px-6 pb-6'>
+                        {/* Add your popup content for D2 SITE MASKING here */}
+                    </div>
+                )}
+
+                {/* ---------- Milestone 4: DQC2 – add your popup content below ---------- */}
+                {popupContext.milestoneIndex === 4 && (
+                    <div className='px-6 pb-6'>
+                        {/* Add your popup content for DQC2 here */}
+                    </div>
+                )}
+
+                {/* ---------- Milestone 5: 40% PAYMENT – add your popup content below ---------- */}
+                {popupContext.milestoneIndex === 5 && (
+                    <div className='px-6 pb-6'>
+                        {/* Add your popup content for 40% PAYMENT here */}
+                    </div>
+                )}
+
+                {/* ---------- Milestone 6: PUSH TO PRODUCTION – add your popup content below ---------- */}
+                {popupContext.milestoneIndex === 6 && (
+                    <div className='px-6 pb-6'>
+                        {/* Add your popup content for PUSH TO PRODUCTION here */}
+                    </div>
+                )}
+
+                </div>
                 </div>
                 </div>
                 </>
