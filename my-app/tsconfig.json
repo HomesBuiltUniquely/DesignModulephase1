@@ -29,6 +29,6 @@
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts",
     "**/*.mts"
-  ],
+, "app/SalesCloser/Components/ApiCalls/server.js", "../backend/server.ts"  ],
   "exclude": ["node_modules"]
 }

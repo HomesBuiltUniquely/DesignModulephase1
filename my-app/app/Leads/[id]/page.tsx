@@ -170,7 +170,7 @@ export default function ProjectDetailPage() {
         const maxId = image.length > 0 ? Math.max(...image.map(img => img.id)) : 0;
         const newImage: ImageType = {
             id: maxId + 1,
-            img: "/profile1.jpg"
+            img: "/profile1 .jpg"
         };
         setImage([...image, newImage]);
     }
