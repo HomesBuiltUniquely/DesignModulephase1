@@ -2,13 +2,13 @@
 
 import React, { useState, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-
+    
 type ImageOption = {
-    id: number;
-    src: string;
-    alt: string;
+        id: number;
+        src: string;
+        alt: string;
     css: string;
-    text: string;
+        text: string;
 };
 
 // Order A–H: Scandinavian, European Classic, Industrial, Farmhouse, Bohemian, Modern Contemporary, Minimalistic, Wabi-Sabi
@@ -350,7 +350,7 @@ function DesignQAFormContent({ linkIdentifiers }: { linkIdentifiers: LinkIdentif
                                                 : 'border-gray-200 bg-white hover:border-green-400 hover:bg-gray-50'
                                         }`}
                                     >
-                                        <span className={`flex-shrink-0 w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center font-bold text-xs sm:text-sm ${isSelected ? 'bg-green-600 text-white' : 'bg-gray-200 text-gray-700'}`}>
+                                        <span className={`shrink-0 w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center font-bold text-xs sm:text-sm ${isSelected ? 'bg-green-600 text-white' : 'bg-gray-200 text-gray-700'}`}>
                                             {letter}
                                         </span>
                                         <p className="text-black font-medium text-xs sm:text-sm xl:text-base">{label}</p>
@@ -390,11 +390,11 @@ function DesignQAFormContent({ linkIdentifiers }: { linkIdentifiers: LinkIdentif
                                     </div>
                                 );
                             })}
-                        </div>
+                                </div>
                     )}
 
                     {/* Back button */}
-                    <div className="flex items-center px-3 sm:px-6 xl:px-8 pb-4 sm:pb-6 pt-2 flex-shrink-0">
+                    <div className="flex items-center px-3 sm:px-6 xl:px-8 pb-4 sm:pb-6 pt-2 shrink-0">
                         <button
                             type="button"
                             onClick={handleBack}
@@ -404,11 +404,11 @@ function DesignQAFormContent({ linkIdentifiers }: { linkIdentifiers: LinkIdentif
                             Back
                         </button>
                     </div>
-                </div>
+               </div>
             </main>
         </div>
     );
-}
+    }
 
 function DesignQAPageWithParams() {
     const searchParams = useSearchParams();
