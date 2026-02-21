@@ -101,14 +101,14 @@ export default function ProjectDetailPage() {
                 type: 'note',
                 timestamp: yesterday,
                 description: 'Note added to project.',
-                user: { name: 'Kavilaash R.', avatar: '/profile3.jpg' },
+                user: { name: 'Saranya R.', avatar: '/profile3.jpg' },
                 details: { kind: 'note', noteText: 'Still waiting for the final site measurement data from the vendor before we can commit to the foundation phase.' },
             },
             {
                 id: 'ev-4',
                 type: 'owner_change',
                 timestamp: oct24,
-                description: 'Owner changed: Alex → Kavilaash. Handover of Phase 1 responsibilities completed.',
+                description: 'Owner changed: Alex → Saranya. Handover of Phase 1 responsibilities completed.',
                 user: { name: 'System' },
             },
             {
@@ -383,7 +383,7 @@ export default function ProjectDetailPage() {
     };
 
     return (
-        <div className='bg-slate-900 min-h-screen'>
+        <div className='bg-slate-900 xl:min-h-[900px]'>
             {!activeCard && (
                 <LeadDetailHeader
                     project={project}

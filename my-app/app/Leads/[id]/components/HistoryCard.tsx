@@ -85,14 +85,12 @@ export default function HistoryCard({
             </div>
 
             {!isMaximized ? (
-                <div className="xl:mt-4 text-left">
-                    <p className="text-gray-600 text-sm font-medium">Progress history · {historyEvents.length} events</p>
-                    <p className="text-gray-500 text-xs mt-1 mb-3">Expand to view timeline and task details.</p>
-                    <div className="space-y-2 max-h-[40vh] overflow-y-auto pr-1">
+                <div className="xl:mt-4 text-left m-4  ">
+                    <div className="space-y-2 max-h-[58vh] overflow-y-auto pr-1">
                         {historyEvents.slice(0, 5).map((ev) => {
                             const badge = eventTypeBadge(ev.type);
                             return (
-                                <div key={ev.id} className="flex gap-2 items-start p-2 rounded-lg bg-white/80 border border-gray-100">
+                                <div key={ev.id} className="flex gap-2 items-start p-2 rounded-2xl bg-white/80 border border-gray-100">
                                     <EventIcon type={ev.type} />
                                     <div className="flex-1 min-w-0">
                                         <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${badge.className}`}>
