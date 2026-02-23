@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import type { HistoryEvent, HistoryEventDetails } from '../types';
 
 type Props = {
@@ -95,6 +96,9 @@ function DetailsContent({ details }: { details: HistoryEventDetails }) {
 }
 
 export default function ViewTaskDetailsModal({ event, onClose }: Props) {
+    const [mounted, setMounted] = useState(false);
+    useEffect(() => setMounted(true), []);
+
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50" onClick={onClose}>
             <div
@@ -110,7 +114,7 @@ export default function ViewTaskDetailsModal({ event, onClose }: Props) {
                 <div className="flex-1 overflow-y-auto p-6 space-y-4">
                     {event.taskName && <p><span className="font-medium text-gray-500">Task:</span> {event.taskName}</p>}
                     {event.milestoneName && <p><span className="font-medium text-gray-500">Milestone:</span> {event.milestoneName}</p>}
-                    <p><span className="font-medium text-gray-500">When:</span> {formatTimestamp(event.timestamp)}</p>
+                    <p><span className="font-medium text-gray-500">When:</span> {mounted ? formatTimestamp(event.timestamp) : event.timestamp}</p>
                     <p><span className="font-medium text-gray-500">By:</span> {event.user.name}</p>
                     <p className="text-gray-700">{event.description}</p>
                     {event.details && (

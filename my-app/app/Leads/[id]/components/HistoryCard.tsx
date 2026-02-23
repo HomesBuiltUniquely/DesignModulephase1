@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import type { HistoryEvent, HistoryEventType } from '../types';
 
 type Props = {
@@ -63,9 +64,14 @@ export default function HistoryCard({
     currentMilestoneIndex,
     totalMilestones,
 }: Props) {
+    const [mounted, setMounted] = useState(false);
+    useEffect(() => setMounted(true), []);
+
     const progressPct = totalMilestones > 0 ? Math.round((currentMilestoneIndex / (totalMilestones - 1)) * 100) : 0;
     const pendingTasks = 12; // placeholder
     const overdueItems = 3;   // placeholder
+
+    const relativeTime = (iso: string) => mounted ? formatRelativeTime(iso) : '—';
 
     return (
         <div className={cardClass}>
@@ -97,7 +103,7 @@ export default function HistoryCard({
                                             {badge.label}
                                         </span>
                                         <p className="text-gray-700 text-xs mt-1 line-clamp-2">{ev.description}</p>
-                                        <p className="text-gray-400 text-[10px] mt-0.5">{formatRelativeTime(ev.timestamp)} · {ev.user.name}</p>
+                                        <p className="text-gray-400 text-[10px] mt-0.5">{relativeTime(ev.timestamp)} · {ev.user.name}</p>
                                     </div>
                                 </div>
                             );
@@ -126,7 +132,7 @@ export default function HistoryCard({
                                     <EventIcon type={ev.type} />
                                     <div className="flex-1 min-w-0">
                                         <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${badge.className}`}>
-                                            {badge.label} {formatRelativeTime(ev.timestamp)}
+                                            {badge.label} {relativeTime(ev.timestamp)}
                                         </span>
                                         <p className="mt-2 text-gray-700 text-sm">{ev.description}</p>
                                         {ev.type === 'note' && ev.details && ev.details.kind === 'note' && (

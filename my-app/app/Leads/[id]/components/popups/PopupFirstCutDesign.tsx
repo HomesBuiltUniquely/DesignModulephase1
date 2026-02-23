@@ -10,6 +10,7 @@ type Props = {
     onDesignDrop: (e: React.DragEvent) => void;
     onDesignDragOver: (e: React.DragEvent) => void;
     removeDesignFile: (index: number) => void;
+    onSubmit?: () => void;
 };
 
 /**
@@ -23,6 +24,7 @@ export default function PopupFirstCutDesign({
     onDesignDrop,
     onDesignDragOver,
     removeDesignFile,
+    onSubmit,
 }: Props) {
     return (
         <div className="w-full min-h-[100vh]">
@@ -112,7 +114,7 @@ export default function PopupFirstCutDesign({
                     </div>
                     <div className="flex items-center justify-between gap-6 mr-5 py-6">
                         <div className="text-[16px] text-gray-600">Cancel</div>
-                        <button className="bg-blue-500 text-white w-35 h-9 rounded-md flex pl-3 pt-1.5 gap-2 font-bold">
+                        <button type="button" onClick={onSubmit} className="bg-blue-500 text-white w-35 h-9 rounded-md flex pl-3 pt-1.5 gap-2 font-bold">
                             Send Invite{' '}
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="size-6">
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" />

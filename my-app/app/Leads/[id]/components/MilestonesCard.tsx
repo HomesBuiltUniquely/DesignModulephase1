@@ -14,7 +14,7 @@ type Props = {
     onScrollRight: () => void;
     scrollRef: RefObject<HTMLDivElement | null>;
     onOpenTask: (milestoneIndex: number, taskName: string) => void;
-    getTaskStatus: (taskIndex: number, total: number) => TaskStatus;
+    getTaskStatus: (milestoneIndex: number, taskIndex: number, taskList: string[]) => TaskStatus;
 };
 
 /**
@@ -111,7 +111,7 @@ export default function MilestonesCard({
                                             {taskList.map((task: string, taskIndex: number) => {
                                                 const status = isNextOrLater
                                                     ? { icon: 'pending' as const, subtitle: 'Not started', tags: ['PENDING'] as const }
-                                                    : getTaskStatus(taskIndex, taskList.length);
+                                                    : getTaskStatus(milestoneIndex, taskIndex, taskList);
                                                 return (
                                                     <div
                                                         key={taskIndex}

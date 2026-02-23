@@ -12,6 +12,7 @@ type Props = {
     onMomDrop: (e: React.DragEvent) => void;
     removeMomFile: (index: number) => void;
     onClose: () => void;
+    onShareMom?: () => void;
 };
 
 /**
@@ -27,6 +28,7 @@ export default function PopupMeetingCompleted({
     onMomDrop,
     removeMomFile,
     onClose,
+    onShareMom,
 }: Props) {
     return (
         <div className="px-6 pb-6 max-w-[640px] mt-6">
@@ -112,7 +114,7 @@ export default function PopupMeetingCompleted({
             </div>
             <div className="flex justify-end gap-3">
                 <button type="button" onClick={onClose} className="px-4 py-2 text-gray-700 font-medium hover:bg-gray-100 rounded-lg">Cancel</button>
-                <button type="button" className="px-5 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 flex items-center gap-1">
+                <button type="button" onClick={onShareMom} className="px-5 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 flex items-center gap-1">
                     Share the MOM <span className="pl-2"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="size-6 fill-white"><path strokeLinecap="round" strokeLinejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" /></svg></span>
                 </button>
             </div>

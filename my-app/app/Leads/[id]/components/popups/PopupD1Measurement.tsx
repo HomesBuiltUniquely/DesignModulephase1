@@ -1,9 +1,13 @@
 'use client';
 
+type Props = {
+    onSubmit?: () => void;
+};
+
 /**
  * D1 Site Measurement popup – measurement date/time, assignment, submit.
  */
-export default function PopupD1Measurement() {
+export default function PopupD1Measurement({ onSubmit }: Props) {
     return (
         <>
             <div className="flex items-center justify-between gap-2 px-6 py-2">
@@ -58,7 +62,7 @@ export default function PopupD1Measurement() {
                 </div>
                 <div className="bg-gray-100 w-full h-[80px] rounded-b-2xl">
                     <div className="h-[1px] bg-gray-200 w-full mt-10" />
-                    <button className="mt-5 ml-98 bg-blue-500 rounded-md w-[150px] py-1.5 h-[36px] text-white text-sm font-bold text-center items-end">Submit Request</button>
+                    <button type="button" onClick={onSubmit} className="mt-5 ml-98 bg-blue-500 rounded-md w-[150px] py-1.5 h-[36px] text-white text-sm font-bold text-center items-end">Submit Request</button>
                 </div>
             </div>
         </>
