@@ -14,6 +14,28 @@ const FAKE_PROJECTS: LeadshipTypes[] = [
     { id: 5, pid: "P005", projectName: "Downtown", projectStage: "10-20%", createAt: "2024-03-10T14:00:00.000Z", updateAt: "2024-04-05T11:20:00.000Z" },
 ];
 
+// Stage column: only Active or Inactive (status)
+function getStatusDisplay(stage: string): "Active" | "Inactive" {
+    if (!stage) return "Active";
+    const s = stage.trim();
+    if (s === "Inactive") return "Inactive";
+    return "Active";
+}
+
+// Progress column: Pre 10%, 10-20%, or 20-60%
+function getStageBucket(stage: string): string {
+    if (!stage) return "Pre 10%";
+    const s = stage.trim();
+    if (s === "Inactive") return "Pre 10%";
+    if (s === "Active") return "10-20%";
+    if (s === "10-20%") return "10-20%";
+    if (s === "20-60%" || s === "20" || s === "20-60") return "20-60%";
+    if (["SUBMITTED", "PAYMENT_PENDING", "D1_ACTIVATED", "CONDITIONAL_D1", "Pre 10%"].includes(s)) return "Pre 10%";
+    if (s.startsWith("10") && s.includes("20")) return "10-20%";
+    if (s.startsWith("20") || s.includes("60")) return "20-60%";
+    return "Pre 10%";
+}
+
 // Helper to format backend date strings (ISO) to "dd/MM/yyyy h:mm A"
 function formatDateTime(value: string): string {
     if (!value) return "";
@@ -37,24 +59,32 @@ export default function Dashboard() {
 
     const [projects, setProjects] = useState<LeadshipTypes[]>(FAKE_PROJECTS);
 
-    // useEffect(() => {
-    //     fetch("http://localhost:8080/api/v1/projects/all")
-    //     .then((res) => res.json())
-    //     .then((json) => {
-    //         if (Array.isArray(json?.data) && json.data.length > 0) {
-    //             setProjects(json.data);
-    //         }
-    //     })
-    //     .catch((err) => {
-    //         console.error("Error fetching projects:", err);
-    //         // Keep using FAKE_PROJECTS when backend is unavailable
-    //     });
-    // }, []);
+    // Fetch leads queue (includes seed data + new leads from sales closure form)
+    useEffect(() => {
+        fetch("http://localhost:3001/api/leads/queue")
+            .then((res) => res.json())
+            .then((data) => {
+                if (Array.isArray(data) && data.length > 0) {
+                    setProjects(data);
+                }
+            })
+            .catch((err) => {
+                console.error("Error fetching leads queue:", err);
+                // Keep using FAKE_PROJECTS when backend is unavailable
+            });
+    }, []);
     
     
     const allTypes = Object.values(SideDashboard);
     const [isDropdownOpen, setIsDropdownOpen] = useState(true);
-    const [isSelected, setIsSelected] = useState("All Projects");
+    const [isSelected, setIsSelected] = useState<string>(allTypes[0]); // "All Projects (10-60%)"
+
+    const filteredProjects = isSelected === "All Projects (10-60%)"
+        ? projects.filter((p) => {
+            const bucket = getStageBucket(p.projectStage);
+            return bucket === "10-20%" || bucket === "20-60%";
+          })
+        : projects.filter((p) => getStageBucket(p.projectStage) === isSelected);
 
     const toggleDropdown = () => {
         setIsDropdownOpen(!isDropdownOpen);
@@ -71,70 +101,25 @@ export default function Dashboard() {
     }
 
     const renderContent = () => {
-            switch(isSelected){
-                case "All Projects":
-                    return (
-                        <div>
-                            {projects.map((arr1) => {
-                                return (
-                                    <div key={arr1.id} className={`xl:flex xl:justify-between xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:border-gray-300 xl:rounded-lg xl:shadow-md hover:xl:bg-green-100 xl:text-gray-900 hover:xl:text-gray-900 xl:cursor-pointer ${(arr1.id % 2 === 0) ? 'bg-gray-50' : 'bg-gray-100'}`} onClick={() => handleRouter(arr1.id)}> 
-                                        <div className={`xl:text-lg xl:font-semibold`} >
-                                            {arr1.id}
-                                        </div>
-                                        <div className="xl:text-lg xl:font-semibold">{arr1.projectName}</div>
-                                        <div className="xl:text-lg xl:font-semibold">{arr1.projectStage}</div>
-                                        <div className="xl:text-lg xl:font-semibold">{formatDateTime(arr1.createAt)}</div>
-                                        <div className="xl:text-lg xl:font-semibold">{formatDateTime(arr1.updateAt)}</div>
-                                    </div>
-                                );
-                            })}
-                        </div>
-                    );
-                case "Pre 10%":
-                    return <div className="">{projects.map((arr1) => {
-                        return (
-                            <div key={arr1.id} className="xl:flex xl:justify-between xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:border-gray-300 xl:rounded-lg xl:shadow-md hover:xl:bg-green-100 xl:text-gray-900 hover:xl:text-gray-900 xl:cursor-pointer" onClick={() => handleRouter(arr1.id)}> 
-                            <div className="xl:text-lg xl:font-semibold">{arr1.id}</div>
-                            <div className="xl:text-lg xl:font-semibold">{arr1.projectName}</div>
-                                <div className="xl:text-lg xl:font-semibold">{arr1.projectStage}</div>
-                                <div className="xl:text-lg xl:font-semibold">{formatDateTime(arr1.createAt)}</div>
-                                <div className="xl:text-lg xl:font-semibold">{formatDateTime(arr1.updateAt)}</div>                            </div>
-                        );
-                    })}</div>;
-                case "10-20%":
-                    return <div className="">{projects.map((arr1) => {
-                        return (
-                            <div key={arr1.id} className="xl:flex xl:justify-between xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:border-gray-300 xl:rounded-lg xl:shadow-md hover:xl:bg-green-100 xl:text-gray-900 hover:xl:text-gray-900 xl:cursor-pointer" onClick={() => handleRouter(arr1.id)}> 
-                                <div className="xl:text-lg xl:font-semibold">{arr1.id}</div>
-                                <div className="xl:text-lg xl:font-semibold">{arr1.projectName}</div>
-                                <div className="xl:text-lg xl:font-semibold">{arr1.projectStage}</div>
-                                <div className="xl:text-lg xl:font-semibold">{formatDateTime(arr1.createAt)}</div>
-                                <div className="xl:text-lg xl:font-semibold">{formatDateTime(arr1.updateAt)}</div>                            </div>
-                        );
-                    })}</div>;
-                case "20-60%":
-                    return <div className="">{projects.map((arr1) => {
-                        return (
-                            <div key={arr1.id} className="xl:flex xl:justify-between xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:border-gray-300 xl:rounded-lg xl:shadow-md hover:xl:bg-green-100 xl:text-gray-900 hover:xl:text-gray-900 xl:cursor-pointer" onClick={() => handleRouter(arr1.id)}> 
-                                <div className="xl:text-lg xl:font-semibold">{arr1.id}</div>
-                                <div className="xl:text-lg xl:font-semibold">{arr1.projectName}</div>
-                                <div className="xl:text-lg xl:font-semibold">{arr1.projectStage}</div>
-                                <div className="xl:text-lg xl:font-semibold">{formatDateTime(arr1.createAt)}</div>
-                                <div className="xl:text-lg xl:font-semibold">{formatDateTime(arr1.updateAt)}</div>                            </div>
-                        );
-                    })}</div>;
-                default:
-                    return <div className="">{projects.map((arr1) => {
-                        return (
-                            <div key={arr1.id} className="xl:flex xl:justify-between xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:border-gray-300 xl:rounded-lg xl:shadow-md hover:xl:bg-green-50 xl:text-gray-900 hover:xl:text-gray-900 xl:cursor-pointer" onClick={() => handleRouter(arr1.id)}> 
-                                <div className="xl:text-lg xl:font-semibold">{arr1.id}</div>
-                                <div className="xl:text-lg xl:font-semibold">{arr1.projectName}</div>
-                                <div className="xl:text-lg xl:font-semibold">{arr1.projectStage}</div>
-                                <div className="xl:text-lg xl:font-semibold">{formatDateTime(arr1.createAt)}</div>
-                                <div className="xl:text-lg xl:font-semibold">{formatDateTime(arr1.updateAt)}</div>                            </div>
-                        );
-                    })}</div>;
-            }
+        const list = filteredProjects;
+        return (
+            <div>
+                {list.map((arr1) => (
+                    <div
+                        key={arr1.id}
+                        className={`xl:grid xl:grid-cols-6 xl:gap-4 xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:border-gray-300 xl:rounded-lg xl:shadow-md hover:xl:bg-green-100 xl:text-gray-900 hover:xl:text-gray-900 xl:cursor-pointer xl:items-center ${(arr1.id % 2 === 0) ? "bg-gray-50" : "bg-gray-100"}`}
+                        onClick={() => handleRouter(arr1.id)}
+                    >
+                        <div className="xl:text-lg xl:font-semibold xl:text-center">{arr1.id}</div>
+                        <div className="xl:text-lg xl:font-semibold xl:text-left">{arr1.projectName}</div>
+                        <div className="xl:text-lg xl:font-semibold xl:text-center">{getStatusDisplay(arr1.projectStage)}</div>
+                        <div className="xl:text-lg xl:font-semibold xl:text-center">{getStageBucket(arr1.projectStage)}</div>
+                        <div className="xl:text-lg xl:font-semibold xl:text-left xl:whitespace-nowrap">{formatDateTime(arr1.createAt)}</div>
+                        <div className="xl:text-lg xl:font-semibold xl:text-left xl:whitespace-nowrap">{formatDateTime(arr1.updateAt)}</div>
+                    </div>
+                ))}
+            </div>
+        );
     }
 
     return (
@@ -180,12 +165,13 @@ export default function Dashboard() {
                     )}   
                     </div>
                     <div className="xl:grid-cols-4 ">
-                        <div className="xl:flex xl:justify-between xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:border-gray-300 xl:rounded-lg xl:shadow-md xl:bg-black xl:text-white xl:text-lg xl:font-bold">
-                            <div className="">ID</div>
-                            <div className="">Project Name</div>
-                            <div className="pr-16">Stage</div>
-                            <div className="pr-16">Created At</div>
-                            <div className="pr-16">Updated At</div>
+                        <div className="xl:grid xl:grid-cols-6 xl:gap-4 xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:border-gray-300 xl:rounded-lg xl:shadow-md xl:bg-black xl:text-white xl:text-lg xl:font-bold xl:items-center">
+                            <div className="xl:text-center">ID</div>
+                            <div className="xl:text-left">Project Name</div>
+                            <div className="xl:text-center">Stage</div>
+                            <div className="xl:text-center">Progress</div>
+                            <div className="xl:text-left">Created At</div>
+                            <div className="xl:text-left">Updated At</div>
                         </div>
     
                         {renderContent()}

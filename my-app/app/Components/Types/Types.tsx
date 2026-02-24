@@ -6,4 +6,6 @@ export type LeadshipTypes = {
     projectStage: string;
     createAt: string;
     updateAt: string;
+    contactNo?: string; // client contact from sales closure (for WhatsApp group)
+    clientEmail?: string; // client email from sales closure (for mail chain)
 };

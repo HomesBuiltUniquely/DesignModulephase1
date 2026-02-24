@@ -11,3 +11,5 @@ export { default as PopupMeetingCompleted } from './popups/PopupMeetingCompleted
 export { default as PopupDqc1Approval } from './popups/PopupDqc1Approval';
 export { default as PopupD2MaskingRequest } from './popups/PopupD2MaskingRequest';
 export { default as PopupPlaceholder } from './popups/PopupPlaceholder';
+export { default as PopupGroupDescription } from './popups/PopupGroupDescription';
+export { default as PopupMailLoopChain } from './popups/PopupMailLoopChain';

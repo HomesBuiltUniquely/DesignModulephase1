@@ -93,21 +93,25 @@ export default function HistoryCard({
             {!isMaximized ? (
                 <div className="xl:mt-4 text-left m-4  ">
                     <div className="space-y-2 max-h-[58vh] overflow-y-auto pr-1">
-                        {historyEvents.slice(0, 5).map((ev) => {
-                            const badge = eventTypeBadge(ev.type);
-                            return (
-                                <div key={ev.id} className="flex gap-2 items-start p-2 rounded-2xl bg-white/80 border border-gray-100">
-                                    <EventIcon type={ev.type} />
-                                    <div className="flex-1 min-w-0">
-                                        <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${badge.className}`}>
-                                            {badge.label}
-                                        </span>
-                                        <p className="text-gray-700 text-xs mt-1 line-clamp-2">{ev.description}</p>
-                                        <p className="text-gray-400 text-[10px] mt-0.5">{relativeTime(ev.timestamp)} · {ev.user.name}</p>
+                        {historyEvents.length === 0 ? (
+                            <p className="text-gray-500 text-sm py-6 text-center">No action done yet.</p>
+                        ) : (
+                            historyEvents.slice(0, 5).map((ev) => {
+                                const badge = eventTypeBadge(ev.type);
+                                return (
+                                    <div key={ev.id} className="flex gap-2 items-start p-2 rounded-2xl bg-white/80 border border-gray-100">
+                                        <EventIcon type={ev.type} />
+                                        <div className="flex-1 min-w-0">
+                                            <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${badge.className}`}>
+                                                {badge.label}
+                                            </span>
+                                            <p className="text-gray-700 text-xs mt-1 line-clamp-2">{ev.description}</p>
+                                            <p className="text-gray-400 text-[10px] mt-0.5">{relativeTime(ev.timestamp)} · {ev.user.name}</p>
+                                        </div>
                                     </div>
-                                </div>
-                            );
-                        })}
+                                );
+                            })
+                        )}
                     </div>
                 </div>
             ) : (
@@ -124,7 +128,10 @@ export default function HistoryCard({
                     </div>
 
                     <div className="flex-1 space-y-4 pr-2">
-                        {historyEvents.map((ev) => {
+                        {historyEvents.length === 0 ? (
+                            <p className="text-gray-500 text-sm py-8 text-center">No action done yet. Complete milestone tasks to see activity here.</p>
+                        ) : (
+                        historyEvents.map((ev) => {
                             const badge = eventTypeBadge(ev.type);
                             const showViewDetails = (ev.type === 'completed' || ev.type === 'file_upload' || ev.type === 'note') && ev.details;
                             return (
@@ -170,7 +177,8 @@ export default function HistoryCard({
                                     </div>
                                 </div>
                             );
-                        })}
+                        })
+                        )}
                     </div>
 
                     <div className="mt-4 p-4 bg-green-800 text-white rounded-xl flex flex-wrap items-center justify-between gap-4 flex-shrink-0">

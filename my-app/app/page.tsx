@@ -1,12 +1,9 @@
-import Image from "next/image";
-import Dashboard from "./Components/Dashboard";
+import DashboardGuard from "./Components/DashboardGuard";
 
 export default function Home() {
   return (
-   <div>
-    <main>
-      <Dashboard />
-    </main>
-   </div>
+    <div>
+      <DashboardGuard />
+    </div>
   );
 }

@@ -84,7 +84,7 @@ function DetailsContent({ details }: { details: HistoryEventDetails }) {
                     <li><span className="font-medium text-gray-500">File:</span> {details.fileName}</li>
                     {details.size && <li><span className="font-medium text-gray-500">Size:</span> {details.size}</li>}
                     {details.status && <li><span className="font-medium text-gray-500">Status:</span> {details.status}</li>}
-                </ul>
+                </ul>                         
             );
         case 'note':
             return (

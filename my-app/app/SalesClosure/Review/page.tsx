@@ -8,9 +8,9 @@ export default function ReviewPage() {
   const [payload, setPayload] = useState(null);
 
   useEffect(() => {
-    const saved = localStorage.getItem("sales_closure_payload");
+    const saved = localStorage.getItem("sales_closure_response");
     if (!saved) {
-      router.push("/SalesCloser");
+      router.push("/SalesClosure");
       return;
     }
     setPayload(JSON.parse(saved));
@@ -26,18 +26,23 @@ export default function ReviewPage() {
         {JSON.stringify(payload, null, 2)}
       </pre>
 
-      <div className="flex gap-3">
+      <div className="flex gap-3 flex-wrap">
         <button
-          onClick={() => router.push("/SalesCloser")}
+          onClick={() => router.push("/")}
+          className="px-5 py-2 rounded-lg bg-green-600 text-white font-medium"
+        >
+          View in Queue
+        </button>
+        <button
+          onClick={() => router.push("/SalesClosure")}
           className="px-5 py-2 rounded-lg border border-gray-300"
         >
           Back
         </button>
-
         <button
           onClick={() => {
-            localStorage.removeItem("sales_closure_payload");
-            router.push("/SalesCloser");
+            localStorage.removeItem("sales_closure_response");
+            router.push("/SalesClosure");
           }}
           className="px-5 py-2 rounded-lg bg-red-600 text-white"
         >

@@ -20,7 +20,7 @@ export default function SalesClosureForm() {
     sales_spoc: "somthing",
     sales_email: "vk@gmail.com",
     customer_name: "Vinit",
-    co_no: "7016002059",
+    co_no: "7016002823",
     email: "vinit@gmail.com",
     property_name: "Home",
     possession: "In 2 Months",
@@ -138,8 +138,8 @@ export default function SalesClosureForm() {
 
       localStorage.setItem("sales_closure_response", JSON.stringify(data2));
 
-      // navigate only after success
-      router.push("/SalesCloser/Review");
+      // navigate only after success; lead is now in the queue (Dashboard)
+      router.push("/SalesClosure/Review");
     } catch (err) {
       console.error("Network error:", err);
       alert("Network error: Backend server is not reachable.");
