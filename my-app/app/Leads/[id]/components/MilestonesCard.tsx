@@ -1,7 +1,9 @@
 "use client";
 
 import type { RefObject } from "react";
+import { useState } from "react";
 import MileStonesArray from "@/app/Components/Types/MileStoneArray";
+import { hasChecklistForTask } from "./Checklists/checklistRegistry";
 
 type TaskStatus = {
   icon: "completed" | "current" | "delayed" | "pending";
@@ -18,6 +20,9 @@ type Props = {
   onScrollRight: () => void;
   scrollRef: RefObject<HTMLDivElement | null>;
   onOpenTask: (milestoneIndex: number, taskName: string) => void;
+  // new callback when user selects "Visit Checklist" from the three-dot menu
+  onVisitChecklist?: (milestoneIndex: number, taskName: string) => void;
+
   getTaskStatus: (milestoneIndex: number, taskIndex: number, taskList: string[]) => TaskStatus;
 };
 
@@ -279,7 +284,7 @@ export default function MilestonesCard({
                               subtitle: "Not started",
                               tags: ["PENDING"] as const,
                             }
-                          : getTaskStatus(milestoneIndex, taskIndex, taskList);
+                          : getTaskStatus(taskIndex, taskList.length);
                         return (
                           <div
                             key={taskIndex}
