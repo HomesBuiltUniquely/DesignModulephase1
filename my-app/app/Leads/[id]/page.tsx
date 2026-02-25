@@ -931,7 +931,6 @@ export default function ProjectDetailPage() {
               milestoneIndex={checklistContext.milestoneIndex}
               taskName={checklistContext.taskName}
               definition={activeChecklistDefinition}
-              onClose={() => setChecklistContext(null)}
               onSuccess={() => {
                 setChecklistContext(null);
               }}
