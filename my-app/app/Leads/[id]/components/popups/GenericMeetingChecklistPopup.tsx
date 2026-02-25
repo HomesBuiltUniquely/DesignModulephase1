@@ -89,7 +89,10 @@ export default function GenericMeetingChecklistPopup({
             console.log("last checklist from server", lastData);
           }
         } catch (err) {
-          console.warn("Unable to fetch last checklist", err);
+          console.warn(
+            "Unable to fetch last checklist unable to find check list",
+            err,
+          );
         }
       }
 
