@@ -8,6 +8,44 @@ app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
+// ----- Auth (so login returns JSON and frontend does not show "Invalid response from server") -----
+const ADMIN_EMAIL = "admin@hubinterior.com";
+const ADMIN_PASSWORD = "admin123";
+const ADMIN_USER = {
+  id: 1,
+  email: ADMIN_EMAIL,
+  name: "Admin",
+  role: "admin",
+  profileImage: null as string | null,
+  phone: "",
+};
+const sessions = new Map<string, typeof ADMIN_USER>();
+
+app.post("/api/auth/login", (req: Request, res: Response) => {
+  const { email, password } = req.body || {};
+  if (email === ADMIN_EMAIL && password === ADMIN_PASSWORD) {
+    const sessionId = "sess-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+    sessions.set(sessionId, ADMIN_USER);
+    return res.status(200).json({ user: ADMIN_USER, sessionId });
+  }
+  return res.status(401).json({ message: "Invalid credentials" });
+});
+
+app.post("/api/auth/logout", (req: Request, res: Response) => {
+  const auth = req.headers.authorization;
+  const token = auth?.replace(/^Bearer\s+/i, "");
+  if (token) sessions.delete(token);
+  return res.status(200).json({ ok: true });
+});
+
+app.get("/api/auth/me", (req: Request, res: Response) => {
+  const auth = req.headers.authorization;
+  const token = auth?.replace(/^Bearer\s+/i, "");
+  const user = token ? sessions.get(token) : null;
+  if (!user) return res.status(401).json({ message: "Unauthorized" });
+  return res.json(user);
+});
+
 let lastSalesClosure: any = null;
 
 // In-memory leads queue so Dashboard can show sales-closure submissions
