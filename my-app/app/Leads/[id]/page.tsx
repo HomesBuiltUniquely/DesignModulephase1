@@ -1,10 +1,15 @@
-'use client';
+"use client";
 
-import { useParams } from 'next/navigation';
-import { useEffect, useRef, useState } from 'react';
-import { LeadshipTypes } from '../../Components/Types/Types';
-import MileStonesArray from '@/app/Components/Types/MileStoneArray';
-import type { ImageType, QCRemark, HistoryEvent } from './types';
+import { useParams } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import { LeadshipTypes } from "../../Components/Types/Types";
+import MileStonesArray from "@/app/Components/Types/MileStoneArray";
+import type { ImageType, QCRemark, HistoryEvent } from "./types";
+import {
+  checklistDefinitions,
+  getChecklistKeyForTask,
+} from "./components/Checklists/checklistRegistry";
+
 import {
   LeadDetailHeader,
   MilestonesCard,
@@ -21,10 +26,6 @@ import {
   PopupPlaceholder,
   GenericMeetingChecklistPopup,
 } from "./components";
-import {
-  checklistDefinitions,
-  getChecklistKeyForTask,
-} from "./components/Checklists/checklistRegistry";
 
 export default function ProjectDetailPage() {
   const params = useParams();
@@ -33,7 +34,28 @@ export default function ProjectDetailPage() {
   // State to track WHICH card is maximized (null = none)
   const [activeCard, setActiveCard] = useState<string | null>(null);
   // Which milestone is "current" (shown alone when not maximized; highlighted when maximized). Next milestones are grayed.
-  const [currentMilestoneIndex, setCurrentMilestoneIndex] = useState(6); // 0 = 1st, 1 = 2nd (DQC1), 2 = 3rd, 3 = D2 SITE MASKING, ...
+  const [currentMilestoneIndex, setCurrentMilestoneIndex] = useState(0); // 0 = 1st, 1 = 2nd (DQC1), 2 = 3rd, 3 = D2 SITE MASKING, ...
+  // Track which tasks are completed; next milestone unlocks only when all tasks in current milestone are done
+  const [completedTaskKeys, setCompletedTaskKeys] = useState<string[]>([]);
+
+  const taskKey = (milestoneIndex: number, taskName: string) =>
+    `${milestoneIndex}-${taskName}`;
+
+  const markTaskComplete = (milestoneIndex: number, taskName: string) => {
+    const key = taskKey(milestoneIndex, taskName);
+    setCompletedTaskKeys((prev) =>
+      prev.includes(key) ? prev : [...prev, key],
+    );
+  };
+
+  useEffect(() => {
+    const milestone = MileStonesArray.MilestonesName[currentMilestoneIndex];
+    if (!milestone || currentMilestoneIndex >= 6) return;
+    const allDone = milestone.taskList.every((t: string) =>
+      completedTaskKeys.includes(taskKey(currentMilestoneIndex, t)),
+    );
+    if (allDone) setCurrentMilestoneIndex((prev) => Math.min(prev + 1, 6));
+  }, [completedTaskKeys, currentMilestoneIndex]);
   // Which milestone popup is open (null = closed). Lets you show different popup content per milestone/task.
   const [popupContext, setPopupContext] = useState<{
     milestoneIndex: number;
@@ -106,128 +128,110 @@ export default function ProjectDetailPage() {
   const [momReferenceFiles, setMomReferenceFiles] = useState<File[]>([]);
   const momFileInputRef = useRef<HTMLInputElement>(null);
 
-  // Progress history: activity log for View Task Details
-  const [historyEvents, setHistoryEvents] = useState<HistoryEvent[]>(() => {
-    const now = new Date();
-    const twoHoursAgo = new Date(
-      now.getTime() - 2 * 60 * 60 * 1000,
-    ).toISOString();
-    const fiveHoursAgo = new Date(
-      now.getTime() - 5 * 60 * 60 * 1000,
-    ).toISOString();
-    const yesterday = new Date(
-      now.getTime() - 24 * 60 * 60 * 1000,
-    ).toISOString();
-    const oct24 = new Date(now.getFullYear(), 9, 24, 9, 15).toISOString();
-    const oct23 = new Date(now.getFullYear(), 9, 23, 16, 30).toISOString();
-    return [
-      {
-        id: "ev-1",
-        type: "completed",
-        taskName: "DQC 1 approval",
-        milestoneName: "DQC1",
-        timestamp: twoHoursAgo,
-        description:
-          "DQC 1 approval completed. Design QC review submitted with verdict and remarks.",
-        user: { name: "Saeed K.", avatar: "/profile1.jpg" },
-        details: {
-          kind: "dqc_review",
-          verdict: "approved_with_changes",
-          pdfName: "Kitchen_Design_Rev2.pdf",
-          remarks: [
-            {
-              priority: "high",
-              text: "Dimension Issue: Missing cabinet clearance dimensions on Wall B.",
-            },
-            {
-              priority: "medium",
-              text: "Material Issue: Check backsplash material compatibility with induction heat specs.",
-            },
-          ],
-        },
+  // Progress history: activity log for View Task Details (fixed timestamps to avoid hydration mismatch)
+  const [historyEvents, setHistoryEvents] = useState<HistoryEvent[]>(() => [
+    {
+      id: "ev-1",
+      type: "completed",
+      taskName: "DQC 1 approval",
+      milestoneName: "DQC1",
+      timestamp: "2025-02-09T10:00:00.000Z",
+      description:
+        "DQC 1 approval completed. Design QC review submitted with verdict and remarks.",
+      user: { name: "Saeed K.", avatar: "/profile1.jpg" },
+      details: {
+        kind: "dqc_review",
+        verdict: "approved_with_changes",
+        pdfName: "Kitchen_Design_Rev2.pdf",
+        remarks: [
+          {
+            priority: "high",
+            text: "Dimension Issue: Missing cabinet clearance dimensions on Wall B.",
+          },
+          {
+            priority: "medium",
+            text: "Material Issue: Check backsplash material compatibility with induction heat specs.",
+          },
+        ],
       },
-      {
-        id: "ev-2",
-        type: "delayed",
-        taskName: "Task 1",
-        timestamp: fiveHoursAgo,
-        description:
-          "Task 1 status: On time → Delayed. System bottleneck detected in backend API response times.",
-        user: { name: "Alex M.", avatar: "/profile2.jpg" },
+    },
+    {
+      id: "ev-2",
+      type: "delayed",
+      taskName: "Task 1",
+      timestamp: "2025-02-09T07:00:00.000Z",
+      description:
+        "Task 1 status: On time → Delayed. System bottleneck detected in backend API response times.",
+      user: { name: "Alex M.", avatar: "/profile2.jpg" },
+    },
+    {
+      id: "ev-3",
+      type: "note",
+      timestamp: "2025-02-08T10:00:00.000Z",
+      description: "Note added to project.",
+      user: { name: "Saranya R.", avatar: "/profile3.jpg" },
+      details: {
+        kind: "note",
+        noteText:
+          "Still waiting for the final site measurement data from the vendor before we can commit to the foundation phase.",
       },
-      {
-        id: "ev-3",
-        type: "note",
-        timestamp: yesterday,
-        description: "Note added to project.",
-        user: { name: "Saranya R.", avatar: "/profile3.jpg" },
-        details: {
-          kind: "note",
-          noteText:
-            "Still waiting for the final site measurement data from the vendor before we can commit to the foundation phase.",
-        },
+    },
+    {
+      id: "ev-4",
+      type: "owner_change",
+      timestamp: "2025-10-24T09:15:00.000Z",
+      description:
+        "Owner changed: Alex → Saranya. Handover of Phase 1 responsibilities completed.",
+      user: { name: "System" },
+    },
+    {
+      id: "ev-5",
+      type: "file_upload",
+      taskName: "Design PDF upload",
+      timestamp: "2025-10-23T16:30:00.000Z",
+      description: "Design PDF uploaded.",
+      user: { name: "Saeed K.", avatar: "/profile1.jpg" },
+      details: {
+        kind: "file_upload",
+        fileName: "Final_Blueprint_V2.pdf",
+        size: "4.2 MB",
+        status: "Ready for review",
       },
-      {
-        id: "ev-4",
-        type: "owner_change",
-        timestamp: oct24,
-        description:
-          "Owner changed: Alex → Saranya. Handover of Phase 1 responsibilities completed.",
-        user: { name: "System" },
+    },
+    {
+      id: "ev-6",
+      type: "completed",
+      taskName: "D1 for MMT request",
+      milestoneName: "D1 SITE MEASUREMENT",
+      timestamp: "2025-02-06T10:00:00.000Z",
+      description: "D1 MMT request submitted with date, time and assignment.",
+      user: { name: "Alex M.", avatar: "/profile2.jpg" },
+      details: {
+        kind: "d1_request",
+        date: "2025-02-05",
+        time: "10:00 AM",
+        assignedExecutive: "Site Team A",
       },
-      {
-        id: "ev-5",
-        type: "file_upload",
-        taskName: "Design PDF upload",
-        timestamp: oct23,
-        description: "Design PDF uploaded.",
-        user: { name: "Saeed K.", avatar: "/profile1.jpg" },
-        details: {
-          kind: "file_upload",
-          fileName: "Final_Blueprint_V2.pdf",
-          size: "4.2 MB",
-          status: "Ready for review",
-        },
+    },
+    {
+      id: "ev-7",
+      type: "completed",
+      taskName: "meeting completed",
+      milestoneName: "DQC1",
+      timestamp: "2025-02-05T10:00:00.000Z",
+      description: "Meeting completed. MOM shared with reference files.",
+      user: { name: "Saranya R.", avatar: "/profile3.jpg" },
+      details: {
+        kind: "mom",
+        minutes:
+          "Finalised layout and material choices. Client approved backsplash option B. Next: DQC 1 submission by EOW.",
+        referenceFiles: [
+          { name: "Meeting_Notes.pdf", size: "120 KB" },
+          { name: "Layout_v3.dwg", size: "2.1 MB" },
+        ],
       },
-      {
-        id: "ev-6",
-        type: "completed",
-        taskName: "D1 for MMT request",
-        milestoneName: "D1 SITE MEASUREMENT",
-        timestamp: new Date(
-          now.getTime() - 3 * 24 * 60 * 60 * 1000,
-        ).toISOString(),
-        description: "D1 MMT request submitted with date, time and assignment.",
-        user: { name: "Alex M.", avatar: "/profile2.jpg" },
-        details: {
-          kind: "d1_request",
-          date: "2025-02-05",
-          time: "10:00 AM",
-          assignedExecutive: "Site Team A",
-        },
-      },
-      {
-        id: "ev-7",
-        type: "completed",
-        taskName: "meeting completed",
-        milestoneName: "DQC1",
-        timestamp: new Date(
-          now.getTime() - 4 * 24 * 60 * 60 * 1000,
-        ).toISOString(),
-        description: "Meeting completed. MOM shared with reference files.",
-        user: { name: "Kavilaash R.", avatar: "/profile3.jpg" },
-        details: {
-          kind: "mom",
-          minutes:
-            "Finalised layout and material choices. Client approved backsplash option B. Next: DQC 1 submission by EOW.",
-          referenceFiles: [
-            { name: "Meeting_Notes.pdf", size: "120 KB" },
-            { name: "Layout_v3.dwg", size: "2.1 MB" },
-          ],
-        },
-      },
-    ];
-  });
+    },
+  ]);
   const [selectedHistoryEvent, setSelectedHistoryEvent] =
     useState<HistoryEvent | null>(null);
 
@@ -281,12 +285,11 @@ export default function ProjectDetailPage() {
     { id: 3, img: "/profile3.jpg" },
     { id: 4, img: "/profile4.jpg" },
   ]);
+  const project = projects.find((p) => p.id === projectId);
 
-    const project = projects.find(p => p.id === projectId);
-                                                                                               
-    if (!project) {
-        return <div className="p-8">Project Not Found</div>;
-    }
+  if (!project) {
+    return <div className="p-8">Project Not Found</div>;
+  }
 
   const handleImageAdding = () => {
     const maxId =
@@ -464,7 +467,7 @@ export default function ProjectDetailPage() {
   const addHistoryEvent = (event: Omit<HistoryEvent, "id" | "timestamp">) => {
     const full: HistoryEvent = {
       ...event,
-      id: `ev-${Date.now()}`,
+      id: `ev-${Math.random().toString(36).slice(2, 11)}`,
       timestamp: new Date().toISOString(),
     };
     setHistoryEvents((prev) => [full, ...prev]);
@@ -488,9 +491,7 @@ export default function ProjectDetailPage() {
           })),
         },
       });
-    }
-    if (dqc1Verdict === "approved") {
-      setCurrentMilestoneIndex((prev) => Math.min(prev + 1, 6));
+      markTaskComplete(popupContext.milestoneIndex, popupContext.taskName);
     }
     closePopup();
   };
@@ -540,24 +541,45 @@ export default function ProjectDetailPage() {
     });
   };
 
-  const getTaskStatus = (taskIndex: number, total: number) => {
-    if (taskIndex === 0)
+  const getTaskStatus = (
+    milestoneIndex: number,
+    taskIndex: number,
+    taskList: string[],
+  ) => {
+    const taskName = taskList[taskIndex];
+    const key = taskKey(milestoneIndex, taskName);
+    const isCompleted = completedTaskKeys.includes(key);
+    const isCurrentMilestone = milestoneIndex === currentMilestoneIndex;
+    const isPastMilestone = milestoneIndex < currentMilestoneIndex;
+
+    if (isCompleted)
       return {
         icon: "completed" as const,
-        subtitle: "Completed on Dec 2",
+        subtitle: "Completed",
         tags: ["ON-TIME"] as const,
       };
-    if (taskIndex === 1)
+    if (isPastMilestone)
+      return {
+        icon: "completed" as const,
+        subtitle: "Completed",
+        tags: ["ON-TIME"] as const,
+      };
+    if (!isCurrentMilestone)
+      return {
+        icon: "pending" as const,
+        subtitle: "Not started",
+        tags: ["PENDING"] as const,
+      };
+
+    const firstIncompleteIndex = taskList.findIndex(
+      (t) => !completedTaskKeys.includes(taskKey(milestoneIndex, t)),
+    );
+    const isCurrentTask = firstIncompleteIndex === taskIndex;
+    if (isCurrentTask)
       return {
         icon: "current" as const,
-        subtitle: "Target: Dec 08",
-        tags: ["CURRENT", "ON-TIME", "ACTION"] as const,
-      };
-    if (taskIndex === 2)
-      return {
-        icon: "delayed" as const,
-        subtitle: "Awaiting MMT to upload files",
-        tags: ["DELAYED"] as const,
+        subtitle: "In progress",
+        tags: ["CURRENT", "ACTION"] as const,
       };
     return {
       icon: "pending" as const,
@@ -565,19 +587,19 @@ export default function ProjectDetailPage() {
       tags: ["PENDING"] as const,
     };
   };
-
   const checklistKey = checklistContext
     ? getChecklistKeyForTask(
         checklistContext.milestoneIndex,
         checklistContext.taskName,
       )
     : null;
+
   const activeChecklistDefinition = checklistKey
     ? checklistDefinitions[checklistKey]
     : null;
 
   return (
-    <div className="bg-slate-900 xl:min-h-[900px]">
+    <div className="bg-slate-900 xl:min-h-[900px] 2xl:min-h-[1400px]">
       {!activeCard && (
         <LeadDetailHeader
           project={project}
@@ -659,7 +681,29 @@ export default function ProjectDetailPage() {
 
       {popupContext && (
         <TaskModal context={popupContext} onClose={closePopup}>
-          {popupContext.milestoneIndex === 0 && <PopupD1Measurement />}
+          {/* ---------- Milestone 0: D1 SITE MEASUREMENT – D1 popup only for "D1 for MMT request" ---------- */}
+          {popupContext.milestoneIndex === 0 &&
+            popupContext.taskName === "D1 for MMT request" && (
+              <PopupD1Measurement
+                onSubmit={() => {
+                  markTaskComplete(0, "D1 for MMT request");
+                  closePopup();
+                }}
+              />
+            )}
+          {popupContext.milestoneIndex === 0 &&
+            popupContext.taskName !== "D1 for MMT request" && (
+              <PopupPlaceholder
+                message={popupContext.taskName}
+                onMarkComplete={() => {
+                  markTaskComplete(
+                    popupContext.milestoneIndex,
+                    popupContext.taskName,
+                  );
+                  closePopup();
+                }}
+              />
+            )}
           {/* ---------- Milestone 1: DQC1 – different popup per task ---------- */}
           {popupContext.milestoneIndex === 1 &&
             popupContext.taskName ===
@@ -672,6 +716,13 @@ export default function ProjectDetailPage() {
                 onDesignDrop={onDesignDrop}
                 onDesignDragOver={onDesignDragOver}
                 removeDesignFile={removeDesignFile}
+                onSubmit={() => {
+                  markTaskComplete(
+                    1,
+                    "First cut design + quotation discussion meeting request",
+                  );
+                  closePopup();
+                }}
               />
             )}
 
@@ -687,20 +738,51 @@ export default function ProjectDetailPage() {
                 onMomDrop={onMomDrop}
                 removeMomFile={removeMomFile}
                 onClose={closePopup}
+                onShareMom={() => {
+                  markTaskComplete(1, "meeting completed");
+                  closePopup();
+                }}
               />
             )}
           {popupContext.milestoneIndex === 1 &&
-            popupContext.taskName ===
-              "Material selection meeting + quotation discussion" && (
-              <PopupPlaceholder />
+            popupContext.taskName === "Design finalisation meeting request" && (
+              <PopupPlaceholder
+                message="Design finalisation meeting request"
+                onMarkComplete={() => {
+                  markTaskComplete(1, "Design finalisation meeting request");
+                  closePopup();
+                }}
+              />
             )}
           {popupContext.milestoneIndex === 1 &&
             popupContext.taskName === "DQC 1 submission - dwg + quotation" && (
-              <PopupPlaceholder message="Hi from DQC 1 submission - dwg + quotation" />
+              <PopupPlaceholder
+                message="Hi from DQC 1 submission - dwg + quotation"
+                onMarkComplete={() => {
+                  markTaskComplete(1, "DQC 1 submission - dwg + quotation");
+                  closePopup();
+                }}
+              />
             )}
           {popupContext.milestoneIndex === 2 &&
             popupContext.taskName === "10% payment collection" && (
-              <PopupPlaceholder />
+              <PopupPlaceholder
+                message="10% payment collection"
+                onMarkComplete={() => {
+                  markTaskComplete(2, "10% payment collection");
+                  closePopup();
+                }}
+              />
+            )}
+          {popupContext.milestoneIndex === 2 &&
+            popupContext.taskName === "10% payment approval" && (
+              <PopupPlaceholder
+                message="10% payment approval"
+                onMarkComplete={() => {
+                  markTaskComplete(2, "10% payment approval");
+                  closePopup();
+                }}
+              />
             )}
           {popupContext.milestoneIndex === 1 &&
             popupContext.taskName === "DQC 1 approval" && (
@@ -740,14 +822,31 @@ export default function ProjectDetailPage() {
             )}
           {popupContext.milestoneIndex === 3 &&
             popupContext.taskName === "D2 - masking request raise" && (
-              <PopupD2MaskingRequest />
+              <PopupD2MaskingRequest
+                onSubmit={() => {
+                  markTaskComplete(3, "D2 - masking request raise");
+                  closePopup();
+                }}
+              />
             )}
           {popupContext.milestoneIndex === 3 &&
             popupContext.taskName !== "D2 - masking request raise" && (
-              <PopupPlaceholder message="Add your popup content for D2 SITE MASKING here" />
+              <PopupPlaceholder
+                message={popupContext.taskName}
+                onMarkComplete={() => {
+                  markTaskComplete(3, popupContext.taskName);
+                  closePopup();
+                }}
+              />
             )}
           {popupContext.milestoneIndex === 4 && (
-            <PopupPlaceholder message="Add your popup content for DQC2 here" />
+            <PopupPlaceholder
+              message={popupContext.taskName}
+              onMarkComplete={() => {
+                markTaskComplete(4, popupContext.taskName);
+                closePopup();
+              }}
+            />
           )}
           {popupContext.milestoneIndex === 5 &&
             popupContext.taskName === "Design sign off" && (
@@ -787,7 +886,13 @@ export default function ProjectDetailPage() {
             )}
           {popupContext.milestoneIndex === 5 &&
             popupContext.taskName !== "Design sign off" && (
-              <PopupPlaceholder message="Add your popup content for 40% PAYMENT here" />
+              <PopupPlaceholder
+                message={popupContext.taskName}
+                onMarkComplete={() => {
+                  markTaskComplete(5, popupContext.taskName);
+                  closePopup();
+                }}
+              />
             )}
           {popupContext.milestoneIndex === 6 && (
             <PopupMeetingCompleted
@@ -800,6 +905,10 @@ export default function ProjectDetailPage() {
               onMomDrop={onMomDrop}
               removeMomFile={removeMomFile}
               onClose={closePopup}
+              onShareMom={() => {
+                markTaskComplete(6, popupContext.taskName);
+                closePopup();
+              }}
             />
           )}
         </TaskModal>
@@ -822,7 +931,6 @@ export default function ProjectDetailPage() {
               milestoneIndex={checklistContext.milestoneIndex}
               taskName={checklistContext.taskName}
               definition={activeChecklistDefinition}
-              onClose={() => setChecklistContext(null)}
               onSuccess={() => {
                 setChecklistContext(null);
               }}

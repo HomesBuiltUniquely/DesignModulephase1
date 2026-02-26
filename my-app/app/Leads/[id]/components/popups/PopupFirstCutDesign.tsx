@@ -1,6 +1,6 @@
-'use client';
+"use client";
 
-import type { RefObject } from 'react';
+import type { RefObject } from "react";
 
 type Props = {
   designUploadFiles: File[];
@@ -10,6 +10,7 @@ type Props = {
   onDesignDrop: (e: React.DragEvent) => void;
   onDesignDragOver: (e: React.DragEvent) => void;
   removeDesignFile: (index: number) => void;
+  onSubmit?: () => void;
 };
 
 /**
@@ -23,6 +24,7 @@ export default function PopupFirstCutDesign({
   onDesignDrop,
   onDesignDragOver,
   removeDesignFile,
+  onSubmit,
 }: Props) {
   return (
     <div className="w-full min-h-[100vh]">
@@ -248,6 +250,11 @@ export default function PopupFirstCutDesign({
           <div className="flex items-center justify-between gap-6 mr-5 py-6">
             <div className="text-[16px] text-gray-600">Cancel</div>
             <button className="bg-blue-500 text-white w-35 h-9 rounded-md flex pl-3 pt-1.5 gap-2 font-bold">
+              <button
+                type="button"
+                onClick={onSubmit}
+                className="bg-blue-500 text-white w-35 h-9 rounded-md flex pl-3 pt-1.5 gap-2 font-bold"
+              ></button>
               Send Invite{" "}
               <svg
                 xmlns="http://www.w3.org/2000/svg"

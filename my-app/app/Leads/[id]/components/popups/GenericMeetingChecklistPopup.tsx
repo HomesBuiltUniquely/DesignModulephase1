@@ -7,7 +7,6 @@ type Props = {
   milestoneIndex: number;
   taskName: string;
   definition: ChecklistDefinition;
-  onClose: () => void;
   onSuccess: () => void;
 };
 
@@ -15,11 +14,11 @@ export default function GenericMeetingChecklistPopup({
   milestoneIndex,
   taskName,
   definition,
-  onClose,
   onSuccess,
 }: Props) {
   const [currentSection, setCurrentSection] = useState(0);
   const [checked, setChecked] = useState<Record<number, Set<string>>>({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const sections = definition.sections;
 
@@ -53,12 +52,14 @@ export default function GenericMeetingChecklistPopup({
   }, [checked, currentSection, sections]);
 
   const allDone =
-    currentSection >= sections.length - 1 &&
-    sections[sections.length - 1].requirements.every((r) =>
-      checked[sections.length - 1]?.has(r),
+    sections.length > 0 &&
+    sections.every((section, idx) =>
+      section.requirements.every((req) => checked[idx]?.has(req)),
     );
 
   const handleSubmit = async () => {
+    if (!allDone || isSubmitting) return;
+
     const answers = sections.map((section, idx) => ({
       title: section.title,
       completed: (checked[idx]?.size ?? 0) === section.requirements.length,
@@ -71,13 +72,17 @@ export default function GenericMeetingChecklistPopup({
     const payload = { milestoneIndex, taskName, answers };
 
     try {
+      setIsSubmitting(true);
+
       const res = await fetch(definition.postUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      const data = await res.json();
-      console.log("checklist response", data);
+      const responseBody = await res.text();
+      if (!res.ok) {
+        throw new Error(responseBody || `Checklist submit failed (${res.status})`);
+      }
 
       alert(definition.successMessage);
 
@@ -89,15 +94,23 @@ export default function GenericMeetingChecklistPopup({
             console.log("last checklist from server", lastData);
           }
         } catch (err) {
-          console.warn("Unable to fetch last checklist", err);
+          console.warn(
+            "Unable to fetch last checklist unable to find check list",
+            err,
+          );
         }
       }
 
       onSuccess();
-      onClose();
     } catch (err) {
       console.error(err);
-      alert("Network error: Backend server is not reachable.");
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Network error: Backend server is not reachable.";
+      alert(message);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -161,9 +174,10 @@ export default function GenericMeetingChecklistPopup({
         <div className="flex justify-end mt-6">
           <button
             onClick={handleSubmit}
+            disabled={isSubmitting}
             className="px-5 py-2 rounded-lg bg-purple-50 text-green-950 hover:bg-slate-900 hover:border hover:border-purple-50 hover:text-purple-50 transition font-bold"
           >
-            Submit
+            {isSubmitting ? "Submitting..." : "Submit"}
           </button>
         </div>
       )}
