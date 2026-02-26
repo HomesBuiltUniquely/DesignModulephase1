@@ -249,12 +249,11 @@ export default function PopupFirstCutDesign({
           </div>
           <div className="flex items-center justify-between gap-6 mr-5 py-6">
             <div className="text-[16px] text-gray-600">Cancel</div>
-            <button className="bg-blue-500 text-white w-35 h-9 rounded-md flex pl-3 pt-1.5 gap-2 font-bold">
-              <button
-                type="button"
-                onClick={onSubmit}
-                className="bg-blue-500 text-white w-35 h-9 rounded-md flex pl-3 pt-1.5 gap-2 font-bold"
-              ></button>
+            <button
+              type="button"
+              onClick={onSubmit}
+              className="bg-blue-500 text-white w-35 h-9 rounded-md flex pl-3 pt-1.5 gap-2 font-bold"
+            >
               Send Invite{" "}
               <svg
                 xmlns="http://www.w3.org/2000/svg"

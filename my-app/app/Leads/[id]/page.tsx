@@ -22,7 +22,9 @@ import {
     PopupPlaceholder,
     PopupGroupDescription,
     PopupMailLoopChain,
+    GenericMeetingChecklistPopup,
 } from './components';
+import { checklistDefinitions, getChecklistKeyForTask } from './components/Checklists/checklistRegistry';
 
 export default function ProjectDetailPage() {
     const params = useParams();
@@ -53,6 +55,8 @@ export default function ProjectDetailPage() {
     }, [completedTaskKeys, currentMilestoneIndex]);
     // Which milestone popup is open (null = closed). Lets you show different popup content per milestone/task.
     const [popupContext, setPopupContext] = useState<{ milestoneIndex: number; milestoneName: string; taskName: string } | null>(null);
+    // Checklist popup (opened from "Visit checklist" in milestone task menu)
+    const [checklistContext, setChecklistContext] = useState<{ milestoneIndex: number; taskName: string } | null>(null);
     // Brief message when user tries to open a task in a future milestone (e.g. "Complete the current milestone first")
     const [blockedTaskMessage, setBlockedTaskMessage] = useState<string | null>(null);
     const [dqc1Verdict, setDqc1Verdict] = useState<'approved' | 'approved_with_changes' | 'rejected' | null>(null);
@@ -459,6 +463,7 @@ export default function ProjectDetailPage() {
                     onScrollRight={() => scrollMilestoneCards('right')}
                     scrollRef={milestoneCardsScrollRef}
                     onOpenTask={openTaskPopup}
+                    onVisitChecklist={(milestoneIndex, taskName) => setChecklistContext({ milestoneIndex, taskName })}
                     getTaskStatus={getTaskStatus}
                 />
 
@@ -734,6 +739,42 @@ export default function ProjectDetailPage() {
                     )}
                 </TaskModal>
             )}
+
+            {checklistContext && (() => {
+                const key = getChecklistKeyForTask(checklistContext.milestoneIndex, checklistContext.taskName);
+                const definition = key ? checklistDefinitions[key] : null;
+                if (!definition) return null;
+                return (
+                    <div
+                        className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50"
+                        onClick={() => setChecklistContext(null)}
+                    >
+                        <div
+                            className="bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden xl:max-h-[85vh] xl:w-[40vw]"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="flex justify-between items-center pt-6 px-6 pb-2 flex-shrink-0">
+                                <h3 className="text-lg font-bold text-gray-900">Checklist</h3>
+                                <button
+                                    type="button"
+                                    onClick={() => setChecklistContext(null)}
+                                    className="text-gray-700 bg-gray-100 hover:text-gray-700 text-2xl leading-none border border-gray-300 rounded-md p-2 font-bold text-sm"
+                                >
+                                    Close
+                                </button>
+                            </div>
+                            <div className="flex-1 overflow-y-auto min-h-0">
+                                <GenericMeetingChecklistPopup
+                                    milestoneIndex={checklistContext.milestoneIndex}
+                                    taskName={checklistContext.taskName}
+                                    definition={definition}
+                                    onSuccess={() => setChecklistContext(null)}
+                                />
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
         </div>
     );
 }
