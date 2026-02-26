@@ -85,6 +85,8 @@ export default function ProjectDetailPage() {
 
     // Progress history: loaded from API and persisted when new events are added (recorded and maintained)
     const [historyEvents, setHistoryEvents] = useState<HistoryEvent[]>([]);
+    const [showHoldModal, setShowHoldModal] = useState(false);
+    const [holdDate, setHoldDate] = useState<string>('');
     const [selectedHistoryEvent, setSelectedHistoryEvent] = useState<HistoryEvent | null>(null);
 
     // Project/lead for this page: loaded from queue API (so sales-closure leads work) or fallback static list
@@ -105,8 +107,16 @@ export default function ProjectDetailPage() {
         }
         setProjectLoaded(false);
         fetch(`http://localhost:3001/api/leads/${projectId}`)
-            .then((res) => (res.ok ? res.json() : Promise.reject(res)))
-            .then((data: LeadshipTypes) => setProject(data))
+            .then(async (res) => {
+                const text = await res.text();
+                if (!res.ok) throw new Error('Not ok');
+                try {
+                    return text ? (JSON.parse(text) as LeadshipTypes) : null;
+                } catch {
+                    throw new Error('Invalid JSON');
+                }
+            })
+            .then((data: LeadshipTypes | null) => { if (data) setProject(data); })
             .catch(() => {
                 const fallback = staticProjects.find((p) => p.id === projectId) ?? null;
                 setProject(fallback);
@@ -120,7 +130,11 @@ export default function ProjectDetailPage() {
         if (!isGroupDesc || projectId == null) return;
         refreshUser();
         fetch(`http://localhost:3001/api/leads/${projectId}`)
-            .then((res) => (res.ok ? res.json() : null))
+            .then(async (res) => {
+                const text = await res.text();
+                if (!res.ok || !text) return null;
+                try { return JSON.parse(text) as LeadshipTypes; } catch { return null; }
+            })
             .then((data: LeadshipTypes | null) => { if (data) setProject(data); })
             .catch(() => {});
     }, [popupContext?.milestoneIndex, popupContext?.taskName, projectId, refreshUser]);
@@ -129,8 +143,12 @@ export default function ProjectDetailPage() {
     useEffect(() => {
         if (projectId == null) return;
         fetch(`http://localhost:3001/api/leads/${projectId}/history`)
-            .then((res) => (res.ok ? res.json() : []))
-            .then((data: HistoryEvent[]) => setHistoryEvents(Array.isArray(data) ? data : []))
+            .then(async (res) => {
+                const text = await res.text();
+                if (!res.ok || !text) return [];
+                try { const d = JSON.parse(text); return Array.isArray(d) ? d : []; } catch { return []; }
+            })
+            .then((data: HistoryEvent[]) => setHistoryEvents(data))
             .catch(() => setHistoryEvents([]));
     }, [projectId]);
 
@@ -407,6 +425,19 @@ export default function ProjectDetailPage() {
                     image={image}
                     onAddImage={handleImageAdding}
                     currentMilestoneIndex={currentMilestoneIndex}
+                    onHoldClick={() => setShowHoldModal(true)}
+                    onResumeClick={async () => {
+                        if (!projectId) return;
+                        try {
+                            await fetch(`http://localhost:3001/api/leads/${projectId}/resume`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                            });
+                            setProject((prev) => (prev ? { ...prev, isOnHold: false, resumeAt: null } : prev));
+                        } catch {
+                            // ignore
+                        }
+                    }}
                 />
             )}
 
@@ -457,6 +488,58 @@ export default function ProjectDetailPage() {
                 </div>
 
             </main>
+
+            {showHoldModal && (
+                <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/60">
+                    <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md space-y-4">
+                        <h2 className="text-lg font-semibold text-gray-900">Put project on hold</h2>
+                        <p className="text-sm text-gray-600">
+                            Select a date when this project should automatically resume.
+                        </p>
+                        <input
+                            type="date"
+                            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-700"
+                            value={holdDate}
+                            onChange={(e) => setHoldDate(e.target.value)}
+                        />
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setShowHoldModal(false);
+                                    setHoldDate('');
+                                }}
+                                className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium hover:bg-gray-50"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                className="px-4 py-2 rounded-lg bg-green-700 text-white text-sm font-semibold hover:bg-green-800 disabled:opacity-60"
+                                disabled={!holdDate}
+                                onClick={async () => {
+                                    if (!projectId || !holdDate) return;
+                                    try {
+                                        await fetch(`http://localhost:3001/api/leads/${projectId}/hold`, {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ resumeAt: holdDate }),
+                                        });
+                                        setProject((prev) =>
+                                            prev ? { ...prev, isOnHold: true, resumeAt: holdDate } : prev,
+                                        );
+                                        setShowHoldModal(false);
+                                    } catch {
+                                        // ignore
+                                    }
+                                }}
+                            >
+                                Confirm hold
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {selectedHistoryEvent && (
                 <ViewTaskDetailsModal

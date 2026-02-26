@@ -131,10 +131,14 @@ export default function SalesClosureForm() {
         body: JSON.stringify(finalPayload),
       });
 
-      const data2 = await res.json();
+      const text = await res.text();
+      let data2: unknown = {};
+      try {
+        data2 = text ? JSON.parse(text) : {};
+      } catch {
+        throw new Error("Invalid response from server");
+      }
       console.log("Response:", data2);
-
-      console.log("POST success response:", data2);
 
       localStorage.setItem("sales_closure_response", JSON.stringify(data2));
 

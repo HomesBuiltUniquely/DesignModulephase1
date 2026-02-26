@@ -62,7 +62,7 @@ export default function Dashboard() {
     // Fetch leads queue (includes seed data + new leads from sales closure form)
     useEffect(() => {
         fetch("http://localhost:3001/api/leads/queue")
-            .then((res) => res.json())
+            .then((res) => res.text().then((t) => { try { return t ? JSON.parse(t) : null; } catch { return null; } }))
             .then((data) => {
                 if (Array.isArray(data) && data.length > 0) {
                     setProjects(data);

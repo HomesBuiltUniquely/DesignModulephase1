@@ -25,7 +25,11 @@ export default function PopupD1Measurement({ sessionId, onSubmit }: Props) {
             return;
         }
         fetch(`${API}/api/auth/mmt-executives`, { headers: { Authorization: `Bearer ${sessionId}` } })
-            .then((res) => (res.ok ? res.json() : []))
+            .then(async (res) => {
+                const text = await res.text();
+                if (!res.ok || !text) return [];
+                try { const d = JSON.parse(text); return Array.isArray(d) ? d : []; } catch { return []; }
+            })
             .then((data) => {
                 const list = Array.isArray(data) ? data : [];
                 setExecutives(list);

@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useAuth } from '../../auth/AuthContext';
+import { BRANCH_OPTIONS } from '../../constants/branches';
 
 const API = 'http://localhost:3001';
 
@@ -13,6 +14,7 @@ export default function AdminCreateProjectManagerPage() {
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
+  const [branch, setBranch] = useState<string>(BRANCH_OPTIONS[0]);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -41,7 +43,7 @@ export default function AdminCreateProjectManagerPage() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${sessionId}`,
         },
-        body: JSON.stringify({ email: email.trim(), password, name: name.trim() || email.trim(), phone: phone.trim() }),
+        body: JSON.stringify({ email: email.trim(), password, name: name.trim() || email.trim(), phone: phone.trim(), branch: branch || BRANCH_OPTIONS[0] }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -53,6 +55,7 @@ export default function AdminCreateProjectManagerPage() {
       setPassword('');
       setName('');
       setPhone('');
+      setBranch(BRANCH_OPTIONS[0]);
     } finally {
       setSubmitting(false);
     }
@@ -121,6 +124,12 @@ export default function AdminCreateProjectManagerPage() {
                 required
                 placeholder="e.g. 9876543210"
               />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Branch</label>
+              <select value={branch} onChange={(e) => setBranch(e.target.value)} className="w-full border border-gray-300 rounded-lg px-4 py-2.5 bg-white" required>
+                {BRANCH_OPTIONS.map((b) => <option key={b} value={b}>{b}</option>)}
+              </select>
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>

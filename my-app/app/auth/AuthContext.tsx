@@ -56,7 +56,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password }),
     });
-    const data = await res.json().catch(() => ({}));
+    const text = await res.text();
+    let data: { user?: AuthUser; sessionId?: string; message?: string } = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      return { success: false, message: 'Invalid response from server' };
+    }
     if (!res.ok) return { success: false, message: data.message || 'Login failed' };
     const { user: u, sessionId: sid } = data;
     if (!u || !sid) return { success: false, message: 'Invalid response' };
@@ -87,7 +93,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         headers: { Authorization: `Bearer ${sessionId}` },
       });
       if (!res.ok) return;
-      const u = await res.json();
+      const text = await res.text();
+      let u: AuthUser | null = null;
+      try {
+        u = text ? JSON.parse(text) : null;
+      } catch {
+        return; // response was not JSON (e.g. HTML 404)
+      }
+      if (!u) return;
       setUserState(u);
       const raw = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY) : null;
       const data: StoredAuth = raw ? JSON.parse(raw) : null;

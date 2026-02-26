@@ -48,7 +48,11 @@ export default function PopupGroupDescription({ designerPhone, clientPhone, sess
   useEffect(() => {
     if (!sessionId) return;
     fetch(`${API}/api/auth/team-phones`, { headers: { Authorization: `Bearer ${sessionId}` } })
-      .then((res) => (res.ok ? res.json() : null))
+      .then(async (res) => {
+        const text = await res.text();
+        if (!res.ok || !text) return null;
+        try { return JSON.parse(text); } catch { return null; }
+      })
       .then((data) => data && setTeamPhones(data))
       .catch(() => {});
   }, [sessionId]);

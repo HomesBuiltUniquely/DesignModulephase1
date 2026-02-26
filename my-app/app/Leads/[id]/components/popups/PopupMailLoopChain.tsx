@@ -44,7 +44,11 @@ export default function PopupMailLoopChain({
     }
     setTeamEmailsLoaded(false);
     fetch(`${API}/api/auth/team-emails`, { headers: { Authorization: `Bearer ${sessionId}` } })
-      .then((res) => (res.ok ? res.json() : null))
+      .then(async (res) => {
+        const text = await res.text();
+        if (!res.ok || !text) return null;
+        try { return JSON.parse(text); } catch { return null; }
+      })
       .then((data) => {
         setTeamEmails(data || null);
         setTeamEmailsLoaded(true);

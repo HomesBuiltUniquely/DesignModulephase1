@@ -10,6 +10,8 @@ type Props = {
     onAddImage: () => void;
     /** Current milestone index (0-based). Used to show which stage this lead is in. */
     currentMilestoneIndex: number;
+    onHoldClick: () => void;
+    onResumeClick: () => void;
 };
 
 const TOTAL_STAGES = MileStonesArray.MilestonesName.length;
@@ -18,7 +20,15 @@ const TOTAL_STAGES = MileStonesArray.MilestonesName.length;
  * Lead/Project detail page header: PID, name, stage progress bar, tabs, team avatars, HOLD/RESUME.
  * Rendered only when no card is maximized.
  */
-export default function LeadDetailHeader({ project, image, onAddImage, currentMilestoneIndex }: Props) {
+function formatResumeDate(value?: string | null): string {
+    if (!value) return '';
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+export default function LeadDetailHeader({ project, image, onAddImage, currentMilestoneIndex, onHoldClick, onResumeClick }: Props) {
+    const holdLabel = project.isOnHold ? `On hold${project.resumeAt ? ` till ${formatResumeDate(project.resumeAt)}` : ''}` : project.projectStage;
     return (
         <div className="w-full px-4 xl:px-6 pt-4 pb-4">
             {/* Top row: project info (left) | Prolance + avatars + HOLD/RESUME (right) – aligned in one row */}
@@ -28,7 +38,7 @@ export default function LeadDetailHeader({ project, image, onAddImage, currentMi
                         <span className="text-gray-400">PID:</span> {project.id}
                     </p>
                     <p className="font-bold text-purple-100">
-                        <span className="text-gray-400">Status:</span> {project.projectStage}
+                        <span className="text-gray-400">Status:</span> {holdLabel}
                     </p>
                     <p className="font-bold text-purple-100">
                         <span className="text-gray-400">Project Name:</span> {project.projectName}
@@ -56,10 +66,19 @@ export default function LeadDetailHeader({ project, image, onAddImage, currentMi
                         </button>
                     </div>
                     <div className="flex gap-2">
-                        <button type="button" className="px-4 py-2 border border-gray-400 rounded-md font-bold text-purple-100 hover:text-green-900 hover:bg-purple-50 transition-colors cursor-pointer">
+                        <button
+                            type="button"
+                            onClick={onHoldClick}
+                            className="px-4 py-2 border border-gray-400 rounded-md font-bold text-purple-100 hover:text-green-900 hover:bg-purple-50 transition-colors cursor-pointer"
+                        >
                             HOLD
                         </button>
-                        <button type="button" className="px-4 py-2 border border-gray-400 rounded-md font-bold text-purple-100 hover:text-green-900 hover:bg-purple-50 transition-colors cursor-pointer">
+                        <button
+                            type="button"
+                            onClick={onResumeClick}
+                            className="px-4 py-2 border border-gray-400 rounded-md font-bold text-purple-100 hover:text-green-900 hover:bg-purple-50 transition-colors cursor-pointer"
+                            disabled={!project.isOnHold}
+                        >
                             RESUME
                         </button>
                     </div>
