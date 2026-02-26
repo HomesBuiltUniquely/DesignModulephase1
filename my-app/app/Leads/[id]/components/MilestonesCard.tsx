@@ -1,7 +1,9 @@
 "use client";
 
 import type { RefObject } from "react";
+import { useState } from "react";
 import MileStonesArray from "@/app/Components/Types/MileStoneArray";
+import { hasChecklistForTask } from "./Checklists/checklistRegistry";
 
 type TaskStatus = {
   icon: "completed" | "current" | "delayed" | "pending";
@@ -18,7 +20,13 @@ type Props = {
   onScrollRight: () => void;
   scrollRef: RefObject<HTMLDivElement | null>;
   onOpenTask: (milestoneIndex: number, taskName: string) => void;
-  getTaskStatus: (milestoneIndex: number, taskIndex: number, taskList: string[]) => TaskStatus;
+  // new callback when user selects "Visit Checklist" from the three-dot menu
+  onVisitChecklist?: (milestoneIndex: number, taskName: string) => void;
+  getTaskStatus: (
+    milestoneIndex: number,
+    taskIndex: number,
+    taskList: string[],
+  ) => TaskStatus;
 };
 
 /**
@@ -33,8 +41,13 @@ export default function MilestonesCard({
   onScrollRight,
   scrollRef,
   onOpenTask,
+  onVisitChecklist,
   getTaskStatus,
 }: Props) {
+  const [openMenuFor, setOpenMenuFor] = useState<
+    { milestoneIndex: number; taskIndex: number } | undefined
+  >(undefined);
+
   const milestones = isMaximized
     ? MileStonesArray.MilestonesName
     : MileStonesArray.MilestonesName.filter(
@@ -261,7 +274,7 @@ export default function MilestonesCard({
                     className={`rounded-2xl shadow-sm border p-4 min-h-[52vh] flex flex-col transition-all ${isCurrent ? "bg-white border-green-900 ring-2 ring-green-200" : isNextOrLater ? "bg-gray-100 border-gray-200 opacity-75" : "bg-white border-gray-200"}`}
                   >
                     <h3
-                      className={`text-lg font-bold mb-3 ${isNextOrLater ? "text-gray-500" : "text-red-900"}`}
+                      className={`text-lg font-bold mb-3 ${isNextOrLater ? "text-gray-500" : "text-green-950"}`}
                     >
                       {milestone.name}
                     </h3>
@@ -273,6 +286,10 @@ export default function MilestonesCard({
                     </div>
                     <div className="space-y-2 flex-1">
                       {taskList.map((task: string, taskIndex: number) => {
+                        const canVisitChecklist = hasChecklistForTask(
+                          milestoneIndex,
+                          task,
+                        );
                         const status = isNextOrLater
                           ? {
                               icon: "pending" as const,
@@ -285,14 +302,19 @@ export default function MilestonesCard({
                             key={taskIndex}
                             role="button"
                             tabIndex={0}
-                            onClick={() => onOpenTask(milestoneIndex, task)}
+                            onClick={() => {
+                              // clicking the row should close any open menu
+                              setOpenMenuFor(undefined);
+                              onOpenTask(milestoneIndex, task);
+                            }}
                             onKeyDown={(e) => {
                               if (e.key === "Enter" || e.key === " ") {
                                 e.preventDefault();
+                                setOpenMenuFor(undefined);
                                 onOpenTask(milestoneIndex, task);
                               }
                             }}
-                            className={`w-full text-left p-3 transition-colors flex items-start gap-3 cursor-pointer ${isNextOrLater ? "hover:bg-gray-200/50 opacity-90" : "hover:bg-gray-50"} ${status.icon === "current" ? "border-l-4 border-blue-500 pl-2" : ""}`}
+                            className={`relative w-full text-left p-3 transition-colors flex items-start gap-3 cursor-pointer ${isNextOrLater ? "hover:bg-gray-200/50 opacity-90" : "hover:bg-gray-50"} ${status.icon === "current" ? "border-l-4 border-blue-500 pl-2" : ""}`}
                           >
                             <span className="flex-shrink-0 mt-0.5">
                               {status.icon === "completed" && (
@@ -368,12 +390,21 @@ export default function MilestonesCard({
                               <span
                                 role="button"
                                 tabIndex={0}
-                                onClick={(e) => e.stopPropagation()}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter" || e.key === " ")
-                                    e.stopPropagation();
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  // show menu for this task
+                                  setOpenMenuFor({ milestoneIndex, taskIndex });
                                 }}
-                                className="p-1 rounded hover:bg-gray-200 text-gray-400 cursor-pointer inline-flex"
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") {
+                                    e.stopPropagation();
+                                    setOpenMenuFor({
+                                      milestoneIndex,
+                                      taskIndex,
+                                    });
+                                  }
+                                }}
+                                className="p-1 rounded hover:bg-gray-200 text-gray-400 cursor-pointer inline-flex relative"
                                 aria-label="More"
                               >
                                 <svg
@@ -390,6 +421,29 @@ export default function MilestonesCard({
                                     d="M12 6.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5ZM12 12.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5ZM12 18.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5Z"
                                   />
                                 </svg>
+                                {/* menu for this task */}
+                                {openMenuFor &&
+                                  openMenuFor.milestoneIndex ===
+                                    milestoneIndex &&
+                                  openMenuFor.taskIndex === taskIndex && (
+                                    <div className="absolute right-0 mt-1 w-40 bg-white shadow-lg rounded-md z-20">
+                                      {canVisitChecklist && (
+                                        <button
+                                          className="w-full text-left px-3 py-2 text-sm hover:bg-gray-100"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            onVisitChecklist?.(
+                                              milestoneIndex,
+                                              task,
+                                            );
+                                            setOpenMenuFor(undefined);
+                                          }}
+                                        >
+                                          Visit checklist
+                                        </button>
+                                      )}
+                                    </div>
+                                  )}
                               </span>
                             </div>
                           </div>
