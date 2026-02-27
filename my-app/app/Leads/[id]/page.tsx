@@ -37,6 +37,8 @@ export default function ProjectDetailPage() {
     const [currentMilestoneIndex, setCurrentMilestoneIndex] = useState(0); // 0 = 1st, 1 = 2nd (DQC1), 2 = 3rd, 3 = D2 SITE MASKING, ...
     // Track which tasks are completed; next milestone unlocks only when all tasks in current milestone are done
     const [completedTaskKeys, setCompletedTaskKeys] = useState<string[]>([]);
+    // Track which tasks that have checklists have had their checklist completed
+    const [completedChecklistKeys, setCompletedChecklistKeys] = useState<string[]>([]);
 
     const taskKey = (milestoneIndex: number, taskName: string) => `${milestoneIndex}-${taskName}`;
 
@@ -56,7 +58,7 @@ export default function ProjectDetailPage() {
     // Which milestone popup is open (null = closed). Lets you show different popup content per milestone/task.
     const [popupContext, setPopupContext] = useState<{ milestoneIndex: number; milestoneName: string; taskName: string } | null>(null);
     // Checklist popup (opened from "Visit checklist" in milestone task menu)
-    const [checklistContext, setChecklistContext] = useState<{ milestoneIndex: number; taskName: string } | null>(null);
+    const [checklistContext, setChecklistContext] = useState<{ milestoneIndex: number; milestoneName: string; taskName: string } | null>(null);
     // Brief message when user tries to open a task in a future milestone (e.g. "Complete the current milestone first")
     const [blockedTaskMessage, setBlockedTaskMessage] = useState<string | null>(null);
     const [dqc1Verdict, setDqc1Verdict] = useState<'approved' | 'approved_with_changes' | 'rejected' | null>(null);
@@ -224,6 +226,7 @@ export default function ProjectDetailPage() {
         }
     };
 
+
     const closePopup = () => {
         setPopupContext(null);
         setDqc1Verdict(null);
@@ -330,6 +333,13 @@ export default function ProjectDetailPage() {
         taskName: string,
         options?: { details?: HistoryEvent['details']; description?: string }
     ) => {
+        const requiresChecklist = getChecklistKeyForTask(milestoneIndex, taskName) !== null;
+        const key = taskKey(milestoneIndex, taskName);
+        if (requiresChecklist && !completedChecklistKeys.includes(key)) {
+            setBlockedTaskMessage('Please complete the checklist for this task before marking it as done.');
+            setTimeout(() => setBlockedTaskMessage(null), 3000);
+            return;
+        }
         const milestone = MileStonesArray.MilestonesName[milestoneIndex];
         const milestoneName = milestone?.name ?? `Milestone ${milestoneIndex + 1}`;
         addHistoryEvent({
@@ -463,7 +473,10 @@ export default function ProjectDetailPage() {
                     onScrollRight={() => scrollMilestoneCards('right')}
                     scrollRef={milestoneCardsScrollRef}
                     onOpenTask={openTaskPopup}
-                    onVisitChecklist={(milestoneIndex, taskName) => setChecklistContext({ milestoneIndex, taskName })}
+                    onVisitChecklist={(milestoneIndex, taskName) => {
+                        const milestone = MileStonesArray.MilestonesName[milestoneIndex];
+                        setChecklistContext({ milestoneIndex, milestoneName: milestone?.name ?? '', taskName });
+                    }}
                     getTaskStatus={getTaskStatus}
                 />
 
@@ -545,6 +558,7 @@ export default function ProjectDetailPage() {
                     </div>
                 </div>
             )}
+
 
             {selectedHistoryEvent && (
                 <ViewTaskDetailsModal
@@ -768,7 +782,18 @@ export default function ProjectDetailPage() {
                                     milestoneIndex={checklistContext.milestoneIndex}
                                     taskName={checklistContext.taskName}
                                     definition={definition}
-                                    onSuccess={() => setChecklistContext(null)}
+                                    milestoneName={checklistContext.milestoneName}
+                                    leadId={projectId}
+                                    onSuccess={() => {
+                                        const k = checklistContext;
+                                        if (k) {
+                                            const ck = taskKey(k.milestoneIndex, k.taskName);
+                                            setCompletedChecklistKeys((prev) =>
+                                                prev.includes(ck) ? prev : [...prev, ck],
+                                            );
+                                        }
+                                        setChecklistContext(null);
+                                    }}
                                 />
                             </div>
                         </div>

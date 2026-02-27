@@ -4,6 +4,7 @@ import type { RefObject } from "react";
 import { useState } from "react";
 import MileStonesArray from "@/app/Components/Types/MileStoneArray";
 import { hasChecklistForTask } from "./Checklists/checklistRegistry";
+import { getTaskTimeline } from "./taskTimelines";
 
 type TaskStatus = {
   icon: "completed" | "current" | "delayed" | "pending";
@@ -297,6 +298,11 @@ export default function MilestonesCard({
                               tags: ["PENDING"] as const,
                             }
                           : getTaskStatus(milestoneIndex, taskIndex, taskList);
+                        const timelineText = getTaskTimeline(
+                          milestone.name,
+                          task,
+                          undefined,
+                        );
                         return (
                           <div
                             key={taskIndex}
@@ -368,6 +374,12 @@ export default function MilestonesCard({
                               </p>
                               <p className="text-xs text-gray-500 mt-0.5">
                                 {status.subtitle}
+                                {timelineText && (
+                                  <>
+                                    {" "}
+                                    · <span>{timelineText}</span>
+                                  </>
+                                )}
                               </p>
                             </div>
                             <div className="flex items-center gap-1.5 flex-shrink-0">

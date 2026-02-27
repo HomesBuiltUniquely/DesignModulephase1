@@ -27,8 +27,20 @@ export default function SalesClosureForm() {
     lead_source: "call",
   });
 
-  const designerName = ["Bharath", "Harsh", "vk", "neel"];
-  const designerLeadName = ["Bharath", "Harsh", "vk", "neel"];
+  type Designer = { id: number; name: string; leadName: string };
+  const [designers, setDesigners] = useState<Designer[]>([]);
+
+  useEffect(() => {
+    fetch("http://localhost:3001/api/designers")
+      .then((res) => res.json())
+      .then((data: Designer[]) => {
+        if (Array.isArray(data)) setDesigners(data);
+      })
+      .catch(() => {});
+  }, []);
+
+  const designerName = designers.map((d) => d.name);
+  const designerLeadName = designers.map((d) => d.leadName);
 
   const [currentDateTime, setCurrentDateTime] = useState("");
 
@@ -477,9 +489,16 @@ export default function SalesClosureForm() {
                     <select
                       className="w-full border p-2.5 rounded-lg text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
                       value={form.designer_name}
-                      onChange={(e) =>
-                        updateFields("designer_name", e.target.value)
-                      }
+                      onChange={(e) => {
+                        const name = e.target.value;
+                        updateFields("designer_name", name);
+                        const match = designers.find((d) => d.name === name);
+                        if (match) {
+                          updateFields("designer_lead", match.leadName);
+                        } else {
+                          updateFields("designer_lead", "");
+                        }
+                      }}
                     >
                       <option value="">Select Designer</option>
                       {designerName.map((name) => (

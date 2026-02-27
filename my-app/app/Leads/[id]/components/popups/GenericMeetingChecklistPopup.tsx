@@ -7,6 +7,8 @@ type Props = {
   milestoneIndex: number;
   taskName: string;
   definition: ChecklistDefinition;
+  milestoneName: string;
+  leadId: number | null;
   onSuccess: () => void;
 };
 
@@ -14,6 +16,8 @@ export default function GenericMeetingChecklistPopup({
   milestoneIndex,
   taskName,
   definition,
+  milestoneName,
+  leadId,
   onSuccess,
 }: Props) {
   const [currentSection, setCurrentSection] = useState(0);
@@ -69,7 +73,7 @@ export default function GenericMeetingChecklistPopup({
         : {}),
     }));
 
-    const payload = { milestoneIndex, taskName, answers };
+    const payload = { milestoneIndex, taskName, milestoneName, answers, leadId };
 
     try {
       setIsSubmitting(true);
