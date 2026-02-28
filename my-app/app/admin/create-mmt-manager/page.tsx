@@ -47,7 +47,10 @@ export default function AdminCreateMmtManagerPage() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setMessage({ type: 'error', text: data.message || 'Failed to create MMT Manager' });
+        const msg = res.status === 404
+          ? 'Backend route not found. Stop the backend (Ctrl+C), then run "npm run dev" in the backend folder and try again.'
+          : (data.message || 'Failed to create MMT Manager');
+        setMessage({ type: 'error', text: msg });
         return;
       }
       setMessage({ type: 'success', text: `MMT Manager created: ${data.user?.email}` });

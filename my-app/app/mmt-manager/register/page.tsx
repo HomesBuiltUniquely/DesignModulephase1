@@ -53,7 +53,10 @@ export default function MmtManagerRegisterPage() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setMessage({ type: 'error', text: data.message || 'Registration failed' });
+        const msg = res.status === 404
+          ? 'Backend route not found. Restart the backend (npm run dev in the backend folder) and try again.'
+          : (data.message || 'Registration failed');
+        setMessage({ type: 'error', text: msg });
         return;
       }
       setMessage({ type: 'success', text: `MMT Executive created: ${data.user?.email}` });

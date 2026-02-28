@@ -3,7 +3,8 @@
 import { SideDashboard } from "../Enums/Enums";
 import { useRouter } from "next/navigation";
 import { LeadshipTypes } from "./Types/Types";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useAuth } from "../auth/AuthContext";
 
 // Stage column: only Active or Inactive (status)
 function getStatusDisplay(stage: string): "Active" | "Inactive" {
@@ -46,13 +47,22 @@ function formatDateTime(value: string): string {
     return `${day}/${month}/${year} ${hours}:${minutes} ${ampm}`;
 }
 
-export default function Dashboard() {
+const API = "http://localhost:3001";
 
+export default function Dashboard() {
+    const { user, sessionId } = useAuth();
     const [projects, setProjects] = useState<LeadshipTypes[]>([]);
+    const [uploadingId, setUploadingId] = useState<number | null>(null);
+    const fileInputRef = useRef<HTMLInputElement | null>(null);
+    const targetLeadRef = useRef<number | null>(null);
+
+    const isMmtUser = ["mmt_manager", "mmt_executive"].includes((user?.role || "").toLowerCase());
 
     // Fetch leads queue (includes seed data + new leads from sales closure form)
     useEffect(() => {
-        fetch("http://localhost:3001/api/leads/queue")
+        const headers: Record<string, string> = {};
+        if (sessionId) headers["Authorization"] = `Bearer ${sessionId}`;
+        fetch(`${API}/api/leads/queue`, { headers })
             .then((res) => res.text().then((t) => { try { return t ? JSON.parse(t) : null; } catch { return null; } }))
             .then((data) => {
                 if (Array.isArray(data)) {
@@ -61,11 +71,39 @@ export default function Dashboard() {
             })
             .catch((err) => {
                 console.error("Error fetching leads queue:", err);
-                // Leave projects empty when backend is unavailable
             });
-    }, []);
-    
-    
+    }, [sessionId]);
+
+    const onUploadClick = (e: React.MouseEvent, leadId: number) => {
+        e.stopPropagation();
+        targetLeadRef.current = leadId;
+        fileInputRef.current?.click();
+    };
+
+    const onFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        e.target.value = "";
+        const leadId = targetLeadRef.current;
+        if (!file || !leadId || !sessionId) return;
+        setUploadingId(leadId);
+        try {
+            const fd = new FormData();
+            fd.append("zip", file);
+            const res = await fetch(`${API}/api/leads/${leadId}/uploads`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${sessionId}` },
+                body: fd,
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.message || "Upload failed");
+        } catch (err) {
+            console.error("Upload error", err);
+        } finally {
+            setUploadingId(null);
+            targetLeadRef.current = null;
+        }
+    };
+
     const allTypes = Object.values(SideDashboard);
     const [isDropdownOpen, setIsDropdownOpen] = useState(true);
     const [isSelected, setIsSelected] = useState<string>(allTypes[0]); // "All Projects (10-60%)"
@@ -93,6 +131,32 @@ export default function Dashboard() {
 
     const renderContent = () => {
         const list = filteredProjects;
+        if (isMmtUser) {
+            return (
+                <div>
+                    {list.map((arr1) => (
+                        <div
+                            key={arr1.id}
+                            className={`xl:grid xl:grid-cols-4 xl:gap-4 xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:border-gray-300 xl:rounded-lg xl:shadow-md hover:xl:bg-green-100 xl:text-gray-900 xl:cursor-pointer xl:items-center ${(arr1.id % 2 === 0) ? "bg-gray-50" : "bg-gray-100"}`}
+                            onClick={() => handleRouter(arr1.id)}
+                        >
+                            <div className="xl:text-lg xl:font-semibold xl:text-center">{arr1.id}</div>
+                            <div className="xl:text-lg xl:font-semibold xl:text-left">{arr1.projectName}</div>
+                            <div className="xl:text-lg xl:font-semibold xl:text-center">{getStatusDisplay(arr1.projectStage)}</div>
+                            <div className="xl:text-center" onClick={(e) => onUploadClick(e, arr1.id)}>
+                                <button
+                                    type="button"
+                                    disabled={uploadingId === arr1.id}
+                                    className="xl:px-4 xl:py-2 xl:rounded-lg xl:bg-green-600 xl:text-white xl:font-semibold xl:text-sm hover:xl:bg-green-700 disabled:xl:opacity-60"
+                                >
+                                    {uploadingId === arr1.id ? "Uploading…" : "Upload ZIP"}
+                                </button>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            );
+        }
         return (
             <div>
                 {list.map((arr1) => (
@@ -156,19 +220,31 @@ export default function Dashboard() {
                     )}   
                     </div>
                     <div className="xl:grid-cols-4 ">
-                        <div className="xl:grid xl:grid-cols-6 xl:gap-4 xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:border-gray-300 xl:rounded-lg xl:shadow-md xl:bg-black xl:text-white xl:text-lg xl:font-bold xl:items-center">
+                        <div className={`xl:grid xl:gap-4 xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:border-gray-300 xl:rounded-lg xl:shadow-md xl:bg-black xl:text-white xl:text-lg xl:font-bold xl:items-center ${isMmtUser ? "xl:grid-cols-4" : "xl:grid-cols-6"}`}>
                             <div className="xl:text-center">ID</div>
                             <div className="xl:text-left">Project Name</div>
                             <div className="xl:text-center">Stage</div>
-                            <div className="xl:text-center">Progress</div>
-                            <div className="xl:text-left">Created At</div>
-                            <div className="xl:text-left">Updated At</div>
+                            {!isMmtUser && (
+                                <>
+                                    <div className="xl:text-center">Progress</div>
+                                    <div className="xl:text-left">Created At</div>
+                                    <div className="xl:text-left">Updated At</div>
+                                </>
+                            )}
+                            {isMmtUser && <div className="xl:text-center">Upload</div>}
                         </div>
-    
+
                         {renderContent()}
+                        <input
+                            ref={fileInputRef}
+                            type="file"
+                            accept=".zip,application/zip,.dwg"
+                            className="hidden"
+                            onChange={onFileSelected}
+                        />
                     </div>
                 </div>
             </main>
         </div>
     );
-    }
+}

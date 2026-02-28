@@ -2,6 +2,10 @@ import express, { Request, Response } from "express";
 import cors from "cors";
 import mysql from "mysql2/promise";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import multer from "multer";
+import fs from "node:fs";
+import path from "node:path";
+import AdmZip from "adm-zip";
 
 const app = express();
 const PORT = 3001;
@@ -33,6 +37,26 @@ const s3 = new S3Client({
         secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || "",
       }
     : undefined,
+});
+
+// ----- Local uploads (MMT zip folders) -----
+const UPLOADS_DIR = path.join(process.cwd(), "uploads");
+if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (_req: Request, _file: Express.Multer.File, cb: (error: Error | null, destination: string) => void) =>
+      cb(null, UPLOADS_DIR),
+    filename: (
+      _req: Request,
+      file: Express.Multer.File,
+      cb: (error: Error | null, filename: string) => void,
+    ) => {
+      const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
+      cb(null, `${Date.now()}-${safe}`);
+    },
+  }),
+  limits: { fileSize: 200 * 1024 * 1024 }, // 200MB
 });
 
 function parseDataUrl(dataUrl: string): { buffer: Buffer; contentType: string; ext: string } {
@@ -128,6 +152,42 @@ async function initDb() {
         created_at DATETIME NOT NULL
       );
     `);
+
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS lead_task_completions (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        lead_id INT NOT NULL,
+        milestone_index INT NOT NULL,
+        task_name VARCHAR(255) NOT NULL,
+        completed_at DATETIME NOT NULL,
+        UNIQUE KEY uniq_lead_task (lead_id, milestone_index, task_name)
+      );
+    `);
+
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS lead_uploads (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        lead_id INT NOT NULL,
+        uploader_id INT NULL,
+        original_name VARCHAR(255) NOT NULL,
+        stored_name VARCHAR(255) NOT NULL,
+        stored_path TEXT NOT NULL,
+        mime_type VARCHAR(100),
+        size_bytes BIGINT,
+        uploaded_at DATETIME NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending'
+      );
+    `);
+    try {
+      const [colRows] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_uploads' AND COLUMN_NAME = 'status'"
+      );
+      if ((colRows as any[]).length === 0) {
+        await conn.query("ALTER TABLE lead_uploads ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'pending'");
+      }
+    } catch {
+      // ignore
+    }
 
     await conn.query(`
       CREATE TABLE IF NOT EXISTS designers (
@@ -278,6 +338,21 @@ app.get("/api/auth/me", async (req: Request, res: Response) => {
   }
 });
 
+// List MMT executives for assignment (e.g. D1 Measurement popup)
+app.get("/api/auth/mmt-executives", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const [rows] = await pool.query(
+      "SELECT id, name, email FROM users WHERE role = 'mmt_executive' ORDER BY name ASC",
+    );
+    return res.json(rows);
+  } catch (err) {
+    console.error("mmt-executives error", err);
+    return res.status(500).json({ message: "Failed to load MMT executives" });
+  }
+});
+
 // Update profile details (name, email, phone)
 app.put("/api/auth/profile", async (req: Request, res: Response) => {
   try {
@@ -336,6 +411,99 @@ app.put("/api/auth/profile-image", async (req: Request, res: Response) => {
     return res
       .status(500)
       .json({ message: "Failed to update profile image" });
+  }
+});
+
+// Admin: create MMT Manager user (POST only; GET returns 405 so you can confirm route is loaded)
+app.all("/api/auth/create-mmt-manager", async (req: Request, res: Response) => {
+  if (req.method !== "POST") {
+    return res.status(405).json({ message: "Use POST to create MMT Manager" });
+  }
+  try {
+    const admin = await getUserFromSession(req);
+    if (!admin) return res.status(401).json({ message: "Unauthorized" });
+    if (admin.role !== "admin") {
+      return res.status(403).json({ message: "Only admin can create MMT Manager" });
+    }
+
+    const { email, password, name, phone } = req.body || {};
+    const normalized = (email || "").trim().toLowerCase();
+    if (!normalized.endsWith("@hubinterior.com")) {
+      return res.status(400).json({ message: "Email must end with @hubinterior.com" });
+    }
+    if (!password || String(password).length < 1) {
+      return res.status(400).json({ message: "Password is required" });
+    }
+
+    const displayName = (name || normalized).trim() || normalized;
+    const phoneVal = phone != null ? String(phone).trim() : null;
+
+    const [result] = await pool.query(
+      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "mmt_manager", phoneVal || null],
+    );
+    const insertId = (result as any).insertId;
+    return res.status(201).json({
+      user: {
+        id: insertId,
+        email: normalized,
+        name: displayName,
+        role: "mmt_manager",
+      },
+    });
+  } catch (err: any) {
+    if (err?.code === "ER_DUP_ENTRY") {
+      return res.status(400).json({ message: "A user with this email already exists" });
+    }
+    console.error("create-mmt-manager error", err);
+    return res.status(500).json({ message: "Failed to create MMT Manager" });
+  }
+});
+
+// MMT Manager: register MMT Executive user
+app.all("/api/auth/register-mmt-executive", async (req: Request, res: Response) => {
+  if (req.method !== "POST") {
+    return res.status(405).json({ message: "Use POST to register MMT Executive" });
+  }
+  try {
+    const manager = await getUserFromSession(req);
+    if (!manager) return res.status(401).json({ message: "Unauthorized" });
+    const role = (manager.role || "").toLowerCase();
+    if (role !== "mmt_manager" && role !== "admin") {
+      return res.status(403).json({ message: "Only MMT Manager or Admin can register MMT Executives" });
+    }
+
+    const { email, password, name, phone } = req.body || {};
+    const normalized = (email || "").trim().toLowerCase();
+    if (!normalized.endsWith("@hubinterior.com")) {
+      return res.status(400).json({ message: "Email must end with @hubinterior.com" });
+    }
+    if (!password || String(password).length < 1) {
+      return res.status(400).json({ message: "Password is required" });
+    }
+
+    const displayName = (name || normalized).trim() || normalized;
+    const phoneVal = phone != null ? String(phone).trim() : null;
+
+    const [result] = await pool.query(
+      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "mmt_executive", phoneVal || null],
+    );
+    const insertId = (result as any).insertId;
+    return res.status(201).json({
+      user: {
+        id: insertId,
+        email: normalized,
+        name: displayName,
+        role: "mmt_executive",
+      },
+    });
+  } catch (err: any) {
+    if (err?.code === "ER_DUP_ENTRY") {
+      return res.status(400).json({ message: "A user with this email already exists" });
+    }
+    console.error("register-mmt-executive error", err);
+    return res.status(500).json({ message: "Failed to register MMT Executive" });
   }
 });
 
@@ -654,6 +822,333 @@ app.get("/api/leads/:id/history", async (req: Request, res: Response) => {
   }
 });
 
+// Persist a history event for a lead (frontend posts HistoryEvent objects here)
+app.post("/api/leads/:id/history", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    await addLeadHistoryEvent(id, req.body);
+    return res.status(201).json({ ok: true });
+  } catch (err) {
+    console.error("lead history insert error", err);
+    return res.status(500).json({ message: "Failed to save history" });
+  }
+});
+
+// Get completed tasks for a lead (used to restore completion state after refresh)
+app.get("/api/leads/:id/completions", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    const [rows] = await pool.query(
+      "SELECT milestone_index as milestoneIndex, task_name as taskName, completed_at as completedAt FROM lead_task_completions WHERE lead_id = ?",
+      [id],
+    );
+    return res.json(rows);
+  } catch (err) {
+    console.error("lead completions load error", err);
+    return res.status(500).json({ message: "Failed to load completions" });
+  }
+});
+
+// Mark a task completed for a lead (persists across refresh)
+app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+  const { milestoneIndex, taskName } = req.body || {};
+  if (typeof milestoneIndex !== "number" || !taskName) {
+    return res.status(400).json({ message: "milestoneIndex and taskName are required" });
+  }
+  try {
+    await pool.query(
+      `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
+      [id, milestoneIndex, taskName, new Date()],
+    );
+    return res.status(201).json({ ok: true });
+  } catch (err) {
+    console.error("complete-task error", err);
+    return res.status(500).json({ message: "Failed to save completion" });
+  }
+});
+
+// MMT uploads: upload a ZIP "folder" for a lead
+app.post(
+  "/api/leads/:id/uploads",
+  upload.single("zip"),
+  async (req: Request, res: Response) => {
+    const leadId = Number(req.params.id);
+    if (Number.isNaN(leadId))
+      return res.status(400).json({ message: "Invalid id" });
+    const file = (req as any).file as Express.Multer.File | undefined;
+    if (!file) return res.status(400).json({ message: "zip file is required" });
+
+    try {
+      const user = await getUserFromSession(req);
+      const uploaderId = user?.id ?? null;
+      const role = (user?.role ?? "").toLowerCase();
+      const status = role === "mmt_manager" ? "approved" : "pending";
+
+      await pool.query(
+        `INSERT INTO lead_uploads
+         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          leadId,
+          uploaderId,
+          file.originalname,
+          file.filename,
+          file.path,
+          file.mimetype,
+          file.size,
+          new Date(),
+          status,
+        ],
+      );
+
+      // Add history event
+      const ev = {
+        id: `upload-${Date.now()}`,
+        type: "file_upload",
+        taskName: "MMT upload",
+        milestoneName: "D1 SITE MEASUREMENT",
+        timestamp: new Date().toISOString(),
+        description: `MMT uploaded files: ${file.originalname}`,
+        user: { name: user?.name ?? "MMT" },
+        details: { kind: "file_upload", fileName: file.originalname, size: `${file.size}` },
+      };
+      await addLeadHistoryEvent(leadId, ev);
+
+      return res.status(201).json({ ok: true });
+    } catch (err) {
+      console.error("lead upload error", err);
+      return res.status(500).json({ message: "Failed to upload files" });
+    }
+  },
+);
+
+// List uploads for a lead (designers see only approved; MMT manager/executive see all with status)
+app.get("/api/leads/:id/uploads", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId))
+    return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    const role = (user?.role ?? "").toLowerCase();
+    const isMmt = role === "mmt_manager" || role === "mmt_executive";
+    const onlyApproved = !isMmt;
+
+    const [rows] = await pool.query(
+      onlyApproved
+        ? `SELECT id, original_name as originalName, uploaded_at as uploadedAt, status
+           FROM lead_uploads WHERE lead_id = ? AND status = 'approved' ORDER BY uploaded_at DESC`
+        : `SELECT id, original_name as originalName, uploaded_at as uploadedAt, status
+           FROM lead_uploads WHERE lead_id = ? ORDER BY uploaded_at DESC`,
+      [leadId],
+    );
+    return res.json(rows);
+  } catch (err) {
+    console.error("list uploads error", err);
+    return res.status(500).json({ message: "Failed to load uploads" });
+  }
+});
+
+// MMT Manager only: approve an upload so it becomes visible to designers
+app.post("/api/leads/:leadId/uploads/:uploadId/approve", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.leadId);
+  const uploadId = Number(req.params.uploadId);
+  if (Number.isNaN(leadId) || Number.isNaN(uploadId))
+    return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    if ((user.role || "").toLowerCase() !== "mmt_manager")
+      return res.status(403).json({ message: "Only MMT Manager can approve uploads" });
+    const [result] = await pool.query(
+      "UPDATE lead_uploads SET status = 'approved' WHERE id = ? AND lead_id = ?",
+      [uploadId, leadId],
+    );
+    if ((result as any).affectedRows === 0)
+      return res.status(404).json({ message: "Upload not found" });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("approve upload error", err);
+    return res.status(500).json({ message: "Failed to approve" });
+  }
+});
+
+// MMT only: delete an upload (so they can re-upload the correct version)
+app.delete("/api/leads/:leadId/uploads/:uploadId", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.leadId);
+  const uploadId = Number(req.params.uploadId);
+  if (Number.isNaN(leadId) || Number.isNaN(uploadId))
+    return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user.role || "").toLowerCase();
+    const isMmt = ["mmt", "mmt_manager", "mmt_executive"].includes(role);
+    if (!isMmt) return res.status(403).json({ message: "Only MMT can delete uploads" });
+    const [rows] = await pool.query(
+      "SELECT stored_path as storedPath FROM lead_uploads WHERE id = ? AND lead_id = ?",
+      [uploadId, leadId],
+    );
+    const row = (rows as any[])[0];
+    if (!row) return res.status(404).json({ message: "Upload not found" });
+    await pool.query("DELETE FROM lead_uploads WHERE id = ? AND lead_id = ?", [uploadId, leadId]);
+    if (row.storedPath && fs.existsSync(row.storedPath)) {
+      try {
+        fs.unlinkSync(row.storedPath);
+      } catch (e) {
+        console.warn("Could not delete file from disk:", row.storedPath, e);
+      }
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("delete upload error", err);
+    return res.status(500).json({ message: "Failed to delete upload" });
+  }
+});
+
+// Download an upload (designers can only download approved uploads)
+app.get("/api/leads/:leadId/uploads/:uploadId/download", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.leadId);
+  const uploadId = Number(req.params.uploadId);
+  if (Number.isNaN(leadId) || Number.isNaN(uploadId)) {
+    return res.status(400).json({ message: "Invalid id" });
+  }
+  try {
+    const user = await getUserFromSession(req);
+    const role = (user?.role ?? "").toLowerCase();
+    const isMmt = role === "mmt_manager" || role === "mmt_executive";
+    const [rows] = await pool.query(
+      `SELECT stored_path as storedPath, original_name as originalName, status
+       FROM lead_uploads WHERE id = ? AND lead_id = ?`,
+      [uploadId, leadId],
+    );
+    const row = (rows as any[])[0];
+    if (!row) return res.status(404).json({ message: "Not found" });
+    if (!isMmt && row.status !== "approved")
+      return res.status(403).json({ message: "Only approved uploads are available" });
+    return res.download(row.storedPath, row.originalName);
+  } catch (err) {
+    console.error("download upload error", err);
+    return res.status(500).json({ message: "Failed to download" });
+  }
+});
+
+// List files inside a ZIP (designers can only list approved uploads)
+app.get("/api/leads/:leadId/uploads/:uploadId/contents", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.leadId);
+  const uploadId = Number(req.params.uploadId);
+  if (Number.isNaN(leadId) || Number.isNaN(uploadId)) {
+    return res.status(400).json({ message: "Invalid id" });
+  }
+  try {
+    const user = await getUserFromSession(req);
+    const role = (user?.role ?? "").toLowerCase();
+    const isMmt = role === "mmt_manager" || role === "mmt_executive";
+    const [rows] = await pool.query(
+      `SELECT stored_path as storedPath, original_name as originalName, size_bytes as sizeBytes, status FROM lead_uploads WHERE id = ? AND lead_id = ?`,
+      [uploadId, leadId],
+    );
+    const row = (rows as any[])[0];
+    if (!row || !fs.existsSync(row.storedPath)) return res.status(404).json({ message: "Not found" });
+    if (!isMmt && row.status !== "approved")
+      return res.status(403).json({ message: "Only approved uploads are available" });
+    try {
+      const zip = new AdmZip(row.storedPath);
+      const entries = zip.getEntries();
+      const files = entries
+        .filter((e) => !e.isDirectory)
+        .map((e) => ({ path: e.entryName, size: e.header?.size ?? 0 }));
+      return res.json({ files });
+    } catch {
+      // Not a ZIP (e.g. single .dwg file) – return single entry so Open/Download still work
+      const name = row.originalName || path.basename(row.storedPath);
+      return res.json({ files: [{ path: name, size: row.sizeBytes || 0 }] });
+    }
+  } catch (err) {
+    console.error("zip contents error", err);
+    return res.status(500).json({ message: "Failed to read contents" });
+  }
+});
+
+// Serve one file from inside a ZIP (designers can only access approved uploads)
+app.get("/api/leads/:leadId/uploads/:uploadId/file", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.leadId);
+  const uploadId = Number(req.params.uploadId);
+  const filePath = req.query.path as string;
+  if (Number.isNaN(leadId) || Number.isNaN(uploadId) || !filePath) {
+    return res.status(400).json({ message: "Invalid id or path" });
+  }
+  try {
+    const user = await getUserFromSession(req);
+    const role = (user?.role ?? "").toLowerCase();
+    const isMmt = role === "mmt_manager" || role === "mmt_executive";
+    const [rows] = await pool.query(
+      `SELECT stored_path as storedPath, original_name as originalName, status FROM lead_uploads WHERE id = ? AND lead_id = ?`,
+      [uploadId, leadId],
+    );
+    const row = (rows as any[])[0];
+    if (!row || !fs.existsSync(row.storedPath)) return res.status(404).json({ message: "Not found" });
+    if (!isMmt && row.status !== "approved")
+      return res.status(403).json({ message: "Only approved uploads are available" });
+    const ext = path.extname(filePath).toLowerCase();
+    const mime: Record<string, string> = {
+      ".pdf": "application/pdf",
+      ".dwg": "application/acad",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".png": "image/png",
+      ".gif": "image/gif",
+      ".webp": "image/webp",
+      ".txt": "text/plain",
+      ".json": "application/json",
+      ".xml": "application/xml",
+      ".md": "text/markdown",
+      ".html": "text/html",
+      ".htm": "text/html",
+      ".css": "text/css",
+      ".js": "application/javascript",
+      ".properties": "text/plain",
+      ".gitignore": "text/plain",
+      ".gitattributes": "text/plain",
+      ".cmd": "text/plain",
+      ".bat": "text/plain",
+      ".java": "text/plain",
+      ".yml": "text/yaml",
+      ".yaml": "text/yaml",
+    };
+    const contentType = mime[ext] || "application/octet-stream";
+    const name = path.basename(filePath);
+    const isDwg = ext === ".dwg";
+
+    try {
+      const zip = new AdmZip(row.storedPath);
+      const entry = zip.getEntry(filePath);
+      if (!entry || entry.isDirectory) return res.status(404).json({ message: "File not found in ZIP" });
+      const data = entry.getData();
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Content-Disposition", isDwg ? `attachment; filename="${name.replace(/"/g, "%22")}"` : `inline; filename="${name.replace(/"/g, "%22")}"`);
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      return res.send(Buffer.isBuffer(data) ? data : Buffer.from(data));
+    } catch {
+      // Not a ZIP – treat as single file (e.g. .dwg); serve from disk if path matches
+      if (filePath !== row.originalName && filePath !== path.basename(row.storedPath)) {
+        return res.status(404).json({ message: "File not found" });
+      }
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Content-Disposition", `attachment; filename="${(row.originalName || name).replace(/"/g, "%22")}"`);
+      return res.sendFile(path.resolve(row.storedPath));
+    }
+  } catch (err) {
+    console.error("file serve error", err);
+    return res.status(500).json({ message: "Failed to read file" });
+  }
+});
+
 // Dashboard: list all leads (sales closure submissions)
 app.get("/api/leads/queue", async (req: Request, res: Response) => {
   const now = new Date();
@@ -797,4 +1292,5 @@ app.post("/api/leads/:id/resume", async (req: Request, res: Response) => {
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
+  console.log("POST /api/auth/create-mmt-manager and POST /api/auth/register-mmt-executive are registered");
 });

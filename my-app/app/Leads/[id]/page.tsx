@@ -30,6 +30,7 @@ export default function ProjectDetailPage() {
     const params = useParams();
     const { user: authUser, sessionId, refreshUser } = useAuth();
     const projectId = params?.id ? Number(params.id) : null;
+    const isMmtUser = ['mmt', 'mmt_manager', 'mmt_executive'].includes((authUser?.role || '').toLowerCase());
     
     // State to track WHICH card is maximized (null = none)
     const [activeCard, setActiveCard] = useState<string | null>(null);
@@ -156,6 +157,21 @@ export default function ProjectDetailPage() {
             })
             .then((data: HistoryEvent[]) => setHistoryEvents(data))
             .catch(() => setHistoryEvents([]));
+    }, [projectId]);
+
+    // Restore completed tasks from DB so it persists across refresh
+    useEffect(() => {
+        if (projectId == null) return;
+        fetch(`http://localhost:3001/api/leads/${projectId}/completions`)
+            .then((res) => res.text().then((t) => { try { return t ? JSON.parse(t) : []; } catch { return []; } }))
+            .then((rows: Array<{ milestoneIndex: number; taskName: string }>) => {
+                if (!Array.isArray(rows)) return;
+                const keys = rows
+                    .filter((r) => typeof r?.milestoneIndex === 'number' && typeof r?.taskName === 'string')
+                    .map((r) => taskKey(r.milestoneIndex, r.taskName));
+                setCompletedTaskKeys(Array.from(new Set(keys)));
+            })
+            .catch(() => {});
     }, [projectId]);
 
     const [image, setImage] = useState<ImageType[]>([
@@ -350,6 +366,14 @@ export default function ProjectDetailPage() {
             user: { name: authUser?.name ?? 'Current User', avatar: authUser?.profileImage },
             details: options?.details,
         });
+        // persist completion for this lead so refresh keeps it completed
+        if (projectId != null) {
+            fetch(`http://localhost:3001/api/leads/${projectId}/complete-task`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ milestoneIndex, taskName }),
+            }).catch(() => {});
+        }
         markTaskComplete(milestoneIndex, taskName);
     };
 
@@ -452,6 +476,9 @@ export default function ProjectDetailPage() {
                             // ignore
                         }
                     }}
+                    hideNavTabs={isMmtUser}
+                    hideStepper={isMmtUser}
+                    hideProlanceHoldResume={isMmtUser}
                 />
             )}
 
@@ -464,44 +491,55 @@ export default function ProjectDetailPage() {
             {/* --- MAIN GRID --- */}
             <main className={`xl:grid xl:grid-cols-7 xl:gap-5 xl:m-4 transition-all duration-300 ${activeCard ? 'block' : ''}`}>
                 
-                <MilestonesCard
-                    cardClass={getCardClass('milestones', 'xl:col-span-3 xl:bg-purple-50 xl:h-[70vh] xl:rounded-3xl relative xl:pt-6 xl:pb-6 xl:px-4')}
-                    isMaximized={activeCard === 'milestones'}
-                    currentMilestoneIndex={currentMilestoneIndex}
-                    onToggleMaximize={() => toggleMaximize('milestones')}
-                    onScrollLeft={() => scrollMilestoneCards('left')}
-                    onScrollRight={() => scrollMilestoneCards('right')}
-                    scrollRef={milestoneCardsScrollRef}
-                    onOpenTask={openTaskPopup}
-                    onVisitChecklist={(milestoneIndex, taskName) => {
-                        const milestone = MileStonesArray.MilestonesName[milestoneIndex];
-                        setChecklistContext({ milestoneIndex, milestoneName: milestone?.name ?? '', taskName });
-                    }}
-                    getTaskStatus={getTaskStatus}
-                />
+                {!isMmtUser && (
+                    <MilestonesCard
+                        cardClass={getCardClass('milestones', 'xl:col-span-3 xl:bg-purple-50 xl:h-[70vh] xl:rounded-3xl relative xl:pt-6 xl:pb-6 xl:px-4')}
+                        isMaximized={activeCard === 'milestones'}
+                        currentMilestoneIndex={currentMilestoneIndex}
+                        onToggleMaximize={() => toggleMaximize('milestones')}
+                        onScrollLeft={() => scrollMilestoneCards('left')}
+                        onScrollRight={() => scrollMilestoneCards('right')}
+                        scrollRef={milestoneCardsScrollRef}
+                        onOpenTask={openTaskPopup}
+                        onVisitChecklist={(milestoneIndex, taskName) => {
+                            const milestone = MileStonesArray.MilestonesName[milestoneIndex];
+                            setChecklistContext({ milestoneIndex, milestoneName: milestone?.name ?? '', taskName });
+                        }}
+                        getTaskStatus={getTaskStatus}
+                    />
+                )}
 
-                <HistoryCard
-                    cardClass={getCardClass('history', 'xl:col-span-2 xl:bg-purple-50 xl:h-[70vh] xl:text-center xl:font-bold xl:pt-8 xl:rounded-3xl text-gray-400 relative')}
-                    onToggleMaximize={() => toggleMaximize('history')}
-                    isMaximized={activeCard === 'history'}
-                    historyEvents={historyEvents}
-                    onViewTaskDetails={setSelectedHistoryEvent}
-                    currentMilestoneIndex={currentMilestoneIndex}
-                    totalMilestones={MileStonesArray.MilestonesName.length}
-                />
+                {!isMmtUser && (
+                    <HistoryCard
+                        cardClass={getCardClass('history', 'xl:col-span-2 xl:bg-purple-50 xl:h-[70vh] xl:text-center xl:font-bold xl:pt-8 xl:rounded-3xl text-gray-400 relative')}
+                        onToggleMaximize={() => toggleMaximize('history')}
+                        isMaximized={activeCard === 'history'}
+                        historyEvents={historyEvents}
+                        onViewTaskDetails={setSelectedHistoryEvent}
+                        currentMilestoneIndex={currentMilestoneIndex}
+                        totalMilestones={MileStonesArray.MilestonesName.length}
+                    />
+                )}
 
-                <div className={`xl:col-span-2 xl:h-full xl:text-center xl:font-bold ${activeCard && activeCard !== 'files' && activeCard !== 'chat' ? 'hidden' : ''}`}>
-                    <div className="xl:grid xl:grid-rows-2 xl:h-full xl:gap-4">
+                <div className={`xl:h-full xl:text-center xl:font-bold ${activeCard && activeCard !== 'files' && activeCard !== 'chat' ? 'hidden' : ''} ${isMmtUser ? 'xl:col-span-7' : 'xl:col-span-2'}`}>
+                    <div className={isMmtUser ? 'xl:h-full' : 'xl:grid xl:grid-rows-2 xl:h-full xl:gap-4'}>
                         <FilesCard
-                            cardClass={getCardClass('files', 'xl:rounded-3xl xl:bg-purple-50 xl:row-span-1 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative')}
+                            cardClass={getCardClass('files', isMmtUser ? 'xl:rounded-3xl xl:bg-purple-50 xl:h-[70vh] xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative' : 'xl:rounded-3xl xl:bg-purple-50 xl:row-span-1 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative')}
                             onToggleMaximize={() => toggleMaximize('files')}
                             isMaximized={activeCard === 'files'}
+                            leadId={projectId}
+                            sessionId={sessionId}
+                            canUpload={isMmtUser}
+                            userRole={authUser?.role}
+                            canDelete={isMmtUser}
                         />
-                        <ChatCard
-                            cardClass={getCardClass('chat', 'xl:rounded-3xl xl:bg-purple-50 xl:row-span-1 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative')}
-                            onToggleMaximize={() => toggleMaximize('chat')}
-                            isMaximized={activeCard === 'chat'}
-                        />
+                        {!isMmtUser && (
+                            <ChatCard
+                                cardClass={getCardClass('chat', 'xl:rounded-3xl xl:bg-purple-50 xl:row-span-1 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative')}
+                                onToggleMaximize={() => toggleMaximize('chat')}
+                                isMaximized={activeCard === 'chat'}
+                            />
+                        )}
                     </div>
                 </div>
 

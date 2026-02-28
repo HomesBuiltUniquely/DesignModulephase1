@@ -12,6 +12,12 @@ type Props = {
     currentMilestoneIndex: number;
     onHoldClick: () => void;
     onResumeClick: () => void;
+    /** Hide the Overview/BOQ/Payment/Escalation navbar (e.g. for MMT). */
+    hideNavTabs?: boolean;
+    /** Hide the milestone progress stepper (e.g. for MMT). */
+    hideStepper?: boolean;
+    /** Hide Prolance, avatars, HOLD and RESUME (e.g. for MMT). */
+    hideProlanceHoldResume?: boolean;
 };
 
 const TOTAL_STAGES = MileStonesArray.MilestonesName.length;
@@ -27,7 +33,7 @@ function formatResumeDate(value?: string | null): string {
     return d.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
-export default function LeadDetailHeader({ project, image, onAddImage, currentMilestoneIndex, onHoldClick, onResumeClick }: Props) {
+export default function LeadDetailHeader({ project, image, onAddImage, currentMilestoneIndex, onHoldClick, onResumeClick, hideNavTabs, hideStepper, hideProlanceHoldResume }: Props) {
     const holdLabel = project.isOnHold ? `On hold${project.resumeAt ? ` till ${formatResumeDate(project.resumeAt)}` : ''}` : project.projectStage;
     return (
         <div className="w-full px-4 xl:px-6 pt-4 pb-4">
@@ -44,6 +50,7 @@ export default function LeadDetailHeader({ project, image, onAddImage, currentMi
                         <span className="text-gray-400">Project Name:</span> {project.projectName}
                     </p>
                 </div>
+                {!hideProlanceHoldResume && (
                 <div className="flex flex-wrap items-center gap-4 xl:gap-6">
                     <div className="border border-gray-400 rounded-md px-4 py-2 font-bold text-purple-100 hover:text-green-900 hover:bg-purple-50 transition-colors cursor-pointer">
                         Prolance
@@ -83,9 +90,11 @@ export default function LeadDetailHeader({ project, image, onAddImage, currentMi
                         </button>
                     </div>
                 </div>
+                )}
             </div>
 
-            {/* Centered stepper progress bar – app colors: green-800/purple for active, gray for inactive */}
+            {/* Centered stepper progress bar – hidden for MMT */}
+            {!hideStepper && (
             <div className="w-full flex justify-center mt-5 xl:mt-6">
                 <div className="w-full max-w-4xl rounded-xl bg-purple-50 shadow border border-purple-200/80 px-4 py-3 xl:px-6 xl:py-4">
                     <div className="flex items-start justify-between gap-1 xl:gap-2">
@@ -138,8 +147,10 @@ export default function LeadDetailHeader({ project, image, onAddImage, currentMi
                     </div>
                 </div>
             </div>
+            )}
 
-            {/* Tabs: below progress bar, centered */}
+            {/* Tabs: Overview, BOQ, Payment, Escalation – hidden for MMT */}
+            {!hideNavTabs && (
             <div className="w-full flex justify-center  mt-3 xl:mt-4">
                 <div className="flex gap-6 xl:gap-8">
                     {['Overview', 'BOQ', 'Payment', 'Escalation'].map((tab) => (
@@ -153,6 +164,7 @@ export default function LeadDetailHeader({ project, image, onAddImage, currentMi
                     ))}
                 </div>
             </div>
+            )}
         </div>
     );
 }
