@@ -60,18 +60,18 @@ export default function Dashboard() {
 
     // Fetch leads queue (includes seed data + new leads from sales closure form)
     useEffect(() => {
+        let cancelled = false;
         const headers: Record<string, string> = {};
         if (sessionId) headers["Authorization"] = `Bearer ${sessionId}`;
         fetch(`${API}/api/leads/queue`, { headers })
             .then((res) => res.text().then((t) => { try { return t ? JSON.parse(t) : null; } catch { return null; } }))
             .then((data) => {
-                if (Array.isArray(data)) {
-                    setProjects(data);
-                }
+                if (!cancelled && Array.isArray(data)) setProjects(data);
             })
-            .catch((err) => {
-                console.error("Error fetching leads queue:", err);
+            .catch(() => {
+                if (!cancelled) setProjects([]);
             });
+        return () => { cancelled = true; };
     }, [sessionId]);
 
     const onUploadClick = (e: React.MouseEvent, leadId: number) => {
@@ -130,7 +130,13 @@ export default function Dashboard() {
     }
 
     const renderContent = () => {
-        const list = filteredProjects;
+        // Deduplicate by id so React keys are unique (API may return duplicate ids)
+        const seen = new Set<number>();
+        const list = filteredProjects.filter((p) => {
+            if (seen.has(p.id)) return false;
+            seen.add(p.id);
+            return true;
+        });
         if (isMmtUser) {
             return (
                 <div>

@@ -15,6 +15,7 @@ export default function TaskModal({ context, onClose, children }: Props) {
   const isDqc1Approval =
     context.taskName === "DQC 1 approval" ||
     context.taskName === "Design sign off";
+  const isDqcSubmission = context.taskName === "DQC 1 submission - dwg + quotation";
   const modalTitle =
     context.milestoneIndex === 1 && context.taskName === "meeting completed"
       ? "Meeting Scheduled"
@@ -28,10 +29,10 @@ export default function TaskModal({ context, onClose, children }: Props) {
       onClick={onClose}
     >
       <div
-        className={`bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden ${isDqc1Approval ? "xl:max-w-[95vw] xl:w-full xl:max-h-[90vh]" : "xl:max-h-[85vh] xl:w-[40vw]"}`}
+        className={`bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden ${isDqc1Approval ? "xl:max-w-[95vw] xl:w-full xl:max-h-[90vh]" : isDqcSubmission ? "xl:max-h-[85vh] xl:w-[42rem]" : "xl:max-h-[85vh] xl:w-[40vw]"}`}
         onClick={(e) => e.stopPropagation()}
       >
-        {!isDqc1Approval && (
+        {!isDqc1Approval && !isDqcSubmission && (
           <div className="flex justify-between items-center pt-6 px-6 pb-2 flex-shrink-0">
             <h3 className="text-lg font-bold text-gray-900">{modalTitle}</h3>
             <button

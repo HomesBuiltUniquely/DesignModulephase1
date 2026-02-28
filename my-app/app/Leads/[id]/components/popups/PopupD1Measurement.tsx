@@ -47,6 +47,33 @@ export default function PopupD1Measurement({ leadId, sessionId, onSubmit }: Prop
 
     const selected = executives.find((e) => String(e.id) === selectedId);
 
+    async function handleSubmit() {
+        if (!leadId || !sessionId || !selectedId) return;
+        setSubmitError(null);
+        setSubmitting(true);
+        try {
+            const res = await fetch(`${API}/api/leads/${leadId}/d1-request`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessionId}` },
+                body: JSON.stringify({
+                    measurementExecutiveId: Number(selectedId),
+                    measurementDate: measurementDate || null,
+                    measurementTime: measurementTime || null,
+                }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                setSubmitError(data.message || 'Failed to submit D1 request');
+                return;
+            }
+            onSubmit?.();
+        } catch {
+            setSubmitError('Could not reach server. Please try again.');
+        } finally {
+            setSubmitting(false);
+        }
+    }
+
     return (
         <>
             <div className="flex items-center justify-between gap-2 px-6 py-2">

@@ -66,6 +66,8 @@ export default function AdminCreateTdmPage() {
       setName('');
       setPhone('');
       setBranch(BRANCH_OPTIONS[0]);
+    } catch (err) {
+      setMessage({ type: 'error', text: 'Could not reach the server. Make sure the backend is running (e.g. run "npm run dev" in the backend folder).' });
     } finally {
       setSubmitting(false);
     }

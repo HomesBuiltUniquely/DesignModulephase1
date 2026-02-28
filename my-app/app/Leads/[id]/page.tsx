@@ -19,6 +19,7 @@ import {
     PopupMeetingCompleted,
     PopupDqc1Approval,
     PopupD2MaskingRequest,
+    PopupDqcSubmission,
     PopupPlaceholder,
     PopupGroupDescription,
     PopupMailLoopChain,
@@ -79,6 +80,7 @@ export default function ProjectDetailPage() {
     const [dqc1CommentPopup, setDqc1CommentPopup] = useState<{ xPct: number; yPct: number; page: number; docX?: number; docY?: number } | null>(null);
     const dqc1PdfViewportRef = useRef<HTMLDivElement>(null);
     const dqc1PdfScrollRef = useRef<HTMLDivElement>(null);
+    const dqc1SubmissionBlobUrlRef = useRef<string | null>(null);
     const [dqc1SelectedPin, setDqc1SelectedPin] = useState<number | null>(null);
     const [dqc1HighlightedPin, setDqc1HighlightedPin] = useState<number | null>(null);
     // Design upload (First cut design popup): selected files
@@ -95,6 +97,7 @@ export default function ProjectDetailPage() {
     const [showHoldModal, setShowHoldModal] = useState(false);
     const [holdDate, setHoldDate] = useState<string>('');
     const [selectedHistoryEvent, setSelectedHistoryEvent] = useState<HistoryEvent | null>(null);
+    const [uploadsVersion, setUploadsVersion] = useState(0);
 
     // Project/lead for this page: loaded from queue API (so sales-closure leads work) or fallback static list
     const staticProjects: LeadshipTypes[] = [
@@ -173,6 +176,43 @@ export default function ProjectDetailPage() {
             })
             .catch(() => {});
     }, [projectId]);
+
+    // When DQC 1 approval popup opens, auto-load the submitted quotation PDF if available (must be before any conditional return)
+    useEffect(() => {
+        if (popupContext?.milestoneIndex !== 1 || popupContext?.taskName !== 'DQC 1 approval' || !projectId || !sessionId) return;
+        let cancelled = false;
+        fetch(`http://localhost:3001/api/leads/${projectId}/dqc-submission-files`, {
+            headers: { Authorization: `Bearer ${sessionId}` },
+        })
+            .then((res) => (res.ok ? res.json() : null))
+            .then((data: { quotation?: { id: number; originalName: string } } | null) => {
+                if (!data?.quotation || cancelled) return;
+                const name = (data.quotation.originalName || '').toLowerCase();
+                if (!name.endsWith('.pdf')) return;
+                const url = `http://localhost:3001/api/leads/${projectId}/uploads/${data.quotation.id}/file?path=${encodeURIComponent(data.quotation.originalName)}`;
+                return fetch(url, { headers: { Authorization: `Bearer ${sessionId}` } })
+                    .then((r) => (r.ok ? r.blob() : null))
+                    .then((blob) => {
+                        if (!blob || cancelled) return;
+                        if (dqc1SubmissionBlobUrlRef.current) URL.revokeObjectURL(dqc1SubmissionBlobUrlRef.current);
+                        const blobUrl = URL.createObjectURL(blob);
+                        dqc1SubmissionBlobUrlRef.current = blobUrl;
+                        setDqc1PdfUrl(blobUrl);
+                        setDqc1PdfFile(new File([blob], data.quotation!.originalName, { type: blob.type }));
+                        setDqc1PdfPageNumber(1);
+                        setDqc1CommentPopup(null);
+                        setDqc1SelectedPin(null);
+                    });
+            })
+            .catch(() => {});
+        return () => {
+            cancelled = true;
+            if (dqc1SubmissionBlobUrlRef.current) {
+                URL.revokeObjectURL(dqc1SubmissionBlobUrlRef.current);
+                dqc1SubmissionBlobUrlRef.current = null;
+            }
+        };
+    }, [popupContext?.milestoneIndex, popupContext?.taskName, projectId, sessionId]);
 
     const [image, setImage] = useState<ImageType[]>([
         {id:1, img:"/profile1.jpg"},
@@ -524,6 +564,7 @@ export default function ProjectDetailPage() {
                 <div className={`xl:h-full xl:text-center xl:font-bold ${activeCard && activeCard !== 'files' && activeCard !== 'chat' ? 'hidden' : ''} ${isMmtUser ? 'xl:col-span-7' : 'xl:col-span-2'}`}>
                     <div className={isMmtUser ? 'xl:h-full' : 'xl:grid xl:grid-rows-2 xl:h-full xl:gap-4'}>
                         <FilesCard
+                            key={`files-${uploadsVersion}`}
                             cardClass={getCardClass('files', isMmtUser ? 'xl:rounded-3xl xl:bg-purple-50 xl:h-[70vh] xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative' : 'xl:rounded-3xl xl:bg-purple-50 xl:row-span-1 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative')}
                             onToggleMaximize={() => toggleMaximize('files')}
                             isMaximized={activeCard === 'files'}
@@ -678,7 +719,14 @@ export default function ProjectDetailPage() {
                         <PopupPlaceholder message="Design finalisation meeting request" onMarkComplete={() => { recordTaskComplete(1, 'Design finalisation meeting request'); closePopup(); }} />
                     )}
                     {popupContext.milestoneIndex === 1 && popupContext.taskName === 'DQC 1 submission - dwg + quotation' && (
-                        <PopupPlaceholder message="Hi from DQC 1 submission - dwg + quotation" onMarkComplete={() => { recordTaskComplete(1, 'DQC 1 submission - dwg + quotation'); closePopup(); }} />
+                        <PopupDqcSubmission
+                            leadId={projectId}
+                            sessionId={sessionId}
+                            onClose={closePopup}
+                            onSaveDraft={closePopup}
+                            onUploadSuccess={() => setUploadsVersion((v) => v + 1)}
+                            onSubmit={() => { recordTaskComplete(1, 'DQC 1 submission - dwg + quotation'); closePopup(); }}
+                        />
                     )}
                     {popupContext.milestoneIndex === 2 && popupContext.taskName === '10% payment collection' && (
                         <PopupPlaceholder message="10% payment collection" onMarkComplete={() => { recordTaskComplete(2, '10% payment collection'); closePopup(); }} />

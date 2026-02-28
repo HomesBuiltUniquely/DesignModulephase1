@@ -43,6 +43,11 @@ const s3 = new S3Client({
 const UPLOADS_DIR = path.join(process.cwd(), "uploads");
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
+// Local profile images when S3 is not configured
+const PROFILE_IMAGES_DIR = path.join(UPLOADS_DIR, "profile-images");
+if (!fs.existsSync(PROFILE_IMAGES_DIR)) fs.mkdirSync(PROFILE_IMAGES_DIR, { recursive: true });
+const API_BASE = process.env.API_BASE_URL || "http://localhost:3001";
+
 const upload = multer({
   storage: multer.diskStorage({
     destination: (_req: Request, _file: Express.Multer.File, cb: (error: Error | null, destination: string) => void) =>
@@ -74,21 +79,50 @@ function parseDataUrl(dataUrl: string): { buffer: Buffer; contentType: string; e
   return { buffer, contentType, ext };
 }
 
-async function uploadProfileImageToS3(userId: number, dataUrl: string): Promise<string> {
+async function uploadProfileImage(userId: number, dataUrl: string): Promise<string> {
   const { buffer, contentType, ext } = parseDataUrl(dataUrl);
-  const key = `profile-images/user-${userId}-${Date.now()}.${ext}`;
+  const filename = `user-${userId}-${Date.now()}.${ext}`;
 
-  await s3.send(
-    new PutObjectCommand({
-      Bucket: S3_BUCKET,
-      Key: key,
-      Body: buffer,
-      ContentType: contentType,
-    }),
-  );
+  if (process.env.AWS_ACCESS_KEY_ID) {
+    const key = `profile-images/${filename}`;
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: S3_BUCKET,
+        Key: key,
+        Body: buffer,
+        ContentType: contentType,
+      }),
+    );
+    return `https://${S3_BUCKET}.s3.${S3_REGION}.amazonaws.com/${key}`;
+  }
 
-  // Standard public URL pattern; adjust if you use a CDN or different endpoint
-  return `https://${S3_BUCKET}.s3.${S3_REGION}.amazonaws.com/${key}`;
+  // No AWS credentials: save locally and return URL for our API to serve
+  const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const filePath = path.join(PROFILE_IMAGES_DIR, safeName);
+  fs.writeFileSync(filePath, buffer);
+  return `${API_BASE}/api/profile-images/${safeName}`;
+}
+
+/** Upload a lead file to S3; returns public URL or null if S3 not configured. */
+async function uploadLeadFileToS3(leadId: number, filePath: string, originalName: string, mimeType?: string): Promise<string | null> {
+  if (!process.env.AWS_ACCESS_KEY_ID) return null;
+  try {
+    const buf = fs.readFileSync(filePath);
+    const safe = (originalName || path.basename(filePath)).replace(/[^a-zA-Z0-9._-]/g, "_");
+    const key = `lead-uploads/lead-${leadId}-${Date.now()}-${safe}`;
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: S3_BUCKET,
+        Key: key,
+        Body: buf,
+        ContentType: mimeType || "application/octet-stream",
+      }),
+    );
+    return `https://${S3_BUCKET}.s3.${S3_REGION}.amazonaws.com/${key}`;
+  } catch (err) {
+    console.error("uploadLeadFileToS3 error", err);
+    return null;
+  }
 }
 
 const ADMIN_EMAIL = "admin@hubinterior.com";
@@ -184,6 +218,26 @@ async function initDb() {
       );
       if ((colRows as any[]).length === 0) {
         await conn.query("ALTER TABLE lead_uploads ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'pending'");
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      const [typeCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_uploads' AND COLUMN_NAME = 'upload_type'"
+      );
+      if ((typeCol as any[]).length === 0) {
+        await conn.query("ALTER TABLE lead_uploads ADD COLUMN upload_type VARCHAR(20) NULL");
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      const [s3Col] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_uploads' AND COLUMN_NAME = 's3_url'"
+      );
+      if ((s3Col as any[]).length === 0) {
+        await conn.query("ALTER TABLE lead_uploads ADD COLUMN s3_url TEXT NULL");
       }
     } catch {
       // ignore
@@ -405,8 +459,8 @@ app.put("/api/auth/profile-image", async (req: Request, res: Response) => {
       return res.status(400).json({ message: "image is required" });
     }
 
-    // Upload to S3 and store only the URL in DB
-    const url = await uploadProfileImageToS3(user.id, image);
+    // Upload to S3 (or local disk when AWS not configured) and store URL in DB
+    const url = await uploadProfileImage(user.id, image);
 
     await pool.query("UPDATE users SET profileImage = ? WHERE id = ?", [
       url,
@@ -424,6 +478,19 @@ app.put("/api/auth/profile-image", async (req: Request, res: Response) => {
       .status(500)
       .json({ message: "Failed to update profile image" });
   }
+});
+
+// Serve local profile images (when S3 is not configured)
+app.get("/api/profile-images/:filename", (req: Request, res: Response) => {
+  const raw = Array.isArray(req.params.filename) ? req.params.filename[0] : (req.params.filename ?? "");
+  const filename = path.basename(String(raw)).replace(/[^a-zA-Z0-9._-]/g, "_");
+  if (!filename) return res.status(400).send("Invalid filename");
+  const resolved = path.resolve(PROFILE_IMAGES_DIR, filename);
+  const dirResolved = path.resolve(PROFILE_IMAGES_DIR);
+  if (!resolved.startsWith(dirResolved) || !fs.existsSync(resolved)) {
+    return res.status(404).send("Not found");
+  }
+  res.sendFile(resolved);
 });
 
 // Admin: create MMT Manager user (POST only; GET returns 405 so you can confirm route is loaded)
@@ -516,6 +583,217 @@ app.all("/api/auth/register-mmt-executive", async (req: Request, res: Response) 
     }
     console.error("register-mmt-executive error", err);
     return res.status(500).json({ message: "Failed to register MMT Executive" });
+  }
+});
+
+// Admin: create TDM (Territorial Design Manager)
+app.all("/api/auth/create-tdm", async (req: Request, res: Response) => {
+  if (req.method !== "POST") return res.status(405).json({ message: "Use POST" });
+  try {
+    const admin = await getUserFromSession(req);
+    if (!admin) return res.status(401).json({ message: "Unauthorized" });
+    if (admin.role !== "admin") return res.status(403).json({ message: "Only admin can create TDM" });
+    const { email, password, name, phone } = req.body || {};
+    const normalized = (email || "").trim().toLowerCase();
+    if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
+    if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
+    const displayName = (name || normalized).trim() || normalized;
+    const phoneVal = phone != null ? String(phone).trim() : null;
+    const [result] = await pool.query(
+      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "territorial_design_manager", phoneVal || null],
+    );
+    const insertId = (result as any).insertId;
+    return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "territorial_design_manager" } });
+  } catch (err: any) {
+    if (err?.code === "ER_DUP_ENTRY") return res.status(400).json({ message: "A user with this email already exists" });
+    console.error("create-tdm error", err);
+    return res.status(500).json({ message: "Failed to create Territorial Design Manager" });
+  }
+});
+
+// Admin: create Admin
+app.all("/api/auth/create-admin", async (req: Request, res: Response) => {
+  if (req.method !== "POST") return res.status(405).json({ message: "Use POST" });
+  try {
+    const admin = await getUserFromSession(req);
+    if (!admin) return res.status(401).json({ message: "Unauthorized" });
+    if (admin.role !== "admin") return res.status(403).json({ message: "Only admin can create Admin" });
+    const { email, password, name, phone } = req.body || {};
+    const normalized = (email || "").trim().toLowerCase();
+    if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
+    if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
+    const displayName = (name || normalized).trim() || normalized;
+    const phoneVal = phone != null ? String(phone).trim() : null;
+    const [result] = await pool.query(
+      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "admin", phoneVal || null],
+    );
+    const insertId = (result as any).insertId;
+    return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "admin" } });
+  } catch (err: any) {
+    if (err?.code === "ER_DUP_ENTRY") return res.status(400).json({ message: "A user with this email already exists" });
+    console.error("create-admin error", err);
+    return res.status(500).json({ message: "Failed to create Admin" });
+  }
+});
+
+// Admin: create DQC Manager
+app.all("/api/auth/create-dqc-manager", async (req: Request, res: Response) => {
+  if (req.method !== "POST") return res.status(405).json({ message: "Use POST" });
+  try {
+    const admin = await getUserFromSession(req);
+    if (!admin) return res.status(401).json({ message: "Unauthorized" });
+    if (admin.role !== "admin") return res.status(403).json({ message: "Only admin can create DQC Manager" });
+    const { email, password, name, phone } = req.body || {};
+    const normalized = (email || "").trim().toLowerCase();
+    if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
+    if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
+    const displayName = (name || normalized).trim() || normalized;
+    const phoneVal = phone != null ? String(phone).trim() : null;
+    const [result] = await pool.query(
+      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "dqc_manager", phoneVal || null],
+    );
+    const insertId = (result as any).insertId;
+    return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "dqc_manager" } });
+  } catch (err: any) {
+    if (err?.code === "ER_DUP_ENTRY") return res.status(400).json({ message: "A user with this email already exists" });
+    console.error("create-dqc-manager error", err);
+    return res.status(500).json({ message: "Failed to create DQC Manager" });
+  }
+});
+
+// Admin: create Escalation Manager
+app.all("/api/auth/create-escalation-manager", async (req: Request, res: Response) => {
+  if (req.method !== "POST") return res.status(405).json({ message: "Use POST" });
+  try {
+    const admin = await getUserFromSession(req);
+    if (!admin) return res.status(401).json({ message: "Unauthorized" });
+    if (admin.role !== "admin") return res.status(403).json({ message: "Only admin can create Escalation Manager" });
+    const { email, password, name, phone } = req.body || {};
+    const normalized = (email || "").trim().toLowerCase();
+    if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
+    if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
+    const displayName = (name || normalized).trim() || normalized;
+    const phoneVal = phone != null ? String(phone).trim() : null;
+    const [result] = await pool.query(
+      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "escalation_manager", phoneVal || null],
+    );
+    const insertId = (result as any).insertId;
+    return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "escalation_manager" } });
+  } catch (err: any) {
+    if (err?.code === "ER_DUP_ENTRY") return res.status(400).json({ message: "A user with this email already exists" });
+    console.error("create-escalation-manager error", err);
+    return res.status(500).json({ message: "Failed to create Escalation Manager" });
+  }
+});
+
+// Admin: create Project Manager
+app.all("/api/auth/create-project-manager", async (req: Request, res: Response) => {
+  if (req.method !== "POST") return res.status(405).json({ message: "Use POST" });
+  try {
+    const admin = await getUserFromSession(req);
+    if (!admin) return res.status(401).json({ message: "Unauthorized" });
+    if (admin.role !== "admin") return res.status(403).json({ message: "Only admin can create Project Manager" });
+    const { email, password, name, phone } = req.body || {};
+    const normalized = (email || "").trim().toLowerCase();
+    if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
+    if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
+    const displayName = (name || normalized).trim() || normalized;
+    const phoneVal = phone != null ? String(phone).trim() : null;
+    const [result] = await pool.query(
+      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "project_manager", phoneVal || null],
+    );
+    const insertId = (result as any).insertId;
+    return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "project_manager" } });
+  } catch (err: any) {
+    if (err?.code === "ER_DUP_ENTRY") return res.status(400).json({ message: "A user with this email already exists" });
+    console.error("create-project-manager error", err);
+    return res.status(500).json({ message: "Failed to create Project Manager" });
+  }
+});
+
+// Admin: create Finance
+app.all("/api/auth/create-finance", async (req: Request, res: Response) => {
+  if (req.method !== "POST") return res.status(405).json({ message: "Use POST" });
+  try {
+    const admin = await getUserFromSession(req);
+    if (!admin) return res.status(401).json({ message: "Unauthorized" });
+    if (admin.role !== "admin") return res.status(403).json({ message: "Only admin can create Finance" });
+    const { email, password, name, phone } = req.body || {};
+    const normalized = (email || "").trim().toLowerCase();
+    if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
+    if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
+    const displayName = (name || normalized).trim() || normalized;
+    const phoneVal = phone != null ? String(phone).trim() : null;
+    const [result] = await pool.query(
+      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "finance", phoneVal || null],
+    );
+    const insertId = (result as any).insertId;
+    return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "finance" } });
+  } catch (err: any) {
+    if (err?.code === "ER_DUP_ENTRY") return res.status(400).json({ message: "A user with this email already exists" });
+    console.error("create-finance error", err);
+    return res.status(500).json({ message: "Failed to create Finance" });
+  }
+});
+
+// DQC Manager or Admin: register DQE (Design Quality Executive)
+app.all("/api/auth/register-dqe", async (req: Request, res: Response) => {
+  if (req.method !== "POST") return res.status(405).json({ message: "Use POST" });
+  try {
+    const manager = await getUserFromSession(req);
+    if (!manager) return res.status(401).json({ message: "Unauthorized" });
+    const role = (manager.role || "").toLowerCase();
+    if (role !== "dqc_manager" && role !== "admin") return res.status(403).json({ message: "Only DQC Manager or Admin can register DQE" });
+    const { email, password, name, phone } = req.body || {};
+    const normalized = (email || "").trim().toLowerCase();
+    if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
+    if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
+    const displayName = (name || normalized).trim() || normalized;
+    const phoneVal = phone != null ? String(phone).trim() : null;
+    const [result] = await pool.query(
+      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "dqe", phoneVal || null],
+    );
+    const insertId = (result as any).insertId;
+    return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "dqe" } });
+  } catch (err: any) {
+    if (err?.code === "ER_DUP_ENTRY") return res.status(400).json({ message: "A user with this email already exists" });
+    console.error("register-dqe error", err);
+    return res.status(500).json({ message: "Failed to register DQE" });
+  }
+});
+
+// TDM or Admin: register designer or design_manager
+app.all("/api/auth/register", async (req: Request, res: Response) => {
+  if (req.method !== "POST") return res.status(405).json({ message: "Use POST" });
+  try {
+    const current = await getUserFromSession(req);
+    if (!current) return res.status(401).json({ message: "Unauthorized" });
+    const role = (current.role || "").toLowerCase();
+    if (role !== "territorial_design_manager" && role !== "admin") return res.status(403).json({ message: "Only TDM or Admin can register designers" });
+    const { email, password, name, phone, role: bodyRole } = req.body || {};
+    const normalized = (email || "").trim().toLowerCase();
+    if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
+    if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
+    const targetRole = bodyRole === "design_manager" ? "design_manager" : "designer";
+    const displayName = (name || normalized).trim() || normalized;
+    const phoneVal = phone != null ? String(phone).trim() : null;
+    const [result] = await pool.query(
+      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, targetRole, phoneVal || null],
+    );
+    const insertId = (result as any).insertId;
+    return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: targetRole } });
+  } catch (err: any) {
+    if (err?.code === "ER_DUP_ENTRY") return res.status(400).json({ message: "A user with this email already exists" });
+    console.error("register (TDM) error", err);
+    return res.status(500).json({ message: "Registration failed" });
   }
 });
 
@@ -901,11 +1179,15 @@ app.post(
       const uploaderId = user?.id ?? null;
       const role = (user?.role ?? "").toLowerCase();
       const status = role === "mmt_manager" ? "approved" : "pending";
-
+      const now = new Date();
+      let s3Url: string | null = null;
+      if (process.env.AWS_ACCESS_KEY_ID) {
+        s3Url = await uploadLeadFileToS3(leadId, file.path, file.originalname, file.mimetype);
+      }
       await pool.query(
         `INSERT INTO lead_uploads
-         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, s3_url)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           leadId,
           uploaderId,
@@ -914,8 +1196,9 @@ app.post(
           file.path,
           file.mimetype,
           file.size,
-          new Date(),
+          now,
           status,
+          s3Url,
         ],
       );
 
@@ -953,9 +1236,9 @@ app.get("/api/leads/:id/uploads", async (req: Request, res: Response) => {
 
     const [rows] = await pool.query(
       onlyApproved
-        ? `SELECT id, original_name as originalName, uploaded_at as uploadedAt, status
+        ? `SELECT id, original_name as originalName, uploaded_at as uploadedAt, status, s3_url as s3Url
            FROM lead_uploads WHERE lead_id = ? AND status = 'approved' ORDER BY uploaded_at DESC`
-        : `SELECT id, original_name as originalName, uploaded_at as uploadedAt, status
+        : `SELECT id, original_name as originalName, uploaded_at as uploadedAt, status, s3_url as s3Url
            FROM lead_uploads WHERE lead_id = ? ORDER BY uploaded_at DESC`,
       [leadId],
     );
@@ -1035,7 +1318,7 @@ app.get("/api/leads/:leadId/uploads/:uploadId/download", async (req: Request, re
     const role = (user?.role ?? "").toLowerCase();
     const isMmt = role === "mmt_manager" || role === "mmt_executive";
     const [rows] = await pool.query(
-      `SELECT stored_path as storedPath, original_name as originalName, status
+      `SELECT stored_path as storedPath, original_name as originalName, status, s3_url as s3Url
        FROM lead_uploads WHERE id = ? AND lead_id = ?`,
       [uploadId, leadId],
     );
@@ -1043,6 +1326,7 @@ app.get("/api/leads/:leadId/uploads/:uploadId/download", async (req: Request, re
     if (!row) return res.status(404).json({ message: "Not found" });
     if (!isMmt && row.status !== "approved")
       return res.status(403).json({ message: "Only approved uploads are available" });
+    if (row.s3Url) return res.redirect(row.s3Url);
     return res.download(row.storedPath, row.originalName);
   } catch (err) {
     console.error("download upload error", err);
@@ -1100,13 +1384,16 @@ app.get("/api/leads/:leadId/uploads/:uploadId/file", async (req: Request, res: R
     const role = (user?.role ?? "").toLowerCase();
     const isMmt = role === "mmt_manager" || role === "mmt_executive";
     const [rows] = await pool.query(
-      `SELECT stored_path as storedPath, original_name as originalName, status FROM lead_uploads WHERE id = ? AND lead_id = ?`,
+      `SELECT stored_path as storedPath, original_name as originalName, status, s3_url as s3Url FROM lead_uploads WHERE id = ? AND lead_id = ?`,
       [uploadId, leadId],
     );
     const row = (rows as any[])[0];
-    if (!row || !fs.existsSync(row.storedPath)) return res.status(404).json({ message: "Not found" });
+    if (!row) return res.status(404).json({ message: "Not found" });
     if (!isMmt && row.status !== "approved")
       return res.status(403).json({ message: "Only approved uploads are available" });
+    const isSingleFile = filePath === row.originalName || filePath === path.basename(row.storedPath);
+    if (row.s3Url && isSingleFile) return res.redirect(row.s3Url);
+    if (!fs.existsSync(row.storedPath)) return res.status(404).json({ message: "Not found" });
     const ext = path.extname(filePath).toLowerCase();
     const mime: Record<string, string> = {
       ".pdf": "application/pdf",
@@ -1158,6 +1445,89 @@ app.get("/api/leads/:leadId/uploads/:uploadId/file", async (req: Request, res: R
   } catch (err) {
     console.error("file serve error", err);
     return res.status(500).json({ message: "Failed to read file" });
+  }
+});
+
+// DQC Submission: upload drawing + quotation; stored in lead_uploads with upload_type, status approved (shows in Files + DQC approval)
+app.post(
+  "/api/leads/:id/dqc-submission",
+  upload.fields([{ name: "drawing", maxCount: 1 }, { name: "quotation", maxCount: 1 }]),
+  async (req: Request, res: Response) => {
+    const leadId = Number(req.params.id);
+    if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+    try {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const role = (user?.role ?? "").toLowerCase();
+      const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
+      if (!allowed.includes(role)) return res.status(403).json({ message: "Not allowed to submit DQC" });
+      const files = (req as any).files as { drawing?: Express.Multer.File[]; quotation?: Express.Multer.File[] };
+      const drawingFile = files?.drawing?.[0];
+      const quotationFile = files?.quotation?.[0];
+      if (!drawingFile || !quotationFile) {
+        return res.status(400).json({ message: "Both drawing and quotation files are required" });
+      }
+      const now = new Date();
+      let drawingS3: string | null = null;
+      let quotationS3: string | null = null;
+      if (process.env.AWS_ACCESS_KEY_ID) {
+        drawingS3 = await uploadLeadFileToS3(leadId, drawingFile.path, drawingFile.originalname, drawingFile.mimetype);
+        quotationS3 = await uploadLeadFileToS3(leadId, quotationFile.path, quotationFile.originalname, quotationFile.mimetype);
+      }
+      await pool.query(
+        `INSERT INTO lead_uploads
+         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc_drawing', ?)`,
+        [leadId, user.id, drawingFile.originalname, drawingFile.filename, drawingFile.path, drawingFile.mimetype, drawingFile.size, now, drawingS3],
+      );
+      await pool.query(
+        `INSERT INTO lead_uploads
+         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc_quotation', ?)`,
+        [leadId, user.id, quotationFile.originalname, quotationFile.filename, quotationFile.path, quotationFile.mimetype, quotationFile.size, now, quotationS3],
+      );
+      const ev = {
+        id: `dqc-submission-${Date.now()}`,
+        type: "file_upload",
+        taskName: "DQC 1 submission - dwg + quotation",
+        milestoneName: "DQC1",
+        timestamp: now.toISOString(),
+        description: `DQC submission: ${drawingFile.originalname}, ${quotationFile.originalname}`,
+        user: { name: user.name ?? "User" },
+        details: { kind: "dqc_submission", drawing: drawingFile.originalname, quotation: quotationFile.originalname },
+      };
+      await addLeadHistoryEvent(leadId, ev);
+      return res.status(201).json({ ok: true });
+    } catch (err) {
+      console.error("dqc-submission error", err);
+      return res.status(500).json({ message: "Failed to submit DQC files" });
+    }
+  },
+);
+
+// Get latest DQC submission files for this lead (for DQC approval to auto-load)
+app.get("/api/leads/:id/dqc-submission-files", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const [rows] = await pool.query(
+      `SELECT id, original_name as originalName, upload_type as uploadType
+       FROM lead_uploads WHERE lead_id = ? AND upload_type IN ('dqc_drawing', 'dqc_quotation') AND status = 'approved'
+       ORDER BY id DESC`,
+      [leadId],
+    );
+    const list = (rows as any[]) || [];
+    const drawing = list.find((r: any) => r.uploadType === "dqc_drawing");
+    const quotation = list.find((r: any) => r.uploadType === "dqc_quotation");
+    return res.json({
+      drawing: drawing ? { id: drawing.id, originalName: drawing.originalName } : null,
+      quotation: quotation ? { id: quotation.id, originalName: quotation.originalName } : null,
+    });
+  } catch (err) {
+    console.error("dqc-submission-files error", err);
+    return res.status(500).json({ message: "Failed to load DQC submission files" });
   }
 });
 
@@ -1231,11 +1601,12 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
   }
 });
 
-// Designers for Sales Closure form
+// Designers for Sales Closure form (from users with role designer or design_manager)
 app.get("/api/designers", async (_req: Request, res: Response) => {
   try {
     const [rows] = await pool.query(
-      "SELECT id, name, lead_name as leadName FROM designers ORDER BY name ASC",
+      `SELECT id, name, COALESCE(name, '') as leadName FROM users
+       WHERE role IN ('designer', 'design_manager') ORDER BY name ASC`,
     );
     res.json(rows);
   } catch (err) {
@@ -1359,5 +1730,5 @@ app.post("/api/leads/:id/resume", async (req: Request, res: Response) => {
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
-  console.log("POST /api/auth/create-mmt-manager and POST /api/auth/register-mmt-executive are registered");
+  console.log("Auth create/register routes: create-mmt-manager, register-mmt-executive, create-tdm, create-admin, create-dqc-manager, create-escalation-manager, create-project-manager, create-finance, register-dqe, register (TDM designer/design_manager)");
 });
