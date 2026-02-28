@@ -7,16 +7,22 @@ const API = 'http://localhost:3001';
 type MmtExecutive = { id: number; name: string; email: string };
 
 type Props = {
+    leadId: number | null;
     sessionId: string | null;
     onSubmit?: () => void;
 };
 
 /**
  * D1 Site Measurement popup – measurement date/time, assignment (Measurement Executive dropdown), submit.
+ * On submit, creates a D1 assignment so only that MMT executive will see this lead.
  */
-export default function PopupD1Measurement({ sessionId, onSubmit }: Props) {
+export default function PopupD1Measurement({ leadId, sessionId, onSubmit }: Props) {
     const [executives, setExecutives] = useState<MmtExecutive[]>([]);
     const [selectedId, setSelectedId] = useState<string>('');
+    const [measurementDate, setMeasurementDate] = useState<string>('');
+    const [measurementTime, setMeasurementTime] = useState<string>('');
+    const [submitting, setSubmitting] = useState(false);
+    const [submitError, setSubmitError] = useState<string | null>(null);
     const [loaded, setLoaded] = useState(false);
 
     useEffect(() => {
@@ -46,11 +52,11 @@ export default function PopupD1Measurement({ sessionId, onSubmit }: Props) {
             <div className="flex items-center justify-between gap-2 px-6 py-2">
                 <div>
                     <div className="font-bold text-sm">Measurement Date</div>
-                    <input type="date" className="w-[250px] border border-gray-300 rounded-md p-2 mt-2" />
+                    <input type="date" className="w-[250px] border border-gray-300 rounded-md p-2 mt-2" value={measurementDate} onChange={(e) => setMeasurementDate(e.target.value)} />
                 </div>
                 <div>
                     <div className="font-bold text-sm">Measurement Time</div>
-                    <input type="time" className="w-[250px] border border-gray-300 rounded-md p-2 mt-2" />
+                    <input type="time" className="w-[250px] border border-gray-300 rounded-md p-2 mt-2" value={measurementTime} onChange={(e) => setMeasurementTime(e.target.value)} />
                 </div>
             </div>
             <div className="text-[12px] text-gray-400 px-6">Select a future date only</div>
@@ -105,9 +111,12 @@ export default function PopupD1Measurement({ sessionId, onSubmit }: Props) {
                     </div>
                     <div className="text-[12px] text-gray-500 italic p-2 pl-4">The customer will be notified automatically via SMS and Email once the measurement request is submitted</div>
                 </div>
+                {submitError && <p className="text-sm text-red-600 px-6 mt-2">{submitError}</p>}
                 <div className="bg-gray-100 w-full h-[80px] rounded-b-2xl">
                     <div className="h-[1px] bg-gray-200 w-full mt-10" />
-                    <button type="button" onClick={onSubmit} className="mt-5 ml-98 bg-blue-500 rounded-md w-[150px] py-1.5 h-[36px] text-white text-sm font-bold text-center items-end">Submit Request</button>
+                    <button type="button" onClick={handleSubmit} disabled={submitting || !selectedId} className="mt-5 ml-98 bg-blue-500 rounded-md w-[150px] py-1.5 h-[36px] text-white text-sm font-bold text-center items-end disabled:opacity-60">
+                        {submitting ? 'Submitting…' : 'Submit Request'}
+                    </button>
                 </div>
             </div>
         </>

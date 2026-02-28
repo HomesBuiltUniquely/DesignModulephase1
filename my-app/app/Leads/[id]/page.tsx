@@ -609,7 +609,7 @@ export default function ProjectDetailPage() {
                 <TaskModal context={popupContext} onClose={closePopup}>
                     {/* ---------- Milestone 0: D1 SITE MEASUREMENT – D1 popup only for "D1 for MMT request" ---------- */}
                     {popupContext.milestoneIndex === 0 && popupContext.taskName === 'D1 for MMT request' && (
-                        <PopupD1Measurement sessionId={sessionId} onSubmit={() => { recordTaskComplete(0, 'D1 for MMT request'); closePopup(); }} />
+                        <PopupD1Measurement leadId={projectId} sessionId={sessionId} onSubmit={() => { recordTaskComplete(0, 'D1 for MMT request'); closePopup(); }} />
                     )}
                     {popupContext.milestoneIndex === 0 && popupContext.taskName === 'Group Description' && (
                         <PopupGroupDescription

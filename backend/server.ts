@@ -197,6 +197,18 @@ async function initDb() {
       );
     `);
 
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS lead_d1_assignments (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        lead_id INT NOT NULL,
+        assigned_to_user_id INT NOT NULL,
+        measurement_date DATE,
+        measurement_time VARCHAR(20),
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        created_at DATETIME NOT NULL
+      );
+    `);
+
     // seed admin
     const [rows] = await conn.query(
       "SELECT id FROM users WHERE email = ?",
@@ -1149,7 +1161,29 @@ app.get("/api/leads/:leadId/uploads/:uploadId/file", async (req: Request, res: R
   }
 });
 
-// Dashboard: list all leads (sales closure submissions)
+// Submit D1 measurement request – assigns an MMT executive to the lead (only they will see it)
+app.post("/api/leads/:id/d1-request", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const { measurementExecutiveId, measurementDate, measurementTime } = req.body || {};
+    const execId = Number(measurementExecutiveId);
+    if (!execId) return res.status(400).json({ message: "measurementExecutiveId is required" });
+    await pool.query(
+      `INSERT INTO lead_d1_assignments (lead_id, assigned_to_user_id, measurement_date, measurement_time, status, created_at)
+       VALUES (?, ?, ?, ?, 'pending', ?)`,
+      [leadId, execId, measurementDate || null, measurementTime || null, new Date()],
+    );
+    return res.status(201).json({ ok: true });
+  } catch (err) {
+    console.error("d1-request error", err);
+    return res.status(500).json({ message: "Failed to submit request" });
+  }
+});
+
+// Dashboard: list all leads (sales closure submissions); MMT executives only see leads they're assigned to
 app.get("/api/leads/queue", async (req: Request, res: Response) => {
   const now = new Date();
   try {
@@ -1157,6 +1191,26 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
       "UPDATE leads SET is_on_hold = 0, resume_at = NULL, update_at = ? WHERE is_on_hold = 1 AND resume_at IS NOT NULL AND resume_at <= ?",
       [now, now],
     );
+
+    const user = await getUserFromSession(req);
+    const role = (user?.role ?? "").toLowerCase();
+
+    if (role === "mmt_executive" && user) {
+      const userId = user.id;
+      if (!userId) return res.json([]);
+      const [rows] = await pool.query(
+        `SELECT l.id, l.pid, l.project_name as projectName, l.project_stage as projectStage,
+                l.contact_no as contactNo, l.client_email as clientEmail,
+                l.is_on_hold as isOnHold, l.resume_at as resumeAt,
+                l.create_at as createAt, l.update_at as updateAt
+         FROM leads l
+         INNER JOIN lead_d1_assignments a ON a.lead_id = l.id AND a.assigned_to_user_id = ?
+         ORDER BY l.id ASC`,
+        [userId],
+      );
+      const list = (rows as any[]).map((r) => ({ ...r, isOnHold: !!r.isOnHold }));
+      return res.json(list);
+    }
 
     const [rows] = await pool.query(
       `SELECT id, pid, project_name as projectName, project_stage as projectStage,
@@ -1190,12 +1244,15 @@ app.get("/api/designers", async (_req: Request, res: Response) => {
   }
 });
 
-// Lead detail by id (for /Leads/[id])
+// Lead detail by id (for /Leads/[id]); MMT executives only get leads they're assigned to
 app.get("/api/leads/:id", async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
 
   try {
+    const user = await getUserFromSession(req);
+    const role = (user?.role ?? "").toLowerCase();
+
     const [rows] = await pool.query(
       `SELECT id, pid, project_name as projectName, project_stage as projectStage,
               contact_no as contactNo, client_email as clientEmail,
@@ -1207,6 +1264,16 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
     );
     const row = (rows as any[])[0];
     if (!row) return res.status(404).json({ message: "Lead not found" });
+
+    if (role === "mmt_executive" && user) {
+      const [assignRows] = await pool.query(
+        "SELECT 1 FROM lead_d1_assignments WHERE lead_id = ? AND assigned_to_user_id = ?",
+        [id, user.id],
+      );
+      if ((assignRows as any[]).length === 0) {
+        return res.status(404).json({ message: "Lead not found" });
+      }
+    }
 
     // auto-resume if date is reached
     if (row.isOnHold && row.resumeAt && new Date(row.resumeAt) <= new Date()) {
