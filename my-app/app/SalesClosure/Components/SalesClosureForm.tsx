@@ -1,6 +1,7 @@
 "use client";
 import { useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
+import { getApiBase } from "@/app/lib/apiBase";
 import { z } from "zod";
 import { FetchData, SalesClosureFormType } from "./Type";
 import { salesClosureSchema } from "./Type";
@@ -31,7 +32,7 @@ export default function SalesClosureForm() {
   const [designers, setDesigners] = useState<Designer[]>([]);
 
   useEffect(() => {
-    fetch("http://localhost:3001/api/designers")
+    fetch(`${getApiBase()}/api/designers`)
       .then((res) => res.json())
       .then((data: Designer[]) => {
         if (Array.isArray(data)) setDesigners(data);
@@ -137,7 +138,7 @@ export default function SalesClosureForm() {
     console.log("Sending payload:", finalPayload);
 
     try {
-      const res = await fetch("http://localhost:3001/api/sales-closure", {
+      const res = await fetch(`${getApiBase()}/api/sales-closure`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(finalPayload),

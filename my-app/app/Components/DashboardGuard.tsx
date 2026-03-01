@@ -46,11 +46,29 @@ export default function DashboardGuard() {
       <header className="bg-white border-b border-gray-200 px-4 py-2 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <a href="/" className="text-green-700 font-semibold">Dashboard</a>
-          {(user.role === 'territorial_design_manager' || user.role === 'dqc_manager' || user.role === 'mmt_manager') && (
+          {(user.role === 'territorial_design_manager' || user.role === 'dqc_manager' || user.role === 'mmt_manager' || user.role === 'mmt_executive' || user.role === 'finance' || user.role === 'admin') && (
             <>
               {user.role === 'territorial_design_manager' && <a href="/tdm/register" className="text-gray-600 hover:text-gray-900 text-sm">Register DM / Designer</a>}
               {user.role === 'dqc_manager' && <a href="/dqc-manager/register" className="text-gray-600 hover:text-gray-900 text-sm">Register DQE</a>}
-              {user.role === 'mmt_manager' && <a href="/mmt-manager/register" className="text-gray-600 hover:text-gray-900 text-sm">Register MMT Executive</a>}
+              {(user.role === 'finance' || user.role === 'admin') && (
+                <>
+                  <a href="/finance" className="text-gray-600 hover:text-gray-900 text-sm">10% Payment</a>
+                  <a href="/finance/40" className="text-gray-600 hover:text-gray-900 text-sm">40% Payment</a>
+                </>
+              )}
+              {user.role === 'mmt_manager' && (
+                <>
+                  <a href="/mmt-manager/register" className="text-gray-600 hover:text-gray-900 text-sm">Register MMT Executive</a>
+                  <a href="/mmt" className="text-gray-600 hover:text-gray-900 text-sm">D1 Uploads</a>
+                  <a href="/d2-uploads" className="text-gray-600 hover:text-gray-900 text-sm">D2 Uploads</a>
+                </>
+              )}
+              {user.role === 'mmt_executive' && (
+                <>
+                  <a href="/mmt" className="text-gray-600 hover:text-gray-900 text-sm">D1 Uploads</a>
+                  <a href="/d2-uploads" className="text-gray-600 hover:text-gray-900 text-sm">D2 Uploads</a>
+                </>
+              )}
             </>
           )}
         </div>

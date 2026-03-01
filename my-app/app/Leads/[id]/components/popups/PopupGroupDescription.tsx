@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from 'react';
 
-const API = 'http://localhost:3001';
+import { getApiBase } from '@/app/lib/apiBase';
+const API = getApiBase();
 
 function toWhatsAppNumber(phone: string): string {
   const digits = (phone || '').replace(/\D/g, '');

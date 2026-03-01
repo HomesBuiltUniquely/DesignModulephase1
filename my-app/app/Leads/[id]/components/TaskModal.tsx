@@ -12,10 +12,13 @@ type Props = {
  * Modal wrapper for task popups. Handles backdrop, size (normal vs DQC 1 approval), and optional header.
  */
 export default function TaskModal({ context, onClose, children }: Props) {
-  const isDqc1Approval =
+  const isDqcApproval =
     context.taskName === "DQC 1 approval" ||
-    context.taskName === "Design sign off";
-  const isDqcSubmission = context.taskName === "DQC 1 submission - dwg + quotation";
+    context.taskName === "DQC 2 approval" ||
+    context.taskName === "DQC 2 approval ";
+  const isDqcSubmission =
+    context.taskName === "DQC 1 submission - dwg + quotation" ||
+    context.taskName === "DQC 2 submission";
   const modalTitle =
     context.milestoneIndex === 1 && context.taskName === "meeting completed"
       ? "Meeting Scheduled"
@@ -29,10 +32,10 @@ export default function TaskModal({ context, onClose, children }: Props) {
       onClick={onClose}
     >
       <div
-        className={`bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden ${isDqc1Approval ? "xl:max-w-[95vw] xl:w-full xl:max-h-[90vh]" : isDqcSubmission ? "xl:max-h-[85vh] xl:w-[42rem]" : "xl:max-h-[85vh] xl:w-[40vw]"}`}
+        className={`bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden ${isDqcApproval ? "xl:max-w-[95vw] xl:w-full xl:max-h-[90vh]" : isDqcSubmission ? "xl:max-h-[85vh] xl:w-[42rem]" : "xl:max-h-[85vh] xl:w-[40vw]"}`}
         onClick={(e) => e.stopPropagation()}
       >
-        {!isDqc1Approval && !isDqcSubmission && (
+        {!isDqcApproval && !isDqcSubmission && (
           <div className="flex justify-between items-center pt-6 px-6 pb-2 flex-shrink-0">
             <h3 className="text-lg font-bold text-gray-900">{modalTitle}</h3>
             <button
@@ -44,7 +47,7 @@ export default function TaskModal({ context, onClose, children }: Props) {
           </div>
         )}
         <div
-          className={`flex-1 overflow-y-auto min-h-0 ${isDqc1Approval ? "flex flex-col" : ""}`}
+          className={`flex-1 overflow-y-auto min-h-0 ${isDqcApproval ? "flex flex-col" : ""}`}
         >
           {children}
         </div>

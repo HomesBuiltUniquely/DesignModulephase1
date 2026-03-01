@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { LeadshipTypes } from "./Types/Types";
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../auth/AuthContext";
+import { getApiBase } from "@/app/lib/apiBase";
 
 // Stage column: only Active or Inactive (status)
 function getStatusDisplay(stage: string): "Active" | "Inactive" {
@@ -47,32 +48,71 @@ function formatDateTime(value: string): string {
     return `${day}/${month}/${year} ${hours}:${minutes} ${ampm}`;
 }
 
-const API = "http://localhost:3001";
+const API = getApiBase();
+
+type DqcQueueItem = { id: number; projectName: string; projectStage: string; dqcStatus: "Pending DQC" | "Approved DQC" };
 
 export default function Dashboard() {
     const { user, sessionId } = useAuth();
     const [projects, setProjects] = useState<LeadshipTypes[]>([]);
+    const [dqcProjects, setDqcProjects] = useState<DqcQueueItem[]>([]);
     const [uploadingId, setUploadingId] = useState<number | null>(null);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const targetLeadRef = useRef<number | null>(null);
 
     const isMmtUser = ["mmt_manager", "mmt_executive"].includes((user?.role || "").toLowerCase());
+    const isDqcUser = ["dqc_manager", "dqe"].includes((user?.role || "").toLowerCase());
+    const isFinanceUser = (user?.role || "").toLowerCase() === "finance";
 
-    // Fetch leads queue (includes seed data + new leads from sales closure form)
+    // Finance: limited access – 10% and 40% payment upload/approve only, no full project list
+    if (isFinanceUser) {
+        return (
+            <div className="p-6 max-w-2xl mx-auto">
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8 text-center">
+                    <h2 className="text-xl font-bold text-gray-900 mb-2">Limited access</h2>
+                    <p className="text-gray-600 mb-6">
+                        As finance, you can only upload payment screenshots and approve 10% and 40% payments. You do not have access to the full project list or lead details.
+                    </p>
+                    <div className="flex flex-wrap items-center justify-center gap-3">
+                        <a
+                            href="/finance"
+                            className="inline-flex items-center gap-2 px-5 py-3 rounded-lg bg-green-600 text-white font-semibold hover:bg-green-700"
+                        >
+                            10% Payment
+                        </a>
+                        <a
+                            href="/finance/40"
+                            className="inline-flex items-center gap-2 px-5 py-3 rounded-lg border border-gray-300 text-gray-700 font-semibold hover:bg-gray-50"
+                        >
+                            40% Payment
+                        </a>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // Fetch leads queue (DQC users get dqc-queue; others get queue)
     useEffect(() => {
         let cancelled = false;
         const headers: Record<string, string> = {};
         if (sessionId) headers["Authorization"] = `Bearer ${sessionId}`;
-        fetch(`${API}/api/leads/queue`, { headers })
+        const url = isDqcUser ? `${API}/api/leads/dqc-queue` : `${API}/api/leads/queue`;
+        fetch(url, { headers })
             .then((res) => res.text().then((t) => { try { return t ? JSON.parse(t) : null; } catch { return null; } }))
             .then((data) => {
-                if (!cancelled && Array.isArray(data)) setProjects(data);
+                if (cancelled) return;
+                if (isDqcUser && Array.isArray(data)) setDqcProjects(data);
+                else if (!isDqcUser && Array.isArray(data)) setProjects(data);
             })
             .catch(() => {
-                if (!cancelled) setProjects([]);
+                if (!cancelled) {
+                    if (isDqcUser) setDqcProjects([]);
+                    else setProjects([]);
+                }
             });
         return () => { cancelled = true; };
-    }, [sessionId]);
+    }, [sessionId, isDqcUser]);
 
     const onUploadClick = (e: React.MouseEvent, leadId: number) => {
         e.stopPropagation();
@@ -126,10 +166,36 @@ export default function Dashboard() {
     const router = useRouter();
 
     const handleRouter = (projectId: number) => {
-        router.push(`/Leads/${projectId}`);
-    }
+        router.push(isDqcUser ? `/Leads/${projectId}?view=dqc` : `/Leads/${projectId}`);
+    };
 
     const renderContent = () => {
+        if (isDqcUser) {
+            const list = dqcProjects.filter((p, i, arr) => arr.findIndex((x) => x.id === p.id) === i);
+            return (
+                <div>
+                    {list.map((row) => (
+                        <div
+                            key={row.id}
+                            className={`xl:grid xl:grid-cols-5 xl:gap-4 xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:border-gray-300 xl:rounded-lg xl:shadow-md hover:xl:bg-green-100 xl:text-gray-900 xl:cursor-pointer xl:items-center ${(row.id % 2 === 0) ? "bg-gray-50" : "bg-gray-100"}`}
+                            onClick={() => handleRouter(row.id)}
+                        >
+                            <div className="xl:text-lg xl:font-semibold xl:text-center">{row.id}</div>
+                            <div className="xl:text-lg xl:font-semibold xl:text-left">{row.projectName}</div>
+                            <div className="xl:text-lg xl:font-semibold xl:text-center">{getStatusDisplay(row.projectStage)}</div>
+                            <div className="xl:text-center" onClick={(e) => { e.stopPropagation(); handleRouter(row.id); }}>
+                                <span className="xl:px-4 xl:py-2 xl:rounded-lg xl:bg-blue-600 xl:text-white xl:font-semibold xl:text-sm hover:xl:bg-blue-700 inline-block cursor-pointer">
+                                    Quality Check
+                                </span>
+                            </div>
+                            <div className={`xl:text-center xl:font-semibold xl:text-sm ${row.dqcStatus === "Approved DQC" ? "xl:text-green-700" : "xl:text-amber-700"}`}>
+                                {row.dqcStatus}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            );
+        }
         // Deduplicate by id so React keys are unique (API may return duplicate ids)
         const seen = new Set<number>();
         const list = filteredProjects.filter((p) => {
@@ -189,6 +255,8 @@ export default function Dashboard() {
                 <div className="xl:grid xl:grid-cols-5 xl:gap-4">
                     <div className=" xl:grid-cols-1 xl:h-screen border-r border-gray-300 xl:pt-4 xl:pl-2">
 
+                    {!isDqcUser && (
+                        <>
                     <div 
                         className="xl:flex xl:justify-between xl:items-center mb-2 xl:pr-2 xl:py-4 xl:cursor-pointer"
                         onClick={toggleDropdown}
@@ -224,20 +292,31 @@ export default function Dashboard() {
                             ))}
                         </div>
                     )}   
+                        </>
+                    )}
+                    {isDqcUser && (
+                        <div className="xl:text-lg xl:font-semibold xl:pl-2 xl:pt-4">DQC Queue</div>
+                    )}
                     </div>
                     <div className="xl:grid-cols-4 ">
-                        <div className={`xl:grid xl:gap-4 xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:border-gray-300 xl:rounded-lg xl:shadow-md xl:bg-black xl:text-white xl:text-lg xl:font-bold xl:items-center ${isMmtUser ? "xl:grid-cols-4" : "xl:grid-cols-6"}`}>
+                        <div className={`xl:grid xl:gap-4 xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:border-gray-300 xl:rounded-lg xl:shadow-md xl:bg-black xl:text-white xl:text-lg xl:font-bold xl:items-center ${isDqcUser ? "xl:grid-cols-5" : isMmtUser ? "xl:grid-cols-4" : "xl:grid-cols-6"}`}>
                             <div className="xl:text-center">ID</div>
-                            <div className="xl:text-left">Project Name</div>
+                            <div className="xl:text-left">{isDqcUser ? "Name" : "Project Name"}</div>
                             <div className="xl:text-center">Stage</div>
-                            {!isMmtUser && (
+                            {isDqcUser && (
+                                <>
+                                    <div className="xl:text-center">Quality Check</div>
+                                    <div className="xl:text-center">DQC Status</div>
+                                </>
+                            )}
+                            {!isDqcUser && !isMmtUser && (
                                 <>
                                     <div className="xl:text-center">Progress</div>
                                     <div className="xl:text-left">Created At</div>
                                     <div className="xl:text-left">Updated At</div>
                                 </>
                             )}
-                            {isMmtUser && <div className="xl:text-center">Upload</div>}
+                            {!isDqcUser && isMmtUser && <div className="xl:text-center">Upload</div>}
                         </div>
 
                         {renderContent()}

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
+import { getApiBase } from '@/app/lib/apiBase';
 
 type LeadRow = {
     id: number;
@@ -31,7 +32,7 @@ export default function MmtUploadsPage() {
         setLoading(true);
         setError(null);
         try {
-            const res = await fetch('http://localhost:3001/api/leads/queue', { headers: { ...authHeaders } });
+            const res = await fetch(`${getApiBase()}/api/leads/queue`, { headers: { ...authHeaders } });
             const text = await res.text();
             const data = (() => {
                 try { return JSON.parse(text); } catch { return null; }
@@ -64,7 +65,7 @@ export default function MmtUploadsPage() {
         try {
             const fd = new FormData();
             fd.append('zip', file);
-            const res = await fetch(`http://localhost:3001/api/leads/${targetLeadId}/uploads`, {
+            const res = await fetch(`${getApiBase()}/api/leads/${targetLeadId}/uploads`, {
                 method: 'POST',
                 headers: { ...authHeaders },
                 body: fd,

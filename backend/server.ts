@@ -1,7 +1,7 @@
 import express, { Request, Response } from "express";
 import cors from "cors";
 import mysql from "mysql2/promise";
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import multer from "multer";
 import fs from "node:fs";
 import path from "node:path";
@@ -260,6 +260,41 @@ async function initDb() {
         measurement_time VARCHAR(20),
         status VARCHAR(20) NOT NULL DEFAULT 'pending',
         created_at DATETIME NOT NULL
+      );
+    `);
+
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS lead_d2_assignments (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        lead_id INT NOT NULL,
+        assigned_to_user_id INT NOT NULL,
+        masking_date DATE,
+        masking_time VARCHAR(20),
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        created_at DATETIME NOT NULL
+      );
+    `);
+
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS lead_dqc_reviews (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        lead_id INT NOT NULL,
+        verdict VARCHAR(50) NOT NULL,
+        remarks JSON NOT NULL,
+        created_at DATETIME NOT NULL,
+        reviewed_by_user_id INT NULL
+      );
+    `);
+
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS lead_dqc_remark_resolutions (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        lead_id INT NOT NULL,
+        dqc_review_id INT NOT NULL,
+        remark_index INT NOT NULL,
+        resolved_at DATETIME NOT NULL,
+        resolved_by_user_id INT NULL,
+        UNIQUE KEY uniq_resolution (dqc_review_id, remark_index)
       );
     `);
 
@@ -891,7 +926,7 @@ app.post("/api/design-freeze-checklist", async (req: Request, res: Response) => 
   try {
     await pool.query(
       "INSERT INTO checklists (type, payload, created_at, lead_id) VALUES (?, ?, ?, ?)",
-      ["design_freeze", JSON.stringify(payload), new Date()],
+      ["design_freeze", JSON.stringify(payload), new Date(), leadId ?? null],
     );
     if (leadId) {
       const event = {
@@ -950,7 +985,7 @@ app.post(
     try {
       await pool.query(
         "INSERT INTO checklists (type, payload, created_at, lead_id) VALUES (?, ?, ?, ?)",
-        ["color_selection", JSON.stringify(payload), new Date()],
+        ["color_selection", JSON.stringify(payload), new Date(), leadId ?? null],
       );
       if (leadId) {
         const event = {
@@ -1163,6 +1198,263 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
   }
 });
 
+// ----- Finance 10% payment: queue (limited fields), upload screenshots, approve -----
+// Finance team sees only leads at 10% payment stage with id, name, status, upload, approve.
+app.get("/api/leads/finance-10p-queue", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user?.role ?? "").toLowerCase();
+    if (role !== "finance" && role !== "admin") {
+      return res.status(403).json({ message: "Only finance or admin can access this queue" });
+    }
+    const [allLeads] = await pool.query(
+      "SELECT id, project_name as projectName, project_stage as projectStage FROM leads ORDER BY id ASC"
+    );
+    const leads = allLeads as { id: number; projectName: string; projectStage: string }[];
+    const [completions] = await pool.query(
+      "SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName FROM lead_task_completions"
+    );
+    const compList = completions as { leadId: number; milestoneIndex: number; taskName: string }[];
+    const hasDqc1Approval = (leadId: number) =>
+      compList.some((c) => c.leadId === leadId && c.milestoneIndex === 1 && c.taskName === "DQC 1 approval");
+    const has10pCollection = (leadId: number) =>
+      compList.some((c) => c.leadId === leadId && c.milestoneIndex === 2 && c.taskName === "10% payment collection");
+    const has10pApproval = (leadId: number) =>
+      compList.some((c) => c.leadId === leadId && c.milestoneIndex === 2 && c.taskName === "10% payment approval");
+    const at10p = leads.filter((l) => hasDqc1Approval(l.id) && !has10pApproval(l.id));
+    const list = at10p.map((l) => ({
+      id: l.id,
+      projectName: l.projectName || "—",
+      status: has10pCollection(l.id) ? "Pending approval" : "Pending upload",
+      canApprove: has10pCollection(l.id),
+    }));
+    return res.json(list);
+  } catch (err) {
+    console.error("finance-10p-queue error", err);
+    return res.status(500).json({ message: "Failed to load queue" });
+  }
+});
+
+// Finance: upload payment screenshot(s) for a lead. Marks "10% payment collection" complete on first upload.
+app.post(
+  "/api/leads/:id/payment-screenshots",
+  upload.single("file"),
+  async (req: Request, res: Response) => {
+    const leadId = Number(req.params.id);
+    if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+    const file = (req as any).file as Express.Multer.File | undefined;
+    if (!file) return res.status(400).json({ message: "file is required" });
+    try {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const role = (user?.role ?? "").toLowerCase();
+      if (role !== "finance" && role !== "admin") {
+        return res.status(403).json({ message: "Only finance can upload payment screenshots" });
+      }
+      const now = new Date();
+      let s3Url: string | null = null;
+      if (process.env.AWS_ACCESS_KEY_ID) {
+        s3Url = await uploadLeadFileToS3(leadId, file.path, file.originalname, file.mimetype);
+      }
+      await pool.query(
+        `INSERT INTO lead_uploads
+         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'payment_screenshot', ?)`,
+        [leadId, user.id, file.originalname, file.filename, file.path, file.mimetype, file.size, now, s3Url]
+      );
+      const ev = {
+        id: `payment-screenshot-${Date.now()}`,
+        type: "file_upload",
+        taskName: "10% payment collection",
+        milestoneName: "10% PAYMENT",
+        timestamp: now.toISOString(),
+        description: `Payment screenshot uploaded: ${file.originalname}`,
+        user: { name: user.name ?? "Finance" },
+        details: { kind: "payment_screenshot", fileName: file.originalname },
+      };
+      await addLeadHistoryEvent(leadId, ev);
+      const [rows] = await pool.query(
+        "SELECT 1 FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 2 AND task_name = ?",
+        [leadId, "10% payment collection"]
+      );
+      if ((rows as any[]).length === 0) {
+        await pool.query(
+          `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+           VALUES (?, 2, '10% payment collection', ?)
+           ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
+          [leadId, now]
+        );
+      }
+      return res.status(201).json({ ok: true });
+    } catch (err) {
+      console.error("payment-screenshots error", err);
+      return res.status(500).json({ message: "Failed to upload" });
+    }
+  }
+);
+
+// Finance: approve 10% payment (marks "10% payment approval" complete; lead moves to next stage)
+app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user?.role ?? "").toLowerCase();
+    if (role !== "finance" && role !== "admin") {
+      return res.status(403).json({ message: "Only finance can approve 10% payment" });
+    }
+    const now = new Date();
+    await pool.query(
+      `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+       VALUES (?, 2, '10% payment approval', ?)
+       ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
+      [leadId, now]
+    );
+    const ev = {
+      id: `10p-approval-${Date.now()}`,
+      type: "note",
+      taskName: "10% payment approval",
+      milestoneName: "10% PAYMENT",
+      timestamp: now.toISOString(),
+      description: "10% payment approved by Finance.",
+      user: { name: user.name ?? "Finance" },
+      details: { kind: "note", noteText: "10% payment approved. Lead moves to next stage." },
+    };
+    await addLeadHistoryEvent(leadId, ev);
+    return res.status(201).json({ ok: true });
+  } catch (err) {
+    console.error("approve-10p-payment error", err);
+    return res.status(500).json({ message: "Failed to approve" });
+  }
+});
+
+// ----- Finance 40% payment: same as 10% – queue, upload screenshots, approve -----
+app.get("/api/leads/finance-40p-queue", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user?.role ?? "").toLowerCase();
+    if (role !== "finance" && role !== "admin") {
+      return res.status(403).json({ message: "Only finance or admin can access this queue" });
+    }
+    const [allLeads] = await pool.query(
+      "SELECT id, project_name as projectName FROM leads ORDER BY id ASC"
+    );
+    const leads = allLeads as { id: number; projectName: string }[];
+    const [completions] = await pool.query(
+      "SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName FROM lead_task_completions"
+    );
+    const compList = completions as { leadId: number; milestoneIndex: number; taskName: string }[];
+    const has40pMeetingDone = (leadId: number) =>
+      compList.some(
+        (c) =>
+          c.leadId === leadId &&
+          c.milestoneIndex === 5 &&
+          c.taskName === "meeting completed & 40% payment request"
+      );
+    const has40pApproval = (leadId: number) =>
+      compList.some((c) => c.leadId === leadId && c.milestoneIndex === 5 && c.taskName === "40% payment approval");
+    const [uploadRows] = await pool.query(
+      "SELECT lead_id as leadId FROM lead_uploads WHERE upload_type = 'payment_40p'"
+    );
+    const has40pUpload = (leadId: number) =>
+      (uploadRows as { leadId: number }[]).some((r) => r.leadId === leadId);
+    const at40p = leads.filter((l) => has40pMeetingDone(l.id) && !has40pApproval(l.id));
+    const list = at40p.map((l) => ({
+      id: l.id,
+      projectName: l.projectName || "—",
+      status: has40pUpload(l.id) ? "Pending approval" : "Pending upload",
+      canApprove: has40pUpload(l.id),
+    }));
+    return res.json(list);
+  } catch (err) {
+    console.error("finance-40p-queue error", err);
+    return res.status(500).json({ message: "Failed to load queue" });
+  }
+});
+
+app.post(
+  "/api/leads/:id/payment-40p-screenshots",
+  upload.single("file"),
+  async (req: Request, res: Response) => {
+    const leadId = Number(req.params.id);
+    if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+    const file = (req as any).file as Express.Multer.File | undefined;
+    if (!file) return res.status(400).json({ message: "file is required" });
+    try {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const role = (user?.role ?? "").toLowerCase();
+      if (role !== "finance" && role !== "admin") {
+        return res.status(403).json({ message: "Only finance can upload 40% payment screenshots" });
+      }
+      const now = new Date();
+      let s3Url: string | null = null;
+      if (process.env.AWS_ACCESS_KEY_ID) {
+        s3Url = await uploadLeadFileToS3(leadId, file.path, file.originalname, file.mimetype);
+      }
+      await pool.query(
+        `INSERT INTO lead_uploads
+         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'payment_40p', ?)`,
+        [leadId, user.id, file.originalname, file.filename, file.path, file.mimetype, file.size, now, s3Url]
+      );
+      const ev = {
+        id: `payment-40p-screenshot-${Date.now()}`,
+        type: "file_upload",
+        taskName: "40% payment collection",
+        milestoneName: "40% PAYMENT",
+        timestamp: now.toISOString(),
+        description: `40% payment screenshot uploaded: ${file.originalname}`,
+        user: { name: user.name ?? "Finance" },
+        details: { kind: "payment_40p", fileName: file.originalname },
+      };
+      await addLeadHistoryEvent(leadId, ev);
+      return res.status(201).json({ ok: true });
+    } catch (err) {
+      console.error("payment-40p-screenshots error", err);
+      return res.status(500).json({ message: "Failed to upload" });
+    }
+  }
+);
+
+app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user?.role ?? "").toLowerCase();
+    if (role !== "finance" && role !== "admin") {
+      return res.status(403).json({ message: "Only finance can approve 40% payment" });
+    }
+    const now = new Date();
+    await pool.query(
+      `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+       VALUES (?, 5, '40% payment approval', ?)
+       ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
+      [leadId, now]
+    );
+    const ev = {
+      id: `40p-approval-${Date.now()}`,
+      type: "note",
+      taskName: "40% payment approval",
+      milestoneName: "40% PAYMENT",
+      timestamp: now.toISOString(),
+      description: "40% payment approved by Finance.",
+      user: { name: user.name ?? "Finance" },
+      details: { kind: "note", noteText: "40% payment approved. Lead moves to next stage." },
+    };
+    await addLeadHistoryEvent(leadId, ev);
+    return res.status(201).json({ ok: true });
+  } catch (err) {
+    console.error("approve-40p-payment error", err);
+    return res.status(500).json({ message: "Failed to approve" });
+  }
+});
+
 // MMT uploads: upload a ZIP "folder" for a lead
 app.post(
   "/api/leads/:id/uploads",
@@ -1202,14 +1494,15 @@ app.post(
         ],
       );
 
-      // Add history event
+      const uploadType = (req.body?.uploadType as string) || "";
+      const isD2 = uploadType === "d2_masking";
       const ev = {
         id: `upload-${Date.now()}`,
         type: "file_upload",
-        taskName: "MMT upload",
-        milestoneName: "D1 SITE MEASUREMENT",
+        taskName: isD2 ? "D2 - files upload" : "MMT upload",
+        milestoneName: isD2 ? "D2 SITE MASKING" : "D1 SITE MEASUREMENT",
         timestamp: new Date().toISOString(),
-        description: `MMT uploaded files: ${file.originalname}`,
+        description: isD2 ? `D2 files uploaded: ${file.originalname}` : `MMT uploaded files: ${file.originalname}`,
         user: { name: user?.name ?? "MMT" },
         details: { kind: "file_upload", fileName: file.originalname, size: `${file.size}` },
       };
@@ -1326,7 +1619,23 @@ app.get("/api/leads/:leadId/uploads/:uploadId/download", async (req: Request, re
     if (!row) return res.status(404).json({ message: "Not found" });
     if (!isMmt && row.status !== "approved")
       return res.status(403).json({ message: "Only approved uploads are available" });
-    if (row.s3Url) return res.redirect(row.s3Url);
+    if (row.s3Url) {
+      try {
+        const url = new URL(row.s3Url);
+        const key = url.pathname.replace(/^\//, "");
+        const obj = await s3.send(new GetObjectCommand({ Bucket: S3_BUCKET, Key: key }));
+        if (!obj.Body) return res.status(404).json({ message: "Not found" });
+        const name = row.originalName || path.basename(key);
+        const ext = path.extname(name).toLowerCase();
+        const mime: Record<string, string> = { ".pdf": "application/pdf", ".dwg": "application/acad" };
+        res.setHeader("Content-Type", mime[ext] || obj.ContentType || "application/octet-stream");
+        res.setHeader("Content-Disposition", `attachment; filename="${name.replace(/"/g, "%22")}"`);
+        return res.send(Buffer.from(await obj.Body.transformToByteArray()));
+      } catch (s3Err) {
+        console.error("S3 download error", s3Err);
+        return res.status(404).json({ message: "File not found" });
+      }
+    }
     return res.download(row.storedPath, row.originalName);
   } catch (err) {
     console.error("download upload error", err);
@@ -1392,7 +1701,30 @@ app.get("/api/leads/:leadId/uploads/:uploadId/file", async (req: Request, res: R
     if (!isMmt && row.status !== "approved")
       return res.status(403).json({ message: "Only approved uploads are available" });
     const isSingleFile = filePath === row.originalName || filePath === path.basename(row.storedPath);
-    if (row.s3Url && isSingleFile) return res.redirect(row.s3Url);
+    if (row.s3Url && isSingleFile) {
+      try {
+        const url = new URL(row.s3Url);
+        const key = url.pathname.replace(/^\//, "");
+        const getCmd = new GetObjectCommand({ Bucket: S3_BUCKET, Key: key });
+        const obj = await s3.send(getCmd);
+        if (!obj.Body) return res.status(404).json({ message: "Not found" });
+        const ext = path.extname(filePath).toLowerCase();
+        const mime: Record<string, string> = {
+          ".pdf": "application/pdf",
+          ".dwg": "application/acad",
+          ".jpg": "image/jpeg",
+          ".png": "image/png",
+        };
+        const contentType = mime[ext] || obj.ContentType || "application/octet-stream";
+        res.setHeader("Content-Type", contentType);
+        res.setHeader("Content-Disposition", `inline; filename="${(row.originalName || path.basename(filePath)).replace(/"/g, "%22")}"`);
+        res.setHeader("X-Content-Type-Options", "nosniff");
+        return res.send(Buffer.from(await obj.Body.transformToByteArray()));
+      } catch (s3Err) {
+        console.error("S3 get file error", s3Err);
+        return res.status(404).json({ message: "File not found" });
+      }
+    }
     if (!fs.existsSync(row.storedPath)) return res.status(404).json({ message: "Not found" });
     const ext = path.extname(filePath).toLowerCase();
     const mime: Record<string, string> = {
@@ -1505,13 +1837,24 @@ app.post(
   },
 );
 
-// Get latest DQC submission files for this lead (for DQC approval to auto-load)
+// Get latest DQC submission files for this lead (for DQC Manager / DQE to load in Design QC Review and do quantity check)
 app.get("/api/leads/:id/dqc-submission-files", async (req: Request, res: Response) => {
   const leadId = Number(req.params.id);
   if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
   try {
     const user = await getUserFromSession(req);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user.role ?? "").toLowerCase();
+    const canAccess =
+      role === "dqc_manager" ||
+      role === "dqe" ||
+      role === "admin" ||
+      role === "designer" ||
+      role === "design_manager" ||
+      role === "territorial_design_manager";
+    if (!canAccess) {
+      return res.status(403).json({ message: "Only DQC roles or designers can access DQC submission files" });
+    }
     const [rows] = await pool.query(
       `SELECT id, original_name as originalName, upload_type as uploadType
        FROM lead_uploads WHERE lead_id = ? AND upload_type IN ('dqc_drawing', 'dqc_quotation') AND status = 'approved'
@@ -1519,15 +1862,205 @@ app.get("/api/leads/:id/dqc-submission-files", async (req: Request, res: Respons
       [leadId],
     );
     const list = (rows as any[]) || [];
-    const drawing = list.find((r: any) => r.uploadType === "dqc_drawing");
-    const quotation = list.find((r: any) => r.uploadType === "dqc_quotation");
+    const uploadType = (r: any) => (r.uploadType ?? r.uploadtype ?? "").toString();
+    const originalName = (r: any) => (r.originalName ?? r.originalname ?? "") || "";
+    const drawing = list.find((r: any) => uploadType(r) === "dqc_drawing");
+    const quotation = list.find((r: any) => uploadType(r) === "dqc_quotation");
     return res.json({
-      drawing: drawing ? { id: drawing.id, originalName: drawing.originalName } : null,
-      quotation: quotation ? { id: quotation.id, originalName: quotation.originalName } : null,
+      drawing: drawing ? { id: drawing.id, originalName: originalName(drawing) } : null,
+      quotation: quotation ? { id: quotation.id, originalName: originalName(quotation) } : null,
     });
   } catch (err) {
     console.error("dqc-submission-files error", err);
     return res.status(500).json({ message: "Failed to load DQC submission files" });
+  }
+});
+
+// DQC 2 Submission: same as DQC 1 – drawing + quotation; stored as dqc2_drawing, dqc2_quotation
+app.post(
+  "/api/leads/:id/dqc2-submission",
+  upload.fields([{ name: "drawing", maxCount: 1 }, { name: "quotation", maxCount: 1 }]),
+  async (req: Request, res: Response) => {
+    const leadId = Number(req.params.id);
+    if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+    try {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const role = (user?.role ?? "").toLowerCase();
+      const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
+      if (!allowed.includes(role)) return res.status(403).json({ message: "Not allowed to submit DQC" });
+      const files = (req as any).files as { drawing?: Express.Multer.File[]; quotation?: Express.Multer.File[] };
+      const drawingFile = files?.drawing?.[0];
+      const quotationFile = files?.quotation?.[0];
+      if (!drawingFile || !quotationFile) {
+        return res.status(400).json({ message: "Both drawing and quotation files are required" });
+      }
+      const now = new Date();
+      let drawingS3: string | null = null;
+      let quotationS3: string | null = null;
+      if (process.env.AWS_ACCESS_KEY_ID) {
+        drawingS3 = await uploadLeadFileToS3(leadId, drawingFile.path, drawingFile.originalname, drawingFile.mimetype);
+        quotationS3 = await uploadLeadFileToS3(leadId, quotationFile.path, quotationFile.originalname, quotationFile.mimetype);
+      }
+      await pool.query(
+        `INSERT INTO lead_uploads
+         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc2_drawing', ?)`,
+        [leadId, user.id, drawingFile.originalname, drawingFile.filename, drawingFile.path, drawingFile.mimetype, drawingFile.size, now, drawingS3],
+      );
+      await pool.query(
+        `INSERT INTO lead_uploads
+         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc2_quotation', ?)`,
+        [leadId, user.id, quotationFile.originalname, quotationFile.filename, quotationFile.path, quotationFile.mimetype, quotationFile.size, now, quotationS3],
+      );
+      const ev = {
+        id: `dqc2-submission-${Date.now()}`,
+        type: "file_upload",
+        taskName: "DQC 2 submission",
+        milestoneName: "DQC2",
+        timestamp: now.toISOString(),
+        description: `DQC 2 submission: ${drawingFile.originalname}, ${quotationFile.originalname}`,
+        user: { name: user.name ?? "User" },
+        details: { kind: "dqc2_submission", drawing: drawingFile.originalname, quotation: quotationFile.originalname },
+      };
+      await addLeadHistoryEvent(leadId, ev);
+      return res.status(201).json({ ok: true });
+    } catch (err) {
+      console.error("dqc2-submission error", err);
+      return res.status(500).json({ message: "Failed to submit DQC 2 files" });
+    }
+  },
+);
+
+app.get("/api/leads/:id/dqc2-submission-files", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user.role ?? "").toLowerCase();
+    const canAccess =
+      role === "dqc_manager" ||
+      role === "dqe" ||
+      role === "admin" ||
+      role === "designer" ||
+      role === "design_manager" ||
+      role === "territorial_design_manager";
+    if (!canAccess) {
+      return res.status(403).json({ message: "Only DQC roles or designers can access DQC submission files" });
+    }
+    const [rows] = await pool.query(
+      `SELECT id, original_name as originalName, upload_type as uploadType
+       FROM lead_uploads WHERE lead_id = ? AND upload_type IN ('dqc2_drawing', 'dqc2_quotation') AND status = 'approved'
+       ORDER BY id DESC`,
+      [leadId],
+    );
+    const list = (rows as any[]) || [];
+    const uploadType = (r: any) => (r.uploadType ?? r.uploadtype ?? "").toString();
+    const originalName = (r: any) => (r.originalName ?? r.originalname ?? "") || "";
+    const drawing = list.find((r: any) => uploadType(r) === "dqc2_drawing");
+    const quotation = list.find((r: any) => uploadType(r) === "dqc2_quotation");
+    return res.json({
+      drawing: drawing ? { id: drawing.id, originalName: originalName(drawing) } : null,
+      quotation: quotation ? { id: quotation.id, originalName: originalName(quotation) } : null,
+    });
+  } catch (err) {
+    console.error("dqc2-submission-files error", err);
+    return res.status(500).json({ message: "Failed to load DQC 2 submission files" });
+  }
+});
+
+// Save DQC review (verdict + remarks). Used when DQE/DQC manager submits; designers then see remarks and mark as solved.
+app.post("/api/leads/:id/dqc-review", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user.role ?? "").toLowerCase();
+    if (role !== "dqc_manager" && role !== "dqe")
+      return res.status(403).json({ message: "Only DQC Manager or DQE can submit DQC review" });
+    const { verdict, remarks } = req.body || {};
+    if (!verdict || !Array.isArray(remarks))
+      return res.status(400).json({ message: "verdict and remarks array required" });
+    await pool.query(
+      `INSERT INTO lead_dqc_reviews (lead_id, verdict, remarks, created_at, reviewed_by_user_id)
+       VALUES (?, ?, ?, ?, ?)`,
+      [leadId, verdict, JSON.stringify(remarks), new Date(), user.id],
+    );
+    return res.status(201).json({ ok: true });
+  } catch (err) {
+    console.error("dqc-review POST error", err);
+    return res.status(500).json({ message: "Failed to save DQC review" });
+  }
+});
+
+// Get latest DQC review for a lead (designers see remarks and resolved state; DQE/manager can also fetch).
+app.get("/api/leads/:id/dqc-review", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const [rows] = await pool.query(
+      `SELECT id, verdict, remarks, created_at, reviewed_by_user_id
+       FROM lead_dqc_reviews WHERE lead_id = ? ORDER BY id DESC LIMIT 1`,
+      [leadId],
+    );
+    const row = (rows as any[])[0];
+    if (!row) return res.json(null);
+    const remarks = typeof row.remarks === "string" ? JSON.parse(row.remarks) : row.remarks || [];
+    const [resRows] = await pool.query(
+      `SELECT remark_index FROM lead_dqc_remark_resolutions WHERE dqc_review_id = ?`,
+      [row.id],
+    );
+    const resolvedSet = new Set((resRows as { remark_index: number }[]).map((r) => r.remark_index));
+    const remarksWithResolved = remarks.map((r: any, i: number) => ({
+      ...r,
+      resolved: resolvedSet.has(i),
+    }));
+    return res.json({
+      id: row.id,
+      verdict: row.verdict,
+      remarks: remarksWithResolved,
+      createdAt: row.created_at,
+      reviewedByUserId: row.reviewed_by_user_id,
+    });
+  } catch (err) {
+    console.error("dqc-review GET error", err);
+    return res.status(500).json({ message: "Failed to load DQC review" });
+  }
+});
+
+// Designer: mark a DQC remark as solved/done (no commenting – only "this comment is done").
+app.post("/api/leads/:id/dqc-review/remarks/:index/resolve", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  const index = Number(req.params.index);
+  if (Number.isNaN(leadId) || Number.isNaN(index) || index < 0)
+    return res.status(400).json({ message: "Invalid id or remark index" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user.role ?? "").toLowerCase();
+    if (role !== "designer" && role !== "design_manager")
+      return res.status(403).json({ message: "Only designers can mark remarks as solved" });
+    const [reviewRows] = await pool.query(
+      "SELECT id FROM lead_dqc_reviews WHERE lead_id = ? ORDER BY id DESC LIMIT 1",
+      [leadId],
+    );
+    const review = (reviewRows as any[])[0];
+    if (!review) return res.status(404).json({ message: "No DQC review found for this lead" });
+    await pool.query(
+      `INSERT INTO lead_dqc_remark_resolutions (lead_id, dqc_review_id, remark_index, resolved_at, resolved_by_user_id)
+       VALUES (?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE resolved_at = VALUES(resolved_at), resolved_by_user_id = VALUES(resolved_by_user_id)`,
+      [leadId, review.id, index, new Date(), user.id],
+    );
+    return res.status(201).json({ ok: true });
+  } catch (err) {
+    console.error("dqc-review resolve error", err);
+    return res.status(500).json({ message: "Failed to mark remark as solved" });
   }
 });
 
@@ -1553,9 +2086,44 @@ app.post("/api/leads/:id/d1-request", async (req: Request, res: Response) => {
   }
 });
 
+// Submit D2 masking request – assigns an MMT executive (same as D1); they will see the lead in D2 queue
+app.post("/api/leads/:id/d2-masking-request", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const { maskingExecutiveId, maskingDate, maskingTime } = req.body || {};
+    const execId = Number(maskingExecutiveId);
+    if (!execId) return res.status(400).json({ message: "maskingExecutiveId is required" });
+    await pool.query(
+      `INSERT INTO lead_d2_assignments (lead_id, assigned_to_user_id, masking_date, masking_time, status, created_at)
+       VALUES (?, ?, ?, ?, 'pending', ?)`,
+      [leadId, execId, maskingDate || null, maskingTime || null, new Date()],
+    );
+    const ev = {
+      id: `d2-masking-${Date.now()}`,
+      type: "note",
+      taskName: "D2 - masking request raise",
+      milestoneName: "D2 SITE MASKING",
+      timestamp: new Date().toISOString(),
+      description: "D2 masking request submitted.",
+      user: { name: user.name ?? "System" },
+      details: { kind: "d2_masking_request", maskingDate: maskingDate || null, maskingTime: maskingTime || null },
+    };
+    await addLeadHistoryEvent(leadId, ev);
+    return res.status(201).json({ ok: true });
+  } catch (err) {
+    console.error("d2-masking-request error", err);
+    return res.status(500).json({ message: "Failed to submit D2 masking request" });
+  }
+});
+
 // Dashboard: list all leads (sales closure submissions); MMT executives only see leads they're assigned to
+// Query param type=d2: return leads that have D2 masking assignment (for D2 uploads page); mmt_executive sees only their D2 assignments
 app.get("/api/leads/queue", async (req: Request, res: Response) => {
   const now = new Date();
+  const queueType = (req.query.type as string) || "d1";
   try {
     await pool.query(
       "UPDATE leads SET is_on_hold = 0, resume_at = NULL, update_at = ? WHERE is_on_hold = 1 AND resume_at IS NOT NULL AND resume_at <= ?",
@@ -1564,6 +2132,36 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
 
     const user = await getUserFromSession(req);
     const role = (user?.role ?? "").toLowerCase();
+    const isMmt = role === "mmt_manager" || role === "mmt_executive";
+
+    if (queueType === "d2") {
+      if (!isMmt) return res.json([]);
+      if (role === "mmt_executive" && user?.id) {
+        const [rows] = await pool.query(
+          `SELECT l.id, l.pid, l.project_name as projectName, l.project_stage as projectStage,
+                  l.contact_no as contactNo, l.client_email as clientEmail,
+                  l.is_on_hold as isOnHold, l.resume_at as resumeAt,
+                  l.create_at as createAt, l.update_at as updateAt
+           FROM leads l
+           INNER JOIN lead_d2_assignments a ON a.lead_id = l.id AND a.assigned_to_user_id = ?
+           ORDER BY l.id ASC`,
+          [user.id],
+        );
+        const list = (rows as any[]).map((r) => ({ ...r, isOnHold: !!r.isOnHold }));
+        return res.json(list);
+      }
+      const [rows] = await pool.query(
+        `SELECT DISTINCT l.id, l.pid, l.project_name as projectName, l.project_stage as projectStage,
+                l.contact_no as contactNo, l.client_email as clientEmail,
+                l.is_on_hold as isOnHold, l.resume_at as resumeAt,
+                l.create_at as createAt, l.update_at as updateAt
+         FROM leads l
+         INNER JOIN lead_d2_assignments a ON a.lead_id = l.id
+         ORDER BY l.id ASC`,
+      );
+      const list = (rows as any[]).map((r) => ({ ...r, isOnHold: !!r.isOnHold }));
+      return res.json(list);
+    }
 
     if (role === "mmt_executive" && user) {
       const userId = user.id;
@@ -1601,6 +2199,42 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
   }
 });
 
+// DQC dashboard: list leads with id, name, stage, dqcStatus (Pending DQC / Approved DQC) for dqc_manager and dqe
+// dqcStatus is based on the *latest* DQC review verdict: only "approved" shows Approved DQC; rejected or approved_with_changes shows Pending DQC
+app.get("/api/leads/dqc-queue", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    const role = (user?.role ?? "").toLowerCase();
+    if (role !== "dqc_manager" && role !== "dqe") {
+      return res.status(403).json({ message: "Only DQC Manager or DQE can access DQC queue" });
+    }
+    const [leadRows] = await pool.query(
+      `SELECT id, project_name as projectName, project_stage as projectStage
+       FROM leads ORDER BY id ASC`,
+    );
+    const leads = leadRows as { id: number; projectName: string; projectStage: string }[];
+    const [reviewRows] = await pool.query(
+      `SELECT lead_id as leadId, verdict FROM lead_dqc_reviews ORDER BY id DESC`,
+    );
+    const latestVerdictByLead: Record<number, string> = {};
+    for (const row of reviewRows as { leadId: number; verdict: string }[]) {
+      if (latestVerdictByLead[row.leadId] === undefined) {
+        latestVerdictByLead[row.leadId] = row.verdict;
+      }
+    }
+    const list = leads.map((l) => ({
+      id: l.id,
+      projectName: l.projectName,
+      projectStage: l.projectStage,
+      dqcStatus: latestVerdictByLead[l.id] === "approved" ? "Approved DQC" : "Pending DQC",
+    }));
+    return res.json(list);
+  } catch (err) {
+    console.error("dqc-queue error", err);
+    return res.status(500).json({ message: "Failed to load DQC queue" });
+  }
+});
+
 // Designers for Sales Closure form (from users with role designer or design_manager)
 app.get("/api/designers", async (_req: Request, res: Response) => {
   try {
@@ -1628,7 +2262,7 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
       `SELECT id, pid, project_name as projectName, project_stage as projectStage,
               contact_no as contactNo, client_email as clientEmail,
               is_on_hold as isOnHold, resume_at as resumeAt,
-              create_at as createAt, update_at as updateAt
+              create_at as createAt, update_at as updateAt, payload
        FROM leads
        WHERE id = ?`,
       [id],
@@ -1656,9 +2290,24 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
       row.resumeAt = null;
     }
 
+    let designerName: string | undefined;
+    let revision: string | undefined;
+    try {
+      const payload = row.payload ? JSON.parse(row.payload) : {};
+      const formData = payload.formData || payload.form_data || {};
+      designerName = formData.designer_name || formData.designerName || undefined;
+      revision = formData.revision || (designerName ? "v1.0 (Latest)" : undefined);
+    } catch {
+      // ignore
+    }
+    if (!revision) revision = "v1.0 (Latest)";
+
+    const { payload: _p, ...rest } = row;
     return res.json({
-      ...row,
+      ...rest,
       isOnHold: !!row.isOnHold,
+      designerName: designerName || null,
+      revision: revision || "v1.0 (Latest)",
     });
   } catch (err) {
     console.error("lead detail error", err);

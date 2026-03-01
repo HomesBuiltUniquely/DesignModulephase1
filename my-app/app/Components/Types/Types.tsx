@@ -10,4 +10,6 @@ export type LeadshipTypes = {
     clientEmail?: string; // client email from sales closure (for mail chain)
     isOnHold?: boolean;
     resumeAt?: string | null;
+    designerName?: string | null; // from sales closure payload (for DQC review panel)
+    revision?: string | null; // for DQC review panel
 };

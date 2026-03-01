@@ -12,6 +12,15 @@ const Dqc1PdfViewer = dynamic<{
 
 type Props = {
   onClose: () => void;
+  /** When provided, reviewer/project/revision/designer are shown from these instead of placeholders */
+  projectTitle?: string;
+  projectRef?: string;
+  revision?: string;
+  designerName?: string;
+  reviewerName?: string;
+  reviewerInitials?: string;
+  reviewerRoleLabel?: string;
+  reviewStatus?: string;
   dqc1Verdict: Dqc1Verdict | null;
   setDqc1Verdict: (v: Dqc1Verdict | null) => void;
   dqc1Remarks: QCRemark[];
@@ -56,6 +65,14 @@ type Props = {
   dqc1HighlightedPin: number | null;
   setDqc1PdfNumPages: (v: number) => void;
   submitDqc1Review: () => void;
+  /** Shown when auto-load of DQC submission failed or returned no files */
+  dqc1SubmissionLoadError?: string | null;
+  /** True when the submitted file was loaded but is not a PDF (cannot preview) */
+  dqc1SubmissionNotPdf?: boolean;
+  /** True while fetching DQC submission file list / file */
+  dqc1SubmissionLoading?: boolean;
+  /** When provided, show a button to load the file from DQC 1 submission (same as in Files Uploaded) so DQC can do the quantity check */
+  onLoadDqcSubmission?: () => void;
 };
 
 /**
@@ -63,6 +80,14 @@ type Props = {
  */
 export default function PopupDqc1Approval({
   onClose,
+  projectTitle,
+  projectRef,
+  revision,
+  designerName,
+  reviewerName,
+  reviewerInitials,
+  reviewerRoleLabel,
+  reviewStatus,
   dqc1Verdict,
   setDqc1Verdict,
   dqc1Remarks,
@@ -93,6 +118,10 @@ export default function PopupDqc1Approval({
   dqc1HighlightedPin,
   setDqc1PdfNumPages,
   submitDqc1Review,
+  dqc1SubmissionLoadError = null,
+  dqc1SubmissionNotPdf = false,
+  dqc1SubmissionLoading = false,
+  onLoadDqcSubmission,
 }: Props) {
   return (
     <div className="flex flex-1 flex-col min-h-0 relative">
@@ -219,13 +248,68 @@ export default function PopupDqc1Approval({
                   onLoadSuccess={(args) => setDqc1PdfNumPages(args.numPages)}
                 />
               ) : (
-                <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-400 text-sm gap-2">
-                  <div className="text-gray-500 font-medium">
-                    No PDF selected
-                  </div>
-                  <div className="text-xs">
-                    Click “Choose PDF” to load a design file
-                  </div>
+                <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-600 text-sm gap-3 p-6 text-center">
+                  {dqc1SubmissionLoading ? (
+                    <>
+                      <div className="font-medium text-gray-700">Loading DQC submission file…</div>
+                      <div className="text-xs text-gray-500">Fetching the file uploaded in DQC 1 submission.</div>
+                    </>
+                  ) : dqc1SubmissionLoadError ? (
+                    <>
+                      <div className="font-semibold text-amber-700">{dqc1SubmissionLoadError}</div>
+                      <div className="text-xs">Use “Choose PDF” to load a file manually, or try loading the DQC submission file again.</div>
+                      {onLoadDqcSubmission && (
+                        <button
+                          type="button"
+                          onClick={onLoadDqcSubmission}
+                          className="mt-2 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700"
+                        >
+                          Load DQC submission file
+                        </button>
+                      )}
+                    </>
+                  ) : dqc1SubmissionNotPdf ? (
+                    <>
+                      <div className="font-semibold text-gray-800">
+                        DQC submission file received (DWG / non-PDF)
+                      </div>
+                      <p className="text-xs max-w-sm">
+                        The file “{dqc1PdfFile?.name ?? 'drawing'}” cannot be previewed in this viewer. Download it to open in CAD, or use “Choose PDF” to load a PDF for inline review.
+                      </p>
+                      {dqc1PdfFile && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const url = URL.createObjectURL(dqc1PdfFile);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = dqc1PdfFile.name;
+                            a.click();
+                            URL.revokeObjectURL(url);
+                          }}
+                          className="mt-1 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700"
+                        >
+                          Download “{dqc1PdfFile.name}”
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <div className="font-medium">No PDF selected</div>
+                      <div className="text-xs max-w-sm">
+                        Files uploaded in <strong>DQC 1 submission – dwg + quotation</strong> (the same as in “Files Uploaded”) are loaded here so you can do the quantity check. If nothing appeared, use the button below or “Choose PDF”.
+                      </div>
+                      {onLoadDqcSubmission && (
+                        <button
+                          type="button"
+                          onClick={onLoadDqcSubmission}
+                          className="mt-2 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700"
+                        >
+                          Load DQC submission file
+                        </button>
+                      )}
+                    </>
+                  )}
                 </div>
               )}
               <div className="absolute inset-0 pointer-events-none">
@@ -305,31 +389,31 @@ export default function PopupDqc1Approval({
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <div className="w-9 h-9 rounded-full bg-gray-600 text-white flex items-center justify-center text-sm font-bold">
-                  AT
+                  {reviewerInitials ?? "AT"}
                 </div>
                 <div>
-                  <p className="font-semibold text-gray-900">Alex Thompson</p>
-                  <p className="text-xs text-gray-500">Lead QA Engineer</p>
+                  <p className="font-semibold text-gray-900">{reviewerName ?? "Alex Thompson"}</p>
+                  <p className="text-xs text-gray-500">{reviewerRoleLabel ?? "Lead QA Engineer"}</p>
                 </div>
               </div>
               <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
-                PENDING REVIEW
+                {reviewStatus ?? "PENDING REVIEW"}
               </span>
             </div>
           </div>
           <div className="p-4 flex-1 overflow-y-auto min-h-0">
             <h4 className="text-base font-bold text-gray-900">
-              Luxury Kitchen Renovation - Unit A
+              {projectTitle ?? "Luxury Kitchen Renovation - Unit A"}
             </h4>
             <p className="text-xs text-gray-500 mt-0.5">
-              Project Ref: LKR-2024-089
+              Project Ref: {projectRef ?? "LKR-2024-089"}
             </p>
             <div className="flex gap-4 mt-3 text-xs">
               <span>
-                <span className="text-gray-500">REVISION:</span> v3.02 (Latest)
+                <span className="text-gray-500">REVISION:</span> {revision ?? "v3.02 (Latest)"}
               </span>
               <span>
-                <span className="text-gray-500">DESIGNER:</span> Sarah Jenkins
+                <span className="text-gray-500">DESIGNER:</span> {designerName ?? "Sarah Jenkins"}
               </span>
             </div>
             <div className="mt-4">

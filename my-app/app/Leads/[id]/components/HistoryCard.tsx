@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import type { HistoryEvent, HistoryEventType } from '../types';
+import DqcDesignerFeedbackCard from './DqcDesignerFeedbackCard';
 
 type Props = {
     cardClass: string;
@@ -11,6 +12,10 @@ type Props = {
     onViewTaskDetails: (event: HistoryEvent) => void;
     currentMilestoneIndex: number;
     totalMilestones: number;
+    /** When true and leadId/sessionId provided, show DQC Review Feedback at top of History (designers). */
+    showDqcFeedback?: boolean;
+    leadId?: number | null;
+    sessionId?: string | null;
 };
 
 function formatRelativeTime(iso: string): string {
@@ -63,6 +68,9 @@ export default function HistoryCard({
     onViewTaskDetails,
     currentMilestoneIndex,
     totalMilestones,
+    showDqcFeedback = false,
+    leadId = null,
+    sessionId = null,
 }: Props) {
     const [mounted, setMounted] = useState(false);
     useEffect(() => setMounted(true), []);
@@ -93,6 +101,11 @@ export default function HistoryCard({
             {!isMaximized ? (
                 <div className="xl:mt-4 text-left m-4  ">
                     <div className="space-y-2 max-h-[58vh] overflow-y-auto pr-1">
+                        {showDqcFeedback && leadId && sessionId && (
+                            <div className="mb-4 pb-4 border-b border-gray-200">
+                                <DqcDesignerFeedbackCard leadId={leadId} sessionId={sessionId} embedded />
+                            </div>
+                        )}
                         {historyEvents.length === 0 ? (
                             <p className="text-gray-500 text-sm py-6 text-center">No action done yet.</p>
                         ) : (
@@ -128,6 +141,11 @@ export default function HistoryCard({
                     </div>
 
                     <div className="flex-1 space-y-4 pr-2">
+                        {showDqcFeedback && leadId && sessionId && (
+                            <div className="mb-4 pb-4 border-b border-gray-200">
+                                <DqcDesignerFeedbackCard leadId={leadId} sessionId={sessionId} embedded />
+                            </div>
+                        )}
                         {historyEvents.length === 0 ? (
                             <p className="text-gray-500 text-sm py-8 text-center">No action done yet. Complete milestone tasks to see activity here.</p>
                         ) : (

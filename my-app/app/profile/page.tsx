@@ -4,7 +4,8 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 
-const API = 'http://localhost:3001';
+import { getApiBase } from '@/app/lib/apiBase';
+const API = getApiBase();
 const MAX_SIZE_BYTES = 2 * 1024 * 1024; // 2MB
 
 function getInitials(name: string, email: string): string {

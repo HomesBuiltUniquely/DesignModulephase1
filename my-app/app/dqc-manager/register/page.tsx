@@ -5,7 +5,8 @@ import { useEffect, useState } from 'react';
 import { useAuth } from '../../auth/AuthContext';
 import { BRANCH_OPTIONS } from '../../constants/branches';
 
-const API = 'http://localhost:3001';
+import { getApiBase } from '@/app/lib/apiBase';
+const API = getApiBase();
 
 export default function DqcManagerRegisterPage() {
   const router = useRouter();

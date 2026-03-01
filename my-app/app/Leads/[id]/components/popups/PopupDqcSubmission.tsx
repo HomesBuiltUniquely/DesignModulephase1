@@ -2,13 +2,16 @@
 
 import { useState, useRef } from 'react';
 
-const API = 'http://localhost:3001';
+import { getApiBase } from '@/app/lib/apiBase';
+const API = getApiBase();
 const DRAWING_ACCEPT = '.skp,.dwg,.pdf,.zip,application/zip';
 const QUOTATION_ACCEPT = '.pdf,.xlsx,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 type Props = {
   leadId: number | null;
   sessionId: string | null;
+  /** DQC 1 (dwg + quotation) or DQC 2 – same process, different endpoint and storage */
+  submissionVariant?: 'dqc1' | 'dqc2';
   onClose: () => void;
   onSaveDraft?: () => void;
   onSubmit: () => void;
@@ -16,9 +19,9 @@ type Props = {
 };
 
 /**
- * DQC Submission popup: Final Sketchup Drawing + Final Quotation uploads, Save as Draft / Submit the DQC.
+ * DQC Submission popup: Final Sketchup Drawing + Final Quotation uploads. Same for DQC 1 and DQC 2.
  */
-export default function PopupDqcSubmission({ leadId, sessionId, onClose, onSaveDraft, onSubmit, onUploadSuccess }: Props) {
+export default function PopupDqcSubmission({ leadId, sessionId, submissionVariant = 'dqc1', onClose, onSaveDraft, onSubmit, onUploadSuccess }: Props) {
   const [drawingFile, setDrawingFile] = useState<File | null>(null);
   const [quotationFile, setQuotationFile] = useState<File | null>(null);
   const [drawingDrag, setDrawingDrag] = useState(false);
@@ -50,14 +53,15 @@ export default function PopupDqcSubmission({ leadId, sessionId, onClose, onSaveD
       const form = new FormData();
       form.append('drawing', drawingFile);
       form.append('quotation', quotationFile);
-      const res = await fetch(`${API}/api/leads/${leadId}/dqc-submission`, {
+      const endpoint = submissionVariant === 'dqc2' ? 'dqc2-submission' : 'dqc-submission';
+      const res = await fetch(`${API}/api/leads/${leadId}/${endpoint}`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${sessionId}` },
         body: form,
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setSubmitError(data.message || 'Failed to upload DQC files');
+        setSubmitError(data.message || (submissionVariant === 'dqc2' ? 'Failed to upload DQC 2 files' : 'Failed to upload DQC files'));
         return;
       }
       onUploadSuccess?.();
@@ -75,8 +79,8 @@ export default function PopupDqcSubmission({ leadId, sessionId, onClose, onSaveD
     <>
       <div className="flex justify-between items-center pt-6 px-6 pb-2 flex-shrink-0">
         <div className="flex items-center gap-3">
-          <h3 className="text-xl font-bold text-gray-900">DQC Submission</h3>
-          <span className="px-2.5 py-0.5 rounded bg-gray-200 text-white text-xs font-medium">V1</span>
+          <h3 className="text-xl font-bold text-gray-900">{submissionVariant === 'dqc2' ? 'DQC 2 Submission' : 'DQC Submission'}</h3>
+          <span className="px-2.5 py-0.5 rounded bg-gray-200 text-white text-xs font-medium">{submissionVariant === 'dqc2' ? 'V2' : 'V1'}</span>
         </div>
         <button
           type="button"
@@ -90,7 +94,7 @@ export default function PopupDqcSubmission({ leadId, sessionId, onClose, onSaveD
         </button>
       </div>
       <p className="text-sm text-gray-600 px-6 pb-4">
-        Submit finalized design + quotation for quality verification. Ensure all files meet the project standards before uploading.
+        Submit finalized design + quotation for quality verification. Files you upload here are sent to DQC—they will review and resolve (approve or request changes). Ensure all files meet the project standards before uploading.
       </p>
 
       <div className="px-6 space-y-6 pb-4">
@@ -177,9 +181,9 @@ export default function PopupDqcSubmission({ leadId, sessionId, onClose, onSaveD
             <path strokeLinecap="round" strokeLinejoin="round" d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z" />
           </svg>
           <div>
-            <p className="font-semibold text-sky-800 text-sm">DQC Review Process</p>
+            <p className="font-semibold text-sky-800 text-sm">Files go to DQC</p>
             <p className="text-sm text-sky-700 mt-0.5">
-              Submitted files will be reviewed by DQC Team. The project stage will not advance until formal review is completed.
+              Uploaded files are sent to DQC. They will review and resolve (approve or request changes). You can see their feedback and re-upload if needed. The project will not move to the next phase until DQC approves.
             </p>
           </div>
         </div>

@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-const API = 'http://localhost:3001';
+import { getApiBase } from '@/app/lib/apiBase';
+const API = getApiBase();
 
 type Props = {
     cardClass: string;
@@ -180,8 +181,8 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
     };
 
     return (
-        <div className={cardClass}>
-            <div className="flex justify-between xl:justify-arround px-4">
+        <div className={`${cardClass} flex flex-col min-h-0`}>
+            <div className="flex flex-shrink-0 justify-between xl:justify-around px-4">
                 <h2 className="text-lg font-bold text-gray-900">Files Uploaded</h2>
                 <button
                     onClick={onToggleMaximize}
@@ -195,9 +196,9 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
                     )}
                 </button>
             </div>
-            <div className="px-4 pt-4 pb-6 overflow-auto max-h-[50vh] xl:max-h-[65vh]">
+            <div className="flex-1 min-h-0 flex flex-col px-4 pt-4 pb-2">
                 {canUpload && (
-                    <div className="flex items-center justify-between gap-3 mb-4">
+                    <div className="flex flex-shrink-0 items-center justify-between gap-3 mb-4">
                         <div className="text-sm text-gray-700">
                             Upload <span className="font-semibold">ZIP</span> or <span className="font-semibold">.dwg</span> (AutoCAD).
                         </div>
@@ -213,9 +214,9 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
                     </div>
                 )}
 
-                {error && <div className="text-sm text-red-600 mb-3">{error}</div>}
+                {error && <div className="flex-shrink-0 text-sm text-red-600 mb-3">{error}</div>}
 
-                <div className="flex items-center justify-between mb-2">
+                <div className="flex flex-shrink-0 items-center justify-between mb-2">
                     <div className="text-sm font-semibold text-gray-900">Uploaded files</div>
                     <button type="button" onClick={loadUploads} disabled={!leadId || loading} className="text-sm text-green-800 hover:underline disabled:opacity-60">
                         {loading ? 'Loading…' : 'Refresh'}
@@ -223,9 +224,9 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
                 </div>
 
                 {uploads.length === 0 ? (
-                    <div className="text-sm text-gray-600">{loading ? 'Loading…' : 'No uploads yet.'}</div>
+                    <div className="flex-shrink-0 text-sm text-gray-600">{loading ? 'Loading…' : 'No uploads yet.'}</div>
                 ) : (
-                    <div className="space-y-2">
+                    <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pb-4 pr-1 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-gray-100 [&::-webkit-scrollbar-track]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-thumb]:rounded-full">
                         {uploads.map((u) => (
                             <div key={u.id} className="bg-white/70 border border-gray-200 rounded-xl px-3 py-2">
                                 <div className="flex items-center justify-between gap-3">

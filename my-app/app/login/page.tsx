@@ -22,6 +22,8 @@ export default function LoginPage() {
       router.replace("/dqc-manager/register");
     else if (user.role === "mmt_manager")
       router.replace("/mmt-manager/register");
+    else if (user.role === "finance")
+      router.replace("/finance");
     else router.replace("/");
   }, [user, loading, router]);
 
@@ -49,6 +51,7 @@ export default function LoginPage() {
       router.replace("/tdm/register");
     else if (role === "dqc_manager") router.replace("/dqc-manager/register");
     else if (role === "mmt_manager") router.replace("/mmt-manager/register");
+    else if (role === "finance") router.replace("/finance");
     else router.replace("/");
   }
 

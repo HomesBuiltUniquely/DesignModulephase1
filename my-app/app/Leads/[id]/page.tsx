@@ -1,7 +1,7 @@
 'use client';
 
-import { useParams } from 'next/navigation';
-import { useEffect, useRef, useState } from 'react';
+import { useParams, useSearchParams, useRouter } from 'next/navigation';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '../../auth/AuthContext';
 import { LeadshipTypes } from '../../Components/Types/Types';
 import MileStonesArray from '@/app/Components/Types/MileStoneArray';
@@ -18,6 +18,7 @@ import {
     PopupFirstCutDesign,
     PopupMeetingCompleted,
     PopupDqc1Approval,
+    PopupDqcDesignerView,
     PopupD2MaskingRequest,
     PopupDqcSubmission,
     PopupPlaceholder,
@@ -26,12 +27,20 @@ import {
     GenericMeetingChecklistPopup,
 } from './components';
 import { checklistDefinitions, getChecklistKeyForTask } from './components/Checklists/checklistRegistry';
+import { getApiBase } from '@/app/lib/apiBase';
+
+const API = getApiBase();
 
 export default function ProjectDetailPage() {
     const params = useParams();
-    const { user: authUser, sessionId, refreshUser } = useAuth();
+    const searchParams = useSearchParams();
+    const router = useRouter();
+    const { user: authUser, sessionId, refreshUser, loading: authLoading } = useAuth();
     const projectId = params?.id ? Number(params.id) : null;
     const isMmtUser = ['mmt', 'mmt_manager', 'mmt_executive'].includes((authUser?.role || '').toLowerCase());
+    const viewDqc = searchParams.get('view') === 'dqc';
+    const isDqcUser = ['dqc_manager', 'dqe'].includes((authUser?.role || '').toLowerCase());
+    const isDesigner = ['designer', 'design_manager'].includes((authUser?.role || '').toLowerCase());
     
     // State to track WHICH card is maximized (null = none)
     const [activeCard, setActiveCard] = useState<string | null>(null);
@@ -81,6 +90,9 @@ export default function ProjectDetailPage() {
     const dqc1PdfViewportRef = useRef<HTMLDivElement>(null);
     const dqc1PdfScrollRef = useRef<HTMLDivElement>(null);
     const dqc1SubmissionBlobUrlRef = useRef<string | null>(null);
+    const [dqc1SubmissionLoadError, setDqc1SubmissionLoadError] = useState<string | null>(null);
+    const [dqc1SubmissionNotPdf, setDqc1SubmissionNotPdf] = useState(false);
+    const [dqc1SubmissionLoading, setDqc1SubmissionLoading] = useState(false);
     const [dqc1SelectedPin, setDqc1SelectedPin] = useState<number | null>(null);
     const [dqc1HighlightedPin, setDqc1HighlightedPin] = useState<number | null>(null);
     // Design upload (First cut design popup): selected files
@@ -116,7 +128,7 @@ export default function ProjectDetailPage() {
             return;
         }
         setProjectLoaded(false);
-        fetch(`http://localhost:3001/api/leads/${projectId}`)
+        fetch(`${API}/api/leads/${projectId}`)
             .then(async (res) => {
                 const text = await res.text();
                 if (!res.ok) throw new Error('Not ok');
@@ -139,7 +151,7 @@ export default function ProjectDetailPage() {
         const isGroupDesc = popupContext?.milestoneIndex === 0 && popupContext?.taskName === 'Group Description';
         if (!isGroupDesc || projectId == null) return;
         refreshUser();
-        fetch(`http://localhost:3001/api/leads/${projectId}`)
+        fetch(`${API}/api/leads/${projectId}`)
             .then(async (res) => {
                 const text = await res.text();
                 if (!res.ok || !text) return null;
@@ -152,7 +164,7 @@ export default function ProjectDetailPage() {
     // Load and maintain history for this lead (recorded on server)
     useEffect(() => {
         if (projectId == null) return;
-        fetch(`http://localhost:3001/api/leads/${projectId}/history`)
+        fetch(`${API}/api/leads/${projectId}/history`)
             .then(async (res) => {
                 const text = await res.text();
                 if (!res.ok || !text) return [];
@@ -165,7 +177,7 @@ export default function ProjectDetailPage() {
     // Restore completed tasks from DB so it persists across refresh
     useEffect(() => {
         if (projectId == null) return;
-        fetch(`http://localhost:3001/api/leads/${projectId}/completions`)
+        fetch(`${API}/api/leads/${projectId}/completions`)
             .then((res) => res.text().then((t) => { try { return t ? JSON.parse(t) : []; } catch { return []; } }))
             .then((rows: Array<{ milestoneIndex: number; taskName: string }>) => {
                 if (!Array.isArray(rows)) return;
@@ -177,42 +189,184 @@ export default function ProjectDetailPage() {
             .catch(() => {});
     }, [projectId]);
 
-    // When DQC 1 approval popup opens, auto-load the submitted quotation PDF if available (must be before any conditional return)
-    useEffect(() => {
-        if (popupContext?.milestoneIndex !== 1 || popupContext?.taskName !== 'DQC 1 approval' || !projectId || !sessionId) return;
-        let cancelled = false;
-        fetch(`http://localhost:3001/api/leads/${projectId}/dqc-submission-files`, {
+    // Load the file(s) uploaded in DQC 1 submission (same as in "Files Uploaded") for the Design QC Review panel. Callable so DQC can retry.
+    const loadDqcSubmissionFile = useCallback(() => {
+        if (!projectId || !sessionId) return;
+        setDqc1SubmissionLoadError(null);
+        setDqc1SubmissionNotPdf(false);
+        setDqc1SubmissionLoading(true);
+        fetch(`${API}/api/leads/${projectId}/dqc-submission-files`, {
             headers: { Authorization: `Bearer ${sessionId}` },
         })
-            .then((res) => (res.ok ? res.json() : null))
-            .then((data: { quotation?: { id: number; originalName: string } } | null) => {
-                if (!data?.quotation || cancelled) return;
-                const name = (data.quotation.originalName || '').toLowerCase();
-                if (!name.endsWith('.pdf')) return;
-                const url = `http://localhost:3001/api/leads/${projectId}/uploads/${data.quotation.id}/file?path=${encodeURIComponent(data.quotation.originalName)}`;
+            .then((res) => {
+                if (!res.ok) {
+                    const msg =
+                        res.status === 401
+                            ? 'Please log in again to load submission files.'
+                            : res.status === 403
+                              ? 'Only DQC Manager or DQE can access submission files. Check you’re logged in with the correct role.'
+                              : res.status === 404
+                                ? 'Not found.'
+                                : 'Could not load submission files.';
+                    setDqc1SubmissionLoadError(msg);
+                    setDqc1SubmissionLoading(false);
+                    return null;
+                }
+                return res.json();
+            })
+            .then((data: { drawing?: { id: number; originalName: string }; quotation?: { id: number; originalName: string } } | null) => {
+                if (data === null) return;
+                const drawing = data?.drawing;
+                const quotation = data?.quotation;
+                const fileToLoad = drawing ?? quotation ?? null;
+                if (!fileToLoad) {
+                    setDqc1SubmissionLoadError('No DQC submission files found for this lead.');
+                    setDqc1SubmissionLoading(false);
+                    return;
+                }
+                const url = `${API}/api/leads/${projectId}/uploads/${fileToLoad.id}/file?path=${encodeURIComponent(fileToLoad.originalName)}`;
                 return fetch(url, { headers: { Authorization: `Bearer ${sessionId}` } })
-                    .then((r) => (r.ok ? r.blob() : null))
+                    .then((r) => {
+                        if (!r.ok) return Promise.reject(new Error(r.status === 404 ? 'File not found.' : 'Could not load file.'));
+                        return r.blob();
+                    })
                     .then((blob) => {
-                        if (!blob || cancelled) return;
-                        if (dqc1SubmissionBlobUrlRef.current) URL.revokeObjectURL(dqc1SubmissionBlobUrlRef.current);
-                        const blobUrl = URL.createObjectURL(blob);
-                        dqc1SubmissionBlobUrlRef.current = blobUrl;
-                        setDqc1PdfUrl(blobUrl);
-                        setDqc1PdfFile(new File([blob], data.quotation!.originalName, { type: blob.type }));
+                        if (!blob) return;
+                        setDqc1SubmissionLoading(false);
+                        const isPdf = blob.type === 'application/pdf';
+                        setDqc1SubmissionNotPdf(!isPdf);
+                        setDqc1PdfFile(new File([blob], fileToLoad.originalName, { type: blob.type }));
                         setDqc1PdfPageNumber(1);
                         setDqc1CommentPopup(null);
                         setDqc1SelectedPin(null);
+                        if (isPdf) {
+                            if (dqc1SubmissionBlobUrlRef.current) URL.revokeObjectURL(dqc1SubmissionBlobUrlRef.current);
+                            const blobUrl = URL.createObjectURL(blob);
+                            dqc1SubmissionBlobUrlRef.current = blobUrl;
+                            setDqc1PdfUrl(blobUrl);
+                        } else {
+                            setDqc1PdfUrl(null);
+                        }
+                    })
+                    .catch((err) => {
+                        setDqc1SubmissionLoadError(err?.message || 'Could not load the submitted file. Use "Choose PDF" to load a file manually.');
+                        setDqc1SubmissionLoading(false);
                     });
             })
-            .catch(() => {});
+            .catch(() => {
+                setDqc1SubmissionLoadError('Could not load DQC submission files. Check your connection and try again.');
+                setDqc1SubmissionLoading(false);
+            });
+    }, [projectId, sessionId]);
+
+    const loadDqc2SubmissionFile = useCallback(() => {
+        if (!projectId || !sessionId) return;
+        setDqc1SubmissionLoadError(null);
+        setDqc1SubmissionNotPdf(false);
+        setDqc1SubmissionLoading(true);
+        fetch(`${API}/api/leads/${projectId}/dqc2-submission-files`, {
+            headers: { Authorization: `Bearer ${sessionId}` },
+        })
+            .then((res) => {
+                if (!res.ok) {
+                    const msg =
+                        res.status === 401
+                            ? 'Please log in again to load submission files.'
+                            : res.status === 403
+                              ? 'Only DQC Manager or DQE can access submission files.'
+                              : res.status === 404
+                                ? 'Not found.'
+                                : 'Could not load DQC 2 submission files.';
+                    setDqc1SubmissionLoadError(msg);
+                    setDqc1SubmissionLoading(false);
+                    return null;
+                }
+                return res.json();
+            })
+            .then((data: { drawing?: { id: number; originalName: string }; quotation?: { id: number; originalName: string } } | null) => {
+                if (data === null) return;
+                const drawing = data?.drawing;
+                const quotation = data?.quotation;
+                const fileToLoad = drawing ?? quotation ?? null;
+                if (!fileToLoad) {
+                    setDqc1SubmissionLoadError('No DQC 2 submission files found for this lead.');
+                    setDqc1SubmissionLoading(false);
+                    return;
+                }
+                const url = `${API}/api/leads/${projectId}/uploads/${fileToLoad.id}/file?path=${encodeURIComponent(fileToLoad.originalName)}`;
+                return fetch(url, { headers: { Authorization: `Bearer ${sessionId}` } })
+                    .then((r) => {
+                        if (!r.ok) return Promise.reject(new Error(r.status === 404 ? 'File not found.' : 'Could not load file.'));
+                        return r.blob();
+                    })
+                    .then((blob) => {
+                        if (!blob) return;
+                        setDqc1SubmissionLoading(false);
+                        const isPdf = blob.type === 'application/pdf';
+                        setDqc1SubmissionNotPdf(!isPdf);
+                        setDqc1PdfFile(new File([blob], fileToLoad.originalName, { type: blob.type }));
+                        setDqc1PdfPageNumber(1);
+                        setDqc1CommentPopup(null);
+                        setDqc1SelectedPin(null);
+                        if (isPdf) {
+                            if (dqc1SubmissionBlobUrlRef.current) URL.revokeObjectURL(dqc1SubmissionBlobUrlRef.current);
+                            const blobUrl = URL.createObjectURL(blob);
+                            dqc1SubmissionBlobUrlRef.current = blobUrl;
+                            setDqc1PdfUrl(blobUrl);
+                        } else {
+                            setDqc1PdfUrl(null);
+                        }
+                    })
+                    .catch((err) => {
+                        setDqc1SubmissionLoadError(err?.message || 'Could not load the submitted file.');
+                        setDqc1SubmissionLoading(false);
+                    });
+            })
+            .catch(() => {
+                setDqc1SubmissionLoadError('Could not load DQC 2 submission files.');
+                setDqc1SubmissionLoading(false);
+            });
+    }, [projectId, sessionId]);
+
+    // When DQC 1 approval popup opens, auto-load DQC 1 submission file
+    useEffect(() => {
+        if (popupContext?.milestoneIndex !== 1 || popupContext?.taskName !== 'DQC 1 approval' || !projectId || !sessionId) return;
+        loadDqcSubmissionFile();
         return () => {
-            cancelled = true;
+            setDqc1SubmissionLoading(false);
             if (dqc1SubmissionBlobUrlRef.current) {
                 URL.revokeObjectURL(dqc1SubmissionBlobUrlRef.current);
                 dqc1SubmissionBlobUrlRef.current = null;
             }
         };
-    }, [popupContext?.milestoneIndex, popupContext?.taskName, projectId, sessionId]);
+    }, [popupContext?.milestoneIndex, popupContext?.taskName, projectId, sessionId, loadDqcSubmissionFile]);
+
+    // When DQC 2 approval popup opens, auto-load DQC 2 submission file for the reviewer panel
+    const isDqc2Approval = popupContext?.milestoneIndex === 4 && (popupContext?.taskName === 'DQC 2 approval' || popupContext?.taskName === 'DQC 2 approval ');
+    useEffect(() => {
+        if (!isDqc2Approval || !projectId || !sessionId) return;
+        loadDqc2SubmissionFile();
+        return () => {
+            setDqc1SubmissionLoading(false);
+            if (dqc1SubmissionBlobUrlRef.current) {
+                URL.revokeObjectURL(dqc1SubmissionBlobUrlRef.current);
+                dqc1SubmissionBlobUrlRef.current = null;
+            }
+        };
+    }, [isDqc2Approval, projectId, sessionId, loadDqc2SubmissionFile]);
+
+    // When DQC user opens lead with ?view=dqc (Quality Check), auto-load DQC 1 submission file so they can do the quantity check
+    useEffect(() => {
+        if (!viewDqc || !isDqcUser || !projectId || !sessionId) return;
+        loadDqcSubmissionFile();
+        return () => {
+            setDqc1SubmissionLoading(false);
+            if (dqc1SubmissionBlobUrlRef.current) {
+                URL.revokeObjectURL(dqc1SubmissionBlobUrlRef.current);
+                dqc1SubmissionBlobUrlRef.current = null;
+            }
+        };
+    }, [viewDqc, isDqcUser, projectId, sessionId, loadDqcSubmissionFile]);
 
     const [image, setImage] = useState<ImageType[]>([
         {id:1, img:"/profile1.jpg"},
@@ -278,7 +432,7 @@ export default function ProjectDetailPage() {
         const milestone = MileStonesArray.MilestonesName[milestoneIndex];
         if (milestone) {
             setPopupContext({ milestoneIndex, milestoneName: milestone.name, taskName });
-            if (taskName === 'DQC 1 approval' || taskName === 'Design sign off') setDqc1Verdict(null);
+            if (taskName === 'DQC 1 approval' || taskName === 'DQC 2 approval' || taskName === 'DQC 2 approval ') setDqc1Verdict(null);
         }
     };
 
@@ -356,6 +510,8 @@ export default function ProjectDetailPage() {
     const onDqc1PdfSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0] ?? null;
         if (!file) return;
+        setDqc1SubmissionLoadError(null);
+        setDqc1SubmissionNotPdf(false);
         setDqc1PdfFile(file);
         setDqc1AnnotateMode(false);
         setDqc1CommentPopup(null);
@@ -375,7 +531,7 @@ export default function ProjectDetailPage() {
         setHistoryEvents((prev) => [full, ...prev]);
         // Persist so history is recorded and maintained
         if (projectId != null) {
-            fetch(`http://localhost:3001/api/leads/${projectId}/history`, {
+            fetch(`${API}/api/leads/${projectId}/history`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(full),
@@ -408,7 +564,7 @@ export default function ProjectDetailPage() {
         });
         // persist completion for this lead so refresh keeps it completed
         if (projectId != null) {
-            fetch(`http://localhost:3001/api/leads/${projectId}/complete-task`, {
+            fetch(`${API}/api/leads/${projectId}/complete-task`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ milestoneIndex, taskName }),
@@ -418,12 +574,17 @@ export default function ProjectDetailPage() {
     };
 
     const submitDqc1Review = () => {
-        if (popupContext && dqc1Verdict) {
+        const milestoneIndex = 1;
+        const taskName = 'DQC 1 approval';
+        const milestoneName = 'DQC1';
+        if (dqc1Verdict) {
             addHistoryEvent({
                 type: 'completed',
-                taskName: popupContext.taskName,
-                milestoneName: popupContext.milestoneName,
-                description: `${popupContext.taskName} completed. Design QC review submitted.`,
+                taskName,
+                milestoneName,
+                description: dqc1Verdict === 'approved'
+                    ? `${taskName} completed. Design QC review submitted.`
+                    : `DQC review submitted: ${dqc1Verdict === 'rejected' ? 'Rejected' : 'Approved with changes'}. Designer must address comments.`,
                 user: { name: authUser?.name ?? 'Current User', avatar: authUser?.profileImage },
                 details: {
                     kind: 'dqc_review',
@@ -432,7 +593,37 @@ export default function ProjectDetailPage() {
                     remarks: dqc1Remarks.map((r) => ({ priority: r.priority, text: r.text })),
                 },
             });
-            markTaskComplete(popupContext.milestoneIndex, popupContext.taskName);
+            // Only move to next milestone when fully approved. Rejected or Approved with changes = designer must resolve comments and resubmit.
+            const movesToNextMilestone = dqc1Verdict === 'approved';
+            if (movesToNextMilestone && projectId != null) {
+                fetch(`${API}/api/leads/${projectId}/complete-task`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ milestoneIndex, taskName }),
+                }).catch(() => {});
+                markTaskComplete(milestoneIndex, taskName);
+            }
+            if (projectId != null) {
+                fetch(`${API}/api/leads/${projectId}/dqc-review`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...(sessionId ? { Authorization: `Bearer ${sessionId}` } : {}) },
+                    body: JSON.stringify({
+                        verdict: dqc1Verdict,
+                        remarks: dqc1Remarks.map((r) => ({
+                            priority: r.priority,
+                            text: r.text,
+                            page: r.page,
+                            xPct: r.xPct,
+                            yPct: r.yPct,
+                            pinNumber: r.pinNumber,
+                        })),
+                    }),
+                }).catch(() => {});
+            }
+        }
+        if (viewDqc && isDqcUser) {
+            router.push('/');
+            return;
         }
         closePopup();
     };
@@ -478,6 +669,19 @@ export default function ProjectDetailPage() {
         el.scrollBy({ left: direction === 'left' ? -step : step, behavior: 'smooth' });
     };
 
+    const getReviewerInitials = (name: string | undefined) => {
+        if (!name || !name.trim()) return "—";
+        const parts = name.trim().split(/\s+/);
+        if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+        return name.slice(0, 2).toUpperCase();
+    };
+    const getReviewerRoleLabel = (role: string | undefined) => {
+        const r = (role || "").toLowerCase();
+        if (r === "dqe") return "Lead QA Engineer";
+        if (r === "dqc_manager") return "DQC Manager";
+        return role || "Reviewer";
+    };
+
     const getTaskStatus = (milestoneIndex: number, taskIndex: number, taskList: string[]) => {
         const taskName = taskList[taskIndex];
         const key = taskKey(milestoneIndex, taskName);
@@ -495,6 +699,85 @@ export default function ProjectDetailPage() {
         return { icon: 'pending' as const, subtitle: 'Not started', tags: ['PENDING'] as const };
     };
 
+    // DQC Manager / DQE: only show DQC1 approval UI (no Prolance, HOLD, RESUME, History, ChatBox, full tracker)
+    if (viewDqc && isDqcUser) {
+        if (authLoading) {
+            return (
+                <div className="min-h-screen bg-gray-100 flex flex-col items-center justify-center p-8">
+                    <p className="text-gray-600">Loading…</p>
+                    <p className="text-sm text-gray-500 mt-2">Preparing DQC submission file…</p>
+                </div>
+            );
+        }
+        return (
+            <div className="min-h-screen bg-gray-100 flex flex-col">
+                <div className="flex-shrink-0 flex flex-wrap items-center justify-between gap-4 px-4 py-3 bg-white border-b border-gray-200 shadow-sm">
+                    <div className="flex flex-wrap items-baseline gap-6">
+                        <span className="text-gray-600 font-medium">Lead ID:</span>
+                        <span className="font-bold text-gray-900">{project.id}</span>
+                        <span className="text-gray-600 font-medium">Name:</span>
+                        <span className="font-bold text-gray-900">{project.projectName}</span>
+                        <span className="text-gray-600 font-medium">Stage:</span>
+                        <span className="font-bold text-gray-900">{project.projectStage || 'Active'}</span>
+                    </div>
+                    <a
+                        href="/"
+                        className="px-4 py-2 rounded-lg border border-gray-300 bg-white text-gray-700 font-medium hover:bg-gray-50"
+                    >
+                        Back to DQC queue
+                    </a>
+                </div>
+                <div className="flex-1 min-h-0 flex flex-col bg-white m-4 rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+                    <PopupDqc1Approval
+                        onClose={() => router.push('/')}
+                        projectTitle={project.projectName}
+                        projectRef={project.pid || `REF-${project.id}`}
+                        revision={project.revision ?? undefined}
+                        designerName={project.designerName ?? undefined}
+                        reviewerName={authUser?.name ?? undefined}
+                        reviewerInitials={getReviewerInitials(authUser?.name)}
+                        reviewerRoleLabel={getReviewerRoleLabel(authUser?.role)}
+                        reviewStatus="PENDING REVIEW"
+                        dqc1Verdict={dqc1Verdict}
+                        setDqc1Verdict={setDqc1Verdict}
+                        dqc1Remarks={dqc1Remarks}
+                        removeDqc1Remark={removeDqc1Remark}
+                        addDqc1Remark={addDqc1Remark}
+                        focusRemarkInPdf={focusRemarkInPdf}
+                        newRemarkText={newRemarkText}
+                        setNewRemarkText={setNewRemarkText}
+                        newRemarkPriority={newRemarkPriority}
+                        setNewRemarkPriority={setNewRemarkPriority}
+                        dqc1PdfFile={dqc1PdfFile}
+                        dqc1PdfUrl={dqc1PdfUrl}
+                        dqc1PdfInputRef={dqc1PdfInputRef}
+                        onDqc1PdfSelected={onDqc1PdfSelected}
+                        dqc1PdfMaximized={dqc1PdfMaximized}
+                        setDqc1PdfMaximized={setDqc1PdfMaximized}
+                        dqc1PdfNumPages={dqc1PdfNumPages}
+                        dqc1PdfPageNumber={dqc1PdfPageNumber}
+                        setDqc1PdfPageNumber={setDqc1PdfPageNumber}
+                        dqc1AnnotateMode={dqc1AnnotateMode}
+                        setDqc1AnnotateMode={setDqc1AnnotateMode}
+                        dqc1CommentPopup={dqc1CommentPopup}
+                        setDqc1CommentPopup={setDqc1CommentPopup}
+                        dqc1PdfViewportRef={dqc1PdfViewportRef}
+                        dqc1PdfScrollRef={dqc1PdfScrollRef}
+                        dqc1SelectedPin={dqc1SelectedPin}
+                        setDqc1SelectedPin={setDqc1SelectedPin}
+                        dqc1HighlightedPin={dqc1HighlightedPin}
+                        setDqc1PdfNumPages={setDqc1PdfNumPages}
+                        submitDqc1Review={submitDqc1Review}
+                        dqc1SubmissionLoadError={dqc1SubmissionLoadError}
+                        dqc1SubmissionNotPdf={dqc1SubmissionNotPdf}
+                        dqc1SubmissionLoading={dqc1SubmissionLoading}
+                        onLoadDqcSubmission={loadDqcSubmissionFile}
+                    />
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div className='bg-slate-900 xl:min-h-[900px] 2xl:min-h-[1400px]'>
             {!activeCard && (
@@ -507,7 +790,7 @@ export default function ProjectDetailPage() {
                     onResumeClick={async () => {
                         if (!projectId) return;
                         try {
-                            await fetch(`http://localhost:3001/api/leads/${projectId}/resume`, {
+                            await fetch(`${API}/api/leads/${projectId}/resume`, {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                             });
@@ -558,28 +841,54 @@ export default function ProjectDetailPage() {
                         onViewTaskDetails={setSelectedHistoryEvent}
                         currentMilestoneIndex={currentMilestoneIndex}
                         totalMilestones={MileStonesArray.MilestonesName.length}
+                        showDqcFeedback={isDesigner}
+                        leadId={projectId}
+                        sessionId={sessionId}
                     />
                 )}
 
-                <div className={`xl:h-full xl:text-center xl:font-bold ${activeCard && activeCard !== 'files' && activeCard !== 'chat' ? 'hidden' : ''} ${isMmtUser ? 'xl:col-span-7' : 'xl:col-span-2'}`}>
-                    <div className={isMmtUser ? 'xl:h-full' : 'xl:grid xl:grid-rows-2 xl:h-full xl:gap-4'}>
-                        <FilesCard
-                            key={`files-${uploadsVersion}`}
-                            cardClass={getCardClass('files', isMmtUser ? 'xl:rounded-3xl xl:bg-purple-50 xl:h-[70vh] xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative' : 'xl:rounded-3xl xl:bg-purple-50 xl:row-span-1 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative')}
-                            onToggleMaximize={() => toggleMaximize('files')}
-                            isMaximized={activeCard === 'files'}
-                            leadId={projectId}
-                            sessionId={sessionId}
-                            canUpload={isMmtUser}
-                            userRole={authUser?.role}
-                            canDelete={isMmtUser}
-                        />
-                        {!isMmtUser && (
-                            <ChatCard
-                                cardClass={getCardClass('chat', 'xl:rounded-3xl xl:bg-purple-50 xl:row-span-1 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative')}
-                                onToggleMaximize={() => toggleMaximize('chat')}
-                                isMaximized={activeCard === 'chat'}
-                            />
+                <div className={`xl:text-center xl:font-bold ${activeCard && activeCard !== 'files' && activeCard !== 'chat' ? 'hidden' : ''} ${isMmtUser ? 'xl:col-span-7 xl:h-[70vh] xl:min-h-0' : 'xl:col-span-2 xl:h-[70vh] xl:min-h-0'}`}>
+                    <div className={isMmtUser ? 'xl:h-full xl:min-h-0 xl:flex xl:flex-col' : isDesigner ? 'xl:flex xl:flex-col xl:h-full xl:min-h-0 xl:gap-4' : 'xl:grid xl:grid-rows-2 xl:h-full xl:min-h-0 xl:gap-4'}>
+                        {isDesigner && !isMmtUser ? (
+                            <div className="xl:flex-1 xl:min-h-0 xl:grid xl:grid-rows-2 xl:gap-4">
+                                <FilesCard
+                                    key={`files-${uploadsVersion}`}
+                                    cardClass={getCardClass('files', 'xl:rounded-3xl xl:bg-purple-50 xl:row-span-1 xl:min-h-0 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative xl:flex xl:flex-col')}
+                                    onToggleMaximize={() => toggleMaximize('files')}
+                                    isMaximized={activeCard === 'files'}
+                                    leadId={projectId}
+                                    sessionId={sessionId}
+                                    canUpload={false}
+                                    userRole={authUser?.role}
+                                    canDelete={false}
+                                />
+                                <ChatCard
+                                    cardClass={getCardClass('chat', 'xl:rounded-3xl xl:bg-purple-50 xl:row-span-1 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative')}
+                                    onToggleMaximize={() => toggleMaximize('chat')}
+                                    isMaximized={activeCard === 'chat'}
+                                />
+                            </div>
+                        ) : (
+                            <>
+                                <FilesCard
+                                    key={`files-${uploadsVersion}`}
+                                    cardClass={getCardClass('files', isMmtUser ? 'xl:rounded-3xl xl:bg-purple-50 xl:h-full xl:min-h-0 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative xl:flex xl:flex-col' : 'xl:rounded-3xl xl:bg-purple-50 xl:row-span-1 xl:min-h-0 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative xl:flex xl:flex-col')}
+                                    onToggleMaximize={() => toggleMaximize('files')}
+                                    isMaximized={activeCard === 'files'}
+                                    leadId={projectId}
+                                    sessionId={sessionId}
+                                    canUpload={isMmtUser}
+                                    userRole={authUser?.role}
+                                    canDelete={isMmtUser}
+                                />
+                                {!isMmtUser && (
+                                    <ChatCard
+                                        cardClass={getCardClass('chat', 'xl:rounded-3xl xl:bg-purple-50 xl:row-span-1 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative')}
+                                        onToggleMaximize={() => toggleMaximize('chat')}
+                                        isMaximized={activeCard === 'chat'}
+                                    />
+                                )}
+                            </>
                         )}
                     </div>
                 </div>
@@ -617,7 +926,7 @@ export default function ProjectDetailPage() {
                                 onClick={async () => {
                                     if (!projectId || !holdDate) return;
                                     try {
-                                        await fetch(`http://localhost:3001/api/leads/${projectId}/hold`, {
+                                        await fetch(`${API}/api/leads/${projectId}/hold`, {
                                             method: 'POST',
                                             headers: { 'Content-Type': 'application/json' },
                                             body: JSON.stringify({ resumeAt: holdDate }),
@@ -735,86 +1044,150 @@ export default function ProjectDetailPage() {
                         <PopupPlaceholder message="10% payment approval" onMarkComplete={() => { recordTaskComplete(2, '10% payment approval'); closePopup(); }} />
                     )}
                     {popupContext.milestoneIndex === 1 && popupContext.taskName === 'DQC 1 approval' && (
-                        <PopupDqc1Approval
-                            onClose={closePopup}
-                            dqc1Verdict={dqc1Verdict}
-                            setDqc1Verdict={setDqc1Verdict}
-                            dqc1Remarks={dqc1Remarks}
-                            removeDqc1Remark={removeDqc1Remark}
-                            addDqc1Remark={addDqc1Remark}
-                            focusRemarkInPdf={focusRemarkInPdf}
-                            newRemarkText={newRemarkText}
-                            setNewRemarkText={setNewRemarkText}
-                            newRemarkPriority={newRemarkPriority}
-                            setNewRemarkPriority={setNewRemarkPriority}
-                            dqc1PdfFile={dqc1PdfFile}
-                            dqc1PdfUrl={dqc1PdfUrl}
-                            dqc1PdfInputRef={dqc1PdfInputRef}
-                            onDqc1PdfSelected={onDqc1PdfSelected}
-                            dqc1PdfMaximized={dqc1PdfMaximized}
-                            setDqc1PdfMaximized={setDqc1PdfMaximized}
-                            dqc1PdfNumPages={dqc1PdfNumPages}
-                            dqc1PdfPageNumber={dqc1PdfPageNumber}
-                            setDqc1PdfPageNumber={setDqc1PdfPageNumber}
-                            dqc1AnnotateMode={dqc1AnnotateMode}
-                            setDqc1AnnotateMode={setDqc1AnnotateMode}
-                            dqc1CommentPopup={dqc1CommentPopup}
-                            setDqc1CommentPopup={setDqc1CommentPopup}
-                            dqc1PdfViewportRef={dqc1PdfViewportRef}
-                            dqc1PdfScrollRef={dqc1PdfScrollRef}
-                            dqc1SelectedPin={dqc1SelectedPin}
-                            setDqc1SelectedPin={setDqc1SelectedPin}
-                            dqc1HighlightedPin={dqc1HighlightedPin}
-                            setDqc1PdfNumPages={setDqc1PdfNumPages}
-                            submitDqc1Review={submitDqc1Review}
-                        />
+                        isDesigner ? (
+                            <PopupDqcDesignerView
+                                onClose={closePopup}
+                                leadId={projectId}
+                                sessionId={sessionId}
+                                projectName={project.projectName}
+                                projectRef={project.pid || `REF-${project.id}`}
+                                onEditResubmit={() => {
+                                    closePopup();
+                                    setPopupContext({ milestoneIndex: 1, milestoneName: 'DQC1', taskName: 'DQC 1 submission - dwg + quotation' });
+                                }}
+                            />
+                        ) : (
+                            <PopupDqc1Approval
+                                onClose={closePopup}
+                                projectTitle={project.projectName}
+                                projectRef={project.pid || `REF-${project.id}`}
+                                revision={project.revision ?? undefined}
+                                designerName={project.designerName ?? undefined}
+                                reviewerName={authUser?.name ?? undefined}
+                                reviewerInitials={getReviewerInitials(authUser?.name)}
+                                reviewerRoleLabel={getReviewerRoleLabel(authUser?.role)}
+                                reviewStatus="PENDING REVIEW"
+                                dqc1Verdict={dqc1Verdict}
+                                setDqc1Verdict={setDqc1Verdict}
+                                dqc1Remarks={dqc1Remarks}
+                                removeDqc1Remark={removeDqc1Remark}
+                                addDqc1Remark={addDqc1Remark}
+                                focusRemarkInPdf={focusRemarkInPdf}
+                                newRemarkText={newRemarkText}
+                                setNewRemarkText={setNewRemarkText}
+                                newRemarkPriority={newRemarkPriority}
+                                setNewRemarkPriority={setNewRemarkPriority}
+                                dqc1PdfFile={dqc1PdfFile}
+                                dqc1PdfUrl={dqc1PdfUrl}
+                                dqc1PdfInputRef={dqc1PdfInputRef}
+                                onDqc1PdfSelected={onDqc1PdfSelected}
+                                dqc1PdfMaximized={dqc1PdfMaximized}
+                                setDqc1PdfMaximized={setDqc1PdfMaximized}
+                                dqc1PdfNumPages={dqc1PdfNumPages}
+                                dqc1PdfPageNumber={dqc1PdfPageNumber}
+                                setDqc1PdfPageNumber={setDqc1PdfPageNumber}
+                                dqc1AnnotateMode={dqc1AnnotateMode}
+                                setDqc1AnnotateMode={setDqc1AnnotateMode}
+                                dqc1CommentPopup={dqc1CommentPopup}
+                                setDqc1CommentPopup={setDqc1CommentPopup}
+                                dqc1PdfViewportRef={dqc1PdfViewportRef}
+                                dqc1PdfScrollRef={dqc1PdfScrollRef}
+                                dqc1SelectedPin={dqc1SelectedPin}
+                                setDqc1SelectedPin={setDqc1SelectedPin}
+                                dqc1HighlightedPin={dqc1HighlightedPin}
+                                setDqc1PdfNumPages={setDqc1PdfNumPages}
+                                submitDqc1Review={submitDqc1Review}
+                                dqc1SubmissionLoadError={dqc1SubmissionLoadError}
+                                dqc1SubmissionNotPdf={dqc1SubmissionNotPdf}
+                                dqc1SubmissionLoading={dqc1SubmissionLoading}
+                                onLoadDqcSubmission={loadDqc2SubmissionFile}
+                            />
+                        )
                     )}
 
                     {popupContext.milestoneIndex === 3 && popupContext.taskName === 'D2 - masking request raise' && (
-                        <PopupD2MaskingRequest onSubmit={() => { recordTaskComplete(3, 'D2 - masking request raise'); closePopup(); }} />
+                        <PopupD2MaskingRequest
+                            leadId={projectId}
+                            sessionId={sessionId}
+                            onSubmit={() => { recordTaskComplete(3, 'D2 - masking request raise'); closePopup(); }}
+                        />
                     )}
                     {popupContext.milestoneIndex === 3 && popupContext.taskName !== 'D2 - masking request raise' && (
                         <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(3, popupContext.taskName); closePopup(); }} />
                     )}
-                    {popupContext.milestoneIndex === 4 && (
-                        <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(4, popupContext.taskName); closePopup(); }} />
-                    )}
-                    {popupContext.milestoneIndex === 5 && popupContext.taskName === 'Design sign off' && (
-                        <PopupDqc1Approval
+                    {popupContext.milestoneIndex === 4 && popupContext.taskName === 'DQC 2 submission' && (
+                        <PopupDqcSubmission
+                            leadId={projectId}
+                            sessionId={sessionId}
+                            submissionVariant="dqc2"
                             onClose={closePopup}
-                            dqc1Verdict={dqc1Verdict}
-                            setDqc1Verdict={setDqc1Verdict}
-                            dqc1Remarks={dqc1Remarks}
-                            removeDqc1Remark={removeDqc1Remark}
-                            addDqc1Remark={addDqc1Remark}
-                            focusRemarkInPdf={focusRemarkInPdf}
-                            newRemarkText={newRemarkText}
-                            setNewRemarkText={setNewRemarkText}
-                            newRemarkPriority={newRemarkPriority}
-                            setNewRemarkPriority={setNewRemarkPriority}
-                            dqc1PdfFile={dqc1PdfFile}
-                            dqc1PdfUrl={dqc1PdfUrl}
-                            dqc1PdfInputRef={dqc1PdfInputRef}
-                            onDqc1PdfSelected={onDqc1PdfSelected}
-                            dqc1PdfMaximized={dqc1PdfMaximized}
-                            setDqc1PdfMaximized={setDqc1PdfMaximized}
-                            dqc1PdfNumPages={dqc1PdfNumPages}
-                            dqc1PdfPageNumber={dqc1PdfPageNumber}
-                            setDqc1PdfPageNumber={setDqc1PdfPageNumber}
-                            dqc1AnnotateMode={dqc1AnnotateMode}
-                            setDqc1AnnotateMode={setDqc1AnnotateMode}
-                            dqc1CommentPopup={dqc1CommentPopup}
-                            setDqc1CommentPopup={setDqc1CommentPopup}
-                            dqc1PdfViewportRef={dqc1PdfViewportRef}
-                            dqc1PdfScrollRef={dqc1PdfScrollRef}
-                            dqc1SelectedPin={dqc1SelectedPin}
-                            setDqc1SelectedPin={setDqc1SelectedPin}
-                            dqc1HighlightedPin={dqc1HighlightedPin}
-                            setDqc1PdfNumPages={setDqc1PdfNumPages}
-                            submitDqc1Review={submitDqc1Review}
+                            onSaveDraft={closePopup}
+                            onSubmit={() => { recordTaskComplete(4, 'DQC 2 submission'); closePopup(); }}
                         />
                     )}
-                    {popupContext.milestoneIndex === 5 && popupContext.taskName !== 'Design sign off' && (
+                    {popupContext.milestoneIndex === 4 && (popupContext.taskName === 'DQC 2 approval' || popupContext.taskName === 'DQC 2 approval ') && (
+                        isDesigner ? (
+                            <PopupDqcDesignerView
+                                onClose={closePopup}
+                                leadId={projectId}
+                                sessionId={sessionId}
+                                submissionVariant="dqc2"
+                                projectName={project.projectName}
+                                projectRef={project.pid || `REF-${project.id}`}
+                                onEditResubmit={() => closePopup()}
+                            />
+                        ) : (
+                            <PopupDqc1Approval
+                                onClose={closePopup}
+                                projectTitle={project.projectName}
+                                projectRef={project.pid || `REF-${project.id}`}
+                                revision={project.revision ?? undefined}
+                                designerName={project.designerName ?? undefined}
+                                reviewerName={authUser?.name ?? undefined}
+                                reviewerInitials={getReviewerInitials(authUser?.name)}
+                                reviewerRoleLabel={getReviewerRoleLabel(authUser?.role)}
+                                reviewStatus="PENDING REVIEW"
+                                dqc1Verdict={dqc1Verdict}
+                                setDqc1Verdict={setDqc1Verdict}
+                                dqc1Remarks={dqc1Remarks}
+                                removeDqc1Remark={removeDqc1Remark}
+                                addDqc1Remark={addDqc1Remark}
+                                focusRemarkInPdf={focusRemarkInPdf}
+                                newRemarkText={newRemarkText}
+                                setNewRemarkText={setNewRemarkText}
+                                newRemarkPriority={newRemarkPriority}
+                                setNewRemarkPriority={setNewRemarkPriority}
+                                dqc1PdfFile={dqc1PdfFile}
+                                dqc1PdfUrl={dqc1PdfUrl}
+                                dqc1PdfInputRef={dqc1PdfInputRef}
+                                onDqc1PdfSelected={onDqc1PdfSelected}
+                                dqc1PdfMaximized={dqc1PdfMaximized}
+                                setDqc1PdfMaximized={setDqc1PdfMaximized}
+                                dqc1PdfNumPages={dqc1PdfNumPages}
+                                dqc1PdfPageNumber={dqc1PdfPageNumber}
+                                setDqc1PdfPageNumber={setDqc1PdfPageNumber}
+                                dqc1AnnotateMode={dqc1AnnotateMode}
+                                setDqc1AnnotateMode={setDqc1AnnotateMode}
+                                dqc1CommentPopup={dqc1CommentPopup}
+                                setDqc1CommentPopup={setDqc1CommentPopup}
+                                dqc1PdfViewportRef={dqc1PdfViewportRef}
+                                dqc1PdfScrollRef={dqc1PdfScrollRef}
+                                dqc1SelectedPin={dqc1SelectedPin}
+                                setDqc1SelectedPin={setDqc1SelectedPin}
+                                dqc1HighlightedPin={dqc1HighlightedPin}
+                                setDqc1PdfNumPages={setDqc1PdfNumPages}
+                                submitDqc1Review={submitDqc1Review}
+                                dqc1SubmissionLoadError={dqc1SubmissionLoadError}
+                                dqc1SubmissionNotPdf={dqc1SubmissionNotPdf}
+                                dqc1SubmissionLoading={dqc1SubmissionLoading}
+                                onLoadDqcSubmission={loadDqcSubmissionFile}
+                            />
+                        )
+                    )}
+                    {popupContext.milestoneIndex === 4 && popupContext.taskName !== 'DQC 2 submission' && popupContext.taskName !== 'DQC 2 approval' && popupContext.taskName !== 'DQC 2 approval ' && (
+                        <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(4, popupContext.taskName); closePopup(); }} />
+                    )}
+                    {popupContext.milestoneIndex === 5 && (
                         <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(5, popupContext.taskName); closePopup(); }} />
                     )}
                     {popupContext.milestoneIndex === 6 && (
