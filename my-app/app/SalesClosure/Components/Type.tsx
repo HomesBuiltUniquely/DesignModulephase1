@@ -1,46 +1,54 @@
 import {
   PropertyConfig,
-  OrderBookingMonth,
   BookingType,
   PaymentMode,
-  StatusOfProject,
   PaymentReceived,
 } from "./Enums";
 
 import { z } from "zod";
 
-export type FetchData = {
-  sales_lead_name: string;
-  sales_spoc: string;
-  sales_email: string;
-  customer_name: string;
-  co_no: string;
-  email: string;
-  property_name: string;
-  possession: string;
-  lead_source: string;
-};
-
 export const salesClosureSchema = z.object({
+  sales_lead_name: z.string().min(1, "Sales lead name is required"),
+
+  sales_spoc: z.string().min(1, "Sales SPOC is required"),
+
+  sales_email: z
+    .string()
+    .min(1, "Sales email is required")
+    .email("Enter a valid sales email")
+    .refine(
+      (value) => value.toLowerCase().endsWith("@hubinterior.com"),
+      "Sales email must end with @hubinterior.com",
+    ),
+
+  customer_name: z.string().min(1, "Customer name is required"),
+
+  co_no: z
+    .string()
+    .min(1, "Contact number is required")
+    .regex(/^\d{10}$/, "Contact number must be exactly 10 digits"),
+
+  email: z
+    .string()
+    .min(1, "Customer email is required")
+    .email("Enter a valid customer email"),
+
+  property_name: z.string().min(1, "Property name is required"),
+
+  possession: z.string().min(1, "Possession is required"),
+
+  lead_source: z.string().min(1, "Lead source is required"),
+
   property_configuration: z.union([
     z.nativeEnum(PropertyConfig),
     z.literal(""),
   ]),
 
-  experience_center: z.string().min(1, "Experience center is required"),
+  experience_center: z.string(),
 
   site_address: z.string().min(1, "Site address is required"),
 
   booking_date: z.string().min(1, "Booking date is required"),
-
-  booking_month: z.number(),
-
-  booking_year: z.number(),
-
-  order_booking_month: z.union([
-    z.nativeEnum(OrderBookingMonth),
-    z.literal(""),
-  ]),
 
   booking_type: z.union([z.nativeEnum(BookingType), z.literal("")]),
 
@@ -64,13 +72,11 @@ export const salesClosureSchema = z.object({
 
   payment_received: z.union([z.nativeEnum(PaymentReceived), z.literal("")]),
 
-  amount_paid: z.union([z.enum(["YES", "NO"]), z.literal("")]),
-
   mode_of_payment: z.union([z.nativeEnum(PaymentMode), z.literal("")]),
 
   payment_screenshot: z.string().min(1, "Payment screenshot is required"),
 
-  status_of_project: z.union([z.nativeEnum(StatusOfProject), z.literal("")]),
+  status_of_project: z.string(),
 
   special_offer: z.string(),
 

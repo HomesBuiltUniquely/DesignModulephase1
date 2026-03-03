@@ -19,7 +19,7 @@ app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "root@root",
+  password: process.env.DB_PASSWORD || "Vk@root1",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -164,8 +164,14 @@ async function initDb() {
         resume_at DATETIME NULL,
         create_at DATETIME NOT NULL,
         update_at DATETIME NOT NULL,
-        payload TEXT NOT NULL
+        payload MEDIUMTEXT NOT NULL
       );
+    `);
+
+    // Existing deployments may still have TEXT; upgrade to MEDIUMTEXT so base64 image payloads fit.
+    await conn.query(`
+      ALTER TABLE leads
+      MODIFY COLUMN payload MEDIUMTEXT NOT NULL
     `);
 
     await conn.query(`
@@ -321,24 +327,29 @@ initDb().catch((err) => {
 // helper to map sales-closure payload to lead fields
 function toLeadRow(payload: any) {
   const now = new Date();
-  const fetched = payload?.fetchedData || {};
-  const formData = payload?.formData || {};
+  const formData = payload?.formData || payload?.form_data || payload || {};
+  const fetched = payload?.fetchedData || formData || {};
   const projectName =
-    fetched.customer_name || fetched.sales_lead_name || "Unnamed";
-  const payment = formData.payment_received || "";
+    formData.customer_name ||
+    fetched.customer_name ||
+    formData.sales_lead_name ||
+    fetched.sales_lead_name ||
+    "Unnamed";
+  const payment =
+    formData.payment_received || payload?.payment_received || "";
   const stage =
     payment === "FULL_10%"
       ? "10-20%"
       : payment === "PARTIAL" || payment === "TOKEN"
         ? "Pre 10%"
-        : formData.status_of_project || "Active";
+        : formData.status_of_project || payload?.status_of_project || "Active";
 
   return {
     pid: "", // you can generate a PID here if needed
     projectName,
     projectStage: stage,
-    contactNo: fetched.co_no || null,
-    clientEmail: fetched.email || null,
+    contactNo: formData.co_no || fetched.co_no || null,
+    clientEmail: formData.email || fetched.email || null,
     createAt: now,
     updateAt: now,
   };
@@ -2294,7 +2305,7 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
     let revision: string | undefined;
     try {
       const payload = row.payload ? JSON.parse(row.payload) : {};
-      const formData = payload.formData || payload.form_data || {};
+      const formData = payload.formData || payload.form_data || payload || {};
       designerName = formData.designer_name || formData.designerName || undefined;
       revision = formData.revision || (designerName ? "v1.0 (Latest)" : undefined);
     } catch {

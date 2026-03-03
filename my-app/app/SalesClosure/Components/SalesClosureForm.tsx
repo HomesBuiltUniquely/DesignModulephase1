@@ -3,31 +3,64 @@ import { useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
 import { getApiBase } from "@/app/lib/apiBase";
 import { z } from "zod";
-import { FetchData, SalesClosureFormType } from "./Type";
+import { SalesClosureFormType } from "./Type";
 import { salesClosureSchema } from "./Type";
+import { BRANCH_OPTIONS, PROJECT_STATUS } from "../../constants/branches";
 import {
   BookingType,
-  OrderBookingMonth,
   PropertyConfig,
   PaymentReceived,
   PaymentMode,
-  StatusOfProject,
+  LeadSource,
 } from "./Enums";
+
+function getTodayDateValue() {
+  return new Date().toISOString().split("T")[0];
+}
+
+function buildInitialFormState(): SalesClosureFormType {
+  return {
+    sales_lead_name: "",
+    sales_spoc: "",
+    sales_email: "",
+    customer_name: "",
+    co_no: "",
+    email: "",
+    property_name: "",
+    possession: "",
+    lead_source: "",
+    property_configuration: "",
+    experience_center: "",
+    site_address: "",
+    booking_date: getTodayDateValue(),
+    booking_type: "",
+    spot_booking: false,
+    designer_name: "",
+    designer_lead: "",
+    order_value: 0,
+    dis_on_woodwork: 0,
+    dis_on_service: 0,
+    dis_on_accessories: 0,
+    hub_coins: 0,
+    complimentary_offer: 0,
+    payment_received: "",
+    mode_of_payment: "",
+    payment_screenshot: "",
+    status_of_project: PROJECT_STATUS,
+    special_offer: "",
+    custom_commitments: "",
+    timeline_promise_by_sales: "",
+    scope_frozen: "",
+    approval_proof: "",
+  };
+}
 
 export default function SalesClosureForm() {
   const router = useRouter();
-  const [fetchData, setFetchData] = useState<FetchData>({
-    sales_lead_name: "Anurag",
-    sales_spoc: "somthing",
-    sales_email: "vk@gmail.com",
-    customer_name: "Vinit",
-    co_no: "7016002823",
-    email: "vinit@gmail.com",
-    property_name: "Home",
-    possession: "In 2 Months",
-    lead_source: "call",
-  });
-
+  type PercentField =
+    | "dis_on_woodwork"
+    | "dis_on_service"
+    | "dis_on_accessories";
   type Designer = { id: number; name: string; leadName: string };
   const [designers, setDesigners] = useState<Designer[]>([]);
 
@@ -58,37 +91,14 @@ export default function SalesClosureForm() {
     Partial<Record<keyof SalesClosureFormType, string>>
   >({});
 
-  const initialFormState: SalesClosureFormType = {
-    property_configuration: "",
-    experience_center: "",
-    site_address: "",
-    booking_date: "",
-    booking_month: 0,
-    booking_year: new Date().getFullYear(),
-    order_booking_month: "",
-    booking_type: "",
-    spot_booking: false,
-    designer_name: "",
-    designer_lead: "",
-    order_value: 0,
-    dis_on_woodwork: 0,
-    dis_on_service: 0,
-    dis_on_accessories: 0,
-    hub_coins: 0,
-    complimentary_offer: 0,
-    payment_received: "",
-    amount_paid: "",
-    mode_of_payment: "",
-    payment_screenshot: "",
-    status_of_project: "",
-    special_offer: "",
-    custom_commitments: "",
-    timeline_promise_by_sales: "",
-    scope_frozen: "",
-    approval_proof: "",
-  };
-
-  const [form, setForm] = useState<SalesClosureFormType>(initialFormState);
+  const [form, setForm] = useState<SalesClosureFormType>(buildInitialFormState);
+  const [percentInputs, setPercentInputs] = useState<
+    Record<PercentField, string>
+  >({
+    dis_on_woodwork: "0",
+    dis_on_service: "0",
+    dis_on_accessories: "0",
+  });
 
   function updateFields<K extends keyof SalesClosureFormType>(
     name: K,
@@ -114,6 +124,29 @@ export default function SalesClosureForm() {
     });
   }
 
+  function handlePercentChange(field: PercentField, value: string) {
+    if (!/^\d*\.?\d*$/.test(value)) return;
+
+    setPercentInputs((prev) => ({ ...prev, [field]: value }));
+    if (value === "" || value === ".") return;
+
+    updateFields(field, Number(value));
+  }
+
+  function handlePercentBlur(field: PercentField) {
+    const raw = percentInputs[field];
+    if (raw === "" || raw === ".") {
+      setPercentInputs((prev) => ({ ...prev, [field]: "0" }));
+      updateFields(field, 0);
+      return;
+    }
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed)) {
+      setPercentInputs((prev) => ({ ...prev, [field]: String(parsed) }));
+      updateFields(field, parsed);
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (form.special_offer.trim() !== "" && !form.approval_proof) {
@@ -121,13 +154,8 @@ export default function SalesClosureForm() {
       return;
     }
 
-    //  Combine both
-    const finalPayload = {
-      fetchedData: fetchData,
-      formData: form,
-    };
-
-    const result = salesClosureSchema.safeParse(finalPayload.formData);
+    const finalPayload = form;
+    const result = salesClosureSchema.safeParse(finalPayload);
 
     if (!result.success) {
       // validation handled live in updateFields; show a summary alert for submit
@@ -153,18 +181,42 @@ export default function SalesClosureForm() {
       }
       console.log("Response:", data2);
 
-      localStorage.setItem("sales_closure_response", JSON.stringify(data2));
+      const responseData =
+        data2 && typeof data2 === "object"
+          ? (data2 as { success?: boolean; message?: string })
+          : {};
+      if (!res.ok || responseData.success === false) {
+        throw new Error(
+          responseData.message || "Failed to submit sales closure.",
+        );
+      }
+
+      localStorage.setItem(
+        "sales_closure_response",
+        JSON.stringify(responseData),
+      );
 
       // navigate only after success; lead is now in the queue (Dashboard)
       router.push("/SalesClosure/Review");
     } catch (err) {
       console.error("Network error:", err);
-      alert("Network error: Backend server is not reachable.");
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Network error: Backend server is not reachable.";
+      alert(message);
     }
   }
 
   function handleCancel() {
-    setForm(initialFormState);
+    const resetForm = buildInitialFormState();
+    setForm(resetForm);
+    setPercentInputs({
+      dis_on_woodwork: String(resetForm.dis_on_woodwork),
+      dis_on_service: String(resetForm.dis_on_service),
+      dis_on_accessories: String(resetForm.dis_on_accessories),
+    });
+    setErrors({});
   }
 
   return (
@@ -186,10 +238,15 @@ export default function SalesClosureForm() {
                   </label>
                   <input
                     className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                    type="text"
-                    readOnly
-                    value={fetchData.sales_email}
+                    type="email"
+                    value={form.sales_email}
+                    onChange={(e) =>
+                      updateFields("sales_email", e.target.value)
+                    }
                   />
+                  {errors.sales_email && (
+                    <p className="text-red-500 text-sm">{errors.sales_email}</p>
+                  )}
                 </div>
                 <div>
                   <label className="block text-sm text-green-950 font-medium mb-1">
@@ -216,9 +273,14 @@ export default function SalesClosureForm() {
                 <input
                   className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
                   type="text"
-                  value={fetchData.customer_name}
-                  readOnly
+                  value={form.customer_name}
+                  onChange={(e) =>
+                    updateFields("customer_name", e.target.value)
+                  }
                 />
+                {errors.customer_name && (
+                  <p className="text-red-500 text-sm">{errors.customer_name}</p>
+                )}
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-2">
                 <div>
@@ -227,10 +289,17 @@ export default function SalesClosureForm() {
                   </label>
                   <input
                     className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                    type="text"
-                    value={fetchData.co_no}
-                    readOnly
+                    type="tel"
+                    inputMode="numeric"
+                    value={form.co_no}
+                    maxLength={10}
+                    onChange={(e) =>
+                      updateFields("co_no", e.target.value.replace(/\D/g, "").slice(0, 10))
+                    }
                   />
+                  {errors.co_no && (
+                    <p className="text-red-500 text-sm">{errors.co_no}</p>
+                  )}
                 </div>
                 <div>
                   <label className="block text-sm text-green-950 font-medium mb-1">
@@ -238,10 +307,13 @@ export default function SalesClosureForm() {
                   </label>
                   <input
                     className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                    type="text"
-                    value={fetchData.email}
-                    readOnly
+                    type="email"
+                    value={form.email}
+                    onChange={(e) => updateFields("email", e.target.value)}
                   />
+                  {errors.email && (
+                    <p className="text-red-500 text-sm">{errors.email}</p>
+                  )}
                 </div>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-2">
@@ -252,9 +324,16 @@ export default function SalesClosureForm() {
                   <input
                     className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
                     type="text"
-                    value={fetchData.property_name}
-                    readOnly
+                    value={form.property_name}
+                    onChange={(e) =>
+                      updateFields("property_name", e.target.value)
+                    }
                   />
+                  {errors.property_name && (
+                    <p className="text-red-500 text-sm">
+                      {errors.property_name}
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label className="block text-sm text-green-950 font-medium mb-1">
@@ -263,9 +342,12 @@ export default function SalesClosureForm() {
                   <input
                     className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
                     type="text"
-                    value={fetchData.possession}
-                    readOnly
+                    value={form.possession}
+                    onChange={(e) => updateFields("possession", e.target.value)}
                   />
+                  {errors.possession && (
+                    <p className="text-red-500 text-sm">{errors.possession}</p>
+                  )}
                 </div>
               </div>
               <div>
@@ -275,8 +357,8 @@ export default function SalesClosureForm() {
                 <input
                   className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
                   type="text"
-                  value={fetchData.lead_source}
-                  readOnly
+                  value={form.lead_source}
+                  onChange={(e) => updateFields("lead_source", e.target.value)}
                 />
               </div>
             </div>
@@ -321,14 +403,21 @@ export default function SalesClosureForm() {
                     <label className="block text-sm text-green-950 font-medium mb-1">
                       Experience Center
                     </label>
-                    <input
-                      className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                      type="text"
+                    <select
                       value={form.experience_center}
                       onChange={(e) =>
                         updateFields("experience_center", e.target.value)
                       }
-                    />
+                      className="w-full border p-2.5 rounded-lg text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
+                      required
+                    >
+                      <option value="">Select Experience Center</option>
+                      {BRANCH_OPTIONS.map((b) => (
+                        <option key={b} value={b}>
+                          {b}
+                        </option>
+                      ))}
+                    </select>
                     {errors.experience_center && (
                       <p className="text-red-500 text-sm">
                         {errors.experience_center}
@@ -361,7 +450,7 @@ export default function SalesClosureForm() {
                 <h2 className="text-lg text-green-950 font-semibold mb-3">
                   Booking Details
                 </h2>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-2">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-2">
                   <div>
                     <label className="block text-sm text-green-950 font-medium mb-1">
                       Booking Date
@@ -369,69 +458,16 @@ export default function SalesClosureForm() {
                     <input
                       className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
                       type="date"
+                      readOnly
                       value={form.booking_date}
                       onChange={(e) => {
                         const selectDate = e.target.value;
-                        const dateObj = new Date(selectDate);
                         updateFields("booking_date", selectDate);
-                        updateFields("booking_month", dateObj.getMonth() + 1); // +1 because month starts from 0
-                        updateFields("booking_year", dateObj.getFullYear());
                       }}
                     />
                     {errors.booking_date && (
                       <p className="text-red-500 text-sm">
                         {errors.booking_date}
-                      </p>
-                    )}
-                  </div>
-                  <div>
-                    <label className="block text-sm text-green-950 font-medium mb-1">
-                      Booking Month
-                    </label>
-                    <input
-                      className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                      type="number"
-                      readOnly
-                      value={form.booking_month}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm text-green-950 font-medium mb-1">
-                      Booking Year
-                    </label>
-                    <input
-                      className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                      type="number"
-                      readOnly
-                      value={form.booking_year}
-                    />
-                  </div>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-2">
-                  <div>
-                    <label className="block text-sm text-green-950 font-medium mb-1">
-                      Order Booking Month
-                    </label>
-                    <select
-                      className="w-full border p-2.5 rounded-lg text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                      value={form.order_booking_month}
-                      onChange={(e) =>
-                        updateFields(
-                          "order_booking_month",
-                          e.target.value as OrderBookingMonth,
-                        )
-                      }
-                    >
-                      <option value="">Select Month</option>
-                      {Object.values(OrderBookingMonth).map((month) => (
-                        <option key={month} value={month}>
-                          {month}
-                        </option>
-                      ))}
-                    </select>
-                    {errors.order_booking_month && (
-                      <p className="text-red-500 text-sm">
-                        {errors.order_booking_month}
                       </p>
                     )}
                   </div>
@@ -549,9 +585,16 @@ export default function SalesClosureForm() {
                       className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
                       type="text"
                       placeholder="Enter Lead Name"
-                      readOnly
-                      value={fetchData.sales_lead_name}
+                      value={form.sales_lead_name}
+                      onChange={(e) =>
+                        updateFields("sales_lead_name", e.target.value)
+                      }
                     />
+                    {errors.sales_lead_name && (
+                      <p className="text-red-500 text-sm">
+                        {errors.sales_lead_name}
+                      </p>
+                    )}
                   </div>
                   <div>
                     <label className="block text-sm text-green-950 font-medium mb-1">
@@ -561,9 +604,16 @@ export default function SalesClosureForm() {
                       className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
                       type="text"
                       placeholder="Enter SPOC"
-                      readOnly
-                      value={fetchData.sales_spoc}
+                      value={form.sales_spoc}
+                      onChange={(e) =>
+                        updateFields("sales_spoc", e.target.value)
+                      }
                     />
+                    {errors.sales_spoc && (
+                      <p className="text-red-500 text-sm">
+                        {errors.sales_spoc}
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -598,13 +648,14 @@ export default function SalesClosureForm() {
                     </label>
                     <input
                       type="text"
-                      min="0"
+                      inputMode="decimal"
                       placeholder="Enter Discount"
                       className="w-full border border-gray-300 rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                      value={form.dis_on_woodwork}
+                      value={percentInputs.dis_on_woodwork}
                       onChange={(e) =>
-                        updateFields("dis_on_woodwork", Number(e.target.value))
+                        handlePercentChange("dis_on_woodwork", e.target.value)
                       }
+                      onBlur={() => handlePercentBlur("dis_on_woodwork")}
                     />
                     {errors.dis_on_woodwork && (
                       <p className="text-red-500 text-sm">
@@ -618,13 +669,14 @@ export default function SalesClosureForm() {
                     </label>
                     <input
                       type="text"
-                      min="0"
+                      inputMode="decimal"
                       placeholder="Enter Discount"
                       className="w-full border border-gray-300 rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                      value={form.dis_on_service}
+                      value={percentInputs.dis_on_service}
                       onChange={(e) =>
-                        updateFields("dis_on_service", Number(e.target.value))
+                        handlePercentChange("dis_on_service", e.target.value)
                       }
+                      onBlur={() => handlePercentBlur("dis_on_service")}
                     />
                     {errors.dis_on_service && (
                       <p className="text-red-500 text-sm">
@@ -638,16 +690,17 @@ export default function SalesClosureForm() {
                     </label>
                     <input
                       type="text"
-                      min="0"
+                      inputMode="decimal"
                       placeholder="Enter Discount"
                       className="w-full border border-gray-300 rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                      value={form.dis_on_accessories}
+                      value={percentInputs.dis_on_accessories}
                       onChange={(e) =>
-                        updateFields(
+                        handlePercentChange(
                           "dis_on_accessories",
-                          Number(e.target.value),
+                          e.target.value,
                         )
                       }
+                      onBlur={() => handlePercentBlur("dis_on_accessories")}
                     />
                     {errors.dis_on_accessories && (
                       <p className="text-red-500 text-sm">
@@ -783,40 +836,6 @@ export default function SalesClosureForm() {
                 </div>
                 <div>
                   <label className="block text-sm text-green-950 font-medium mb-1">
-                    Amount Paid
-                  </label>
-
-                  <div className="flex items-center gap-6">
-                    {/* YES */}
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="amountPaid"
-                        value="yes"
-                        checked={form.amount_paid === "YES"}
-                        onChange={() => updateFields("amount_paid", "YES")}
-                        className="w-4 h-4 accent-green-700"
-                      />
-                      <span className="text-sm text-green-950">Yes</span>
-                    </label>
-
-                    {/* NO */}
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="amountPaid"
-                        value="no"
-                        checked={form.amount_paid === "NO"}
-                        onChange={() => updateFields("amount_paid", "NO")}
-                        className="w-4 h-4 accent-green-700"
-                      />
-                      <span className="text-sm text-green-950">No</span>
-                    </label>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-sm text-green-950 font-medium mb-1">
                     Payment Screenshot Upload
                   </label>
 
@@ -861,24 +880,12 @@ export default function SalesClosureForm() {
                   <label className="block text-sm text-green-950 font-medium text-gray-700 mb-2">
                     Status of Project (System Controlled)
                   </label>
-
-                  <select
-                    className="w-full border border-gray-300 rounded-lg p-2 bg-gray-100 text-gray-600 cursor-not-allowed text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
+                  <input
+                    type="text"
                     value={form.status_of_project}
-                    onChange={(e) =>
-                      updateFields(
-                        "status_of_project",
-                        e.target.value as StatusOfProject,
-                      )
-                    }
-                  >
-                    <option value="">Select</option>
-                    {Object.values(StatusOfProject).map((status) => (
-                      <option key={status} value={status}>
-                        {status}
-                      </option>
-                    ))}
-                  </select>
+                    readOnly
+                    className="w-full border border-green-950 rounded-lg p-2 bg-purple-50 cursor-not-allowed"
+                  />
                   {errors.status_of_project && (
                     <p className="text-red-500 text-sm">
                       {errors.status_of_project}
@@ -890,7 +897,7 @@ export default function SalesClosureForm() {
               <div className="border border-2 border-gray-300 rounded-2xl p-4 space-y-4 bg-purple-50">
                 {/* Section Title */}
                 <h2 className="text-lg font-semibold text-green-950">
-                  Special Declaration(VERY IMPORTANT)
+                  Special Declaration
                 </h2>
 
                 {/* Special Offer */}

@@ -7,49 +7,30 @@ export enum PropertyConfig {
   OTHER = "OTHER",
 }
 
-export enum OrderBookingMonth {
-  JANUAJANUARY = "JANUARY",
-  FEBRUARY = "FEBRUARY",
-  MARCH = "MARCH",
-  APRIL = "APRIL",
-  MAY = "MAY",
-  JUNE = "JUNE",
-  JULY = "JULY",
-  AUGUST = "AUGUST",
-  SEPTEMBER = "SEPTEMBER",
-  OCTOBER = "OCTOBER",
-  NOVEMBER = "NOVEMBER",
-  DECEMBER = "DECEMBER",
-}
-
 export enum BookingType {
-  FRESH = "FRESH",
-  REVISION = "REVISION",
-  UPGRADE = "UPGRADE",
-  REPEAT = "REPEAT",
-}
-
-export enum DesignerLeadType {
-  FULL_10_PERCENT = "FULL_10_PERCENT",
-  PARTIAL = "PARTIAL",
-  TOKEN_ONLY = "TOKEN_ONLY",
+  APARTMENT = "APARTMENT",
+  RENOVATION = "RENOVATION",
+  KITCHEN = "KITCHEN",
 }
 
 export enum PaymentMode {
   UPI = "UPI",
   CASH = "CASH",
   CARD = "CARD",
-}
-
-export enum StatusOfProject {
-  SUBMITTED = "SUBMITTED",
-  PAYMENT_PENDING = "PAYMENT_PENDING",
-  D1_ACTIVATED = "D1_ACTIVATED",
-  CONDITIONAL_D1 = "CONDITIONAL_D1",
+  CHEQUE = "CHEQUE",
 }
 
 export enum PaymentReceived {
   FULL_10 = "FULL_10%",
   PARTIAL = "PARTIAL",
   TOKEN = "TOKEN",
+}
+
+export enum LeadSource {
+  CALL = "CALL",
+  WALK_IN = "WALK_IN",
+  REFERRAL = "REFERRAL",
+  DIGITAL = "DIGITAL",
+  SOCIAL_MEDIA = "SOCIAL_MEDIA",
+  OTHER = "OTHER",
 }
