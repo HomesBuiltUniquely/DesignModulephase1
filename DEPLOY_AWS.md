@@ -287,22 +287,65 @@ The app uses `getApiBase()` from `@/app/lib/apiBase`, which reads `process.env.N
 
 ## Part 5: Single EC2 (frontend + backend on one machine)
 
-If you prefer one server:
+This section walks you through running **both** the Next.js frontend and the Express backend on a **single EC2** instance, then optionally putting **Nginx** in front for HTTPS.
 
-1. Use the same EC2 and RDS/S3 setup as above.
-2. On EC2 install Node, clone repo, then:
+**Prerequisites:** RDS (MySQL) and S3 are already created (Parts 1 and 2). You have an EC2 instance (e.g. Amazon Linux 2023 or Ubuntu) with a key pair for SSH.
 
-**Backend (port 3001):**
+---
+
+### 5.1 SSH and install dependencies
+
+From your laptop: `ssh -i your-key.pem ec2-user@<EC2-PUBLIC-IP>`
+
+On **Amazon Linux 2023**: `sudo dnf install -y nodejs npm git` then `sudo dnf groupinstall -y "Development Tools"` and `sudo dnf install -y python3 python3-devel`.
+
+On **Ubuntu 22.04**: `sudo apt update && sudo apt install -y nodejs npm git build-essential python3`
+
+---
+
+### 5.2 Clone the repo
+
+```bash
+cd ~
+git clone https://github.com/HomesBuiltUniquely/DesignModulephase1.git app
+cd app
+```
+
+---
+
+### 5.3 Backend: env vars and run
+
+Create `~/app/backend/.env` with your real values:
+
+```env
+DB_HOST=your-rds-endpoint.ap-south-1.rds.amazonaws.com
+DB_USER=admin
+DB_PASSWORD=your-rds-password
+DB_NAME=DesignMod
+DB_PORT=3306
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+AWS_REGION=ap-south-1
+S3_BUCKET_NAME=your-bucket
+API_BASE_URL=http://<EC2-PUBLIC-IP>:3001
+```
+
+Then:
 
 ```bash
 cd ~/app/backend
 npm ci
-# set .env as in Part 3
-nohup npx ts-node server.ts > api.log 2>&1 &
-# or use systemd as in 3.3
+export $(grep -v '^#' .env | xargs)
+nohup env $(grep -v '^#' .env | xargs | tr '\n' ' ') npx ts-node server.ts > api.log 2>&1 &
 ```
 
-**Frontend (port 3000):**
+Check: `curl http://localhost:3001/api/health` should return `{"ok":true}`.
+
+---
+
+### 5.4 Frontend: build and run
+
+Replace `<EC2-PUBLIC-IP>` with your EC2 public IP.
 
 ```bash
 cd ~/app/my-app
@@ -311,14 +354,66 @@ npm run build
 NEXT_PUBLIC_API_URL=http://<EC2-PUBLIC-IP>:3001 nohup npm start > next.log 2>&1 &
 ```
 
-Open **http://\<EC2-PUBLIC-IP\>:3000** in the browser. Set **NEXT_PUBLIC_API_URL** to `http://<EC2-PUBLIC-IP>:3001` so the client calls the same host.
+---
 
-For production, put **Nginx** (or another reverse proxy) in front:
+### 5.5 Open the app
 
-- Nginx listens on 80/443 and proxies:
-  - `/api` → `http://127.0.0.1:3001`
-  - `/` → `http://127.0.0.1:3000`
-- Use **Let’s Encrypt** for HTTPS and set **NEXT_PUBLIC_API_URL** to `https://yourdomain.com` (same origin, so `/api` is enough if you proxy API under the same domain).
+In EC2 Security Group allow **inbound** ports **3000** and **3001** from `0.0.0.0/0` (or your IP). Then open **http://\<EC2-PUBLIC-IP\>:3000** in the browser.
+
+---
+
+### 5.6 (Optional) Nginx + HTTPS
+
+1. Point a domain (e.g. `app.yourdomain.com`) to your EC2 public IP (DNS A record).
+2. Install: `sudo dnf install -y nginx certbot python3-certbot-nginx` then `sudo systemctl enable nginx && sudo systemctl start nginx`.
+3. Create `/etc/nginx/conf.d/design-module.conf`:
+
+```nginx
+server {
+    listen 80;
+    server_name yourdomain.com www.yourdomain.com;
+    location /api/ {
+        proxy_pass http://127.0.0.1:3001/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+Run `sudo nginx -t && sudo systemctl reload nginx`.
+4. HTTPS: `sudo certbot --nginx -d yourdomain.com -d www.yourdomain.com`
+5. Rebuild frontend: `cd ~/app/my-app`, `pkill -f "next start"`, then `NEXT_PUBLIC_API_URL=https://yourdomain.com npm run build` and `NEXT_PUBLIC_API_URL=https://yourdomain.com nohup npm start > next.log 2>&1 &`
+6. Security group: allow **80** and **443**; you can remove public access to 3000/3001.
+
+---
+
+### 5.7 Redeploy after code changes
+
+```bash
+cd ~/app && git pull origin main
+cd ~/app/backend && npm ci && export $(grep -v '^#' .env | xargs) && pkill -f "ts-node server.ts"
+nohup env $(grep -v '^#' .env | xargs | tr '\n' ' ') npx ts-node server.ts > api.log 2>&1 &
+cd ~/app/my-app && npm ci && npm run build && pkill -f "next start"
+NEXT_PUBLIC_API_URL=http://<EC2-PUBLIC-IP>:3001 nohup npm start > next.log 2>&1 &
+```
+
+---
+
+**Removed legacy short version; use sections 5.1–5.7 above.**
 
 ---
 

@@ -10,7 +10,21 @@ import AdmZip from "adm-zip";
 const app = express();
 const PORT = 3001;
 
-app.use(cors());
+// Allow frontend origin(s); required for browser requests from design.hubinterior.com
+const allowedOrigins = [
+  "https://design.hubinterior.com",
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+];
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+      return cb(null, false);
+    },
+    credentials: true,
+  })
+);
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
@@ -23,7 +37,7 @@ app.get("/api/health", (_req, res) => {
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "Vk@root1",
+  password: process.env.DB_PASSWORD || "root@root",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
