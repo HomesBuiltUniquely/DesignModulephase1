@@ -13,12 +13,13 @@ This guide walks you through deploying the **Design Module** application (Next.j
 | **Database** | MySQL | Amazon RDS for MySQL |
 | **File storage** | S3 (profile images, lead uploads) | Amazon S3 (already used in app) |
 
-Two common deployment patterns:
+Common deployment patterns:
 
 1. **Amplify + EC2 + RDS + S3** – Frontend on Amplify (managed), API on a single EC2, DB on RDS.
 2. **EC2 only (monolith)** – One EC2 runs both Next.js and the Express API; RDS for MySQL, S3 for files.
+3. **Docker on EC2 (or ECS)** – API and frontend run in containers via Docker Compose; same RDS and S3 (see **Part 5A**).
 
-Below we describe **Option 1** (Amplify + EC2 + RDS) and then a simpler **single-EC2** variant.
+Below we describe **Option 1** (Amplify + EC2 + RDS), then a **single-EC2** variant, and **Docker-based production**.
 
 ---
 
@@ -110,7 +111,7 @@ node -v   # v20.x
 Clone your repo (or copy files via scp/rsync):
 
 ```bash
-git clone <your-repo-url> app && cd app/backend
+git clone https://github.com/HomesBuiltUniquely/DesignModulephase1.git app && cd app/backend
 # or: scp -r ./backend ec2-user@<EC2-IP>:~/app/
 ```
 
@@ -321,6 +322,106 @@ For production, put **Nginx** (or another reverse proxy) in front:
 
 ---
 
+## Part 5A: Docker-based production deployment
+
+You can run the app in production using **Docker** and **Docker Compose**: same RDS and S3 as above, with the API and Next.js frontend in containers. This gives you consistent builds, easy restarts, and a simple path to **ECS** or **Kubernetes** later.
+
+### 5A.1 What’s included
+
+- **`backend/Dockerfile`** – Builds TypeScript to JS and runs the Express API (port 3001).
+- **`my-app/Dockerfile`** – Builds Next.js and runs `next start` (port 3000).
+- **`docker-compose.yml`** (repo root) – Runs API + frontend; DB and S3 stay external (RDS + S3).
+
+Database and file storage are **not** in Docker: use **RDS for MySQL** and **S3** as in Parts 1 and 2. The containers only need the same env vars (DB_*, AWS_*, API_BASE_URL, etc.).
+
+### 5A.2 Build and run locally (with RDS/S3)
+
+From the **repo root**:
+
+```bash
+# 1. Env vars for API (DB, S3, API_BASE_URL). Create backend/.env or export:
+export DB_HOST=<your-rds-endpoint>
+export DB_USER=admin
+export DB_PASSWORD=<password>
+export DB_NAME=DesignMod
+export AWS_ACCESS_KEY_ID=...
+export AWS_SECRET_ACCESS_KEY=...
+export AWS_REGION=ap-south-1
+export S3_BUCKET_NAME=your-bucket
+export API_BASE_URL=http://localhost:3001
+
+# 2. Frontend must know the API URL (browser calls it)
+export NEXT_PUBLIC_API_URL=http://localhost:3001
+
+# 3. Build and start
+docker compose up -d --build
+```
+
+- Frontend: **http://localhost:3000**
+- API: **http://localhost:3001**
+
+Uploaded files are stored in a Docker volume `api_uploads` (or in S3 if configured). For production you should rely on S3; the volume is only for local/testing.
+
+### 5A.3 Run on EC2 with Docker
+
+1. **Launch EC2** (same as Part 3): Amazon Linux 2023 or Ubuntu, open 22 (SSH) and 80/443 (or 3000/3001 for testing).
+2. **Install Docker and Docker Compose** (e.g. on Amazon Linux 2023):
+
+   ```bash
+   sudo yum install -y docker
+   sudo systemctl start docker && sudo systemctl enable docker
+   sudo usermod -aG docker ec2-user
+   # Log out and back in, then:
+   sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+   sudo chmod +x /usr/local/bin/docker-compose
+   ```
+
+3. **Clone repo** and set env (same as 5A.2). Use the **public** API URL the browser will use:
+
+   ```bash
+   git clone <your-repo> app && cd app
+   export DB_HOST=<RDS-endpoint>
+   export DB_USER=admin
+   export DB_PASSWORD=<password>
+   export DB_NAME=DesignMod
+   export AWS_ACCESS_KEY_ID=...
+   export AWS_SECRET_ACCESS_KEY=...
+   export AWS_REGION=ap-south-1
+   export S3_BUCKET_NAME=...
+   export API_BASE_URL=http://<EC2-PUBLIC-IP>:3001
+   export NEXT_PUBLIC_API_URL=http://<EC2-PUBLIC-IP>:3001
+   docker compose up -d --build
+   ```
+
+4. Open **http://\<EC2-PUBLIC-IP\>:3000**. For production, put **Nginx** (or a load balancer) in front and use HTTPS; set `API_BASE_URL` and `NEXT_PUBLIC_API_URL` to the public HTTPS URL (e.g. `https://api.yourdomain.com` and `https://yourdomain.com` or same host with `/api` proxied).
+
+### 5A.4 (Optional) Push images to ECR and run on ECS
+
+1. **Create ECR repositories** (e.g. `design-module-api`, `design-module-frontend`).
+2. **Build and push** (replace `<account-id>` and region):
+
+   ```bash
+   aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin <account-id>.dkr.ecr.ap-south-1.amazonaws.com
+   docker build -t design-module-api ./backend
+   docker tag design-module-api:latest <account-id>.dkr.ecr.ap-south-1.amazonaws.com/design-module-api:latest
+   docker push <account-id>.dkr.ecr.ap-south-1.amazonaws.com/design-module-api:latest
+   # Same for my-app → design-module-frontend
+   ```
+
+3. **Create ECS cluster**, task definitions (Fargate or EC2), and services. Point tasks to RDS (security group + env vars) and give tasks an IAM role for S3. Set `NEXT_PUBLIC_API_URL` at **build time** for the frontend image (e.g. in CI when building the image).
+
+### 5A.5 Quick reference (Docker)
+
+| Item | Notes |
+|------|--------|
+| **Backend image** | `backend/Dockerfile` – compiles TS, runs `node dist/server.js` |
+| **Frontend image** | `my-app/Dockerfile` – `next build` then `next start`; set `NEXT_PUBLIC_API_URL` at build |
+| **Compose** | `docker compose up -d --build`; DB and S3 via env (RDS + S3) |
+| **EC2** | Install Docker + Compose, set env, run `docker compose up -d` |
+| **ECS** | Build/push to ECR; run tasks with same env; use ALB for HTTPS |
+
+---
+
 ## Part 6: Initialize the database
 
 Your backend uses `initDb()` to create tables. Options:
@@ -368,5 +469,6 @@ Then start the API; it will use the same schema.
 3. **EC2**: Install Node, run backend (ts-node or compiled), set env, optionally systemd.
 4. **Amplify**: Connect repo, set root to `my-app`, set `NEXT_PUBLIC_API_URL`, build and deploy.
 5. **Single EC2**: Run backend and Next.js on the same instance; use Nginx + HTTPS for production.
+6. **Docker (production)**: Use `backend/Dockerfile` and `my-app/Dockerfile` with `docker compose up`; RDS and S3 stay external. Run on EC2 with Docker installed, or push images to ECR and run on ECS.
 
-After deployment, log in and test: dashboard, leads, file uploads (S3), and checklists. If anything fails, check backend logs (`journalctl -u design-module-api -f`) and browser Network tab for API calls to `NEXT_PUBLIC_API_URL`.
+After deployment, log in and test: dashboard, leads, file uploads (S3), and checklists. If anything fails, check backend logs (`journalctl -u design-module-api -f` or `docker compose logs -f api`) and browser Network tab for API calls to `NEXT_PUBLIC_API_URL`.

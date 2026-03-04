@@ -368,12 +368,25 @@ export default function ProjectDetailPage() {
         };
     }, [viewDqc, isDqcUser, projectId, sessionId, loadDqcSubmissionFile]);
 
-    const [image, setImage] = useState<ImageType[]>([
-        {id:1, img:"/profile1.jpg"},
-        {id:2, img:"/profile2.jpg"},
-        {id:3, img:"/profile3.jpg"},
-        {id:4, img:"/profile4.jpg"},
-    ]);
+    const [image, setImage] = useState<ImageType[]>([]);
+
+    // Fetch involved users (D1/D2 assignees + uploaders) and their profile images for header avatars
+    useEffect(() => {
+        if (!projectId || !sessionId) return;
+        const headers: Record<string, string> = { Authorization: `Bearer ${sessionId}` };
+        fetch(`${API}/api/leads/${projectId}/involved-users`, { headers })
+            .then((res) => res.json())
+            .then((data: { id: number; name: string; profileImage: string | null }[]) => {
+                if (Array.isArray(data)) {
+                    setImage(data.map((u) => ({
+                        id: u.id,
+                        img: u.profileImage || '',
+                        name: u.name || '',
+                    })));
+                }
+            })
+            .catch(() => {});
+    }, [projectId, sessionId]);
 
     useEffect(() => {
         return () => {
@@ -389,13 +402,11 @@ export default function ProjectDetailPage() {
     }
 
     const handleImageAdding = () => {
-        const maxId = image.length > 0 ? Math.max(...image.map(img => img.id)) : 0;
-        const newImage: ImageType = {
-            id: maxId + 1,
-            img: "/profile1 .jpg"
-        };
+        // TODO: wire to "add user to project" when backend supports it
+        const maxId = image.length > 0 ? Math.max(...image.map((img) => img.id)) : 0;
+        const newImage: ImageType = { id: maxId + 1, img: '', name: '' };
         setImage([...image, newImage]);
-    }
+    };
    
     // Toggle function: If clicking the same card, close it. If new card, open it.
     const toggleMaximize = (cardName: string) => {

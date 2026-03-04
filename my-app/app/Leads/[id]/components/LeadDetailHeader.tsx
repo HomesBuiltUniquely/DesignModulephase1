@@ -56,14 +56,30 @@ export default function LeadDetailHeader({ project, image, onAddImage, currentMi
                         Prolance
                     </div>
                     <div className="flex items-center -space-x-3">
-                        {image.map((imgdata) => (
-                            <img
-                                key={imgdata.id}
-                                src={imgdata.img}
-                                alt="profile"
-                                className="w-10 h-10 xl:w-12 xl:h-12 rounded-full border-2 border-slate-800 object-cover hover:z-10 relative"
-                            />
-                        ))}
+                        {image.map((imgdata) => {
+                            const initials = (imgdata.name || '').trim()
+                                ? (imgdata.name!.trim().split(/\s+/).length >= 2
+                                    ? (imgdata.name!.trim().split(/\s+/)[0][0] + imgdata.name!.trim().split(/\s+/).pop()![0]).toUpperCase()
+                                    : imgdata.name!.trim().slice(0, 2).toUpperCase())
+                                : '?';
+                            return imgdata.img ? (
+                                <img
+                                    key={imgdata.id}
+                                    src={imgdata.img}
+                                    alt=""
+                                    className="w-10 h-10 xl:w-12 xl:h-12 rounded-full border-2 border-slate-800 object-cover hover:z-10 relative bg-gray-200"
+                                    title={imgdata.name || undefined}
+                                />
+                            ) : (
+                                <div
+                                    key={imgdata.id}
+                                    className="w-10 h-10 xl:w-12 xl:h-12 rounded-full border-2 border-slate-800 flex items-center justify-center bg-slate-700 text-purple-100 text-xs xl:text-sm font-bold hover:z-10 relative"
+                                    title={imgdata.name || undefined}
+                                >
+                                    {initials}
+                                </div>
+                            );
+                        })}
                         <button
                             type="button"
                             onClick={onAddImage}

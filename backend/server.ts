@@ -14,6 +14,10 @@ app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
+app.get("/api/health", (_req, res) => {
+  res.json({ ok: true });
+});
+
 // ----- MySQL setup -----
 // Defaults are set from the credentials you provided; you can still override via env vars if needed.
 const pool = mysql.createPool({
@@ -2323,6 +2327,81 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("lead detail error", err);
     return res.status(500).json({ message: "Failed to load lead" });
+  }
+});
+
+// Involved users for a lead (D1/D2 assignees + uploaders); used for header avatars (profile images)
+app.get("/api/leads/:id/involved-users", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+
+    const [leadRows] = await pool.query("SELECT id FROM leads WHERE id = ?", [leadId]);
+    if ((leadRows as any[]).length === 0) return res.status(404).json({ message: "Lead not found" });
+
+    if ((user?.role ?? "").toLowerCase() === "mmt_executive") {
+      const [assignRows] = await pool.query(
+        "SELECT 1 FROM lead_d1_assignments WHERE lead_id = ? AND assigned_to_user_id = ?",
+        [leadId, user.id],
+      );
+      if ((assignRows as any[]).length === 0) {
+        const [d2Rows] = await pool.query(
+          "SELECT 1 FROM lead_d2_assignments WHERE lead_id = ? AND assigned_to_user_id = ?",
+          [leadId, user.id],
+        );
+        if ((d2Rows as any[]).length === 0) return res.status(404).json({ message: "Lead not found" });
+      }
+    }
+
+    const userIds = new Set<number>();
+    const [d1] = await pool.query(
+      "SELECT assigned_to_user_id FROM lead_d1_assignments WHERE lead_id = ?",
+      [leadId],
+    );
+    (d1 as { assigned_to_user_id: number }[]).forEach((r) =>
+      userIds.add(r.assigned_to_user_id),
+    );
+    const [d2] = await pool.query(
+      "SELECT assigned_to_user_id FROM lead_d2_assignments WHERE lead_id = ?",
+      [leadId],
+    );
+    (d2 as { assigned_to_user_id: number }[]).forEach((r) =>
+      userIds.add(r.assigned_to_user_id),
+    );
+    const [up] = await pool.query(
+      "SELECT uploader_id FROM lead_uploads WHERE lead_id = ? AND uploader_id IS NOT NULL",
+      [leadId],
+    );
+    (up as { uploader_id: number | null }[]).forEach((r) => {
+      if (r.uploader_id) userIds.add(r.uploader_id);
+    });
+
+    // Also include core project team roles so DQC manager, DQE, TDM, and design managers appear
+    const [coreTeamRows] = await pool.query(
+      "SELECT id FROM users WHERE role IN ('dqc_manager', 'dqe', 'territorial_design_manager', 'design_manager')",
+    );
+    (coreTeamRows as { id: number }[]).forEach((u) => userIds.add(u.id));
+
+    if (userIds.size === 0) return res.json([]);
+
+    const placeholders = Array.from(userIds).map(() => "?").join(",");
+    const [userRows] = await pool.query(
+      `SELECT id, name, profileImage FROM users WHERE id IN (${placeholders}) ORDER BY name ASC`,
+      Array.from(userIds),
+    );
+    const list = (userRows as { id: number; name: string | null; profileImage: string | null }[]).map((u) => {
+      let profileImage = u.profileImage || null;
+      if (profileImage && profileImage.startsWith("/") && !profileImage.startsWith("http")) {
+        profileImage = `${API_BASE}${profileImage}`;
+      }
+      return { id: u.id, name: u.name || "", profileImage };
+    });
+    return res.json(list);
+  } catch (err) {
+    console.error("involved-users error", err);
+    return res.status(500).json({ message: "Failed to load involved users" });
   }
 });
 
