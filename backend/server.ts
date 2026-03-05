@@ -160,6 +160,19 @@ async function initDb() {
         phone VARCHAR(50)
       );
     `);
+    // Add design_manager_id for mapping designers to their design manager (id in users table)
+    try {
+      const [mgrCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'design_manager_id'",
+      );
+      if ((mgrCol as any[]).length === 0) {
+        await conn.query(
+          "ALTER TABLE users ADD COLUMN design_manager_id INT NULL",
+        );
+      }
+    } catch {
+      // ignore
+    }
 
     await conn.query(`
       CREATE TABLE IF NOT EXISTS sessions (
@@ -841,16 +854,30 @@ app.all("/api/auth/register", async (req: Request, res: Response) => {
     if (!current) return res.status(401).json({ message: "Unauthorized" });
     const role = (current.role || "").toLowerCase();
     if (role !== "territorial_design_manager" && role !== "admin") return res.status(403).json({ message: "Only TDM or Admin can register designers" });
-    const { email, password, name, phone, role: bodyRole } = req.body || {};
+    const { email, password, name, phone, role: bodyRole, managerId } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
     if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
     const targetRole = bodyRole === "design_manager" ? "design_manager" : "designer";
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    let designManagerId: number | null = null;
+    if (targetRole === "designer" && managerId != null && managerId !== "") {
+      const idNum = Number(managerId);
+      if (!Number.isNaN(idNum)) {
+        const [mgrRows] = await pool.query(
+          "SELECT id FROM users WHERE id = ? AND role = 'design_manager'",
+          [idNum],
+        );
+        if ((mgrRows as any[]).length === 0) {
+          return res.status(400).json({ message: "Invalid design manager selected" });
+        }
+        designManagerId = idNum;
+      }
+    }
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, targetRole, phoneVal || null],
+      "INSERT INTO users (email, password, name, role, phone, design_manager_id) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, targetRole, phoneVal || null, designManagerId],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: targetRole } });
@@ -2268,8 +2295,14 @@ app.get("/api/leads/dqc-queue", async (req: Request, res: Response) => {
 app.get("/api/designers", async (_req: Request, res: Response) => {
   try {
     const [rows] = await pool.query(
-      `SELECT id, name, COALESCE(name, '') as leadName FROM users
-       WHERE role IN ('designer', 'design_manager') ORDER BY name ASC`,
+      `SELECT u.id,
+              u.name,
+              u.role,
+              COALESCE(m.name, '') as leadName
+       FROM users u
+       LEFT JOIN users m ON u.design_manager_id = m.id
+       WHERE u.role IN ('designer', 'design_manager')
+       ORDER BY u.name ASC`,
     );
     res.json(rows);
   } catch (err) {
