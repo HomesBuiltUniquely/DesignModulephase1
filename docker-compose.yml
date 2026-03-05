@@ -1,0 +1,46 @@
+# Design Module – API + Frontend (DB and S3 are external: RDS + S3)
+# Usage:
+#   cp backend/.env.example backend/.env   # set DB_*, AWS_*, API_BASE_URL
+#   export NEXT_PUBLIC_API_URL=http://localhost:3001
+#   docker compose up -d --build
+
+services:
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - DB_HOST=${DB_HOST:-localhost}
+      - DB_USER=${DB_USER:-root}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME:-DesignMod}
+      - DB_PORT=${DB_PORT:-3306}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION:-ap-south-1}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
+      - API_BASE_URL=${API_BASE_URL:-http://localhost:3001}
+    volumes:
+      - api_uploads:/app/uploads
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./my-app
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped
+
+volumes:
+  api_uploads:

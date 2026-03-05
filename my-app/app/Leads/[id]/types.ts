@@ -34,6 +34,8 @@ export type Dqc1Verdict = 'approved' | 'approved_with_changes' | 'rejected';
 export type ImageType = {
     id: number;
     img: string;
+    /** Used for avatar fallback when img is empty (e.g. user has no profile photo). */
+    name?: string;
 };
 
 // --- Progress History / View Task Details ---

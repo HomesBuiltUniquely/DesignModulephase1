@@ -9,6 +9,7 @@ import { getApiBase } from '@/app/lib/apiBase';
 const API = getApiBase();
 
 type RegisterRole = 'design_manager' | 'designer';
+type DesignManager = { id: number; name: string; role: string };
 
 export default function TdmRegisterPage() {
   const router = useRouter();
@@ -19,6 +20,8 @@ export default function TdmRegisterPage() {
   const [phone, setPhone] = useState('');
   const [branch, setBranch] = useState<string>(BRANCH_OPTIONS[0]);
   const [role, setRole] = useState<RegisterRole>('designer');
+  const [designManagers, setDesignManagers] = useState<DesignManager[]>([]);
+  const [managerId, setManagerId] = useState<string>('');
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -30,6 +33,19 @@ export default function TdmRegisterPage() {
     }
     if (user.role !== 'territorial_design_manager') router.replace('/');
   }, [user, loading, router]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    const headers: Record<string, string> = { Authorization: `Bearer ${sessionId}` };
+    fetch(`${API}/api/designers`, { headers })
+      .then((res) => res.json())
+      .then((data: DesignManager[]) => {
+        if (Array.isArray(data)) {
+          setDesignManagers(data.filter((d) => d.role === 'design_manager'));
+        }
+      })
+      .catch(() => {});
+  }, [sessionId]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -54,6 +70,7 @@ export default function TdmRegisterPage() {
           phone: phone.trim(),
           branch: branch || BRANCH_OPTIONS[0],
           role,
+          managerId: role === 'designer' ? managerId || null : null,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -114,6 +131,24 @@ export default function TdmRegisterPage() {
                 <option value="design_manager">Design Manager</option>
               </select>
             </div>
+            {role === 'designer' && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Design Manager</label>
+                <select
+                  value={managerId}
+                  onChange={(e) => setManagerId(e.target.value)}
+                  className="w-full border border-gray-300 rounded-lg px-4 py-2.5 bg-white"
+                  required
+                >
+                  <option value="">Select Design Manager</option>
+                  {designManagers.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Branch</label>
               <select value={branch} onChange={(e) => setBranch(e.target.value)} className="w-full border border-gray-300 rounded-lg px-4 py-2.5 bg-white" required>

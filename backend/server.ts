@@ -10,9 +10,27 @@ import AdmZip from "adm-zip";
 const app = express();
 const PORT = 3001;
 
-app.use(cors());
+// Allow frontend origin(s); required for browser requests from design.hubinterior.com
+const allowedOrigins = [
+  "https://design.hubinterior.com",
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+];
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+      return cb(null, false);
+    },
+    credentials: true,
+  })
+);
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+
+app.get("/api/health", (_req, res) => {
+  res.json({ ok: true });
+});
 
 // ----- MySQL setup -----
 // Defaults are set from the credentials you provided; you can still override via env vars if needed.
@@ -189,6 +207,19 @@ async function initDb() {
         phone VARCHAR(50)
       );
     `);
+    // Add design_manager_id for mapping designers to their design manager (id in users table)
+    try {
+      const [mgrCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'design_manager_id'",
+      );
+      if ((mgrCol as any[]).length === 0) {
+        await conn.query(
+          "ALTER TABLE users ADD COLUMN design_manager_id INT NULL",
+        );
+      }
+    } catch {
+      // ignore
+    }
 
     await conn.query(`
       CREATE TABLE IF NOT EXISTS sessions (
@@ -207,6 +238,7 @@ async function initDb() {
         project_stage VARCHAR(50) NOT NULL,
         contact_no VARCHAR(50),
         client_email VARCHAR(255),
+        assigned_designer_id INT NULL,
         is_on_hold TINYINT(1) DEFAULT 0,
         resume_at DATETIME NULL,
         create_at DATETIME NOT NULL,
@@ -220,6 +252,20 @@ async function initDb() {
       ALTER TABLE leads
       MODIFY COLUMN payload MEDIUMTEXT NOT NULL
     `);
+
+    // Add assigned_designer_id if missing (mapping leads to designers)
+    try {
+      const [designerCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'leads' AND COLUMN_NAME = 'assigned_designer_id'",
+      );
+      if ((designerCol as any[]).length === 0) {
+        await conn.query(
+          "ALTER TABLE leads ADD COLUMN assigned_designer_id INT NULL",
+        );
+      }
+    } catch {
+      // ignore
+    }
 
     await conn.query(`
       CREATE TABLE IF NOT EXISTS checklists (
@@ -473,6 +519,37 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
   }
 });
 
+app.post("/api/auth/change-password", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+
+    const { currentPassword, newPassword } = req.body || {};
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ message: "Current and new password are required" });
+    }
+
+    const [rows] = await pool.query(
+      "SELECT password FROM users WHERE id = ?",
+      [user.id],
+    );
+    const row = (rows as any[])[0];
+    if (!row || row.password !== String(currentPassword)) {
+      return res.status(400).json({ message: "Current password is incorrect" });
+    }
+
+    await pool.query(
+      "UPDATE users SET password = ? WHERE id = ?",
+      [String(newPassword), user.id],
+    );
+
+    return res.json({ message: "Password updated successfully" });
+  } catch (err) {
+    console.error("change-password error", err);
+    return res.status(500).json({ message: "Failed to change password" });
+  }
+});
+
 app.post("/api/auth/logout", async (req: Request, res: Response) => {
   const auth = req.headers.authorization;
   const token = auth?.replace(/^Bearer\s+/i, "");
@@ -570,6 +647,65 @@ app.put("/api/auth/profile-image", async (req: Request, res: Response) => {
     return res
       .status(500)
       .json({ message: "Failed to update profile image" });
+  }
+});
+
+// Team contact details for Mail loop / Group description (admins, TDMs, DMs)
+app.get("/api/auth/team-emails", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const [rows] = await pool.query(
+      "SELECT name, email, role FROM users WHERE role IN ('admin','territorial_design_manager','design_manager') ORDER BY role, name ASC",
+    );
+    const admins: { name: string; email: string }[] = [];
+    const territorial_design_managers: { name: string; email: string }[] = [];
+    const design_managers: { name: string; email: string }[] = [];
+    (rows as { name: string | null; email: string | null; role: string }[]).forEach(
+      (r) => {
+        const name = r.name || "";
+        const email = r.email || "";
+        if (!email) return;
+        const role = (r.role || "").toLowerCase();
+        if (role === "admin") admins.push({ name, email });
+        else if (role === "territorial_design_manager")
+          territorial_design_managers.push({ name, email });
+        else if (role === "design_manager") design_managers.push({ name, email });
+      },
+    );
+    return res.json({ admins, territorial_design_managers, design_managers });
+  } catch (err) {
+    console.error("team-emails error", err);
+    return res.status(500).json({ message: "Failed to load team emails" });
+  }
+});
+
+app.get("/api/auth/team-phones", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const [rows] = await pool.query(
+      "SELECT name, phone, role FROM users WHERE role IN ('admin','territorial_design_manager','design_manager') ORDER BY role, name ASC",
+    );
+    const admins: { name: string; phone: string }[] = [];
+    const territorial_design_managers: { name: string; phone: string }[] = [];
+    const design_managers: { name: string; phone: string }[] = [];
+    (rows as { name: string | null; phone: string | null; role: string }[]).forEach(
+      (r) => {
+        const name = r.name || "";
+        const phone = r.phone || "";
+        if (!phone) return;
+        const role = (r.role || "").toLowerCase();
+        if (role === "admin") admins.push({ name, phone });
+        else if (role === "territorial_design_manager")
+          territorial_design_managers.push({ name, phone });
+        else if (role === "design_manager") design_managers.push({ name, phone });
+      },
+    );
+    return res.json({ admins, territorial_design_managers, design_managers });
+  } catch (err) {
+    console.error("team-phones error", err);
+    return res.status(500).json({ message: "Failed to load team phones" });
   }
 });
 
@@ -870,16 +1006,30 @@ app.all("/api/auth/register", async (req: Request, res: Response) => {
     if (!current) return res.status(401).json({ message: "Unauthorized" });
     const role = (current.role || "").toLowerCase();
     if (role !== "territorial_design_manager" && role !== "admin") return res.status(403).json({ message: "Only TDM or Admin can register designers" });
-    const { email, password, name, phone, role: bodyRole } = req.body || {};
+    const { email, password, name, phone, role: bodyRole, managerId } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
     if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
     const targetRole = bodyRole === "design_manager" ? "design_manager" : "designer";
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    let designManagerId: number | null = null;
+    if (targetRole === "designer" && managerId != null && managerId !== "") {
+      const idNum = Number(managerId);
+      if (!Number.isNaN(idNum)) {
+        const [mgrRows] = await pool.query(
+          "SELECT id FROM users WHERE id = ? AND role = 'design_manager'",
+          [idNum],
+        );
+        if ((mgrRows as any[]).length === 0) {
+          return res.status(400).json({ message: "Invalid design manager selected" });
+        }
+        designManagerId = idNum;
+      }
+    }
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, targetRole, phoneVal || null],
+      "INSERT INTO users (email, password, name, role, phone, design_manager_id) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, targetRole, phoneVal || null, designManagerId],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: targetRole } });
@@ -900,11 +1050,28 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
   const pid = ""; // keep empty or generate PID if required
 
   try {
+    // Determine assigned designer based on designer_name in payload (if any)
+    let assignedDesignerId: number | null = null;
+    try {
+      const designerName: string | undefined =
+        (payload && (payload.designer_name || payload.designerName)) || undefined;
+      if (designerName) {
+        const [rows] = await pool.query(
+          "SELECT id FROM users WHERE name = ? AND role = 'designer' LIMIT 1",
+          [designerName],
+        );
+        const row = (rows as { id: number }[])[0];
+        if (row?.id) assignedDesignerId = row.id;
+      }
+    } catch {
+      // ignore mapping errors; assignedDesignerId stays null
+    }
+
     await pool.query(
       `INSERT INTO leads
        (pid, project_name, project_stage, contact_no, client_email,
-        is_on_hold, resume_at, create_at, update_at, payload)
-       VALUES (?, ?, ?, ?, ?, 0, NULL, ?, ?, ?)`,
+        is_on_hold, resume_at, create_at, update_at, payload, assigned_designer_id)
+       VALUES (?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)`,
       [
         pid,
         lead.projectName,
@@ -914,6 +1081,7 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
         lead.createAt,
         lead.updateAt,
         JSON.stringify(payload),
+        assignedDesignerId,
       ],
     );
 
@@ -2655,18 +2823,42 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
     }
 
     const [rows] = await pool.query(
-      `SELECT id, pid, project_name as projectName, project_stage as projectStage,
-              contact_no as contactNo, client_email as clientEmail,
-              is_on_hold as isOnHold, resume_at as resumeAt,
-              create_at as createAt, update_at as updateAt
-       FROM leads
-       ORDER BY id ASC`,
+      `SELECT l.id, l.pid, l.project_name as projectName, l.project_stage as projectStage,
+              l.contact_no as contactNo, l.client_email as clientEmail,
+              l.is_on_hold as isOnHold, l.resume_at as resumeAt,
+              l.create_at as createAt, l.update_at as updateAt,
+              l.assigned_designer_id
+       FROM leads l
+       ORDER BY l.id ASC`,
     );
-    const list = (rows as any[]).map((r) => ({
+    const baseList = (rows as any[]).map((r) => ({
       ...r,
       isOnHold: !!r.isOnHold,
     }));
-    res.json(list);
+
+    // Visibility rules for designers / design managers
+    if (user && role === "designer") {
+      const filtered = baseList.filter(
+        (l) => l.assigned_designer_id && l.assigned_designer_id === user.id,
+      );
+      return res.json(filtered);
+    }
+
+    if (user && role === "design_manager") {
+      const [dmRows] = await pool.query(
+        `SELECT l.id
+         FROM leads l
+         INNER JOIN users d ON d.id = l.assigned_designer_id
+         WHERE d.design_manager_id = ?`,
+        [user.id],
+      );
+      const allowedIds = new Set((dmRows as { id: number }[]).map((r) => r.id));
+      const filtered = baseList.filter((l) => allowedIds.has(l.id));
+      return res.json(filtered);
+    }
+
+    // Admins, TDMs, and others keep full list
+    res.json(baseList);
   } catch (err) {
     console.error("leads/queue error", err);
     res.status(500).json({ message: "Failed to load leads" });
@@ -2713,8 +2905,14 @@ app.get("/api/leads/dqc-queue", async (req: Request, res: Response) => {
 app.get("/api/designers", async (_req: Request, res: Response) => {
   try {
     const [rows] = await pool.query(
-      `SELECT id, name, COALESCE(name, '') as leadName FROM users
-       WHERE role IN ('designer', 'design_manager') ORDER BY name ASC`,
+      `SELECT u.id,
+              u.name,
+              u.role,
+              COALESCE(m.name, '') as leadName
+       FROM users u
+       LEFT JOIN users m ON u.design_manager_id = m.id
+       WHERE u.role IN ('designer', 'design_manager')
+       ORDER BY u.name ASC`,
     );
     res.json(rows);
   } catch (err) {
@@ -2736,7 +2934,8 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
       `SELECT id, pid, project_name as projectName, project_stage as projectStage,
               contact_no as contactNo, client_email as clientEmail,
               is_on_hold as isOnHold, resume_at as resumeAt,
-              create_at as createAt, update_at as updateAt, payload
+              create_at as createAt, update_at as updateAt, payload,
+              assigned_designer_id
        FROM leads
        WHERE id = ?`,
       [id],
@@ -2750,6 +2949,25 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
         [id, user.id],
       );
       if ((assignRows as any[]).length === 0) {
+        return res.status(404).json({ message: "Lead not found" });
+      }
+    }
+
+    // Visibility rules for designers / design managers
+    if (user && role === "designer") {
+      if (!row.assigned_designer_id || row.assigned_designer_id !== user.id) {
+        return res.status(404).json({ message: "Lead not found" });
+      }
+    }
+
+    if (user && role === "design_manager") {
+      const [dmCheck] = await pool.query(
+        `SELECT 1
+         FROM users d
+         WHERE d.id = ? AND d.design_manager_id = ?`,
+        [row.assigned_designer_id, user.id],
+      );
+      if ((dmCheck as any[]).length === 0) {
         return res.status(404).json({ message: "Lead not found" });
       }
     }
@@ -2786,6 +3004,81 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("lead detail error", err);
     return res.status(500).json({ message: "Failed to load lead" });
+  }
+});
+
+// Involved users for a lead (D1/D2 assignees + uploaders); used for header avatars (profile images)
+app.get("/api/leads/:id/involved-users", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+
+    const [leadRows] = await pool.query("SELECT id FROM leads WHERE id = ?", [leadId]);
+    if ((leadRows as any[]).length === 0) return res.status(404).json({ message: "Lead not found" });
+
+    if ((user?.role ?? "").toLowerCase() === "mmt_executive") {
+      const [assignRows] = await pool.query(
+        "SELECT 1 FROM lead_d1_assignments WHERE lead_id = ? AND assigned_to_user_id = ?",
+        [leadId, user.id],
+      );
+      if ((assignRows as any[]).length === 0) {
+        const [d2Rows] = await pool.query(
+          "SELECT 1 FROM lead_d2_assignments WHERE lead_id = ? AND assigned_to_user_id = ?",
+          [leadId, user.id],
+        );
+        if ((d2Rows as any[]).length === 0) return res.status(404).json({ message: "Lead not found" });
+      }
+    }
+
+    const userIds = new Set<number>();
+    const [d1] = await pool.query(
+      "SELECT assigned_to_user_id FROM lead_d1_assignments WHERE lead_id = ?",
+      [leadId],
+    );
+    (d1 as { assigned_to_user_id: number }[]).forEach((r) =>
+      userIds.add(r.assigned_to_user_id),
+    );
+    const [d2] = await pool.query(
+      "SELECT assigned_to_user_id FROM lead_d2_assignments WHERE lead_id = ?",
+      [leadId],
+    );
+    (d2 as { assigned_to_user_id: number }[]).forEach((r) =>
+      userIds.add(r.assigned_to_user_id),
+    );
+    const [up] = await pool.query(
+      "SELECT uploader_id FROM lead_uploads WHERE lead_id = ? AND uploader_id IS NOT NULL",
+      [leadId],
+    );
+    (up as { uploader_id: number | null }[]).forEach((r) => {
+      if (r.uploader_id) userIds.add(r.uploader_id);
+    });
+
+    // Also include core project team roles so DQC manager, DQE, TDM, and design managers appear
+    const [coreTeamRows] = await pool.query(
+      "SELECT id FROM users WHERE role IN ('dqc_manager', 'dqe', 'territorial_design_manager', 'design_manager')",
+    );
+    (coreTeamRows as { id: number }[]).forEach((u) => userIds.add(u.id));
+
+    if (userIds.size === 0) return res.json([]);
+
+    const placeholders = Array.from(userIds).map(() => "?").join(",");
+    const [userRows] = await pool.query(
+      `SELECT id, name, profileImage FROM users WHERE id IN (${placeholders}) ORDER BY name ASC`,
+      Array.from(userIds),
+    );
+    const list = (userRows as { id: number; name: string | null; profileImage: string | null }[]).map((u) => {
+      let profileImage = u.profileImage || null;
+      if (profileImage && profileImage.startsWith("/") && !profileImage.startsWith("http")) {
+        profileImage = `${API_BASE}${profileImage}`;
+      }
+      return { id: u.id, name: u.name || "", profileImage };
+    });
+    return res.json(list);
+  } catch (err) {
+    console.error("involved-users error", err);
+    return res.status(500).json({ message: "Failed to load involved users" });
   }
 });
 
