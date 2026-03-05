@@ -19,7 +19,7 @@ app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "Vk@root1",
+  password: process.env.DB_PASSWORD || "root",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -47,6 +47,7 @@ if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 const PROFILE_IMAGES_DIR = path.join(UPLOADS_DIR, "profile-images");
 if (!fs.existsSync(PROFILE_IMAGES_DIR)) fs.mkdirSync(PROFILE_IMAGES_DIR, { recursive: true });
 const API_BASE = process.env.API_BASE_URL || "http://localhost:3001";
+const FRONTEND_BASE = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -122,6 +123,52 @@ async function uploadLeadFileToS3(leadId: number, filePath: string, originalName
   } catch (err) {
     console.error("uploadLeadFileToS3 error", err);
     return null;
+  }
+}
+
+async function triggerCustomerEmailForLead(leadId: number, emailRoutePath: string): Promise<void> {
+  try {
+    const [rows] = await pool.query(
+      "SELECT project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?",
+      [leadId],
+    );
+    const row = (rows as any[])[0];
+    if (!row) return;
+
+    let payload: any = {};
+    try {
+      payload = row.payload ? JSON.parse(row.payload) : {};
+    } catch {
+      payload = {};
+    }
+
+    const customerEmail =
+      row.clientEmail || payload.email || payload?.form?.email || null;
+    const customerName =
+      payload.customer_name ||
+      payload?.form?.customer_name ||
+      row.projectName ||
+      "Customer";
+
+    if (!customerEmail) return;
+
+    // Fire-and-forget; do not block backend response
+    fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        to: customerEmail,
+        customerName,
+      }),
+    }).catch((err) => {
+      console.error("Failed to trigger customer email", {
+        leadId,
+        route: emailRoutePath,
+        error: err,
+      });
+    });
+  } catch (err) {
+    console.error("triggerCustomerEmailForLead error", { leadId, route: emailRoutePath, error: err });
   }
 }
 
@@ -870,6 +917,36 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
       ],
     );
 
+    // Fire-and-forget: trigger D1 Site Measurement welcome email via frontend mail service
+    try {
+      const customerEmail =
+        lead.clientEmail || payload.email || payload?.form?.email || null;
+      const customerName =
+        payload.customer_name ||
+        payload?.form?.customer_name ||
+        lead.projectName ||
+        "Customer";
+
+      if (customerEmail) {
+        const frontendBase =
+          process.env.FRONTEND_BASE_URL || "http://localhost:3000";
+
+        // Do not block main response if email fails; just log.
+        fetch(`${frontendBase}/api/email/send-d1-site-measurement`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            to: customerEmail,
+            customerName,
+          }),
+        }).catch((err) => {
+          console.error("Failed to trigger D1 email from backend", err);
+        });
+      }
+    } catch (emailErr) {
+      console.error("D1 email trigger error (non-fatal)", emailErr);
+    }
+
     res.status(201).json({
       success: true,
       message: "Sales closure received",
@@ -1191,7 +1268,7 @@ app.get("/api/leads/:id/completions", async (req: Request, res: Response) => {
 app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
-  const { milestoneIndex, taskName } = req.body || {};
+  const { milestoneIndex, taskName, meta } = req.body || {};
   if (typeof milestoneIndex !== "number" || !taskName) {
     return res.status(400).json({ message: "milestoneIndex and taskName are required" });
   }
@@ -1202,6 +1279,305 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
        ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
       [id, milestoneIndex, taskName, new Date()],
     );
+
+    // Fire-and-forget: trigger milestone-specific customer emails where defined
+    const emailRoutePath = (() => {
+      const t = String(taskName).trim();
+      switch (milestoneIndex) {
+        // Milestone 0: D1 SITE MEASUREMENT
+        case 0:
+          if (t === "D1 for MMT request") {
+            // Sl no 3 – D1 for MMT request (measurement visit scheduling)
+            return "/api/email/send-d1-mmt-visit-scheduled";
+          }
+          break;
+
+        // Milestone 1: DQC1
+        case 1:
+          if (t === "First cut design + quotation discussion meeting request") {
+            // Sl no 5 – first cut design + quotation discussion (meeting request)
+            return "/api/email/send-dqc1-first-cut-design-scheduled";
+          }
+          if (t === "meeting completed") {
+            // After DQC1 first‑cut meeting completed → project design timeline mail
+            return "/api/email/send-project-design-timeline";
+          }
+          if (t === "Design finalisation meeting request") {
+            // Design finalisation / design‑freeze meeting request
+            return "/api/email/send-dqc1-design-freezing-scheduled";
+          }
+          if (t === "DQC 1 approval") {
+            // DQC 1 approved → 10% payment request to CX
+            return "/api/email/send-ten-percent-payment-request";
+          }
+          break;
+
+        // Milestone 2: 10% PAYMENT
+        case 2:
+          // 10% payment approval email is triggered in /api/leads/:id/approve-10p-payment
+          break;
+
+        // Milestone 3: D2 SITE MASKING
+        case 3:
+          if (t === "D2 - masking request raise") {
+            // Sl no 9 – D2 masking request raise
+            return "/api/email/send-d2-masking-request";
+          }
+          break;
+
+        // Milestone 4: DQC2
+        case 4:
+          if (t === "Material selection meeting + quotation discussion") {
+            // Sl no 11 – DQC2 material selection meeting scheduled
+            return "/api/email/send-dqc2-material-selection-scheduled";
+          }
+          if (t === "DQC 2 submission") {
+            // Sl no 12 – DQC2 submission (final design pack ready)
+            return "/api/email/send-dqc2-final-design-submission";
+          }
+          // DQC 2 approval is internal; design sign‑off meeting email is triggered from 40% PAYMENT milestone.
+          break;
+
+        // Milestone 5: 40% PAYMENT
+        case 5: {
+          if (t === "Design sign off") {
+            // Sl no 14 – design sign‑off meeting request (after DQC2 approval)
+            return "/api/email/send-design-signoff-meeting-scheduled";
+          }
+          if (t === "meeting completed & 40% payment request") {
+            // Sl no 15 – meeting completed & 40% payment request
+            return "/api/email/send-design-signoff-40pc-payment-request";
+          }
+          // 40% payment approval email is triggered in /api/leads/:id/approve-40p-payment
+          break;
+        }
+
+        // Milestone 6: PUSH TO PRODUCTION
+        case 6:
+          if (t === "Cx approval for production") {
+            // Sl no 16 – CX approval for production
+            return "/api/email/send-production-approval-request";
+          }
+          if (t === "POC mail & Timeline submission" || t === "POC mail & Timeline submission ") {
+            // Sl no 16 (second task) – POC mail & timeline submission
+            return "/api/email/send-production-poc-timeline";
+          }
+          break;
+
+        default:
+          break;
+      }
+      return null;
+    })();
+
+    if (emailRoutePath) {
+      // Special-case DQC1 first-cut design so we can include meeting details (date, time)
+      if (emailRoutePath === "/api/email/send-dqc1-first-cut-design-scheduled") {
+        try {
+          const [rows] = await pool.query(
+            "SELECT project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?",
+            [id],
+          );
+          const row = (rows as any[])[0];
+          if (row) {
+            let payload: any = {};
+            try {
+              payload = row.payload ? JSON.parse(row.payload) : {};
+            } catch {
+              payload = {};
+            }
+            const customerEmail =
+              row.clientEmail || payload.email || payload?.form?.email || null;
+            const customerName =
+              payload.customer_name ||
+              payload?.form?.customer_name ||
+              row.projectName ||
+              "Customer";
+
+            if (customerEmail) {
+              const meetingDate = meta?.meetingDate || null;
+              const meetingTime = meta?.meetingTime || null;
+
+              fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  to: customerEmail,
+                  customerName,
+                  meetingDate,
+                  meetingTime,
+                }),
+              }).catch((err) => {
+                console.error("DQC1 first-cut email trigger error (non-fatal)", {
+                  leadId: id,
+                  route: emailRoutePath,
+                  error: err,
+                });
+              });
+            }
+          }
+        } catch (err) {
+          console.error("DQC1 first-cut email prepare error (non-fatal)", {
+            leadId: id,
+            route: emailRoutePath,
+            error: err,
+          });
+        }
+      } else if (emailRoutePath === "/api/email/send-d1-mmt-visit-scheduled") {
+        // Special-case D1 MMT visit so we can include visit details (date, time, executive)
+        try {
+          const [rows] = await pool.query(
+            `SELECT a.measurement_date as measurementDate,
+                    a.measurement_time as measurementTime,
+                    u.name as executiveName,
+                    u.phone as executivePhone,
+                    l.client_email as clientEmail,
+                    l.project_name as projectName,
+                    l.payload
+             FROM lead_d1_assignments a
+             INNER JOIN leads l ON l.id = a.lead_id
+             LEFT JOIN users u ON u.id = a.assigned_to_user_id
+             WHERE a.lead_id = ?
+             ORDER BY a.created_at DESC
+             LIMIT 1`,
+            [id],
+          );
+          const row = (rows as any[])[0];
+          if (row && row.clientEmail) {
+            let payload: any = {};
+            try {
+              payload = row.payload ? JSON.parse(row.payload) : {};
+            } catch {
+              payload = {};
+            }
+            const customerEmail =
+              row.clientEmail || payload.email || payload?.form?.email || null;
+            const customerName =
+              payload.customer_name ||
+              payload?.form?.customer_name ||
+              row.projectName ||
+              "Customer";
+
+            if (customerEmail) {
+              const visitDate =
+                row.measurementDate instanceof Date
+                  ? row.measurementDate.toISOString().split("T")[0]
+                  : row.measurementDate || null;
+              const visitTime = row.measurementTime || null;
+              const executiveName = row.executiveName || null;
+              const executivePhone = row.executivePhone || null;
+
+              fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  to: customerEmail,
+                  customerName,
+                  visitDate,
+                  visitTime,
+                  executiveName,
+                  executivePhone,
+                }),
+              }).catch((err) => {
+                console.error("D1 MMT email trigger error (non-fatal)", {
+                  leadId: id,
+                  route: emailRoutePath,
+                  error: err,
+                });
+              });
+            }
+          }
+        } catch (err) {
+          console.error("D1 MMT email prepare error (non-fatal)", {
+            leadId: id,
+            route: emailRoutePath,
+            error: err,
+          });
+        }
+      } else if (emailRoutePath === "/api/email/send-ten-percent-payment-request") {
+        // Special-case 10% payment request so we can include PID, property configuration and amount
+        try {
+          const [rows] = await pool.query(
+            "SELECT pid, project_name as projectName, client_email as clientEmail, project_value as projectValue, payload FROM leads WHERE id = ?",
+            [id],
+          );
+          const row = (rows as any[])[0];
+          if (row) {
+            let payload: any = {};
+            try {
+              payload = row.payload ? JSON.parse(row.payload) : {};
+            } catch {
+              payload = {};
+            }
+            const formData = payload?.formData || payload?.form_data || payload || {};
+
+            const customerEmail =
+              row.clientEmail || formData.email || formData.sales_email || null;
+            const customerName =
+              formData.customer_name ||
+              payload.customer_name ||
+              formData.sales_lead_name ||
+              row.projectName ||
+              "Customer";
+
+            if (customerEmail) {
+              const projectId = row.pid || "";
+              const propertyType = formData.property_configuration || "";
+              const rawOrderValue =
+                formData.order_value ??
+                payload.order_value ??
+                row.projectValue ??
+                null;
+              let amountDue: string | undefined;
+              if (typeof rawOrderValue === "number") {
+                amountDue = `₹${(rawOrderValue * 0.1).toFixed(0)}`;
+              } else if (typeof rawOrderValue === "string" && rawOrderValue.trim()) {
+                const num = Number(rawOrderValue.replace(/[^0-9.]/g, ""));
+                if (!Number.isNaN(num) && num > 0) {
+                  amountDue = `₹${(num * 0.1).toFixed(0)}`;
+                }
+              }
+
+              fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  to: customerEmail,
+                  customerName,
+                  projectId,
+                  propertyType,
+                  amountDue,
+                  // optional dueDate can be wired later if we have a clear field
+                }),
+              }).catch((err) => {
+                console.error("10% payment request email trigger error (non-fatal)", {
+                  leadId: id,
+                  route: emailRoutePath,
+                  error: err,
+                });
+              });
+            }
+          }
+        } catch (err) {
+          console.error("10% payment request email prepare error (non-fatal)", {
+            leadId: id,
+            route: emailRoutePath,
+            error: err,
+          });
+        }
+      } else {
+        triggerCustomerEmailForLead(id, emailRoutePath).catch((err) => {
+          console.error("complete-task email trigger error (non-fatal)", {
+            leadId: id,
+            milestoneIndex,
+            taskName,
+            route: emailRoutePath,
+            error: err,
+          });
+        });
+      }
+    }
+
     return res.status(201).json({ ok: true });
   } catch (err) {
     console.error("complete-task error", err);
@@ -1334,6 +1710,12 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
       details: { kind: "note", noteText: "10% payment approved. Lead moves to next stage." },
     };
     await addLeadHistoryEvent(leadId, ev);
+    // Fire-and-forget: trigger 10% payment approval email
+    triggerCustomerEmailForLead(leadId, "/api/email/send-ten-percent-payment-approval").catch(
+      (emailErr) => {
+        console.error("10% payment approval email trigger error (non-fatal)", emailErr);
+      },
+    );
     return res.status(201).json({ ok: true });
   } catch (err) {
     console.error("approve-10p-payment error", err);
@@ -1459,6 +1841,12 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
       details: { kind: "note", noteText: "40% payment approved. Lead moves to next stage." },
     };
     await addLeadHistoryEvent(leadId, ev);
+    // Fire-and-forget: trigger 40% payment approval email
+    triggerCustomerEmailForLead(leadId, "/api/email/send-design-signoff-40pc-payment-approval").catch(
+      (emailErr) => {
+        console.error("40% payment approval email trigger error (non-fatal)", emailErr);
+      },
+    );
     return res.status(201).json({ ok: true });
   } catch (err) {
     console.error("approve-40p-payment error", err);
@@ -1840,6 +2228,81 @@ app.post(
         details: { kind: "dqc_submission", drawing: drawingFile.originalname, quotation: quotationFile.originalname },
       };
       await addLeadHistoryEvent(leadId, ev);
+
+      // Fire-and-forget internal DQC 1 review request email
+      try {
+        const [leadRows] = await pool.query(
+          "SELECT project_name as projectName, client_email as clientEmail, payload, project_value as projectValue, experience_center as experienceCenter FROM leads WHERE id = ?",
+          [leadId],
+        );
+        const leadRow = (leadRows as any[])[0];
+        if (leadRow) {
+          let payload: any = {};
+          try {
+            payload = leadRow.payload ? JSON.parse(leadRow.payload) : {};
+          } catch {
+            payload = {};
+          }
+
+          const customerName =
+            payload.customer_name ||
+            payload?.form?.customer_name ||
+            leadRow.projectName ||
+            "Customer";
+          const ecName =
+            payload.experience_center ||
+            payload?.form?.experience_center ||
+            leadRow.experienceCenter ||
+            "Experience Center";
+          const designerName = user.name || "Designer";
+          const projectValue =
+            payload.project_value ||
+            payload?.form?.project_value ||
+            leadRow.projectValue ||
+            "";
+
+          // Determine primary DQC recipient and CC list (designer + manager + TDM)
+          const [dqcRows] = await pool.query(
+            "SELECT email, name FROM users WHERE role IN ('dqc_manager', 'dqe') ORDER BY id ASC LIMIT 1",
+          );
+          const dqcUser = (dqcRows as any[])[0];
+
+          if (dqcUser && dqcUser.email) {
+            const to = dqcUser.email as string;
+
+            const [ccRows] = await pool.query(
+              "SELECT email FROM users WHERE id IN (?, ?, ?) AND email IS NOT NULL",
+              [user.id, payload.manager_user_id || null, payload.tdm_user_id || null],
+            );
+            const ccList = (ccRows as any[]).map((r) => r.email).filter(Boolean);
+
+            fetch(`${FRONTEND_BASE}/api/email/send-dqc1-review-request-internal`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                to,
+                cc: ccList,
+                customerName,
+                ecName,
+                designerName,
+                projectValue: String(projectValue || ""),
+                dqcRepName: dqcUser.name || "DQC Team",
+              }),
+            }).catch((err) => {
+              console.error("DQC1 review request internal email trigger error (non-fatal)", {
+                leadId,
+                error: err,
+              });
+            });
+          }
+        }
+      } catch (err) {
+        console.error("DQC1 review request internal email prepare error (non-fatal)", {
+          leadId,
+          error: err,
+        });
+      }
+
       return res.status(201).json({ ok: true });
     } catch (err) {
       console.error("dqc-submission error", err);

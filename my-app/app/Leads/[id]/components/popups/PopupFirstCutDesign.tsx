@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import type { RefObject } from "react";
 
 type Props = {
@@ -10,7 +11,7 @@ type Props = {
   onDesignDrop: (e: React.DragEvent) => void;
   onDesignDragOver: (e: React.DragEvent) => void;
   removeDesignFile: (index: number) => void;
-  onSubmit?: () => void;
+  onSubmit?: (meta?: { meetingDate?: string; meetingTime?: string }) => void;
 };
 
 /**
@@ -26,6 +27,9 @@ export default function PopupFirstCutDesign({
   removeDesignFile,
   onSubmit,
 }: Props) {
+  const [meetingDate, setMeetingDate] = useState("");
+  const [meetingTime, setMeetingTime] = useState("");
+
   return (
     <div className="w-full min-h-[100vh]">
       <div>
@@ -55,6 +59,8 @@ export default function PopupFirstCutDesign({
             <input
               type="date"
               className="w-[250px] border border-gray-300 rounded-md p-2 mt-2"
+              value={meetingDate}
+              onChange={(e) => setMeetingDate(e.target.value)}
             />
           </div>
           <div>
@@ -62,6 +68,8 @@ export default function PopupFirstCutDesign({
             <input
               type="time"
               className="w-[250px] border border-gray-300 rounded-md p-2 mt-2"
+              value={meetingTime}
+              onChange={(e) => setMeetingTime(e.target.value)}
             />
           </div>
         </div>
@@ -251,7 +259,7 @@ export default function PopupFirstCutDesign({
             <div className="text-[16px] text-gray-600">Cancel</div>
             <button
               type="button"
-              onClick={onSubmit}
+              onClick={() => onSubmit?.({ meetingDate, meetingTime })}
               className="bg-blue-500 text-white w-35 h-9 rounded-md flex pl-3 pt-1.5 gap-2 font-bold"
             >
               Send Invite{" "}

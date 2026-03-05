@@ -543,7 +543,11 @@ export default function ProjectDetailPage() {
     const recordTaskComplete = (
         milestoneIndex: number,
         taskName: string,
-        options?: { details?: HistoryEvent['details']; description?: string }
+        options?: {
+            details?: HistoryEvent['details'];
+            description?: string;
+            meta?: Record<string, unknown>;
+        }
     ) => {
         const requiresChecklist = getChecklistKeyForTask(milestoneIndex, taskName) !== null;
         const key = taskKey(milestoneIndex, taskName);
@@ -567,7 +571,7 @@ export default function ProjectDetailPage() {
             fetch(`${API}/api/leads/${projectId}/complete-task`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ milestoneIndex, taskName }),
+                body: JSON.stringify({ milestoneIndex, taskName, meta: options?.meta }),
             }).catch(() => {});
         }
         markTaskComplete(milestoneIndex, taskName);
@@ -995,10 +999,11 @@ export default function ProjectDetailPage() {
                             onDesignDrop={onDesignDrop}
                             onDesignDragOver={onDesignDragOver}
                             removeDesignFile={removeDesignFile}
-                            onSubmit={() => {
+                            onSubmit={(meta) => {
                                 recordTaskComplete(1, 'First cut design + quotation discussion meeting request', {
                                     description: 'First cut design uploaded and meeting request submitted.',
                                     details: designUploadFiles.length > 0 ? { kind: 'file_upload', fileName: designUploadFiles.map((f) => f.name).join(', '), status: 'Uploaded' } : undefined,
+                                    meta,
                                 });
                                 closePopup();
                             }}
