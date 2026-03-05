@@ -61,7 +61,7 @@ export default function SalesClosureForm() {
     | "dis_on_woodwork"
     | "dis_on_service"
     | "dis_on_accessories";
-  type Designer = { id: number; name: string; leadName: string };
+  type Designer = { id: number; name: string; role: string; leadName: string };
   const [designers, setDesigners] = useState<Designer[]>([]);
 
   useEffect(() => {
@@ -73,8 +73,12 @@ export default function SalesClosureForm() {
       .catch(() => {});
   }, []);
 
-  const designerName = designers.map((d) => d.name);
-  const designerLeadName = designers.map((d) => d.leadName);
+  const designerName = designers
+    .filter((d) => d.role === "designer")
+    .map((d) => d.name);
+  const designerLeadName = designers
+    .filter((d) => d.role === "design_manager")
+    .map((d) => d.name);
 
   const [currentDateTime, setCurrentDateTime] = useState("");
 
@@ -529,8 +533,10 @@ export default function SalesClosureForm() {
                       onChange={(e) => {
                         const name = e.target.value;
                         updateFields("designer_name", name);
-                        const match = designers.find((d) => d.name === name);
-                        if (match) {
+                        const match = designers.find(
+                          (d) => d.role === "designer" && d.name === name,
+                        );
+                        if (match && match.leadName) {
                           updateFields("designer_lead", match.leadName);
                         } else {
                           updateFields("designer_lead", "");
@@ -552,7 +558,7 @@ export default function SalesClosureForm() {
                   </div>
                   <div>
                     <label className="block text-sm text-green-950 font-medium mb-1">
-                      Designer Lead
+                      Design Manager
                     </label>
                     <select
                       className="w-full border p-2.5 rounded-lg text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
@@ -561,7 +567,7 @@ export default function SalesClosureForm() {
                         updateFields("designer_lead", e.target.value)
                       }
                     >
-                      <option value="">Select Designer Lead</option>
+                      <option value="">Select Design Manager</option>
                       {designerLeadName.map((lead) => (
                         <option key={lead} value={lead}>
                           {lead}
