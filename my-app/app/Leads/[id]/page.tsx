@@ -39,6 +39,7 @@ export default function ProjectDetailPage() {
     const projectId = params?.id ? Number(params.id) : null;
     const isMmtUser = ['mmt', 'mmt_manager', 'mmt_executive'].includes((authUser?.role || '').toLowerCase());
     const viewDqc = searchParams.get('view') === 'dqc';
+    const dqcStage = viewDqc ? (searchParams.get('stage') === 'dqc2' ? 'dqc2' as const : 'dqc1' as const) : null;
     const isDqcUser = ['dqc_manager', 'dqe'].includes((authUser?.role || '').toLowerCase());
     const isDesigner = ['designer', 'design_manager'].includes((authUser?.role || '').toLowerCase());
     
@@ -66,6 +67,26 @@ export default function ProjectDetailPage() {
         );
         if (allDone) setCurrentMilestoneIndex((prev) => Math.min(prev + 1, 6));
     }, [completedTaskKeys, currentMilestoneIndex]);
+
+    // Hydrate completed tasks for this lead from backend so milestone index matches server state
+    useEffect(() => {
+        if (!projectId || !sessionId) return;
+        const headers: Record<string, string> = { Authorization: `Bearer ${sessionId}` };
+        fetch(`${API}/api/leads/${projectId}/completions`, { headers })
+            .then((res) => res.json())
+            .then((data: { milestoneIndex: number; taskName: string }[]) => {
+                if (!Array.isArray(data)) return;
+                const keys = data.map((c) => taskKey(c.milestoneIndex, c.taskName));
+                if (keys.length) {
+                    setCompletedTaskKeys((prev) => {
+                        // merge to avoid losing any local completions
+                        const merged = new Set([...prev, ...keys]);
+                        return Array.from(merged);
+                    });
+                }
+            })
+            .catch(() => {});
+    }, [projectId, sessionId]);
     // Which milestone popup is open (null = closed). Lets you show different popup content per milestone/task.
     const [popupContext, setPopupContext] = useState<{ milestoneIndex: number; milestoneName: string; taskName: string } | null>(null);
     // Checklist popup (opened from "Visit checklist" in milestone task menu)
@@ -161,18 +182,24 @@ export default function ProjectDetailPage() {
             .catch(() => {});
     }, [popupContext?.milestoneIndex, popupContext?.taskName, projectId, refreshUser]);
 
-    // Load and maintain history for this lead (recorded on server)
-    useEffect(() => {
+    // Load history from server (use credentials so we get full list; don't overwrite with empty on error)
+    const loadHistory = useCallback(() => {
         if (projectId == null) return;
-        fetch(`${API}/api/leads/${projectId}/history`)
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (sessionId) headers['Authorization'] = `Bearer ${sessionId}`;
+        fetch(`${API}/api/leads/${projectId}/history`, { headers, credentials: 'include' })
             .then(async (res) => {
                 const text = await res.text();
                 if (!res.ok || !text) return [];
                 try { const d = JSON.parse(text); return Array.isArray(d) ? d : []; } catch { return []; }
             })
             .then((data: HistoryEvent[]) => setHistoryEvents(data))
-            .catch(() => setHistoryEvents([]));
-    }, [projectId]);
+            .catch(() => { /* keep existing state on error instead of clearing */ });
+    }, [projectId, sessionId]);
+
+    useEffect(() => {
+        loadHistory();
+    }, [loadHistory]);
 
     // Restore completed tasks from DB so it persists across refresh
     useEffect(() => {
@@ -355,10 +382,14 @@ export default function ProjectDetailPage() {
         };
     }, [isDqc2Approval, projectId, sessionId, loadDqc2SubmissionFile]);
 
-    // When DQC user opens lead with ?view=dqc (Quality Check), auto-load DQC 1 submission file so they can do the quantity check
+    // When DQC user opens lead with ?view=dqc (Quality Check), load DQC 1 or DQC 2 submission file based on stage
     useEffect(() => {
         if (!viewDqc || !isDqcUser || !projectId || !sessionId) return;
-        loadDqcSubmissionFile();
+        if (dqcStage === 'dqc2') {
+            loadDqc2SubmissionFile();
+        } else {
+            loadDqcSubmissionFile();
+        }
         return () => {
             setDqc1SubmissionLoading(false);
             if (dqc1SubmissionBlobUrlRef.current) {
@@ -366,7 +397,7 @@ export default function ProjectDetailPage() {
                 dqc1SubmissionBlobUrlRef.current = null;
             }
         };
-    }, [viewDqc, isDqcUser, projectId, sessionId, loadDqcSubmissionFile]);
+    }, [viewDqc, isDqcUser, dqcStage, projectId, sessionId, loadDqcSubmissionFile, loadDqc2SubmissionFile]);
 
     const [image, setImage] = useState<ImageType[]>([]);
 
@@ -540,11 +571,14 @@ export default function ProjectDetailPage() {
             timestamp: new Date().toISOString(),
         };
         setHistoryEvents((prev) => [full, ...prev]);
-        // Persist so history is recorded and maintained
+        // Persist to server only; do not refetch here so we never overwrite with a stale response and lose entries
         if (projectId != null) {
+            const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+            if (sessionId) headers['Authorization'] = `Bearer ${sessionId}`;
             fetch(`${API}/api/leads/${projectId}/history`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
+                credentials: 'include',
                 body: JSON.stringify(full),
             }).catch((err) => console.error('Failed to persist history event:', err));
         }
@@ -589,9 +623,15 @@ export default function ProjectDetailPage() {
     };
 
     const submitDqc1Review = () => {
-        const milestoneIndex = 1;
-        const taskName = 'DQC 1 approval';
-        const milestoneName = 'DQC1';
+        // Use DQC1 or DQC2 context: from popup (designer view) or from URL stage (DQC-only view)
+        const isDqc2 =
+            (popupContext?.milestoneIndex === 4 &&
+                (popupContext.taskName === 'DQC 2 approval' || popupContext.taskName === 'DQC 2 approval ')) ||
+            (viewDqc && isDqcUser && dqcStage === 'dqc2');
+        const milestoneIndex = isDqc2 ? 4 : 1;
+        const taskName =
+            (isDqc2 && popupContext?.taskName) ? popupContext.taskName : 'DQC 1 approval';
+        const milestoneName = isDqc2 ? 'DQC2' : 'DQC1';
         if (dqc1Verdict) {
             addHistoryEvent({
                 type: 'completed',
@@ -608,15 +648,33 @@ export default function ProjectDetailPage() {
                     remarks: dqc1Remarks.map((r) => ({ priority: r.priority, text: r.text })),
                 },
             });
-            // Only move to next milestone when fully approved. Rejected or Approved with changes = designer must resolve comments and resubmit.
-            const movesToNextMilestone = dqc1Verdict === 'approved';
+            // Move to next milestone:
+            // - DQC1: only when fully approved
+            // - DQC2: for any verdict except "rejected"
+            const movesToNextMilestone = isDqc2 ? dqc1Verdict !== 'rejected' : dqc1Verdict === 'approved';
             if (movesToNextMilestone && projectId != null) {
-                fetch(`${API}/api/leads/${projectId}/complete-task`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ milestoneIndex, taskName }),
-                }).catch(() => {});
-                markTaskComplete(milestoneIndex, taskName);
+                if (isDqc2) {
+                    // For DQC2, auto-complete all tasks in the DQC2 milestone and jump milestone index to 40% PAYMENT.
+                    const dqc2Milestone = MileStonesArray.MilestonesName[4];
+                    dqc2Milestone.taskList.forEach((t: string) => {
+                        fetch(`${API}/api/leads/${projectId}/complete-task`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ milestoneIndex: 4, taskName: t }),
+                        }).catch(() => {});
+                        markTaskComplete(4, t);
+                    });
+                    // Force UI to show 40% PAYMENT as current milestone after DQC2 approval.
+                    setCurrentMilestoneIndex(5);
+                } else {
+                    // DQC1: mark only the approval task; other tasks should already be completed manually.
+                    fetch(`${API}/api/leads/${projectId}/complete-task`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ milestoneIndex, taskName }),
+                    }).catch(() => {});
+                    markTaskComplete(milestoneIndex, taskName);
+                }
             }
             if (projectId != null) {
                 fetch(`${API}/api/leads/${projectId}/dqc-review`, {
@@ -734,6 +792,11 @@ export default function ProjectDetailPage() {
                         <span className="font-bold text-gray-900">{project.projectName}</span>
                         <span className="text-gray-600 font-medium">Stage:</span>
                         <span className="font-bold text-gray-900">{project.projectStage || 'Active'}</span>
+                        {dqcStage && (
+                            <span className="px-2.5 py-0.5 rounded bg-blue-100 text-blue-800 text-sm font-semibold">
+                                {dqcStage === 'dqc2' ? 'DQC 2 Approval' : 'DQC 1 Approval'}
+                            </span>
+                        )}
                     </div>
                     <a
                         href="/"
@@ -745,6 +808,7 @@ export default function ProjectDetailPage() {
                 <div className="flex-1 min-h-0 flex flex-col bg-white m-4 rounded-xl border border-gray-200 shadow-sm overflow-hidden">
                     <PopupDqc1Approval
                         onClose={() => router.push('/')}
+                        reviewTitle={dqcStage === 'dqc2' ? 'DQC 2 Approval' : 'DQC 1 Approval'}
                         projectTitle={project.projectName}
                         projectRef={project.pid || `REF-${project.id}`}
                         revision={project.revision ?? undefined}
@@ -1010,13 +1074,58 @@ export default function ProjectDetailPage() {
                             onDesignDrop={onDesignDrop}
                             onDesignDragOver={onDesignDragOver}
                             removeDesignFile={removeDesignFile}
-                            onSubmit={(meta) => {
-                                recordTaskComplete(1, 'First cut design + quotation discussion meeting request', {
-                                    description: 'First cut design uploaded and meeting request submitted.',
-                                    details: designUploadFiles.length > 0 ? { kind: 'file_upload', fileName: designUploadFiles.map((f) => f.name).join(', '), status: 'Uploaded' } : undefined,
-                                    meta,
-                                });
-                                closePopup();
+                            onSubmit={async () => {
+                                if (!projectId) return;
+                                try {
+                                    if (designUploadFiles.length > 0 && sessionId) {
+                                        const fd = new FormData();
+                                        designUploadFiles.forEach((f) =>
+                                            fd.append('files', f),
+                                        );
+                                        await fetch(
+                                            `${API}/api/leads/${projectId}/first-cut-design-upload`,
+                                            {
+                                                method: 'POST',
+                                                headers: {
+                                                    Authorization: `Bearer ${sessionId}`,
+                                                },
+                                                body: fd,
+                                            },
+                                        );
+                                    }
+                                    recordTaskComplete(
+                                        1,
+                                        'First cut design + quotation discussion meeting request',
+                                        {
+                                            description:
+                                                'First cut design uploaded and meeting request submitted.',
+                                            details:
+                                                designUploadFiles.length > 0
+                                                    ? {
+                                                          kind: 'file_upload',
+                                                          fileName:
+                                                              designUploadFiles
+                                                                  .map(
+                                                                      (f) =>
+                                                                          f.name,
+                                                                  )
+                                                                  .join(', '),
+                                                          status: 'Uploaded',
+                                                      }
+                                                    : undefined,
+                                        },
+                                    );
+                                    setDesignUploadFiles([]);
+                                    closePopup();
+                                } catch (err) {
+                                    console.error(
+                                        'first-cut-design upload failed',
+                                        err,
+                                    );
+                                    alert(
+                                        'Failed to upload design files. Please try again.',
+                                    );
+                                }
                             }}
                         />
                     )}
@@ -1031,12 +1140,37 @@ export default function ProjectDetailPage() {
                             onMomDrop={onMomDrop}
                             removeMomFile={removeMomFile}
                             onClose={closePopup}
-                            onShareMom={() => {
-                                recordTaskComplete(1, 'meeting completed', {
-                                    description: 'Meeting completed. Minutes of meeting shared.',
-                                    details: { kind: 'mom', minutes: momMinutes, referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })) },
-                                });
-                                closePopup();
+                            onShareMom={async () => {
+                                if (!projectId) return;
+                                try {
+                                    if (sessionId) {
+                                        const fd = new FormData();
+                                        fd.append('minutes', momMinutes);
+                                        momReferenceFiles.forEach((f) => fd.append('files', f));
+                                        await fetch(`${API}/api/leads/${projectId}/mom-upload`, {
+                                            method: 'POST',
+                                            headers: {
+                                                Authorization: `Bearer ${sessionId}`,
+                                            },
+                                            body: fd,
+                                        });
+                                    }
+                                    recordTaskComplete(1, 'meeting completed', {
+                                        description: 'Meeting completed. Minutes of meeting shared.',
+                                        details: {
+                                            kind: 'mom',
+                                            minutes: momMinutes,
+                                            referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                        },
+                                    });
+                                    setMomMinutes('');
+                                    setMomReferenceFiles([]);
+                                    setUploadsVersion((v) => v + 1);
+                                    closePopup();
+                                } catch (err) {
+                                    console.error('mom upload failed', err);
+                                    alert('Failed to save MOM. Please try again.');
+                                }
                             }}
                         />
                     )}
@@ -1150,7 +1284,14 @@ export default function ProjectDetailPage() {
                                 submissionVariant="dqc2"
                                 projectName={project.projectName}
                                 projectRef={project.pid || `REF-${project.id}`}
-                                onEditResubmit={() => closePopup()}
+                                onEditResubmit={() => {
+                                    closePopup();
+                                    setPopupContext({
+                                        milestoneIndex: 4,
+                                        milestoneName: 'DQC2',
+                                        taskName: 'DQC 2 submission',
+                                    });
+                                }}
                             />
                         ) : (
                             <PopupDqc1Approval
@@ -1203,10 +1344,10 @@ export default function ProjectDetailPage() {
                     {popupContext.milestoneIndex === 4 && popupContext.taskName !== 'DQC 2 submission' && popupContext.taskName !== 'DQC 2 approval' && popupContext.taskName !== 'DQC 2 approval ' && (
                         <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(4, popupContext.taskName); closePopup(); }} />
                     )}
-                    {popupContext.milestoneIndex === 5 && (
+                    {popupContext.milestoneIndex === 5 && popupContext.taskName !== 'meeting completed & 40% payment request' && (
                         <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(5, popupContext.taskName); closePopup(); }} />
                     )}
-                    {popupContext.milestoneIndex === 6 && (
+                    {popupContext.milestoneIndex === 5 && popupContext.taskName === 'meeting completed & 40% payment request' && (
                         <PopupMeetingCompleted
                             momMinutes={momMinutes}
                             setMomMinutes={setMomMinutes}
@@ -1218,13 +1359,17 @@ export default function ProjectDetailPage() {
                             removeMomFile={removeMomFile}
                             onClose={closePopup}
                             onShareMom={() => {
-                                recordTaskComplete(6, popupContext.taskName, {
+                                recordTaskComplete(5, popupContext.taskName, {
                                     description: 'Meeting completed & 40% payment request shared.',
                                     details: { kind: 'mom', minutes: momMinutes, referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })) },
                                 });
+                                setUploadsVersion((v) => v + 1);
                                 closePopup();
                             }}
                         />
+                    )}
+                    {popupContext.milestoneIndex === 6 && (
+                        <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(6, popupContext.taskName); closePopup(); }} />
                     )}
                 </TaskModal>
             )}

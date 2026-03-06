@@ -181,7 +181,7 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
     };
 
     return (
-        <div className={`${cardClass} flex flex-col min-h-0`}>
+        <div className={`${cardClass} flex flex-col min-h-0 min-w-0 overflow-hidden`}>
             <div className="flex flex-shrink-0 justify-between xl:justify-around px-4">
                 <h2 className="text-lg font-bold text-gray-900">Files Uploaded</h2>
                 <button
@@ -226,13 +226,13 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
                 {uploads.length === 0 ? (
                     <div className="flex-shrink-0 text-sm text-gray-600">{loading ? 'Loading…' : 'No uploads yet.'}</div>
                 ) : (
-                    <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pb-4 pr-1 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-gray-100 [&::-webkit-scrollbar-track]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-thumb]:rounded-full">
+                    <div className="flex-1 min-h-0 min-w-0 overflow-auto overflow-x-auto space-y-2 pb-4 pr-1 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-gray-100 [&::-webkit-scrollbar-track]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-thumb]:rounded-full">
                         {uploads.map((u) => (
-                            <div key={u.id} className="bg-white/70 border border-gray-200 rounded-xl px-3 py-2">
-                                <div className="flex items-center justify-between gap-3">
-                                    <div className="min-w-0">
-                                        <div className="flex items-center gap-2">
-                                            <span className="text-sm font-medium text-gray-900 truncate">{u.originalName}</span>
+                            <div key={u.id} className="bg-white/70 border border-gray-200 rounded-xl px-3 py-2 min-w-0">
+                                <div className="flex items-center justify-between gap-3 min-w-0">
+                                    <div className="min-w-0 flex-1 overflow-hidden">
+                                        <div className="flex items-center gap-2 min-w-0">
+                                            <span className="text-sm font-medium text-gray-900 truncate block min-w-0" title={u.originalName}>{u.originalName}</span>
                                             {u.status && (
                                                 <span className={`shrink-0 px-2 py-0.5 rounded text-xs font-medium ${u.status === 'approved' ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}`}>
                                                     {u.status === 'approved' ? 'Approved' : 'Pending'}
