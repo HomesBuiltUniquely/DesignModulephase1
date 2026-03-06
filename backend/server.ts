@@ -25,8 +25,9 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+// Allow large DQC submissions and uploads (drawing + quotation can be big)
+app.use(express.json({ limit: "200mb" }));
+app.use(express.urlencoded({ extended: true, limit: "200mb" }));
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
@@ -1319,7 +1320,40 @@ app.get("/api/leads/:id/history", async (req: Request, res: Response) => {
         return null;
       }
     }).filter(Boolean);
-    return res.json(events);
+
+    if (events.length > 0) {
+      return res.json(events);
+    }
+
+    // Fallback for older leads that pre-date explicit history events:
+    // synthesize basic "completed" entries from task completions so History is never empty.
+    const [compRows] = await pool.query(
+      "SELECT milestone_index as milestoneIndex, task_name as taskName, completed_at as completedAt FROM lead_task_completions WHERE lead_id = ? ORDER BY completed_at DESC",
+      [id],
+    );
+    const completions = compRows as {
+      milestoneIndex: number;
+      taskName: string;
+      completedAt: Date | null;
+    }[];
+    const synthetic = completions.map((c) => {
+      const ts = c.completedAt ? new Date(c.completedAt) : new Date();
+      const milestoneName = MILESTONE_NAMES[c.milestoneIndex] ?? `Milestone ${c.milestoneIndex + 1}`;
+      return {
+        id: `legacy-completion-${id}-${c.milestoneIndex}-${c.taskName}-${ts.getTime()}`,
+        type: "completed",
+        taskName: c.taskName,
+        milestoneName,
+        timestamp: ts.toISOString(),
+        description: `${c.taskName} completed.`,
+        user: { name: "System", avatar: null },
+        details: {
+          kind: "note",
+          noteText: "Imported from existing completion record.",
+        },
+      };
+    });
+    return res.json(synthetic);
   } catch (err) {
     console.error("lead history error", err);
     return res.status(500).json({ message: "Failed to load history" });
