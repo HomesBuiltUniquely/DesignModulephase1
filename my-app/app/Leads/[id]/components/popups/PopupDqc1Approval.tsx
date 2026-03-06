@@ -73,6 +73,8 @@ type Props = {
   dqc1SubmissionLoading?: boolean;
   /** When provided, show a button to load the file from DQC 1 submission (same as in Files Uploaded) so DQC can do the quantity check */
   onLoadDqcSubmission?: () => void;
+  /** Optional title (e.g. "DQC 1 Approval" / "DQC 2 Approval") instead of default "Design QC Review" */
+  reviewTitle?: string;
 };
 
 /**
@@ -122,11 +124,12 @@ export default function PopupDqc1Approval({
   dqc1SubmissionNotPdf = false,
   dqc1SubmissionLoading = false,
   onLoadDqcSubmission,
+  reviewTitle,
 }: Props) {
   return (
     <div className="flex flex-1 flex-col min-h-0 relative">
       <div className="flex justify-between items-center px-6 py-3 border-b border-gray-200 flex-shrink-0">
-        <h3 className="text-lg font-bold text-gray-900">Design QC Review</h3>
+        <h3 className="text-lg font-bold text-gray-900">{reviewTitle ?? "Design QC Review"}</h3>
         <button
           onClick={onClose}
           className="text-gray-700 bg-gray-100 hover:bg-gray-200 text-xl leading-none border border-gray-300 rounded-md px-2 py-1 font-bold text-sm"

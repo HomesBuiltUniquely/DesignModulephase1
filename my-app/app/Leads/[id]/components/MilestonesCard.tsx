@@ -230,19 +230,11 @@ export default function MilestonesCard({
               const isCurrent = milestoneIndex === currentMilestoneIndex;
               const isNextOrLater = milestoneIndex > currentMilestoneIndex;
               const taskList = milestone.taskList;
+              const completedCount = taskList.filter(
+                (_, taskIndex) => getTaskStatus(milestoneIndex, taskIndex, taskList).icon === "completed",
+              ).length;
               const progressPercent = taskList.length
-                ? Math.min(
-                    100,
-                    Math.round(
-                      ((milestoneIndex === 0
-                        ? 1
-                        : milestoneIndex === 1
-                          ? 2
-                          : 0) /
-                        taskList.length) *
-                        100,
-                    ),
-                  )
+                ? Math.min(100, Math.round((completedCount / taskList.length) * 100))
                 : 0;
               const dateRanges = [
                 "Dec 01 - Dec 15",

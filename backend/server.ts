@@ -1377,6 +1377,24 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
   }
 });
 
+// Get all completed tasks for a lead (used to hydrate milestone progress on load)
+app.get("/api/leads/:id/completions", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const [rows] = await pool.query(
+      "SELECT milestone_index as milestoneIndex, task_name as taskName FROM lead_task_completions WHERE lead_id = ?",
+      [id],
+    );
+    return res.json(rows);
+  } catch (err) {
+    console.error("lead completions error", err);
+    return res.status(500).json({ message: "Failed to load completions" });
+  }
+});
+
 // ----- Finance 10% payment: queue (limited fields), upload screenshots, approve -----
 // Finance team sees only leads at 10% payment stage with id, name, status, upload, approve.
 app.get("/api/leads/finance-10p-queue", async (req: Request, res: Response) => {
@@ -2016,6 +2034,193 @@ app.post(
   },
 );
 
+// Meeting completed (Minutes of Meeting): upload MOM text + reference files so they appear in Files card
+app.post(
+  "/api/leads/:id/mom-upload",
+  upload.array("files"),
+  async (req: Request, res: Response) => {
+    const leadId = Number(req.params.id);
+    if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+    try {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const role = (user?.role ?? "").toLowerCase();
+      const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
+      if (!allowed.includes(role)) {
+        return res.status(403).json({ message: "Not allowed to submit MOM" });
+      }
+
+      const files = (req as any).files as Express.Multer.File[] | undefined;
+      const minutesRaw = (req.body as any)?.minutes;
+      const minutes = typeof minutesRaw === "string" ? minutesRaw.trim() : "";
+
+      if ((!files || files.length === 0) && !minutes) {
+        return res.status(400).json({ message: "Minutes or at least one file is required" });
+      }
+
+      const now = new Date();
+
+      // Save reference files
+      if (files && files.length > 0) {
+        for (const file of files) {
+          let s3Url: string | null = null;
+          if (process.env.AWS_ACCESS_KEY_ID) {
+            s3Url = await uploadLeadFileToS3(
+              leadId,
+              file.path,
+              file.originalname,
+              file.mimetype,
+            );
+          }
+          await pool.query(
+            `INSERT INTO lead_uploads
+             (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'mom_attachment', ?)`,
+            [
+              leadId,
+              user.id,
+              file.originalname,
+              file.filename,
+              file.path,
+              file.mimetype,
+              file.size,
+              now,
+              s3Url,
+            ],
+          );
+        }
+      }
+
+      // Save MOM minutes as a text file entry so it also appears under Files
+      if (minutes) {
+        const baseName = `MOM-${now.toISOString().slice(0, 10)}-${Date.now()}.txt`;
+        const storedName = baseName;
+        const storedPath = path.join(UPLOADS_DIR, storedName);
+        await fs.promises.writeFile(storedPath, minutes, "utf8");
+        const sizeBytes = Buffer.byteLength(minutes, "utf8");
+
+        let s3UrlText: string | null = null;
+        if (process.env.AWS_ACCESS_KEY_ID) {
+          s3UrlText = await uploadLeadFileToS3(
+            leadId,
+            storedPath,
+            baseName,
+            "text/plain",
+          );
+        }
+
+        await pool.query(
+          `INSERT INTO lead_uploads
+           (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'mom_minutes', ?)`,
+          [
+            leadId,
+            user.id,
+            baseName,
+            storedName,
+            storedPath,
+            "text/plain",
+            sizeBytes,
+            now,
+            s3UrlText,
+          ],
+        );
+      }
+
+      const attachmentNames = files && files.length > 0 ? files.map((f) => f.originalname) : [];
+      const ev = {
+        id: `mom-${Date.now()}`,
+        type: "mom",
+        taskName: "meeting completed",
+        milestoneName: "DQC1",
+        timestamp: now.toISOString(),
+        description: attachmentNames.length
+          ? `Minutes of Meeting recorded with attachments: ${attachmentNames.join(", ")}`
+          : "Minutes of Meeting recorded",
+        user: { name: user.name ?? "User" },
+        details: {
+          kind: "mom",
+          hasMinutes: !!minutes,
+          attachments: attachmentNames.map((name) => ({ name })),
+        },
+      };
+      await addLeadHistoryEvent(leadId, ev);
+
+      return res.status(201).json({ ok: true });
+    } catch (err) {
+      console.error("mom-upload error", err);
+      return res.status(500).json({ message: "Failed to save MOM" });
+    }
+  },
+);
+
+// First cut design upload: files from \"First cut design + quotation discussion\" popup
+app.post(
+  "/api/leads/:id/first-cut-design-upload",
+  upload.array("files"),
+  async (req: Request, res: Response) => {
+    const leadId = Number(req.params.id);
+    if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+    try {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const role = (user?.role ?? "").toLowerCase();
+      const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
+      if (!allowed.includes(role)) {
+        return res.status(403).json({ message: "Not allowed to upload first cut design" });
+      }
+      const files = (req as any).files as Express.Multer.File[] | undefined;
+      if (!files || files.length === 0) {
+        return res.status(400).json({ message: "At least one file is required" });
+      }
+      const now = new Date();
+      for (const file of files) {
+        let s3Url: string | null = null;
+        if (process.env.AWS_ACCESS_KEY_ID) {
+          s3Url = await uploadLeadFileToS3(
+            leadId,
+            file.path,
+            file.originalname,
+            file.mimetype,
+          );
+        }
+        await pool.query(
+          `INSERT INTO lead_uploads
+           (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'first_cut_design', ?)`,
+          [
+            leadId,
+            user.id,
+            file.originalname,
+            file.filename,
+            file.path,
+            file.mimetype,
+            file.size,
+            now,
+            s3Url,
+          ],
+        );
+      }
+      const names = files.map((f) => f.originalname).join(", ");
+      const ev = {
+        id: `first-cut-design-${Date.now()}`,
+        type: "file_upload",
+        taskName: "First cut design + quotation discussion meeting request",
+        milestoneName: "DQC1",
+        timestamp: now.toISOString(),
+        description: `First cut design upload: ${names}`,
+        user: { name: user.name ?? "User" },
+        details: { kind: "first_cut_design", files: files.map((f) => ({ name: f.originalname })) },
+      };
+      await addLeadHistoryEvent(leadId, ev);
+      return res.status(201).json({ ok: true });
+    } catch (err) {
+      console.error("first-cut-design-upload error", err);
+      return res.status(500).json({ message: "Failed to upload first cut design" });
+    }
+  },
+);
+
 // Get latest DQC submission files for this lead (for DQC Manager / DQE to load in Design QC Review and do quantity check)
 app.get("/api/leads/:id/dqc-submission-files", async (req: Request, res: Response) => {
   const leadId = Number(req.params.id);
@@ -2104,6 +2309,12 @@ app.post(
         details: { kind: "dqc2_submission", drawing: drawingFile.originalname, quotation: quotationFile.originalname },
       };
       await addLeadHistoryEvent(leadId, ev);
+      // Also create a new DQC review entry in "pending" state so the DQC dashboard shows this lead again for DQC 2.
+      await pool.query(
+        `INSERT INTO lead_dqc_reviews (lead_id, verdict, remarks, created_at, reviewed_by_user_id)
+         VALUES (?, ?, ?, ?, NULL)`,
+        [leadId, "pending_dqc2", JSON.stringify([]), now],
+      );
       return res.status(201).json({ ok: true });
     } catch (err) {
       console.error("dqc2-submission error", err);
@@ -2298,6 +2509,67 @@ app.post("/api/leads/:id/d2-masking-request", async (req: Request, res: Response
   }
 });
 
+// Milestone names and task lists (must match frontend MileStonesArray) for computing current milestone from completions
+const MILESTONE_NAMES = [
+  "D1 SITE MEASUREMENT",
+  "DQC1",
+  "10% PAYMENT",
+  "D2 SITE MASKING",
+  "DQC2",
+  "40% PAYMENT",
+  "PUSH TO PRODUCTION",
+];
+const MILESTONE_TASKS: string[][] = [
+  ["Group Description", "Mail loop chain 2 initiate", "D1 for MMT request", "D1 files upload"],
+  [
+    "First cut design + quotation discussion meeting request",
+    "meeting completed",
+    "Design finalisation meeting request",
+    "DQC 1 submission - dwg + quotation",
+    "DQC 1 approval",
+  ],
+  ["10% payment collection", "10% payment approval"],
+  ["D2 - masking request raise", "D2 - files upload"],
+  [
+    "Material selection meeting + quotation discussion",
+    "Material selection meeting completed",
+    "DQC 2 submission",
+    "DQC 2 approval ",
+  ],
+  ["Design sign off", "meeting completed & 40% payment request", "40% payment approval"],
+  ["Cx approval for production", "POC mail & Timeline submission "],
+];
+
+function getCurrentMilestoneIndex(
+  completions: { milestoneIndex: number; taskName: string }[],
+): number {
+  const completedSet = new Set(
+    completions.map((c) => `${c.milestoneIndex}::${c.taskName}`),
+  );
+  for (let i = 0; i < MILESTONE_TASKS.length; i++) {
+    const tasks = MILESTONE_TASKS[i];
+    const allDone = tasks.every((t) => completedSet.has(`${i}::${t}`));
+    if (!allDone) return i;
+  }
+  return MILESTONE_TASKS.length - 1;
+}
+
+/** Progress within the current milestone: 0–100 (completed tasks in that milestone / total tasks). */
+function getCurrentMilestoneProgress(
+  completions: { milestoneIndex: number; taskName: string }[],
+  milestoneIndex: number,
+): number {
+  const tasks = MILESTONE_TASKS[milestoneIndex];
+  if (!tasks || tasks.length === 0) return 0;
+  const completedSet = new Set(
+    completions.map((c) => `${c.milestoneIndex}::${c.taskName}`),
+  );
+  const completed = tasks.filter((t) =>
+    completedSet.has(`${milestoneIndex}::${t}`),
+  ).length;
+  return Math.round((completed / tasks.length) * 100);
+}
+
 // Dashboard: list all leads (sales closure submissions); MMT executives only see leads they're assigned to
 // Query param type=d2: return leads that have D2 masking assignment (for D2 uploads page); mmt_executive sees only their D2 assignments
 app.get("/api/leads/queue", async (req: Request, res: Response) => {
@@ -2364,19 +2636,53 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
               l.contact_no as contactNo, l.client_email as clientEmail,
               l.is_on_hold as isOnHold, l.resume_at as resumeAt,
               l.create_at as createAt, l.update_at as updateAt,
-              l.assigned_designer_id
+              l.assigned_designer_id,
+              u.name as designerName
        FROM leads l
+       LEFT JOIN users u ON u.id = l.assigned_designer_id
        ORDER BY l.id ASC`,
     );
     const baseList = (rows as any[]).map((r) => ({
       ...r,
       isOnHold: !!r.isOnHold,
+      designerName: r.designerName ?? null,
     }));
+
+    // Enrich with current milestone (from task completions) for Design Phase dashboard
+    const [completionRows] = await pool.query(
+      `SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName FROM lead_task_completions`,
+    );
+    const compList = completionRows as {
+      leadId: number;
+      milestoneIndex: number;
+      taskName: string;
+    }[];
+    const completionsByLead = new Map<
+      number,
+      { milestoneIndex: number; taskName: string }[]
+    >();
+    for (const c of compList) {
+      const arr = completionsByLead.get(c.leadId) ?? [];
+      arr.push({ milestoneIndex: c.milestoneIndex, taskName: c.taskName });
+      completionsByLead.set(c.leadId, arr);
+    }
+    const enrichedList = baseList.map((l: any) => {
+      const comps = completionsByLead.get(l.id) ?? [];
+      const idx = getCurrentMilestoneIndex(comps);
+      const progress = getCurrentMilestoneProgress(comps, idx);
+      return {
+        ...l,
+        currentMilestoneIndex: idx,
+        currentMilestoneName: MILESTONE_NAMES[idx] ?? "—",
+        currentMilestoneProgress: progress,
+      };
+    });
 
     // Visibility rules for designers / design managers
     if (user && role === "designer") {
-      const filtered = baseList.filter(
-        (l) => l.assigned_designer_id && l.assigned_designer_id === user.id,
+      const filtered = enrichedList.filter(
+        (l: any) =>
+          l.assigned_designer_id && l.assigned_designer_id === user.id,
       );
       return res.json(filtered);
     }
@@ -2390,20 +2696,23 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
         [user.id],
       );
       const allowedIds = new Set((dmRows as { id: number }[]).map((r) => r.id));
-      const filtered = baseList.filter((l) => allowedIds.has(l.id));
+      const filtered = enrichedList.filter((l: any) =>
+        allowedIds.has(l.id),
+      );
       return res.json(filtered);
     }
 
     // Admins, TDMs, and others keep full list
-    res.json(baseList);
+    res.json(enrichedList);
   } catch (err) {
     console.error("leads/queue error", err);
     res.status(500).json({ message: "Failed to load leads" });
   }
 });
 
-// DQC dashboard: list leads with id, name, stage, dqcStatus (Pending DQC / Approved DQC) for dqc_manager and dqe
-// dqcStatus is based on the *latest* DQC review verdict: only "approved" shows Approved DQC; rejected or approved_with_changes shows Pending DQC
+// DQC dashboard: list leads with id, name, stage, dqcStatus, dqc1Pending, dqc2Pending for dqc_manager and dqe
+// dqc1Pending = needs DQC 1 approval (has DQC 1 submission, latest verdict not approved)
+// dqc2Pending = needs DQC 2 approval (latest verdict is pending_dqc2)
 app.get("/api/leads/dqc-queue", async (req: Request, res: Response) => {
   try {
     const user = await getUserFromSession(req);
@@ -2425,12 +2734,34 @@ app.get("/api/leads/dqc-queue", async (req: Request, res: Response) => {
         latestVerdictByLead[row.leadId] = row.verdict;
       }
     }
-    const list = leads.map((l) => ({
-      id: l.id,
-      projectName: l.projectName,
-      projectStage: l.projectStage,
-      dqcStatus: latestVerdictByLead[l.id] === "approved" ? "Approved DQC" : "Pending DQC",
-    }));
+    const [completionRows] = await pool.query(
+      `SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName
+       FROM lead_task_completions`,
+    );
+    const completions = completionRows as { leadId: number; milestoneIndex: number; taskName: string }[];
+    const hasDqc1Submission = (leadId: number) =>
+      completions.some(
+        (c) =>
+          c.leadId === leadId &&
+          c.milestoneIndex === 1 &&
+          c.taskName === "DQC 1 submission - dwg + quotation",
+      );
+    const list = leads.map((l) => {
+      const verdict = latestVerdictByLead[l.id];
+      const dqc2Pending = verdict === "pending_dqc2";
+      const dqc1Pending =
+        !dqc2Pending &&
+        hasDqc1Submission(l.id) &&
+        (verdict === undefined || verdict === "rejected" || verdict === "approved_with_changes");
+      return {
+        id: l.id,
+        projectName: l.projectName,
+        projectStage: l.projectStage,
+        dqcStatus: verdict === "approved" ? "Approved DQC" : "Pending DQC",
+        dqc1Pending: !!dqc1Pending,
+        dqc2Pending: !!dqc2Pending,
+      };
+    });
     return res.json(list);
   } catch (err) {
     console.error("dqc-queue error", err);
