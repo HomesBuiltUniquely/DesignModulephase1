@@ -2,8 +2,22 @@ export function renderDqc1FirstCutDesignScheduledEmail(params: {
   customerName: string;
   meetingDate?: string;
   meetingTime?: string;
+  designerName?: string;
+  designerTitle?: string;
+  /**
+   * Public URL to the designer's profile image.
+   * If omitted, a neutral placeholder avatar is rendered instead.
+   */
+  designerAvatarUrl?: string;
 }) {
-  const { customerName, meetingDate, meetingTime } = params;
+  const {
+    customerName,
+    meetingDate,
+    meetingTime,
+    designerName,
+    designerTitle,
+    designerAvatarUrl,
+  } = params;
 
   const formatDate = (value?: string) => {
     if (!value) return null;
@@ -30,6 +44,9 @@ export function renderDqc1FirstCutDesignScheduledEmail(params: {
 
   const prettyDate = formatDate(meetingDate) || "October 24, 2023";
   const prettyTime = formatTime(meetingTime) || "2:00 PM — 3:00 PM (EST)";
+
+  const signatureName = designerName || "Sarah Mitchell";
+  const signatureTitle = designerTitle || "Lead Designer, HUB Interior";
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -161,14 +178,18 @@ export function renderDqc1FirstCutDesignScheduledEmail(params: {
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-bottom:32px;">
           <tr>
             <td style="width:52px;vertical-align:top;">
-              <div style="width:44px;height:44px;border-radius:9999px;background-color:#d1d5db;"></div>
+              ${
+                designerAvatarUrl
+                  ? `<img src="${designerAvatarUrl}" alt="${signatureName}" style="width:44px;height:44px;border-radius:9999px;object-fit:cover;display:block;" />`
+                  : `<div style="width:44px;height:44px;border-radius:9999px;background-color:#d1d5db;"></div>`
+              }
             </td>
             <td style="vertical-align:middle;padding-left:12px;">
               <p style="margin:0 0 4px 0;font-size:17px;font-weight:700;color:#1f1f1f;line-height:1.2;">
-                Best, Sarah Mitchell
+                Best, ${signatureName}
               </p>
               <p style="margin:0;font-size:13px;font-weight:400;letter-spacing:0.08em;text-transform:uppercase;color:#9ca3af;">
-                Lead Designer, HUB Interior
+                ${signatureTitle}
               </p>
             </td>
           </tr>

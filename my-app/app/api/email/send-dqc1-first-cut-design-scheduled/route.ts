@@ -9,6 +9,9 @@ export async function POST(request: Request) {
     const customerName = body.customerName as string | undefined;
     const meetingDate = body.meetingDate as string | undefined;
     const meetingTime = body.meetingTime as string | undefined;
+    const designerName = body.designerName as string | undefined;
+    const designerTitle = body.designerTitle as string | undefined;
+    const designerAvatarUrl = body.designerAvatarUrl as string | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -21,6 +24,9 @@ export async function POST(request: Request) {
       customerName,
       meetingDate,
       meetingTime,
+      designerName,
+      designerTitle,
+      designerAvatarUrl,
     });
 
     const info = await sendMail({

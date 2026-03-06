@@ -13,8 +13,15 @@ export async function POST(request: Request) {
     const designerName = body.designerName as string | undefined;
     const projectValue = body.projectValue as string | number | undefined;
     const dqcRepName = body.dqcRepName as string | undefined;
+    const drawingFileName = body.drawingFileName as string | undefined;
+    const quotationFileName = body.quotationFileName as string | undefined;
 
-    if (!to || !customerName || !ecName || !designerName || !projectValue || !dqcRepName) {
+    const hasProjectValue =
+      projectValue !== undefined &&
+      projectValue !== null &&
+      String(projectValue).trim() !== '';
+
+    if (!to || !customerName || !ecName || !designerName || !hasProjectValue || !dqcRepName) {
       return NextResponse.json(
         { error: 'Missing required fields: to, customerName, ecName, designerName, projectValue, dqcRepName' },
         { status: 400 },
@@ -27,6 +34,8 @@ export async function POST(request: Request) {
       ecName,
       designerName,
       projectValue: String(projectValue),
+      drawingFileName,
+      quotationFileName,
     });
 
     const info = await sendMail({

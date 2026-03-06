@@ -1074,7 +1074,7 @@ export default function ProjectDetailPage() {
                             onDesignDrop={onDesignDrop}
                             onDesignDragOver={onDesignDragOver}
                             removeDesignFile={removeDesignFile}
-                            onSubmit={async () => {
+                            onSubmit={async (meta) => {
                                 if (!projectId) return;
                                 try {
                                     if (designUploadFiles.length > 0 && sessionId) {
@@ -1093,6 +1093,44 @@ export default function ProjectDetailPage() {
                                             },
                                         );
                                     }
+
+                                    // Trigger customer email: DQC1 – First Cut Design Discussion Scheduled
+                                    try {
+                                        const customerEmail = project?.clientEmail;
+                                        const customerName = project?.projectName;
+                                        const designerDisplayName = project?.designerName || authUser?.name || undefined;
+                                        const matchedDesignerAvatar =
+                                            project?.designerName
+                                                ? image.find(
+                                                      (u) =>
+                                                          u.name &&
+                                                          u.name.trim().toLowerCase() ===
+                                                              project.designerName!.trim().toLowerCase(),
+                                                  )?.img
+                                                : undefined;
+                                        const designerAvatarUrl = matchedDesignerAvatar || authUser?.profileImage || undefined;
+
+                                        if (customerEmail && customerName) {
+                                            await fetch('/api/email/send-dqc1-first-cut-design-scheduled', {
+                                                method: 'POST',
+                                                headers: {
+                                                    'Content-Type': 'application/json',
+                                                },
+                                                body: JSON.stringify({
+                                                    to: customerEmail,
+                                                    customerName,
+                                                    meetingDate: meta?.meetingDate || null,
+                                                    meetingTime: meta?.meetingTime || null,
+                                                    designerName: designerDisplayName,
+                                                    designerTitle: 'Lead Designer, HUB Interior',
+                                                    designerAvatarUrl,
+                                                }),
+                                            });
+                                        }
+                                    } catch (emailErr) {
+                                        console.error('Failed to send first-cut design scheduled email', emailErr);
+                                    }
+
                                     recordTaskComplete(
                                         1,
                                         'First cut design + quotation discussion meeting request',
@@ -1113,6 +1151,10 @@ export default function ProjectDetailPage() {
                                                           status: 'Uploaded',
                                                       }
                                                     : undefined,
+                                            meta: {
+                                                meetingDate: meta?.meetingDate || null,
+                                                meetingTime: meta?.meetingTime || null,
+                                            },
                                         },
                                     );
                                     setDesignUploadFiles([]);
@@ -1181,6 +1223,40 @@ export default function ProjectDetailPage() {
                         <PopupDqcSubmission
                             leadId={projectId}
                             sessionId={sessionId}
+                            dqc1EmailMeta={
+                                project
+                                    ? {
+                                          customerName: project.projectName,
+                                          ecName:
+                                              (project as any).experienceCenter ||
+                                              (project as any).experience_center ||
+                                              'Experience Center',
+                                          designerName: project.designerName ?? authUser?.name ?? 'Designer',
+                                          projectValue:
+                                              (project as any).orderValue ??
+                                              (project as any).order_value ??
+                                              0,
+                                          designerEmail: authUser?.email,
+                                          cc: (() => {
+                                              const cc: string[] = [];
+                                              const designManagerEmail =
+                                                  (project as any).designManagerEmail ||
+                                                  (project as any).design_manager_email ||
+                                                  (project as any).designer_lead_email;
+                                              const tdmEmail =
+                                                  (project as any).tdmEmail ||
+                                                  (project as any).tdm_email;
+                                              if (designManagerEmail && typeof designManagerEmail === 'string') {
+                                                  cc.push(designManagerEmail);
+                                              }
+                                              if (tdmEmail && typeof tdmEmail === 'string') {
+                                                  cc.push(tdmEmail);
+                                              }
+                                              return cc;
+                                          })(),
+                                      }
+                                    : undefined
+                            }
                             onClose={closePopup}
                             onSaveDraft={closePopup}
                             onUploadSuccess={() => setUploadsVersion((v) => v + 1)}

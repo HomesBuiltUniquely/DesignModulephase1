@@ -4,10 +4,20 @@ type Dqc1ReviewRequestParams = {
   ecName: string;
   designerName: string;
   projectValue: string;
+  drawingFileName?: string;
+  quotationFileName?: string;
 };
 
 export function renderDqc1ReviewRequestInternalEmail(params: Dqc1ReviewRequestParams) {
-  const { dqcRepName, customerName, ecName, designerName, projectValue } = params;
+  const {
+    dqcRepName,
+    customerName,
+    ecName,
+    designerName,
+    projectValue,
+    drawingFileName,
+    quotationFileName,
+  } = params;
 
   const subjectLine = `DQC 1 Review Request – ${customerName} – ${ecName}`;
 
@@ -102,8 +112,14 @@ export function renderDqc1ReviewRequestInternalEmail(params: Dqc1ReviewRequestPa
                       Files Submitted
                     </p>
                     <ul style="margin:0 0 10px 18px;padding:0;font-size:13px;line-height:1.6;color:#4b5563;">
-                      <li>Final Prolance File</li>
-                      <li>Updated Estimate</li>
+                      <li>
+                        Final Drawing
+                        ${drawingFileName ? ` – <strong>${drawingFileName}</strong>` : ''}
+                      </li>
+                      <li>
+                        Final Quotation
+                        ${quotationFileName ? ` – <strong>${quotationFileName}</strong>` : ''}
+                      </li>
                     </ul>
                     <p style="margin:0;font-size:13px;line-height:1.6;color:#4b5563;">
                       Kindly review and share your approval/comments at the earliest convenience.
