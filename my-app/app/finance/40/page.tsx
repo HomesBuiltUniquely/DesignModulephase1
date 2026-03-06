@@ -34,6 +34,13 @@ export default function Finance40pPage() {
   const role = (user?.role || '').toLowerCase();
 
   const loadLeads = async () => {
+    if (!sessionId) {
+      // Not authenticated yet; avoid calling API without token (would return 401).
+      setLeads([]);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {

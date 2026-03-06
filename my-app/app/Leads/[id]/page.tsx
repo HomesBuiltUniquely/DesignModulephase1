@@ -127,6 +127,7 @@ export default function ProjectDetailPage() {
 
     // Progress history: loaded from API and persisted when new events are added (recorded and maintained)
     const [historyEvents, setHistoryEvents] = useState<HistoryEvent[]>([]);
+    const historyLeadIdRef = useRef<number | null>(null);
     const [showHoldModal, setShowHoldModal] = useState(false);
     const [holdDate, setHoldDate] = useState<string>('');
     const [selectedHistoryEvent, setSelectedHistoryEvent] = useState<HistoryEvent | null>(null);
@@ -182,18 +183,29 @@ export default function ProjectDetailPage() {
             .catch(() => {});
     }, [popupContext?.milestoneIndex, popupContext?.taskName, projectId, refreshUser]);
 
-    // Load history from server (use credentials so we get full list; don't overwrite with empty on error)
+    // Load history from server. Only apply response if still for same lead; merge with current state so we never drop recent events.
     const loadHistory = useCallback(() => {
         if (projectId == null) return;
+        historyLeadIdRef.current = projectId;
         const headers: Record<string, string> = { 'Content-Type': 'application/json' };
         if (sessionId) headers['Authorization'] = `Bearer ${sessionId}`;
+        const loadingForId = projectId;
         fetch(`${API}/api/leads/${projectId}/history`, { headers, credentials: 'include' })
             .then(async (res) => {
                 const text = await res.text();
                 if (!res.ok || !text) return [];
                 try { const d = JSON.parse(text); return Array.isArray(d) ? d : []; } catch { return []; }
             })
-            .then((data: HistoryEvent[]) => setHistoryEvents(data))
+            .then((data: HistoryEvent[]) => {
+                if (historyLeadIdRef.current !== loadingForId) return;
+                setHistoryEvents((prev) => {
+                    const serverIds = new Set((data ?? []).map((e) => e.id).filter(Boolean));
+                    const fromPrev = prev.filter((e) => e.id && !serverIds.has(e.id));
+                    const merged = [...(data ?? []), ...fromPrev];
+                    merged.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+                    return merged;
+                });
+            })
             .catch(() => { /* keep existing state on error instead of clearing */ });
     }, [projectId, sessionId]);
 
@@ -203,8 +215,9 @@ export default function ProjectDetailPage() {
 
     // Restore completed tasks from DB so it persists across refresh
     useEffect(() => {
-        if (projectId == null) return;
-        fetch(`${API}/api/leads/${projectId}/completions`)
+        if (projectId == null || !sessionId) return;
+        const headers: Record<string, string> = { Authorization: `Bearer ${sessionId}` };
+        fetch(`${API}/api/leads/${projectId}/completions`, { headers })
             .then((res) => res.text().then((t) => { try { return t ? JSON.parse(t) : []; } catch { return []; } }))
             .then((rows: Array<{ milestoneIndex: number; taskName: string }>) => {
                 if (!Array.isArray(rows)) return;
@@ -214,7 +227,7 @@ export default function ProjectDetailPage() {
                 setCompletedTaskKeys(Array.from(new Set(keys)));
             })
             .catch(() => {});
-    }, [projectId]);
+    }, [projectId, sessionId]);
 
     // Load the file(s) uploaded in DQC 1 submission (same as in "Files Uploaded") for the Design QC Review panel. Callable so DQC can retry.
     const loadDqcSubmissionFile = useCallback(() => {
@@ -1434,17 +1447,86 @@ export default function ProjectDetailPage() {
                             onMomDrop={onMomDrop}
                             removeMomFile={removeMomFile}
                             onClose={closePopup}
-                            onShareMom={() => {
-                                recordTaskComplete(5, popupContext.taskName, {
-                                    description: 'Meeting completed & 40% payment request shared.',
-                                    details: { kind: 'mom', minutes: momMinutes, referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })) },
-                                });
-                                setUploadsVersion((v) => v + 1);
-                                closePopup();
+                            onShareMom={async () => {
+                                if (!projectId) return;
+                                try {
+                                    if (sessionId) {
+                                        const fd = new FormData();
+                                        fd.append('minutes', momMinutes);
+                                        momReferenceFiles.forEach((f) => fd.append('files', f));
+                                        await fetch(`${API}/api/leads/${projectId}/mom-upload`, {
+                                            method: 'POST',
+                                            headers: {
+                                                Authorization: `Bearer ${sessionId}`,
+                                            },
+                                            body: fd,
+                                        });
+                                    }
+                                    recordTaskComplete(5, popupContext.taskName, {
+                                        description: 'Meeting completed & 40% payment request shared.',
+                                        details: {
+                                            kind: 'mom',
+                                            minutes: momMinutes,
+                                            referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                        },
+                                    });
+                                    setMomMinutes('');
+                                    setMomReferenceFiles([]);
+                                    setUploadsVersion((v) => v + 1);
+                                    closePopup();
+                                } catch (err) {
+                                    console.error('mom upload failed', err);
+                                    alert('Failed to save MOM. Please try again.');
+                                }
                             }}
                         />
                     )}
-                    {popupContext.milestoneIndex === 6 && (
+                    {popupContext.milestoneIndex === 6 && popupContext.taskName === 'Cx approval for production' && (
+                        <PopupMeetingCompleted
+                            momMinutes={momMinutes}
+                            setMomMinutes={setMomMinutes}
+                            momReferenceFiles={momReferenceFiles}
+                            momFileInputRef={momFileInputRef}
+                            openMomFileUpload={openMomFileUpload}
+                            onMomFilesSelected={onMomFilesSelected}
+                            onMomDrop={onMomDrop}
+                            removeMomFile={removeMomFile}
+                            onClose={closePopup}
+                            onShareMom={async () => {
+                                if (!projectId) return;
+                                try {
+                                    if (sessionId) {
+                                        const fd = new FormData();
+                                        fd.append('minutes', momMinutes);
+                                        momReferenceFiles.forEach((f) => fd.append('files', f));
+                                        await fetch(`${API}/api/leads/${projectId}/mom-upload`, {
+                                            method: 'POST',
+                                            headers: {
+                                                Authorization: `Bearer ${sessionId}`,
+                                            },
+                                            body: fd,
+                                        });
+                                    }
+                                    recordTaskComplete(6, popupContext.taskName, {
+                                        description: 'Cx approval for production MOM shared.',
+                                        details: {
+                                            kind: 'mom',
+                                            minutes: momMinutes,
+                                            referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                        },
+                                    });
+                                    setMomMinutes('');
+                                    setMomReferenceFiles([]);
+                                    setUploadsVersion((v) => v + 1);
+                                    closePopup();
+                                } catch (err) {
+                                    console.error('mom upload failed', err);
+                                    alert('Failed to save MOM. Please try again.');
+                                }
+                            }}
+                        />
+                    )}
+                    {popupContext.milestoneIndex === 6 && popupContext.taskName !== 'Cx approval for production' && (
                         <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(6, popupContext.taskName); closePopup(); }} />
                     )}
                 </TaskModal>
