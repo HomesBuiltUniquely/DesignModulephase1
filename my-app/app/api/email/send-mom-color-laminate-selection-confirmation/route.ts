@@ -1,12 +1,17 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import { renderDqc2FinalDesignSubmissionEmail } from '@/lib/email/render-dqc2-final-design-submission';
+import {
+  renderMomColorLaminateSelectionConfirmationEmail,
+  type LaminateSelections,
+} from '@/lib/email/render-mom-color-laminate-selection-confirmation';
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
     const to = body.to as string | undefined;
     const customerName = body.customerName as string | undefined;
+    const designerName = body.designerName as string | undefined;
+    const laminateSelections = body.laminateSelections as LaminateSelections | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -15,22 +20,25 @@ export async function POST(request: Request) {
       );
     }
 
-    const html = renderDqc2FinalDesignSubmissionEmail({ customerName });
+    const { subject, html } = renderMomColorLaminateSelectionConfirmationEmail({
+      customerName,
+      designerName,
+      laminateSelections: laminateSelections ?? undefined,
+    });
 
     const info = await sendMail({
       to,
-      subject: 'DQC2 – Final Design Submission Ready',
+      subject,
       html,
     });
 
     return NextResponse.json({ success: true, messageId: info.messageId });
   } catch (error) {
     // eslint-disable-next-line no-console
-    console.error('DQC2 final design submission email error', error);
+    console.error('MOM color laminate selection confirmation email error', error);
     return NextResponse.json(
-      { error: 'Failed to send DQC2 final design submission email' },
+      { error: 'Failed to send MOM color laminate selection confirmation email' },
       { status: 500 }
     );
   }
 }
-

@@ -1,20 +1,19 @@
-export function renderD2MaskingRequestEmail(params: {
+export function renderDqc2MaterialSelectionScheduledEmail(params: {
   customerName: string;
   designerName?: string;
-  maskingDate?: string | null;
-  maskingTime?: string | null;
+  meetingDate?: string | null;
+  meetingTime?: string | null;
+  ecLocation?: string | null;
 }) {
   const {
     customerName,
     designerName = "Designer",
-    maskingDate,
-    maskingTime,
+    meetingDate = "–",
+    meetingTime = "–",
+    ecLocation = "–",
   } = params;
 
-  const dateDisplay = maskingDate || "–";
-  const timeDisplay = maskingTime || "–";
-
-  const subject = "Site Masking Scheduled – Detailed Development Stage";
+  const subject = "Color & Material Selection Meeting – Scheduled";
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -40,35 +39,44 @@ export function renderD2MaskingRequestEmail(params: {
         </div>
         <div style="height:1px;background-color:#f1e4d2;margin-bottom:18px;"></div>
         <div style="display:inline-flex;align-items:center;justify-content:center;padding:6px 18px;border-radius:9999px;background-color:#f6ebdd;font-size:11px;font-weight:600;letter-spacing:0.16em;text-transform:uppercase;color:#4c3a26;margin-bottom:12px;">
-          D2 – Site Masking
+          DQC 2
         </div>
         <h1 style="margin:0 0 10px 0;font-size:26px;line-height:1.3;font-weight:600;color:#111827;">
-          Site Masking Scheduled
+          Color & Material Selection Meeting – Scheduled
         </h1>
         <p style="margin:0;font-size:14px;line-height:1.7;color:#4b5563;max-width:480px;margin-left:auto;margin-right:auto;">
           Dear ${customerName},
         </p>
         <p style="margin:8px 0 0 0;font-size:14px;line-height:1.7;color:#4b5563;max-width:520px;margin-left:auto;margin-right:auto;">
-          As your 10% milestone has been completed, we are now proceeding with the D2 – Site Masking stage.
+          As the D2 stage has been completed, we are now ready to proceed with the Color &amp; Material Selection discussion.
+        </p>
+        <p style="margin:8px 0 0 0;font-size:14px;line-height:1.7;color:#4b5563;max-width:520px;margin-left:auto;margin-right:auto;">
+          Let&apos;s connect at our Experience Center to finalise finishes and material selections.
         </p>
       </div>
 
-      <!-- Date & Time -->
+      <!-- Date, Time, Location -->
       <div style="padding:0 32px 20px 32px;background-color:#fdf7f0;">
         <div style="background-color:#f8efdf;border-radius:18px;padding:18px 24px;box-shadow:0 6px 18px rgba(0,0,0,0.03);margin-bottom:20px;">
           <div style="font-size:13px;color:#3b3b3b;line-height:1.8;">
-            <p style="margin:0 0 8px 0;">📅 Date: ${dateDisplay}</p>
-            <p style="margin:0;">🕒 Time: ${timeDisplay}</p>
+            <p style="margin:0 0 8px 0;">📅 Date: ${meetingDate}</p>
+            <p style="margin:0 0 8px 0;">🕒 Time: ${meetingTime}</p>
+            <p style="margin:0;">📍 Location: ${ecLocation}</p>
           </div>
         </div>
-        <p style="margin:0 0 10px 0;font-size:14px;line-height:1.7;color:#4b5563;">
-          During this visit, our team will align detailed technical references to ensure accuracy before moving further in the process.
+        <p style="margin:0 0 12px 0;font-size:14px;line-height:1.7;color:#4b5563;">
+          During this meeting, we will:
         </p>
-        <p style="margin:0 0 10px 0;font-size:14px;line-height:1.7;color:#4b5563;">
-          Kindly ensure site access at the scheduled time. Please inform us in advance if there are any access instructions.
+        <ul style="margin:0 0 12px 18px;padding:0;font-size:14px;line-height:1.7;color:#4b5563;">
+          <li style="margin-bottom:6px;">Finalise laminate and finish selections</li>
+          <li style="margin-bottom:6px;">Align shutter finishes and internal materials</li>
+          <li style="margin-bottom:6px;">Confirm accessory preferences</li>
+        </ul>
+        <p style="margin:0 0 12px 0;font-size:14px;line-height:1.7;color:#4b5563;">
+          I hope this schedule works for you. In case of any constraints, please feel free to let me know.
         </p>
         <p style="margin:0;font-size:14px;line-height:1.7;color:#4b5563;font-weight:500;">
-          We&apos;re progressing smoothly to the next phase.
+          Looking forward to finalising the details together.
         </p>
       </div>
 

@@ -1,12 +1,16 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import { renderGenericMilestoneEmail } from '@/lib/email/render-generic-milestone';
+import { renderTenPercentPaymentApprovalEmail } from '@/lib/email/render-ten-percent-payment-approval';
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
     const to = body.to as string | undefined;
     const customerName = body.customerName as string | undefined;
+    const projectId = body.projectId as string | undefined;
+    const amountPaid = body.amountPaid as string | undefined;
+    const paymentDate = body.paymentDate as string | undefined;
+    const transactionRef = body.transactionRef as string | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -15,22 +19,17 @@ export async function POST(request: Request) {
       );
     }
 
-    const html = renderGenericMilestoneEmail({
+    const html = renderTenPercentPaymentApprovalEmail({
       customerName,
-      title: '10% Payment – Approval Confirmation',
-      intro:
-        'Your 10% milestone payment has been approved. This secures your project slot and allows us to move into the next phase.',
-      bulletPoints: [
-        'Your payment has been recorded against your project ID.',
-        'Design and planning activities will continue as per the agreed timeline.',
-        'Your designer or project coordinator will share any next actions, if required.',
-      ],
-      ctaLabel: 'View Payment Status',
+      projectId,
+      amountPaid,
+      paymentDate,
+      transactionRef,
     });
 
     const info = await sendMail({
       to,
-      subject: '10% Payment – Approval Confirmation',
+      subject: '10% Payment Confirmation',
       html,
     });
 

@@ -92,66 +92,6 @@ export default function PopupDqcSubmission({
       }
       onUploadSuccess?.();
 
-      // Fire internal DQC1 review request email once DQC1 submission succeeds.
-      if (submissionVariant === 'dqc1' && dqc1EmailMeta) {
-        try {
-          // Build CC list: designer, admin(s), TDM(s), DM(s), plus any extra CC passed in.
-          const ccSet = new Set<string>();
-          const add = (e?: string) => {
-            const t = (e || '').trim().toLowerCase();
-            if (t && t.includes('@')) ccSet.add(t);
-          };
-          add(dqc1EmailMeta.designerEmail);
-          (dqc1EmailMeta.cc || []).forEach((e) => add(e));
-
-          // Fetch global team emails (admins, TDM, DM) similar to Mail loop chain popup.
-          if (sessionId) {
-            try {
-              const res = await fetch(`${API}/api/auth/team-emails`, {
-                headers: { Authorization: `Bearer ${sessionId}` },
-              });
-              const text = await res.text();
-              if (res.ok && text) {
-                try {
-                  const data = JSON.parse(text) as {
-                    admins?: { email: string }[];
-                    territorial_design_managers?: { email: string }[];
-                    design_managers?: { email: string }[];
-                  };
-                  (data.admins || []).forEach((m) => add(m.email));
-                  (data.territorial_design_managers || []).forEach((m) => add(m.email));
-                  (data.design_managers || []).forEach((m) => add(m.email));
-                } catch {
-                  // ignore parse error and continue
-                }
-              }
-            } catch {
-              // ignore failure to load team emails; still send email with whatever CC we have
-            }
-          }
-
-          const ccList = Array.from(ccSet);
-
-          await fetch('/api/email/send-dqc1-review-request-internal', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              to: 'communication@hubinterior.com',
-              customerName: dqc1EmailMeta.customerName,
-              ecName: dqc1EmailMeta.ecName,
-              designerName: dqc1EmailMeta.designerName,
-              projectValue: dqc1EmailMeta.projectValue,
-              cc: ccList.length ? ccList : undefined,
-              dqcRepName: 'DQC Team',
-              drawingFileName: drawingFile?.name,
-              quotationFileName: quotationFile?.name,
-            }),
-          });
-        } catch {
-          // If the email fails, we still consider the submission successful.
-        }
-      }
-
       onSubmit();
     } catch {
       setSubmitError('Could not reach server. Please try again.');

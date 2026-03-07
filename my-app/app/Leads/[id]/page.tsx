@@ -667,9 +667,10 @@ export default function ProjectDetailPage() {
             const movesToNextMilestone = isDqc2 ? dqc1Verdict !== 'rejected' : dqc1Verdict === 'approved';
             if (movesToNextMilestone && projectId != null) {
                 if (isDqc2) {
-                    // For DQC2, auto-complete all tasks in the DQC2 milestone and jump milestone index to 40% PAYMENT.
-                    const dqc2Milestone = MileStonesArray.MilestonesName[4];
-                    dqc2Milestone.taskList.forEach((t: string) => {
+                    // For DQC2 approval: only complete the approval task (send DQC2 approval email).
+                    // Material meeting + submission tasks are completed earlier when designer does them.
+                    const dqc2ApprovalTasks = ['DQC 2 approval '];
+                    dqc2ApprovalTasks.forEach((t: string) => {
                         fetch(`${API}/api/leads/${projectId}/complete-task`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
@@ -684,7 +685,10 @@ export default function ProjectDetailPage() {
                     fetch(`${API}/api/leads/${projectId}/complete-task`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ milestoneIndex, taskName }),
+                        body: JSON.stringify({
+                            milestoneIndex,
+                            taskName,
+                        }),
                     }).catch(() => {});
                     markTaskComplete(milestoneIndex, taskName);
                 }
@@ -1105,43 +1109,6 @@ export default function ProjectDetailPage() {
                                                 body: fd,
                                             },
                                         );
-                                    }
-
-                                    // Trigger customer email: DQC1 – First Cut Design Discussion Scheduled
-                                    try {
-                                        const customerEmail = project?.clientEmail;
-                                        const customerName = project?.projectName;
-                                        const designerDisplayName = project?.designerName || authUser?.name || undefined;
-                                        const matchedDesignerAvatar =
-                                            project?.designerName
-                                                ? image.find(
-                                                      (u) =>
-                                                          u.name &&
-                                                          u.name.trim().toLowerCase() ===
-                                                              project.designerName!.trim().toLowerCase(),
-                                                  )?.img
-                                                : undefined;
-                                        const designerAvatarUrl = matchedDesignerAvatar || authUser?.profileImage || undefined;
-
-                                        if (customerEmail && customerName) {
-                                            await fetch('/api/email/send-dqc1-first-cut-design-scheduled', {
-                                                method: 'POST',
-                                                headers: {
-                                                    'Content-Type': 'application/json',
-                                                },
-                                                body: JSON.stringify({
-                                                    to: customerEmail,
-                                                    customerName,
-                                                    meetingDate: meta?.meetingDate || null,
-                                                    meetingTime: meta?.meetingTime || null,
-                                                    designerName: designerDisplayName,
-                                                    designerTitle: 'Lead Designer, HUB Interior',
-                                                    designerAvatarUrl,
-                                                }),
-                                            });
-                                        }
-                                    } catch (emailErr) {
-                                        console.error('Failed to send first-cut design scheduled email', emailErr);
                                     }
 
                                     recordTaskComplete(

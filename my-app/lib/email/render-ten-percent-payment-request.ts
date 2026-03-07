@@ -18,7 +18,7 @@ export function renderTenPercentPaymentRequestEmail(params: {
 <head>
   <meta charSet="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>10% Design Payment Request</title>
+  <title>Design Approved – Ready for Site Masking</title>
 </head>
 <body style="margin:0;padding:0;background-color:#f3e5d8;">
   <div style="min-height:100vh;background-color:#f3e5d8;padding:40px 16px;">
@@ -37,14 +37,20 @@ export function renderTenPercentPaymentRequestEmail(params: {
         </div>
         <div style="height:1px;background-color:#f1e4d2;margin-bottom:18px;"></div>
         <div style="display:inline-flex;align-items:center;justify-content:center;padding:6px 18px;border-radius:9999px;background-color:#f6ebdd;font-size:11px;font-weight:600;letter-spacing:0.16em;text-transform:uppercase;color:#4c3a26;margin-bottom:12px;">
-          Payment Milestone
+          Design Approved
         </div>
         <h1 style="margin:0 0 10px 0;font-size:26px;line-height:1.3;font-weight:600;color:#111827;">
-          10% Design Payment Request
+          Ready for Site Masking – 10% Milestone
         </h1>
         <p style="margin:0;font-size:14px;line-height:1.7;color:#4b5563;max-width:480px;margin-left:auto;margin-right:auto;">
-          Hi ${customerName}, your design has been approved by our DQC team.
-          To move ahead with masking and the next set of activities, we request you to complete the 10% design payment.
+          Dear ${customerName},
+        </p>
+        <p style="margin:8px 0 0 0;font-size:14px;line-height:1.7;color:#4b5563;max-width:520px;margin-left:auto;margin-right:auto;">
+          We’re pleased to inform you that your design has been successfully reviewed and approved under DQC 1.
+          Your project is now ready to move into the Site Masking & Detailed Development stage.
+        </p>
+        <p style="margin:8px 0 0 0;font-size:14px;line-height:1.7;color:#4b5563;max-width:520px;margin-left:auto;margin-right:auto;">
+          To initiate this next step, we request the <strong>10% milestone payment</strong>.
         </p>
       </div>
 
@@ -61,19 +67,19 @@ export function renderTenPercentPaymentRequestEmail(params: {
           </div>
           <div style="font-size:13px;color:#3b3b3b;">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-              <span style="color:#7b7b7b;">Project ID</span>
+              <span style="color:#7b7b7b;">Project ID:</span>
               <span style="font-weight:500;color:#111827;">${projectId}</span>
             </div>
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-              <span style="color:#7b7b7b;">Property Type</span>
+              <span style="color:#7b7b7b;">Property Type:</span>
               <span style="font-weight:500;color:#111827;">${propertyType}</span>
             </div>
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-              <span style="color:#7b7b7b;">Amount Due</span>
+              <span style="color:#7b7b7b;">Payable Amount:</span>
               <span style="font-weight:600;color:#16a34a;">${amountDue}</span>
             </div>
             <div style="display:flex;align-items:center;justify-content:space-between;">
-              <span style="color:#7b7b7b;">Due Date</span>
+              <span style="color:#7b7b7b;">Due Date:</span>
               <span style="font-weight:500;color:#111827;">${dueDate}</span>
             </div>
           </div>

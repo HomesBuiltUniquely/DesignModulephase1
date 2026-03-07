@@ -7,6 +7,12 @@ export async function POST(request: Request) {
     const body = await request.json();
     const to = body.to as string | undefined;
     const customerName = body.customerName as string | undefined;
+    const productionPoc = body.productionPoc as string | undefined;
+    const executionPoc = body.executionPoc as string | undefined;
+    const spmPoc = body.spmPoc as string | undefined;
+    const operationManager = body.operationManager as string | undefined;
+    const operationHead = body.operationHead as string | undefined;
+    const designerName = body.designerName as string | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -15,11 +21,19 @@ export async function POST(request: Request) {
       );
     }
 
-    const html = renderProductionPocTimelineEmail({ customerName });
+    const html = renderProductionPocTimelineEmail({
+      customerName,
+      productionPoc,
+      executionPoc,
+      spmPoc,
+      operationManager,
+      operationHead,
+      designerName,
+    });
 
     const info = await sendMail({
       to,
-      subject: 'Your Production & POC Timeline – HUB Interior',
+      subject: 'Production Initiated – Project Timeline Activated',
       html,
     });
 

@@ -7,6 +7,9 @@ export async function POST(request: Request) {
     const body = await request.json();
     const to = body.to as string | undefined;
     const customerName = body.customerName as string | undefined;
+    const designerName = body.designerName as string | undefined;
+    const maskingDate = body.maskingDate as string | null | undefined;
+    const maskingTime = body.maskingTime as string | null | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -15,11 +18,16 @@ export async function POST(request: Request) {
       );
     }
 
-    const html = renderD2MaskingRequestEmail({ customerName });
+    const { subject, html } = renderD2MaskingRequestEmail({
+      customerName,
+      designerName,
+      maskingDate,
+      maskingTime,
+    });
 
     const info = await sendMail({
       to,
-      subject: 'D2 – Masking Request & Scheduling',
+      subject,
       html,
     });
 

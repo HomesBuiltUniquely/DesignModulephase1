@@ -1,12 +1,16 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import { renderGenericMilestoneEmail } from '@/lib/email/render-generic-milestone';
+import { renderDqc2MaterialSelectionScheduledEmail } from '@/lib/email/render-dqc2-material-selection-scheduled';
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
     const to = body.to as string | undefined;
     const customerName = body.customerName as string | undefined;
+    const designerName = body.designerName as string | undefined;
+    const meetingDate = body.meetingDate as string | null | undefined;
+    const meetingTime = body.meetingTime as string | null | undefined;
+    const ecLocation = body.ecLocation as string | null | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -15,22 +19,17 @@ export async function POST(request: Request) {
       );
     }
 
-    const html = renderGenericMilestoneEmail({
+    const { subject, html } = renderDqc2MaterialSelectionScheduledEmail({
       customerName,
-      title: 'DQC2 – Material Selection Session Scheduled',
-      intro:
-        'Your DQC2 material selection session has been scheduled. In this meeting, we will finalise materials, finishes and key touchpoints for your home.',
-      bulletPoints: [
-        'Review shortlisted laminates, fabrics, finishes and fixtures.',
-        'Understand maintenance, durability and budget implications.',
-        'Lock selections that will move into final drawings and BOQ.',
-      ],
-      ctaLabel: 'View Session Details',
+      designerName,
+      meetingDate,
+      meetingTime,
+      ecLocation,
     });
 
     const info = await sendMail({
       to,
-      subject: 'DQC2 – Material Selection Session Scheduled',
+      subject,
       html,
     });
 

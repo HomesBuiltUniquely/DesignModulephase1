@@ -1,12 +1,16 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import { renderGenericMilestoneEmail } from '@/lib/email/render-generic-milestone';
+import { renderDesignSignoff40pcPaymentApprovalEmail } from '@/lib/email/render-design-signoff-40pc-payment-approval';
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
     const to = body.to as string | undefined;
     const customerName = body.customerName as string | undefined;
+    const projectName = body.projectName as string | undefined;
+    const amountReceived = body.amountReceived as string | undefined;
+    const dateOfReceipt = body.dateOfReceipt as string | undefined;
+    const modeOfPayment = body.modeOfPayment as string | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -15,22 +19,17 @@ export async function POST(request: Request) {
       );
     }
 
-    const html = renderGenericMilestoneEmail({
+    const html = renderDesignSignoff40pcPaymentApprovalEmail({
       customerName,
-      title: 'Design Sign‑off – 40% Payment Approved',
-      intro:
-        'Your 40% payment at design sign‑off has been approved. This confirms your commitment to proceed into production and execution.',
-      bulletPoints: [
-        'Final design pack and BOQ are now locked for production.',
-        'Procurement and factory planning can begin as per schedule.',
-        'Your project manager will share production and site timelines.',
-      ],
-      ctaLabel: 'View Design Sign‑off Details',
+      projectName,
+      amountReceived,
+      dateOfReceipt,
+      modeOfPayment,
     });
 
     const info = await sendMail({
       to,
-      subject: 'Design Sign‑off – 40% Payment Approved',
+      subject: 'Payment Receipt – 40% Milestone',
       html,
     });
 

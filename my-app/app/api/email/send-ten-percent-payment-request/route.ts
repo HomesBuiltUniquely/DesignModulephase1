@@ -29,7 +29,7 @@ export async function POST(request: Request) {
 
     const info = await sendMail({
       to,
-      subject: '10% Payment Request – HUB Interior',
+      subject: 'Design Approved – Ready for Site Masking',
       html,
     });
 

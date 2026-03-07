@@ -1508,22 +1508,26 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             // Design finalisation / design‑freeze meeting request
             return "/api/email/send-dqc1-design-freezing-scheduled";
           }
+          // DQC 1 approval → fires BOTH internal (designer) and CX (10% payment) emails
           if (t === "DQC 1 approval") {
-            // DQC 1 approved → 10% payment request to CX
-            return "/api/email/send-ten-percent-payment-request";
+            return "DQC1_APPROVAL_DUAL";
           }
           break;
 
         // Milestone 2: 10% PAYMENT
         case 2:
+          // 10% payment collection: fire BOTH internal + CX (fallback if not sent at DQC 1 approval)
+          if (t === "10% payment collection") {
+            return "10P_COLLECTION_DUAL";
+          }
           // 10% payment approval email is triggered in /api/leads/:id/approve-10p-payment
           break;
 
         // Milestone 3: D2 SITE MASKING
         case 3:
           if (t === "D2 - masking request raise") {
-            // Sl no 9 – D2 masking request raise
-            return "/api/email/send-d2-masking-request";
+            // Sl no 9 – D2 masking: internal (Designer→PM) + CX
+            return "D2_MASKING_DUAL";
           }
           break;
 
@@ -1533,11 +1537,19 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             // Sl no 11 – DQC2 material selection meeting scheduled
             return "/api/email/send-dqc2-material-selection-scheduled";
           }
-          if (t === "DQC 2 submission") {
-            // Sl no 12 – DQC2 submission (final design pack ready)
-            return "/api/email/send-dqc2-final-design-submission";
+          if (t === "Material selection meeting completed") {
+            // Sl no 11b – MOM Color & Laminate Selection Confirmation
+            return "/api/email/send-mom-color-laminate-selection-confirmation";
           }
-          // DQC 2 approval is internal; design sign‑off meeting email is triggered from 40% PAYMENT milestone.
+          if (t === "DQC 2 submission") {
+            // Sl no 12 – DQC2 submission: internal only (to DQC)
+            return "DQC2_SUBMISSION_DUAL";
+          }
+          if (t === "DQC 2 approval" || t === "DQC 2 approval ") {
+            // DQC 2 approval: internal only (to designer)
+            return "/api/email/send-dqc2-approval-internal";
+          }
+          // design sign‑off meeting email is triggered from 40% PAYMENT milestone.
           break;
 
         // Milestone 5: 40% PAYMENT
@@ -1573,8 +1585,444 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
     })();
 
     if (emailRoutePath) {
-      // Special-case DQC1 first-cut design so we can include meeting details (date, time)
-      if (emailRoutePath === "/api/email/send-dqc1-first-cut-design-scheduled") {
+      console.log("[complete-task] Email trigger:", { leadId: id, milestoneIndex, taskName, emailRoutePath });
+      // DQC 1 approval: fire BOTH internal (to designer) and CX (10% payment request)
+      if (emailRoutePath === "DQC1_APPROVAL_DUAL") {
+        try {
+          console.log("[DQC1_APPROVAL_DUAL] Triggered for leadId:", id);
+          const [leadRows] = await pool.query(
+            `SELECT l.pid, l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
+                    u.id as designerId, u.email as designerEmail, u.name as designerName
+             FROM leads l
+             LEFT JOIN users u ON u.id = l.assigned_designer_id
+             WHERE l.id = ?`,
+            [id],
+          );
+          const leadRow = (leadRows as any[])[0];
+          if (!leadRow) {
+            console.warn("[DQC1_APPROVAL_DUAL] No lead found for id:", id);
+          }
+          if (leadRow) {
+            let payload: any = {};
+            try {
+              payload = leadRow.payload ? JSON.parse(leadRow.payload) : {};
+            } catch {
+              payload = {};
+            }
+            const formData =
+              payload?.formData ||
+              payload?.form_data ||
+              payload?.form ||
+              payload ||
+              {};
+            const customerEmail =
+              leadRow.clientEmail ||
+              formData.email ||
+              formData.sales_email ||
+              payload?.email ||
+              payload?.form?.email ||
+              null;
+            const customerName =
+              formData.customer_name ||
+              formData.sales_lead_name ||
+              payload.customer_name ||
+              payload?.form?.customer_name ||
+              leadRow.projectName ||
+              "Customer";
+            const ecName =
+              payload.experience_center ||
+              payload?.form?.experience_center ||
+              leadRow.experienceCenter ||
+              "Experience Center";
+            let designerName = leadRow.designerName || "Designer";
+            let designerEmail = leadRow.designerEmail || null;
+            if (!designerEmail && (formData.designer_name || formData.designerName || payload.designer_name || payload.designerName)) {
+              const dn = formData.designer_name || formData.designerName || payload.designer_name || payload.designerName || "";
+              const [uRows] = await pool.query("SELECT email, name FROM users WHERE (name = ? OR email = ?) AND role IN ('designer', 'design_manager') LIMIT 1", [dn, dn]);
+              const uRow = (uRows as any[])[0];
+              if (uRow) {
+                designerEmail = uRow.email;
+                designerName = uRow.name || designerName;
+              }
+            }
+
+            const projectId = leadRow.pid || "";
+            const propertyType = formData.property_configuration || "";
+            const rawOrderValue = formData.order_value ?? payload.order_value ?? null;
+            let amountDue: string | undefined;
+            if (typeof rawOrderValue === "number") {
+              amountDue = `₹${(rawOrderValue * 0.1).toFixed(0)}`;
+            } else if (typeof rawOrderValue === "string" && rawOrderValue.trim()) {
+              const num = Number(rawOrderValue.replace(/[^0-9.]/g, ""));
+              if (!Number.isNaN(num) && num > 0) {
+                amountDue = `₹${(num * 0.1).toFixed(0)}`;
+              }
+            }
+
+            console.log("[DQC1_APPROVAL_DUAL] Lead data:", {
+              leadId: id,
+              designerEmail: designerEmail ? "ok" : "MISSING",
+              customerEmail: customerEmail ? "ok" : "MISSING",
+              customerName,
+              ecName,
+              assignedDesignerId: leadRow.assigned_designer_id ?? null,
+              FRONTEND_BASE,
+            });
+
+            const sendInternal = designerEmail && customerName && designerName && ecName;
+            const sendCx = !!customerEmail;
+            if (!sendInternal && !sendCx) {
+              console.warn("[DQC1_APPROVAL_DUAL] Skipping emails: no designerEmail or customerEmail", {
+                leadId: id,
+                hasDesigner: !!designerEmail,
+                hasCustomer: !!customerEmail,
+              });
+            }
+
+            // 1. Internal email to designer: DQC 1 approved, proceed for masking
+            if (sendInternal) {
+              const url = `${FRONTEND_BASE}/api/email/send-ten-percent-payment-internal`;
+              try {
+                const r = await fetch(url, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    to: designerEmail,
+                    customerName,
+                    designerName,
+                    ecName,
+                  }),
+                });
+                const text = await r.text();
+                if (!r.ok) {
+                  console.error("10% internal email API error", {
+                    leadId: id,
+                    status: r.status,
+                    body: text,
+                  });
+                } else {
+                  console.log("[DQC1_APPROVAL_DUAL] Internal email sent to designer");
+                }
+              } catch (err) {
+                console.error("10% internal email trigger error", { leadId: id, error: err });
+              }
+            }
+
+            // 2. CX email: 10% payment request with account details
+            if (sendCx) {
+              const url = `${FRONTEND_BASE}/api/email/send-ten-percent-payment-request`;
+              try {
+                const r = await fetch(url, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    to: customerEmail,
+                    customerName,
+                    projectId,
+                    propertyType,
+                    amountDue,
+                  }),
+                });
+                const text = await r.text();
+                if (!r.ok) {
+                  console.error("10% CX email API error", {
+                    leadId: id,
+                    status: r.status,
+                    body: text,
+                  });
+                } else {
+                  console.log("[DQC1_APPROVAL_DUAL] CX email sent to customer");
+                }
+              } catch (err) {
+                console.error("10% payment request CX email trigger error", { leadId: id, error: err });
+              }
+            }
+          }
+        } catch (err) {
+          console.error("DQC1 approval dual-email prepare error (non-fatal)", {
+            leadId: id,
+            error: err,
+          });
+        }
+      } else if (emailRoutePath === "10P_COLLECTION_DUAL") {
+        // 10% payment collection: same dual emails as DQC 1 approval (fallback when marked complete manually)
+        try {
+          const [leadRows] = await pool.query(
+            `SELECT l.pid, l.project_name as projectName, l.client_email as clientEmail, l.payload,
+                    u.id as designerId, u.email as designerEmail, u.name as designerName
+             FROM leads l
+             LEFT JOIN users u ON u.id = l.assigned_designer_id
+             WHERE l.id = ?`,
+            [id],
+          );
+          const leadRow = (leadRows as any[])[0];
+          if (leadRow) {
+            let payload: any = {};
+            try {
+              payload = leadRow.payload ? JSON.parse(leadRow.payload) : {};
+            } catch {
+              payload = {};
+            }
+            const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
+            const customerEmail =
+              leadRow.clientEmail ||
+              formData.email ||
+              formData.sales_email ||
+              payload?.email ||
+              payload?.form?.email ||
+              null;
+            const customerName =
+              formData.customer_name ||
+              formData.sales_lead_name ||
+              payload.customer_name ||
+              payload?.form?.customer_name ||
+              leadRow.projectName ||
+              "Customer";
+            const ecName =
+              payload.experience_center ||
+              payload?.form?.experience_center ||
+              leadRow.experienceCenter ||
+              "Experience Center";
+            const designerName = leadRow.designerName || "Designer";
+            const designerEmail = leadRow.designerEmail || null;
+            const projectId = leadRow.pid || "";
+            const propertyType = formData.property_configuration || "";
+            const rawOrderValue = formData.order_value ?? payload.order_value ?? null;
+            let amountDue: string | undefined;
+            if (typeof rawOrderValue === "number") {
+              amountDue = `₹${(rawOrderValue * 0.1).toFixed(0)}`;
+            } else if (typeof rawOrderValue === "string" && rawOrderValue.trim()) {
+              const num = Number(rawOrderValue.replace(/[^0-9.]/g, ""));
+              if (!Number.isNaN(num) && num > 0) {
+                amountDue = `₹${(num * 0.1).toFixed(0)}`;
+              }
+            }
+
+            if (designerEmail && customerName && designerName && ecName) {
+              fetch(`${FRONTEND_BASE}/api/email/send-ten-percent-payment-internal`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  to: designerEmail,
+                  customerName,
+                  designerName,
+                  ecName,
+                }),
+              }).catch((err) => {
+                console.error("10% collection internal email trigger error (non-fatal)", {
+                  leadId: id,
+                  error: err,
+                });
+              });
+            }
+
+            if (customerEmail) {
+              fetch(`${FRONTEND_BASE}/api/email/send-ten-percent-payment-request`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  to: customerEmail,
+                  customerName,
+                  projectId,
+                  propertyType,
+                  amountDue,
+                }),
+              }).catch((err) => {
+                console.error("10% collection CX email trigger error (non-fatal)", {
+                  leadId: id,
+                  error: err,
+                });
+              });
+            }
+          }
+        } catch (err) {
+          console.error("10% collection dual-email prepare error (non-fatal)", {
+            leadId: id,
+            error: err,
+          });
+        }
+      } else if (emailRoutePath === "D2_MASKING_DUAL") {
+        try {
+          const [rows] = await pool.query(
+            `SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload,
+                    a.masking_date as maskingDate, a.masking_time as maskingTime,
+                    u_designer.email as designerEmail, u_designer.name as designerName
+             FROM leads l
+             LEFT JOIN lead_d2_assignments a ON a.lead_id = l.id
+             LEFT JOIN users u_designer ON u_designer.id = a.assigned_to_user_id
+             WHERE l.id = ?
+             ORDER BY a.created_at DESC
+             LIMIT 1`,
+            [id],
+          );
+          const row = (rows as any[])[0];
+          const [pmRows] = await pool.query(
+            "SELECT email, name FROM users WHERE role = 'project_manager' AND email IS NOT NULL ORDER BY id ASC LIMIT 1",
+          );
+          const pmRow = (pmRows as any[])[0];
+          const pmEmail = pmRow?.email || null;
+          const pmName = pmRow?.name || null;
+          if (row) {
+            let payload: any = {};
+            try {
+              payload = row.payload ? JSON.parse(row.payload) : {};
+            } catch {
+              payload = {};
+            }
+            const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
+            const customerEmail =
+              row.clientEmail ||
+              formData.email ||
+              formData.sales_email ||
+              payload?.email ||
+              payload?.form?.email ||
+              null;
+            const customerName =
+              formData.customer_name ||
+              formData.sales_lead_name ||
+              payload.customer_name ||
+              payload?.form?.customer_name ||
+              row.projectName ||
+              "Customer";
+            const ecName =
+              payload.experience_center ||
+              payload?.form?.experience_center ||
+              row.experienceCenter ||
+              "Experience Center";
+            const designerName = row.designerName || "Designer";
+            const maskingDate = row.maskingDate
+              ? (row.maskingDate instanceof Date ? row.maskingDate.toISOString().split("T")[0] : row.maskingDate)
+              : null;
+            const maskingTime = row.maskingTime || null;
+
+            if (pmEmail && customerName && designerName && ecName) {
+              const [mmtRows] = await pool.query(
+                "SELECT name FROM users WHERE role IN ('mmt_manager', 'mmt_executive') AND email IS NOT NULL ORDER BY id ASC LIMIT 1",
+              );
+              const mmtName = (mmtRows as any[])[0]?.name || null;
+              fetch(`${FRONTEND_BASE}/api/email/send-d2-masking-request-internal`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  to: pmEmail,
+                  customerName,
+                  designerName,
+                  ecName,
+                  mmtName,
+                  pmName,
+                  maskingDate,
+                  maskingTime,
+                }),
+              }).catch((err) => {
+                console.error("D2 masking internal email trigger error (non-fatal)", {
+                  leadId: id,
+                  error: err,
+                });
+              });
+            }
+
+            if (customerEmail) {
+              fetch(`${FRONTEND_BASE}/api/email/send-d2-masking-request`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  to: customerEmail,
+                  customerName,
+                  designerName,
+                  maskingDate,
+                  maskingTime,
+                }),
+              }).catch((err) => {
+                console.error("D2 masking CX email trigger error (non-fatal)", {
+                  leadId: id,
+                  error: err,
+                });
+              });
+            }
+          }
+        } catch (err) {
+          console.error("D2 masking dual-email prepare error (non-fatal)", {
+            leadId: id,
+            error: err,
+          });
+        }
+      } else if (emailRoutePath === "DQC2_SUBMISSION_DUAL") {
+        try {
+          const [leadRows] = await pool.query(
+            `SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload,
+                    u.id as designerId, u.email as designerEmail, u.name as designerName
+             FROM leads l
+             LEFT JOIN lead_d1_assignments a ON a.lead_id = l.id
+             LEFT JOIN users u ON u.id = a.assigned_to_user_id
+             WHERE l.id = ?
+             ORDER BY a.created_at DESC
+             LIMIT 1`,
+            [id],
+          );
+          const leadRow = (leadRows as any[])[0];
+          if (leadRow) {
+            let payload: any = {};
+            try {
+              payload = leadRow.payload ? JSON.parse(leadRow.payload) : {};
+            } catch {
+              payload = {};
+            }
+            const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
+            const customerEmail =
+              leadRow.clientEmail ||
+              formData.email ||
+              formData.sales_email ||
+              payload?.email ||
+              payload?.form?.email ||
+              null;
+            const customerName =
+              formData.customer_name ||
+              formData.sales_lead_name ||
+              payload.customer_name ||
+              payload?.form?.customer_name ||
+              leadRow.projectName ||
+              "Customer";
+            const ecName =
+              payload.experience_center ||
+              payload?.form?.experience_center ||
+              leadRow.experienceCenter ||
+              "Experience Center";
+            const designerName = leadRow.designerName || "Designer";
+            const projectValue = payload.project_value || payload?.form?.project_value || "";
+
+            const [dqcRows] = await pool.query(
+              "SELECT email, name FROM users WHERE role IN ('dqc_manager', 'dqe') ORDER BY id ASC LIMIT 1",
+            );
+            const dqcUser = (dqcRows as any[])[0];
+
+            if (dqcUser && dqcUser.email && customerName && ecName && designerName && dqcUser.name) {
+              fetch(`${FRONTEND_BASE}/api/email/send-dqc2-final-design-submission-internal`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  to: dqcUser.email,
+                  customerName,
+                  ecName,
+                  designerName,
+                  dqcRepName: dqcUser.name || "DQC Team",
+                  projectValue: String(projectValue || ""),
+                }),
+              }).catch((err) => {
+                console.error("DQC2 submission internal email trigger error (non-fatal)", {
+                  leadId: id,
+                  error: err,
+                });
+              });
+            }
+            // DQC 2 submission: internal only (no CX email)
+          }
+        } catch (err) {
+          console.error("DQC2 submission dual-email prepare error (non-fatal)", {
+            leadId: id,
+            error: err,
+          });
+        }
+      } else if (emailRoutePath === "/api/email/send-dqc1-first-cut-design-scheduled") {
         try {
           const [rows] = await pool.query(
             "SELECT project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?",
@@ -1696,11 +2144,64 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             error: err,
           });
         }
-      } else if (emailRoutePath === "/api/email/send-ten-percent-payment-request") {
-        // Special-case 10% payment request so we can include PID, property configuration and amount
+      } else if (emailRoutePath === "/api/email/send-dqc2-approval-internal") {
+        // DQC 2 approval: internal only – email to designer (no CX)
         try {
           const [rows] = await pool.query(
-            "SELECT pid, project_name as projectName, client_email as clientEmail, project_value as projectValue, payload FROM leads WHERE id = ?",
+            `SELECT l.project_name as projectName, l.payload, l.assigned_designer_id,
+                    u.email as designerEmail, u.name as designerName
+             FROM leads l
+             LEFT JOIN users u ON u.id = l.assigned_designer_id
+             WHERE l.id = ?`,
+            [id],
+          );
+          const row = (rows as any[])[0];
+          if (row && row.designerEmail && row.designerName) {
+            let payload: any = {};
+            try {
+              payload = row.payload ? JSON.parse(row.payload) : {};
+            } catch {
+              payload = {};
+            }
+            const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
+            const customerName =
+              formData.customer_name ||
+              formData.sales_lead_name ||
+              payload?.customer_name ||
+              payload?.form?.customer_name ||
+              row.projectName ||
+              "Customer";
+
+            fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                to: row.designerEmail,
+                designerName: row.designerName,
+                customerName,
+              }),
+            }).catch((err) => {
+              console.error("DQC2 approval internal email trigger error (non-fatal)", {
+                leadId: id,
+                error: err,
+              });
+            });
+          }
+        } catch (err) {
+          console.error("DQC2 approval internal email prepare error (non-fatal)", {
+            leadId: id,
+            error: err,
+          });
+        }
+      } else if (emailRoutePath === "/api/email/send-mom-color-laminate-selection-confirmation") {
+        // Material selection meeting completed: MOM Color & Laminate Selection Confirmation
+        try {
+          const [rows] = await pool.query(
+            `SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
+                    u.name as designerName
+             FROM leads l
+             LEFT JOIN users u ON u.id = l.assigned_designer_id
+             WHERE l.id = ?`,
             [id],
           );
           const row = (rows as any[])[0];
@@ -1711,59 +2212,353 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             } catch {
               payload = {};
             }
-            const formData = payload?.formData || payload?.form_data || payload || {};
-
+            const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
             const customerEmail =
-              row.clientEmail || formData.email || formData.sales_email || null;
+              row.clientEmail ||
+              formData.email ||
+              formData.sales_email ||
+              payload?.email ||
+              payload?.form?.email ||
+              null;
             const customerName =
               formData.customer_name ||
-              payload.customer_name ||
               formData.sales_lead_name ||
+              payload?.customer_name ||
+              payload?.form?.customer_name ||
               row.projectName ||
               "Customer";
+            const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
+            const laminateSelections = meta?.laminateSelections ?? null;
 
             if (customerEmail) {
-              const projectId = row.pid || "";
-              const propertyType = formData.property_configuration || "";
-              const rawOrderValue =
-                formData.order_value ??
-                payload.order_value ??
-                row.projectValue ??
-                null;
-              let amountDue: string | undefined;
-              if (typeof rawOrderValue === "number") {
-                amountDue = `₹${(rawOrderValue * 0.1).toFixed(0)}`;
-              } else if (typeof rawOrderValue === "string" && rawOrderValue.trim()) {
-                const num = Number(rawOrderValue.replace(/[^0-9.]/g, ""));
-                if (!Number.isNaN(num) && num > 0) {
-                  amountDue = `₹${(num * 0.1).toFixed(0)}`;
-                }
-              }
-
               fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                   to: customerEmail,
                   customerName,
-                  projectId,
-                  propertyType,
-                  amountDue,
-                  // optional dueDate can be wired later if we have a clear field
+                  designerName,
+                  laminateSelections,
                 }),
               }).catch((err) => {
-                console.error("10% payment request email trigger error (non-fatal)", {
+                console.error("MOM color laminate selection email trigger error (non-fatal)", {
                   leadId: id,
-                  route: emailRoutePath,
                   error: err,
                 });
               });
             }
           }
         } catch (err) {
-          console.error("10% payment request email prepare error (non-fatal)", {
+          console.error("MOM color laminate selection email prepare error (non-fatal)", {
             leadId: id,
-            route: emailRoutePath,
+            error: err,
+          });
+        }
+      } else if (emailRoutePath === "/api/email/send-design-signoff-meeting-scheduled") {
+        // Design sign off (40% milestone): CX only, pass meeting date/time, designer name
+        try {
+          const [rows] = await pool.query(
+            `SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
+                    u.name as designerName
+             FROM leads l
+             LEFT JOIN users u ON u.id = l.assigned_designer_id
+             WHERE l.id = ?`,
+            [id],
+          );
+          const row = (rows as any[])[0];
+          if (row) {
+            let payload: any = {};
+            try {
+              payload = row.payload ? JSON.parse(row.payload) : {};
+            } catch {
+              payload = {};
+            }
+            const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
+            const customerEmail =
+              row.clientEmail ||
+              formData.email ||
+              formData.sales_email ||
+              payload?.email ||
+              payload?.form?.email ||
+              null;
+            const customerName =
+              formData.customer_name ||
+              formData.sales_lead_name ||
+              payload?.customer_name ||
+              payload?.form?.customer_name ||
+              row.projectName ||
+              "Customer";
+            const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
+            const meetingDate = meta?.meetingDate ?? meta?.signoffDate ?? null;
+            const meetingTime = meta?.meetingTime ?? meta?.signoffTime ?? null;
+
+            if (customerEmail) {
+              fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  to: customerEmail,
+                  customerName,
+                  designerName,
+                  meetingDate: meetingDate || undefined,
+                  meetingTime: meetingTime || undefined,
+                }),
+              }).catch((err) => {
+                console.error("Design signoff meeting scheduled email trigger error (non-fatal)", {
+                  leadId: id,
+                  error: err,
+                });
+              });
+            }
+          }
+        } catch (err) {
+          console.error("Design signoff meeting scheduled email prepare error (non-fatal)", {
+            leadId: id,
+            error: err,
+          });
+        }
+      } else if (emailRoutePath === "/api/email/send-design-signoff-40pc-payment-request") {
+        // Meeting completed & 40% payment request: CX only, pass amount, bank details, designer
+        try {
+          const [rows] = await pool.query(
+            `SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
+                    u.name as designerName
+             FROM leads l
+             LEFT JOIN users u ON u.id = l.assigned_designer_id
+             WHERE l.id = ?`,
+            [id],
+          );
+          const row = (rows as any[])[0];
+          if (row) {
+            let payload: any = {};
+            try {
+              payload = row.payload ? JSON.parse(row.payload) : {};
+            } catch {
+              payload = {};
+            }
+            const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
+            const customerEmail =
+              row.clientEmail ||
+              formData.email ||
+              formData.sales_email ||
+              payload?.email ||
+              payload?.form?.email ||
+              null;
+            const customerName =
+              formData.customer_name ||
+              formData.sales_lead_name ||
+              payload?.customer_name ||
+              payload?.form?.customer_name ||
+              row.projectName ||
+              "Customer";
+            const designerName = row.designerName || formData.designer_name || formData.designerName || "Team HUB Interiors";
+            const amount = meta?.amount ?? meta?.amountDue ?? meta?.payableAmount ?? formData.forty_percent_amount ?? payload?.forty_percent_amount ?? null;
+            const accountName = meta?.accountName ?? "Brightspace Creation Private Limited";
+            const accountNumber = meta?.accountNumber ?? "748305000519";
+            const ifscCode = meta?.ifscCode ?? "ICIC0007483";
+
+            if (customerEmail) {
+              fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  to: customerEmail,
+                  customerName,
+                  designerName,
+                  amount: amount != null ? String(amount) : undefined,
+                  accountName,
+                  accountNumber,
+                  ifscCode,
+                }),
+              }).catch((err) => {
+                console.error("40% payment request email trigger error (non-fatal)", {
+                  leadId: id,
+                  error: err,
+                });
+              });
+            }
+          }
+        } catch (err) {
+          console.error("40% payment request email prepare error (non-fatal)", {
+            leadId: id,
+            error: err,
+          });
+        }
+      } else if (emailRoutePath === "/api/email/send-dqc2-material-selection-scheduled") {
+        // DQC2 material selection: pass meeting date/time, ec location, designer name
+        try {
+          const [rows] = await pool.query(
+            `SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
+                    u.name as designerName
+             FROM leads l
+             LEFT JOIN users u ON u.id = l.assigned_designer_id
+             WHERE l.id = ?`,
+            [id],
+          );
+          const row = (rows as any[])[0];
+          if (row) {
+            let payload: any = {};
+            try {
+              payload = row.payload ? JSON.parse(row.payload) : {};
+            } catch {
+              payload = {};
+            }
+            const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
+            const customerEmail =
+              row.clientEmail ||
+              formData.email ||
+              formData.sales_email ||
+              payload?.email ||
+              payload?.form?.email ||
+              null;
+            const customerName =
+              formData.customer_name ||
+              formData.sales_lead_name ||
+              payload?.customer_name ||
+              payload?.form?.customer_name ||
+              row.projectName ||
+              "Customer";
+            const ecName =
+              formData.experience_center ||
+              payload?.experience_center ||
+              payload?.form?.experience_center ||
+              "Experience Center";
+            const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
+            const meetingDate = meta?.meetingDate ?? null;
+            const meetingTime = meta?.meetingTime ?? null;
+            const ecLocation = meta?.ecLocation ?? meta?.ecAddress ?? ecName;
+
+            if (customerEmail) {
+              fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  to: customerEmail,
+                  customerName,
+                  designerName,
+                  meetingDate,
+                  meetingTime,
+                  ecLocation,
+                }),
+              }).catch((err) => {
+                console.error("DQC2 material selection email trigger error (non-fatal)", {
+                  leadId: id,
+                  error: err,
+                });
+              });
+            }
+          }
+        } catch (err) {
+          console.error("DQC2 material selection email prepare error (non-fatal)", {
+            leadId: id,
+            error: err,
+          });
+        }
+      } else if (emailRoutePath === "/api/email/send-production-poc-timeline") {
+        // POC mail & Timeline submission: CX only, pass POC details and designer
+        try {
+          const [rows] = await pool.query(
+            `SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
+                    u.name as designerName
+             FROM leads l
+             LEFT JOIN users u ON u.id = l.assigned_designer_id
+             WHERE l.id = ?`,
+            [id],
+          );
+          const row = (rows as any[])[0];
+          if (row?.clientEmail) {
+            let payload: any = {};
+            try {
+              payload = row.payload ? JSON.parse(row.payload) : {};
+            } catch {
+              payload = {};
+            }
+            const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
+            const customerName =
+              formData.customer_name ||
+              formData.sales_lead_name ||
+              payload?.customer_name ||
+              payload?.form?.customer_name ||
+              row.projectName ||
+              "Customer";
+            const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
+            const productionPoc = meta?.productionPoc ?? "Prajwal - prajwal@hubinterior.com";
+            const executionPoc = meta?.executionPoc ?? "Project Manager - PM automatically";
+            const spmPoc = meta?.spmPoc ?? "SPM automatically";
+            const operationManager = meta?.operationManager ?? "Balaji - balaji@hubinterior.com";
+            const operationHead = meta?.operationHead ?? "Alex - alex@hubinterior.com";
+            fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                to: row.clientEmail,
+                customerName,
+                designerName,
+                productionPoc,
+                executionPoc,
+                spmPoc,
+                operationManager,
+                operationHead,
+              }),
+            }).catch((err) => {
+              console.error("Production POC timeline email trigger error (non-fatal)", {
+                leadId: id,
+                error: err,
+              });
+            });
+          }
+        } catch (err) {
+          console.error("Production POC timeline email prepare error (non-fatal)", {
+            leadId: id,
+            error: err,
+          });
+        }
+      } else if (emailRoutePath === "/api/email/send-production-approval-request") {
+        // Cx approval for production: CX only, pass designer name
+        try {
+          const [rows] = await pool.query(
+            `SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
+                    u.name as designerName
+             FROM leads l
+             LEFT JOIN users u ON u.id = l.assigned_designer_id
+             WHERE l.id = ?`,
+            [id],
+          );
+          const row = (rows as any[])[0];
+          if (row?.clientEmail) {
+            let payload: any = {};
+            try {
+              payload = row.payload ? JSON.parse(row.payload) : {};
+            } catch {
+              payload = {};
+            }
+            const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
+            const customerName =
+              formData.customer_name ||
+              formData.sales_lead_name ||
+              payload?.customer_name ||
+              payload?.form?.customer_name ||
+              row.projectName ||
+              "Customer";
+            const designerName = row.designerName || formData.designer_name || formData.designerName || "Team HUB Interiors";
+            fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                to: row.clientEmail,
+                customerName,
+                designerName,
+              }),
+            }).catch((err) => {
+              console.error("Production approval request email trigger error (non-fatal)", {
+                leadId: id,
+                error: err,
+              });
+            });
+          }
+        } catch (err) {
+          console.error("Production approval request email prepare error (non-fatal)", {
+            leadId: id,
             error: err,
           });
         }
@@ -1930,12 +2725,73 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
       details: { kind: "note", noteText: "10% payment approved. Lead moves to next stage." },
     };
     await addLeadHistoryEvent(leadId, ev);
-    // Fire-and-forget: trigger 10% payment approval email
-    triggerCustomerEmailForLead(leadId, "/api/email/send-ten-percent-payment-approval").catch(
-      (emailErr) => {
-        console.error("10% payment approval email trigger error (non-fatal)", emailErr);
-      },
-    );
+    // Fire-and-forget: trigger 10% payment approval email (custom template with receipt details)
+    try {
+      const [rows] = await pool.query(
+        "SELECT pid, project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?",
+        [leadId],
+      );
+      const row = (rows as any[])[0];
+      if (row) {
+        let payload: any = {};
+        try {
+          payload = row.payload ? JSON.parse(row.payload) : {};
+        } catch {
+          payload = {};
+        }
+        const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
+        const customerEmail =
+          row.clientEmail ||
+          formData.email ||
+          formData.sales_email ||
+          payload?.email ||
+          payload?.form?.email ||
+          null;
+        const customerName =
+          formData.customer_name ||
+          formData.sales_lead_name ||
+          payload.customer_name ||
+          payload?.form?.customer_name ||
+          row.projectName ||
+          "Customer";
+        const projectId = row.pid || "";
+        const rawOrderValue = formData.order_value ?? payload.order_value ?? null;
+        let amountPaid: string | undefined;
+        if (typeof rawOrderValue === "number") {
+          amountPaid = `₹${(rawOrderValue * 0.1).toFixed(0)}`;
+        } else if (typeof rawOrderValue === "string" && rawOrderValue.trim()) {
+          const num = Number(rawOrderValue.replace(/[^0-9.]/g, ""));
+          if (!Number.isNaN(num) && num > 0) {
+            amountPaid = `₹${(num * 0.1).toFixed(0)}`;
+          }
+        }
+        const paymentDate = now.toLocaleDateString("en-IN", {
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+        });
+        const transactionRef = projectId ? `${projectId}-10PCT-${Date.now()}` : `10PCT-${Date.now()}`;
+
+        if (customerEmail) {
+          fetch(`${FRONTEND_BASE}/api/email/send-ten-percent-payment-approval`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              to: customerEmail,
+              customerName,
+              projectId: projectId || undefined,
+              amountPaid: amountPaid || undefined,
+              paymentDate,
+              transactionRef,
+            }),
+          }).catch((emailErr) => {
+            console.error("10% payment approval email trigger error (non-fatal)", emailErr);
+          });
+        }
+      }
+    } catch (emailErr) {
+      console.error("10% payment approval email prepare error (non-fatal)", emailErr);
+    }
     return res.status(201).json({ ok: true });
   } catch (err) {
     console.error("approve-10p-payment error", err);
@@ -2061,12 +2917,52 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
       details: { kind: "note", noteText: "40% payment approved. Lead moves to next stage." },
     };
     await addLeadHistoryEvent(leadId, ev);
-    // Fire-and-forget: trigger 40% payment approval email
-    triggerCustomerEmailForLead(leadId, "/api/email/send-design-signoff-40pc-payment-approval").catch(
-      (emailErr) => {
-        console.error("40% payment approval email trigger error (non-fatal)", emailErr);
-      },
-    );
+    // Fire-and-forget: trigger 40% payment approval CX email (receipt)
+    try {
+      const [rows] = await pool.query(
+        "SELECT project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?",
+        [leadId],
+      );
+      const row = (rows as any[])[0];
+      if (row?.clientEmail) {
+        let payload: any = {};
+        try {
+          payload = row.payload ? JSON.parse(row.payload) : {};
+        } catch {
+          payload = {};
+        }
+        const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
+        const customerName =
+          formData.customer_name ||
+          formData.sales_lead_name ||
+          payload?.customer_name ||
+          payload?.form?.customer_name ||
+          row.projectName ||
+          "Customer";
+        const projectName = row.projectName || customerName || "Project";
+        const dateStr = now.toLocaleDateString("en-IN", {
+          day: "numeric",
+          month: "long",
+          year: "numeric",
+        });
+        fetch(`${FRONTEND_BASE}/api/email/send-design-signoff-40pc-payment-approval`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            to: row.clientEmail,
+            customerName,
+            projectName,
+            amountReceived: formData.forty_percent_amount ?? payload?.forty_percent_amount ?? undefined,
+            dateOfReceipt: dateStr,
+            modeOfPayment: "Bank Transfer",
+          }),
+        }).catch((emailErr) => {
+          console.error("40% payment approval email trigger error (non-fatal)", emailErr);
+        });
+      }
+    } catch (e) {
+      console.error("40% payment approval email prepare error (non-fatal)", e);
+    }
     return res.status(201).json({ ok: true });
   } catch (err) {
     console.error("approve-40p-payment error", err);
@@ -2452,7 +3348,7 @@ app.post(
       // Fire-and-forget internal DQC 1 review request email
       try {
         const [leadRows] = await pool.query(
-          "SELECT project_name as projectName, client_email as clientEmail, payload, project_value as projectValue, experience_center as experienceCenter FROM leads WHERE id = ?",
+          "SELECT project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?",
           [leadId],
         );
         const leadRow = (leadRows as any[])[0];
@@ -2478,7 +3374,6 @@ app.post(
           const projectValue =
             payload.project_value ||
             payload?.form?.project_value ||
-            leadRow.projectValue ||
             "";
 
           // Determine primary DQC recipient and CC list (designer + manager + TDM)

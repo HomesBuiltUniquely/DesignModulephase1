@@ -1,12 +1,15 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import { renderGenericMilestoneEmail } from '@/lib/email/render-generic-milestone';
+import { renderDesignSignoffMeetingScheduledEmail } from '@/lib/email/render-design-signoff-meeting-scheduled';
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
     const to = body.to as string | undefined;
     const customerName = body.customerName as string | undefined;
+    const meetingDate = body.meetingDate as string | undefined;
+    const meetingTime = body.meetingTime as string | undefined;
+    const designerName = body.designerName as string | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -15,22 +18,16 @@ export async function POST(request: Request) {
       );
     }
 
-    const html = renderGenericMilestoneEmail({
+    const html = renderDesignSignoffMeetingScheduledEmail({
       customerName,
-      title: 'Design Sign‑off Meeting Scheduled',
-      intro:
-        'Your design sign‑off meeting has been scheduled. This is the session where we formalise the final design and move into production.',
-      bulletPoints: [
-        'We will review the final layouts, finishes and key specifications.',
-        'Any last minor clarifications will be addressed before sign‑off.',
-        'We will also walk you through payment and production timelines.',
-      ],
-      ctaLabel: 'View Meeting Details',
+      meetingDate,
+      meetingTime,
+      designerName,
     });
 
     const info = await sendMail({
       to,
-      subject: 'Design Sign‑off Meeting Scheduled',
+      subject: 'Design Approved – Let\'s Schedule Final Sign-Off',
       html,
     });
 

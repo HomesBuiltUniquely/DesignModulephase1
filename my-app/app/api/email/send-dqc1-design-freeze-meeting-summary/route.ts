@@ -1,12 +1,16 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import { renderGenericMilestoneEmail } from '@/lib/email/render-generic-milestone';
+import { renderDqc1DesignFreezeMeetingSummaryEmail } from '@/lib/email/render-dqc1-design-freeze-meeting-summary';
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
     const to = body.to as string | undefined;
     const customerName = body.customerName as string | undefined;
+    const designerName = body.designerName as string | undefined;
+    const meetingDate = body.meetingDate as string | undefined;
+    const projectId = body.projectId as string | undefined;
+    const propertyType = body.propertyType as string | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -15,17 +19,12 @@ export async function POST(request: Request) {
       );
     }
 
-    const html = renderGenericMilestoneEmail({
+    const html = renderDqc1DesignFreezeMeetingSummaryEmail({
       customerName,
-      title: 'DQC1 – Design Freeze Meeting Summary',
-      intro:
-        'Thank you for attending the design freeze discussion. Here is a summary of what was aligned and how we will move forward.',
-      bulletPoints: [
-        'Key layout and design decisions agreed during the meeting.',
-        'Open points (if any) that will be refined before final sign‑off.',
-        'Next steps towards budget confirmation and documentation.',
-      ],
-      ctaLabel: 'View Design Freeze Summary',
+      designerName,
+      meetingDate,
+      projectId,
+      propertyType,
     });
 
     const info = await sendMail({
