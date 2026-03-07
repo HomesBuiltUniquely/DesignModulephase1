@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { sendMail } from '@/lib/email/mailer';
+import { sendMailForPayment } from '@/lib/email/mailer';
 import { renderTenPercentPaymentApprovalEmail } from '@/lib/email/render-ten-percent-payment-approval';
 
 export async function POST(request: Request) {
@@ -27,7 +27,7 @@ export async function POST(request: Request) {
       transactionRef,
     });
 
-    const info = await sendMail({
+    const info = await sendMailForPayment({
       to,
       subject: '10% Payment Confirmation',
       html,

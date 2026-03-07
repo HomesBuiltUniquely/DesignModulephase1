@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { sendMail } from '@/lib/email/mailer';
+import { sendMailForPayment } from '@/lib/email/mailer';
 import { renderTenPercentPaymentInternalEmail } from '@/lib/email/render-ten-percent-payment-internal';
 
 export async function POST(request: Request) {
@@ -24,12 +24,12 @@ export async function POST(request: Request) {
       ecName,
     });
 
-    const info = await sendMail({
+    const info = await sendMailForPayment({
       to,
       subject,
       html,
       ...(cc && cc.length ? { cc } : {}),
-    } as any);
+    });
 
     return NextResponse.json({ success: true, messageId: (info as any).messageId });
   } catch (error) {

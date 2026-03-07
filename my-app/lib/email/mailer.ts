@@ -6,6 +6,13 @@ const smtpUser = process.env.SMTP_USER;
 const smtpPass = process.env.SMTP_PASS;
 const mailFrom = process.env.MAIL_FROM || smtpUser;
 
+// Optional: separate SMTP for payment-related emails (10%, 40% payment request/approval)
+const paymentSmtpHost = process.env.PAYMENT_SMTP_HOST;
+const paymentSmtpPort = process.env.PAYMENT_SMTP_PORT ? Number(process.env.PAYMENT_SMTP_PORT) : 587;
+const paymentSmtpUser = process.env.PAYMENT_SMTP_USER;
+const paymentSmtpPass = process.env.PAYMENT_SMTP_PASS;
+const paymentMailFrom = process.env.PAYMENT_MAIL_FROM || paymentSmtpUser;
+
 if (!smtpHost || !smtpUser || !smtpPass) {
   // eslint-disable-next-line no-console
   console.warn('[mailer] SMTP configuration is incomplete. Emails will fail until env is set.');
@@ -21,10 +28,24 @@ export const transporter = nodemailer.createTransport({
   },
 });
 
+const paymentTransporter =
+  paymentSmtpHost && paymentSmtpUser && paymentSmtpPass
+    ? nodemailer.createTransport({
+        host: paymentSmtpHost,
+        port: paymentSmtpPort,
+        secure: paymentSmtpPort === 465,
+        auth: {
+          user: paymentSmtpUser,
+          pass: paymentSmtpPass,
+        },
+      })
+    : null;
+
 export type SendMailOptions = {
   to: string | string[];
   subject: string;
   html: string;
+  cc?: string | string[];
 };
 
 export async function sendMail(options: SendMailOptions) {
@@ -32,13 +53,37 @@ export async function sendMail(options: SendMailOptions) {
     throw new Error('SMTP configuration missing. Please set SMTP_HOST, SMTP_USER, SMTP_PASS.');
   }
 
-  const info = await transporter.sendMail({
+  const msg: nodemailer.SendMailOptions = {
     from: mailFrom,
     to: options.to,
     subject: options.subject,
     html: options.html,
-  });
+  };
+  if (options.cc && (Array.isArray(options.cc) ? options.cc.length : options.cc)) {
+    msg.cc = options.cc;
+  }
 
+  const info = await transporter.sendMail(msg);
   return info;
+}
+
+/**
+ * Send email using the payment-dedicated SMTP (when PAYMENT_SMTP_* is set).
+ * Falls back to default sendMail() if payment SMTP is not configured.
+ */
+export async function sendMailForPayment(options: SendMailOptions) {
+  if (paymentTransporter && paymentMailFrom) {
+    const msg: nodemailer.SendMailOptions = {
+      from: paymentMailFrom,
+      to: options.to,
+      subject: options.subject,
+      html: options.html,
+    };
+    if (options.cc && (Array.isArray(options.cc) ? options.cc.length : options.cc)) {
+      msg.cc = options.cc;
+    }
+    return paymentTransporter.sendMail(msg);
+  }
+  return sendMail(options);
 }
 
