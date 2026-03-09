@@ -2990,10 +2990,12 @@ app.post(
       if (process.env.AWS_ACCESS_KEY_ID) {
         s3Url = await uploadLeadFileToS3(leadId, file.path, file.originalname, file.mimetype);
       }
+      const uploadType = (req.body?.uploadType as string) || "";
+      const isD2 = uploadType === "d2_masking";
       await pool.query(
         `INSERT INTO lead_uploads
-         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, s3_url)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           leadId,
           uploaderId,
@@ -3004,12 +3006,10 @@ app.post(
           file.size,
           now,
           status,
+          uploadType || null,
           s3Url,
         ],
       );
-
-      const uploadType = (req.body?.uploadType as string) || "";
-      const isD2 = uploadType === "d2_masking";
       const ev = {
         id: `upload-${Date.now()}`,
         type: "file_upload",
@@ -3022,7 +3022,8 @@ app.post(
       };
       await addLeadHistoryEvent(leadId, ev);
 
-      // If this is a D1 upload (not D2 masking), also mark the "D1 files upload" task complete for milestone 0
+      // If this is a D1 upload, mark the "D1 files upload" task complete for milestone 0.
+      // If this is D2 masking upload, mark "D2 - files upload" complete for milestone 3.
       if (!isD2) {
         try {
           await pool.query(
@@ -3034,6 +3035,17 @@ app.post(
         } catch (completeErr) {
           console.error("mark D1 files upload complete error", completeErr);
           // do not fail the upload because of completion bookkeeping
+        }
+      } else {
+        try {
+          await pool.query(
+            `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+             VALUES (?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
+            [leadId, 3, "D2 - files upload", now],
+          );
+        } catch (completeErr) {
+          console.error("mark D2 files upload complete error", completeErr);
         }
       }
 
@@ -3088,6 +3100,27 @@ app.post("/api/leads/:leadId/uploads/:uploadId/approve", async (req: Request, re
     );
     if ((result as any).affectedRows === 0)
       return res.status(404).json({ message: "Upload not found" });
+
+    // After approval, if this upload is D2 masking upload, ensure the D2 files task is marked complete.
+    const [rows] = await pool.query(
+      "SELECT upload_type FROM lead_uploads WHERE id = ? AND lead_id = ?",
+      [uploadId, leadId],
+    );
+    const uploadType = (rows as { upload_type?: string }[])[0]?.upload_type || "";
+    if (uploadType === "d2_masking") {
+      const now = new Date();
+      try {
+        await pool.query(
+          `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+           VALUES (?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
+          [leadId, 3, "D2 - files upload", now],
+        );
+      } catch (err) {
+        console.error("mark D2 files upload complete on approve error", err);
+      }
+    }
+
     return res.json({ ok: true });
   } catch (err) {
     console.error("approve upload error", err);
