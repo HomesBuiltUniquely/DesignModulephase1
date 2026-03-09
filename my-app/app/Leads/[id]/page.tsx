@@ -1321,6 +1321,120 @@ export default function ProjectDetailPage() {
                     {popupContext.milestoneIndex === 3 && popupContext.taskName !== 'D2 - masking request raise' && (
                         <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(3, popupContext.taskName); closePopup(); }} />
                     )}
+                    {popupContext.milestoneIndex === 4 && popupContext.taskName === 'Material selection meeting + quotation discussion' && (
+                        <PopupFirstCutDesign
+                            designUploadFiles={designUploadFiles}
+                            designFileInputRef={designFileInputRef}
+                            openDesignFileUpload={openDesignFileUpload}
+                            onDesignFilesSelected={onDesignFilesSelected}
+                            onDesignDrop={onDesignDrop}
+                            onDesignDragOver={onDesignDragOver}
+                            removeDesignFile={removeDesignFile}
+                            onSubmit={async (meta) => {
+                                if (!projectId) return;
+                                try {
+                                    if (designUploadFiles.length > 0 && sessionId) {
+                                        const fd = new FormData();
+                                        designUploadFiles.forEach((f) =>
+                                            fd.append('files', f),
+                                        );
+                                        await fetch(
+                                            `${API}/api/leads/${projectId}/first-cut-design-upload`,
+                                            {
+                                                method: 'POST',
+                                                headers: {
+                                                    Authorization: `Bearer ${sessionId}`,
+                                                },
+                                                body: fd,
+                                            },
+                                        );
+                                    }
+
+                                    recordTaskComplete(
+                                        4,
+                                        'Material selection meeting + quotation discussion',
+                                        {
+                                            description:
+                                                'Material selection meeting design uploaded and meeting request submitted.',
+                                            details:
+                                                designUploadFiles.length > 0
+                                                    ? {
+                                                          kind: 'file_upload',
+                                                          fileName:
+                                                              designUploadFiles
+                                                                  .map(
+                                                                      (f) =>
+                                                                          f.name,
+                                                                  )
+                                                                  .join(', '),
+                                                          status: 'Uploaded',
+                                                      }
+                                                    : undefined,
+                                            meta: {
+                                                meetingDate: meta?.meetingDate || null,
+                                                meetingTime: meta?.meetingTime || null,
+                                            },
+                                        },
+                                    );
+                                    setDesignUploadFiles([]);
+                                    closePopup();
+                                } catch (err) {
+                                    console.error(
+                                        'material-selection upload failed',
+                                        err,
+                                    );
+                                    alert(
+                                        'Failed to upload design files. Please try again.',
+                                    );
+                                }
+                            }}
+                        />
+                    )}
+                    {popupContext.milestoneIndex === 4 && popupContext.taskName === 'Material selection meeting completed' && (
+                        <PopupMeetingCompleted
+                            momMinutes={momMinutes}
+                            setMomMinutes={setMomMinutes}
+                            momReferenceFiles={momReferenceFiles}
+                            momFileInputRef={momFileInputRef}
+                            openMomFileUpload={openMomFileUpload}
+                            onMomFilesSelected={onMomFilesSelected}
+                            onMomDrop={onMomDrop}
+                            removeMomFile={removeMomFile}
+                            onClose={closePopup}
+                            onShareMom={async () => {
+                                if (!projectId) return;
+                                try {
+                                    if (sessionId) {
+                                        const fd = new FormData();
+                                        fd.append('minutes', momMinutes);
+                                        momReferenceFiles.forEach((f) => fd.append('files', f));
+                                        await fetch(`${API}/api/leads/${projectId}/mom-upload`, {
+                                            method: 'POST',
+                                            headers: {
+                                                Authorization: `Bearer ${sessionId}`,
+                                            },
+                                            body: fd,
+                                        });
+                                    }
+                                    recordTaskComplete(4, 'Material selection meeting completed', {
+                                        description: 'Material selection meeting completed. Minutes of meeting shared.',
+                                        details: {
+                                            kind: 'mom',
+                                            minutes: momMinutes,
+                                            referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                        },
+                                    });
+                                    setMomMinutes('');
+                                    setMomReferenceFiles([]);
+                                    setUploadsVersion((v) => v + 1);
+                                    closePopup();
+                                } catch (err) {
+                                    console.error('mom upload failed', err);
+                                    alert('Failed to save MOM. Please try again.');
+                                }
+                            }}
+                        />
+                    )}
                     {popupContext.milestoneIndex === 4 && popupContext.taskName === 'DQC 2 submission' && (
                         <PopupDqcSubmission
                             leadId={projectId}
@@ -1397,10 +1511,84 @@ export default function ProjectDetailPage() {
                             />
                         )
                     )}
-                    {popupContext.milestoneIndex === 4 && popupContext.taskName !== 'DQC 2 submission' && popupContext.taskName !== 'DQC 2 approval' && popupContext.taskName !== 'DQC 2 approval ' && (
+                    {popupContext.milestoneIndex === 4 &&
+                        popupContext.taskName !== 'DQC 2 submission' &&
+                        popupContext.taskName !== 'DQC 2 approval' &&
+                        popupContext.taskName !== 'DQC 2 approval ' &&
+                        popupContext.taskName !== 'Material selection meeting + quotation discussion' &&
+                        popupContext.taskName !== 'Material selection meeting completed' && (
                         <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(4, popupContext.taskName); closePopup(); }} />
                     )}
-                    {popupContext.milestoneIndex === 5 && popupContext.taskName !== 'meeting completed & 40% payment request' && (
+                    {popupContext.milestoneIndex === 5 && popupContext.taskName === 'Design sign off' && (
+                        <PopupFirstCutDesign
+                            designUploadFiles={designUploadFiles}
+                            designFileInputRef={designFileInputRef}
+                            openDesignFileUpload={openDesignFileUpload}
+                            onDesignFilesSelected={onDesignFilesSelected}
+                            onDesignDrop={onDesignDrop}
+                            onDesignDragOver={onDesignDragOver}
+                            removeDesignFile={removeDesignFile}
+                            onSubmit={async (meta) => {
+                                if (!projectId) return;
+                                try {
+                                    if (designUploadFiles.length > 0 && sessionId) {
+                                        const fd = new FormData();
+                                        designUploadFiles.forEach((f) =>
+                                            fd.append('files', f),
+                                        );
+                                        await fetch(
+                                            `${API}/api/leads/${projectId}/first-cut-design-upload`,
+                                            {
+                                                method: 'POST',
+                                                headers: {
+                                                    Authorization: `Bearer ${sessionId}`,
+                                                },
+                                                body: fd,
+                                            },
+                                        );
+                                    }
+
+                                    recordTaskComplete(
+                                        5,
+                                        'Design sign off',
+                                        {
+                                            description:
+                                                'Design sign off meeting design uploaded and request submitted.',
+                                            details:
+                                                designUploadFiles.length > 0
+                                                    ? {
+                                                          kind: 'file_upload',
+                                                          fileName:
+                                                              designUploadFiles
+                                                                  .map(
+                                                                      (f) =>
+                                                                          f.name,
+                                                                  )
+                                                                  .join(', '),
+                                                          status: 'Uploaded',
+                                                      }
+                                                    : undefined,
+                                            meta: {
+                                                meetingDate: meta?.meetingDate || null,
+                                                meetingTime: meta?.meetingTime || null,
+                                            },
+                                        },
+                                    );
+                                    setDesignUploadFiles([]);
+                                    closePopup();
+                                } catch (err) {
+                                    console.error(
+                                        'design-signoff upload failed',
+                                        err,
+                                    );
+                                    alert(
+                                        'Failed to upload design files. Please try again.',
+                                    );
+                                }
+                            }}
+                        />
+                    )}
+                    {popupContext.milestoneIndex === 5 && popupContext.taskName !== 'meeting completed & 40% payment request' && popupContext.taskName !== 'Design sign off' && (
                         <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(5, popupContext.taskName); closePopup(); }} />
                     )}
                     {popupContext.milestoneIndex === 5 && popupContext.taskName === 'meeting completed & 40% payment request' && (

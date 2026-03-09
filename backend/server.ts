@@ -3022,6 +3022,21 @@ app.post(
       };
       await addLeadHistoryEvent(leadId, ev);
 
+      // If this is a D1 upload (not D2 masking), also mark the "D1 files upload" task complete for milestone 0
+      if (!isD2) {
+        try {
+          await pool.query(
+            `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+             VALUES (?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
+            [leadId, 0, "D1 files upload", now],
+          );
+        } catch (completeErr) {
+          console.error("mark D1 files upload complete error", completeErr);
+          // do not fail the upload because of completion bookkeeping
+        }
+      }
+
       return res.status(201).json({ ok: true });
     } catch (err) {
       console.error("lead upload error", err);

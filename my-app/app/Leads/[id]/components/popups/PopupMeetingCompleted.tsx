@@ -50,11 +50,19 @@ export default function PopupMeetingCompleted({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
                 <div>
                     <label className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-1.5">Meeting Participants</label>
-                    <input type="text" readOnly className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-gray-700 bg-gray-50 text-sm" value="John Doe (Client), Sarah Miller (Lead Architect), Mike Ross (PM)" />
+                    <input
+                        type="text"
+                        className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-gray-700 bg-white text-sm"
+                        placeholder="Enter participants (e.g. John Doe – Client, Sarah Miller – Lead)"
+                    />
                 </div>
                 <div>
                     <label className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-1.5">Date / Time</label>
-                    <input type="text" readOnly className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-gray-700 bg-gray-50 text-sm" value="Oct 24, 2023 | 10:30 AM - 11:45 AM (GMT +5:30)" />
+                    <input
+                        type="text"
+                        className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-gray-700 bg-white text-sm"
+                        placeholder="Enter date & time (e.g. Oct 24, 2023 | 10:30 AM – 11:45 AM)"
+                    />
                 </div>
             </div>
             <div className="mb-6">
