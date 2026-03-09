@@ -38,7 +38,7 @@ app.get("/api/health", (_req, res) => {
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "root",
+  password: process.env.DB_PASSWORD || "root@root",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -429,14 +429,13 @@ function toLeadRow(payload: any) {
     formData.sales_lead_name ||
     fetched.sales_lead_name ||
     "Unnamed";
+  // Sales closure: FULL_10% → 10-20%; TOKEN, PARTIAL, or any other (e.g. Select) → Pre 10%
   const payment =
     formData.payment_received || payload?.payment_received || "";
   const stage =
     payment === "FULL_10%"
       ? "10-20%"
-      : payment === "PARTIAL" || payment === "TOKEN"
-        ? "Pre 10%"
-        : formData.status_of_project || payload?.status_of_project || "Active";
+      : "Pre 10%";
 
   return {
     pid: "", // you can generate a PID here if needed
