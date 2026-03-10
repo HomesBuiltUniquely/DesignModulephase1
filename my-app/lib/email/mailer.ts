@@ -14,7 +14,6 @@ const paymentSmtpPass = process.env.PAYMENT_SMTP_PASS;
 const paymentMailFrom = process.env.PAYMENT_MAIL_FROM || paymentSmtpUser;
 
 if (!smtpHost || !smtpUser || !smtpPass) {
-  // eslint-disable-next-line no-console
   console.warn('[mailer] SMTP configuration is incomplete. Emails will fail until env is set.');
 }
 
@@ -49,9 +48,12 @@ export type MailAttachment = {
 
 export type SendMailOptions = {
   to: string | string[];
+  cc?: string | string[];
+  bcc?: string | string[];
+  replyTo?: string;
   subject: string;
   html: string;
-  cc?: string | string[];
+  text?: string;
   attachments?: MailAttachment[];
 };
 
@@ -63,8 +65,12 @@ export async function sendMail(options: SendMailOptions) {
   const msg: nodemailer.SendMailOptions = {
     from: mailFrom,
     to: options.to,
+    cc: options.cc,
+    bcc: options.bcc,
+    replyTo: options.replyTo,
     subject: options.subject,
     html: options.html,
+    text: options.text,
   };
   if (options.cc && (Array.isArray(options.cc) ? options.cc.length : options.cc)) {
     msg.cc = options.cc;

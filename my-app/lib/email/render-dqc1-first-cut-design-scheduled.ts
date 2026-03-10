@@ -44,6 +44,11 @@ export function renderDqc1FirstCutDesignScheduledEmail(params: {
 
   const prettyDate = formatDate(meetingDate) || "October 24, 2023";
   const prettyTime = formatTime(meetingTime) || "2:00 PM — 3:00 PM (EST)";
+  const assetBase =
+    process.env.FRONTEND_BASE_URL ||
+    process.env.NEXT_PUBLIC_SITE_URL ||
+    "https://design.hubinterior.com";
+  const heroImageUrl = `${assetBase}/scandanavian.png`;
 
   const signatureName = designerName || "Sarah Mitchell";
   const signatureTitle = designerTitle || "Lead Designer, HUB Interior";
@@ -70,7 +75,9 @@ export function renderDqc1FirstCutDesignScheduledEmail(params: {
               <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
                 <tr>
                   <td style="padding-right:12px;vertical-align:middle;">
-                    <div style="width:36px;height:36px;background-color:#da4b3a;border-radius:10px;display:block;"></div>
+                    <div style="width:36px;height:36px;background-color:#da4b3a;border-radius:10px;display:block;text-align:center;line-height:36px;">
+                      <span style="display:inline-block;color:#ffffff;font-size:11px;font-weight:700;letter-spacing:0.06em;line-height:36px;">HI</span>
+                    </div>
                   </td>
                   <td style="vertical-align:middle;">
                     <div style="text-align:center;">
@@ -102,9 +109,9 @@ export function renderDqc1FirstCutDesignScheduledEmail(params: {
 
         <!-- Image block -->
         <div style="width:100%;height:220px;background-color:#e8e0d0;border-radius:12px;
-          overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.08);margin-bottom:36px;
-          display:flex;align-items:center;justify-content:center;">
-          <span style="font-size:14px;color:#9ca3af;">[Leafy green plant on beige background]</span>
+          overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.08);margin-bottom:36px;">
+          <img src="${heroImageUrl}" alt="First cut design discussion visual"
+            style="display:block;width:100%;height:100%;object-fit:cover;border:0;" />
         </div>
 
         <!-- Meeting details -->
@@ -112,24 +119,24 @@ export function renderDqc1FirstCutDesignScheduledEmail(params: {
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
             <tr>
               <td style="padding:12px 0;border-bottom:1px solid #e0e0e0;">
-                <span style="font-size:13px;font-weight:400;letter-spacing:0.10em;text-transform:uppercase;color:#9ca3af;">
+                <span style="font-size:13px;font-weight:500;letter-spacing:0.10em;text-transform:uppercase;color:#6b7280;">
                   Date
                 </span>
               </td>
               <td style="padding:12px 0;border-bottom:1px solid #e0e0e0;text-align:right;">
-                <span style="font-size:17px;font-weight:400;color:#000000;">
+                <span style="font-size:17px;font-weight:600;color:#1f2937;">
                   ${prettyDate}
                 </span>
               </td>
             </tr>
             <tr>
               <td style="padding:12px 0;">
-                <span style="font-size:13px;font-weight:400;letter-spacing:0.10em;text-transform:uppercase;color:#9ca3af;">
+                <span style="font-size:13px;font-weight:500;letter-spacing:0.10em;text-transform:uppercase;color:#6b7280;">
                   Time
                 </span>
               </td>
               <td style="padding:12px 0;text-align:right;">
-                <span style="font-size:17px;font-weight:400;color:#000000;">
+                <span style="font-size:17px;font-weight:600;color:#1f2937;">
                   ${prettyTime}
                 </span>
               </td>
@@ -199,13 +206,13 @@ export function renderDqc1FirstCutDesignScheduledEmail(params: {
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-bottom:24px;font-size:13px;color:#9ca3af;">
           <tr>
             <td style="padding:0 16px 8px 0;vertical-align:middle;">
-              <span style="margin-right:4px;">🌐</span>hubinterior.com
+              <span style="margin-right:4px;">📞</span>+91 8898891117
             </td>
             <td style="padding:0 16px 8px 0;vertical-align:middle;">
-              <span style="margin-right:4px;">✉</span>hello@hubinterior.com
+              <span style="margin-right:4px;">✉</span>communication@hubinterior.com
             </td>
             <td style="padding:0 0 8px 0;vertical-align:middle;">
-              <span style="margin-right:4px;">📍</span>New York, NY
+              <span style="margin-right:4px;">📍</span>Bangalore, Karnataka
             </td>
           </tr>
         </table>
@@ -230,4 +237,3 @@ export function renderDqc1FirstCutDesignScheduledEmail(params: {
 
   return html;
 }
-

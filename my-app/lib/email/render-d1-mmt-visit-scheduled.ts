@@ -38,6 +38,11 @@ export function renderD1MmtVisitScheduledEmail(params: {
 
   const prettyDate = formatDate(visitDate) || "October 24, 2023";
   const prettyTime = formatTime(visitTime) || "10:00 AM";
+  const assetBase =
+    process.env.FRONTEND_BASE_URL ||
+    process.env.NEXT_PUBLIC_SITE_URL ||
+    "https://design.hubinterior.com";
+  const bannerImageUrl = `${assetBase}/profile1.jpg`;
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -58,17 +63,10 @@ export function renderD1MmtVisitScheduledEmail(params: {
         <div style="text-align:center;margin-bottom:32px;">
           <div style="display:inline-block;">
             <div style="width:44px;height:44px;background-color:#da4b3a;border-radius:10px;
-              display:block;margin:0 auto 12px auto;">
-              <div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;">
-                <!-- Compass / divider style icon -->
-                <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden
-                  style="fill:none;stroke:#ffffff;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;">
-                  <circle cx="12" cy="6" r="1.6" fill="#ffffff" />
-                  <path d="M12 7.8 8.2 18.5" />
-                  <path d="M12 7.8 15.8 18.5" />
-                  <path d="M9.2 14.5h5.6" />
-                </svg>
-              </div>
+              display:block;margin:0 auto 12px auto;text-align:center;line-height:44px;">
+              <span style="display:inline-block;color:#ffffff;font-weight:700;font-size:13px;letter-spacing:0.08em;line-height:44px;">
+                HI
+              </span>
             </div>
             <p style="margin:0;font-size:17px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#333333;">
               HUB Interior
@@ -201,12 +199,10 @@ export function renderD1MmtVisitScheduledEmail(params: {
           </p>
         </div>
 
-        <!-- Placeholder visual banner -->
-        <div style="width:100%;height:200px;background-color:#f5f0e8;border-radius:18px;
-          display:flex;align-items:center;justify-content:center;margin-bottom:24px;">
-          <span style="font-size:13px;color:#9ca3af;">
-            [Wooden desk, blueprints, mug, office chair]
-          </span>
+        <!-- Visual banner -->
+        <div style="width:100%;margin-bottom:24px;">
+          <img src="${bannerImageUrl}" alt="Site measurement preview"
+            style="display:block;width:100%;max-height:220px;object-fit:cover;border-radius:18px;border:0;" />
         </div>
 
         <!-- Closing -->
@@ -219,10 +215,13 @@ export function renderD1MmtVisitScheduledEmail(params: {
       <!-- Footer -->
       <footer style="padding:24px 40px;background-color:#f7f4ef;text-align:center;">
         <p style="margin:0 0 4px 0;font-size:13px;color:#6b7280;">
-          Contact us: support@hubinterior.com · +91 (80) 1234‑5678
+          Contact email: communication@hubinterior.com
         </p>
         <p style="margin:0 0 12px 0;font-size:13px;color:#6b7280;">
-          123 Design District, High‑Rise Blvd, Metro City
+          Phone no: +91 8898891117
+        </p>
+        <p style="margin:0 0 12px 0;font-size:13px;color:#6b7280;">
+          Address: HBR Layout, Bangalore, 1st Floor, 6th Cross Rd, 1st Stage, HBR Layout 4th Block, HBR Layout, Bengaluru, Karnataka 560044
         </p>
         <div style="padding-top:8px;border-top:1px solid #e5e7eb;">
           <p style="margin:0;font-size:10px;color:#9ca3af;">
@@ -237,4 +236,3 @@ export function renderD1MmtVisitScheduledEmail(params: {
 
   return html;
 }
-

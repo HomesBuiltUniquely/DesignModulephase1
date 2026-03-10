@@ -31,6 +31,11 @@ export function renderDqc1DesignFreezingScheduledEmail(params: {
 
   const prettyDate = formatDate(meetingDate) || "Tuesday, October 24, 2023";
   const prettyTime = formatTime(meetingTime) || "10:30 AM — 11:30 AM (EST)";
+  const assetBase =
+    process.env.FRONTEND_BASE_URL ||
+    process.env.NEXT_PUBLIC_SITE_URL ||
+    "https://design.hubinterior.com";
+  const heroImageUrl = `${assetBase}/modernContemporary.png`;
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -53,11 +58,9 @@ export function renderDqc1DesignFreezingScheduledEmail(params: {
             <td align="center">
               <div style="display:inline-block;">
                 <div style="width:40px;height:40px;border-radius:9999px;background-color:#d62323;
-                  display:flex;align-items:center;justify-content:center;margin:0 auto 10px auto;
+                  text-align:center;line-height:40px;margin:0 auto 10px auto;
                   box-shadow:0 4px 10px rgba(0,0,0,0.18);">
-                  <span style="width:22px;height:22px;border-radius:9999px;border:1px solid #ffffff;
-                    display:flex;align-items:center;justify-content:center;
-                    color:#ffffff;font-size:11px;font-weight:600;">A</span>
+                  <span style="display:inline-block;color:#ffffff;font-size:12px;font-weight:700;letter-spacing:0.08em;line-height:40px;">HI</span>
                 </div>
                 <p style="margin:0;text-align:center;font-size:12px;letter-spacing:0.28em;
                   text-transform:uppercase;color:#111111;">
@@ -130,14 +133,11 @@ export function renderDqc1DesignFreezingScheduledEmail(params: {
           </table>
         </div>
 
-        <!-- Hero image placeholder -->
+        <!-- Hero image -->
         <div style="width:100%;height:190px;border-radius:18px;overflow:hidden;
-          background:linear-gradient(90deg,#2f2b2a,#3b3634,#262220);
-          display:flex;align-items:center;justify-content:center;
           box-shadow:0 10px 24px rgba(0,0,0,0.18);margin-bottom:24px;">
-          <span style="font-size:12px;letter-spacing:0.18em;text-transform:uppercase;color:#a3a3a3;">
-            Final living room render placeholder
-          </span>
+          <img src="${heroImageUrl}" alt="Final living room render"
+            style="display:block;width:100%;height:100%;object-fit:cover;border:0;" />
         </div>
 
         <!-- Agenda card -->
@@ -204,17 +204,17 @@ export function renderDqc1DesignFreezingScheduledEmail(params: {
           <tr>
             <td style="vertical-align:top;">
               <p style="margin:0 0 4px 0;">Warm regards,</p>
-              <p style="margin:0 0 2px 0;font-weight:600;color:#111827;">Julian Vance</p>
-              <p style="margin:0;font-size:11px;color:#d62323;">Lead Interior Architect</p>
+              <p style="margin:0 0 2px 0;font-weight:600;color:#111827;">Team HUB Interior</p>
+              <p style="margin:0;font-size:11px;color:#d62323;">Design Team</p>
             </td>
             <td style="vertical-align:top;text-align:right;">
               <p style="margin:0 0 4px 0;">
                 <span style="font-size:13px;color:#9ca3af;margin-right:4px;">☎</span>
-                <span style="font-size:12px;color:#4b5563;">+1 (555) 012-3456</span>
+                <span style="font-size:12px;color:#4b5563;">+91 8898891117</span>
               </p>
               <p style="margin:0;">
                 <span style="font-size:13px;color:#9ca3af;margin-right:4px;">✉</span>
-                <span style="font-size:12px;color:#4b5563;">julian@hubinteriors.design</span>
+                <span style="font-size:12px;color:#4b5563;">communication@hubinterior.com</span>
               </p>
             </td>
           </tr>
@@ -224,7 +224,7 @@ export function renderDqc1DesignFreezingScheduledEmail(params: {
 
         <p style="margin:0;font-size:10px;letter-spacing:0.16em;text-transform:uppercase;
           color:#b3b3b3;text-align:center;">
-          HUB INTERIOR DESIGN STUDIO · NEW YORK · LONDON · DUBAI
+          HBR LAYOUT, BANGALORE, 1ST FLOOR, 6TH CROSS RD, 1ST STAGE, HBR LAYOUT 4TH BLOCK, HBR LAYOUT, BENGALURU, KARNATAKA 560044
         </p>
       </div>
     </div>
@@ -234,4 +234,3 @@ export function renderDqc1DesignFreezingScheduledEmail(params: {
 
   return html;
 }
-

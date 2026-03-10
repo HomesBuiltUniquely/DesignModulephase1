@@ -38,7 +38,7 @@ app.get("/api/health", (_req, res) => {
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "root",
+  password: process.env.DB_PASSWORD || "Vk@root1",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -2155,7 +2155,11 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
       } else if (emailRoutePath === "/api/email/send-dqc1-first-cut-design-scheduled") {
         try {
           const [rows] = await pool.query(
-            "SELECT project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?",
+            `SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload,
+                    u.name as assignedDesignerName, u.profileImage as assignedDesignerAvatar, u.role as assignedDesignerRole
+             FROM leads l
+             LEFT JOIN users u ON u.id = l.assigned_designer_id
+             WHERE l.id = ?`,
             [id],
           );
           const row = (rows as any[])[0];
@@ -2173,6 +2177,25 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               payload?.form?.customer_name ||
               row.projectName ||
               "Customer";
+            const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
+            const designerName =
+              row.assignedDesignerName ||
+              formData.designer_name ||
+              payload?.designer_name ||
+              "Design Team";
+            const designerTitleRaw =
+              formData.designer_title ||
+              payload?.designer_title ||
+              row.assignedDesignerRole ||
+              "Lead Designer";
+            const designerTitle = String(designerTitleRaw)
+              .replace(/_/g, " ")
+              .replace(/\b\w/g, (c: string) => c.toUpperCase());
+            const designerAvatarUrl =
+              row.assignedDesignerAvatar ||
+              formData.designer_avatar_url ||
+              payload?.designer_avatar_url ||
+              null;
 
             if (customerEmail) {
               const meetingDate = meta?.meetingDate || null;
@@ -2199,6 +2222,9 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   meetingDate,
                   meetingTime,
                   ...(attachments.length ? { attachments } : {}),
+                  designerName,
+                  designerTitle,
+                  designerAvatarUrl,
                 }),
               }).catch((err) => {
                 console.error("DQC1 first-cut email trigger error (non-fatal)", {
