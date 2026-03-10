@@ -41,11 +41,18 @@ const paymentTransporter =
       })
     : null;
 
+export type MailAttachment = {
+  filename: string;
+  content: string | Buffer;
+  encoding?: 'base64';
+};
+
 export type SendMailOptions = {
   to: string | string[];
   subject: string;
   html: string;
   cc?: string | string[];
+  attachments?: MailAttachment[];
 };
 
 export async function sendMail(options: SendMailOptions) {
@@ -61,6 +68,13 @@ export async function sendMail(options: SendMailOptions) {
   };
   if (options.cc && (Array.isArray(options.cc) ? options.cc.length : options.cc)) {
     msg.cc = options.cc;
+  }
+  if (options.attachments && options.attachments.length > 0) {
+    msg.attachments = options.attachments.map((a) => ({
+      filename: a.filename,
+      content: a.content,
+      encoding: a.encoding,
+    }));
   }
 
   const info = await transporter.sendMail(msg);
@@ -81,6 +95,13 @@ export async function sendMailForPayment(options: SendMailOptions) {
     };
     if (options.cc && (Array.isArray(options.cc) ? options.cc.length : options.cc)) {
       msg.cc = options.cc;
+    }
+    if (options.attachments && options.attachments.length > 0) {
+      msg.attachments = options.attachments.map((a) => ({
+        filename: a.filename,
+        content: a.content,
+        encoding: a.encoding,
+      }));
     }
     return paymentTransporter.sendMail(msg);
   }

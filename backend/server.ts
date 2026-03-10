@@ -145,6 +145,62 @@ async function uploadLeadFileToS3(leadId: number, filePath: string, originalName
   }
 }
 
+const MAX_EMAIL_ATTACHMENT_SIZE = 15 * 1024 * 1024; // 15MB per file
+
+/** Read a file from disk or S3 and return as base64 for email attachment. */
+async function readUploadAsBase64Attachment(row: {
+  storedPath: string;
+  originalName: string;
+  s3Url?: string | null;
+}): Promise<{ filename: string; content: string; encoding: "base64" } | null> {
+  try {
+    let buf: Buffer;
+    if (row.s3Url && process.env.AWS_ACCESS_KEY_ID) {
+      const url = new URL(row.s3Url);
+      const key = url.pathname.replace(/^\//, "");
+      const obj = await s3.send(new GetObjectCommand({ Bucket: S3_BUCKET, Key: key }));
+      if (!obj.Body) return null;
+      buf = Buffer.from(await obj.Body.transformToByteArray());
+    } else if (fs.existsSync(row.storedPath)) {
+      buf = fs.readFileSync(row.storedPath);
+    } else {
+      return null;
+    }
+    if (buf.length > MAX_EMAIL_ATTACHMENT_SIZE) {
+      console.warn("[email-attach] Skipping large file", row.originalName, buf.length, "bytes");
+      return null;
+    }
+    return {
+      filename: (row.originalName || "attachment").replace(/[^a-zA-Z0-9._-]/g, "_") || "attachment",
+      content: buf.toString("base64"),
+      encoding: "base64",
+    };
+  } catch (err) {
+    console.error("[email-attach] readUploadAsBase64Attachment error", err);
+    return null;
+  }
+}
+
+/** Read multer file from disk and return as base64 attachment. */
+function readMulterFileAsAttachment(file: Express.Multer.File): { filename: string; content: string; encoding: "base64" } | null {
+  try {
+    if (!fs.existsSync(file.path)) return null;
+    const buf = fs.readFileSync(file.path);
+    if (buf.length > MAX_EMAIL_ATTACHMENT_SIZE) {
+      console.warn("[email-attach] Skipping large multer file", file.originalname, buf.length, "bytes");
+      return null;
+    }
+    return {
+      filename: (file.originalname || "attachment").replace(/[^a-zA-Z0-9._-]/g, "_") || "attachment",
+      content: buf.toString("base64"),
+      encoding: "base64",
+    };
+  } catch (err) {
+    console.error("[email-attach] readMulterFileAsAttachment error", err);
+    return null;
+  }
+}
+
 async function triggerCustomerEmailForLead(leadId: number, emailRoutePath: string): Promise<void> {
   try {
     const [rows] = await pool.query(
@@ -1748,14 +1804,53 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         // 10% payment collection: same dual emails as DQC 1 approval (fallback when marked complete manually)
         try {
           const [leadRows] = await pool.query(
-            `SELECT l.pid, l.project_name as projectName, l.client_email as clientEmail, l.payload,
+            `SELECT l.pid, l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
                     u.id as designerId, u.email as designerEmail, u.name as designerName
              FROM leads l
              LEFT JOIN users u ON u.id = l.assigned_designer_id
              WHERE l.id = ?`,
             [id],
           );
-          const leadRow = (leadRows as any[])[0];
+          let leadRow = (leadRows as any[])[0];
+          let designerEmail = leadRow?.designerEmail || null;
+          let designerName = leadRow?.designerName || "Designer";
+
+          if (!designerEmail && leadRow) {
+            const [d1Rows] = await pool.query(
+              `SELECT u.email as designerEmail, u.name as designerName
+               FROM lead_d1_assignments a
+               LEFT JOIN users u ON u.id = a.assigned_to_user_id
+               WHERE a.lead_id = ? ORDER BY a.created_at DESC LIMIT 1`,
+              [id],
+            );
+            const d1Row = (d1Rows as any[])[0];
+            if (d1Row?.designerEmail) {
+              designerEmail = d1Row.designerEmail;
+              designerName = d1Row.designerName || designerName;
+            }
+          }
+          if (!designerEmail && leadRow) {
+            let payload: any = {};
+            try {
+              payload = leadRow.payload ? JSON.parse(leadRow.payload) : {};
+            } catch {
+              payload = {};
+            }
+            const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
+            const dn = formData.designer_name || formData.designerName || payload.designer_name || payload.designerName || "";
+            if (dn) {
+              const [uRows] = await pool.query(
+                "SELECT email, name FROM users WHERE (name = ? OR email = ?) AND role IN ('designer', 'design_manager') LIMIT 1",
+                [dn, dn],
+              );
+              const uRow = (uRows as any[])[0];
+              if (uRow) {
+                designerEmail = uRow.email;
+                designerName = uRow.name || designerName;
+              }
+            }
+          }
+
           if (leadRow) {
             let payload: any = {};
             try {
@@ -1781,10 +1876,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const ecName =
               payload.experience_center ||
               payload?.form?.experience_center ||
-              leadRow.experienceCenter ||
               "Experience Center";
-            const designerName = leadRow.designerName || "Designer";
-            const designerEmail = leadRow.designerEmail || null;
             const projectId = leadRow.pid || "";
             const propertyType = formData.property_configuration || "";
             const rawOrderValue = formData.order_value ?? payload.order_value ?? null;
@@ -1798,6 +1890,11 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               }
             }
 
+            if (!designerEmail) {
+              console.warn("[10P_COLLECTION_DUAL] Skipping internal email: no designer email (tried assigned_designer_id, lead_d1_assignments, designer_name lookup)", {
+                leadId: id,
+              });
+            }
             if (designerEmail && customerName && designerName && ecName) {
               fetch(`${FRONTEND_BASE}/api/email/send-ten-percent-payment-internal`, {
                 method: "POST",
@@ -1860,8 +1957,18 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             "SELECT email, name FROM users WHERE role = 'project_manager' AND email IS NOT NULL ORDER BY id ASC LIMIT 1",
           );
           const pmRow = (pmRows as any[])[0];
-          const pmEmail = pmRow?.email || null;
-          const pmName = pmRow?.name || null;
+          let pmEmail = pmRow?.email || null;
+          let pmName = pmRow?.name || null;
+          if (!pmEmail) {
+            const [mmtRows] = await pool.query(
+              "SELECT email, name FROM users WHERE role IN ('mmt_manager', 'mmt_executive') AND email IS NOT NULL ORDER BY id ASC LIMIT 1",
+            );
+            const mmtRow = (mmtRows as any[])[0];
+            if (mmtRow) {
+              pmEmail = mmtRow.email;
+              pmName = mmtRow.name || "MMT";
+            }
+          }
           if (row) {
             let payload: any = {};
             try {
@@ -1996,6 +2103,28 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const dqcUser = (dqcRows as any[])[0];
 
             if (dqcUser && dqcUser.email && customerName && ecName && designerName && dqcUser.name) {
+              const [drawRows] = await pool.query(
+                `SELECT stored_path as storedPath, original_name as originalName, s3_url as s3Url
+                 FROM lead_uploads WHERE lead_id = ? AND upload_type = 'dqc2_drawing' AND status = 'approved' ORDER BY id DESC LIMIT 1`,
+                [id],
+              );
+              const [quotRows] = await pool.query(
+                `SELECT stored_path as storedPath, original_name as originalName, s3_url as s3Url
+                 FROM lead_uploads WHERE lead_id = ? AND upload_type = 'dqc2_quotation' AND status = 'approved' ORDER BY id DESC LIMIT 1`,
+                [id],
+              );
+              const draw = (drawRows as any[])[0];
+              const quot = (quotRows as any[])[0];
+              const attachments: { filename: string; content: string; encoding: "base64" }[] = [];
+              if (draw) {
+                const att = await readUploadAsBase64Attachment({ storedPath: draw.storedPath, originalName: draw.originalName, s3Url: draw.s3Url });
+                if (att) attachments.push(att);
+              }
+              if (quot) {
+                const att = await readUploadAsBase64Attachment({ storedPath: quot.storedPath, originalName: quot.originalName, s3Url: quot.s3Url });
+                if (att) attachments.push(att);
+              }
+
               fetch(`${FRONTEND_BASE}/api/email/send-dqc2-final-design-submission-internal`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -2006,6 +2135,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   designerName,
                   dqcRepName: dqcUser.name || "DQC Team",
                   projectValue: String(projectValue || ""),
+                  ...(attachments.length ? { attachments } : {}),
                 }),
               }).catch((err) => {
                 console.error("DQC2 submission internal email trigger error (non-fatal)", {
@@ -2048,6 +2178,18 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               const meetingDate = meta?.meetingDate || null;
               const meetingTime = meta?.meetingTime || null;
 
+              const [fcdRows] = await pool.query(
+                `SELECT stored_path as storedPath, original_name as originalName, s3_url as s3Url
+                 FROM lead_uploads WHERE lead_id = ? AND upload_type = 'first_cut_design' AND status = 'approved'
+                 ORDER BY id DESC`,
+                [id],
+              );
+              const attachments: { filename: string; content: string; encoding: "base64" }[] = [];
+              for (const r of (fcdRows as any[]) || []) {
+                const att = await readUploadAsBase64Attachment({ storedPath: r.storedPath, originalName: r.originalName, s3Url: r.s3Url });
+                if (att) attachments.push(att);
+              }
+
               fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -2056,6 +2198,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   customerName,
                   meetingDate,
                   meetingTime,
+                  ...(attachments.length ? { attachments } : {}),
                 }),
               }).catch((err) => {
                 console.error("DQC1 first-cut email trigger error (non-fatal)", {
@@ -2072,6 +2215,55 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             route: emailRoutePath,
             error: err,
           });
+        }
+      } else if (emailRoutePath === "/api/email/send-project-design-timeline") {
+        try {
+          const [rows] = await pool.query(
+            "SELECT project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?",
+            [id],
+          );
+          const row = (rows as any[])[0];
+          if (row?.clientEmail) {
+            let payload: any = {};
+            try {
+              payload = row.payload ? JSON.parse(row.payload) : {};
+            } catch {
+              payload = {};
+            }
+            const customerEmail =
+              row.clientEmail || payload.email || payload?.form?.email || null;
+            const customerName =
+              payload.customer_name ||
+              payload?.form?.customer_name ||
+              row.projectName ||
+              "Customer";
+
+            const [momRows] = await pool.query(
+              `SELECT stored_path as storedPath, original_name as originalName, s3_url as s3Url
+               FROM lead_uploads WHERE lead_id = ? AND upload_type IN ('mom_attachment', 'mom_minutes') AND status = 'approved'
+               ORDER BY uploaded_at DESC LIMIT 10`,
+              [id],
+            );
+            const attachments: { filename: string; content: string; encoding: "base64" }[] = [];
+            for (const r of (momRows as any[]) || []) {
+              const att = await readUploadAsBase64Attachment({ storedPath: r.storedPath, originalName: r.originalName, s3Url: r.s3Url });
+              if (att) attachments.push(att);
+            }
+
+            fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                to: customerEmail,
+                customerName,
+                ...(attachments.length ? { attachments } : {}),
+              }),
+            }).catch((err) => {
+              console.error("Project design timeline email trigger error (non-fatal)", { leadId: id, error: err });
+            });
+          }
+        } catch (err) {
+          console.error("Project design timeline email prepare error (non-fatal)", { leadId: id, error: err });
         }
       } else if (emailRoutePath === "/api/email/send-d1-mmt-visit-scheduled") {
         // Special-case D1 MMT visit so we can include visit details (date, time, executive)
@@ -2357,6 +2549,18 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const accountNumber = meta?.accountNumber ?? "748305000519";
             const ifscCode = meta?.ifscCode ?? "ICIC0007483";
 
+            const [momRows] = await pool.query(
+              `SELECT stored_path as storedPath, original_name as originalName, s3_url as s3Url
+               FROM lead_uploads WHERE lead_id = ? AND upload_type IN ('mom_attachment', 'mom_minutes') AND status = 'approved'
+               ORDER BY uploaded_at DESC LIMIT 10`,
+              [id],
+            );
+            const attachments: { filename: string; content: string; encoding: "base64" }[] = [];
+            for (const r of (momRows as any[]) || []) {
+              const att = await readUploadAsBase64Attachment({ storedPath: r.storedPath, originalName: r.originalName, s3Url: r.s3Url });
+              if (att) attachments.push(att);
+            }
+
             if (customerEmail) {
               fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
                 method: "POST",
@@ -2369,6 +2573,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   accountName,
                   accountNumber,
                   ifscCode,
+                  ...(attachments.length ? { attachments } : {}),
                 }),
               }).catch((err) => {
                 console.error("40% payment request email trigger error (non-fatal)", {
@@ -2541,6 +2746,19 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               row.projectName ||
               "Customer";
             const designerName = row.designerName || formData.designer_name || formData.designerName || "Team HUB Interiors";
+
+            const [momRows] = await pool.query(
+              `SELECT stored_path as storedPath, original_name as originalName, s3_url as s3Url
+               FROM lead_uploads WHERE lead_id = ? AND upload_type IN ('mom_attachment', 'mom_minutes') AND status = 'approved'
+               ORDER BY uploaded_at DESC LIMIT 10`,
+              [id],
+            );
+            const attachments: { filename: string; content: string; encoding: "base64" }[] = [];
+            for (const r of (momRows as any[]) || []) {
+              const att = await readUploadAsBase64Attachment({ storedPath: r.storedPath, originalName: r.originalName, s3Url: r.s3Url });
+              if (att) attachments.push(att);
+            }
+
             fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -2548,6 +2766,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                 to: row.clientEmail,
                 customerName,
                 designerName,
+                ...(attachments.length ? { attachments } : {}),
               }),
             }).catch((err) => {
               console.error("Production approval request email trigger error (non-fatal)", {
@@ -3382,7 +3601,7 @@ app.post(
           );
           const dqcUser = (dqcRows as any[])[0];
 
-          if (dqcUser && dqcUser.email) {
+            if (dqcUser && dqcUser.email) {
             const to = dqcUser.email as string;
 
             const [ccRows] = await pool.query(
@@ -3390,6 +3609,12 @@ app.post(
               [user.id, payload.manager_user_id || null, payload.tdm_user_id || null],
             );
             const ccList = (ccRows as any[]).map((r) => r.email).filter(Boolean);
+
+            const attachments: { filename: string; content: string; encoding: "base64" }[] = [];
+            const drawingAtt = readMulterFileAsAttachment(drawingFile);
+            const quotationAtt = readMulterFileAsAttachment(quotationFile);
+            if (drawingAtt) attachments.push(drawingAtt);
+            if (quotationAtt) attachments.push(quotationAtt);
 
             fetch(`${FRONTEND_BASE}/api/email/send-dqc1-review-request-internal`, {
               method: "POST",
@@ -3402,6 +3627,9 @@ app.post(
                 designerName,
                 projectValue: String(projectValue || ""),
                 dqcRepName: dqcUser.name || "DQC Team",
+                drawingFileName: drawingFile.originalname,
+                quotationFileName: quotationFile.originalname,
+                ...(attachments.length ? { attachments } : {}),
               }),
             }).catch((err) => {
               console.error("DQC1 review request internal email trigger error (non-fatal)", {

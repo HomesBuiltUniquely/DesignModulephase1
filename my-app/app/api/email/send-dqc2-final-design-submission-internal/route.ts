@@ -12,6 +12,7 @@ export async function POST(request: Request) {
     const designerName = body.designerName as string | undefined;
     const dqcRepName = body.dqcRepName as string | undefined;
     const projectValue = body.projectValue as string | number | undefined;
+    const attachments = body.attachments as Array<{ filename: string; content: string; encoding?: 'base64' }> | undefined;
 
     if (!to || !customerName || !ecName || !designerName || !dqcRepName) {
       return NextResponse.json(
@@ -33,7 +34,8 @@ export async function POST(request: Request) {
       subject,
       html,
       ...(cc && cc.length ? { cc } : {}),
-    } as any);
+      attachments: attachments?.length ? attachments : undefined,
+    });
 
     return NextResponse.json({ success: true, messageId: (info as any).messageId });
   } catch (error) {

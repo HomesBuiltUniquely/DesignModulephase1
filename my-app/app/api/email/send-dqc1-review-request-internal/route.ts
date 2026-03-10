@@ -15,6 +15,7 @@ export async function POST(request: Request) {
     const dqcRepName = body.dqcRepName as string | undefined;
     const drawingFileName = body.drawingFileName as string | undefined;
     const quotationFileName = body.quotationFileName as string | undefined;
+    const attachments = body.attachments as Array<{ filename: string; content: string; encoding?: 'base64' }> | undefined;
 
     const hasProjectValue =
       projectValue !== undefined &&
@@ -43,6 +44,7 @@ export async function POST(request: Request) {
       cc,
       subject,
       html,
+      attachments: attachments?.length ? attachments : undefined,
     });
 
     return NextResponse.json({ success: true, messageId: info.messageId });

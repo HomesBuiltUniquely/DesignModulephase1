@@ -12,6 +12,7 @@ export async function POST(request: Request) {
     const designerName = body.designerName as string | undefined;
     const designerTitle = body.designerTitle as string | undefined;
     const designerAvatarUrl = body.designerAvatarUrl as string | undefined;
+    const attachments = body.attachments as Array<{ filename: string; content: string; encoding?: 'base64' }> | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -33,6 +34,7 @@ export async function POST(request: Request) {
       to,
       subject: 'DQC1 – First Cut Design Presentation Scheduled',
       html,
+      attachments: attachments?.length ? attachments : undefined,
     });
 
     return NextResponse.json({ success: true, messageId: info.messageId });

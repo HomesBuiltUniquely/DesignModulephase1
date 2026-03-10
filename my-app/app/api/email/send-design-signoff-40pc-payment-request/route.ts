@@ -12,6 +12,7 @@ export async function POST(request: Request) {
     const accountNumber = body.accountNumber as string | undefined;
     const ifscCode = body.ifscCode as string | undefined;
     const designerName = body.designerName as string | undefined;
+    const attachments = body.attachments as Array<{ filename: string; content: string; encoding?: 'base64' }> | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -33,6 +34,7 @@ export async function POST(request: Request) {
       to,
       subject: 'Design Sign-Off Completed – 40% Milestone',
       html,
+      attachments: attachments?.length ? attachments : undefined,
     });
 
     return NextResponse.json({ success: true, messageId: info.messageId });
