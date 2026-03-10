@@ -488,11 +488,31 @@ export default function ProjectDetailPage() {
             setTimeout(() => setBlockedTaskMessage(null), 3000);
             return;
         }
+
         const milestone = MileStonesArray.MilestonesName[milestoneIndex];
-        if (milestone) {
-            setPopupContext({ milestoneIndex, milestoneName: milestone.name, taskName });
-            if (taskName === 'DQC 1 approval' || taskName === 'DQC 2 approval' || taskName === 'DQC 2 approval ') setDqc1Verdict(null);
+        if (!milestone) return;
+
+        // If this task has a checklist, force the checklist to be completed before showing the popup.
+        const checklistKey = getChecklistKeyForTask(milestoneIndex, taskName);
+        if (checklistKey) {
+            const key = taskKey(milestoneIndex, taskName);
+            const hasCompletedChecklist = completedChecklistKeys.includes(key);
+            if (!hasCompletedChecklist) {
+                setBlockedTaskMessage('Please complete the checklist for this task before opening the popup.');
+                setTimeout(() => setBlockedTaskMessage(null), 3000);
+                // Automatically open the checklist modal to guide the user.
+                setChecklistContext({
+                    milestoneIndex,
+                    milestoneName: milestone.name,
+                    taskName,
+                });
+                return;
+            }
         }
+
+        setPopupContext({ milestoneIndex, milestoneName: milestone.name, taskName });
+        if (taskName === 'DQC 1 approval' || taskName === 'DQC 2 approval' || taskName === 'DQC 2 approval ')
+            setDqc1Verdict(null);
     };
 
 
@@ -1724,7 +1744,13 @@ export default function ProjectDetailPage() {
                         />
                     )}
                     {popupContext.milestoneIndex === 6 && (popupContext.taskName === 'POC mail & Timeline submission' || popupContext.taskName === 'POC mail & Timeline submission ') && (
-                        <PopupPlaceholder message="An automatic mail will be sent to the customer (CX) for POC mail & Timeline submission. The milestone will advance when the mail is sent—no action needed here." />
+                        <PopupPlaceholder
+                            message="POC mail & Timeline submission"
+                            onMarkComplete={() => {
+                                recordTaskComplete(6, 'POC mail & Timeline submission');
+                                closePopup();
+                            }}
+                        />
                     )}
                     {popupContext.milestoneIndex === 6 && popupContext.taskName !== 'Cx approval for production' && popupContext.taskName !== 'POC mail & Timeline submission' && popupContext.taskName !== 'POC mail & Timeline submission ' && (
                         <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(6, popupContext.taskName); closePopup(); }} />

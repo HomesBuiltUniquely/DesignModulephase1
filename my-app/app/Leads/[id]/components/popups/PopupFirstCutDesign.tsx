@@ -11,8 +11,16 @@ type Props = {
   onDesignDrop: (e: React.DragEvent) => void;
   onDesignDragOver: (e: React.DragEvent) => void;
   removeDesignFile: (index: number) => void;
-  /** Send meeting invite + upload; does not complete task or close. Can be called multiple times. */
-  onSubmit?: (meta?: { meetingDate?: string; meetingTime?: string }) => void;
+  /**
+   * Send meeting invite + upload; does not complete task or close.
+   * Can be called multiple times.
+   */
+  onSubmit?: (meta?: {
+    meetingDate?: string;
+    meetingTime?: string;
+    meetingMode?: "online" | "offline";
+    meetingLink?: string;
+  }) => void;
   /** Called when designer marks 100% complete; parent should record task complete and close. */
   onCompleteAndProceed?: () => void;
 };
@@ -34,7 +42,9 @@ export default function PopupFirstCutDesign({
   const [meetingDate, setMeetingDate] = useState("");
   const [meetingTime, setMeetingTime] = useState("");
   const [meetingMode, setMeetingMode] = useState<"online" | "offline">("online");
+  const [meetingLink, setMeetingLink] = useState("");
   const [completionPercent, setCompletionPercent] = useState(0);
+  const isMeetingLinkEmpty = meetingLink.trim().length === 0;
 
   return (
     <div className="w-full">
@@ -58,6 +68,21 @@ export default function PopupFirstCutDesign({
           <div className="text-[14px] font-bold text-black">
             MEETING SCHEDULE
           </div>
+        </div>
+        <div className="px-6 pt-2">
+          <div className="font-bold text-sm text-black mb-1">
+            Meeting link <span className="text-red-500">*</span>
+          </div>
+          <input
+            type="url"
+            placeholder="Paste Google Meet / Teams / Zoom link"
+            className="w-full border border-gray-300 rounded-md p-2 text-sm"
+            value={meetingLink}
+            onChange={(e) => setMeetingLink(e.target.value)}
+          />
+          <p className="mt-1 text-xs text-gray-500">
+            This link is mandatory and will be included in the meeting email.
+          </p>
         </div>
         <div className="flex items-center justify-between gap-2 px-6 py-2">
           <div>
@@ -269,8 +294,16 @@ export default function PopupFirstCutDesign({
         <div className="flex justify-end gap-2 bg-gray-100 px-6 py-3">
           <button
             type="button"
-            onClick={() => onSubmit?.({ meetingDate, meetingTime })}
-            className="bg-blue-500 text-white px-4 h-9 rounded-md flex items-center gap-2 font-bold"
+            onClick={() =>
+              onSubmit?.({
+                meetingDate,
+                meetingTime,
+                meetingMode,
+                meetingLink: meetingLink.trim(),
+              })
+            }
+            disabled={isMeetingLinkEmpty}
+            className="bg-blue-500 text-white px-4 h-9 rounded-md flex items-center gap-2 font-bold disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Send Invite
             <svg
@@ -291,7 +324,7 @@ export default function PopupFirstCutDesign({
           <button
             type="button"
             onClick={() => onCompleteAndProceed?.()}
-            disabled={completionPercent < 100}
+            disabled={completionPercent < 100 || isMeetingLinkEmpty}
             className="bg-green-600 text-white px-4 h-9 rounded-md flex items-center gap-2 font-bold disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Mark 100% complete & proceed

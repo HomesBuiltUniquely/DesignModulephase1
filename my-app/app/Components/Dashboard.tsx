@@ -45,8 +45,16 @@ function getPhaseFromMilestone(
 // Single source for phase bucket: prefer milestone-derived phase, else stage
 function getPhaseBucket(p: LeadshipTypes): string {
     const fromMilestone = getPhaseFromMilestone(p.currentMilestoneIndex, p.currentMilestoneProgress);
+    const fromStage = getStageBucket(p.projectStage);
+
+    // If milestone says "Pre 10%" but sales closure stage is already 10–20% or 20–60%,
+    // trust the stage so new FULL_10% leads appear in the 10–20% bucket.
+    if (fromMilestone === "Pre 10%" && fromStage !== "Pre 10%") {
+        return fromStage;
+    }
+
     if (fromMilestone !== null) return fromMilestone;
-    return getStageBucket(p.projectStage);
+    return fromStage;
 }
 
 // Helper to format backend date strings (ISO) to "dd/MM/yyyy h:mm A"
