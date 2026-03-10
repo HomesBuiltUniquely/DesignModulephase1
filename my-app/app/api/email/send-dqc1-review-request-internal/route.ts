@@ -8,6 +8,7 @@ export async function POST(request: Request) {
 
     const to = body.to as string | undefined;
     const cc = body.cc as string[] | undefined;
+    const attachments = body.attachments as { filename: string; path: string }[] | undefined;
     const customerName = body.customerName as string | undefined;
     const ecName = body.ecName as string | undefined;
     const designerName = body.designerName as string | undefined;
@@ -15,7 +16,6 @@ export async function POST(request: Request) {
     const dqcRepName = body.dqcRepName as string | undefined;
     const drawingFileName = body.drawingFileName as string | undefined;
     const quotationFileName = body.quotationFileName as string | undefined;
-    const attachments = body.attachments as Array<{ filename: string; content: string; encoding?: 'base64' }> | undefined;
 
     const hasProjectValue =
       projectValue !== undefined &&
@@ -44,7 +44,7 @@ export async function POST(request: Request) {
       cc,
       subject,
       html,
-      attachments: attachments?.length ? attachments : undefined,
+      ...(attachments && attachments.length ? { attachments } : {}),
     });
 
     return NextResponse.json({ success: true, messageId: info.messageId });

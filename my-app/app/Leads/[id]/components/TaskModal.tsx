@@ -19,6 +19,11 @@ export default function TaskModal({ context, onClose, children }: Props) {
   const isDqcSubmission =
     context.taskName === "DQC 1 submission - dwg + quotation" ||
     context.taskName === "DQC 2 submission";
+  const contentClass = isDqcApproval
+    ? "flex-1 overflow-y-auto min-h-0 flex flex-col"
+    : isDqcSubmission
+      ? "flex-1 overflow-y-auto min-h-0"
+      : "overflow-y-auto";
   const modalTitle =
     context.milestoneIndex === 1 && context.taskName === "meeting completed"
       ? "Meeting Scheduled"
@@ -47,7 +52,7 @@ export default function TaskModal({ context, onClose, children }: Props) {
           </div>
         )}
         <div
-          className={`flex-1 overflow-y-auto min-h-0 ${isDqcApproval ? "flex flex-col" : ""}`}
+          className={contentClass}
         >
           {children}
         </div>

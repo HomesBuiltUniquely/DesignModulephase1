@@ -8,7 +8,6 @@ export async function POST(request: Request) {
     const to = body.to as string | undefined;
     const customerName = body.customerName as string | undefined;
     const designerName = body.designerName as string | undefined;
-    const attachments = body.attachments as Array<{ filename: string; content: string; encoding?: 'base64' }> | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -26,7 +25,6 @@ export async function POST(request: Request) {
       to,
       subject: 'Final Approval Required – Production Initiation',
       html,
-      attachments: attachments?.length ? attachments : undefined,
     });
 
     return NextResponse.json({ success: true, messageId: info.messageId });

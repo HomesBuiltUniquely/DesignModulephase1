@@ -14,6 +14,7 @@ const paymentSmtpPass = process.env.PAYMENT_SMTP_PASS;
 const paymentMailFrom = process.env.PAYMENT_MAIL_FROM || paymentSmtpUser;
 
 if (!smtpHost || !smtpUser || !smtpPass) {
+  // eslint-disable-next-line no-console
   console.warn('[mailer] SMTP configuration is incomplete. Emails will fail until env is set.');
 }
 
@@ -40,21 +41,16 @@ const paymentTransporter =
       })
     : null;
 
-export type MailAttachment = {
-  filename: string;
-  content: string | Buffer;
-  encoding?: 'base64';
-};
-
 export type SendMailOptions = {
   to: string | string[];
-  cc?: string | string[];
-  bcc?: string | string[];
-  replyTo?: string;
   subject: string;
   html: string;
-  text?: string;
-  attachments?: MailAttachment[];
+  cc?: string | string[];
+  /**
+   * Optional attachments for this email.
+   * We pass these through to Nodemailer as-is.
+   */
+  attachments?: { filename: string; path: string }[];
 };
 
 export async function sendMail(options: SendMailOptions) {
@@ -65,22 +61,14 @@ export async function sendMail(options: SendMailOptions) {
   const msg: nodemailer.SendMailOptions = {
     from: mailFrom,
     to: options.to,
-    cc: options.cc,
-    bcc: options.bcc,
-    replyTo: options.replyTo,
     subject: options.subject,
     html: options.html,
-    text: options.text,
+    ...(options.attachments && options.attachments.length
+      ? { attachments: options.attachments }
+      : {}),
   };
   if (options.cc && (Array.isArray(options.cc) ? options.cc.length : options.cc)) {
     msg.cc = options.cc;
-  }
-  if (options.attachments && options.attachments.length > 0) {
-    msg.attachments = options.attachments.map((a) => ({
-      filename: a.filename,
-      content: a.content,
-      encoding: a.encoding,
-    }));
   }
 
   const info = await transporter.sendMail(msg);
@@ -98,16 +86,12 @@ export async function sendMailForPayment(options: SendMailOptions) {
       to: options.to,
       subject: options.subject,
       html: options.html,
+      ...(options.attachments && options.attachments.length
+        ? { attachments: options.attachments }
+        : {}),
     };
     if (options.cc && (Array.isArray(options.cc) ? options.cc.length : options.cc)) {
       msg.cc = options.cc;
-    }
-    if (options.attachments && options.attachments.length > 0) {
-      msg.attachments = options.attachments.map((a) => ({
-        filename: a.filename,
-        content: a.content,
-        encoding: a.encoding,
-      }));
     }
     return paymentTransporter.sendMail(msg);
   }

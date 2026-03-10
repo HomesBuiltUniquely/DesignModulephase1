@@ -7,7 +7,6 @@ export async function POST(request: Request) {
     const body = await request.json();
     const to = body.to as string | undefined;
     const customerName = body.customerName as string | undefined;
-    const attachments = body.attachments as Array<{ filename: string; content: string; encoding?: 'base64' }> | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -22,7 +21,6 @@ export async function POST(request: Request) {
       to,
       subject: 'Your Project Design Timeline – HUB Interior',
       html,
-      attachments: attachments?.length ? attachments : undefined,
     });
 
     return NextResponse.json({ success: true, messageId: info.messageId });

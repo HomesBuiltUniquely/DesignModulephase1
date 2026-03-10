@@ -121,6 +121,18 @@ function getNextAction(bucket: string): string {
     return "Continue design";
 }
 
+// Milestone options for the Filter dropdown (Design Phase table)
+const MILESTONE_FILTER_OPTIONS: { value: string; label: string }[] = [
+    { value: "", label: "All milestones" },
+    { value: "D1 SITE MEASUREMENT", label: "D1 SITE MEASUREMENT" },
+    { value: "DQC1", label: "DQC1" },
+    { value: "10% PAYMENT", label: "10% PAYMENT" },
+    { value: "D2 SITE MASKING", label: "D2 SITE MASKING" },
+    { value: "DQC2", label: "DQC2" },
+    { value: "40% PAYMENT", label: "40% PAYMENT" },
+    { value: "PUSH TO PRODUCTION", label: "PUSH TO PRODUCTION" },
+];
+
 // Next action from current milestone (Design Phase table)
 function getNextActionFromMilestone(milestoneIndex: number | undefined, milestoneName: string | null | undefined): string {
     if (milestoneIndex !== undefined && milestoneIndex >= 0) {
@@ -264,6 +276,9 @@ export default function Dashboard() {
     const [isDropdownOpen, setIsDropdownOpen] = useState(true);
     const [isSelected, setIsSelected] = useState<string>(allTypes[0]); // "All Projects (10-60%)"
     const [searchQuery, setSearchQuery] = useState("");
+    const [milestoneFilter, setMilestoneFilter] = useState<string>("");
+    const [filterDropdownOpen, setFilterDropdownOpen] = useState(false);
+    const filterDropdownRef = useRef<HTMLDivElement>(null);
     const [page, setPage] = useState(1);
     const PAGE_SIZE = 10;
 
@@ -282,16 +297,20 @@ export default function Dashboard() {
           )
         : filteredProjects;
 
-    const totalItems = searchFiltered.length;
+    const milestoneFiltered = milestoneFilter
+        ? searchFiltered.filter((p) => (p.currentMilestoneName ?? "") === milestoneFilter)
+        : searchFiltered;
+
+    const totalItems = milestoneFiltered.length;
     const totalPages = Math.max(1, Math.ceil(totalItems / PAGE_SIZE));
     const currentPage = Math.min(Math.max(1, page), totalPages);
-    const paginatedProjects = searchFiltered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+    const paginatedProjects = milestoneFiltered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
     const stats = {
-        total: searchFiltered.length,
-        pre10: searchFiltered.filter((p) => getPhaseBucket(p) === "Pre 10%").length,
-        bucket1020: searchFiltered.filter((p) => getPhaseBucket(p) === "10-20%").length,
-        bucket2060: searchFiltered.filter((p) => getPhaseBucket(p) === "20-60%").length,
+        total: milestoneFiltered.length,
+        pre10: milestoneFiltered.filter((p) => getPhaseBucket(p) === "Pre 10%").length,
+        bucket1020: milestoneFiltered.filter((p) => getPhaseBucket(p) === "10-20%").length,
+        bucket2060: milestoneFiltered.filter((p) => getPhaseBucket(p) === "20-60%").length,
     };
 
     const toggleDropdown = () => {
@@ -306,7 +325,18 @@ export default function Dashboard() {
 
     useEffect(() => {
         setPage(1);
-    }, [isSelected, searchQuery]);
+    }, [isSelected, searchQuery, milestoneFilter]);
+
+    // Close filter dropdown when clicking outside
+    useEffect(() => {
+        const handleClickOutside = (e: MouseEvent) => {
+            if (filterDropdownRef.current && !filterDropdownRef.current.contains(e.target as Node)) {
+                setFilterDropdownOpen(false);
+            }
+        };
+        document.addEventListener("mousedown", handleClickOutside);
+        return () => document.removeEventListener("mousedown", handleClickOutside);
+    }, []);
 
     const handleRouter = (projectId: number, dqcStage?: "dqc1" | "dqc2") => {
         if (isDqcUser && dqcStage) {
@@ -614,10 +644,39 @@ export default function Dashboard() {
                                             onChange={(e) => setSearchQuery(e.target.value)}
                                             className="px-3 py-2 border border-gray-300 rounded-lg text-sm w-full sm:w-48 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                                         />
-                                        <button type="button" className="px-4 py-2 rounded-lg border border-gray-300 bg-white text-gray-700 text-sm font-medium hover:bg-gray-50 flex items-center gap-2">
-                                            <span>Filter</span>
-                                            <span aria-hidden>▾</span>
-                                        </button>
+                                        <div className="relative" ref={filterDropdownRef}>
+                                            <button
+                                                type="button"
+                                                onClick={() => setFilterDropdownOpen((o) => !o)}
+                                                className="px-4 py-2 rounded-lg border border-gray-300 bg-white text-gray-700 text-sm font-medium hover:bg-gray-50 flex items-center gap-2"
+                                            >
+                                                <span>Filter</span>
+                                                {milestoneFilter ? (
+                                                    <span className="text-blue-600 font-semibold truncate max-w-[120px]" title={MILESTONE_FILTER_OPTIONS.find((o) => o.value === milestoneFilter)?.label}>
+                                                        {MILESTONE_FILTER_OPTIONS.find((o) => o.value === milestoneFilter)?.label}
+                                                    </span>
+                                                ) : null}
+                                                <span aria-hidden>▾</span>
+                                            </button>
+                                            {filterDropdownOpen && (
+                                                <div className="absolute right-0 top-full mt-1 z-50 min-w-[200px] py-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-64 overflow-y-auto">
+                                                    <p className="px-3 py-2 text-xs font-semibold text-gray-500 uppercase border-b border-gray-100">By milestone</p>
+                                                    {MILESTONE_FILTER_OPTIONS.map((opt) => (
+                                                        <button
+                                                            key={opt.value || "all"}
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setMilestoneFilter(opt.value);
+                                                                setFilterDropdownOpen(false);
+                                                            }}
+                                                            className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 ${opt.value === milestoneFilter ? "bg-blue-50 text-blue-700 font-medium" : "text-gray-700"}`}
+                                                        >
+                                                            {opt.label}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
                                         <button type="button" className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700">
                                             + Add Project
                                         </button>

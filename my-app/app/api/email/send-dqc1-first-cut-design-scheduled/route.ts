@@ -12,7 +12,6 @@ export async function POST(request: Request) {
     const designerName = body.designerName as string | undefined;
     const designerTitle = body.designerTitle as string | undefined;
     const designerAvatarUrl = body.designerAvatarUrl as string | undefined;
-    const attachments = body.attachments as Array<{ filename: string; content: string; encoding?: 'base64' }> | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -20,6 +19,8 @@ export async function POST(request: Request) {
         { status: 400 }
       );
     }
+
+    const attachments = body.attachments as { filename: string; path: string }[] | undefined;
 
     const html = renderDqc1FirstCutDesignScheduledEmail({
       customerName,
@@ -34,7 +35,7 @@ export async function POST(request: Request) {
       to,
       subject: 'DQC1 – First Cut Design Presentation Scheduled',
       html,
-      attachments: attachments?.length ? attachments : undefined,
+      ...(attachments && attachments.length ? { attachments } : {}),
     });
 
     return NextResponse.json({ success: true, messageId: info.messageId });

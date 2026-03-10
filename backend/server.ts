@@ -145,62 +145,6 @@ async function uploadLeadFileToS3(leadId: number, filePath: string, originalName
   }
 }
 
-const MAX_EMAIL_ATTACHMENT_SIZE = 15 * 1024 * 1024; // 15MB per file
-
-/** Read a file from disk or S3 and return as base64 for email attachment. */
-async function readUploadAsBase64Attachment(row: {
-  storedPath: string;
-  originalName: string;
-  s3Url?: string | null;
-}): Promise<{ filename: string; content: string; encoding: "base64" } | null> {
-  try {
-    let buf: Buffer;
-    if (row.s3Url && process.env.AWS_ACCESS_KEY_ID) {
-      const url = new URL(row.s3Url);
-      const key = url.pathname.replace(/^\//, "");
-      const obj = await s3.send(new GetObjectCommand({ Bucket: S3_BUCKET, Key: key }));
-      if (!obj.Body) return null;
-      buf = Buffer.from(await obj.Body.transformToByteArray());
-    } else if (fs.existsSync(row.storedPath)) {
-      buf = fs.readFileSync(row.storedPath);
-    } else {
-      return null;
-    }
-    if (buf.length > MAX_EMAIL_ATTACHMENT_SIZE) {
-      console.warn("[email-attach] Skipping large file", row.originalName, buf.length, "bytes");
-      return null;
-    }
-    return {
-      filename: (row.originalName || "attachment").replace(/[^a-zA-Z0-9._-]/g, "_") || "attachment",
-      content: buf.toString("base64"),
-      encoding: "base64",
-    };
-  } catch (err) {
-    console.error("[email-attach] readUploadAsBase64Attachment error", err);
-    return null;
-  }
-}
-
-/** Read multer file from disk and return as base64 attachment. */
-function readMulterFileAsAttachment(file: Express.Multer.File): { filename: string; content: string; encoding: "base64" } | null {
-  try {
-    if (!fs.existsSync(file.path)) return null;
-    const buf = fs.readFileSync(file.path);
-    if (buf.length > MAX_EMAIL_ATTACHMENT_SIZE) {
-      console.warn("[email-attach] Skipping large multer file", file.originalname, buf.length, "bytes");
-      return null;
-    }
-    return {
-      filename: (file.originalname || "attachment").replace(/[^a-zA-Z0-9._-]/g, "_") || "attachment",
-      content: buf.toString("base64"),
-      encoding: "base64",
-    };
-  } catch (err) {
-    console.error("[email-attach] readMulterFileAsAttachment error", err);
-    return null;
-  }
-}
-
 async function triggerCustomerEmailForLead(leadId: number, emailRoutePath: string): Promise<void> {
   try {
     const [rows] = await pool.query(
@@ -1539,7 +1483,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
     );
 
     // Fire-and-forget: trigger milestone-specific customer emails where defined
-    const emailRoutePath = (() => {
+    const emailRoutePath: string | null = (() => {
       const t = String(taskName).trim();
       switch (milestoneIndex) {
         // Milestone 0: D1 SITE MEASUREMENT
@@ -1554,7 +1498,8 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         case 1:
           if (t === "First cut design + quotation discussion meeting request") {
             // Sl no 5 – first cut design + quotation discussion (meeting request)
-            return "/api/email/send-dqc1-first-cut-design-scheduled";
+            // Email invite is triggered directly from /api/leads/:id/first-cut-design-upload (Send Invite button).
+            // Do not fire an additional email on task completion.
           }
           if (t === "meeting completed") {
             // After DQC1 first‑cut meeting completed → project design timeline mail
@@ -2097,53 +2042,65 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const designerName = leadRow.designerName || "Designer";
             const projectValue = payload.project_value || payload?.form?.project_value || "";
 
-            const [dqcRows] = await pool.query(
-              "SELECT email, name FROM users WHERE role IN ('dqc_manager', 'dqe') ORDER BY id ASC LIMIT 1",
-            );
-            const dqcUser = (dqcRows as any[])[0];
+          const [dqcRows] = await pool.query(
+            "SELECT email, name FROM users WHERE role IN ('dqc_manager', 'dqe') ORDER BY id ASC LIMIT 1",
+          );
+          const dqcUser = (dqcRows as any[])[0];
 
-            if (dqcUser && dqcUser.email && customerName && ecName && designerName && dqcUser.name) {
-              const [drawRows] = await pool.query(
-                `SELECT stored_path as storedPath, original_name as originalName, s3_url as s3Url
-                 FROM lead_uploads WHERE lead_id = ? AND upload_type = 'dqc2_drawing' AND status = 'approved' ORDER BY id DESC LIMIT 1`,
+          // Collect latest DQC2 drawing & quotation uploads for this lead (if S3 is configured)
+          let attachments: { filename: string; path: string }[] | undefined;
+          if (process.env.AWS_ACCESS_KEY_ID) {
+            try {
+              const [uploadRows] = await pool.query(
+                `SELECT original_name as originalName, upload_type as uploadType, s3_url as s3Url
+                 FROM lead_uploads
+                 WHERE lead_id = ? AND upload_type IN ('dqc2_drawing', 'dqc2_quotation') AND status = 'approved' AND s3_url IS NOT NULL
+                 ORDER BY id DESC`,
                 [id],
               );
-              const [quotRows] = await pool.query(
-                `SELECT stored_path as storedPath, original_name as originalName, s3_url as s3Url
-                 FROM lead_uploads WHERE lead_id = ? AND upload_type = 'dqc2_quotation' AND status = 'approved' ORDER BY id DESC LIMIT 1`,
-                [id],
-              );
-              const draw = (drawRows as any[])[0];
-              const quot = (quotRows as any[])[0];
-              const attachments: { filename: string; content: string; encoding: "base64" }[] = [];
-              if (draw) {
-                const att = await readUploadAsBase64Attachment({ storedPath: draw.storedPath, originalName: draw.originalName, s3Url: draw.s3Url });
-                if (att) attachments.push(att);
+              const list = (uploadRows as any[]) || [];
+              const seenTypes = new Set<string>();
+              attachments = list
+                .map((r) => {
+                  const type = (r.uploadType || r.uploadtype || "").toString();
+                  if (!type || seenTypes.has(type)) return null;
+                  seenTypes.add(type);
+                  const name = (r.originalName || "").toString();
+                  const url = (r.s3Url || "").toString();
+                  return name && url ? { filename: name, path: url } : null;
+                })
+                .filter((v): v is { filename: string; path: string } => !!v);
+              if (attachments.length === 0) {
+                attachments = undefined;
               }
-              if (quot) {
-                const att = await readUploadAsBase64Attachment({ storedPath: quot.storedPath, originalName: quot.originalName, s3Url: quot.s3Url });
-                if (att) attachments.push(att);
-              }
-
-              fetch(`${FRONTEND_BASE}/api/email/send-dqc2-final-design-submission-internal`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  to: dqcUser.email,
-                  customerName,
-                  ecName,
-                  designerName,
-                  dqcRepName: dqcUser.name || "DQC Team",
-                  projectValue: String(projectValue || ""),
-                  ...(attachments.length ? { attachments } : {}),
-                }),
-              }).catch((err) => {
-                console.error("DQC2 submission internal email trigger error (non-fatal)", {
-                  leadId: id,
-                  error: err,
-                });
+            } catch (attachErr) {
+              console.error("Failed to load DQC2 submission attachments (non-fatal)", {
+                leadId: id,
+                error: attachErr,
               });
             }
+          }
+
+          if (dqcUser && dqcUser.email && customerName && ecName && designerName && dqcUser.name) {
+            fetch(`${FRONTEND_BASE}/api/email/send-dqc2-final-design-submission-internal`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                to: dqcUser.email,
+                customerName,
+                ecName,
+                designerName,
+                dqcRepName: dqcUser.name || "DQC Team",
+                projectValue: String(projectValue || ""),
+                ...(attachments ? { attachments } : {}),
+              }),
+            }).catch((err) => {
+              console.error("DQC2 submission internal email trigger error (non-fatal)", {
+                leadId: id,
+                error: err,
+              });
+            });
+          }
             // DQC 2 submission: internal only (no CX email)
           }
         } catch (err) {
@@ -2152,14 +2109,10 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             error: err,
           });
         }
-      } else if (emailRoutePath === "/api/email/send-dqc1-first-cut-design-scheduled") {
+      } else if (emailRoutePath === ("/api/email/send-dqc1-first-cut-design-scheduled" as string)) {
         try {
           const [rows] = await pool.query(
-            `SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload,
-                    u.name as assignedDesignerName, u.profileImage as assignedDesignerAvatar, u.role as assignedDesignerRole
-             FROM leads l
-             LEFT JOIN users u ON u.id = l.assigned_designer_id
-             WHERE l.id = ?`,
+            "SELECT project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?",
             [id],
           );
           const row = (rows as any[])[0];
@@ -2177,41 +2130,40 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               payload?.form?.customer_name ||
               row.projectName ||
               "Customer";
-            const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
-            const designerName =
-              row.assignedDesignerName ||
-              formData.designer_name ||
-              payload?.designer_name ||
-              "Design Team";
-            const designerTitleRaw =
-              formData.designer_title ||
-              payload?.designer_title ||
-              row.assignedDesignerRole ||
-              "Lead Designer";
-            const designerTitle = String(designerTitleRaw)
-              .replace(/_/g, " ")
-              .replace(/\b\w/g, (c: string) => c.toUpperCase());
-            const designerAvatarUrl =
-              row.assignedDesignerAvatar ||
-              formData.designer_avatar_url ||
-              payload?.designer_avatar_url ||
-              null;
+
+            // Collect latest first-cut design uploads (if any) to attach when S3 URLs are available.
+            let attachments: { filename: string; path: string }[] | undefined;
+            if (process.env.AWS_ACCESS_KEY_ID) {
+              try {
+                const [uploadRows] = await pool.query(
+                  `SELECT original_name as originalName, s3_url as s3Url
+                   FROM lead_uploads
+                   WHERE lead_id = ? AND upload_type = 'first_cut_design' AND status = 'approved' AND s3_url IS NOT NULL
+                   ORDER BY id DESC`,
+                  [id],
+                );
+                const list = (uploadRows as any[]) || [];
+                attachments = list
+                  .map((r) => {
+                    const name = (r.originalName || "").toString();
+                    const url = (r.s3Url || "").toString();
+                    return name && url ? { filename: name, path: url } : null;
+                  })
+                  .filter((v): v is { filename: string; path: string } => !!v);
+                if (attachments.length === 0) {
+                  attachments = undefined;
+                }
+              } catch (attachErr) {
+                console.error("Failed to load first-cut design attachments (non-fatal)", {
+                  leadId: id,
+                  error: attachErr,
+                });
+              }
+            }
 
             if (customerEmail) {
               const meetingDate = meta?.meetingDate || null;
               const meetingTime = meta?.meetingTime || null;
-
-              const [fcdRows] = await pool.query(
-                `SELECT stored_path as storedPath, original_name as originalName, s3_url as s3Url
-                 FROM lead_uploads WHERE lead_id = ? AND upload_type = 'first_cut_design' AND status = 'approved'
-                 ORDER BY id DESC`,
-                [id],
-              );
-              const attachments: { filename: string; content: string; encoding: "base64" }[] = [];
-              for (const r of (fcdRows as any[]) || []) {
-                const att = await readUploadAsBase64Attachment({ storedPath: r.storedPath, originalName: r.originalName, s3Url: r.s3Url });
-                if (att) attachments.push(att);
-              }
 
               fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
                 method: "POST",
@@ -2221,10 +2173,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   customerName,
                   meetingDate,
                   meetingTime,
-                  ...(attachments.length ? { attachments } : {}),
-                  designerName,
-                  designerTitle,
-                  designerAvatarUrl,
+                  ...(attachments ? { attachments } : {}),
                 }),
               }).catch((err) => {
                 console.error("DQC1 first-cut email trigger error (non-fatal)", {
@@ -2241,55 +2190,6 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             route: emailRoutePath,
             error: err,
           });
-        }
-      } else if (emailRoutePath === "/api/email/send-project-design-timeline") {
-        try {
-          const [rows] = await pool.query(
-            "SELECT project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?",
-            [id],
-          );
-          const row = (rows as any[])[0];
-          if (row?.clientEmail) {
-            let payload: any = {};
-            try {
-              payload = row.payload ? JSON.parse(row.payload) : {};
-            } catch {
-              payload = {};
-            }
-            const customerEmail =
-              row.clientEmail || payload.email || payload?.form?.email || null;
-            const customerName =
-              payload.customer_name ||
-              payload?.form?.customer_name ||
-              row.projectName ||
-              "Customer";
-
-            const [momRows] = await pool.query(
-              `SELECT stored_path as storedPath, original_name as originalName, s3_url as s3Url
-               FROM lead_uploads WHERE lead_id = ? AND upload_type IN ('mom_attachment', 'mom_minutes') AND status = 'approved'
-               ORDER BY uploaded_at DESC LIMIT 10`,
-              [id],
-            );
-            const attachments: { filename: string; content: string; encoding: "base64" }[] = [];
-            for (const r of (momRows as any[]) || []) {
-              const att = await readUploadAsBase64Attachment({ storedPath: r.storedPath, originalName: r.originalName, s3Url: r.s3Url });
-              if (att) attachments.push(att);
-            }
-
-            fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                to: customerEmail,
-                customerName,
-                ...(attachments.length ? { attachments } : {}),
-              }),
-            }).catch((err) => {
-              console.error("Project design timeline email trigger error (non-fatal)", { leadId: id, error: err });
-            });
-          }
-        } catch (err) {
-          console.error("Project design timeline email prepare error (non-fatal)", { leadId: id, error: err });
         }
       } else if (emailRoutePath === "/api/email/send-d1-mmt-visit-scheduled") {
         // Special-case D1 MMT visit so we can include visit details (date, time, executive)
@@ -2575,18 +2475,6 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const accountNumber = meta?.accountNumber ?? "748305000519";
             const ifscCode = meta?.ifscCode ?? "ICIC0007483";
 
-            const [momRows] = await pool.query(
-              `SELECT stored_path as storedPath, original_name as originalName, s3_url as s3Url
-               FROM lead_uploads WHERE lead_id = ? AND upload_type IN ('mom_attachment', 'mom_minutes') AND status = 'approved'
-               ORDER BY uploaded_at DESC LIMIT 10`,
-              [id],
-            );
-            const attachments: { filename: string; content: string; encoding: "base64" }[] = [];
-            for (const r of (momRows as any[]) || []) {
-              const att = await readUploadAsBase64Attachment({ storedPath: r.storedPath, originalName: r.originalName, s3Url: r.s3Url });
-              if (att) attachments.push(att);
-            }
-
             if (customerEmail) {
               fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
                 method: "POST",
@@ -2599,7 +2487,6 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   accountName,
                   accountNumber,
                   ifscCode,
-                  ...(attachments.length ? { attachments } : {}),
                 }),
               }).catch((err) => {
                 console.error("40% payment request email trigger error (non-fatal)", {
@@ -2772,19 +2659,6 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               row.projectName ||
               "Customer";
             const designerName = row.designerName || formData.designer_name || formData.designerName || "Team HUB Interiors";
-
-            const [momRows] = await pool.query(
-              `SELECT stored_path as storedPath, original_name as originalName, s3_url as s3Url
-               FROM lead_uploads WHERE lead_id = ? AND upload_type IN ('mom_attachment', 'mom_minutes') AND status = 'approved'
-               ORDER BY uploaded_at DESC LIMIT 10`,
-              [id],
-            );
-            const attachments: { filename: string; content: string; encoding: "base64" }[] = [];
-            for (const r of (momRows as any[]) || []) {
-              const att = await readUploadAsBase64Attachment({ storedPath: r.storedPath, originalName: r.originalName, s3Url: r.s3Url });
-              if (att) attachments.push(att);
-            }
-
             fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -2792,7 +2666,6 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                 to: row.clientEmail,
                 customerName,
                 designerName,
-                ...(attachments.length ? { attachments } : {}),
               }),
             }).catch((err) => {
               console.error("Production approval request email trigger error (non-fatal)", {
@@ -3017,6 +2890,35 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
         });
         const transactionRef = projectId ? `${projectId}-10PCT-${Date.now()}` : `10PCT-${Date.now()}`;
 
+        // Collect approved payment screenshots (if any) to attach to the email when S3 URLs are available.
+        let attachments: { filename: string; path: string }[] | undefined;
+        if (process.env.AWS_ACCESS_KEY_ID) {
+          try {
+            const [uploadRows] = await pool.query(
+              `SELECT original_name as originalName, s3_url as s3Url
+               FROM lead_uploads
+               WHERE lead_id = ? AND upload_type = 'payment_screenshot' AND status = 'approved' AND s3_url IS NOT NULL`,
+              [leadId],
+            );
+            const list = (uploadRows as any[]) || [];
+            attachments = list
+              .map((r) => {
+                const name = (r.originalName || "").toString();
+                const url = (r.s3Url || "").toString();
+                return name && url ? { filename: name, path: url } : null;
+              })
+              .filter((v): v is { filename: string; path: string } => !!v);
+            if (attachments.length === 0) {
+              attachments = undefined;
+            }
+          } catch (attachErr) {
+            console.error("Failed to load payment screenshot attachments (non-fatal)", {
+              leadId,
+              error: attachErr,
+            });
+          }
+        }
+
         if (customerEmail) {
           fetch(`${FRONTEND_BASE}/api/email/send-ten-percent-payment-approval`, {
             method: "POST",
@@ -3028,6 +2930,7 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
               amountPaid: amountPaid || undefined,
               paymentDate,
               transactionRef,
+              ...(attachments ? { attachments } : {}),
             }),
           }).catch((emailErr) => {
             console.error("10% payment approval email trigger error (non-fatal)", emailErr);
@@ -3190,6 +3093,36 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
           month: "long",
           year: "numeric",
         });
+
+        // Collect approved 40% payment screenshots (if any) to attach when S3 URLs are available.
+        let attachments: { filename: string; path: string }[] | undefined;
+        if (process.env.AWS_ACCESS_KEY_ID) {
+          try {
+            const [uploadRows] = await pool.query(
+              `SELECT original_name as originalName, s3_url as s3Url
+               FROM lead_uploads
+               WHERE lead_id = ? AND upload_type = 'payment_40p' AND status = 'approved' AND s3_url IS NOT NULL`,
+              [leadId],
+            );
+            const list = (uploadRows as any[]) || [];
+            attachments = list
+              .map((r) => {
+                const name = (r.originalName || "").toString();
+                const url = (r.s3Url || "").toString();
+                return name && url ? { filename: name, path: url } : null;
+              })
+              .filter((v): v is { filename: string; path: string } => !!v);
+            if (attachments.length === 0) {
+              attachments = undefined;
+            }
+          } catch (attachErr) {
+            console.error("Failed to load 40% payment attachments (non-fatal)", {
+              leadId,
+              error: attachErr,
+            });
+          }
+        }
+
         fetch(`${FRONTEND_BASE}/api/email/send-design-signoff-40pc-payment-approval`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -3200,6 +3133,7 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
             amountReceived: formData.forty_percent_amount ?? payload?.forty_percent_amount ?? undefined,
             dateOfReceipt: dateStr,
             modeOfPayment: "Bank Transfer",
+            ...(attachments ? { attachments } : {}),
           }),
         }).catch((emailErr) => {
           console.error("40% payment approval email trigger error (non-fatal)", emailErr);
@@ -3627,7 +3561,7 @@ app.post(
           );
           const dqcUser = (dqcRows as any[])[0];
 
-            if (dqcUser && dqcUser.email) {
+          if (dqcUser && dqcUser.email) {
             const to = dqcUser.email as string;
 
             const [ccRows] = await pool.query(
@@ -3635,12 +3569,6 @@ app.post(
               [user.id, payload.manager_user_id || null, payload.tdm_user_id || null],
             );
             const ccList = (ccRows as any[]).map((r) => r.email).filter(Boolean);
-
-            const attachments: { filename: string; content: string; encoding: "base64" }[] = [];
-            const drawingAtt = readMulterFileAsAttachment(drawingFile);
-            const quotationAtt = readMulterFileAsAttachment(quotationFile);
-            if (drawingAtt) attachments.push(drawingAtt);
-            if (quotationAtt) attachments.push(quotationAtt);
 
             fetch(`${FRONTEND_BASE}/api/email/send-dqc1-review-request-internal`, {
               method: "POST",
@@ -3653,9 +3581,18 @@ app.post(
                 designerName,
                 projectValue: String(projectValue || ""),
                 dqcRepName: dqcUser.name || "DQC Team",
-                drawingFileName: drawingFile.originalname,
-                quotationFileName: quotationFile.originalname,
-                ...(attachments.length ? { attachments } : {}),
+                ...(drawingS3 || quotationS3
+                  ? {
+                      attachments: [
+                        ...(drawingS3
+                          ? [{ filename: drawingFile.originalname, path: drawingS3 }]
+                          : []),
+                        ...(quotationS3
+                          ? [{ filename: quotationFile.originalname, path: quotationS3 }]
+                          : []),
+                      ],
+                    }
+                  : {}),
               }),
             }).catch((err) => {
               console.error("DQC1 review request internal email trigger error (non-fatal)", {
@@ -3820,6 +3757,11 @@ app.post(
         return res.status(400).json({ message: "At least one file is required" });
       }
       const now = new Date();
+      const meetingDateRaw = (req.body as any)?.meetingDate;
+      const meetingTimeRaw = (req.body as any)?.meetingTime;
+      const meetingDate = typeof meetingDateRaw === "string" && meetingDateRaw.trim() ? meetingDateRaw.trim() : null;
+      const meetingTime = typeof meetingTimeRaw === "string" && meetingTimeRaw.trim() ? meetingTimeRaw.trim() : null;
+      const attachments: { filename: string; path: string }[] = [];
       for (const file of files) {
         let s3Url: string | null = null;
         if (process.env.AWS_ACCESS_KEY_ID) {
@@ -3846,6 +3788,12 @@ app.post(
             s3Url,
           ],
         );
+        if (s3Url) {
+          attachments.push({
+            filename: file.originalname,
+            path: s3Url,
+          });
+        }
       }
       const names = files.map((f) => f.originalname).join(", ");
       const ev = {
@@ -3859,6 +3807,54 @@ app.post(
         details: { kind: "first_cut_design", files: files.map((f) => ({ name: f.originalname })) },
       };
       await addLeadHistoryEvent(leadId, ev);
+      // Fire-and-forget: send first-cut design invite email immediately when designer clicks "Send Invite"
+      try {
+        const [rows] = await pool.query(
+          "SELECT project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?",
+          [leadId],
+        );
+        const row = (rows as any[])[0];
+        if (row) {
+          let payload: any = {};
+          try {
+            payload = row.payload ? JSON.parse(row.payload) : {};
+          } catch {
+            payload = {};
+          }
+          const customerEmail =
+            row.clientEmail || payload.email || payload?.form?.email || null;
+          const customerName =
+            payload.customer_name ||
+            payload?.form?.customer_name ||
+            row.projectName ||
+            "Customer";
+
+          if (customerEmail) {
+            fetch(`${FRONTEND_BASE}/api/email/send-dqc1-first-cut-design-scheduled`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                to: customerEmail,
+                customerName,
+                meetingDate,
+                meetingTime,
+                ...(attachments.length ? { attachments } : {}),
+              }),
+            }).catch((err) => {
+              console.error("DQC1 first-cut invite email trigger error (non-fatal)", {
+                leadId,
+                error: err,
+              });
+            });
+          }
+        }
+      } catch (emailErr) {
+        console.error("DQC1 first-cut invite email prepare error (non-fatal)", {
+          leadId,
+          error: emailErr,
+        });
+      }
+
       return res.status(201).json({ ok: true });
     } catch (err) {
       console.error("first-cut-design-upload error", err);

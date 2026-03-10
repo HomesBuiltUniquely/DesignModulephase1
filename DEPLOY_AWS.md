@@ -551,9 +551,39 @@ Then start the API; it will use the same schema.
 - `API_BASE_URL` – public URL of the API (for CORS and any links)
 - `PORT` – 3001 (or your choice)
 
-**Frontend (Amplify / build env):**
+**Frontend (Amplify / Next.js on EC2):**
 
 - `NEXT_PUBLIC_API_URL` – backend URL the browser will call (e.g. `https://api.yourdomain.com`)
+- **Email (required for emails to be sent):** `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, and optionally `MAIL_FROM`. These are read by the **Next.js app** (e.g. `my-app`) when the backend calls `POST /api/email/send-*` on the frontend. If these are missing, the mailer will throw and emails will not send.
+
+**Backend (for triggering emails):**
+
+- `FRONTEND_BASE_URL` – URL where the Next.js app is reachable **from the backend server**. The backend calls this URL to trigger emails (e.g. `http://localhost:3000` when frontend and backend run on the same EC2, or `https://design.hubinterior.com` if the frontend is on a different host). If wrong or missing, the backend cannot trigger the frontend email API and no mail is sent.
+
+---
+
+## Emails not working on EC2
+
+1. **Backend must reach the frontend**  
+   Set `FRONTEND_BASE_URL` in the **backend** env (or `backend/.env`) to the URL the backend uses to call the Next app:
+   - Same EC2: `http://localhost:3000`
+   - Different host/domain: `https://your-frontend-domain.com`
+   Restart the backend after changing.
+
+2. **Frontend must have SMTP configured**  
+   The **Next.js app** (`my-app`) sends the actual email. Set in the **frontend** env when you run `npm start` (or in `my-app/.env` on EC2):
+   - `SMTP_HOST` (e.g. `email-smtp.ap-south-1.amazonaws.com` for AWS SES)
+   - `SMTP_PORT` (e.g. `587`)
+   - `SMTP_USER` (SES SMTP credentials)
+   - `SMTP_PASS` (SES SMTP password)
+   - `MAIL_FROM` (e.g. `noreply@yourdomain.com`)
+
+3. **Check logs**  
+   - Backend: `tail -f ~/app/api.log` (or wherever the API logs). Look for failed `fetch` to `FRONTEND_BASE_URL/api/email/...`.
+   - Frontend: `tail -f ~/app/next.log`. Look for `[mailer] SMTP configuration is incomplete` or `D1 email send error`.
+
+4. **SES (if using AWS)**  
+   Verify the SMTP user/pass are for **SES SMTP** (not IAM console login). Ensure the sending identity (domain or email) is verified in SES and not in sandbox if you send to arbitrary addresses.
 
 ---
 

@@ -11,7 +11,10 @@ type Props = {
   onDesignDrop: (e: React.DragEvent) => void;
   onDesignDragOver: (e: React.DragEvent) => void;
   removeDesignFile: (index: number) => void;
+  /** Send meeting invite + upload; does not complete task or close. Can be called multiple times. */
   onSubmit?: (meta?: { meetingDate?: string; meetingTime?: string }) => void;
+  /** Called when designer marks 100% complete; parent should record task complete and close. */
+  onCompleteAndProceed?: () => void;
 };
 
 /**
@@ -26,12 +29,15 @@ export default function PopupFirstCutDesign({
   onDesignDragOver,
   removeDesignFile,
   onSubmit,
+  onCompleteAndProceed,
 }: Props) {
   const [meetingDate, setMeetingDate] = useState("");
   const [meetingTime, setMeetingTime] = useState("");
+  const [meetingMode, setMeetingMode] = useState<"online" | "offline">("online");
+  const [completionPercent, setCompletionPercent] = useState(0);
 
   return (
-    <div className="w-full min-h-[100vh]">
+    <div className="w-full">
       <div>
         <div className="w-full border border-gray-200 mt-2" />
         <div className="flex items-center gap-2 py-4 px-6">
@@ -90,36 +96,29 @@ export default function PopupFirstCutDesign({
           </svg>
           <div className="text-[14px] font-bold text-black">MEETING MODE</div>
         </div>
-        <div className="flex justify-around gap-4 bg-gray-200 w-47 h-12 rounded-md ml-5">
-          <div className="text-blue-400 bg-white w-20 h-[4.5vh] text-center font-bold mt-1.5 pt-1.5 ml-1.5 rounded-md">
+        <div className="flex justify-start gap-4 bg-gray-200 w-47 h-12 rounded-md ml-5">
+          <button
+            type="button"
+            onClick={() => setMeetingMode("online")}
+            className={`w-24 h-[4.5vh] text-center font-bold mt-1.5 pt-1.5 ml-1.5 rounded-md ${
+              meetingMode === "online"
+                ? "bg-white text-blue-500"
+                : "bg-transparent text-gray-500"
+            }`}
+          >
             Online
-          </div>
-          <div className="w-20 h-[4.5vh] text-center text-gray-400 font-bold mt-1.5 pt-1.5">
+          </button>
+          <button
+            type="button"
+            onClick={() => setMeetingMode("offline")}
+            className={`w-24 h-[4.5vh] text-center font-bold mt-1.5 pt-1.5 rounded-md ${
+              meetingMode === "offline"
+                ? "bg-white text-blue-500"
+                : "bg-transparent text-gray-500"
+            }`}
+          >
             Offline
-          </div>
-        </div>
-        <div>
-          <h1 className="pl-6 pt-4 font-semibold text-black">Meeting Link</h1>
-          <div className="relative w-138.75 mt-4 ml-4">
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              fill="none"
-              viewBox="0 0 24 24"
-              strokeWidth="1.5"
-              stroke="currentColor"
-              className="size-6 absolute left-3 top-3 text-gray-400"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244"
-              />
-            </svg>
-            <input
-              className="w-full h-12.5 border border-gray-300 rounded-xl placeholder-gray-500 font-medium text-[18px] pl-13"
-              placeholder="https://zoom.us/j/..."
-            />
-          </div>
+          </button>
         </div>
         <div className="flex items-center gap-2 py-4 px-6 mt-4">
           <svg
@@ -235,50 +234,68 @@ export default function PopupFirstCutDesign({
           )}
         </div>
         <div className="w-full border border-gray-200 mt-4" />
-        <div className="flex justify-between bg-gray-100">
-          <div className="flex items-center gap-2 py-4 px-4">
+        {/* Design completion level bar: 0–100%; only "Mark 100% complete & proceed" advances the stage */}
+        <div className="px-6 py-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[14px] font-bold text-black">Design completion</span>
+            <span className="text-sm font-medium text-gray-700">{completionPercent}%</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={completionPercent}
+              onChange={(e) => setCompletionPercent(Number(e.target.value))}
+              className="flex-1 h-2.5 rounded-full appearance-none bg-gray-200 accent-blue-500"
+            />
+            <input
+              type="number"
+              min={0}
+              max={100}
+              value={completionPercent}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                setCompletionPercent(Math.min(100, Math.max(0, isNaN(v) ? 0 : v)));
+              }}
+              className="w-14 border border-gray-300 rounded-md px-2 py-1 text-sm text-center"
+            />
+          </div>
+          <p className="text-xs text-gray-500">
+            Send as many meeting invites as needed. When design is 100% complete, use &quot;Mark 100% complete & proceed&quot; to advance to the next stage.
+          </p>
+        </div>
+        <div className="w-full border border-gray-200" />
+        <div className="flex justify-end gap-2 bg-gray-100 px-6 py-3">
+          <button
+            type="button"
+            onClick={() => onSubmit?.({ meetingDate, meetingTime })}
+            className="bg-blue-500 text-white px-4 h-9 rounded-md flex items-center gap-2 font-bold"
+          >
+            Send Invite
             <svg
               xmlns="http://www.w3.org/2000/svg"
               fill="none"
               viewBox="0 0 24 24"
               strokeWidth="1.5"
               stroke="currentColor"
-              className="size-5 text-black"
+              className="size-5"
             >
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z"
+                d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5"
               />
             </svg>
-            <div className="text-[13px] text-black w-75">
-              Customer will receive calender invite automatically
-            </div>
-          </div>
-          <div className="flex items-center justify-between gap-6 mr-5 py-6">
-            <div className="text-[16px] text-gray-600">Cancel</div>
-            <button
-              type="button"
-              onClick={() => onSubmit?.({ meetingDate, meetingTime })}
-              className="bg-blue-500 text-white w-35 h-9 rounded-md flex pl-3 pt-1.5 gap-2 font-bold"
-            >
-              Send Invite{" "}
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-                strokeWidth="1.5"
-                stroke="currentColor"
-                className="size-6"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5"
-                />
-              </svg>
-            </button>
-          </div>
+          </button>
+          <button
+            type="button"
+            onClick={() => onCompleteAndProceed?.()}
+            disabled={completionPercent < 100}
+            className="bg-green-600 text-white px-4 h-9 rounded-md flex items-center gap-2 font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Mark 100% complete & proceed
+          </button>
         </div>
       </div>
     </div>
