@@ -2610,7 +2610,7 @@ app.get("/api/leads/finance-10p-queue", async (req: Request, res: Response) => {
       return res.status(403).json({ message: "Only finance or admin can access this queue" });
     }
     const [allLeads] = await pool.query(
-      "SELECT id, project_name as projectName, project_stage as projectStage FROM leads ORDER BY id ASC"
+      "SELECT id, project_name as projectName, project_stage as projectStage FROM leads ORDER BY id DESC"
     );
     const leads = allLeads as { id: number; projectName: string; projectStage: string }[];
     const [completions] = await pool.query(
@@ -2636,6 +2636,62 @@ app.get("/api/leads/finance-10p-queue", async (req: Request, res: Response) => {
     return res.status(500).json({ message: "Failed to load queue" });
   }
 });
+
+// Project/lead side: upload 10% payment screenshots for finance to review and approve. Any authenticated user with lead access.
+app.post(
+  "/api/leads/:id/10p-payment-upload",
+  upload.array("files"),
+  async (req: Request, res: Response) => {
+    const leadId = Number(req.params.id);
+    if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+    const files = (req as any).files as Express.Multer.File[] | undefined;
+    if (!files || files.length === 0) return res.status(400).json({ message: "At least one file is required" });
+    try {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const now = new Date();
+      for (const file of files) {
+        let s3Url: string | null = null;
+        if (process.env.AWS_ACCESS_KEY_ID) {
+          s3Url = await uploadLeadFileToS3(leadId, file.path, file.originalname, file.mimetype);
+        }
+        await pool.query(
+          `INSERT INTO lead_uploads
+           (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'payment_10p', ?)`,
+          [leadId, user.id, file.originalname, file.filename, file.path, file.mimetype, file.size, now, s3Url]
+        );
+      }
+      const ev = {
+        id: `10p-upload-${Date.now()}`,
+        type: "file_upload",
+        taskName: "10% payment collection",
+        milestoneName: "10% PAYMENT",
+        timestamp: now.toISOString(),
+        description: `10% payment screenshots uploaded for finance review: ${files.map((f) => f.originalname).join(", ")}`,
+        user: { name: user.name ?? "User" },
+        details: { kind: "payment_10p", fileNames: files.map((f) => f.originalname) },
+      };
+      await addLeadHistoryEvent(leadId, ev);
+      const [rows] = await pool.query(
+        "SELECT 1 FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 2 AND task_name = ?",
+        [leadId, "10% payment collection"]
+      );
+      if ((rows as any[]).length === 0) {
+        await pool.query(
+          `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+           VALUES (?, 2, '10% payment collection', ?)
+           ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
+          [leadId, now]
+        );
+      }
+      return res.status(201).json({ ok: true });
+    } catch (err) {
+      console.error("10p-payment-upload error", err);
+      return res.status(500).json({ message: "Failed to upload" });
+    }
+  }
+);
 
 // Finance: upload payment screenshot(s) for a lead. Marks "10% payment collection" complete on first upload.
 app.post(
@@ -2712,6 +2768,10 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
        VALUES (?, 2, '10% payment approval', ?)
        ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
       [leadId, now]
+    );
+    await pool.query(
+      "UPDATE lead_uploads SET status = 'approved' WHERE lead_id = ? AND upload_type = 'payment_10p' AND status = 'pending'",
+      [leadId]
     );
     const ev = {
       id: `10p-approval-${Date.now()}`,
@@ -2798,6 +2858,62 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
   }
 });
 
+// Project/lead side: upload 40% payment screenshots for finance to review and approve.
+app.post(
+  "/api/leads/:id/40p-payment-upload",
+  upload.array("files"),
+  async (req: Request, res: Response) => {
+    const leadId = Number(req.params.id);
+    if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+    const files = (req as any).files as Express.Multer.File[] | undefined;
+    if (!files || files.length === 0) return res.status(400).json({ message: "At least one file is required" });
+    try {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const now = new Date();
+      for (const file of files) {
+        let s3Url: string | null = null;
+        if (process.env.AWS_ACCESS_KEY_ID) {
+          s3Url = await uploadLeadFileToS3(leadId, file.path, file.originalname, file.mimetype);
+        }
+        await pool.query(
+          `INSERT INTO lead_uploads
+           (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'payment_40p', ?)`,
+          [leadId, user.id, file.originalname, file.filename, file.path, file.mimetype, file.size, now, s3Url]
+        );
+      }
+      const ev = {
+        id: `40p-upload-${Date.now()}`,
+        type: "file_upload",
+        taskName: "meeting completed & 40% payment request",
+        milestoneName: "40% PAYMENT",
+        timestamp: now.toISOString(),
+        description: `40% payment screenshots uploaded for finance review: ${files.map((f) => f.originalname).join(", ")}`,
+        user: { name: user.name ?? "User" },
+        details: { kind: "payment_40p", fileNames: files.map((f) => f.originalname) },
+      };
+      await addLeadHistoryEvent(leadId, ev);
+      const [rows] = await pool.query(
+        "SELECT 1 FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 5 AND task_name = ?",
+        [leadId, "meeting completed & 40% payment request"]
+      );
+      if ((rows as any[]).length === 0) {
+        await pool.query(
+          `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+           VALUES (?, 5, 'meeting completed & 40% payment request', ?)
+           ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
+          [leadId, now]
+        );
+      }
+      return res.status(201).json({ ok: true });
+    } catch (err) {
+      console.error("40p-payment-upload error", err);
+      return res.status(500).json({ message: "Failed to upload" });
+    }
+  }
+);
+
 // ----- Finance 40% payment: same as 10% – queue, upload screenshots, approve -----
 app.get("/api/leads/finance-40p-queue", async (req: Request, res: Response) => {
   try {
@@ -2808,7 +2924,7 @@ app.get("/api/leads/finance-40p-queue", async (req: Request, res: Response) => {
       return res.status(403).json({ message: "Only finance or admin can access this queue" });
     }
     const [allLeads] = await pool.query(
-      "SELECT id, project_name as projectName FROM leads ORDER BY id ASC"
+      "SELECT id, project_name as projectName FROM leads ORDER BY id DESC"
     );
     const leads = allLeads as { id: number; projectName: string }[];
     const [completions] = await pool.query(
@@ -2904,6 +3020,10 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
        VALUES (?, 5, '40% payment approval', ?)
        ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
       [leadId, now]
+    );
+    await pool.query(
+      "UPDATE lead_uploads SET status = 'approved' WHERE lead_id = ? AND upload_type = 'payment_40p' AND status = 'pending'",
+      [leadId]
     );
     const ev = {
       id: `40p-approval-${Date.now()}`,
@@ -3066,13 +3186,14 @@ app.get("/api/leads/:id/uploads", async (req: Request, res: Response) => {
     const user = await getUserFromSession(req);
     const role = (user?.role ?? "").toLowerCase();
     const isMmt = role === "mmt_manager" || role === "mmt_executive";
-    const onlyApproved = !isMmt;
+    const isFinance = role === "finance" || role === "admin";
+    const onlyApproved = !isMmt && !isFinance;
 
     const [rows] = await pool.query(
       onlyApproved
-        ? `SELECT id, original_name as originalName, uploaded_at as uploadedAt, status, s3_url as s3Url
+        ? `SELECT id, original_name as originalName, uploaded_at as uploadedAt, status, s3_url as s3Url, upload_type as uploadType
            FROM lead_uploads WHERE lead_id = ? AND status = 'approved' ORDER BY uploaded_at DESC`
-        : `SELECT id, original_name as originalName, uploaded_at as uploadedAt, status, s3_url as s3Url
+        : `SELECT id, original_name as originalName, uploaded_at as uploadedAt, status, s3_url as s3Url, upload_type as uploadType
            FROM lead_uploads WHERE lead_id = ? ORDER BY uploaded_at DESC`,
       [leadId],
     );
@@ -3172,14 +3293,16 @@ app.get("/api/leads/:leadId/uploads/:uploadId/download", async (req: Request, re
     const user = await getUserFromSession(req);
     const role = (user?.role ?? "").toLowerCase();
     const isMmt = role === "mmt_manager" || role === "mmt_executive";
+    const isFinance = role === "finance" || role === "admin";
     const [rows] = await pool.query(
-      `SELECT stored_path as storedPath, original_name as originalName, status, s3_url as s3Url
+      `SELECT stored_path as storedPath, original_name as originalName, status, s3_url as s3Url, upload_type as uploadType
        FROM lead_uploads WHERE id = ? AND lead_id = ?`,
       [uploadId, leadId],
     );
     const row = (rows as any[])[0];
     if (!row) return res.status(404).json({ message: "Not found" });
-    if (!isMmt && row.status !== "approved")
+    const isPaymentUpload = (row.uploadType === "payment_10p" || row.uploadType === "payment_screenshot" || row.uploadType === "payment_40p");
+    if (!isMmt && !(isFinance && isPaymentUpload) && row.status !== "approved")
       return res.status(403).json({ message: "Only approved uploads are available" });
     if (row.s3Url) {
       try {
@@ -4034,7 +4157,7 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
                   l.create_at as createAt, l.update_at as updateAt
            FROM leads l
            INNER JOIN lead_d2_assignments a ON a.lead_id = l.id AND a.assigned_to_user_id = ?
-           ORDER BY l.id ASC`,
+           ORDER BY l.id DESC`,
           [user.id],
         );
         const list = (rows as any[]).map((r) => ({ ...r, isOnHold: !!r.isOnHold }));
@@ -4047,7 +4170,7 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
                 l.create_at as createAt, l.update_at as updateAt
          FROM leads l
          INNER JOIN lead_d2_assignments a ON a.lead_id = l.id
-         ORDER BY l.id ASC`,
+         ORDER BY l.id DESC`,
       );
       const list = (rows as any[]).map((r) => ({ ...r, isOnHold: !!r.isOnHold }));
       return res.json(list);
@@ -4063,7 +4186,7 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
                 l.create_at as createAt, l.update_at as updateAt
          FROM leads l
          INNER JOIN lead_d1_assignments a ON a.lead_id = l.id AND a.assigned_to_user_id = ?
-         ORDER BY l.id ASC`,
+         ORDER BY l.id DESC`,
         [userId],
       );
       const list = (rows as any[]).map((r) => ({ ...r, isOnHold: !!r.isOnHold }));
@@ -4079,7 +4202,7 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
               u.name as designerName
        FROM leads l
        LEFT JOIN users u ON u.id = l.assigned_designer_id
-       ORDER BY l.id ASC`,
+       ORDER BY l.id DESC`,
     );
     const baseList = (rows as any[]).map((r) => ({
       ...r,
@@ -4161,7 +4284,7 @@ app.get("/api/leads/dqc-queue", async (req: Request, res: Response) => {
     }
     const [leadRows] = await pool.query(
       `SELECT id, project_name as projectName, project_stage as projectStage
-       FROM leads ORDER BY id ASC`,
+       FROM leads ORDER BY id DESC`,
     );
     const leads = leadRows as { id: number; projectName: string; projectStage: string }[];
     const [reviewRows] = await pool.query(

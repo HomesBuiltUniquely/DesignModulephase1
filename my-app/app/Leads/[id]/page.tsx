@@ -22,6 +22,7 @@ import {
     PopupD2MaskingRequest,
     PopupDqcSubmission,
     PopupPlaceholder,
+    Popup10pPaymentCollection,
     PopupGroupDescription,
     PopupMailLoopChain,
     GenericMeetingChecklistPopup,
@@ -124,6 +125,9 @@ export default function ProjectDetailPage() {
     const [momMinutes, setMomMinutes] = useState('');
     const [momReferenceFiles, setMomReferenceFiles] = useState<File[]>([]);
     const momFileInputRef = useRef<HTMLInputElement>(null);
+    // 40% payment screenshot upload (meeting completed & 40% payment request popup)
+    const [payment40pFiles, setPayment40pFiles] = useState<File[]>([]);
+    const payment40pInputRef = useRef<HTMLInputElement>(null);
 
     // Progress history: loaded from API and persisted when new events are added (recorded and maintained)
     const [historyEvents, setHistoryEvents] = useState<HistoryEvent[]>([]);
@@ -752,6 +756,23 @@ export default function ProjectDetailPage() {
     };
     const removeMomFile = (index: number) => setMomReferenceFiles((prev) => prev.filter((_, i) => i !== index));
 
+    const openPayment40pUpload = (accept: string) => {
+        payment40pInputRef.current?.setAttribute('accept', accept);
+        payment40pInputRef.current?.click();
+    };
+    const onPayment40pFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const files = e.target.files ? Array.from(e.target.files) : [];
+        setPayment40pFiles((prev) => [...prev, ...files]);
+        e.target.value = '';
+    };
+    const onPayment40pDrop = (e: React.DragEvent) => {
+        e.preventDefault();
+        const files = Array.from(e.dataTransfer.files || []);
+        setPayment40pFiles((prev) => [...prev, ...files]);
+    };
+    const onPayment40pDragOver = (e: React.DragEvent) => e.preventDefault();
+    const removePayment40pFile = (index: number) => setPayment40pFiles((prev) => prev.filter((_, i) => i !== index));
+
     const scrollMilestoneCards = (direction: 'left' | 'right') => {
         const el = milestoneCardsScrollRef.current;
         if (!el) return;
@@ -1110,35 +1131,7 @@ export default function ProjectDetailPage() {
                                             },
                                         );
                                     }
-
-                                    recordTaskComplete(
-                                        1,
-                                        'First cut design + quotation discussion meeting request',
-                                        {
-                                            description:
-                                                'First cut design uploaded and meeting request submitted.',
-                                            details:
-                                                designUploadFiles.length > 0
-                                                    ? {
-                                                          kind: 'file_upload',
-                                                          fileName:
-                                                              designUploadFiles
-                                                                  .map(
-                                                                      (f) =>
-                                                                          f.name,
-                                                                  )
-                                                                  .join(', '),
-                                                          status: 'Uploaded',
-                                                      }
-                                                    : undefined,
-                                            meta: {
-                                                meetingDate: meta?.meetingDate || null,
-                                                meetingTime: meta?.meetingTime || null,
-                                            },
-                                        },
-                                    );
                                     setDesignUploadFiles([]);
-                                    closePopup();
                                 } catch (err) {
                                     console.error(
                                         'first-cut-design upload failed',
@@ -1148,6 +1141,19 @@ export default function ProjectDetailPage() {
                                         'Failed to upload design files. Please try again.',
                                     );
                                 }
+                            }}
+                            onCompleteAndProceed={() => {
+                                recordTaskComplete(
+                                    1,
+                                    'First cut design + quotation discussion meeting request',
+                                    {
+                                        description:
+                                            'First cut design completed (100%) and meeting request submitted.',
+                                        meta: {},
+                                    },
+                                );
+                                setDesignUploadFiles([]);
+                                closePopup();
                             }}
                         />
                     )}
@@ -1243,11 +1249,20 @@ export default function ProjectDetailPage() {
                             onSubmit={() => { recordTaskComplete(1, 'DQC 1 submission - dwg + quotation'); closePopup(); }}
                         />
                     )}
-                    {popupContext.milestoneIndex === 2 && popupContext.taskName === '10% payment collection' && (
-                        <PopupPlaceholder message="10% payment collection" onMarkComplete={() => { recordTaskComplete(2, '10% payment collection'); closePopup(); }} />
+                    {popupContext.milestoneIndex === 2 && popupContext.taskName === '10% payment collection' && projectId != null && (
+                        <Popup10pPaymentCollection
+                            leadId={projectId}
+                            apiBase={API}
+                            sessionId={sessionId}
+                            onSuccess={() => {
+                                setCompletedTaskKeys((prev) => Array.from(new Set([...prev, taskKey(2, '10% payment collection')])));
+                                setUploadsVersion((v) => v + 1);
+                                closePopup();
+                            }}
+                        />
                     )}
                     {popupContext.milestoneIndex === 2 && popupContext.taskName === '10% payment approval' && (
-                        <PopupPlaceholder message="10% payment approval" onMarkComplete={() => { recordTaskComplete(2, '10% payment approval'); closePopup(); }} />
+                        <PopupPlaceholder message="10% payment approval is done by the finance team from their queue. Once they approve, this milestone will advance automatically—no action needed here." />
                     )}
                     {popupContext.milestoneIndex === 1 && popupContext.taskName === 'DQC 1 approval' && (
                         isDesigner ? (
@@ -1330,7 +1345,7 @@ export default function ProjectDetailPage() {
                             onDesignDrop={onDesignDrop}
                             onDesignDragOver={onDesignDragOver}
                             removeDesignFile={removeDesignFile}
-                            onSubmit={async (meta) => {
+                            onSubmit={async () => {
                                 if (!projectId) return;
                                 try {
                                     if (designUploadFiles.length > 0 && sessionId) {
@@ -1349,35 +1364,7 @@ export default function ProjectDetailPage() {
                                             },
                                         );
                                     }
-
-                                    recordTaskComplete(
-                                        4,
-                                        'Material selection meeting + quotation discussion',
-                                        {
-                                            description:
-                                                'Material selection meeting design uploaded and meeting request submitted.',
-                                            details:
-                                                designUploadFiles.length > 0
-                                                    ? {
-                                                          kind: 'file_upload',
-                                                          fileName:
-                                                              designUploadFiles
-                                                                  .map(
-                                                                      (f) =>
-                                                                          f.name,
-                                                                  )
-                                                                  .join(', '),
-                                                          status: 'Uploaded',
-                                                      }
-                                                    : undefined,
-                                            meta: {
-                                                meetingDate: meta?.meetingDate || null,
-                                                meetingTime: meta?.meetingTime || null,
-                                            },
-                                        },
-                                    );
                                     setDesignUploadFiles([]);
-                                    closePopup();
                                 } catch (err) {
                                     console.error(
                                         'material-selection upload failed',
@@ -1387,6 +1374,19 @@ export default function ProjectDetailPage() {
                                         'Failed to upload design files. Please try again.',
                                     );
                                 }
+                            }}
+                            onCompleteAndProceed={() => {
+                                recordTaskComplete(
+                                    4,
+                                    'Material selection meeting + quotation discussion',
+                                    {
+                                        description:
+                                            'Material selection meeting completed (100%) and meeting request submitted.',
+                                        meta: {},
+                                    },
+                                );
+                                setDesignUploadFiles([]);
+                                closePopup();
                             }}
                         />
                     )}
@@ -1528,7 +1528,7 @@ export default function ProjectDetailPage() {
                             onDesignDrop={onDesignDrop}
                             onDesignDragOver={onDesignDragOver}
                             removeDesignFile={removeDesignFile}
-                            onSubmit={async (meta) => {
+                            onSubmit={async () => {
                                 if (!projectId) return;
                                 try {
                                     if (designUploadFiles.length > 0 && sessionId) {
@@ -1547,35 +1547,7 @@ export default function ProjectDetailPage() {
                                             },
                                         );
                                     }
-
-                                    recordTaskComplete(
-                                        5,
-                                        'Design sign off',
-                                        {
-                                            description:
-                                                'Design sign off meeting design uploaded and request submitted.',
-                                            details:
-                                                designUploadFiles.length > 0
-                                                    ? {
-                                                          kind: 'file_upload',
-                                                          fileName:
-                                                              designUploadFiles
-                                                                  .map(
-                                                                      (f) =>
-                                                                          f.name,
-                                                                  )
-                                                                  .join(', '),
-                                                          status: 'Uploaded',
-                                                      }
-                                                    : undefined,
-                                            meta: {
-                                                meetingDate: meta?.meetingDate || null,
-                                                meetingTime: meta?.meetingTime || null,
-                                            },
-                                        },
-                                    );
                                     setDesignUploadFiles([]);
-                                    closePopup();
                                 } catch (err) {
                                     console.error(
                                         'design-signoff upload failed',
@@ -1586,9 +1558,25 @@ export default function ProjectDetailPage() {
                                     );
                                 }
                             }}
+                            onCompleteAndProceed={() => {
+                                recordTaskComplete(
+                                    5,
+                                    'Design sign off',
+                                    {
+                                        description:
+                                            'Design sign off completed (100%) and request submitted.',
+                                        meta: {},
+                                    },
+                                );
+                                setDesignUploadFiles([]);
+                                closePopup();
+                            }}
                         />
                     )}
-                    {popupContext.milestoneIndex === 5 && popupContext.taskName !== 'meeting completed & 40% payment request' && popupContext.taskName !== 'Design sign off' && (
+                    {popupContext.milestoneIndex === 5 && popupContext.taskName === '40% payment approval' && (
+                        <PopupPlaceholder message="40% payment approval is done by the finance team from their queue. Once they approve, this milestone will advance automatically—no action needed here." />
+                    )}
+                    {popupContext.milestoneIndex === 5 && popupContext.taskName !== 'meeting completed & 40% payment request' && popupContext.taskName !== 'Design sign off' && popupContext.taskName !== '40% payment approval' && (
                         <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(5, popupContext.taskName); closePopup(); }} />
                     )}
                     {popupContext.milestoneIndex === 5 && popupContext.taskName === 'meeting completed & 40% payment request' && (
@@ -1602,6 +1590,14 @@ export default function ProjectDetailPage() {
                             onMomDrop={onMomDrop}
                             removeMomFile={removeMomFile}
                             onClose={closePopup}
+                            show40pUpload={true}
+                            payment40pFiles={payment40pFiles}
+                            payment40pInputRef={payment40pInputRef}
+                            openPayment40pUpload={openPayment40pUpload}
+                            onPayment40pFilesSelected={onPayment40pFilesSelected}
+                            onPayment40pDrop={onPayment40pDrop}
+                            onPayment40pDragOver={onPayment40pDragOver}
+                            removePayment40pFile={removePayment40pFile}
                             onShareMom={async () => {
                                 if (!projectId) return;
                                 try {
@@ -1611,27 +1607,39 @@ export default function ProjectDetailPage() {
                                         momReferenceFiles.forEach((f) => fd.append('files', f));
                                         await fetch(`${API}/api/leads/${projectId}/mom-upload`, {
                                             method: 'POST',
-                                            headers: {
-                                                Authorization: `Bearer ${sessionId}`,
-                                            },
+                                            headers: { Authorization: `Bearer ${sessionId}` },
                                             body: fd,
                                         });
                                     }
-                                    recordTaskComplete(5, popupContext.taskName, {
-                                        description: 'Meeting completed & 40% payment request shared.',
-                                        details: {
-                                            kind: 'mom',
-                                            minutes: momMinutes,
-                                            referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
-                                        },
-                                    });
+                                    if (payment40pFiles.length > 0 && sessionId) {
+                                        const fd40 = new FormData();
+                                        payment40pFiles.forEach((f) => fd40.append('files', f));
+                                        await fetch(`${API}/api/leads/${projectId}/40p-payment-upload`, {
+                                            method: 'POST',
+                                            headers: { Authorization: `Bearer ${sessionId}` },
+                                            body: fd40,
+                                        });
+                                    }
+                                    if (payment40pFiles.length === 0) {
+                                        recordTaskComplete(5, 'meeting completed & 40% payment request', {
+                                            description: 'Meeting completed & 40% payment request shared.',
+                                            details: {
+                                                kind: 'mom',
+                                                minutes: momMinutes,
+                                                referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                            },
+                                        });
+                                    } else {
+                                        setCompletedTaskKeys((prev) => Array.from(new Set([...prev, taskKey(5, 'meeting completed & 40% payment request')])));
+                                    }
                                     setMomMinutes('');
                                     setMomReferenceFiles([]);
+                                    setPayment40pFiles([]);
                                     setUploadsVersion((v) => v + 1);
                                     closePopup();
                                 } catch (err) {
-                                    console.error('mom upload failed', err);
-                                    alert('Failed to save MOM. Please try again.');
+                                    console.error('MOM / 40% upload failed', err);
+                                    alert('Failed to save. Please try again.');
                                 }
                             }}
                         />
@@ -1681,7 +1689,10 @@ export default function ProjectDetailPage() {
                             }}
                         />
                     )}
-                    {popupContext.milestoneIndex === 6 && popupContext.taskName !== 'Cx approval for production' && (
+                    {popupContext.milestoneIndex === 6 && (popupContext.taskName === 'POC mail & Timeline submission' || popupContext.taskName === 'POC mail & Timeline submission ') && (
+                        <PopupPlaceholder message="An automatic mail will be sent to the customer (CX) for POC mail & Timeline submission. The milestone will advance when the mail is sent—no action needed here." />
+                    )}
+                    {popupContext.milestoneIndex === 6 && popupContext.taskName !== 'Cx approval for production' && popupContext.taskName !== 'POC mail & Timeline submission' && popupContext.taskName !== 'POC mail & Timeline submission ' && (
                         <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(6, popupContext.taskName); closePopup(); }} />
                     )}
                 </TaskModal>

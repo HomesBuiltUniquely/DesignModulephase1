@@ -11,7 +11,10 @@ type Props = {
   onDesignDrop: (e: React.DragEvent) => void;
   onDesignDragOver: (e: React.DragEvent) => void;
   removeDesignFile: (index: number) => void;
+  /** Send meeting invite + upload; does not complete task or close. Can be called multiple times. */
   onSubmit?: (meta?: { meetingDate?: string; meetingTime?: string }) => void;
+  /** Called when designer marks 100% complete; parent should record task complete and close. */
+  onCompleteAndProceed?: () => void;
 };
 
 /**
@@ -26,10 +29,12 @@ export default function PopupFirstCutDesign({
   onDesignDragOver,
   removeDesignFile,
   onSubmit,
+  onCompleteAndProceed,
 }: Props) {
   const [meetingDate, setMeetingDate] = useState("");
   const [meetingTime, setMeetingTime] = useState("");
   const [meetingMode, setMeetingMode] = useState<"online" | "offline">("online");
+  const [completionPercent, setCompletionPercent] = useState(0);
 
   return (
     <div className="w-full">
@@ -229,7 +234,39 @@ export default function PopupFirstCutDesign({
           )}
         </div>
         <div className="w-full border border-gray-200 mt-4" />
-        <div className="flex justify-end bg-gray-100 px-6 py-3">
+        {/* Design completion level bar: 0–100%; only "Mark 100% complete & proceed" advances the stage */}
+        <div className="px-6 py-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[14px] font-bold text-black">Design completion</span>
+            <span className="text-sm font-medium text-gray-700">{completionPercent}%</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={completionPercent}
+              onChange={(e) => setCompletionPercent(Number(e.target.value))}
+              className="flex-1 h-2.5 rounded-full appearance-none bg-gray-200 accent-blue-500"
+            />
+            <input
+              type="number"
+              min={0}
+              max={100}
+              value={completionPercent}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                setCompletionPercent(Math.min(100, Math.max(0, isNaN(v) ? 0 : v)));
+              }}
+              className="w-14 border border-gray-300 rounded-md px-2 py-1 text-sm text-center"
+            />
+          </div>
+          <p className="text-xs text-gray-500">
+            Send as many meeting invites as needed. When design is 100% complete, use &quot;Mark 100% complete & proceed&quot; to advance to the next stage.
+          </p>
+        </div>
+        <div className="w-full border border-gray-200" />
+        <div className="flex justify-end gap-2 bg-gray-100 px-6 py-3">
           <button
             type="button"
             onClick={() => onSubmit?.({ meetingDate, meetingTime })}
@@ -250,6 +287,14 @@ export default function PopupFirstCutDesign({
                 d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5"
               />
             </svg>
+          </button>
+          <button
+            type="button"
+            onClick={() => onCompleteAndProceed?.()}
+            disabled={completionPercent < 100}
+            className="bg-green-600 text-white px-4 h-9 rounded-md flex items-center gap-2 font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Mark 100% complete & proceed
           </button>
         </div>
       </div>

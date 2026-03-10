@@ -13,6 +13,15 @@ type Props = {
     removeMomFile: (index: number) => void;
     onClose: () => void;
     onShareMom?: () => void;
+    /** When true, show 40% payment screenshot upload section (for "meeting completed & 40% payment request"). */
+    show40pUpload?: boolean;
+    payment40pFiles?: File[];
+    payment40pInputRef?: RefObject<HTMLInputElement | null>;
+    openPayment40pUpload?: (accept: string) => void;
+    onPayment40pFilesSelected?: (e: React.ChangeEvent<HTMLInputElement>) => void;
+    onPayment40pDrop?: (e: React.DragEvent) => void;
+    onPayment40pDragOver?: (e: React.DragEvent) => void;
+    removePayment40pFile?: (index: number) => void;
 };
 
 /**
@@ -29,6 +38,14 @@ export default function PopupMeetingCompleted({
     removeMomFile,
     onClose,
     onShareMom,
+    show40pUpload,
+    payment40pFiles = [],
+    payment40pInputRef,
+    openPayment40pUpload,
+    onPayment40pFilesSelected,
+    onPayment40pDrop,
+    onPayment40pDragOver,
+    removePayment40pFile,
 }: Props) {
     return (
         <div className="px-6 pb-6 max-w-[640px] mt-6">
@@ -120,10 +137,41 @@ export default function PopupMeetingCompleted({
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5"><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>
                 <p className="text-xs text-gray-700"><strong>LEGAL DISCLAIMER:</strong> THIS MOM WILL BE TREATED AS OFFICIAL DESIGN DISCUSSION RECORD AND WILL BE USED AS THE PRIMARY REFERENCE FOR DISPUTE RESOLUTION OR STAGE SIGN-OFFS.</p>
             </div>
+
+            {show40pUpload && openPayment40pUpload && onPayment40pFilesSelected && removePayment40pFile && (
+                <div className="mb-6">
+                    <h3 className="text-sm font-bold text-gray-800 mb-1">40% payment screenshots (for finance)</h3>
+                    <p className="text-xs text-gray-500 mb-3">Upload payment screenshots. These will be sent to the finance team to review and approve; the milestone will advance automatically after approval.</p>
+                    <input ref={payment40pInputRef} type="file" className="hidden" multiple accept="image/*,.pdf,application/pdf" onChange={onPayment40pFilesSelected} />
+                    <div
+                        onClick={() => openPayment40pUpload('image/*,.pdf,application/pdf')}
+                        onDrop={(e) => { e.preventDefault(); onPayment40pDrop?.(e); }}
+                        onDragOver={(e) => { e.preventDefault(); onPayment40pDragOver?.(e); }}
+                        className="flex-1 min-w-[200px] border-2 border-dashed border-gray-300 rounded-xl bg-gray-50 p-6 flex flex-col items-center justify-center cursor-pointer hover:border-green-300 hover:bg-gray-100 transition-colors"
+                    >
+                        <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center mb-2">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-6 h-6 text-green-600"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5" /></svg>
+                        </div>
+                        <p className="text-sm font-medium text-gray-700">Drag & drop or click to add payment screenshots</p>
+                        <p className="text-xs text-gray-500 mt-0.5">Images or PDF</p>
+                    </div>
+                    {payment40pFiles.length > 0 && (
+                        <div className="mt-3 space-y-2">
+                            {payment40pFiles.map((file, index) => (
+                                <div key={`${file.name}-${index}`} className="flex items-center justify-between text-sm bg-gray-100 rounded-lg px-3 py-2">
+                                    <span className="text-gray-700 truncate flex-1">{file.name}</span>
+                                    <button type="button" onClick={() => removePayment40pFile(index)} className="text-red-600 hover:underline ml-2 flex-shrink-0">Remove</button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
+
             <div className="flex justify-end gap-3">
                 <button type="button" onClick={onClose} className="px-4 py-2 text-gray-700 font-medium hover:bg-gray-100 rounded-lg">Cancel</button>
                 <button type="button" onClick={onShareMom} className="px-5 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 flex items-center gap-1">
-                    Share the MOM <span className="pl-2"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="size-6 fill-white"><path strokeLinecap="round" strokeLinejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" /></svg></span>
+                    {show40pUpload ? 'Share MOM & send to finance' : 'Share the MOM'} <span className="pl-2"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="size-6 fill-white"><path strokeLinecap="round" strokeLinejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" /></svg></span>
                 </button>
             </div>
         </div>
