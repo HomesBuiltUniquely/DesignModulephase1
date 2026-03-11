@@ -3314,7 +3314,7 @@ app.post(
   },
 );
 
-// List uploads for a lead (designers see only approved; MMT manager/executive see all with status)
+// List uploads for a lead (designers see only approved; MMT manager/executive and Finance see all with status)
 app.get("/api/leads/:id/uploads", async (req: Request, res: Response) => {
   const leadId = Number(req.params.id);
   if (Number.isNaN(leadId))
@@ -3323,13 +3323,14 @@ app.get("/api/leads/:id/uploads", async (req: Request, res: Response) => {
     const user = await getUserFromSession(req);
     const role = (user?.role ?? "").toLowerCase();
     const isMmt = role === "mmt_manager" || role === "mmt_executive";
-    const onlyApproved = !isMmt;
+    const isFinance = role === "finance" || role === "admin";
+    const onlyApproved = !isMmt && !isFinance;
 
     const [rows] = await pool.query(
       onlyApproved
-        ? `SELECT id, original_name as originalName, uploaded_at as uploadedAt, status, s3_url as s3Url
+        ? `SELECT id, original_name as originalName, uploaded_at as uploadedAt, status, upload_type as uploadType, s3_url as s3Url
            FROM lead_uploads WHERE lead_id = ? AND status = 'approved' ORDER BY uploaded_at DESC`
-        : `SELECT id, original_name as originalName, uploaded_at as uploadedAt, status, s3_url as s3Url
+        : `SELECT id, original_name as originalName, uploaded_at as uploadedAt, status, upload_type as uploadType, s3_url as s3Url
            FROM lead_uploads WHERE lead_id = ? ORDER BY uploaded_at DESC`,
       [leadId],
     );
