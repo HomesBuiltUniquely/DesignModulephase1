@@ -22,15 +22,15 @@ export function renderDesignSignoffMeetingScheduledEmail(params: {
   <div style="min-height:100vh;background-color:#f8f5ee;padding:48px 16px;">
     <div style="max-width:640px;margin:0 auto;background-color:#ffffff;border-radius:24px;box-shadow:0 4px 20px rgba(0,0,0,0.08);overflow:hidden;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
       <div style="padding:48px 32px 40px 32px;">
-        <div style="display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:15px;">
-          <div style="width:36px;height:40px;">
-            <div style="width:36px;height:40px;background-color:#da4b3a;clip-path:polygon(18px 0, 36px 40px, 0 40px);"></div>
+        <div style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:15px;">
+          <div style="width:30px;height:30px;background-color:#d62323;border-radius:9px;flex:0 0 auto;text-align:center;line-height:30px;">
+            <span style="display:inline-block;color:#ffffff;font-weight:700;font-size:10px;line-height:1;letter-spacing:0.04em;vertical-align:middle;">HI</span>
           </div>
-          <div style="text-align:center;">
-            <p style="margin:0;font-size:16px;letter-spacing:0.08em;color:#333333;text-transform:uppercase;">HUB Interior</p>
-            <div style="width:70px;height:1px;background-color:#d4d4d4;margin:8px auto 0;"></div>
+          <div style="text-align:left;">
+            <p style="margin:0;font-size:24px;line-height:1.1;font-weight:600;color:#111827;letter-spacing:0.01em;">HUB Interior</p>
           </div>
         </div>
+        <div style="width:100%;height:1px;background-color:#f1e4d2;margin:0 0 20px 0;"></div>
         <h1 style="margin:0 0 20px 0;font-size:28px;line-height:1.2;font-weight:800;color:#000;text-align:center;">
           Design Approved – Let's Schedule Final Sign-Off
         </h1>

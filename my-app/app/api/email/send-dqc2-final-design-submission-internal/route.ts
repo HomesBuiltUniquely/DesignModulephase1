@@ -20,6 +20,8 @@ export async function POST(request: Request) {
       );
     }
 
+    const attachments = body.attachments as { filename: string; path: string }[] | undefined;
+
     const { subject, html } = renderDqc2FinalDesignSubmissionInternalEmail({
       dqcRepName,
       customerName,
@@ -33,6 +35,7 @@ export async function POST(request: Request) {
       subject,
       html,
       ...(cc && cc.length ? { cc } : {}),
+      ...(attachments && attachments.length ? { attachments } : {}),
     } as any);
 
     return NextResponse.json({ success: true, messageId: (info as any).messageId });

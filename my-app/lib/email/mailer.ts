@@ -46,6 +46,11 @@ export type SendMailOptions = {
   subject: string;
   html: string;
   cc?: string | string[];
+  /**
+   * Optional attachments for this email.
+   * We pass these through to Nodemailer as-is.
+   */
+  attachments?: { filename: string; path: string }[];
 };
 
 export async function sendMail(options: SendMailOptions) {
@@ -58,6 +63,9 @@ export async function sendMail(options: SendMailOptions) {
     to: options.to,
     subject: options.subject,
     html: options.html,
+    ...(options.attachments && options.attachments.length
+      ? { attachments: options.attachments }
+      : {}),
   };
   if (options.cc && (Array.isArray(options.cc) ? options.cc.length : options.cc)) {
     msg.cc = options.cc;
@@ -78,6 +86,9 @@ export async function sendMailForPayment(options: SendMailOptions) {
       to: options.to,
       subject: options.subject,
       html: options.html,
+      ...(options.attachments && options.attachments.length
+        ? { attachments: options.attachments }
+        : {}),
     };
     if (options.cc && (Array.isArray(options.cc) ? options.cc.length : options.cc)) {
       msg.cc = options.cc;

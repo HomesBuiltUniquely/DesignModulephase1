@@ -38,7 +38,7 @@ app.get("/api/health", (_req, res) => {
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "root@root",
+  password: process.env.DB_PASSWORD || "root",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -429,13 +429,14 @@ function toLeadRow(payload: any) {
     formData.sales_lead_name ||
     fetched.sales_lead_name ||
     "Unnamed";
-  // Sales closure: FULL_10% → 10-20%; TOKEN, PARTIAL, or any other (e.g. Select) → Pre 10%
   const payment =
     formData.payment_received || payload?.payment_received || "";
   const stage =
     payment === "FULL_10%"
       ? "10-20%"
-      : "Pre 10%";
+      : payment === "PARTIAL" || payment === "TOKEN"
+        ? "Pre 10%"
+        : formData.status_of_project || payload?.status_of_project || "Active";
 
   return {
     pid: "", // you can generate a PID here if needed
@@ -1482,7 +1483,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
     );
 
     // Fire-and-forget: trigger milestone-specific customer emails where defined
-    const emailRoutePath = (() => {
+    const emailRoutePath: string | null = (() => {
       const t = String(taskName).trim();
       switch (milestoneIndex) {
         // Milestone 0: D1 SITE MEASUREMENT
@@ -1497,7 +1498,8 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         case 1:
           if (t === "First cut design + quotation discussion meeting request") {
             // Sl no 5 – first cut design + quotation discussion (meeting request)
-            return "/api/email/send-dqc1-first-cut-design-scheduled";
+            // Email invite is triggered directly from /api/leads/:id/first-cut-design-upload (Send Invite button).
+            // Do not fire an additional email on task completion.
           }
           if (t === "meeting completed") {
             // After DQC1 first‑cut meeting completed → project design timeline mail
@@ -1747,14 +1749,53 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         // 10% payment collection: same dual emails as DQC 1 approval (fallback when marked complete manually)
         try {
           const [leadRows] = await pool.query(
-            `SELECT l.pid, l.project_name as projectName, l.client_email as clientEmail, l.payload,
+            `SELECT l.pid, l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
                     u.id as designerId, u.email as designerEmail, u.name as designerName
              FROM leads l
              LEFT JOIN users u ON u.id = l.assigned_designer_id
              WHERE l.id = ?`,
             [id],
           );
-          const leadRow = (leadRows as any[])[0];
+          let leadRow = (leadRows as any[])[0];
+          let designerEmail = leadRow?.designerEmail || null;
+          let designerName = leadRow?.designerName || "Designer";
+
+          if (!designerEmail && leadRow) {
+            const [d1Rows] = await pool.query(
+              `SELECT u.email as designerEmail, u.name as designerName
+               FROM lead_d1_assignments a
+               LEFT JOIN users u ON u.id = a.assigned_to_user_id
+               WHERE a.lead_id = ? ORDER BY a.created_at DESC LIMIT 1`,
+              [id],
+            );
+            const d1Row = (d1Rows as any[])[0];
+            if (d1Row?.designerEmail) {
+              designerEmail = d1Row.designerEmail;
+              designerName = d1Row.designerName || designerName;
+            }
+          }
+          if (!designerEmail && leadRow) {
+            let payload: any = {};
+            try {
+              payload = leadRow.payload ? JSON.parse(leadRow.payload) : {};
+            } catch {
+              payload = {};
+            }
+            const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
+            const dn = formData.designer_name || formData.designerName || payload.designer_name || payload.designerName || "";
+            if (dn) {
+              const [uRows] = await pool.query(
+                "SELECT email, name FROM users WHERE (name = ? OR email = ?) AND role IN ('designer', 'design_manager') LIMIT 1",
+                [dn, dn],
+              );
+              const uRow = (uRows as any[])[0];
+              if (uRow) {
+                designerEmail = uRow.email;
+                designerName = uRow.name || designerName;
+              }
+            }
+          }
+
           if (leadRow) {
             let payload: any = {};
             try {
@@ -1780,10 +1821,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const ecName =
               payload.experience_center ||
               payload?.form?.experience_center ||
-              leadRow.experienceCenter ||
               "Experience Center";
-            const designerName = leadRow.designerName || "Designer";
-            const designerEmail = leadRow.designerEmail || null;
             const projectId = leadRow.pid || "";
             const propertyType = formData.property_configuration || "";
             const rawOrderValue = formData.order_value ?? payload.order_value ?? null;
@@ -1797,6 +1835,11 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               }
             }
 
+            if (!designerEmail) {
+              console.warn("[10P_COLLECTION_DUAL] Skipping internal email: no designer email (tried assigned_designer_id, lead_d1_assignments, designer_name lookup)", {
+                leadId: id,
+              });
+            }
             if (designerEmail && customerName && designerName && ecName) {
               fetch(`${FRONTEND_BASE}/api/email/send-ten-percent-payment-internal`, {
                 method: "POST",
@@ -1859,8 +1902,18 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             "SELECT email, name FROM users WHERE role = 'project_manager' AND email IS NOT NULL ORDER BY id ASC LIMIT 1",
           );
           const pmRow = (pmRows as any[])[0];
-          const pmEmail = pmRow?.email || null;
-          const pmName = pmRow?.name || null;
+          let pmEmail = pmRow?.email || null;
+          let pmName = pmRow?.name || null;
+          if (!pmEmail) {
+            const [mmtRows] = await pool.query(
+              "SELECT email, name FROM users WHERE role IN ('mmt_manager', 'mmt_executive') AND email IS NOT NULL ORDER BY id ASC LIMIT 1",
+            );
+            const mmtRow = (mmtRows as any[])[0];
+            if (mmtRow) {
+              pmEmail = mmtRow.email;
+              pmName = mmtRow.name || "MMT";
+            }
+          }
           if (row) {
             let payload: any = {};
             try {
@@ -1989,30 +2042,65 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const designerName = leadRow.designerName || "Designer";
             const projectValue = payload.project_value || payload?.form?.project_value || "";
 
-            const [dqcRows] = await pool.query(
-              "SELECT email, name FROM users WHERE role IN ('dqc_manager', 'dqe') ORDER BY id ASC LIMIT 1",
-            );
-            const dqcUser = (dqcRows as any[])[0];
+          const [dqcRows] = await pool.query(
+            "SELECT email, name FROM users WHERE role IN ('dqc_manager', 'dqe') ORDER BY id ASC LIMIT 1",
+          );
+          const dqcUser = (dqcRows as any[])[0];
 
-            if (dqcUser && dqcUser.email && customerName && ecName && designerName && dqcUser.name) {
-              fetch(`${FRONTEND_BASE}/api/email/send-dqc2-final-design-submission-internal`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  to: dqcUser.email,
-                  customerName,
-                  ecName,
-                  designerName,
-                  dqcRepName: dqcUser.name || "DQC Team",
-                  projectValue: String(projectValue || ""),
-                }),
-              }).catch((err) => {
-                console.error("DQC2 submission internal email trigger error (non-fatal)", {
-                  leadId: id,
-                  error: err,
-                });
+          // Collect latest DQC2 drawing & quotation uploads for this lead (if S3 is configured)
+          let attachments: { filename: string; path: string }[] | undefined;
+          if (process.env.AWS_ACCESS_KEY_ID) {
+            try {
+              const [uploadRows] = await pool.query(
+                `SELECT original_name as originalName, upload_type as uploadType, s3_url as s3Url
+                 FROM lead_uploads
+                 WHERE lead_id = ? AND upload_type IN ('dqc2_drawing', 'dqc2_quotation') AND status = 'approved' AND s3_url IS NOT NULL
+                 ORDER BY id DESC`,
+                [id],
+              );
+              const list = (uploadRows as any[]) || [];
+              const seenTypes = new Set<string>();
+              attachments = list
+                .map((r) => {
+                  const type = (r.uploadType || r.uploadtype || "").toString();
+                  if (!type || seenTypes.has(type)) return null;
+                  seenTypes.add(type);
+                  const name = (r.originalName || "").toString();
+                  const url = (r.s3Url || "").toString();
+                  return name && url ? { filename: name, path: url } : null;
+                })
+                .filter((v): v is { filename: string; path: string } => !!v);
+              if (attachments.length === 0) {
+                attachments = undefined;
+              }
+            } catch (attachErr) {
+              console.error("Failed to load DQC2 submission attachments (non-fatal)", {
+                leadId: id,
+                error: attachErr,
               });
             }
+          }
+
+          if (dqcUser && dqcUser.email && customerName && ecName && designerName && dqcUser.name) {
+            fetch(`${FRONTEND_BASE}/api/email/send-dqc2-final-design-submission-internal`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                to: dqcUser.email,
+                customerName,
+                ecName,
+                designerName,
+                dqcRepName: dqcUser.name || "DQC Team",
+                projectValue: String(projectValue || ""),
+                ...(attachments ? { attachments } : {}),
+              }),
+            }).catch((err) => {
+              console.error("DQC2 submission internal email trigger error (non-fatal)", {
+                leadId: id,
+                error: err,
+              });
+            });
+          }
             // DQC 2 submission: internal only (no CX email)
           }
         } catch (err) {
@@ -2021,7 +2109,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             error: err,
           });
         }
-      } else if (emailRoutePath === "/api/email/send-dqc1-first-cut-design-scheduled") {
+      } else if (emailRoutePath === ("/api/email/send-dqc1-first-cut-design-scheduled" as string)) {
         try {
           const [rows] = await pool.query(
             "SELECT project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?",
@@ -2043,6 +2131,36 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               row.projectName ||
               "Customer";
 
+            // Collect latest first-cut design uploads (if any) to attach when S3 URLs are available.
+            let attachments: { filename: string; path: string }[] | undefined;
+            if (process.env.AWS_ACCESS_KEY_ID) {
+              try {
+                const [uploadRows] = await pool.query(
+                  `SELECT original_name as originalName, s3_url as s3Url
+                   FROM lead_uploads
+                   WHERE lead_id = ? AND upload_type = 'first_cut_design' AND status = 'approved' AND s3_url IS NOT NULL
+                   ORDER BY id DESC`,
+                  [id],
+                );
+                const list = (uploadRows as any[]) || [];
+                attachments = list
+                  .map((r) => {
+                    const name = (r.originalName || "").toString();
+                    const url = (r.s3Url || "").toString();
+                    return name && url ? { filename: name, path: url } : null;
+                  })
+                  .filter((v): v is { filename: string; path: string } => !!v);
+                if (attachments.length === 0) {
+                  attachments = undefined;
+                }
+              } catch (attachErr) {
+                console.error("Failed to load first-cut design attachments (non-fatal)", {
+                  leadId: id,
+                  error: attachErr,
+                });
+              }
+            }
+
             if (customerEmail) {
               const meetingDate = meta?.meetingDate || null;
               const meetingTime = meta?.meetingTime || null;
@@ -2055,6 +2173,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   customerName,
                   meetingDate,
                   meetingTime,
+                  ...(attachments ? { attachments } : {}),
                 }),
               }).catch((err) => {
                 console.error("DQC1 first-cut email trigger error (non-fatal)", {
@@ -2610,7 +2729,7 @@ app.get("/api/leads/finance-10p-queue", async (req: Request, res: Response) => {
       return res.status(403).json({ message: "Only finance or admin can access this queue" });
     }
     const [allLeads] = await pool.query(
-      "SELECT id, project_name as projectName, project_stage as projectStage FROM leads ORDER BY id DESC"
+      "SELECT id, project_name as projectName, project_stage as projectStage FROM leads ORDER BY id ASC"
     );
     const leads = allLeads as { id: number; projectName: string; projectStage: string }[];
     const [completions] = await pool.query(
@@ -2636,62 +2755,6 @@ app.get("/api/leads/finance-10p-queue", async (req: Request, res: Response) => {
     return res.status(500).json({ message: "Failed to load queue" });
   }
 });
-
-// Project/lead side: upload 10% payment screenshots for finance to review and approve. Any authenticated user with lead access.
-app.post(
-  "/api/leads/:id/10p-payment-upload",
-  upload.array("files"),
-  async (req: Request, res: Response) => {
-    const leadId = Number(req.params.id);
-    if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
-    const files = (req as any).files as Express.Multer.File[] | undefined;
-    if (!files || files.length === 0) return res.status(400).json({ message: "At least one file is required" });
-    try {
-      const user = await getUserFromSession(req);
-      if (!user) return res.status(401).json({ message: "Unauthorized" });
-      const now = new Date();
-      for (const file of files) {
-        let s3Url: string | null = null;
-        if (process.env.AWS_ACCESS_KEY_ID) {
-          s3Url = await uploadLeadFileToS3(leadId, file.path, file.originalname, file.mimetype);
-        }
-        await pool.query(
-          `INSERT INTO lead_uploads
-           (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'payment_10p', ?)`,
-          [leadId, user.id, file.originalname, file.filename, file.path, file.mimetype, file.size, now, s3Url]
-        );
-      }
-      const ev = {
-        id: `10p-upload-${Date.now()}`,
-        type: "file_upload",
-        taskName: "10% payment collection",
-        milestoneName: "10% PAYMENT",
-        timestamp: now.toISOString(),
-        description: `10% payment screenshots uploaded for finance review: ${files.map((f) => f.originalname).join(", ")}`,
-        user: { name: user.name ?? "User" },
-        details: { kind: "payment_10p", fileNames: files.map((f) => f.originalname) },
-      };
-      await addLeadHistoryEvent(leadId, ev);
-      const [rows] = await pool.query(
-        "SELECT 1 FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 2 AND task_name = ?",
-        [leadId, "10% payment collection"]
-      );
-      if ((rows as any[]).length === 0) {
-        await pool.query(
-          `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
-           VALUES (?, 2, '10% payment collection', ?)
-           ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
-          [leadId, now]
-        );
-      }
-      return res.status(201).json({ ok: true });
-    } catch (err) {
-      console.error("10p-payment-upload error", err);
-      return res.status(500).json({ message: "Failed to upload" });
-    }
-  }
-);
 
 // Finance: upload payment screenshot(s) for a lead. Marks "10% payment collection" complete on first upload.
 app.post(
@@ -2769,10 +2832,6 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
        ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
       [leadId, now]
     );
-    await pool.query(
-      "UPDATE lead_uploads SET status = 'approved' WHERE lead_id = ? AND upload_type = 'payment_10p' AND status = 'pending'",
-      [leadId]
-    );
     const ev = {
       id: `10p-approval-${Date.now()}`,
       type: "note",
@@ -2831,6 +2890,35 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
         });
         const transactionRef = projectId ? `${projectId}-10PCT-${Date.now()}` : `10PCT-${Date.now()}`;
 
+        // Collect approved payment screenshots (if any) to attach to the email when S3 URLs are available.
+        let attachments: { filename: string; path: string }[] | undefined;
+        if (process.env.AWS_ACCESS_KEY_ID) {
+          try {
+            const [uploadRows] = await pool.query(
+              `SELECT original_name as originalName, s3_url as s3Url
+               FROM lead_uploads
+               WHERE lead_id = ? AND upload_type = 'payment_screenshot' AND status = 'approved' AND s3_url IS NOT NULL`,
+              [leadId],
+            );
+            const list = (uploadRows as any[]) || [];
+            attachments = list
+              .map((r) => {
+                const name = (r.originalName || "").toString();
+                const url = (r.s3Url || "").toString();
+                return name && url ? { filename: name, path: url } : null;
+              })
+              .filter((v): v is { filename: string; path: string } => !!v);
+            if (attachments.length === 0) {
+              attachments = undefined;
+            }
+          } catch (attachErr) {
+            console.error("Failed to load payment screenshot attachments (non-fatal)", {
+              leadId,
+              error: attachErr,
+            });
+          }
+        }
+
         if (customerEmail) {
           fetch(`${FRONTEND_BASE}/api/email/send-ten-percent-payment-approval`, {
             method: "POST",
@@ -2842,6 +2930,7 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
               amountPaid: amountPaid || undefined,
               paymentDate,
               transactionRef,
+              ...(attachments ? { attachments } : {}),
             }),
           }).catch((emailErr) => {
             console.error("10% payment approval email trigger error (non-fatal)", emailErr);
@@ -2858,62 +2947,6 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
   }
 });
 
-// Project/lead side: upload 40% payment screenshots for finance to review and approve.
-app.post(
-  "/api/leads/:id/40p-payment-upload",
-  upload.array("files"),
-  async (req: Request, res: Response) => {
-    const leadId = Number(req.params.id);
-    if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
-    const files = (req as any).files as Express.Multer.File[] | undefined;
-    if (!files || files.length === 0) return res.status(400).json({ message: "At least one file is required" });
-    try {
-      const user = await getUserFromSession(req);
-      if (!user) return res.status(401).json({ message: "Unauthorized" });
-      const now = new Date();
-      for (const file of files) {
-        let s3Url: string | null = null;
-        if (process.env.AWS_ACCESS_KEY_ID) {
-          s3Url = await uploadLeadFileToS3(leadId, file.path, file.originalname, file.mimetype);
-        }
-        await pool.query(
-          `INSERT INTO lead_uploads
-           (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'payment_40p', ?)`,
-          [leadId, user.id, file.originalname, file.filename, file.path, file.mimetype, file.size, now, s3Url]
-        );
-      }
-      const ev = {
-        id: `40p-upload-${Date.now()}`,
-        type: "file_upload",
-        taskName: "meeting completed & 40% payment request",
-        milestoneName: "40% PAYMENT",
-        timestamp: now.toISOString(),
-        description: `40% payment screenshots uploaded for finance review: ${files.map((f) => f.originalname).join(", ")}`,
-        user: { name: user.name ?? "User" },
-        details: { kind: "payment_40p", fileNames: files.map((f) => f.originalname) },
-      };
-      await addLeadHistoryEvent(leadId, ev);
-      const [rows] = await pool.query(
-        "SELECT 1 FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 5 AND task_name = ?",
-        [leadId, "meeting completed & 40% payment request"]
-      );
-      if ((rows as any[]).length === 0) {
-        await pool.query(
-          `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
-           VALUES (?, 5, 'meeting completed & 40% payment request', ?)
-           ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
-          [leadId, now]
-        );
-      }
-      return res.status(201).json({ ok: true });
-    } catch (err) {
-      console.error("40p-payment-upload error", err);
-      return res.status(500).json({ message: "Failed to upload" });
-    }
-  }
-);
-
 // ----- Finance 40% payment: same as 10% – queue, upload screenshots, approve -----
 app.get("/api/leads/finance-40p-queue", async (req: Request, res: Response) => {
   try {
@@ -2924,7 +2957,7 @@ app.get("/api/leads/finance-40p-queue", async (req: Request, res: Response) => {
       return res.status(403).json({ message: "Only finance or admin can access this queue" });
     }
     const [allLeads] = await pool.query(
-      "SELECT id, project_name as projectName FROM leads ORDER BY id DESC"
+      "SELECT id, project_name as projectName FROM leads ORDER BY id ASC"
     );
     const leads = allLeads as { id: number; projectName: string }[];
     const [completions] = await pool.query(
@@ -3021,10 +3054,6 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
        ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
       [leadId, now]
     );
-    await pool.query(
-      "UPDATE lead_uploads SET status = 'approved' WHERE lead_id = ? AND upload_type = 'payment_40p' AND status = 'pending'",
-      [leadId]
-    );
     const ev = {
       id: `40p-approval-${Date.now()}`,
       type: "note",
@@ -3064,6 +3093,36 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
           month: "long",
           year: "numeric",
         });
+
+        // Collect approved 40% payment screenshots (if any) to attach when S3 URLs are available.
+        let attachments: { filename: string; path: string }[] | undefined;
+        if (process.env.AWS_ACCESS_KEY_ID) {
+          try {
+            const [uploadRows] = await pool.query(
+              `SELECT original_name as originalName, s3_url as s3Url
+               FROM lead_uploads
+               WHERE lead_id = ? AND upload_type = 'payment_40p' AND status = 'approved' AND s3_url IS NOT NULL`,
+              [leadId],
+            );
+            const list = (uploadRows as any[]) || [];
+            attachments = list
+              .map((r) => {
+                const name = (r.originalName || "").toString();
+                const url = (r.s3Url || "").toString();
+                return name && url ? { filename: name, path: url } : null;
+              })
+              .filter((v): v is { filename: string; path: string } => !!v);
+            if (attachments.length === 0) {
+              attachments = undefined;
+            }
+          } catch (attachErr) {
+            console.error("Failed to load 40% payment attachments (non-fatal)", {
+              leadId,
+              error: attachErr,
+            });
+          }
+        }
+
         fetch(`${FRONTEND_BASE}/api/email/send-design-signoff-40pc-payment-approval`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -3074,6 +3133,7 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
             amountReceived: formData.forty_percent_amount ?? payload?.forty_percent_amount ?? undefined,
             dateOfReceipt: dateStr,
             modeOfPayment: "Bank Transfer",
+            ...(attachments ? { attachments } : {}),
           }),
         }).catch((emailErr) => {
           console.error("40% payment approval email trigger error (non-fatal)", emailErr);
@@ -3110,12 +3170,10 @@ app.post(
       if (process.env.AWS_ACCESS_KEY_ID) {
         s3Url = await uploadLeadFileToS3(leadId, file.path, file.originalname, file.mimetype);
       }
-      const uploadType = (req.body?.uploadType as string) || "";
-      const isD2 = uploadType === "d2_masking";
       await pool.query(
         `INSERT INTO lead_uploads
-         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, s3_url)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           leadId,
           uploaderId,
@@ -3126,10 +3184,12 @@ app.post(
           file.size,
           now,
           status,
-          uploadType || null,
           s3Url,
         ],
       );
+
+      const uploadType = (req.body?.uploadType as string) || "";
+      const isD2 = uploadType === "d2_masking";
       const ev = {
         id: `upload-${Date.now()}`,
         type: "file_upload",
@@ -3141,33 +3201,6 @@ app.post(
         details: { kind: "file_upload", fileName: file.originalname, size: `${file.size}` },
       };
       await addLeadHistoryEvent(leadId, ev);
-
-      // If this is a D1 upload, mark the "D1 files upload" task complete for milestone 0.
-      // If this is D2 masking upload, mark "D2 - files upload" complete for milestone 3.
-      if (!isD2) {
-        try {
-          await pool.query(
-            `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
-             VALUES (?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
-            [leadId, 0, "D1 files upload", now],
-          );
-        } catch (completeErr) {
-          console.error("mark D1 files upload complete error", completeErr);
-          // do not fail the upload because of completion bookkeeping
-        }
-      } else {
-        try {
-          await pool.query(
-            `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
-             VALUES (?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
-            [leadId, 3, "D2 - files upload", now],
-          );
-        } catch (completeErr) {
-          console.error("mark D2 files upload complete error", completeErr);
-        }
-      }
 
       return res.status(201).json({ ok: true });
     } catch (err) {
@@ -3186,14 +3219,13 @@ app.get("/api/leads/:id/uploads", async (req: Request, res: Response) => {
     const user = await getUserFromSession(req);
     const role = (user?.role ?? "").toLowerCase();
     const isMmt = role === "mmt_manager" || role === "mmt_executive";
-    const isFinance = role === "finance" || role === "admin";
-    const onlyApproved = !isMmt && !isFinance;
+    const onlyApproved = !isMmt;
 
     const [rows] = await pool.query(
       onlyApproved
-        ? `SELECT id, original_name as originalName, uploaded_at as uploadedAt, status, s3_url as s3Url, upload_type as uploadType
+        ? `SELECT id, original_name as originalName, uploaded_at as uploadedAt, status, s3_url as s3Url
            FROM lead_uploads WHERE lead_id = ? AND status = 'approved' ORDER BY uploaded_at DESC`
-        : `SELECT id, original_name as originalName, uploaded_at as uploadedAt, status, s3_url as s3Url, upload_type as uploadType
+        : `SELECT id, original_name as originalName, uploaded_at as uploadedAt, status, s3_url as s3Url
            FROM lead_uploads WHERE lead_id = ? ORDER BY uploaded_at DESC`,
       [leadId],
     );
@@ -3221,27 +3253,6 @@ app.post("/api/leads/:leadId/uploads/:uploadId/approve", async (req: Request, re
     );
     if ((result as any).affectedRows === 0)
       return res.status(404).json({ message: "Upload not found" });
-
-    // After approval, if this upload is D2 masking upload, ensure the D2 files task is marked complete.
-    const [rows] = await pool.query(
-      "SELECT upload_type FROM lead_uploads WHERE id = ? AND lead_id = ?",
-      [uploadId, leadId],
-    );
-    const uploadType = (rows as { upload_type?: string }[])[0]?.upload_type || "";
-    if (uploadType === "d2_masking") {
-      const now = new Date();
-      try {
-        await pool.query(
-          `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
-           VALUES (?, ?, ?, ?)
-           ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
-          [leadId, 3, "D2 - files upload", now],
-        );
-      } catch (err) {
-        console.error("mark D2 files upload complete on approve error", err);
-      }
-    }
-
     return res.json({ ok: true });
   } catch (err) {
     console.error("approve upload error", err);
@@ -3293,16 +3304,14 @@ app.get("/api/leads/:leadId/uploads/:uploadId/download", async (req: Request, re
     const user = await getUserFromSession(req);
     const role = (user?.role ?? "").toLowerCase();
     const isMmt = role === "mmt_manager" || role === "mmt_executive";
-    const isFinance = role === "finance" || role === "admin";
     const [rows] = await pool.query(
-      `SELECT stored_path as storedPath, original_name as originalName, status, s3_url as s3Url, upload_type as uploadType
+      `SELECT stored_path as storedPath, original_name as originalName, status, s3_url as s3Url
        FROM lead_uploads WHERE id = ? AND lead_id = ?`,
       [uploadId, leadId],
     );
     const row = (rows as any[])[0];
     if (!row) return res.status(404).json({ message: "Not found" });
-    const isPaymentUpload = (row.uploadType === "payment_10p" || row.uploadType === "payment_screenshot" || row.uploadType === "payment_40p");
-    if (!isMmt && !(isFinance && isPaymentUpload) && row.status !== "approved")
+    if (!isMmt && row.status !== "approved")
       return res.status(403).json({ message: "Only approved uploads are available" });
     if (row.s3Url) {
       try {
@@ -3572,6 +3581,18 @@ app.post(
                 designerName,
                 projectValue: String(projectValue || ""),
                 dqcRepName: dqcUser.name || "DQC Team",
+                ...(drawingS3 || quotationS3
+                  ? {
+                      attachments: [
+                        ...(drawingS3
+                          ? [{ filename: drawingFile.originalname, path: drawingS3 }]
+                          : []),
+                        ...(quotationS3
+                          ? [{ filename: quotationFile.originalname, path: quotationS3 }]
+                          : []),
+                      ],
+                    }
+                  : {}),
               }),
             }).catch((err) => {
               console.error("DQC1 review request internal email trigger error (non-fatal)", {
@@ -3736,6 +3757,11 @@ app.post(
         return res.status(400).json({ message: "At least one file is required" });
       }
       const now = new Date();
+      const meetingDateRaw = (req.body as any)?.meetingDate;
+      const meetingTimeRaw = (req.body as any)?.meetingTime;
+      const meetingDate = typeof meetingDateRaw === "string" && meetingDateRaw.trim() ? meetingDateRaw.trim() : null;
+      const meetingTime = typeof meetingTimeRaw === "string" && meetingTimeRaw.trim() ? meetingTimeRaw.trim() : null;
+      const attachments: { filename: string; path: string }[] = [];
       for (const file of files) {
         let s3Url: string | null = null;
         if (process.env.AWS_ACCESS_KEY_ID) {
@@ -3762,6 +3788,12 @@ app.post(
             s3Url,
           ],
         );
+        if (s3Url) {
+          attachments.push({
+            filename: file.originalname,
+            path: s3Url,
+          });
+        }
       }
       const names = files.map((f) => f.originalname).join(", ");
       const ev = {
@@ -3775,6 +3807,54 @@ app.post(
         details: { kind: "first_cut_design", files: files.map((f) => ({ name: f.originalname })) },
       };
       await addLeadHistoryEvent(leadId, ev);
+      // Fire-and-forget: send first-cut design invite email immediately when designer clicks "Send Invite"
+      try {
+        const [rows] = await pool.query(
+          "SELECT project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?",
+          [leadId],
+        );
+        const row = (rows as any[])[0];
+        if (row) {
+          let payload: any = {};
+          try {
+            payload = row.payload ? JSON.parse(row.payload) : {};
+          } catch {
+            payload = {};
+          }
+          const customerEmail =
+            row.clientEmail || payload.email || payload?.form?.email || null;
+          const customerName =
+            payload.customer_name ||
+            payload?.form?.customer_name ||
+            row.projectName ||
+            "Customer";
+
+          if (customerEmail) {
+            fetch(`${FRONTEND_BASE}/api/email/send-dqc1-first-cut-design-scheduled`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                to: customerEmail,
+                customerName,
+                meetingDate,
+                meetingTime,
+                ...(attachments.length ? { attachments } : {}),
+              }),
+            }).catch((err) => {
+              console.error("DQC1 first-cut invite email trigger error (non-fatal)", {
+                leadId,
+                error: err,
+              });
+            });
+          }
+        }
+      } catch (emailErr) {
+        console.error("DQC1 first-cut invite email prepare error (non-fatal)", {
+          leadId,
+          error: emailErr,
+        });
+      }
+
       return res.status(201).json({ ok: true });
     } catch (err) {
       console.error("first-cut-design-upload error", err);
@@ -4157,7 +4237,7 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
                   l.create_at as createAt, l.update_at as updateAt
            FROM leads l
            INNER JOIN lead_d2_assignments a ON a.lead_id = l.id AND a.assigned_to_user_id = ?
-           ORDER BY l.id DESC`,
+           ORDER BY l.id ASC`,
           [user.id],
         );
         const list = (rows as any[]).map((r) => ({ ...r, isOnHold: !!r.isOnHold }));
@@ -4170,7 +4250,7 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
                 l.create_at as createAt, l.update_at as updateAt
          FROM leads l
          INNER JOIN lead_d2_assignments a ON a.lead_id = l.id
-         ORDER BY l.id DESC`,
+         ORDER BY l.id ASC`,
       );
       const list = (rows as any[]).map((r) => ({ ...r, isOnHold: !!r.isOnHold }));
       return res.json(list);
@@ -4186,7 +4266,7 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
                 l.create_at as createAt, l.update_at as updateAt
          FROM leads l
          INNER JOIN lead_d1_assignments a ON a.lead_id = l.id AND a.assigned_to_user_id = ?
-         ORDER BY l.id DESC`,
+         ORDER BY l.id ASC`,
         [userId],
       );
       const list = (rows as any[]).map((r) => ({ ...r, isOnHold: !!r.isOnHold }));
@@ -4202,7 +4282,7 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
               u.name as designerName
        FROM leads l
        LEFT JOIN users u ON u.id = l.assigned_designer_id
-       ORDER BY l.id DESC`,
+       ORDER BY l.id ASC`,
     );
     const baseList = (rows as any[]).map((r) => ({
       ...r,
@@ -4284,7 +4364,7 @@ app.get("/api/leads/dqc-queue", async (req: Request, res: Response) => {
     }
     const [leadRows] = await pool.query(
       `SELECT id, project_name as projectName, project_stage as projectStage
-       FROM leads ORDER BY id DESC`,
+       FROM leads ORDER BY id ASC`,
     );
     const leads = leadRows as { id: number; projectName: string; projectStage: string }[];
     const [reviewRows] = await pool.query(

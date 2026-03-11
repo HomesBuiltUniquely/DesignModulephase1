@@ -1137,6 +1137,13 @@ export default function ProjectDetailPage() {
                                 try {
                                     if (designUploadFiles.length > 0 && sessionId) {
                                         const fd = new FormData();
+                                        // meeting meta is used by backend to personalise the invite email
+                                        if (meta?.meetingDate) {
+                                            fd.append('meetingDate', meta.meetingDate);
+                                        }
+                                        if (meta?.meetingTime) {
+                                            fd.append('meetingTime', meta.meetingTime);
+                                        }
                                         designUploadFiles.forEach((f) =>
                                             fd.append('files', f),
                                         );

@@ -19,6 +19,8 @@ export async function POST(request: Request) {
       );
     }
 
+    const attachments = body.attachments as { filename: string; path: string }[] | undefined;
+
     const html = renderTenPercentPaymentApprovalEmail({
       customerName,
       projectId,
@@ -31,6 +33,7 @@ export async function POST(request: Request) {
       to,
       subject: '10% Payment Confirmation',
       html,
+      ...(attachments && attachments.length ? { attachments } : {}),
     });
 
     return NextResponse.json({ success: true, messageId: info.messageId });

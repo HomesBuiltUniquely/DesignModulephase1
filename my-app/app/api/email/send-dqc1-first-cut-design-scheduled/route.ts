@@ -20,6 +20,8 @@ export async function POST(request: Request) {
       );
     }
 
+    const attachments = body.attachments as { filename: string; path: string }[] | undefined;
+
     const html = renderDqc1FirstCutDesignScheduledEmail({
       customerName,
       meetingDate,
@@ -33,6 +35,7 @@ export async function POST(request: Request) {
       to,
       subject: 'DQC1 – First Cut Design Presentation Scheduled',
       html,
+      ...(attachments && attachments.length ? { attachments } : {}),
     });
 
     return NextResponse.json({ success: true, messageId: info.messageId });

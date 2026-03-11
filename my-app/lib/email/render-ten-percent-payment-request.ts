@@ -24,26 +24,24 @@ export function renderTenPercentPaymentRequestEmail(params: {
   <div style="min-height:100vh;background-color:#f3e5d8;padding:40px 16px;">
     <div style="max-width:640px;margin:0 auto;background-color:#ffffff;border-radius:26px;box-shadow:0 4px 18px rgba(0,0,0,0.08);overflow:hidden;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
       <!-- Header / Brand -->
-      <div style="padding:40px 32px 28px 32px;text-align:center;">
-        <div style="display:inline-flex;align-items:center;justify-content:center;gap:12px;margin-bottom:18px;">
-          <div style="width:40px;height:40px;background-color:#d62323;border-radius:10px;display:flex;align-items:center;justify-content:center;transform:rotate(45deg);">
-            <span style="color:#ffffff;font-weight:700;font-size:14px;transform:rotate(-45deg);display:inline-block;">HI</span>
+      <div style="padding:36px 32px 28px 32px;text-align:center;">
+        <div style="margin:0 auto 16px auto;text-align:center;">
+          <div style="width:34px;height:34px;background-color:#d62323;border-radius:10px;display:flex;align-items:center;justify-content:center;margin:0 auto 10px auto;">
+            <span style="color:#ffffff;font-weight:700;font-size:12px;line-height:1;letter-spacing:0.04em;">HI</span>
           </div>
-          <div style="text-align:left;">
-            <div style="font-size:18px;font-weight:600;color:#111827;line-height:1.2;">
-              HUB Interior
-            </div>
+          <div style="font-size:32px;font-weight:600;color:#111827;line-height:1.15;letter-spacing:0.01em;text-align:center;">
+            HUB Interior
           </div>
         </div>
-        <div style="height:1px;background-color:#f1e4d2;margin-bottom:18px;"></div>
+        <div style="height:1px;background-color:#f1e4d2;margin-bottom:20px;"></div>
         <div style="display:inline-flex;align-items:center;justify-content:center;padding:6px 18px;border-radius:9999px;background-color:#f6ebdd;font-size:11px;font-weight:600;letter-spacing:0.16em;text-transform:uppercase;color:#4c3a26;margin-bottom:12px;">
           Design Approved
         </div>
         <h1 style="margin:0 0 10px 0;font-size:26px;line-height:1.3;font-weight:600;color:#111827;">
           Ready for Site Masking – 10% Milestone
         </h1>
-        <p style="margin:0;font-size:14px;line-height:1.7;color:#4b5563;max-width:480px;margin-left:auto;margin-right:auto;">
-          Dear ${customerName},
+        <p style="margin:0;font-size:14px;line-height:1.7;color:#4b5563;max-width:480px;margin-left:auto;margin-right:auto;text-align:center;">
+          Hi ${customerName},
         </p>
         <p style="margin:8px 0 0 0;font-size:14px;line-height:1.7;color:#4b5563;max-width:520px;margin-left:auto;margin-right:auto;">
           We’re pleased to inform you that your design has been successfully reviewed and approved under DQC 1.
@@ -161,4 +159,3 @@ export function renderTenPercentPaymentRequestEmail(params: {
 
   return html;
 }
-

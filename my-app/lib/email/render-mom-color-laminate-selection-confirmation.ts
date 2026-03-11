@@ -56,14 +56,12 @@ export function renderMomColorLaminateSelectionConfirmationEmail(params: {
   <div style="min-height:100vh;background-color:#f3e5d8;padding:40px 16px;">
     <div style="max-width:640px;margin:0 auto;background-color:#ffffff;border-radius:26px;box-shadow:0 4px 18px rgba(0,0,0,0.08);overflow:hidden;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
       <!-- Header / Brand -->
-      <div style="padding:40px 32px 28px 32px;text-align:center;">
-        <div style="display:inline-flex;align-items:center;justify-content:center;gap:12px;margin-bottom:18px;">
-          <div style="width:40px;height:40px;background-color:#d62323;border-radius:10px;display:flex;align-items:center;justify-content:center;transform:rotate(45deg);">
-            <span style="color:#ffffff;font-weight:700;font-size:14px;transform:rotate(-45deg);display:inline-block;">HI</span>
+      <div style="padding:36px 32px 28px 32px;text-align:center;">
+        <div style="display:inline-flex;align-items:center;justify-content:center;gap:10px;margin-bottom:18px;">
+          <div style="width:30px;height:30px;background-color:#d62323;border-radius:9px;flex:0 0 auto;text-align:center;line-height:30px;">
+            <span style="display:inline-block;color:#ffffff;font-weight:700;font-size:10px;line-height:1;letter-spacing:0.04em;vertical-align:middle;">HI</span>
           </div>
-          <div style="text-align:left;">
-            <div style="font-size:18px;font-weight:600;color:#111827;line-height:1.2;">HUB Interior</div>
-          </div>
+          <div style="text-align:left;font-size:24px;font-weight:600;color:#111827;line-height:1.1;letter-spacing:0.01em;">HUB Interior</div>
         </div>
         <div style="height:1px;background-color:#f1e4d2;margin-bottom:18px;"></div>
         <div style="display:inline-flex;align-items:center;justify-content:center;padding:6px 18px;border-radius:9999px;background-color:#f6ebdd;font-size:11px;font-weight:600;letter-spacing:0.16em;text-transform:uppercase;color:#4c3a26;margin-bottom:12px;">

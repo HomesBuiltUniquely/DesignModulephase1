@@ -22,7 +22,7 @@ export function renderProjectDesignTimelineEmail(params: { customerName: string 
       (step) => `
         <tr>
           <td align="center" valign="top" width="40" style="padding-top:6px;">
-            <div style="width:28px;height:28px;border-radius:9999px;background-color:#d62323;color:#ffffff;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:center;margin:0 auto;">
+            <div style="width:28px;height:28px;border-radius:9999px;background-color:#d62323;color:#ffffff;font-size:13px;font-weight:600;text-align:center;line-height:28px;margin:0 auto;">
               ${step.id}
             </div>
           </td>
@@ -58,8 +58,8 @@ export function renderProjectDesignTimelineEmail(params: { customerName: string 
                     <table role="presentation" border="0" cellpadding="0" cellspacing="0">
                       <tr>
                         <td align="center" valign="middle" style="padding-right:8px;">
-                          <div style="width:36px;height:36px;background-color:#d62323;border-radius:8px;display:flex;align-items:center;justify-content:center;transform:rotate(45deg);">
-                            <span style="color:#ffffff;font-weight:700;font-size:12px;transform:rotate(-45deg);display:inline-block;">HI</span>
+                          <div style="width:36px;height:36px;background-color:#d62323;border-radius:8px;text-align:center;line-height:36px;">
+                            <span style="color:#ffffff;font-weight:700;font-size:12px;display:inline-block;line-height:36px;">HI</span>
                           </div>
                         </td>
                         <td align="left" valign="middle">
@@ -139,10 +139,10 @@ export function renderProjectDesignTimelineEmail(params: { customerName: string 
                 © 2024 HUB INTERIOR DESIGN STUDIO
               </p>
               <p style="margin:0 0 4px 0;font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:#8b7660;">
-                123 DESIGN AVENUE, SUITE 500
+                HBR LAYOUT, BANGALORE, 1ST FLOOR, 6TH CROSS RD, 1ST STAGE, HBR LAYOUT 4TH BLOCK, HBR LAYOUT, BENGALURU, KARNATAKA 560044
               </p>
               <p style="margin:0 0 10px 0;font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:#8b7660;">
-                HUBINTERIOR.COM | CONTACT@HUBINTERIOR.COM
+                COMMUNICATION@HUBINTERIOR.COM
               </p>
               <p style="margin:0 0 2px 0;font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#b1997f;">
                 This email was sent to you regarding your project with HUB Interior.
@@ -161,4 +161,3 @@ export function renderProjectDesignTimelineEmail(params: { customerName: string 
 
   return html;
 }
-

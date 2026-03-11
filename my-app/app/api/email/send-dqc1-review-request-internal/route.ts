@@ -8,6 +8,7 @@ export async function POST(request: Request) {
 
     const to = body.to as string | undefined;
     const cc = body.cc as string[] | undefined;
+    const attachments = body.attachments as { filename: string; path: string }[] | undefined;
     const customerName = body.customerName as string | undefined;
     const ecName = body.ecName as string | undefined;
     const designerName = body.designerName as string | undefined;
@@ -43,6 +44,7 @@ export async function POST(request: Request) {
       cc,
       subject,
       html,
+      ...(attachments && attachments.length ? { attachments } : {}),
     });
 
     return NextResponse.json({ success: true, messageId: info.messageId });
