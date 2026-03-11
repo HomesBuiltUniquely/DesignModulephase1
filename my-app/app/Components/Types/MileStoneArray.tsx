@@ -19,7 +19,6 @@ const MileStonesArray: MileStonesTypes = {
       taskList: [
         "First cut design + quotation discussion meeting request",
         "meeting completed",
-        "Design finalisation meeting request",
         "DQC 1 submission - dwg + quotation",
         "DQC 1 approval",
       ],

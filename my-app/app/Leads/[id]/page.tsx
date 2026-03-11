@@ -1229,43 +1229,6 @@ export default function ProjectDetailPage() {
                             }}
                         />
                     )}
-                    {popupContext.milestoneIndex === 1 && popupContext.taskName === 'Design finalisation meeting request' && (
-                        <PopupFirstCutDesign
-                            designUploadFiles={designUploadFiles}
-                            designFileInputRef={designFileInputRef}
-                            openDesignFileUpload={openDesignFileUpload}
-                            onDesignFilesSelected={onDesignFilesSelected}
-                            onDesignDrop={onDesignDrop}
-                            onDesignDragOver={onDesignDragOver}
-                            removeDesignFile={removeDesignFile}
-                            onSubmit={async () => {
-                                if (!projectId) return;
-                                try {
-                                    if (designUploadFiles.length > 0 && sessionId) {
-                                        const fd = new FormData();
-                                        designUploadFiles.forEach((f) => fd.append('files', f));
-                                        await fetch(`${API}/api/leads/${projectId}/first-cut-design-upload`, {
-                                            method: 'POST',
-                                            headers: { Authorization: `Bearer ${sessionId}` },
-                                            body: fd,
-                                        });
-                                    }
-                                    setDesignUploadFiles([]);
-                                } catch (err) {
-                                    console.error('design-finalisation upload failed', err);
-                                    alert('Failed to upload design files. Please try again.');
-                                }
-                            }}
-                            onCompleteAndProceed={() => {
-                                recordTaskComplete(1, 'Design finalisation meeting request', {
-                                    description: 'Design finalisation meeting request completed (100%) and submitted.',
-                                    meta: {},
-                                });
-                                setDesignUploadFiles([]);
-                                closePopup();
-                            }}
-                        />
-                    )}
                     {popupContext.milestoneIndex === 1 && popupContext.taskName === 'DQC 1 submission - dwg + quotation' && (
                         <PopupDqcSubmission
                             leadId={projectId}

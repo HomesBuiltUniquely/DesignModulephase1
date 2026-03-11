@@ -12,8 +12,6 @@ export const TIMELINE_1BHK: Record<string, string> = {
   "DQC1::First cut design + quotation discussion meeting request":
     "24 hrs from D1 file received",
   "DQC1::meeting completed": "As per meeting date (MOM submission)",
-  "DQC1::Design finalisation meeting request":
-    "2–3 days from last meeting (design freeze)",
   "DQC1::DQC 1 submission - dwg + quotation": "2 days from last meeting",
   "DQC1::DQC 1 approval": "After DQC review",
 

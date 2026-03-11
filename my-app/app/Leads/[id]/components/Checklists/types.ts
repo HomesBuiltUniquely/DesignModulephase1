@@ -17,6 +17,5 @@ export type ChecklistDefinition = {
 
 export type ChecklistKey =
   | "first_cut"
-  | "design_freeze"
   | "color_selection"
   | "design_signoff";

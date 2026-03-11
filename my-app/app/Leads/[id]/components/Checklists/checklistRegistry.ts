@@ -20,11 +20,6 @@ const checklistRoutes: ChecklistRoute[] = [
     key: "first_cut",
   },
   {
-    milestoneIndex: 1,
-    taskName: "Design finalisation meeting request",
-    key: "design_freeze",
-  },
-  {
     milestoneIndex: 4,
     taskName: "Material selection meeting completed",
     key: "color_selection",

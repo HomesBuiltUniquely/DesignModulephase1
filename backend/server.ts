@@ -1505,10 +1505,6 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             // After DQC1 first‑cut meeting completed → project design timeline mail
             return "/api/email/send-project-design-timeline";
           }
-          if (t === "Design finalisation meeting request") {
-            // Design finalisation / design‑freeze meeting request
-            return "/api/email/send-dqc1-design-freezing-scheduled";
-          }
           // DQC 1 approval → fires BOTH internal (designer) and CX (10% payment) emails
           if (t === "DQC 1 approval") {
             return "DQC1_APPROVAL_DUAL";
