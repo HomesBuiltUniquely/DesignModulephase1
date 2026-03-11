@@ -1681,18 +1681,23 @@ export default function ProjectDetailPage() {
                                             body: fd40,
                                         });
                                     }
-                                    if (payment40pFiles.length === 0) {
-                                        recordTaskComplete(5, 'meeting completed & 40% payment request', {
-                                            description: 'Meeting completed & 40% payment request shared.',
-                                            details: {
-                                                kind: 'mom',
-                                                minutes: momMinutes,
-                                                referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
-                                            },
-                                        });
-                                    } else {
-                                        setCompletedTaskKeys((prev) => Array.from(new Set([...prev, taskKey(5, 'meeting completed & 40% payment request')])));
-                                    }
+                                    const hasPaymentScreenshots = payment40pFiles.length > 0;
+                                    recordTaskComplete(5, 'meeting completed & 40% payment request', {
+                                        description: hasPaymentScreenshots
+                                            ? 'Meeting completed & 40% payment request shared with payment screenshots for finance.'
+                                            : 'Meeting completed & 40% payment request shared.',
+                                        details: hasPaymentScreenshots
+                                            ? {
+                                                  kind: 'mom',
+                                                  minutes: momMinutes,
+                                                  referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                              }
+                                            : {
+                                                  kind: 'mom',
+                                                  minutes: momMinutes,
+                                                  referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                              },
+                                    });
                                     setMomMinutes('');
                                     setMomReferenceFiles([]);
                                     setPayment40pFiles([]);
