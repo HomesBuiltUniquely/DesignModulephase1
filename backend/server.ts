@@ -38,7 +38,7 @@ app.get("/api/health", (_req, res) => {
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "root",
+  password: process.env.DB_PASSWORD || "root@root",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -2756,6 +2756,62 @@ app.get("/api/leads/finance-10p-queue", async (req: Request, res: Response) => {
   }
 });
 
+// Project/lead side: upload 10% payment screenshots for finance to review and approve. Any authenticated user.
+app.post(
+  "/api/leads/:id/10p-payment-upload",
+  upload.array("files"),
+  async (req: Request, res: Response) => {
+    const leadId = Number(req.params.id);
+    if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+    const files = (req as any).files as Express.Multer.File[] | undefined;
+    if (!files || files.length === 0) return res.status(400).json({ message: "At least one file is required" });
+    try {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const now = new Date();
+      for (const file of files) {
+        let s3Url: string | null = null;
+        if (process.env.AWS_ACCESS_KEY_ID) {
+          s3Url = await uploadLeadFileToS3(leadId, file.path, file.originalname, file.mimetype);
+        }
+        await pool.query(
+          `INSERT INTO lead_uploads
+           (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'payment_10p', ?)`,
+          [leadId, user.id, file.originalname, file.filename, file.path, file.mimetype, file.size, now, s3Url]
+        );
+      }
+      const ev = {
+        id: `10p-upload-${Date.now()}`,
+        type: "file_upload",
+        taskName: "10% payment collection",
+        milestoneName: "10% PAYMENT",
+        timestamp: now.toISOString(),
+        description: `10% payment screenshots uploaded for finance review: ${files.map((f) => f.originalname).join(", ")}`,
+        user: { name: user.name ?? "User" },
+        details: { kind: "payment_10p", fileNames: files.map((f) => f.originalname) },
+      };
+      await addLeadHistoryEvent(leadId, ev);
+      const [rows] = await pool.query(
+        "SELECT 1 FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 2 AND task_name = ?",
+        [leadId, "10% payment collection"]
+      );
+      if ((rows as any[]).length === 0) {
+        await pool.query(
+          `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+           VALUES (?, 2, '10% payment collection', ?)
+           ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
+          [leadId, now]
+        );
+      }
+      return res.status(201).json({ ok: true });
+    } catch (err) {
+      console.error("10p-payment-upload error", err);
+      return res.status(500).json({ message: "Failed to upload" });
+    }
+  }
+);
+
 // Finance: upload payment screenshot(s) for a lead. Marks "10% payment collection" complete on first upload.
 app.post(
   "/api/leads/:id/payment-screenshots",
@@ -2831,6 +2887,10 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
        VALUES (?, 2, '10% payment approval', ?)
        ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
       [leadId, now]
+    );
+    await pool.query(
+      "UPDATE lead_uploads SET status = 'approved' WHERE lead_id = ? AND upload_type = 'payment_10p' AND status = 'pending'",
+      [leadId]
     );
     const ev = {
       id: `10p-approval-${Date.now()}`,
