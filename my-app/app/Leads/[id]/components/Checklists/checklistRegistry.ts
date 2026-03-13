@@ -41,13 +41,6 @@ export const checklistDefinitions: Record<ChecklistKey, ChecklistDefinition> = {
     showBreakdownDividerAtIndex: 1,
     breakdownDividerTitle: "MEETING STRUCTURE (2 HOURS BREAKDOWN)",
   },
-  design_freeze: {
-    title: "DESIGN FREEZE MEETING CHECKLIST - online",
-    sections: designFreezeMeetingChecklist,
-    postUrl: `${API}/api/design-freeze-checklist`,
-    lastUrl: `${API}/api/design-freeze-checklist/last`,
-    successMessage: "Design Freeze Checklist submitted successfully",
-  },
   color_selection: {
     title: "COLOR & MATERIAL SELECTION MEETING CHECKLIST - online",
     sections: colorSelectionMeetingChecklist,
