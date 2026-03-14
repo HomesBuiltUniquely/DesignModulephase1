@@ -80,7 +80,7 @@ const upload = multer({
       const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
       cb(null, `${Date.now()}-${safe}`);
     },
-  }),
+  }), 
   limits: { fileSize: 200 * 1024 * 1024 }, // 200MB
 });
 
@@ -4759,7 +4759,20 @@ app.post("/api/leads/:id/resume", async (req: Request, res: Response) => {
   }
 });
 
-app.listen(PORT, () => {
+// ----- Keep process alive on unhandled errors (log instead of exit) -----
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught exception:", err);
+});
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("Unhandled rejection at", promise, "reason:", reason);
+});
+
+const server = app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
   console.log("Auth create/register routes: create-mmt-manager, register-mmt-executive, create-tdm, create-admin, create-dqc-manager, create-escalation-manager, create-project-manager, create-finance, register-dqe, register (TDM designer/design_manager)");
+});
+
+server.on("error", (err) => {
+  console.error("Server listen error:", err);
+  process.exit(1);
 });
