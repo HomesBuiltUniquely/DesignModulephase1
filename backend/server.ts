@@ -4271,7 +4271,6 @@ const MILESTONE_TASKS: string[][] = [
   [
     "First cut design + quotation discussion meeting request",
     "meeting completed",
-    "Design finalisation meeting request",
     "DQC 1 submission - dwg + quotation",
     "DQC 1 approval",
   ],
