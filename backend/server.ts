@@ -728,6 +728,36 @@ async function getGoogleConnectionByUserId(userId: number) {
   return ((rows as any[])[0] || null) as GoogleCalendarConnectionRow | null;
 }
 
+async function getCalendarVisibleUsers(currentUser: { id: number; email: string; name: string; role: string }) {
+  const role = (currentUser.role || "").toLowerCase();
+
+  if (role === "admin" || role === "territorial_design_manager") {
+    const [rows] = await pool.query(
+      `SELECT DISTINCT u.id, u.email, u.name, u.role
+       FROM users u
+       INNER JOIN google_calendar_connections gcc ON gcc.user_id = u.id
+       WHERE gcc.active = 1
+       ORDER BY u.name ASC`,
+    );
+    return rows as { id: number; email: string; name: string; role: string }[];
+  }
+
+  if (role === "design_manager") {
+    const [rows] = await pool.query(
+      `SELECT DISTINCT u.id, u.email, u.name, u.role
+       FROM users u
+       INNER JOIN google_calendar_connections gcc ON gcc.user_id = u.id
+       WHERE gcc.active = 1
+         AND (u.id = ? OR (u.role = 'designer' AND u.design_manager_id = ?))
+       ORDER BY u.name ASC`,
+      [currentUser.id, currentUser.id],
+    );
+    return rows as { id: number; email: string; name: string; role: string }[];
+  }
+
+  return [currentUser];
+}
+
 async function exchangeGoogleCodeForTokens(code: string) {
   const body = new URLSearchParams();
   body.set("code", code);
@@ -1135,16 +1165,31 @@ app.get("/api/google-calendar/my-events", async (req: Request, res: Response) =>
   try {
     const user = await getUserFromSession(req);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
-    const connection = await ensureValidGoogleConnection(user.id);
-    if (!connection) return res.json({ events: [] });
+    const visibleUsers = await getCalendarVisibleUsers(user);
+    const allEvents: any[] = [];
 
-    const events = await fetchGoogleEventsForConnection(
-      connection,
-      { id: user.id, email: user.email, name: user.name, role: user.role },
-      (req.query.timeMin as string | undefined) || null,
-      (req.query.timeMax as string | undefined) || null,
-    );
-    return res.json({ events });
+    for (const visibleUser of visibleUsers) {
+      try {
+        const connection = await ensureValidGoogleConnection(visibleUser.id);
+        if (!connection) continue;
+
+        const events = await fetchGoogleEventsForConnection(
+          connection,
+          { id: visibleUser.id, email: visibleUser.email, name: visibleUser.name, role: visibleUser.role },
+          (req.query.timeMin as string | undefined) || null,
+          (req.query.timeMax as string | undefined) || null,
+        );
+        allEvents.push(...events);
+      } catch (innerErr) {
+        console.error("google-calendar my-events user fetch error", {
+          userId: visibleUser.id,
+          error: innerErr,
+        });
+      }
+    }
+
+    allEvents.sort((a, b) => String(a.start || "").localeCompare(String(b.start || "")));
+    return res.json({ events: allEvents });
   } catch (err: any) {
     console.error("google-calendar my-events error", err);
     return res.status(500).json({ message: err?.message || "Failed to load Google Calendar events" });
@@ -1155,8 +1200,9 @@ app.get("/api/google-calendar/all-events", async (req: Request, res: Response) =
   try {
     const user = await getUserFromSession(req);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
-    if ((user.role || "").toLowerCase() !== "admin") {
-      return res.status(403).json({ message: "Only admin can view all calendar events." });
+    const role = (user.role || "").toLowerCase();
+    if (role !== "admin" && role !== "territorial_design_manager") {
+      return res.status(403).json({ message: "Only admin or TDM can view all calendar events." });
     }
 
     const [rows] = await pool.query(
