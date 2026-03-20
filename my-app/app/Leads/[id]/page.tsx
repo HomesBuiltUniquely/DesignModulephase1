@@ -28,7 +28,7 @@ import {
     GenericMeetingChecklistPopup,
 } from './components';
 import { checklistDefinitions, getChecklistKeyForTask } from './components/Checklists/checklistRegistry';
-import { getApiBase } from '@/app/lib/apiBase';
+import { buildAuthHeaders, getApiBase } from '@/app/lib/apiBase';
 
 const API = getApiBase();
 
@@ -156,7 +156,9 @@ export default function ProjectDetailPage() {
             return;
         }
         setProjectLoaded(false);
-        fetch(`${API}/api/leads/${projectId}`)
+        fetch(`${API}/api/leads/${projectId}`, {
+            headers: buildAuthHeaders(sessionId),
+        })
             .then(async (res) => {
                 const text = await res.text();
                 if (!res.ok) throw new Error('Not ok');
@@ -172,14 +174,16 @@ export default function ProjectDetailPage() {
                 setProject(fallback);
             })
             .finally(() => setProjectLoaded(true));
-    }, [projectId]);
+    }, [projectId, sessionId]);
 
     // When Group Description popup opens, auto-fetch latest profile (designer phone) and lead (client contactNo)
     useEffect(() => {
         const isGroupDesc = popupContext?.milestoneIndex === 0 && popupContext?.taskName === 'Group Description';
         if (!isGroupDesc || projectId == null) return;
         refreshUser();
-        fetch(`${API}/api/leads/${projectId}`)
+        fetch(`${API}/api/leads/${projectId}`, {
+            headers: buildAuthHeaders(sessionId),
+        })
             .then(async (res) => {
                 const text = await res.text();
                 if (!res.ok || !text) return null;
@@ -187,7 +191,7 @@ export default function ProjectDetailPage() {
             })
             .then((data: LeadshipTypes | null) => { if (data) setProject(data); })
             .catch(() => {});
-    }, [popupContext?.milestoneIndex, popupContext?.taskName, projectId, refreshUser]);
+    }, [popupContext?.milestoneIndex, popupContext?.taskName, projectId, refreshUser, sessionId]);
 
     // Load history from server. Only apply response if still for same lead; merge with current state so we never drop recent events.
     const loadHistory = useCallback(() => {
@@ -604,10 +608,9 @@ export default function ProjectDetailPage() {
         // Persist to server only; do not refetch here so we never overwrite with a stale response and lose entries
         if (projectId != null) {
             const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-            if (sessionId) headers['Authorization'] = `Bearer ${sessionId}`;
             fetch(`${API}/api/leads/${projectId}/history`, {
                 method: 'POST',
-                headers,
+                headers: buildAuthHeaders(sessionId, headers),
                 credentials: 'include',
                 body: JSON.stringify(full),
             }).catch((err) => console.error('Failed to persist history event:', err));
@@ -645,7 +648,7 @@ export default function ProjectDetailPage() {
         if (projectId != null) {
             fetch(`${API}/api/leads/${projectId}/complete-task`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' }),
                 body: JSON.stringify({ milestoneIndex, taskName, meta: options?.meta }),
             }).catch(() => {});
         }
@@ -690,7 +693,7 @@ export default function ProjectDetailPage() {
                     dqc2ApprovalTasks.forEach((t: string) => {
                         fetch(`${API}/api/leads/${projectId}/complete-task`, {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
+                            headers: buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' }),
                             body: JSON.stringify({ milestoneIndex: 4, taskName: t }),
                         }).catch(() => {});
                         markTaskComplete(4, t);
@@ -701,7 +704,7 @@ export default function ProjectDetailPage() {
                     // DQC1: mark only the approval task; other tasks should already be completed manually.
                     fetch(`${API}/api/leads/${projectId}/complete-task`, {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' }),
                         body: JSON.stringify({
                             milestoneIndex,
                             taskName,
@@ -713,7 +716,7 @@ export default function ProjectDetailPage() {
             if (projectId != null) {
                 fetch(`${API}/api/leads/${projectId}/dqc-review`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json', ...(sessionId ? { Authorization: `Bearer ${sessionId}` } : {}) },
+                    headers: buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' }),
                     body: JSON.stringify({
                         verdict: dqc1Verdict,
                         remarks: dqc1Remarks.map((r) => ({

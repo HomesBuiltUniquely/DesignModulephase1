@@ -100,7 +100,7 @@ app.get("/api/health", (_req, res) => {
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "root@root",
+  password: process.env.DB_PASSWORD || "Root@123",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -132,6 +132,18 @@ const PROFILE_IMAGES_DIR = path.join(UPLOADS_DIR, "profile-images");
 if (!fs.existsSync(PROFILE_IMAGES_DIR)) fs.mkdirSync(PROFILE_IMAGES_DIR, { recursive: true });
 const API_BASE = process.env.API_BASE_URL || "http://localhost:3001";
 const FRONTEND_BASE = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CALENDAR_CLIENT_ID || "";
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CALENDAR_CLIENT_SECRET || "";
+const GOOGLE_REDIRECT_URI =
+  process.env.GOOGLE_CALENDAR_REDIRECT_URI || `${API_BASE}/api/google-calendar/oauth/callback`;
+const GOOGLE_SCOPE =
+  process.env.GOOGLE_CALENDAR_SCOPE ||
+  "https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/userinfo.email openid profile";
+const GOOGLE_AUTH_URI = "https://accounts.google.com/o/oauth2/v2/auth";
+const GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token";
+const GOOGLE_EVENTS_URI = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
+const GOOGLE_USERINFO_URI = "https://www.googleapis.com/oauth2/v2/userinfo";
+const GOOGLE_TIME_ZONE = "Asia/Kolkata";
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -314,6 +326,22 @@ async function initDb() {
         id VARCHAR(255) PRIMARY KEY,
         user_id INT NOT NULL,
         created_at DATETIME NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id)
+      );
+    `);
+
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS google_calendar_connections (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL UNIQUE,
+        google_email VARCHAR(255) NOT NULL,
+        access_token TEXT NOT NULL,
+        refresh_token TEXT NULL,
+        expires_at DATETIME NULL,
+        scope TEXT NULL,
+        active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at DATETIME NOT NULL,
+        updated_at DATETIME NOT NULL,
         FOREIGN KEY (user_id) REFERENCES users(id)
       );
     `);
@@ -605,6 +633,305 @@ function saveExcelPreview(rows: Record<string, unknown>[], headers: string[]): s
   return token;
 }
 
+type SessionUser = Awaited<ReturnType<typeof getUserFromSession>>;
+
+type GoogleCalendarConnectionRow = {
+  id: number;
+  user_id: number;
+  google_email: string;
+  access_token: string;
+  refresh_token: string | null;
+  expires_at: Date | string | null;
+  scope: string | null;
+  active: number;
+};
+
+function normalizeEmail(value?: string | null) {
+  return (value || "").trim().toLowerCase();
+}
+
+function isGoogleCalendarConfigured() {
+  return Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET && GOOGLE_REDIRECT_URI);
+}
+
+function buildGoogleCalendarRedirect(status: "success" | "error", message?: string) {
+  const url = new URL("/google-calendar", FRONTEND_BASE);
+  url.searchParams.set("gc_status", status);
+  if (message) url.searchParams.set("gc_message", message);
+  return url.toString();
+}
+
+function buildGoogleCalendarAuthUrl(userId: number) {
+  if (!isGoogleCalendarConfigured()) return null;
+  const url = new URL(GOOGLE_AUTH_URI);
+  url.searchParams.set("client_id", GOOGLE_CLIENT_ID);
+  url.searchParams.set("redirect_uri", GOOGLE_REDIRECT_URI);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("access_type", "offline");
+  url.searchParams.set("prompt", "consent");
+  url.searchParams.set("scope", GOOGLE_SCOPE);
+  url.searchParams.set("state", `${userId}:${Date.now()}`);
+  return url.toString();
+}
+
+function parseGoogleState(state?: string | null) {
+  const raw = (state || "").trim();
+  const userId = Number(raw.split(":")[0]);
+  return Number.isFinite(userId) ? userId : null;
+}
+
+function formatGoogleDateTime(meetingDate?: string | null, meetingTime?: string | null) {
+  if (!meetingDate || !meetingTime) return null;
+  const time = /^\d{2}:\d{2}$/.test(meetingTime) ? `${meetingTime}:00` : meetingTime;
+  const iso = `${meetingDate}T${time}+05:30`;
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+}
+
+function addHoursToIso(iso: string, hours: number) {
+  const parsed = new Date(iso);
+  parsed.setHours(parsed.getHours() + hours);
+  return parsed.toISOString();
+}
+
+function distinctEmails(values: Array<string | null | undefined>) {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const value of values) {
+    const email = normalizeEmail(value);
+    if (!email || seen.has(email)) continue;
+    seen.add(email);
+    output.push(email);
+  }
+  return output;
+}
+
+async function getUserById(userId: number) {
+  const [rows] = await pool.query(
+    "SELECT id, email, name, role FROM users WHERE id = ? LIMIT 1",
+    [userId],
+  );
+  return ((rows as any[])[0] || null) as
+    | { id: number; email: string; name: string; role: string }
+    | null;
+}
+
+async function getGoogleConnectionByUserId(userId: number) {
+  const [rows] = await pool.query(
+    `SELECT id, user_id, google_email, access_token, refresh_token, expires_at, scope, active
+     FROM google_calendar_connections
+     WHERE user_id = ? AND active = 1
+     LIMIT 1`,
+    [userId],
+  );
+  return ((rows as any[])[0] || null) as GoogleCalendarConnectionRow | null;
+}
+
+async function exchangeGoogleCodeForTokens(code: string) {
+  const body = new URLSearchParams();
+  body.set("code", code);
+  body.set("client_id", GOOGLE_CLIENT_ID);
+  body.set("client_secret", GOOGLE_CLIENT_SECRET);
+  body.set("redirect_uri", GOOGLE_REDIRECT_URI);
+  body.set("grant_type", "authorization_code");
+
+  const response = await fetch(GOOGLE_TOKEN_URI, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data?.error_description || data?.error || "Failed to exchange Google authorization code");
+  }
+  return data as {
+    access_token: string;
+    refresh_token?: string;
+    expires_in?: number;
+    scope?: string;
+  };
+}
+
+async function refreshGoogleAccessToken(connection: GoogleCalendarConnectionRow) {
+  if (!connection.refresh_token) {
+    throw new Error("Google refresh token missing. Please reconnect Google Calendar.");
+  }
+
+  const body = new URLSearchParams();
+  body.set("client_id", GOOGLE_CLIENT_ID);
+  body.set("client_secret", GOOGLE_CLIENT_SECRET);
+  body.set("refresh_token", connection.refresh_token);
+  body.set("grant_type", "refresh_token");
+
+  const response = await fetch(GOOGLE_TOKEN_URI, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data?.access_token) {
+    throw new Error(data?.error_description || data?.error || "Failed to refresh Google access token");
+  }
+
+  const expiresAt =
+    data.expires_in && Number.isFinite(Number(data.expires_in))
+      ? new Date(Date.now() + Number(data.expires_in) * 1000)
+      : null;
+
+  await pool.query(
+    `UPDATE google_calendar_connections
+     SET access_token = ?, expires_at = ?, scope = COALESCE(?, scope), updated_at = ?
+     WHERE id = ?`,
+    [data.access_token, expiresAt, data.scope || null, new Date(), connection.id],
+  );
+
+  return {
+    ...connection,
+    access_token: data.access_token as string,
+    expires_at: expiresAt,
+    scope: (data.scope as string | undefined) || connection.scope,
+  };
+}
+
+async function ensureValidGoogleConnection(userId: number) {
+  const connection = await getGoogleConnectionByUserId(userId);
+  if (!connection) return null;
+
+  const expiresAt = connection.expires_at ? new Date(connection.expires_at) : null;
+  const isExpired = expiresAt ? expiresAt.getTime() <= Date.now() + 60_000 : false;
+  if (!isExpired) return connection;
+  return refreshGoogleAccessToken(connection);
+}
+
+async function fetchGoogleUserEmail(accessToken: string) {
+  const response = await fetch(GOOGLE_USERINFO_URI, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data?.error?.message || "Failed to read Google account email");
+  }
+  return normalizeEmail(data?.email || "");
+}
+
+async function upsertGoogleConnection(args: {
+  userId: number;
+  googleEmail: string;
+  accessToken: string;
+  refreshToken?: string | null;
+  expiresIn?: number;
+  scope?: string | null;
+}) {
+  const now = new Date();
+  const expiresAt =
+    args.expiresIn && Number.isFinite(Number(args.expiresIn))
+      ? new Date(Date.now() + Number(args.expiresIn) * 1000)
+      : null;
+
+  await pool.query(
+    `INSERT INTO google_calendar_connections
+      (user_id, google_email, access_token, refresh_token, expires_at, scope, active, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+     ON DUPLICATE KEY UPDATE
+      google_email = VALUES(google_email),
+      access_token = VALUES(access_token),
+      refresh_token = COALESCE(VALUES(refresh_token), refresh_token),
+      expires_at = VALUES(expires_at),
+      scope = VALUES(scope),
+      active = 1,
+      updated_at = VALUES(updated_at)`,
+    [
+      args.userId,
+      args.googleEmail,
+      args.accessToken,
+      args.refreshToken || null,
+      expiresAt,
+      args.scope || null,
+      now,
+      now,
+    ],
+  );
+}
+
+async function fetchGoogleEventsForConnection(
+  connection: GoogleCalendarConnectionRow,
+  owner: { id: number; email: string; name: string; role: string },
+  timeMin?: string | null,
+  timeMax?: string | null,
+) {
+  const url = new URL(GOOGLE_EVENTS_URI);
+  url.searchParams.set("singleEvents", "true");
+  url.searchParams.set("orderBy", "startTime");
+  url.searchParams.set("maxResults", "250");
+  if (timeMin) url.searchParams.set("timeMin", new Date(timeMin).toISOString());
+  if (timeMax) url.searchParams.set("timeMax", new Date(timeMax).toISOString());
+
+  const response = await fetch(url.toString(), {
+    headers: { Authorization: `Bearer ${connection.access_token}` },
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data?.error?.message || "Failed to fetch Google Calendar events");
+  }
+
+  return ((data?.items as any[]) || []).map((event) => ({
+    id: event.id,
+    summary: event.summary || "Untitled event",
+    description: event.description || "",
+    htmlLink: event.htmlLink || "",
+    status: event.status || "confirmed",
+    location: event.location || "",
+    start: event.start?.dateTime || event.start?.date || null,
+    end: event.end?.dateTime || event.end?.date || null,
+    attendees: Array.isArray(event.attendees)
+      ? event.attendees.map((attendee: any) => ({
+          email: attendee.email || "",
+          displayName: attendee.displayName || "",
+          responseStatus: attendee.responseStatus || "",
+        }))
+      : [],
+    ownerUserId: owner.id,
+    ownerName: owner.name,
+    ownerEmail: owner.email,
+    ownerRole: owner.role,
+    connectedGoogleEmail: connection.google_email,
+  }));
+}
+
+async function createGoogleCalendarEventForUser(args: {
+  userId: number;
+  summary: string;
+  description?: string;
+  startDateTimeIso: string;
+  endDateTimeIso: string;
+  attendees?: string[];
+}) {
+  const connection = await ensureValidGoogleConnection(args.userId);
+  if (!connection) return null;
+
+  const response = await fetch(`${GOOGLE_EVENTS_URI}?sendUpdates=all`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${connection.access_token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      summary: args.summary,
+      description: args.description || "",
+      start: { dateTime: args.startDateTimeIso, timeZone: GOOGLE_TIME_ZONE },
+      end: { dateTime: args.endDateTimeIso, timeZone: GOOGLE_TIME_ZONE },
+      attendees: (args.attendees || []).map((email) => ({ email })),
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data?.error?.message || "Failed to create Google Calendar event");
+  }
+  return data as { id?: string; htmlLink?: string };
+}
+
 async function addLeadHistoryEvent(leadId: number, event: any) {
   await pool.query(
     "INSERT INTO lead_history (lead_id, event, created_at) VALUES (?, ?, ?)",
@@ -705,6 +1032,167 @@ app.get("/api/auth/me", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("me error", err);
     return res.status(500).json({ message: "Failed to load user" });
+  }
+});
+
+app.get("/api/google-calendar/connect-url", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    if (!isGoogleCalendarConfigured()) {
+      return res.status(400).json({ message: "Google Calendar is not configured on the backend." });
+    }
+    const authUrl = buildGoogleCalendarAuthUrl(user.id);
+    if (!authUrl) {
+      return res.status(400).json({ message: "Failed to generate Google connect URL." });
+    }
+    return res.json({ authUrl });
+  } catch (err) {
+    console.error("google-calendar connect-url error", err);
+    return res.status(500).json({ message: "Failed to generate Google connect URL" });
+  }
+});
+
+app.get("/api/google-calendar/oauth/callback", async (req: Request, res: Response) => {
+  const code = String(req.query.code || "");
+  const error = String(req.query.error || "");
+  const state = String(req.query.state || "");
+  if (error) return res.redirect(buildGoogleCalendarRedirect("error", error));
+
+  try {
+    if (!code) {
+      return res.redirect(buildGoogleCalendarRedirect("error", "Missing Google authorization code."));
+    }
+    const userId = parseGoogleState(state);
+    if (!userId) {
+      return res.redirect(buildGoogleCalendarRedirect("error", "Invalid Google connection state."));
+    }
+    const user = await getUserById(userId);
+    if (!user) {
+      return res.redirect(buildGoogleCalendarRedirect("error", "User not found for Google connection."));
+    }
+
+    const tokenData = await exchangeGoogleCodeForTokens(code);
+    const googleEmail = await fetchGoogleUserEmail(tokenData.access_token);
+    if (!googleEmail || normalizeEmail(user.email) !== googleEmail) {
+      return res.redirect(
+        buildGoogleCalendarRedirect(
+          "error",
+          `Please connect the same Google email as your module login (${user.email}).`,
+        ),
+      );
+    }
+
+    await upsertGoogleConnection({
+      userId: user.id,
+      googleEmail,
+      accessToken: tokenData.access_token,
+      refreshToken: tokenData.refresh_token || null,
+      expiresIn: tokenData.expires_in,
+      scope: tokenData.scope || GOOGLE_SCOPE,
+    });
+
+    return res.redirect(buildGoogleCalendarRedirect("success", "Google Calendar connected successfully."));
+  } catch (err: any) {
+    console.error("google-calendar callback error", err);
+    return res.redirect(buildGoogleCalendarRedirect("error", err?.message || "Failed to connect Google Calendar."));
+  }
+});
+
+app.get("/api/google-calendar/status", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const connection = await getGoogleConnectionByUserId(user.id);
+    return res.json({
+      configured: isGoogleCalendarConfigured(),
+      connected: Boolean(connection),
+      googleEmail: connection?.google_email || null,
+      expiresAt: connection?.expires_at || null,
+    });
+  } catch (err) {
+    console.error("google-calendar status error", err);
+    return res.status(500).json({ message: "Failed to load Google Calendar status" });
+  }
+});
+
+app.post("/api/google-calendar/disconnect", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    await pool.query(
+      "UPDATE google_calendar_connections SET active = 0, updated_at = ? WHERE user_id = ?",
+      [new Date(), user.id],
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("google-calendar disconnect error", err);
+    return res.status(500).json({ message: "Failed to disconnect Google Calendar" });
+  }
+});
+
+app.get("/api/google-calendar/my-events", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const connection = await ensureValidGoogleConnection(user.id);
+    if (!connection) return res.json({ events: [] });
+
+    const events = await fetchGoogleEventsForConnection(
+      connection,
+      { id: user.id, email: user.email, name: user.name, role: user.role },
+      (req.query.timeMin as string | undefined) || null,
+      (req.query.timeMax as string | undefined) || null,
+    );
+    return res.json({ events });
+  } catch (err: any) {
+    console.error("google-calendar my-events error", err);
+    return res.status(500).json({ message: err?.message || "Failed to load Google Calendar events" });
+  }
+});
+
+app.get("/api/google-calendar/all-events", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    if ((user.role || "").toLowerCase() !== "admin") {
+      return res.status(403).json({ message: "Only admin can view all calendar events." });
+    }
+
+    const [rows] = await pool.query(
+      `SELECT gcc.id, gcc.user_id, gcc.google_email, gcc.access_token, gcc.refresh_token, gcc.expires_at, gcc.scope, gcc.active,
+              u.email as user_email, u.name as user_name, u.role as user_role
+       FROM google_calendar_connections gcc
+       INNER JOIN users u ON u.id = gcc.user_id
+       WHERE gcc.active = 1
+       ORDER BY u.name ASC`,
+    );
+
+    const allEvents: any[] = [];
+    for (const row of rows as any[]) {
+      try {
+        const connection = await ensureValidGoogleConnection(row.user_id);
+        if (!connection) continue;
+        const events = await fetchGoogleEventsForConnection(
+          connection,
+          { id: row.user_id, email: row.user_email, name: row.user_name, role: row.user_role },
+          (req.query.timeMin as string | undefined) || null,
+          (req.query.timeMax as string | undefined) || null,
+        );
+        allEvents.push(...events);
+      } catch (innerErr) {
+        console.error("google-calendar all-events user fetch error", {
+          userId: row.user_id,
+          error: innerErr,
+        });
+      }
+    }
+
+    allEvents.sort((a, b) => String(a.start || "").localeCompare(String(b.start || "")));
+    return res.json({ events: allEvents });
+  } catch (err) {
+    console.error("google-calendar all-events error", err);
+    return res.status(500).json({ message: "Failed to load admin Google Calendar events" });
   }
 });
 
@@ -1818,6 +2306,9 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
     return res.status(400).json({ message: "milestoneIndex and taskName are required" });
   }
   try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+
     await pool.query(
       `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
        VALUES (?, ?, ?, ?)
@@ -2503,6 +2994,25 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             if (customerEmail) {
               const meetingDate = meta?.meetingDate || null;
               const meetingTime = meta?.meetingTime || null;
+              const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
+
+              if (googleStart) {
+                try {
+                  const event = await createGoogleCalendarEventForUser({
+                    userId: actingUser.id,
+                    summary: `First Cut Design Discussion - ${customerName}`,
+                    description: `First cut design and quotation discussion for ${customerName}.`,
+                    startDateTimeIso: googleStart,
+                    endDateTimeIso: addHoursToIso(googleStart, 1),
+                    attendees: distinctEmails([customerEmail, actingUser.email]),
+                  });
+                } catch (calendarErr) {
+                  console.error("DQC1 first-cut Google event create error (non-fatal)", {
+                    leadId: id,
+                    error: calendarErr,
+                  });
+                }
+              }
 
               fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
                 method: "POST",
@@ -2716,7 +3226,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         try {
           const [rows] = await pool.query(
             `SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
-                    u.name as designerName
+                    u.name as designerName, u.email as designerEmail
              FROM leads l
              LEFT JOIN users u ON u.id = l.assigned_designer_id
              WHERE l.id = ?`,
@@ -2748,6 +3258,25 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
             const meetingDate = meta?.meetingDate ?? meta?.signoffDate ?? null;
             const meetingTime = meta?.meetingTime ?? meta?.signoffTime ?? null;
+            const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
+
+            if (googleStart) {
+              try {
+                await createGoogleCalendarEventForUser({
+                  userId: actingUser.id,
+                  summary: `Design Sign-Off - ${customerName}`,
+                  description: `Design sign-off meeting scheduled for ${customerName}.`,
+                  startDateTimeIso: googleStart,
+                  endDateTimeIso: addHoursToIso(googleStart, 1),
+                  attendees: distinctEmails([customerEmail, row.designerEmail, actingUser.email]),
+                });
+              } catch (calendarErr) {
+                console.error("Design signoff Google event create error (non-fatal)", {
+                  leadId: id,
+                  error: calendarErr,
+                });
+              }
+            }
 
             if (customerEmail) {
               fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
@@ -2846,7 +3375,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         try {
           const [rows] = await pool.query(
             `SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
-                    u.name as designerName
+                    u.name as designerName, u.email as designerEmail
              FROM leads l
              LEFT JOIN users u ON u.id = l.assigned_designer_id
              WHERE l.id = ?`,
@@ -2884,6 +3413,25 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const meetingDate = meta?.meetingDate ?? null;
             const meetingTime = meta?.meetingTime ?? null;
             const ecLocation = meta?.ecLocation ?? meta?.ecAddress ?? ecName;
+            const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
+
+            if (googleStart) {
+              try {
+                await createGoogleCalendarEventForUser({
+                  userId: actingUser.id,
+                  summary: `Material Selection - ${customerName}`,
+                  description: `Material selection meeting at ${ecLocation || ecName}.`,
+                  startDateTimeIso: googleStart,
+                  endDateTimeIso: addHoursToIso(googleStart, 1),
+                  attendees: distinctEmails([customerEmail, row.designerEmail, actingUser.email]),
+                });
+              } catch (calendarErr) {
+                console.error("DQC2 material selection Google event create error (non-fatal)", {
+                  leadId: id,
+                  error: calendarErr,
+                });
+              }
+            }
 
             if (customerEmail) {
               fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
@@ -4706,6 +5254,26 @@ app.post(
             "Customer";
 
           if (customerEmail) {
+            const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
+
+            if (googleStart) {
+              try {
+                await createGoogleCalendarEventForUser({
+                  userId: user.id,
+                  summary: `First Cut Design Discussion - ${customerName}`,
+                  description: `First cut design and quotation discussion for ${customerName}.`,
+                  startDateTimeIso: googleStart,
+                  endDateTimeIso: addHoursToIso(googleStart, 1),
+                  attendees: distinctEmails([customerEmail, user.email]),
+                });
+              } catch (calendarErr) {
+                console.error("DQC1 first-cut invite Google event create error (non-fatal)", {
+                  leadId,
+                  error: calendarErr,
+                });
+              }
+            }
+
             fetch(`${FRONTEND_BASE}/api/email/send-dqc1-first-cut-design-scheduled`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
