@@ -617,42 +617,17 @@ export default function Dashboard() {
                         <div className="xl:transition-all xl:duration-200">
                             <p className="xl:pl-2 xl:pt-2 xl:pb-1 text-xs font-bold text-gray-500 uppercase tracking-wide">Design Phases</p>
                             {allTypes.map((type, index) => (
-                                index === 1 ? (
-                                    <div key="google-calendar-after-all-projects">
-                                        <a
-                                            href="/google-calendar"
-                                            className={`xl:p-4 xl:border-gray-300 xl:cursor-pointer xl:font-semibold xl:inline-block xl:w-66.25 text-left xl:transition-all xl:duration-200 block ${
-                                                pathname === '/google-calendar'
-                                                    ? 'xl:border-l-4 xl:border-l-green-400 xl:bg-gray-100 xl:text-green-500 xl:font-bold'
-                                                    : 'hover:xl:border-l-4 hover:xl:border-l-green-400 hover:xl:bg-gray-100 hover:xl:text-green-500 hover:xl:font-bold hover:xl:scale-105'
-                                            }`}
-                                        >
-                                            Google Calendar
-                                        </a>
-                                        <div
-                                            onClick={() => handleSelection(type)}
-                                            className={`xl:p-4 xl:border-gray-300 xl:cursor-pointer xl:font-semibold xl:inline-block xl:w-66.25 text-left xl:transition-all xl:duration-200 ${
-                                                isSelected === type
-                                                    ? 'xl:border-l-4 xl:border-l-green-400 xl:bg-gray-100 xl:text-green-400 xl:font-bold'
-                                                    : 'hover:xl:xl:border-l-4 hover:xl:border-l-green-400 hover:xl:bg-gray-100 hover:xl:text-green-400 hover:xl:font-bold hover:xl:scale-105'
-                                            }`}
-                                        >
-                                            {type}
-                                        </div>
-                                    </div>
-                                ) : (
-                                    <div
-                                        key={index}
-                                        onClick={() => handleSelection(type)}
-                                        className={`xl:p-4 xl:border-gray-300 xl:cursor-pointer xl:font-semibold xl:inline-block xl:w-66.25 text-left xl:transition-all xl:duration-200 ${
-                                            isSelected === type 
-                                                ? 'xl:border-l-4 xl:border-l-green-400 xl:bg-gray-100 xl:text-green-400 xl:font-bold' 
-                                                : 'hover:xl:xl:border-l-4 hover:xl:border-l-green-400 hover:xl:bg-gray-100 hover:xl:text-green-400 hover:xl:font-bold hover:xl:scale-105'
-                                        }`}
-                                    >
-                                        {type}
-                                    </div>
-                                )
+                                <div
+                                    key={index}
+                                    onClick={() => handleSelection(type)}
+                                    className={`xl:p-4 xl:border-gray-300 xl:cursor-pointer xl:font-semibold xl:inline-block xl:w-66.25 text-left xl:transition-all xl:duration-200 ${
+                                        isSelected === type 
+                                            ? 'xl:border-l-4 xl:border-l-green-400 xl:bg-gray-100 xl:text-green-400 xl:font-bold' 
+                                            : 'hover:xl:xl:border-l-4 hover:xl:border-l-green-400 hover:xl:bg-gray-100 hover:xl:text-green-400 hover:xl:font-bold hover:xl:scale-105'
+                                    }`}
+                                >
+                                    {type}
+                                </div>
                             ))}
                         </div>
                     )}   
