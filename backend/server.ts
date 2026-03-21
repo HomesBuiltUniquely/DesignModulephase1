@@ -320,6 +320,19 @@ async function initDb() {
     } catch {
       // ignore
     }
+    // Add mmt_manager_id for mapping MMT executives to their manager
+    try {
+      const [mmtMgrCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'mmt_manager_id'",
+      );
+      if ((mmtMgrCol as any[]).length === 0) {
+        await conn.query(
+          "ALTER TABLE users ADD COLUMN mmt_manager_id INT NULL",
+        );
+      }
+    } catch {
+      // ignore
+    }
 
     await conn.query(`
       CREATE TABLE IF NOT EXISTS sessions (
@@ -755,6 +768,19 @@ async function getCalendarVisibleUsers(currentUser: { id: number; email: string;
     return rows as { id: number; email: string; name: string; role: string }[];
   }
 
+  if (role === "mmt_manager") {
+    const [rows] = await pool.query(
+      `SELECT DISTINCT u.id, u.email, u.name, u.role
+       FROM users u
+       INNER JOIN google_calendar_connections gcc ON gcc.user_id = u.id
+       WHERE gcc.active = 1
+         AND (u.id = ? OR (u.role = 'mmt_executive' AND u.mmt_manager_id = ?))
+       ORDER BY u.name ASC`,
+      [currentUser.id, currentUser.id],
+    );
+    return rows as { id: number; email: string; name: string; role: string }[];
+  }
+
   return [currentUser];
 }
 
@@ -960,6 +986,38 @@ async function createGoogleCalendarEventForUser(args: {
     throw new Error(data?.error?.message || "Failed to create Google Calendar event");
   }
   return data as { id?: string; htmlLink?: string };
+}
+
+async function createGoogleCalendarEventForFirstAvailableUser(args: {
+  userIds: Array<number | null | undefined>;
+  summary: string;
+  description?: string;
+  startDateTimeIso: string;
+  endDateTimeIso: string;
+  attendees?: string[];
+}) {
+  let lastError: unknown = null;
+  for (const rawUserId of args.userIds) {
+    const userId = Number(rawUserId);
+    if (!userId) continue;
+    try {
+      const event = await createGoogleCalendarEventForUser({
+        userId,
+        summary: args.summary,
+        description: args.description,
+        startDateTimeIso: args.startDateTimeIso,
+        endDateTimeIso: args.endDateTimeIso,
+        attendees: args.attendees,
+      });
+      if (event) {
+        return { ...event, ownerUserId: userId };
+      }
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  if (lastError) throw lastError;
+  return null;
 }
 
 async function addLeadHistoryEvent(leadId: number, event: any) {
@@ -1462,8 +1520,15 @@ app.all("/api/auth/register-mmt-executive", async (req: Request, res: Response) 
     const phoneVal = phone != null ? String(phone).trim() : null;
 
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, "mmt_executive", phoneVal || null],
+      "INSERT INTO users (email, password, name, role, phone, mmt_manager_id) VALUES (?, ?, ?, ?, ?, ?)",
+      [
+        normalized,
+        String(password),
+        displayName,
+        "mmt_executive",
+        phoneVal || null,
+        role === "mmt_manager" ? manager.id : null,
+      ],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({
@@ -2735,7 +2800,9 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
           const [rows] = await pool.query(
             `SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload,
                     a.masking_date as maskingDate, a.masking_time as maskingTime,
-                    u_designer.email as designerEmail, u_designer.name as designerName
+                    a.assigned_to_user_id as executiveUserId,
+                    u_designer.email as designerEmail, u_designer.name as designerName,
+                    u_designer.mmt_manager_id as executiveManagerId
              FROM leads l
              LEFT JOIN lead_d2_assignments a ON a.lead_id = l.id
              LEFT JOIN users u_designer ON u_designer.id = a.assigned_to_user_id
@@ -2793,6 +2860,29 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               ? (row.maskingDate instanceof Date ? row.maskingDate.toISOString().split("T")[0] : row.maskingDate)
               : null;
             const maskingTime = row.maskingTime || null;
+            const googleStart = formatGoogleDateTime(maskingDate, maskingTime);
+
+            if (googleStart) {
+              try {
+                await createGoogleCalendarEventForFirstAvailableUser({
+                  userIds: [row.executiveUserId, row.executiveManagerId, actingUser.id],
+                  summary: `D2 Site Masking - ${customerName}`,
+                  description: [
+                    `D2 masking visit scheduled for ${customerName}.`,
+                    designerName ? `Assigned MMT executive: ${designerName}` : null,
+                    pmName ? `MMT manager: ${pmName}` : null,
+                  ].filter(Boolean).join("\n"),
+                  startDateTimeIso: googleStart,
+                  endDateTimeIso: addHoursToIso(googleStart, 1),
+                  attendees: distinctEmails([customerEmail, row.designerEmail, pmEmail, actingUser.email]),
+                });
+              } catch (calendarErr) {
+                console.error("D2 masking Google event create error (non-fatal)", {
+                  leadId: id,
+                  error: calendarErr,
+                });
+              }
+            }
 
             if (pmEmail && customerName && designerName && ecName) {
               const [mmtRows] = await pool.query(
@@ -3063,7 +3153,10 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
           const [rows] = await pool.query(
             `SELECT a.measurement_date as measurementDate,
                     a.measurement_time as measurementTime,
+                    a.assigned_to_user_id as executiveUserId,
                     u.name as executiveName,
+                    u.email as executiveEmail,
+                    u.mmt_manager_id as executiveManagerId,
                     u.phone as executivePhone,
                     l.client_email as clientEmail,
                     l.project_name as projectName,
@@ -3099,7 +3192,39 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   : row.measurementDate || null;
               const visitTime = row.measurementTime || null;
               const executiveName = row.executiveName || null;
+              const executiveEmail = row.executiveEmail || null;
               const executivePhone = row.executivePhone || null;
+              const googleStart = formatGoogleDateTime(visitDate, visitTime);
+
+              let managerEmail: string | null = null;
+              let managerName: string | null = null;
+              if (row.executiveManagerId) {
+                const manager = await getUserById(Number(row.executiveManagerId));
+                managerEmail = manager?.email || null;
+                managerName = manager?.name || null;
+              }
+
+              if (googleStart) {
+                try {
+                  await createGoogleCalendarEventForFirstAvailableUser({
+                    userIds: [row.executiveUserId, row.executiveManagerId, actingUser.id],
+                    summary: `D1 Site Measurement - ${customerName}`,
+                    description: [
+                      `D1 site measurement scheduled for ${customerName}.`,
+                      executiveName ? `Assigned MMT executive: ${executiveName}` : null,
+                      managerName ? `MMT manager: ${managerName}` : null,
+                    ].filter(Boolean).join("\n"),
+                    startDateTimeIso: googleStart,
+                    endDateTimeIso: addHoursToIso(googleStart, 1),
+                    attendees: distinctEmails([customerEmail, executiveEmail, managerEmail, actingUser.email]),
+                  });
+                } catch (calendarErr) {
+                  console.error("D1 MMT Google event create error (non-fatal)", {
+                    leadId: id,
+                    error: calendarErr,
+                  });
+                }
+              }
 
               fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
                 method: "POST",
@@ -3275,43 +3400,45 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
             const meetingDate = meta?.meetingDate ?? meta?.signoffDate ?? null;
             const meetingTime = meta?.meetingTime ?? meta?.signoffTime ?? null;
-            const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
+            if (meetingDate && meetingTime) {
+              const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
 
-            if (googleStart) {
-              try {
-                await createGoogleCalendarEventForUser({
-                  userId: actingUser.id,
-                  summary: `Design Sign-Off - ${customerName}`,
-                  description: `Design sign-off meeting scheduled for ${customerName}.`,
-                  startDateTimeIso: googleStart,
-                  endDateTimeIso: addHoursToIso(googleStart, 1),
-                  attendees: distinctEmails([customerEmail, row.designerEmail, actingUser.email]),
-                });
-              } catch (calendarErr) {
-                console.error("Design signoff Google event create error (non-fatal)", {
-                  leadId: id,
-                  error: calendarErr,
+              if (googleStart) {
+                try {
+                  await createGoogleCalendarEventForFirstAvailableUser({
+                    userIds: [row.assigned_designer_id, actingUser.id],
+                    summary: `Design Sign-Off - ${customerName}`,
+                    description: `Design sign-off meeting scheduled for ${customerName}.`,
+                    startDateTimeIso: googleStart,
+                    endDateTimeIso: addHoursToIso(googleStart, 1),
+                    attendees: distinctEmails([customerEmail, row.designerEmail, actingUser.email]),
+                  });
+                } catch (calendarErr) {
+                  console.error("Design signoff Google event create error (non-fatal)", {
+                    leadId: id,
+                    error: calendarErr,
+                  });
+                }
+              }
+
+              if (customerEmail) {
+                fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    to: customerEmail,
+                    customerName,
+                    designerName,
+                    meetingDate: meetingDate || undefined,
+                    meetingTime: meetingTime || undefined,
+                  }),
+                }).catch((err) => {
+                  console.error("Design signoff meeting scheduled email trigger error (non-fatal)", {
+                    leadId: id,
+                    error: err,
+                  });
                 });
               }
-            }
-
-            if (customerEmail) {
-              fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  to: customerEmail,
-                  customerName,
-                  designerName,
-                  meetingDate: meetingDate || undefined,
-                  meetingTime: meetingTime || undefined,
-                }),
-              }).catch((err) => {
-                console.error("Design signoff meeting scheduled email trigger error (non-fatal)", {
-                  leadId: id,
-                  error: err,
-                });
-              });
             }
           }
         } catch (err) {
@@ -3430,44 +3557,46 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const meetingDate = meta?.meetingDate ?? null;
             const meetingTime = meta?.meetingTime ?? null;
             const ecLocation = meta?.ecLocation ?? meta?.ecAddress ?? ecName;
-            const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
+            if (meetingDate && meetingTime) {
+              const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
 
-            if (googleStart) {
-              try {
-                await createGoogleCalendarEventForUser({
-                  userId: actingUser.id,
-                  summary: `Material Selection - ${customerName}`,
-                  description: `Material selection meeting at ${ecLocation || ecName}.`,
-                  startDateTimeIso: googleStart,
-                  endDateTimeIso: addHoursToIso(googleStart, 1),
-                  attendees: distinctEmails([customerEmail, row.designerEmail, actingUser.email]),
-                });
-              } catch (calendarErr) {
-                console.error("DQC2 material selection Google event create error (non-fatal)", {
-                  leadId: id,
-                  error: calendarErr,
+              if (googleStart) {
+                try {
+                  await createGoogleCalendarEventForFirstAvailableUser({
+                    userIds: [row.assigned_designer_id, actingUser.id],
+                    summary: `Material Selection - ${customerName}`,
+                    description: `Material selection meeting at ${ecLocation || ecName}.`,
+                    startDateTimeIso: googleStart,
+                    endDateTimeIso: addHoursToIso(googleStart, 1),
+                    attendees: distinctEmails([customerEmail, row.designerEmail, actingUser.email]),
+                  });
+                } catch (calendarErr) {
+                  console.error("DQC2 material selection Google event create error (non-fatal)", {
+                    leadId: id,
+                    error: calendarErr,
+                  });
+                }
+              }
+
+              if (customerEmail) {
+                fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    to: customerEmail,
+                    customerName,
+                    designerName,
+                    meetingDate,
+                    meetingTime,
+                    ecLocation,
+                  }),
+                }).catch((err) => {
+                  console.error("DQC2 material selection email trigger error (non-fatal)", {
+                    leadId: id,
+                    error: err,
+                  });
                 });
               }
-            }
-
-            if (customerEmail) {
-              fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  to: customerEmail,
-                  customerName,
-                  designerName,
-                  meetingDate,
-                  meetingTime,
-                  ecLocation,
-                }),
-              }).catch((err) => {
-                console.error("DQC2 material selection email trigger error (non-fatal)", {
-                  leadId: id,
-                  error: err,
-                });
-              });
             }
           }
         } catch (err) {
@@ -4221,6 +4350,156 @@ app.post(
     }
   },
 );
+
+app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+
+    const role = (actingUser.role || "").toLowerCase();
+    const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
+    if (!allowed.includes(role)) {
+      return res.status(403).json({ message: "Not allowed to send meeting invites" });
+    }
+
+    const {
+      meetingType,
+      meetingDate,
+      meetingTime,
+      meetingLink,
+      meetingMode,
+      ecLocation,
+    } = req.body || {};
+
+    if (!meetingType || !meetingDate || !meetingTime) {
+      return res.status(400).json({ message: "meetingType, meetingDate and meetingTime are required" });
+    }
+
+    const [rows] = await pool.query(
+      `SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
+              u.name as designerName, u.email as designerEmail
+       FROM leads l
+       LEFT JOIN users u ON u.id = l.assigned_designer_id
+       WHERE l.id = ?`,
+      [leadId],
+    );
+    const row = (rows as any[])[0];
+    if (!row) return res.status(404).json({ message: "Lead not found" });
+
+    let payload: any = {};
+    try {
+      payload = row.payload ? JSON.parse(row.payload) : {};
+    } catch {
+      payload = {};
+    }
+
+    const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
+    const customerEmail =
+      row.clientEmail ||
+      formData.email ||
+      formData.sales_email ||
+      payload?.email ||
+      payload?.form?.email ||
+      null;
+    const customerName =
+      formData.customer_name ||
+      formData.sales_lead_name ||
+      payload?.customer_name ||
+      payload?.form?.customer_name ||
+      row.projectName ||
+      "Customer";
+    const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
+    const eventStart = formatGoogleDateTime(meetingDate, meetingTime);
+    if (!eventStart) {
+      return res.status(400).json({ message: "Invalid meeting date/time" });
+    }
+
+    let summary = "";
+    let description = "";
+    let emailRoutePath = "";
+    let emailBody: Record<string, unknown> = {};
+
+    if (meetingType === "dqc2_material_selection") {
+      const resolvedEcLocation =
+        ecLocation ||
+        formData.experience_center ||
+        payload?.experience_center ||
+        payload?.form?.experience_center ||
+        "Experience Center";
+      summary = `Material Selection - ${customerName}`;
+      description = [
+        `Material selection meeting at ${resolvedEcLocation}.`,
+        meetingMode ? `Mode: ${meetingMode}` : null,
+        meetingLink ? `Meeting link: ${meetingLink}` : null,
+      ].filter(Boolean).join("\n");
+      emailRoutePath = "/api/email/send-dqc2-material-selection-scheduled";
+      emailBody = {
+        to: customerEmail,
+        customerName,
+        designerName,
+        meetingDate,
+        meetingTime,
+        ecLocation: resolvedEcLocation,
+      };
+    } else if (meetingType === "design_signoff") {
+      summary = `Design Sign-Off - ${customerName}`;
+      description = [
+        `Design sign-off meeting scheduled for ${customerName}.`,
+        meetingMode ? `Mode: ${meetingMode}` : null,
+        meetingLink ? `Meeting link: ${meetingLink}` : null,
+      ].filter(Boolean).join("\n");
+      emailRoutePath = "/api/email/send-design-signoff-meeting-scheduled";
+      emailBody = {
+        to: customerEmail,
+        customerName,
+        designerName,
+        meetingDate,
+        meetingTime,
+      };
+    } else {
+      return res.status(400).json({ message: "Unsupported meetingType" });
+    }
+
+    try {
+      await createGoogleCalendarEventForFirstAvailableUser({
+        userIds: [row.assigned_designer_id, actingUser.id],
+        summary,
+        description,
+        startDateTimeIso: eventStart,
+        endDateTimeIso: addHoursToIso(eventStart, 1),
+        attendees: distinctEmails([customerEmail, row.designerEmail, actingUser.email]),
+      });
+    } catch (calendarErr) {
+      console.error("meeting invite Google event create error (non-fatal)", {
+        leadId,
+        meetingType,
+        error: calendarErr,
+      });
+    }
+
+    if (customerEmail) {
+      fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(emailBody),
+      }).catch((err) => {
+        console.error("meeting invite email trigger error (non-fatal)", {
+          leadId,
+          meetingType,
+          error: err,
+        });
+      });
+    }
+
+    return res.status(201).json({ ok: true });
+  } catch (err) {
+    console.error("schedule-meeting-invite error", err);
+    return res.status(500).json({ message: "Failed to schedule meeting invite" });
+  }
+});
 
 // List uploads for a lead (designers see only approved; MMT manager/executive and Finance see all with status)
 app.get("/api/leads/:id/uploads", async (req: Request, res: Response) => {

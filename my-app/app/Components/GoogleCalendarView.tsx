@@ -306,7 +306,7 @@ export default function GoogleCalendarView() {
 
   const role = (user?.role || '').toLowerCase();
   const canSeeAllEvents = role === 'admin' || role === 'territorial_design_manager';
-  const canSeeOwnerLabels = role === 'admin' || role === 'territorial_design_manager' || role === 'design_manager';
+  const canSeeOwnerLabels = role === 'admin' || role === 'territorial_design_manager' || role === 'design_manager' || role === 'mmt_manager';
   const weekStart = useMemo(() => startOfWeek(currentDate), [currentDate]);
   const weekDays = useMemo(() => buildWeekDays(weekStart), [weekStart]);
   const miniCalendarDays = useMemo(() => buildMiniCalendarDays(currentDate), [currentDate]);
@@ -446,6 +446,8 @@ export default function GoogleCalendarView() {
                     ? 'TDM view of all connected calendars'
                     : role === 'design_manager'
                       ? 'Your events plus all designer events under you'
+                      : role === 'mmt_manager'
+                        ? 'Your events plus all MMT executive events under you'
                       : 'Your HUB Calendar events in one place'}
               </p>
             </div>
