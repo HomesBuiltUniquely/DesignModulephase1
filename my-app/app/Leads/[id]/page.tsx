@@ -1172,14 +1172,14 @@ export default function ProjectDetailPage() {
                                     );
                                 }
                             }}
-                            onCompleteAndProceed={() => {
+                            onCompleteAndProceed={(meta) => {
                                 recordTaskComplete(
                                     1,
                                     'First cut design + quotation discussion meeting request',
                                     {
                                         description:
                                             'First cut design completed (100%) and meeting request submitted.',
-                                        meta: {},
+                                        meta: meta ?? {},
                                     },
                                 );
                                 setDesignUploadFiles([]);
@@ -1372,9 +1372,23 @@ export default function ProjectDetailPage() {
                             onDesignDrop={onDesignDrop}
                             onDesignDragOver={onDesignDragOver}
                             removeDesignFile={removeDesignFile}
-                            onSubmit={async () => {
+                            onSubmit={async (meta) => {
                                 if (!projectId) return;
                                 try {
+                                    await fetch(`${API}/api/leads/${projectId}/schedule-meeting-invite`, {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/json',
+                                            Authorization: `Bearer ${sessionId}`,
+                                        },
+                                        body: JSON.stringify({
+                                            meetingType: 'dqc2_material_selection',
+                                            meetingDate: meta?.meetingDate,
+                                            meetingTime: meta?.meetingTime,
+                                            meetingMode: meta?.meetingMode,
+                                            meetingLink: meta?.meetingLink,
+                                        }),
+                                    });
                                     if (designUploadFiles.length > 0 && sessionId) {
                                         const fd = new FormData();
                                         designUploadFiles.forEach((f) =>
@@ -1555,9 +1569,23 @@ export default function ProjectDetailPage() {
                             onDesignDrop={onDesignDrop}
                             onDesignDragOver={onDesignDragOver}
                             removeDesignFile={removeDesignFile}
-                            onSubmit={async () => {
+                            onSubmit={async (meta) => {
                                 if (!projectId) return;
                                 try {
+                                    await fetch(`${API}/api/leads/${projectId}/schedule-meeting-invite`, {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/json',
+                                            Authorization: `Bearer ${sessionId}`,
+                                        },
+                                        body: JSON.stringify({
+                                            meetingType: 'design_signoff',
+                                            meetingDate: meta?.meetingDate,
+                                            meetingTime: meta?.meetingTime,
+                                            meetingMode: meta?.meetingMode,
+                                            meetingLink: meta?.meetingLink,
+                                        }),
+                                    });
                                     if (designUploadFiles.length > 0 && sessionId) {
                                         const fd = new FormData();
                                         designUploadFiles.forEach((f) =>
