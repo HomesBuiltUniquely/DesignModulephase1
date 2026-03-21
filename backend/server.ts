@@ -5,6 +5,8 @@ import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3
 import multer from "multer";
 import fs from "node:fs";
 import path from "node:path";
+import type { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import AdmZip from "adm-zip";
 
 const app = express();
@@ -124,6 +126,15 @@ async function uploadProfileImage(userId: number, dataUrl: string): Promise<stri
 }
 
 /** Upload a lead file to S3; returns public URL or null if S3 not configured. */
+/** Stream S3 GetObject body to Express response (avoids loading large PDFs into one Buffer). */
+async function pipeS3BodyToResponse(res: Response, body: unknown): Promise<void> {
+  const stream = body as Readable | null;
+  if (!stream || typeof stream.pipe !== "function") {
+    throw new Error("S3 object has no readable body");
+  }
+  await pipeline(stream, res);
+}
+
 async function uploadLeadFileToS3(leadId: number, filePath: string, originalName: string, mimeType?: string): Promise<string | null> {
   if (!process.env.AWS_ACCESS_KEY_ID) return null;
   try {
@@ -3429,7 +3440,8 @@ app.get("/api/leads/:leadId/uploads/:uploadId/download", async (req: Request, re
         const mime: Record<string, string> = { ".pdf": "application/pdf", ".dwg": "application/acad" };
         res.setHeader("Content-Type", mime[ext] || obj.ContentType || "application/octet-stream");
         res.setHeader("Content-Disposition", `attachment; filename="${name.replace(/"/g, "%22")}"`);
-        return res.send(Buffer.from(await obj.Body.transformToByteArray()));
+        await pipeS3BodyToResponse(res, obj.Body);
+        return;
       } catch (s3Err) {
         console.error("S3 download error", s3Err);
         return res.status(404).json({ message: "File not found" });
@@ -3518,7 +3530,8 @@ app.get("/api/leads/:leadId/uploads/:uploadId/file", async (req: Request, res: R
         res.setHeader("Content-Type", contentType);
         res.setHeader("Content-Disposition", `inline; filename="${(row.originalName || path.basename(filePath)).replace(/"/g, "%22")}"`);
         res.setHeader("X-Content-Type-Options", "nosniff");
-        return res.send(Buffer.from(await obj.Body.transformToByteArray()));
+        await pipeS3BodyToResponse(res, obj.Body);
+        return;
       } catch (s3Err) {
         console.error("S3 get file error", s3Err);
         return res.status(404).json({ message: "File not found" });

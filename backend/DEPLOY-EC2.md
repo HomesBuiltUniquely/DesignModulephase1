@@ -258,7 +258,19 @@ After a reboot, PM2 will start the backend again.
 
 ---
 
-## 10. (Optional) Nginx in front of the app
+## 10. Large PDF / file uploads (production) — **read this**
+
+If uploads work locally but **in production only tiny files (KB) succeed** or you see **413 Request Entity Too Large**:
+
+- **Nginx** defaults to **`client_max_body_size 1m`**. Multipart uploads (DQC drawing + quotation PDFs, MMT ZIPs) must allow more.
+- Fix: set **`client_max_body_size 200M;`** in the **`server { }`** block for `api.hubinterior.com` (and optionally in `http { }`), then `sudo nginx -t && sudo systemctl reload nginx`.
+- A ready-made snippet is in the repo: **`backend/nginx-api-large-uploads.conf`** — merge the directives into your real site config.
+
+The Node backend already allows **~200MB** per file (`express` + `multer` limits). The usual missing piece is **Nginx** (or another reverse proxy) in front of Node.
+
+---
+
+## 11. (Optional) Nginx in front of the app
 
 If you want HTTPS and a reverse proxy:
 
@@ -312,3 +324,4 @@ Point your frontend’s `NEXT_PUBLIC_API_URL` (or `API_BASE_URL`) to `http://you
 - [ ] MySQL installed and `DesignMod` DB + user created (or RDS configured and reachable).
 - [ ] `pm2 start dist/server.js --name backend` (or `ecosystem.config.cjs`) with env loaded.
 - [ ] `pm2 startup` and `pm2 save` for restart on reboot.
+- [ ] If using Nginx: **`client_max_body_size 200M`** (see §10) so PDF/ZIP uploads are not capped at ~1 MB.
