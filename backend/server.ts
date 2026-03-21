@@ -461,6 +461,16 @@ async function initDb() {
       );
     `);
 
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS customer_api_records (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        customer_number VARCHAR(100) NOT NULL,
+        payload JSON NOT NULL,
+        created_at DATETIME NOT NULL,
+        INDEX idx_customer_api_records_number (customer_number)
+      );
+    `);
+
     // seed admin
     const [rows] = await conn.query(
       "SELECT id FROM users WHERE email = ?",
