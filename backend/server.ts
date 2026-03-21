@@ -8,6 +8,7 @@ import path from "node:path";
 import type { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import AdmZip from "adm-zip";
+import { registerCustomerNumberRoutes } from "./routes/customerNumberApi";
 
 const app = express();
 const PORT = Number(process.env.PORT || 3001);
@@ -41,6 +42,26 @@ function reflectCorsHeaders(req: Request, res: Response): void {
   }
 }
 
+/**
+ * Explicit OPTIONS handler *before* cors(): multipart + Authorization triggers a preflight.
+ * If anything in the stack mishandles OPTIONS, the browser shows a generic CORS error on the real POST.
+ */
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (req.method !== "OPTIONS") return next();
+  const origin = req.headers.origin;
+  if (typeof origin !== "string" || !allowedOrigins.includes(origin)) return next();
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, X-Requested-With, Accept, Origin",
+  );
+  res.setHeader("Access-Control-Max-Age", "86400");
+  res.setHeader("Vary", "Origin");
+  return res.status(204).end();
+});
+
 app.use(
   cors({
     origin: (origin, cb) => {
@@ -73,6 +94,9 @@ const pool = mysql.createPool({
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
 });
+
+// Standalone route: /api/customer/:customerNumber (see routes/customerNumberApi.ts)
+registerCustomerNumberRoutes(app, pool);
 
 // ----- S3 setup for profile images -----
 const S3_REGION = process.env.AWS_REGION || "ap-south-1";
