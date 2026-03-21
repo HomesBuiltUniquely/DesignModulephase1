@@ -1,4 +1,4 @@
-import express, { Request, Response } from "express";
+import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
 import mysql from "mysql2/promise";
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
@@ -10,21 +10,49 @@ import { pipeline } from "node:stream/promises";
 import AdmZip from "adm-zip";
 
 const app = express();
-const PORT = 3001;
+const PORT = Number(process.env.PORT || 3001);
 
-// Allow frontend origin(s); required for browser requests from design.hubinterior.com
-const allowedOrigins = [
-  "https://design.hubinterior.com",
-  "http://localhost:3000",
-  "http://127.0.0.1:3000",
-];
+/** Browsers send Origin on cross-origin requests; preflight must allow the exact origin (incl. www). */
+function buildAllowedOrigins(): string[] {
+  const fromEnv = (process.env.ALLOWED_ORIGINS || process.env.CORS_ORIGINS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const defaults = [
+    "https://design.hubinterior.com",
+    "https://www.design.hubinterior.com",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+  ];
+  const set = new Set<string>([...defaults, ...fromEnv]);
+  const fe = (process.env.FRONTEND_BASE_URL || "").replace(/\/$/, "");
+  if (fe.startsWith("http://") || fe.startsWith("https://")) set.add(fe);
+  return Array.from(set);
+}
+
+let allowedOrigins = buildAllowedOrigins();
+
+function reflectCorsHeaders(req: Request, res: Response): void {
+  const origin = req.headers.origin;
+  if (typeof origin === "string" && allowedOrigins.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.append("Vary", "Origin");
+  }
+}
+
 app.use(
   cors({
     origin: (origin, cb) => {
-      if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+      if (!origin) return cb(null, true);
+      if (allowedOrigins.includes(origin)) return cb(null, true);
+      console.warn("CORS: blocked origin:", origin, "| allowed count:", allowedOrigins.length);
       return cb(null, false);
     },
     credentials: true,
+    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Origin"],
+    optionsSuccessStatus: 204,
   })
 );
 // Allow large DQC submissions and uploads (drawing + quotation can be big)
@@ -4769,6 +4797,17 @@ app.post("/api/leads/:id/resume", async (req: Request, res: Response) => {
     console.error("resume error", err);
     res.status(500).json({ message: "Failed to resume project" });
   }
+});
+
+// Ensure CORS headers are present on error responses (multer, etc.) so the browser doesn't only show a generic CORS error
+app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
+  reflectCorsHeaders(req, res);
+  if (err instanceof multer.MulterError) {
+    return res.status(400).json({ message: err.message });
+  }
+  const msg = err instanceof Error ? err.message : "Server error";
+  console.error("Express error:", err);
+  return res.status(500).json({ message: msg });
 });
 
 // ----- Keep process alive on unhandled errors (log instead of exit) -----
