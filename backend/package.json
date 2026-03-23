@@ -14,6 +14,7 @@
   "description": "",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.999.0",
+    "@aws-sdk/s3-request-presigner": "^3.1014.0",
     "adm-zip": "^0.5.16",
     "better-sqlite3": "^12.6.2",
     "cors": "^2.8.6",
