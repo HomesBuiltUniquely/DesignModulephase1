@@ -273,6 +273,7 @@ export default function Finance10pPage() {
                 <button type="button" onClick={() => setViewLeadId(null)} className="text-gray-500 hover:text-gray-700 text-2xl leading-none">&times;</button>
               </div>
               <div className="p-4 overflow-auto flex-1">
+                
                 {viewLoading ? (
                   <p className="text-sm text-gray-500">Loading…</p>
                 ) : viewUploads.length === 0 ? (

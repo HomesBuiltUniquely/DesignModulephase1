@@ -1,7 +1,8 @@
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
 import mysql from "mysql2/promise";
-import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import multer from "multer";
 import fs from "node:fs";
 import path from "node:path";
@@ -89,7 +90,7 @@ app.get("/api/health", (_req, res) => {
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "root@root",
+  password: process.env.DB_PASSWORD || "root",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -206,6 +207,19 @@ async function uploadLeadFileToS3(leadId: number, filePath: string, originalName
     console.error("uploadLeadFileToS3 error", err);
     return null;
   }
+}
+
+/** Public URL for a key (same pattern as uploadLeadFileToS3). */
+function buildS3PublicUrl(key: string): string {
+  return `https://${S3_BUCKET}.s3.${S3_REGION}.amazonaws.com/${key}`;
+}
+
+/** Copy object from S3 to local disk (mirrors multer so zip/list/download paths keep working). */
+async function streamS3ObjectToDisk(key: string, destPath: string): Promise<void> {
+  const obj = await s3.send(new GetObjectCommand({ Bucket: S3_BUCKET, Key: key }));
+  const body = obj.Body as Readable;
+  if (!body || typeof body.pipe !== "function") throw new Error("S3 object has no body");
+  await pipeline(body, fs.createWriteStream(destPath));
 }
 
 async function triggerCustomerEmailForLead(leadId: number, emailRoutePath: string): Promise<void> {
@@ -3644,6 +3658,401 @@ app.get("/api/leads/:leadId/uploads/:uploadId/file", async (req: Request, res: R
   }
 });
 
+/** Shared DB + history + email for DQC 1 (multipart or S3-direct flow). */
+async function persistDqc1SubmissionFromMeta(
+  leadId: number,
+  user: { id: number; name?: string | null; role?: string | null },
+  drawingFile: { originalname: string; filename: string; path: string; mimetype: string; size: number },
+  quotationFile: { originalname: string; filename: string; path: string; mimetype: string; size: number },
+  drawingS3: string | null,
+  quotationS3: string | null,
+): Promise<void> {
+  const now = new Date();
+  await pool.query(
+    `INSERT INTO lead_uploads
+     (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc_drawing', ?)`,
+    [leadId, user.id, drawingFile.originalname, drawingFile.filename, drawingFile.path, drawingFile.mimetype, drawingFile.size, now, drawingS3],
+  );
+  await pool.query(
+    `INSERT INTO lead_uploads
+     (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc_quotation', ?)`,
+    [leadId, user.id, quotationFile.originalname, quotationFile.filename, quotationFile.path, quotationFile.mimetype, quotationFile.size, now, quotationS3],
+  );
+  const ev = {
+    id: `dqc-submission-${Date.now()}`,
+    type: "file_upload",
+    taskName: "DQC 1 submission - dwg + quotation",
+    milestoneName: "DQC1",
+    timestamp: now.toISOString(),
+    description: `DQC submission: ${drawingFile.originalname}, ${quotationFile.originalname}`,
+    user: { name: user.name ?? "User" },
+    details: { kind: "dqc_submission", drawing: drawingFile.originalname, quotation: quotationFile.originalname },
+  };
+  await addLeadHistoryEvent(leadId, ev);
+
+  try {
+    const [leadRows] = await pool.query(
+      "SELECT project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?",
+      [leadId],
+    );
+    const leadRow = (leadRows as any[])[0];
+    if (leadRow) {
+      let payload: any = {};
+      try {
+        payload = leadRow.payload ? JSON.parse(leadRow.payload) : {};
+      } catch {
+        payload = {};
+      }
+
+      const customerName =
+        payload.customer_name || payload?.form?.customer_name || leadRow.projectName || "Customer";
+      const ecName =
+        payload.experience_center || payload?.form?.experience_center || leadRow.experienceCenter || "Experience Center";
+      const designerName = user.name || "Designer";
+      const projectValue = payload.project_value || payload?.form?.project_value || "";
+
+      const [dqcRows] = await pool.query(
+        "SELECT email, name FROM users WHERE role IN ('dqc_manager', 'dqe') ORDER BY id ASC LIMIT 1",
+      );
+      const dqcUser = (dqcRows as any[])[0];
+
+      if (dqcUser && dqcUser.email) {
+        const to = dqcUser.email as string;
+
+        const [ccRows] = await pool.query(
+          "SELECT email FROM users WHERE id IN (?, ?, ?) AND email IS NOT NULL",
+          [user.id, payload.manager_user_id || null, payload.tdm_user_id || null],
+        );
+        const ccList = (ccRows as any[]).map((r) => r.email).filter(Boolean);
+
+        fetch(`${FRONTEND_BASE}/api/email/send-dqc1-review-request-internal`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            to,
+            cc: ccList,
+            customerName,
+            ecName,
+            designerName,
+            projectValue: String(projectValue || ""),
+            dqcRepName: dqcUser.name || "DQC Team",
+            ...(drawingS3 || quotationS3
+              ? {
+                  attachments: [
+                    ...(drawingS3 ? [{ filename: drawingFile.originalname, path: drawingS3 }] : []),
+                    ...(quotationS3 ? [{ filename: quotationFile.originalname, path: quotationS3 }] : []),
+                  ],
+                }
+              : {}),
+          }),
+        }).catch((err) => {
+          console.error("DQC1 review request internal email trigger error (non-fatal)", {
+            leadId,
+            error: err,
+          });
+        });
+      }
+    }
+  } catch (err) {
+    console.error("DQC1 review request internal email prepare error (non-fatal)", {
+      leadId,
+      error: err,
+    });
+  }
+}
+
+/** DQC 2: DB + history + pending_dqc2 row (multipart or S3-direct). */
+async function persistDqc2SubmissionFromMeta(
+  leadId: number,
+  user: { id: number; name?: string | null; role?: string | null },
+  drawingFile: { originalname: string; filename: string; path: string; mimetype: string; size: number },
+  quotationFile: { originalname: string; filename: string; path: string; mimetype: string; size: number },
+  drawingS3: string | null,
+  quotationS3: string | null,
+): Promise<void> {
+  const now = new Date();
+  await pool.query(
+    `INSERT INTO lead_uploads
+     (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc2_drawing', ?)`,
+    [leadId, user.id, drawingFile.originalname, drawingFile.filename, drawingFile.path, drawingFile.mimetype, drawingFile.size, now, drawingS3],
+  );
+  await pool.query(
+    `INSERT INTO lead_uploads
+     (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc2_quotation', ?)`,
+    [leadId, user.id, quotationFile.originalname, quotationFile.filename, quotationFile.path, quotationFile.mimetype, quotationFile.size, now, quotationS3],
+  );
+  const ev = {
+    id: `dqc2-submission-${Date.now()}`,
+    type: "file_upload",
+    taskName: "DQC 2 submission",
+    milestoneName: "DQC2",
+    timestamp: now.toISOString(),
+    description: `DQC 2 submission: ${drawingFile.originalname}, ${quotationFile.originalname}`,
+    user: { name: user.name ?? "User" },
+    details: { kind: "dqc2_submission", drawing: drawingFile.originalname, quotation: quotationFile.originalname },
+  };
+  await addLeadHistoryEvent(leadId, ev);
+  await pool.query(
+    `INSERT INTO lead_dqc_reviews (lead_id, verdict, remarks, created_at, reviewed_by_user_id)
+     VALUES (?, ?, ?, ?, NULL)`,
+    [leadId, "pending_dqc2", JSON.stringify([]), now],
+  );
+}
+
+// ----- DQC 1: browser uploads directly to S3 (bypasses Nginx body limit); then small JSON "complete" calls API -----
+app.post("/api/leads/:id/dqc-submission/presign", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  if (!process.env.AWS_ACCESS_KEY_ID) {
+    return res.status(501).json({ message: "Direct upload not configured", directUpload: false });
+  }
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user?.role ?? "").toLowerCase();
+    const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
+    if (!allowed.includes(role)) return res.status(403).json({ message: "Not allowed to submit DQC" });
+    const body = req.body as { drawingName?: string; drawingMime?: string; quotationName?: string; quotationMime?: string };
+    if (!body.drawingName?.trim() || !body.quotationName?.trim()) {
+      return res.status(400).json({ message: "drawingName and quotationName are required" });
+    }
+    const dm = (body.drawingMime || "application/octet-stream").trim() || "application/octet-stream";
+    const qm = (body.quotationMime || "application/octet-stream").trim() || "application/octet-stream";
+    const ts = Date.now();
+    const safeD = body.drawingName.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const safeQ = body.quotationName.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const drawingKey = `lead-uploads/lead-${leadId}-${ts}-drawing-${safeD}`;
+    const quotationKey = `lead-uploads/lead-${leadId}-${ts}-quotation-${safeQ}`;
+    const drawingCmd = new PutObjectCommand({ Bucket: S3_BUCKET, Key: drawingKey, ContentType: dm });
+    const quotationCmd = new PutObjectCommand({ Bucket: S3_BUCKET, Key: quotationKey, ContentType: qm });
+    const drawingUploadUrl = await getSignedUrl(s3, drawingCmd, { expiresIn: 900 });
+    const quotationUploadUrl = await getSignedUrl(s3, quotationCmd, { expiresIn: 900 });
+    return res.json({
+      drawing: {
+        uploadUrl: drawingUploadUrl,
+        key: drawingKey,
+        contentType: dm,
+        publicUrl: buildS3PublicUrl(drawingKey),
+      },
+      quotation: {
+        uploadUrl: quotationUploadUrl,
+        key: quotationKey,
+        contentType: qm,
+        publicUrl: buildS3PublicUrl(quotationKey),
+      },
+    });
+  } catch (err) {
+    console.error("dqc-submission presign error", err);
+    return res.status(500).json({ message: "Failed to prepare upload" });
+  }
+});
+
+app.post("/api/leads/:id/dqc-submission/complete", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  if (!process.env.AWS_ACCESS_KEY_ID) {
+    return res.status(501).json({ message: "Direct upload not configured" });
+  }
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user?.role ?? "").toLowerCase();
+    const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
+    if (!allowed.includes(role)) return res.status(403).json({ message: "Not allowed to submit DQC" });
+    const body = req.body as {
+      drawingKey?: string;
+      quotationKey?: string;
+      drawingName?: string;
+      quotationName?: string;
+    };
+    const drawingKey = body.drawingKey?.trim();
+    const quotationKey = body.quotationKey?.trim();
+    if (!drawingKey || !quotationKey) {
+      return res.status(400).json({ message: "drawingKey and quotationKey are required" });
+    }
+    const prefix = `lead-uploads/lead-${leadId}-`;
+    if (!drawingKey.startsWith(prefix) || !quotationKey.startsWith(prefix)) {
+      return res.status(400).json({ message: "Invalid keys for this lead" });
+    }
+    const dRe = new RegExp(`^lead-uploads/lead-${leadId}-(\\d+)-drawing-`);
+    const qRe = new RegExp(`^lead-uploads/lead-${leadId}-(\\d+)-quotation-`);
+    const dm = dRe.exec(drawingKey);
+    const qm = qRe.exec(quotationKey);
+    if (!dm || !qm || dm[1] !== qm[1]) {
+      return res.status(400).json({ message: "Invalid drawing/quotation key pair" });
+    }
+    await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: drawingKey }));
+    await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: quotationKey }));
+    const headD = await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: drawingKey }));
+    const headQ = await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: quotationKey }));
+    const drawingSize = Number(headD.ContentLength || 0);
+    const quotationSize = Number(headQ.ContentLength || 0);
+    const drawingMime = headD.ContentType || "application/octet-stream";
+    const quotationMime = headQ.ContentType || "application/octet-stream";
+    const drawingLocal = path.join(UPLOADS_DIR, `${Date.now()}-dqc1-d-${path.basename(drawingKey)}`);
+    const quotationLocal = path.join(UPLOADS_DIR, `${Date.now()}-dqc1-q-${path.basename(quotationKey)}`);
+    await streamS3ObjectToDisk(drawingKey, drawingLocal);
+    await streamS3ObjectToDisk(quotationKey, quotationLocal);
+    const drawingS3 = buildS3PublicUrl(drawingKey);
+    const quotationS3 = buildS3PublicUrl(quotationKey);
+    const drawingName = (body.drawingName || path.basename(drawingKey)).trim();
+    const quotationName = (body.quotationName || path.basename(quotationKey)).trim();
+    await persistDqc1SubmissionFromMeta(
+      leadId,
+      user,
+      {
+        originalname: drawingName,
+        filename: path.basename(drawingLocal),
+        path: drawingLocal,
+        mimetype: drawingMime,
+        size: drawingSize,
+      },
+      {
+        originalname: quotationName,
+        filename: path.basename(quotationLocal),
+        path: quotationLocal,
+        mimetype: quotationMime,
+        size: quotationSize,
+      },
+      drawingS3,
+      quotationS3,
+    );
+    return res.status(201).json({ ok: true });
+  } catch (err) {
+    console.error("dqc-submission complete error", err);
+    return res.status(500).json({ message: "Failed to finalize DQC submission" });
+  }
+});
+
+// ----- DQC 2: same S3-direct flow (keys must contain dqc2-drawing / dqc2-quotation) -----
+app.post("/api/leads/:id/dqc2-submission/presign", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  if (!process.env.AWS_ACCESS_KEY_ID) {
+    return res.status(501).json({ message: "Direct upload not configured", directUpload: false });
+  }
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user?.role ?? "").toLowerCase();
+    const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
+    if (!allowed.includes(role)) return res.status(403).json({ message: "Not allowed to submit DQC" });
+    const body = req.body as { drawingName?: string; drawingMime?: string; quotationName?: string; quotationMime?: string };
+    if (!body.drawingName?.trim() || !body.quotationName?.trim()) {
+      return res.status(400).json({ message: "drawingName and quotationName are required" });
+    }
+    const dm = (body.drawingMime || "application/octet-stream").trim() || "application/octet-stream";
+    const qm = (body.quotationMime || "application/octet-stream").trim() || "application/octet-stream";
+    const ts = Date.now();
+    const safeD = body.drawingName.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const safeQ = body.quotationName.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const drawingKey = `lead-uploads/lead-${leadId}-${ts}-dqc2-drawing-${safeD}`;
+    const quotationKey = `lead-uploads/lead-${leadId}-${ts}-dqc2-quotation-${safeQ}`;
+    const drawingCmd = new PutObjectCommand({ Bucket: S3_BUCKET, Key: drawingKey, ContentType: dm });
+    const quotationCmd = new PutObjectCommand({ Bucket: S3_BUCKET, Key: quotationKey, ContentType: qm });
+    const drawingUploadUrl = await getSignedUrl(s3, drawingCmd, { expiresIn: 900 });
+    const quotationUploadUrl = await getSignedUrl(s3, quotationCmd, { expiresIn: 900 });
+    return res.json({
+      drawing: {
+        uploadUrl: drawingUploadUrl,
+        key: drawingKey,
+        contentType: dm,
+        publicUrl: buildS3PublicUrl(drawingKey),
+      },
+      quotation: {
+        uploadUrl: quotationUploadUrl,
+        key: quotationKey,
+        contentType: qm,
+        publicUrl: buildS3PublicUrl(quotationKey),
+      },
+    });
+  } catch (err) {
+    console.error("dqc2-submission presign error", err);
+    return res.status(500).json({ message: "Failed to prepare upload" });
+  }
+});
+
+app.post("/api/leads/:id/dqc2-submission/complete", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  if (!process.env.AWS_ACCESS_KEY_ID) {
+    return res.status(501).json({ message: "Direct upload not configured" });
+  }
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user?.role ?? "").toLowerCase();
+    const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
+    if (!allowed.includes(role)) return res.status(403).json({ message: "Not allowed to submit DQC" });
+    const body = req.body as {
+      drawingKey?: string;
+      quotationKey?: string;
+      drawingName?: string;
+      quotationName?: string;
+    };
+    const drawingKey = body.drawingKey?.trim();
+    const quotationKey = body.quotationKey?.trim();
+    if (!drawingKey || !quotationKey) {
+      return res.status(400).json({ message: "drawingKey and quotationKey are required" });
+    }
+    const prefix = `lead-uploads/lead-${leadId}-`;
+    if (!drawingKey.startsWith(prefix) || !quotationKey.startsWith(prefix)) {
+      return res.status(400).json({ message: "Invalid keys for this lead" });
+    }
+    const dRe = new RegExp(`^lead-uploads/lead-${leadId}-(\\d+)-dqc2-drawing-`);
+    const qRe = new RegExp(`^lead-uploads/lead-${leadId}-(\\d+)-dqc2-quotation-`);
+    const dm = dRe.exec(drawingKey);
+    const qm = qRe.exec(quotationKey);
+    if (!dm || !qm || dm[1] !== qm[1]) {
+      return res.status(400).json({ message: "Invalid drawing/quotation key pair" });
+    }
+    await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: drawingKey }));
+    await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: quotationKey }));
+    const headD = await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: drawingKey }));
+    const headQ = await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: quotationKey }));
+    const drawingSize = Number(headD.ContentLength || 0);
+    const quotationSize = Number(headQ.ContentLength || 0);
+    const drawingMime = headD.ContentType || "application/octet-stream";
+    const quotationMime = headQ.ContentType || "application/octet-stream";
+    const drawingLocal = path.join(UPLOADS_DIR, `${Date.now()}-dqc2-d-${path.basename(drawingKey)}`);
+    const quotationLocal = path.join(UPLOADS_DIR, `${Date.now()}-dqc2-q-${path.basename(quotationKey)}`);
+    await streamS3ObjectToDisk(drawingKey, drawingLocal);
+    await streamS3ObjectToDisk(quotationKey, quotationLocal);
+    const drawingS3 = buildS3PublicUrl(drawingKey);
+    const quotationS3 = buildS3PublicUrl(quotationKey);
+    const drawingName = (body.drawingName || path.basename(drawingKey)).trim();
+    const quotationName = (body.quotationName || path.basename(quotationKey)).trim();
+    await persistDqc2SubmissionFromMeta(
+      leadId,
+      user,
+      {
+        originalname: drawingName,
+        filename: path.basename(drawingLocal),
+        path: drawingLocal,
+        mimetype: drawingMime,
+        size: drawingSize,
+      },
+      {
+        originalname: quotationName,
+        filename: path.basename(quotationLocal),
+        path: quotationLocal,
+        mimetype: quotationMime,
+        size: quotationSize,
+      },
+      drawingS3,
+      quotationS3,
+    );
+    return res.status(201).json({ ok: true });
+  } catch (err) {
+    console.error("dqc2-submission complete error", err);
+    return res.status(500).json({ message: "Failed to finalize DQC 2 submission" });
+  }
+});
+
 // DQC Submission: upload drawing + quotation; stored in lead_uploads with upload_type, status approved (shows in Files + DQC approval)
 app.post(
   "/api/leads/:id/dqc-submission",
@@ -3663,122 +4072,13 @@ app.post(
       if (!drawingFile || !quotationFile) {
         return res.status(400).json({ message: "Both drawing and quotation files are required" });
       }
-      const now = new Date();
       let drawingS3: string | null = null;
       let quotationS3: string | null = null;
       if (process.env.AWS_ACCESS_KEY_ID) {
         drawingS3 = await uploadLeadFileToS3(leadId, drawingFile.path, drawingFile.originalname, drawingFile.mimetype);
         quotationS3 = await uploadLeadFileToS3(leadId, quotationFile.path, quotationFile.originalname, quotationFile.mimetype);
       }
-      await pool.query(
-        `INSERT INTO lead_uploads
-         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc_drawing', ?)`,
-        [leadId, user.id, drawingFile.originalname, drawingFile.filename, drawingFile.path, drawingFile.mimetype, drawingFile.size, now, drawingS3],
-      );
-      await pool.query(
-        `INSERT INTO lead_uploads
-         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc_quotation', ?)`,
-        [leadId, user.id, quotationFile.originalname, quotationFile.filename, quotationFile.path, quotationFile.mimetype, quotationFile.size, now, quotationS3],
-      );
-      const ev = {
-        id: `dqc-submission-${Date.now()}`,
-        type: "file_upload",
-        taskName: "DQC 1 submission - dwg + quotation",
-        milestoneName: "DQC1",
-        timestamp: now.toISOString(),
-        description: `DQC submission: ${drawingFile.originalname}, ${quotationFile.originalname}`,
-        user: { name: user.name ?? "User" },
-        details: { kind: "dqc_submission", drawing: drawingFile.originalname, quotation: quotationFile.originalname },
-      };
-      await addLeadHistoryEvent(leadId, ev);
-
-      // Fire-and-forget internal DQC 1 review request email
-      try {
-        const [leadRows] = await pool.query(
-          "SELECT project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?",
-          [leadId],
-        );
-        const leadRow = (leadRows as any[])[0];
-        if (leadRow) {
-          let payload: any = {};
-          try {
-            payload = leadRow.payload ? JSON.parse(leadRow.payload) : {};
-          } catch {
-            payload = {};
-          }
-
-          const customerName =
-            payload.customer_name ||
-            payload?.form?.customer_name ||
-            leadRow.projectName ||
-            "Customer";
-          const ecName =
-            payload.experience_center ||
-            payload?.form?.experience_center ||
-            leadRow.experienceCenter ||
-            "Experience Center";
-          const designerName = user.name || "Designer";
-          const projectValue =
-            payload.project_value ||
-            payload?.form?.project_value ||
-            "";
-
-          // Determine primary DQC recipient and CC list (designer + manager + TDM)
-          const [dqcRows] = await pool.query(
-            "SELECT email, name FROM users WHERE role IN ('dqc_manager', 'dqe') ORDER BY id ASC LIMIT 1",
-          );
-          const dqcUser = (dqcRows as any[])[0];
-
-          if (dqcUser && dqcUser.email) {
-            const to = dqcUser.email as string;
-
-            const [ccRows] = await pool.query(
-              "SELECT email FROM users WHERE id IN (?, ?, ?) AND email IS NOT NULL",
-              [user.id, payload.manager_user_id || null, payload.tdm_user_id || null],
-            );
-            const ccList = (ccRows as any[]).map((r) => r.email).filter(Boolean);
-
-            fetch(`${FRONTEND_BASE}/api/email/send-dqc1-review-request-internal`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                to,
-                cc: ccList,
-                customerName,
-                ecName,
-                designerName,
-                projectValue: String(projectValue || ""),
-                dqcRepName: dqcUser.name || "DQC Team",
-                ...(drawingS3 || quotationS3
-                  ? {
-                      attachments: [
-                        ...(drawingS3
-                          ? [{ filename: drawingFile.originalname, path: drawingS3 }]
-                          : []),
-                        ...(quotationS3
-                          ? [{ filename: quotationFile.originalname, path: quotationS3 }]
-                          : []),
-                      ],
-                    }
-                  : {}),
-              }),
-            }).catch((err) => {
-              console.error("DQC1 review request internal email trigger error (non-fatal)", {
-                leadId,
-                error: err,
-              });
-            });
-          }
-        }
-      } catch (err) {
-        console.error("DQC1 review request internal email prepare error (non-fatal)", {
-          leadId,
-          error: err,
-        });
-      }
-
+      await persistDqc1SubmissionFromMeta(leadId, user, drawingFile, quotationFile, drawingS3, quotationS3);
       return res.status(201).json({ ok: true });
     } catch (err) {
       console.error("dqc-submission error", err);
@@ -4091,42 +4391,13 @@ app.post(
       if (!drawingFile || !quotationFile) {
         return res.status(400).json({ message: "Both drawing and quotation files are required" });
       }
-      const now = new Date();
       let drawingS3: string | null = null;
       let quotationS3: string | null = null;
       if (process.env.AWS_ACCESS_KEY_ID) {
         drawingS3 = await uploadLeadFileToS3(leadId, drawingFile.path, drawingFile.originalname, drawingFile.mimetype);
         quotationS3 = await uploadLeadFileToS3(leadId, quotationFile.path, quotationFile.originalname, quotationFile.mimetype);
       }
-      await pool.query(
-        `INSERT INTO lead_uploads
-         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc2_drawing', ?)`,
-        [leadId, user.id, drawingFile.originalname, drawingFile.filename, drawingFile.path, drawingFile.mimetype, drawingFile.size, now, drawingS3],
-      );
-      await pool.query(
-        `INSERT INTO lead_uploads
-         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc2_quotation', ?)`,
-        [leadId, user.id, quotationFile.originalname, quotationFile.filename, quotationFile.path, quotationFile.mimetype, quotationFile.size, now, quotationS3],
-      );
-      const ev = {
-        id: `dqc2-submission-${Date.now()}`,
-        type: "file_upload",
-        taskName: "DQC 2 submission",
-        milestoneName: "DQC2",
-        timestamp: now.toISOString(),
-        description: `DQC 2 submission: ${drawingFile.originalname}, ${quotationFile.originalname}`,
-        user: { name: user.name ?? "User" },
-        details: { kind: "dqc2_submission", drawing: drawingFile.originalname, quotation: quotationFile.originalname },
-      };
-      await addLeadHistoryEvent(leadId, ev);
-      // Also create a new DQC review entry in "pending" state so the DQC dashboard shows this lead again for DQC 2.
-      await pool.query(
-        `INSERT INTO lead_dqc_reviews (lead_id, verdict, remarks, created_at, reviewed_by_user_id)
-         VALUES (?, ?, ?, ?, NULL)`,
-        [leadId, "pending_dqc2", JSON.stringify([]), now],
-      );
+      await persistDqc2SubmissionFromMeta(leadId, user, drawingFile, quotationFile, drawingS3, quotationS3);
       return res.status(201).json({ ok: true });
     } catch (err) {
       console.error("dqc2-submission error", err);

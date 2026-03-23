@@ -76,13 +76,79 @@ export default function PopupDqcSubmission({
     setSubmitError(null);
     setSubmitting(true);
     try {
+      const endpoint = submissionVariant === 'dqc2' ? 'dqc2-submission' : 'dqc-submission';
+      const authHeaders = { Authorization: `Bearer ${sessionId}` } as Record<string, string>;
+
+      /** 1) Try S3 direct upload (small API calls — bypasses Nginx body limit in production). */
+      const presignRes = await fetch(`${API}/api/leads/${leadId}/${endpoint}/presign`, {
+        method: 'POST',
+        headers: { ...authHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          drawingName: drawingFile.name,
+          drawingMime: drawingFile.type || 'application/octet-stream',
+          quotationName: quotationFile.name,
+          quotationMime: quotationFile.type || 'application/octet-stream',
+        }),
+      });
+
+      if (presignRes.ok) {
+        const presign = (await presignRes.json()) as {
+          drawing: { uploadUrl: string; key: string; contentType: string };
+          quotation: { uploadUrl: string; key: string; contentType: string };
+        };
+        const putD = await fetch(presign.drawing.uploadUrl, {
+          method: 'PUT',
+          body: drawingFile,
+          headers: { 'Content-Type': presign.drawing.contentType },
+        });
+        const putQ = await fetch(presign.quotation.uploadUrl, {
+          method: 'PUT',
+          body: quotationFile,
+          headers: { 'Content-Type': presign.quotation.contentType },
+        });
+        if (!putD.ok || !putQ.ok) {
+          setSubmitError('Upload to storage failed. Check S3 bucket CORS or try again.');
+          return;
+        }
+        const done = await fetch(`${API}/api/leads/${leadId}/${endpoint}/complete`, {
+          method: 'POST',
+          headers: { ...authHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            drawingKey: presign.drawing.key,
+            quotationKey: presign.quotation.key,
+            drawingName: drawingFile.name,
+            quotationName: quotationFile.name,
+          }),
+        });
+        const doneData = await done.json().catch(() => ({}));
+        if (!done.ok) {
+          setSubmitError(
+            (doneData as { message?: string }).message ||
+              (submissionVariant === 'dqc2' ? 'Failed to finalize DQC 2 submission' : 'Failed to finalize DQC submission'),
+          );
+          return;
+        }
+        onUploadSuccess?.();
+        onSubmit();
+        return;
+      }
+
+      /** 2) No direct upload (local dev without AWS): fall back to multipart through API. */
+      if (presignRes.status !== 501) {
+        const errBody = await presignRes.json().catch(() => ({}));
+        setSubmitError(
+          (errBody as { message?: string }).message ||
+            (submissionVariant === 'dqc2' ? 'Failed to upload DQC 2 files' : 'Failed to upload DQC files'),
+        );
+        return;
+      }
+
       const form = new FormData();
       form.append('drawing', drawingFile);
       form.append('quotation', quotationFile);
-      const endpoint = submissionVariant === 'dqc2' ? 'dqc2-submission' : 'dqc-submission';
       const res = await fetch(`${API}/api/leads/${leadId}/${endpoint}`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${sessionId}` },
+        headers: authHeaders,
         body: form,
       });
       const data = await res.json().catch(() => ({}));
@@ -91,7 +157,6 @@ export default function PopupDqcSubmission({
         return;
       }
       onUploadSuccess?.();
-
       onSubmit();
     } catch {
       setSubmitError('Could not reach server. Please try again.');
