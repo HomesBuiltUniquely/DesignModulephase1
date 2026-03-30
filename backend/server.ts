@@ -9,7 +9,9 @@ import path from "node:path";
 import type { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import AdmZip from "adm-zip";
+import * as XLSX from "xlsx";
 import { registerCustomerNumberRoutes } from "./routes/customerNumberApi";
+import { registerProlanceRoutes } from "./routes/prolanceApi";
 
 const app = express();
 const PORT = Number(process.env.PORT || 3001);
@@ -56,7 +58,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   res.setHeader("Access-Control-Allow-Methods", "GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, X-Requested-With, Accept, Origin",
+    "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Prolance-Token, X-Prolance-Origin-Session",
   );
   res.setHeader("Access-Control-Max-Age", "86400");
   res.setHeader("Vary", "Origin");
@@ -73,7 +75,15 @@ app.use(
     },
     credentials: true,
     methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Origin"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Requested-With",
+      "Accept",
+      "Origin",
+      "X-Prolance-Token",
+      "X-Prolance-Origin-Session",
+    ],
     optionsSuccessStatus: 204,
   })
 );
@@ -557,6 +567,42 @@ async function getUserFromSession(req: Request) {
     profileImage: user.profileImage || null,
     phone: user.phone || "",
   };
+}
+
+function normalizeHeaderKey(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function canImportLeads(role: string | null | undefined): boolean {
+  const r = (role || "").toLowerCase();
+  return r === "admin" || r === "territorial_design_manager" || r === "design_manager";
+}
+
+function canAssignLeads(role: string | null | undefined): boolean {
+  const r = (role || "").toLowerCase();
+  return r === "admin" || r === "territorial_design_manager" || r === "design_manager";
+}
+
+type ImportedPreview = {
+  createdAt: number;
+  rows: Record<string, unknown>[];
+  headers: string[];
+};
+
+const excelImportPreviewStore = new Map<string, ImportedPreview>();
+const EXCEL_PREVIEW_TTL_MS = 30 * 60 * 1000;
+
+function saveExcelPreview(rows: Record<string, unknown>[], headers: string[]): string {
+  const token = `preview-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  excelImportPreviewStore.set(token, { createdAt: Date.now(), rows, headers });
+  // Best-effort cleanup of expired previews.
+  for (const [k, v] of excelImportPreviewStore.entries()) {
+    if (Date.now() - v.createdAt > EXCEL_PREVIEW_TTL_MS) excelImportPreviewStore.delete(k);
+  }
+  return token;
 }
 
 async function addLeadHistoryEvent(leadId: number, event: any) {
@@ -1210,6 +1256,187 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("Error saving lead", err);
     res.status(500).json({ message: "Failed to save sales closure" });
+  }
+});
+
+// Upload Excel and preview headers/rows for lead import.
+app.post("/api/leads/import-excel/preview", upload.single("file"), async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    if (!canImportLeads(user.role)) {
+      return res.status(403).json({ message: "Only admin, TDM, and design manager can import leads" });
+    }
+    const file = (req as any).file as Express.Multer.File | undefined;
+    if (!file) return res.status(400).json({ message: "Excel file is required" });
+
+    const workbook = XLSX.readFile(file.path, { cellDates: false });
+    const firstSheetName = workbook.SheetNames[0];
+    if (!firstSheetName) return res.status(400).json({ message: "Workbook has no sheets" });
+    const sheet = workbook.Sheets[firstSheetName];
+    const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" }) as unknown[][];
+    if (!matrix.length) return res.status(400).json({ message: "Sheet is empty" });
+    const headers = (matrix[0] || [])
+      .map((h) => String(h || "").trim())
+      .filter((h) => h.length > 0);
+    if (headers.length === 0) return res.status(400).json({ message: "Header row is empty" });
+
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false }) as Record<string, unknown>[];
+    const trimmedRows = rows.slice(0, 1000);
+    const token = saveExcelPreview(trimmedRows, headers);
+
+    // remove temporary upload
+    try { fs.unlinkSync(file.path); } catch {}
+
+    return res.json({
+      token,
+      headers,
+      sampleRows: trimmedRows.slice(0, 5),
+      rowCount: trimmedRows.length,
+      targetFields: [
+        { key: "projectName", label: "Project Name", required: true },
+        { key: "customerName", label: "Customer Name", required: false },
+        { key: "clientEmail", label: "Customer Email", required: false },
+        { key: "contactNo", label: "Contact No", required: false },
+        { key: "projectStage", label: "Project Stage", required: false },
+      ],
+    });
+  } catch (err) {
+    console.error("import-excel preview error", err);
+    return res.status(500).json({ message: "Failed to preview excel file" });
+  }
+});
+
+// Commit lead import from previously previewed Excel data using chosen header mapping.
+app.post("/api/leads/import-excel/commit", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    if (!canImportLeads(user.role)) {
+      return res.status(403).json({ message: "Only admin, TDM, and design manager can import leads" });
+    }
+
+    const token = String(req.body?.token || "");
+    const mappings = (req.body?.mappings || {}) as Record<string, string>;
+    const defaultDesignerIdRaw = req.body?.defaultDesignerId;
+    const defaultDesignerId =
+      defaultDesignerIdRaw === undefined || defaultDesignerIdRaw === null || defaultDesignerIdRaw === ""
+        ? null
+        : Number(defaultDesignerIdRaw);
+    if (!token) return res.status(400).json({ message: "token is required" });
+    if (!mappings || typeof mappings !== "object") return res.status(400).json({ message: "mappings are required" });
+    const cached = excelImportPreviewStore.get(token);
+    if (!cached) return res.status(400).json({ message: "Preview token not found or expired" });
+    if (Date.now() - cached.createdAt > EXCEL_PREVIEW_TTL_MS) {
+      excelImportPreviewStore.delete(token);
+      return res.status(400).json({ message: "Preview token expired. Please upload the file again." });
+    }
+
+    const pickValue = (row: Record<string, unknown>, targetField: string): string => {
+      const mappedHeader = String(mappings[targetField] || "").trim();
+      if (!mappedHeader) return "";
+      if (row[mappedHeader] != null && String(row[mappedHeader]).trim() !== "") {
+        return String(row[mappedHeader]).trim();
+      }
+      const normalizedMapped = normalizeHeaderKey(mappedHeader);
+      const matchedKey = Object.keys(row).find((k) => normalizeHeaderKey(k) === normalizedMapped);
+      return matchedKey ? String(row[matchedKey] ?? "").trim() : "";
+    };
+
+    let defaultDesignerName = "";
+    if (defaultDesignerId !== null) {
+      if (!Number.isFinite(defaultDesignerId) || defaultDesignerId <= 0) {
+        return res.status(400).json({ message: "Invalid defaultDesignerId" });
+      }
+      const [designerRows] = await pool.query(
+        "SELECT id, name, role, design_manager_id FROM users WHERE id = ? AND role IN ('designer', 'design_manager') LIMIT 1",
+        [defaultDesignerId],
+      );
+      const designer = (designerRows as any[])[0];
+      if (!designer) return res.status(400).json({ message: "Invalid default designer selected" });
+
+      const role = (user.role || "").toLowerCase();
+      if (role === "design_manager") {
+        const allowed =
+          (designer.role === "design_manager" && Number(designer.id) === Number(user.id)) ||
+          (designer.role === "designer" && Number(designer.design_manager_id) === Number(user.id));
+        if (!allowed) {
+          return res.status(403).json({ message: "You can assign only to yourself or your designers" });
+        }
+      }
+      defaultDesignerName = String(designer.name || "");
+    }
+
+    const rows = cached.rows;
+    let imported = 0;
+    const errors: Array<{ row: number; message: string }> = [];
+    const now = new Date();
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const projectName = pickValue(row, "projectName");
+      if (!projectName) continue;
+
+      const customerName = pickValue(row, "customerName");
+      const clientEmail = pickValue(row, "clientEmail") || null;
+      const contactNo = pickValue(row, "contactNo") || null;
+      const projectStage = pickValue(row, "projectStage") || "Active";
+
+      let assignedDesignerId: number | null = null;
+      let designerName = "";
+      if (defaultDesignerId !== null) {
+        assignedDesignerId = defaultDesignerId;
+        designerName = defaultDesignerName;
+      }
+
+      const payload = {
+        source: "excel_import",
+        importedBy: { id: user.id, name: user.name, role: user.role },
+        importedAt: now.toISOString(),
+        formData: {
+          customer_name: customerName || projectName,
+          designer_name: designerName || "",
+          co_no: contactNo || "",
+          email: clientEmail || "",
+          status_of_project: projectStage,
+        },
+        rawRow: row,
+      };
+
+      try {
+        await pool.query(
+          `INSERT INTO leads
+           (pid, project_name, project_stage, contact_no, client_email,
+            is_on_hold, resume_at, create_at, update_at, payload, assigned_designer_id)
+           VALUES (?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)`,
+          [
+            "",
+            projectName,
+            projectStage,
+            contactNo,
+            clientEmail,
+            now,
+            now,
+            JSON.stringify(payload),
+            assignedDesignerId,
+          ],
+        );
+        imported += 1;
+      } catch (insertErr: any) {
+        errors.push({ row: i + 2, message: insertErr?.message || "Insert failed" });
+      }
+    }
+
+    excelImportPreviewStore.delete(token);
+    return res.json({
+      ok: true,
+      imported,
+      totalRows: rows.length,
+      failed: errors.length,
+      errors: errors.slice(0, 50),
+    });
+  } catch (err) {
+    console.error("import-excel commit error", err);
+    return res.status(500).json({ message: "Failed to import leads" });
   }
 });
 
@@ -3672,33 +3899,45 @@ app.get("/api/leads/:leadId/uploads/:uploadId/file", async (req: Request, res: R
 async function persistDqc1SubmissionFromMeta(
   leadId: number,
   user: { id: number; name?: string | null; role?: string | null },
-  drawingFile: { originalname: string; filename: string; path: string; mimetype: string; size: number },
-  quotationFile: { originalname: string; filename: string; path: string; mimetype: string; size: number },
-  drawingS3: string | null,
-  quotationS3: string | null,
+  drawingFiles: { originalname: string; filename: string; path: string; mimetype: string; size: number }[],
+  quotationFiles: { originalname: string; filename: string; path: string; mimetype: string; size: number }[],
+  drawingS3Urls: (string | null)[],
+  quotationS3Urls: (string | null)[],
 ): Promise<void> {
   const now = new Date();
-  await pool.query(
-    `INSERT INTO lead_uploads
-     (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc_drawing', ?)`,
-    [leadId, user.id, drawingFile.originalname, drawingFile.filename, drawingFile.path, drawingFile.mimetype, drawingFile.size, now, drawingS3],
-  );
-  await pool.query(
-    `INSERT INTO lead_uploads
-     (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc_quotation', ?)`,
-    [leadId, user.id, quotationFile.originalname, quotationFile.filename, quotationFile.path, quotationFile.mimetype, quotationFile.size, now, quotationS3],
-  );
+  for (let i = 0; i < drawingFiles.length; i++) {
+    const drawingFile = drawingFiles[i];
+    const drawingS3 = drawingS3Urls[i] ?? null;
+    await pool.query(
+      `INSERT INTO lead_uploads
+       (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc_drawing', ?)`,
+      [leadId, user.id, drawingFile.originalname, drawingFile.filename, drawingFile.path, drawingFile.mimetype, drawingFile.size, now, drawingS3],
+    );
+  }
+  for (let i = 0; i < quotationFiles.length; i++) {
+    const quotationFile = quotationFiles[i];
+    const quotationS3 = quotationS3Urls[i] ?? null;
+    await pool.query(
+      `INSERT INTO lead_uploads
+       (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc_quotation', ?)`,
+      [leadId, user.id, quotationFile.originalname, quotationFile.filename, quotationFile.path, quotationFile.mimetype, quotationFile.size, now, quotationS3],
+    );
+  }
   const ev = {
     id: `dqc-submission-${Date.now()}`,
     type: "file_upload",
     taskName: "DQC 1 submission - dwg + quotation",
     milestoneName: "DQC1",
     timestamp: now.toISOString(),
-    description: `DQC submission: ${drawingFile.originalname}, ${quotationFile.originalname}`,
+    description: `DQC submission: ${[...drawingFiles.map((f) => f.originalname), ...quotationFiles.map((f) => f.originalname)].join(", ")}`,
     user: { name: user.name ?? "User" },
-    details: { kind: "dqc_submission", drawing: drawingFile.originalname, quotation: quotationFile.originalname },
+    details: {
+      kind: "dqc_submission",
+      drawings: drawingFiles.map((f) => f.originalname),
+      quotations: quotationFiles.map((f) => f.originalname),
+    },
   };
   await addLeadHistoryEvent(leadId, ev);
 
@@ -3748,11 +3987,23 @@ async function persistDqc1SubmissionFromMeta(
             designerName,
             projectValue: String(projectValue || ""),
             dqcRepName: dqcUser.name || "DQC Team",
-            ...(drawingS3 || quotationS3
+            ...(drawingS3Urls.some(Boolean) || quotationS3Urls.some(Boolean)
               ? {
                   attachments: [
-                    ...(drawingS3 ? [{ filename: drawingFile.originalname, path: drawingS3 }] : []),
-                    ...(quotationS3 ? [{ filename: quotationFile.originalname, path: quotationS3 }] : []),
+                    ...drawingFiles
+                      .map((f, idx) =>
+                        drawingS3Urls[idx]
+                          ? { filename: f.originalname, path: drawingS3Urls[idx] as string }
+                          : null,
+                      )
+                      .filter((v): v is { filename: string; path: string } => !!v),
+                    ...quotationFiles
+                      .map((f, idx) =>
+                        quotationS3Urls[idx]
+                          ? { filename: f.originalname, path: quotationS3Urls[idx] as string }
+                          : null,
+                      )
+                      .filter((v): v is { filename: string; path: string } => !!v),
                   ],
                 }
               : {}),
@@ -3777,33 +4028,45 @@ async function persistDqc1SubmissionFromMeta(
 async function persistDqc2SubmissionFromMeta(
   leadId: number,
   user: { id: number; name?: string | null; role?: string | null },
-  drawingFile: { originalname: string; filename: string; path: string; mimetype: string; size: number },
-  quotationFile: { originalname: string; filename: string; path: string; mimetype: string; size: number },
-  drawingS3: string | null,
-  quotationS3: string | null,
+  drawingFiles: { originalname: string; filename: string; path: string; mimetype: string; size: number }[],
+  quotationFiles: { originalname: string; filename: string; path: string; mimetype: string; size: number }[],
+  drawingS3Urls: (string | null)[],
+  quotationS3Urls: (string | null)[],
 ): Promise<void> {
   const now = new Date();
-  await pool.query(
-    `INSERT INTO lead_uploads
-     (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc2_drawing', ?)`,
-    [leadId, user.id, drawingFile.originalname, drawingFile.filename, drawingFile.path, drawingFile.mimetype, drawingFile.size, now, drawingS3],
-  );
-  await pool.query(
-    `INSERT INTO lead_uploads
-     (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc2_quotation', ?)`,
-    [leadId, user.id, quotationFile.originalname, quotationFile.filename, quotationFile.path, quotationFile.mimetype, quotationFile.size, now, quotationS3],
-  );
+  for (let i = 0; i < drawingFiles.length; i++) {
+    const drawingFile = drawingFiles[i];
+    const drawingS3 = drawingS3Urls[i] ?? null;
+    await pool.query(
+      `INSERT INTO lead_uploads
+       (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc2_drawing', ?)`,
+      [leadId, user.id, drawingFile.originalname, drawingFile.filename, drawingFile.path, drawingFile.mimetype, drawingFile.size, now, drawingS3],
+    );
+  }
+  for (let i = 0; i < quotationFiles.length; i++) {
+    const quotationFile = quotationFiles[i];
+    const quotationS3 = quotationS3Urls[i] ?? null;
+    await pool.query(
+      `INSERT INTO lead_uploads
+       (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc2_quotation', ?)`,
+      [leadId, user.id, quotationFile.originalname, quotationFile.filename, quotationFile.path, quotationFile.mimetype, quotationFile.size, now, quotationS3],
+    );
+  }
   const ev = {
     id: `dqc2-submission-${Date.now()}`,
     type: "file_upload",
     taskName: "DQC 2 submission",
     milestoneName: "DQC2",
     timestamp: now.toISOString(),
-    description: `DQC 2 submission: ${drawingFile.originalname}, ${quotationFile.originalname}`,
+    description: `DQC 2 submission: ${[...drawingFiles.map((f) => f.originalname), ...quotationFiles.map((f) => f.originalname)].join(", ")}`,
     user: { name: user.name ?? "User" },
-    details: { kind: "dqc2_submission", drawing: drawingFile.originalname, quotation: quotationFile.originalname },
+    details: {
+      kind: "dqc2_submission",
+      drawings: drawingFiles.map((f) => f.originalname),
+      quotations: quotationFiles.map((f) => f.originalname),
+    },
   };
   await addLeadHistoryEvent(leadId, ev);
   await pool.query(
@@ -3826,34 +4089,61 @@ app.post("/api/leads/:id/dqc-submission/presign", async (req: Request, res: Resp
     const role = (user?.role ?? "").toLowerCase();
     const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
     if (!allowed.includes(role)) return res.status(403).json({ message: "Not allowed to submit DQC" });
-    const body = req.body as { drawingName?: string; drawingMime?: string; quotationName?: string; quotationMime?: string };
-    if (!body.drawingName?.trim() || !body.quotationName?.trim()) {
-      return res.status(400).json({ message: "drawingName and quotationName are required" });
+    const body = req.body as {
+      drawingName?: string;
+      drawingMime?: string;
+      quotationName?: string;
+      quotationMime?: string;
+      drawings?: { name?: string; mime?: string }[];
+      quotations?: { name?: string; mime?: string }[];
+    };
+    const drawingsInput =
+      Array.isArray(body.drawings) && body.drawings.length > 0
+        ? body.drawings
+        : [{ name: body.drawingName, mime: body.drawingMime }];
+    const quotationsInput =
+      Array.isArray(body.quotations) && body.quotations.length > 0
+        ? body.quotations
+        : [{ name: body.quotationName, mime: body.quotationMime }];
+    const validDrawings = drawingsInput
+      .map((d) => ({ name: (d?.name || "").trim(), mime: (d?.mime || "application/octet-stream").trim() || "application/octet-stream" }))
+      .filter((d) => d.name);
+    const validQuotations = quotationsInput
+      .map((q) => ({ name: (q?.name || "").trim(), mime: (q?.mime || "application/octet-stream").trim() || "application/octet-stream" }))
+      .filter((q) => q.name);
+    if (validDrawings.length === 0 || validQuotations.length === 0) {
+      return res.status(400).json({ message: "At least one drawing and one quotation are required" });
     }
-    const dm = (body.drawingMime || "application/octet-stream").trim() || "application/octet-stream";
-    const qm = (body.quotationMime || "application/octet-stream").trim() || "application/octet-stream";
     const ts = Date.now();
-    const safeD = body.drawingName.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const safeQ = body.quotationName.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const drawingKey = `lead-uploads/lead-${leadId}-${ts}-drawing-${safeD}`;
-    const quotationKey = `lead-uploads/lead-${leadId}-${ts}-quotation-${safeQ}`;
-    const drawingCmd = new PutObjectCommand({ Bucket: S3_BUCKET, Key: drawingKey, ContentType: dm });
-    const quotationCmd = new PutObjectCommand({ Bucket: S3_BUCKET, Key: quotationKey, ContentType: qm });
-    const drawingUploadUrl = await getSignedUrl(s3, drawingCmd, { expiresIn: 900 });
-    const quotationUploadUrl = await getSignedUrl(s3, quotationCmd, { expiresIn: 900 });
+    const drawings = await Promise.all(
+      validDrawings.map(async (d, idx) => {
+        const safe = d.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+        const key = `lead-uploads/lead-${leadId}-${ts}-${idx}-drawing-${safe}`;
+        const cmd = new PutObjectCommand({ Bucket: S3_BUCKET, Key: key, ContentType: d.mime });
+        return {
+          uploadUrl: await getSignedUrl(s3, cmd, { expiresIn: 900 }),
+          key,
+          contentType: d.mime,
+          publicUrl: buildS3PublicUrl(key),
+        };
+      }),
+    );
+    const quotations = await Promise.all(
+      validQuotations.map(async (q, idx) => {
+        const safe = q.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+        const key = `lead-uploads/lead-${leadId}-${ts}-${idx}-quotation-${safe}`;
+        const cmd = new PutObjectCommand({ Bucket: S3_BUCKET, Key: key, ContentType: q.mime });
+        return {
+          uploadUrl: await getSignedUrl(s3, cmd, { expiresIn: 900 }),
+          key,
+          contentType: q.mime,
+          publicUrl: buildS3PublicUrl(key),
+        };
+      }),
+    );
     return res.json({
-      drawing: {
-        uploadUrl: drawingUploadUrl,
-        key: drawingKey,
-        contentType: dm,
-        publicUrl: buildS3PublicUrl(drawingKey),
-      },
-      quotation: {
-        uploadUrl: quotationUploadUrl,
-        key: quotationKey,
-        contentType: qm,
-        publicUrl: buildS3PublicUrl(quotationKey),
-      },
+      drawings,
+      quotations,
     });
   } catch (err) {
     console.error("dqc-submission presign error", err);
@@ -3878,58 +4168,81 @@ app.post("/api/leads/:id/dqc-submission/complete", async (req: Request, res: Res
       quotationKey?: string;
       drawingName?: string;
       quotationName?: string;
+      drawingKeys?: string[];
+      quotationKeys?: string[];
+      drawingNames?: string[];
+      quotationNames?: string[];
     };
-    const drawingKey = body.drawingKey?.trim();
-    const quotationKey = body.quotationKey?.trim();
-    if (!drawingKey || !quotationKey) {
-      return res.status(400).json({ message: "drawingKey and quotationKey are required" });
+    const drawingKeys =
+      Array.isArray(body.drawingKeys) && body.drawingKeys.length > 0
+        ? body.drawingKeys.map((k) => (k || "").trim()).filter(Boolean)
+        : body.drawingKey?.trim()
+          ? [body.drawingKey.trim()]
+          : [];
+    const quotationKeys =
+      Array.isArray(body.quotationKeys) && body.quotationKeys.length > 0
+        ? body.quotationKeys.map((k) => (k || "").trim()).filter(Boolean)
+        : body.quotationKey?.trim()
+          ? [body.quotationKey.trim()]
+          : [];
+    if (drawingKeys.length === 0 || quotationKeys.length === 0) {
+      return res.status(400).json({ message: "At least one drawingKey and one quotationKey are required" });
     }
     const prefix = `lead-uploads/lead-${leadId}-`;
-    if (!drawingKey.startsWith(prefix) || !quotationKey.startsWith(prefix)) {
+    if (drawingKeys.some((k) => !k.startsWith(prefix)) || quotationKeys.some((k) => !k.startsWith(prefix))) {
       return res.status(400).json({ message: "Invalid keys for this lead" });
     }
-    const dRe = new RegExp(`^lead-uploads/lead-${leadId}-(\\d+)-drawing-`);
-    const qRe = new RegExp(`^lead-uploads/lead-${leadId}-(\\d+)-quotation-`);
-    const dm = dRe.exec(drawingKey);
-    const qm = qRe.exec(quotationKey);
-    if (!dm || !qm || dm[1] !== qm[1]) {
-      return res.status(400).json({ message: "Invalid drawing/quotation key pair" });
+    const drawingNamesInput =
+      Array.isArray(body.drawingNames) && body.drawingNames.length > 0
+        ? body.drawingNames
+        : body.drawingName
+          ? [body.drawingName]
+          : [];
+    const quotationNamesInput =
+      Array.isArray(body.quotationNames) && body.quotationNames.length > 0
+        ? body.quotationNames
+        : body.quotationName
+          ? [body.quotationName]
+          : [];
+    const drawingFilesMeta: { originalname: string; filename: string; path: string; mimetype: string; size: number }[] = [];
+    const quotationFilesMeta: { originalname: string; filename: string; path: string; mimetype: string; size: number }[] = [];
+    const drawingS3Urls: (string | null)[] = [];
+    const quotationS3Urls: (string | null)[] = [];
+    for (let i = 0; i < drawingKeys.length; i++) {
+      const key = drawingKeys[i];
+      const head = await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: key }));
+      const local = path.join(UPLOADS_DIR, `${Date.now()}-dqc1-d-${i}-${path.basename(key)}`);
+      await streamS3ObjectToDisk(key, local);
+      drawingFilesMeta.push({
+        originalname: ((drawingNamesInput[i] || path.basename(key)) as string).trim(),
+        filename: path.basename(local),
+        path: local,
+        mimetype: head.ContentType || "application/octet-stream",
+        size: Number(head.ContentLength || 0),
+      });
+      drawingS3Urls.push(buildS3PublicUrl(key));
     }
-    await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: drawingKey }));
-    await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: quotationKey }));
-    const headD = await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: drawingKey }));
-    const headQ = await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: quotationKey }));
-    const drawingSize = Number(headD.ContentLength || 0);
-    const quotationSize = Number(headQ.ContentLength || 0);
-    const drawingMime = headD.ContentType || "application/octet-stream";
-    const quotationMime = headQ.ContentType || "application/octet-stream";
-    const drawingLocal = path.join(UPLOADS_DIR, `${Date.now()}-dqc1-d-${path.basename(drawingKey)}`);
-    const quotationLocal = path.join(UPLOADS_DIR, `${Date.now()}-dqc1-q-${path.basename(quotationKey)}`);
-    await streamS3ObjectToDisk(drawingKey, drawingLocal);
-    await streamS3ObjectToDisk(quotationKey, quotationLocal);
-    const drawingS3 = buildS3PublicUrl(drawingKey);
-    const quotationS3 = buildS3PublicUrl(quotationKey);
-    const drawingName = (body.drawingName || path.basename(drawingKey)).trim();
-    const quotationName = (body.quotationName || path.basename(quotationKey)).trim();
+    for (let i = 0; i < quotationKeys.length; i++) {
+      const key = quotationKeys[i];
+      const head = await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: key }));
+      const local = path.join(UPLOADS_DIR, `${Date.now()}-dqc1-q-${i}-${path.basename(key)}`);
+      await streamS3ObjectToDisk(key, local);
+      quotationFilesMeta.push({
+        originalname: ((quotationNamesInput[i] || path.basename(key)) as string).trim(),
+        filename: path.basename(local),
+        path: local,
+        mimetype: head.ContentType || "application/octet-stream",
+        size: Number(head.ContentLength || 0),
+      });
+      quotationS3Urls.push(buildS3PublicUrl(key));
+    }
     await persistDqc1SubmissionFromMeta(
       leadId,
       user,
-      {
-        originalname: drawingName,
-        filename: path.basename(drawingLocal),
-        path: drawingLocal,
-        mimetype: drawingMime,
-        size: drawingSize,
-      },
-      {
-        originalname: quotationName,
-        filename: path.basename(quotationLocal),
-        path: quotationLocal,
-        mimetype: quotationMime,
-        size: quotationSize,
-      },
-      drawingS3,
-      quotationS3,
+      drawingFilesMeta,
+      quotationFilesMeta,
+      drawingS3Urls,
+      quotationS3Urls,
     );
     return res.status(201).json({ ok: true });
   } catch (err) {
@@ -3951,34 +4264,61 @@ app.post("/api/leads/:id/dqc2-submission/presign", async (req: Request, res: Res
     const role = (user?.role ?? "").toLowerCase();
     const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
     if (!allowed.includes(role)) return res.status(403).json({ message: "Not allowed to submit DQC" });
-    const body = req.body as { drawingName?: string; drawingMime?: string; quotationName?: string; quotationMime?: string };
-    if (!body.drawingName?.trim() || !body.quotationName?.trim()) {
-      return res.status(400).json({ message: "drawingName and quotationName are required" });
+    const body = req.body as {
+      drawingName?: string;
+      drawingMime?: string;
+      quotationName?: string;
+      quotationMime?: string;
+      drawings?: { name?: string; mime?: string }[];
+      quotations?: { name?: string; mime?: string }[];
+    };
+    const drawingsInput =
+      Array.isArray(body.drawings) && body.drawings.length > 0
+        ? body.drawings
+        : [{ name: body.drawingName, mime: body.drawingMime }];
+    const quotationsInput =
+      Array.isArray(body.quotations) && body.quotations.length > 0
+        ? body.quotations
+        : [{ name: body.quotationName, mime: body.quotationMime }];
+    const validDrawings = drawingsInput
+      .map((d) => ({ name: (d?.name || "").trim(), mime: (d?.mime || "application/octet-stream").trim() || "application/octet-stream" }))
+      .filter((d) => d.name);
+    const validQuotations = quotationsInput
+      .map((q) => ({ name: (q?.name || "").trim(), mime: (q?.mime || "application/octet-stream").trim() || "application/octet-stream" }))
+      .filter((q) => q.name);
+    if (validDrawings.length === 0 || validQuotations.length === 0) {
+      return res.status(400).json({ message: "At least one drawing and one quotation are required" });
     }
-    const dm = (body.drawingMime || "application/octet-stream").trim() || "application/octet-stream";
-    const qm = (body.quotationMime || "application/octet-stream").trim() || "application/octet-stream";
     const ts = Date.now();
-    const safeD = body.drawingName.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const safeQ = body.quotationName.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const drawingKey = `lead-uploads/lead-${leadId}-${ts}-dqc2-drawing-${safeD}`;
-    const quotationKey = `lead-uploads/lead-${leadId}-${ts}-dqc2-quotation-${safeQ}`;
-    const drawingCmd = new PutObjectCommand({ Bucket: S3_BUCKET, Key: drawingKey, ContentType: dm });
-    const quotationCmd = new PutObjectCommand({ Bucket: S3_BUCKET, Key: quotationKey, ContentType: qm });
-    const drawingUploadUrl = await getSignedUrl(s3, drawingCmd, { expiresIn: 900 });
-    const quotationUploadUrl = await getSignedUrl(s3, quotationCmd, { expiresIn: 900 });
+    const drawings = await Promise.all(
+      validDrawings.map(async (d, idx) => {
+        const safe = d.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+        const key = `lead-uploads/lead-${leadId}-${ts}-${idx}-dqc2-drawing-${safe}`;
+        const cmd = new PutObjectCommand({ Bucket: S3_BUCKET, Key: key, ContentType: d.mime });
+        return {
+          uploadUrl: await getSignedUrl(s3, cmd, { expiresIn: 900 }),
+          key,
+          contentType: d.mime,
+          publicUrl: buildS3PublicUrl(key),
+        };
+      }),
+    );
+    const quotations = await Promise.all(
+      validQuotations.map(async (q, idx) => {
+        const safe = q.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+        const key = `lead-uploads/lead-${leadId}-${ts}-${idx}-dqc2-quotation-${safe}`;
+        const cmd = new PutObjectCommand({ Bucket: S3_BUCKET, Key: key, ContentType: q.mime });
+        return {
+          uploadUrl: await getSignedUrl(s3, cmd, { expiresIn: 900 }),
+          key,
+          contentType: q.mime,
+          publicUrl: buildS3PublicUrl(key),
+        };
+      }),
+    );
     return res.json({
-      drawing: {
-        uploadUrl: drawingUploadUrl,
-        key: drawingKey,
-        contentType: dm,
-        publicUrl: buildS3PublicUrl(drawingKey),
-      },
-      quotation: {
-        uploadUrl: quotationUploadUrl,
-        key: quotationKey,
-        contentType: qm,
-        publicUrl: buildS3PublicUrl(quotationKey),
-      },
+      drawings,
+      quotations,
     });
   } catch (err) {
     console.error("dqc2-submission presign error", err);
@@ -4003,58 +4343,81 @@ app.post("/api/leads/:id/dqc2-submission/complete", async (req: Request, res: Re
       quotationKey?: string;
       drawingName?: string;
       quotationName?: string;
+      drawingKeys?: string[];
+      quotationKeys?: string[];
+      drawingNames?: string[];
+      quotationNames?: string[];
     };
-    const drawingKey = body.drawingKey?.trim();
-    const quotationKey = body.quotationKey?.trim();
-    if (!drawingKey || !quotationKey) {
-      return res.status(400).json({ message: "drawingKey and quotationKey are required" });
+    const drawingKeys =
+      Array.isArray(body.drawingKeys) && body.drawingKeys.length > 0
+        ? body.drawingKeys.map((k) => (k || "").trim()).filter(Boolean)
+        : body.drawingKey?.trim()
+          ? [body.drawingKey.trim()]
+          : [];
+    const quotationKeys =
+      Array.isArray(body.quotationKeys) && body.quotationKeys.length > 0
+        ? body.quotationKeys.map((k) => (k || "").trim()).filter(Boolean)
+        : body.quotationKey?.trim()
+          ? [body.quotationKey.trim()]
+          : [];
+    if (drawingKeys.length === 0 || quotationKeys.length === 0) {
+      return res.status(400).json({ message: "At least one drawingKey and one quotationKey are required" });
     }
     const prefix = `lead-uploads/lead-${leadId}-`;
-    if (!drawingKey.startsWith(prefix) || !quotationKey.startsWith(prefix)) {
+    if (drawingKeys.some((k) => !k.startsWith(prefix)) || quotationKeys.some((k) => !k.startsWith(prefix))) {
       return res.status(400).json({ message: "Invalid keys for this lead" });
     }
-    const dRe = new RegExp(`^lead-uploads/lead-${leadId}-(\\d+)-dqc2-drawing-`);
-    const qRe = new RegExp(`^lead-uploads/lead-${leadId}-(\\d+)-dqc2-quotation-`);
-    const dm = dRe.exec(drawingKey);
-    const qm = qRe.exec(quotationKey);
-    if (!dm || !qm || dm[1] !== qm[1]) {
-      return res.status(400).json({ message: "Invalid drawing/quotation key pair" });
+    const drawingNamesInput =
+      Array.isArray(body.drawingNames) && body.drawingNames.length > 0
+        ? body.drawingNames
+        : body.drawingName
+          ? [body.drawingName]
+          : [];
+    const quotationNamesInput =
+      Array.isArray(body.quotationNames) && body.quotationNames.length > 0
+        ? body.quotationNames
+        : body.quotationName
+          ? [body.quotationName]
+          : [];
+    const drawingFilesMeta: { originalname: string; filename: string; path: string; mimetype: string; size: number }[] = [];
+    const quotationFilesMeta: { originalname: string; filename: string; path: string; mimetype: string; size: number }[] = [];
+    const drawingS3Urls: (string | null)[] = [];
+    const quotationS3Urls: (string | null)[] = [];
+    for (let i = 0; i < drawingKeys.length; i++) {
+      const key = drawingKeys[i];
+      const head = await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: key }));
+      const local = path.join(UPLOADS_DIR, `${Date.now()}-dqc2-d-${i}-${path.basename(key)}`);
+      await streamS3ObjectToDisk(key, local);
+      drawingFilesMeta.push({
+        originalname: ((drawingNamesInput[i] || path.basename(key)) as string).trim(),
+        filename: path.basename(local),
+        path: local,
+        mimetype: head.ContentType || "application/octet-stream",
+        size: Number(head.ContentLength || 0),
+      });
+      drawingS3Urls.push(buildS3PublicUrl(key));
     }
-    await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: drawingKey }));
-    await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: quotationKey }));
-    const headD = await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: drawingKey }));
-    const headQ = await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: quotationKey }));
-    const drawingSize = Number(headD.ContentLength || 0);
-    const quotationSize = Number(headQ.ContentLength || 0);
-    const drawingMime = headD.ContentType || "application/octet-stream";
-    const quotationMime = headQ.ContentType || "application/octet-stream";
-    const drawingLocal = path.join(UPLOADS_DIR, `${Date.now()}-dqc2-d-${path.basename(drawingKey)}`);
-    const quotationLocal = path.join(UPLOADS_DIR, `${Date.now()}-dqc2-q-${path.basename(quotationKey)}`);
-    await streamS3ObjectToDisk(drawingKey, drawingLocal);
-    await streamS3ObjectToDisk(quotationKey, quotationLocal);
-    const drawingS3 = buildS3PublicUrl(drawingKey);
-    const quotationS3 = buildS3PublicUrl(quotationKey);
-    const drawingName = (body.drawingName || path.basename(drawingKey)).trim();
-    const quotationName = (body.quotationName || path.basename(quotationKey)).trim();
+    for (let i = 0; i < quotationKeys.length; i++) {
+      const key = quotationKeys[i];
+      const head = await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: key }));
+      const local = path.join(UPLOADS_DIR, `${Date.now()}-dqc2-q-${i}-${path.basename(key)}`);
+      await streamS3ObjectToDisk(key, local);
+      quotationFilesMeta.push({
+        originalname: ((quotationNamesInput[i] || path.basename(key)) as string).trim(),
+        filename: path.basename(local),
+        path: local,
+        mimetype: head.ContentType || "application/octet-stream",
+        size: Number(head.ContentLength || 0),
+      });
+      quotationS3Urls.push(buildS3PublicUrl(key));
+    }
     await persistDqc2SubmissionFromMeta(
       leadId,
       user,
-      {
-        originalname: drawingName,
-        filename: path.basename(drawingLocal),
-        path: drawingLocal,
-        mimetype: drawingMime,
-        size: drawingSize,
-      },
-      {
-        originalname: quotationName,
-        filename: path.basename(quotationLocal),
-        path: quotationLocal,
-        mimetype: quotationMime,
-        size: quotationSize,
-      },
-      drawingS3,
-      quotationS3,
+      drawingFilesMeta,
+      quotationFilesMeta,
+      drawingS3Urls,
+      quotationS3Urls,
     );
     return res.status(201).json({ ok: true });
   } catch (err) {
@@ -4066,7 +4429,7 @@ app.post("/api/leads/:id/dqc2-submission/complete", async (req: Request, res: Re
 // DQC Submission: upload drawing + quotation; stored in lead_uploads with upload_type, status approved (shows in Files + DQC approval)
 app.post(
   "/api/leads/:id/dqc-submission",
-  upload.fields([{ name: "drawing", maxCount: 1 }, { name: "quotation", maxCount: 1 }]),
+  upload.fields([{ name: "drawing", maxCount: 20 }, { name: "quotation", maxCount: 20 }]),
   async (req: Request, res: Response) => {
     const leadId = Number(req.params.id);
     if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
@@ -4077,18 +4440,22 @@ app.post(
       const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
       if (!allowed.includes(role)) return res.status(403).json({ message: "Not allowed to submit DQC" });
       const files = (req as any).files as { drawing?: Express.Multer.File[]; quotation?: Express.Multer.File[] };
-      const drawingFile = files?.drawing?.[0];
-      const quotationFile = files?.quotation?.[0];
-      if (!drawingFile || !quotationFile) {
-        return res.status(400).json({ message: "Both drawing and quotation files are required" });
+      const drawingFiles = files?.drawing ?? [];
+      const quotationFiles = files?.quotation ?? [];
+      if (drawingFiles.length === 0 || quotationFiles.length === 0) {
+        return res.status(400).json({ message: "At least one drawing and one quotation file are required" });
       }
-      let drawingS3: string | null = null;
-      let quotationS3: string | null = null;
+      let drawingS3Urls: (string | null)[] = [];
+      let quotationS3Urls: (string | null)[] = [];
       if (process.env.AWS_ACCESS_KEY_ID) {
-        drawingS3 = await uploadLeadFileToS3(leadId, drawingFile.path, drawingFile.originalname, drawingFile.mimetype);
-        quotationS3 = await uploadLeadFileToS3(leadId, quotationFile.path, quotationFile.originalname, quotationFile.mimetype);
+        drawingS3Urls = await Promise.all(
+          drawingFiles.map((f) => uploadLeadFileToS3(leadId, f.path, f.originalname, f.mimetype)),
+        );
+        quotationS3Urls = await Promise.all(
+          quotationFiles.map((f) => uploadLeadFileToS3(leadId, f.path, f.originalname, f.mimetype)),
+        );
       }
-      await persistDqc1SubmissionFromMeta(leadId, user, drawingFile, quotationFile, drawingS3, quotationS3);
+      await persistDqc1SubmissionFromMeta(leadId, user, drawingFiles, quotationFiles, drawingS3Urls, quotationS3Urls);
       return res.status(201).json({ ok: true });
     } catch (err) {
       console.error("dqc-submission error", err);
@@ -4370,11 +4737,19 @@ app.get("/api/leads/:id/dqc-submission-files", async (req: Request, res: Respons
     const list = (rows as any[]) || [];
     const uploadType = (r: any) => (r.uploadType ?? r.uploadtype ?? "").toString();
     const originalName = (r: any) => (r.originalName ?? r.originalname ?? "") || "";
-    const drawing = list.find((r: any) => uploadType(r) === "dqc_drawing");
-    const quotation = list.find((r: any) => uploadType(r) === "dqc_quotation");
+    const drawingFiles = list
+      .filter((r: any) => uploadType(r) === "dqc_drawing")
+      .map((r: any) => ({ id: r.id, originalName: originalName(r) }));
+    const quotationFiles = list
+      .filter((r: any) => uploadType(r) === "dqc_quotation")
+      .map((r: any) => ({ id: r.id, originalName: originalName(r) }));
+    const drawing = drawingFiles[0];
+    const quotation = quotationFiles[0];
     return res.json({
-      drawing: drawing ? { id: drawing.id, originalName: originalName(drawing) } : null,
-      quotation: quotation ? { id: quotation.id, originalName: originalName(quotation) } : null,
+      drawing: drawing ?? null,
+      quotation: quotation ?? null,
+      drawingFiles,
+      quotationFiles,
     });
   } catch (err) {
     console.error("dqc-submission-files error", err);
@@ -4385,7 +4760,7 @@ app.get("/api/leads/:id/dqc-submission-files", async (req: Request, res: Respons
 // DQC 2 Submission: same as DQC 1 – drawing + quotation; stored as dqc2_drawing, dqc2_quotation
 app.post(
   "/api/leads/:id/dqc2-submission",
-  upload.fields([{ name: "drawing", maxCount: 1 }, { name: "quotation", maxCount: 1 }]),
+  upload.fields([{ name: "drawing", maxCount: 20 }, { name: "quotation", maxCount: 20 }]),
   async (req: Request, res: Response) => {
     const leadId = Number(req.params.id);
     if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
@@ -4396,18 +4771,22 @@ app.post(
       const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
       if (!allowed.includes(role)) return res.status(403).json({ message: "Not allowed to submit DQC" });
       const files = (req as any).files as { drawing?: Express.Multer.File[]; quotation?: Express.Multer.File[] };
-      const drawingFile = files?.drawing?.[0];
-      const quotationFile = files?.quotation?.[0];
-      if (!drawingFile || !quotationFile) {
-        return res.status(400).json({ message: "Both drawing and quotation files are required" });
+      const drawingFiles = files?.drawing ?? [];
+      const quotationFiles = files?.quotation ?? [];
+      if (drawingFiles.length === 0 || quotationFiles.length === 0) {
+        return res.status(400).json({ message: "At least one drawing and one quotation file are required" });
       }
-      let drawingS3: string | null = null;
-      let quotationS3: string | null = null;
+      let drawingS3Urls: (string | null)[] = [];
+      let quotationS3Urls: (string | null)[] = [];
       if (process.env.AWS_ACCESS_KEY_ID) {
-        drawingS3 = await uploadLeadFileToS3(leadId, drawingFile.path, drawingFile.originalname, drawingFile.mimetype);
-        quotationS3 = await uploadLeadFileToS3(leadId, quotationFile.path, quotationFile.originalname, quotationFile.mimetype);
+        drawingS3Urls = await Promise.all(
+          drawingFiles.map((f) => uploadLeadFileToS3(leadId, f.path, f.originalname, f.mimetype)),
+        );
+        quotationS3Urls = await Promise.all(
+          quotationFiles.map((f) => uploadLeadFileToS3(leadId, f.path, f.originalname, f.mimetype)),
+        );
       }
-      await persistDqc2SubmissionFromMeta(leadId, user, drawingFile, quotationFile, drawingS3, quotationS3);
+      await persistDqc2SubmissionFromMeta(leadId, user, drawingFiles, quotationFiles, drawingS3Urls, quotationS3Urls);
       return res.status(201).json({ ok: true });
     } catch (err) {
       console.error("dqc2-submission error", err);
@@ -4442,11 +4821,19 @@ app.get("/api/leads/:id/dqc2-submission-files", async (req: Request, res: Respon
     const list = (rows as any[]) || [];
     const uploadType = (r: any) => (r.uploadType ?? r.uploadtype ?? "").toString();
     const originalName = (r: any) => (r.originalName ?? r.originalname ?? "") || "";
-    const drawing = list.find((r: any) => uploadType(r) === "dqc2_drawing");
-    const quotation = list.find((r: any) => uploadType(r) === "dqc2_quotation");
+    const drawingFiles = list
+      .filter((r: any) => uploadType(r) === "dqc2_drawing")
+      .map((r: any) => ({ id: r.id, originalName: originalName(r) }));
+    const quotationFiles = list
+      .filter((r: any) => uploadType(r) === "dqc2_quotation")
+      .map((r: any) => ({ id: r.id, originalName: originalName(r) }));
+    const drawing = drawingFiles[0];
+    const quotation = quotationFiles[0];
     return res.json({
-      drawing: drawing ? { id: drawing.id, originalName: originalName(drawing) } : null,
-      quotation: quotation ? { id: quotation.id, originalName: originalName(quotation) } : null,
+      drawing: drawing ?? null,
+      quotation: quotation ?? null,
+      drawingFiles,
+      quotationFiles,
     });
   } catch (err) {
     console.error("dqc2-submission-files error", err);
@@ -4881,6 +5268,180 @@ app.get("/api/designers", async (_req: Request, res: Response) => {
   }
 });
 
+// Assignable designers for lead reassignment (admin/TDM/design_manager).
+app.get("/api/designers/assignable", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user.role || "").toLowerCase();
+    if (!canAssignLeads(role)) {
+      return res.status(403).json({ message: "Only admin, TDM, or design manager can reassign leads" });
+    }
+
+    if (role === "design_manager") {
+      const [rows] = await pool.query(
+        `SELECT id, name, role
+         FROM users
+         WHERE role = 'design_manager' AND id = ?
+         UNION
+         SELECT id, name, role
+         FROM users
+         WHERE role = 'designer' AND design_manager_id = ?
+         ORDER BY name ASC`,
+        [user.id, user.id],
+      );
+      return res.json(rows);
+    }
+
+    const [rows] = await pool.query(
+      `SELECT id, name, role
+       FROM users
+       WHERE role IN ('designer', 'design_manager')
+       ORDER BY name ASC`,
+    );
+    return res.json(rows);
+  } catch (err) {
+    console.error("designers/assignable error", err);
+    return res.status(500).json({ message: "Failed to load assignable designers" });
+  }
+});
+
+// Assign a single lead to a designer/design manager.
+app.post("/api/leads/:id/assign-designer", async (req: Request, res: Response) => {
+  try {
+    const leadId = Number(req.params.id);
+    if (!leadId) return res.status(400).json({ message: "Invalid lead id" });
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user.role || "").toLowerCase();
+    if (!canAssignLeads(role)) {
+      return res.status(403).json({ message: "Only admin, TDM, or design manager can reassign leads" });
+    }
+
+    const designerId = Number(req.body?.designerId);
+    if (!designerId) return res.status(400).json({ message: "designerId is required" });
+
+    const [leadRows] = await pool.query(
+      "SELECT id, assigned_designer_id FROM leads WHERE id = ? LIMIT 1",
+      [leadId],
+    );
+    const lead = (leadRows as any[])[0];
+    if (!lead) return res.status(404).json({ message: "Lead not found" });
+
+    if (role === "design_manager") {
+      const [visibilityRows] = await pool.query(
+        `SELECT 1
+         FROM leads l
+         INNER JOIN users d ON d.id = l.assigned_designer_id
+         WHERE l.id = ? AND d.design_manager_id = ?`,
+        [leadId, user.id],
+      );
+      if ((visibilityRows as any[]).length === 0) {
+        return res.status(403).json({ message: "You can reassign only leads from your team" });
+      }
+    }
+
+    const [designerRows] = await pool.query(
+      "SELECT id, name, role, design_manager_id FROM users WHERE id = ? AND role IN ('designer', 'design_manager') LIMIT 1",
+      [designerId],
+    );
+    const designer = (designerRows as any[])[0];
+    if (!designer) return res.status(400).json({ message: "Invalid designer selected" });
+
+    if (role === "design_manager") {
+      const allowed =
+        (designer.role === "design_manager" && designer.id === user.id) ||
+        (designer.role === "designer" && Number(designer.design_manager_id) === Number(user.id));
+      if (!allowed) {
+        return res.status(403).json({ message: "You can assign only to yourself or your designers" });
+      }
+    }
+
+    await pool.query("UPDATE leads SET assigned_designer_id = ?, update_at = ? WHERE id = ?", [
+      designerId,
+      new Date(),
+      leadId,
+    ]);
+    return res.json({
+      ok: true,
+      leadId,
+      assignedDesignerId: designerId,
+      designerName: designer.name,
+    });
+  } catch (err) {
+    console.error("assign-designer error", err);
+    return res.status(500).json({ message: "Failed to assign lead" });
+  }
+});
+
+// Bulk assign multiple leads to one designer.
+app.post("/api/leads/assign-designer/bulk", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user.role || "").toLowerCase();
+    if (!canAssignLeads(role)) {
+      return res.status(403).json({ message: "Only admin, TDM, or design manager can reassign leads" });
+    }
+
+    const leadIds = Array.isArray(req.body?.leadIds)
+      ? (req.body.leadIds as unknown[])
+          .map((v) => Number(v))
+          .filter((v) => Number.isFinite(v) && v > 0)
+      : [];
+    const designerId = Number(req.body?.designerId);
+    if (leadIds.length === 0) return res.status(400).json({ message: "leadIds are required" });
+    if (!designerId) return res.status(400).json({ message: "designerId is required" });
+
+    const [designerRows] = await pool.query(
+      "SELECT id, name, role, design_manager_id FROM users WHERE id = ? AND role IN ('designer', 'design_manager') LIMIT 1",
+      [designerId],
+    );
+    const designer = (designerRows as any[])[0];
+    if (!designer) return res.status(400).json({ message: "Invalid designer selected" });
+
+    if (role === "design_manager") {
+      const allowed =
+        (designer.role === "design_manager" && designer.id === user.id) ||
+        (designer.role === "designer" && Number(designer.design_manager_id) === Number(user.id));
+      if (!allowed) {
+        return res.status(403).json({ message: "You can assign only to yourself or your designers" });
+      }
+    }
+
+    const updatedLeadIds: number[] = [];
+    for (const leadId of leadIds) {
+      if (role === "design_manager") {
+        const [visibilityRows] = await pool.query(
+          `SELECT 1
+           FROM leads l
+           INNER JOIN users d ON d.id = l.assigned_designer_id
+           WHERE l.id = ? AND d.design_manager_id = ?`,
+          [leadId, user.id],
+        );
+        if ((visibilityRows as any[]).length === 0) continue;
+      }
+      await pool.query("UPDATE leads SET assigned_designer_id = ?, update_at = ? WHERE id = ?", [
+        designerId,
+        new Date(),
+        leadId,
+      ]);
+      updatedLeadIds.push(leadId);
+    }
+
+    return res.json({
+      ok: true,
+      updatedCount: updatedLeadIds.length,
+      updatedLeadIds,
+      assignedDesignerId: designerId,
+      designerName: designer.name,
+    });
+  } catch (err) {
+    console.error("assign-designer bulk error", err);
+    return res.status(500).json({ message: "Failed to bulk assign leads" });
+  }
+});
+
 // Lead detail by id (for /Leads/[id]); MMT executives only get leads they're assigned to
 app.get("/api/leads/:id", async (req: Request, res: Response) => {
   const id = Number(req.params.id);
@@ -5103,6 +5664,8 @@ app.post("/api/leads/:id/resume", async (req: Request, res: Response) => {
     res.status(500).json({ message: "Failed to resume project" });
   }
 });
+
+registerProlanceRoutes(app, getUserFromSession);
 
 // Ensure CORS headers are present on error responses (multer, etc.) so the browser doesn't only show a generic CORS error
 app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {

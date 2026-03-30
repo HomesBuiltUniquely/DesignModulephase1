@@ -75,6 +75,9 @@ type Props = {
   onLoadDqcSubmission?: () => void;
   /** Optional title (e.g. "DQC 1 Approval" / "DQC 2 Approval") instead of default "Design QC Review" */
   reviewTitle?: string;
+  dqcSubmissionFiles?: Array<{ id: number; originalName: string }>;
+  selectedDqcSubmissionFileId?: number | null;
+  onSelectDqcSubmissionFile?: (id: number) => void;
 };
 
 /**
@@ -125,7 +128,14 @@ export default function PopupDqc1Approval({
   dqc1SubmissionLoading = false,
   onLoadDqcSubmission,
   reviewTitle,
+  dqcSubmissionFiles = [],
+  selectedDqcSubmissionFileId = null,
+  onSelectDqcSubmissionFile,
 }: Props) {
+  const visibleRemarks = dqc1Remarks.filter((r) => {
+    if (selectedDqcSubmissionFileId == null) return true;
+    return r.uploadId == null || r.uploadId === selectedDqcSubmissionFileId;
+  });
   return (
     <div className="flex flex-1 flex-col min-h-0 relative">
       <div className="flex justify-between items-center px-6 py-3 border-b border-gray-200 flex-shrink-0">
@@ -165,6 +175,20 @@ export default function PopupDqc1Approval({
             >
               Choose PDF
             </button>
+            {dqcSubmissionFiles.length > 1 && onSelectDqcSubmissionFile && (
+              <select
+                value={selectedDqcSubmissionFileId ?? dqcSubmissionFiles[0].id}
+                onChange={(e) => onSelectDqcSubmissionFile(Number(e.target.value))}
+                className="px-2 py-1.5 rounded-md border border-gray-300 bg-white text-sm max-w-[220px]"
+                title="Select submitted file"
+              >
+                {dqcSubmissionFiles.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.originalName}
+                  </option>
+                ))}
+              </select>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -346,7 +370,7 @@ export default function PopupDqc1Approval({
                     }}
                   />
                 )}
-                {dqc1Remarks
+                {visibleRemarks
                   .filter((r) => r.page === dqc1PdfPageNumber)
                   .map((r) => (
                     <button
@@ -438,7 +462,7 @@ export default function PopupDqc1Approval({
                 click on the PDF where you want to add a remark.
               </p>
               <div className="space-y-2 mt-3">
-                {dqc1Remarks.map((r) => (
+                {visibleRemarks.map((r) => (
                   <div
                     key={r.id}
                     role="button"

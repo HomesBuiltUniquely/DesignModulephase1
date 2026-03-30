@@ -11,6 +11,8 @@ export type QCRemark = {
     xPct: number;
     yPct: number;
     page: number;
+    uploadId?: number;
+    uploadName?: string;
     docX?: number;
     docY?: number;
 };

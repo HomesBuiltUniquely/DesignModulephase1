@@ -188,6 +188,12 @@ type DqcQueueItem = {
   dqc2Pending?: boolean;
 };
 
+type AssignableDesigner = {
+    id: number;
+    name: string;
+    role: "designer" | "design_manager";
+};
+
 export default function Dashboard() {
     const { user, sessionId } = useAuth();
     const [projects, setProjects] = useState<LeadshipTypes[]>([]);
@@ -199,6 +205,10 @@ export default function Dashboard() {
     const isMmtUser = ["mmt_manager", "mmt_executive"].includes((user?.role || "").toLowerCase());
     const isDqcUser = ["dqc_manager", "dqe"].includes((user?.role || "").toLowerCase());
     const isFinanceUser = (user?.role || "").toLowerCase() === "finance";
+    const canImportLeads =
+        (user?.role || "").toLowerCase() === "admin" ||
+        (user?.role || "").toLowerCase() === "territorial_design_manager" ||
+        (user?.role || "").toLowerCase() === "design_manager";
 
     // Finance: limited access – 10% and 40% payment upload/approve only, no full project list
     if (isFinanceUser) {
@@ -250,6 +260,18 @@ export default function Dashboard() {
         return () => { cancelled = true; };
     }, [sessionId, isDqcUser]);
 
+    useEffect(() => {
+        if (!canImportLeads || !sessionId) return;
+        fetch(`${API}/api/designers/assignable`, {
+            headers: { Authorization: `Bearer ${sessionId}` },
+        })
+            .then((res) => res.json())
+            .then((rows: AssignableDesigner[]) => {
+                if (Array.isArray(rows)) setAssignableDesigners(rows);
+            })
+            .catch(() => setAssignableDesigners([]));
+    }, [canImportLeads, sessionId]);
+
     const onUploadClick = (e: React.MouseEvent, leadId: number) => {
         e.stopPropagation();
         targetLeadRef.current = leadId;
@@ -279,7 +301,7 @@ export default function Dashboard() {
             targetLeadRef.current = null;
         }
     };
-
+    
     const allTypes = Object.values(SideDashboard);
     const [isDropdownOpen, setIsDropdownOpen] = useState(true);
     const [isSelected, setIsSelected] = useState<string>(allTypes[0]); // "All Projects (10-60%)"
@@ -289,6 +311,24 @@ export default function Dashboard() {
     const filterDropdownRef = useRef<HTMLDivElement>(null);
     const [page, setPage] = useState(1);
     const PAGE_SIZE = 10;
+    const [showImportPanel, setShowImportPanel] = useState(false);
+    const [excelFile, setExcelFile] = useState<File | null>(null);
+    const [previewToken, setPreviewToken] = useState<string | null>(null);
+    const [excelHeaders, setExcelHeaders] = useState<string[]>([]);
+    const [excelRowCount, setExcelRowCount] = useState(0);
+    const [targetFields, setTargetFields] = useState<Array<{ key: string; label: string; required: boolean }>>([]);
+    const [mappings, setMappings] = useState<Record<string, string>>({});
+    const [importDesignerId, setImportDesignerId] = useState<number | "">("");
+    const [previewLoading, setPreviewLoading] = useState(false);
+    const [importLoading, setImportLoading] = useState(false);
+    const [importMessage, setImportMessage] = useState<string | null>(null);
+    const [assignableDesigners, setAssignableDesigners] = useState<AssignableDesigner[]>([]);
+    const [selectedLeadIds, setSelectedLeadIds] = useState<number[]>([]);
+    const [bulkDesignerId, setBulkDesignerId] = useState<number | "">("");
+    const [bulkAssignLoading, setBulkAssignLoading] = useState(false);
+    const [bulkAssignMessage, setBulkAssignMessage] = useState<string | null>(null);
+    const [singleAssignByLead, setSingleAssignByLead] = useState<Record<number, number | "">>({});
+    const [singleAssignLoadingLeadId, setSingleAssignLoadingLeadId] = useState<number | null>(null);
 
     const filteredProjects = isSelected === "All Projects (10-60%)"
         ? projects.filter((p) => {
@@ -353,6 +393,189 @@ export default function Dashboard() {
             router.push(`/Leads/${projectId}?view=dqc`);
         } else {
             router.push(`/Leads/${projectId}`);
+        }
+    };
+
+    const toggleLeadSelection = (leadId: number) => {
+        setSelectedLeadIds((prev) =>
+            prev.includes(leadId) ? prev.filter((id) => id !== leadId) : [...prev, leadId],
+        );
+    };
+
+    const toggleSelectAllVisible = (visibleLeadIds: number[]) => {
+        const allSelected = visibleLeadIds.length > 0 && visibleLeadIds.every((id) => selectedLeadIds.includes(id));
+        if (allSelected) {
+            setSelectedLeadIds((prev) => prev.filter((id) => !visibleLeadIds.includes(id)));
+        } else {
+            setSelectedLeadIds((prev) => Array.from(new Set([...prev, ...visibleLeadIds])));
+        }
+    };
+
+    const refreshQueue = async () => {
+        const headers: Record<string, string> = {};
+        if (sessionId) headers.Authorization = `Bearer ${sessionId}`;
+        const res = await fetch(`${API}/api/leads/queue`, { headers });
+        const data = await res.json().catch(() => null);
+        if (res.ok && Array.isArray(data)) setProjects(data);
+    };
+
+    const assignSingleLead = async (leadId: number) => {
+        const designerId = singleAssignByLead[leadId];
+        if (!designerId || !sessionId) return;
+        setSingleAssignLoadingLeadId(leadId);
+        setBulkAssignMessage(null);
+        try {
+            const res = await fetch(`${API}/api/leads/${leadId}/assign-designer`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${sessionId}`,
+                },
+                body: JSON.stringify({ designerId }),
+            });
+            const data = await res.json().catch(() => null);
+            if (!res.ok) throw new Error(data?.message || "Failed to assign lead");
+            setProjects((prev) =>
+                prev.map((p) =>
+                    p.id === leadId
+                        ? {
+                            ...p,
+                            assigned_designer_id: Number(designerId),
+                            designerName: data?.designerName ?? p.designerName,
+                        }
+                        : p,
+                ),
+            );
+            setBulkAssignMessage(`Lead ${leadId} assigned to ${data?.designerName || "selected designer"}.`);
+        } catch (err) {
+            setBulkAssignMessage(err instanceof Error ? err.message : "Failed to assign lead");
+        } finally {
+            setSingleAssignLoadingLeadId(null);
+        }
+    };
+
+    const assignBulkLeads = async () => {
+        if (!sessionId) return;
+        if (!bulkDesignerId) {
+            setBulkAssignMessage("Please select a designer for bulk assignment.");
+            return;
+        }
+        if (selectedLeadIds.length === 0) {
+            setBulkAssignMessage("Please select at least one lead.");
+            return;
+        }
+        setBulkAssignLoading(true);
+        setBulkAssignMessage(null);
+        try {
+            const res = await fetch(`${API}/api/leads/assign-designer/bulk`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${sessionId}`,
+                },
+                body: JSON.stringify({ leadIds: selectedLeadIds, designerId: bulkDesignerId }),
+            });
+            const data = await res.json().catch(() => null);
+            if (!res.ok) throw new Error(data?.message || "Bulk assign failed");
+            await refreshQueue();
+            setSelectedLeadIds([]);
+            setBulkAssignMessage(
+                `Bulk assignment complete: ${data?.updatedCount ?? 0} lead(s) assigned to ${data?.designerName || "selected designer"}.`,
+            );
+        } catch (err) {
+            setBulkAssignMessage(err instanceof Error ? err.message : "Bulk assign failed");
+        } finally {
+            setBulkAssignLoading(false);
+        }
+    };
+
+    const runExcelPreview = async () => {
+        if (!excelFile) {
+            setImportMessage("Please choose an Excel file first.");
+            return;
+        }
+        if (!sessionId) {
+            setImportMessage("Please login again.");
+            return;
+        }
+        setPreviewLoading(true);
+        setImportMessage(null);
+        try {
+            const fd = new FormData();
+            fd.append("file", excelFile);
+            const res = await fetch(`${API}/api/leads/import-excel/preview`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${sessionId}` },
+                body: fd,
+            });
+            const data = await res.json().catch(() => null);
+            if (!res.ok) throw new Error(data?.message || "Failed to preview Excel file");
+            setPreviewToken(String(data.token));
+            setExcelHeaders(Array.isArray(data.headers) ? data.headers : []);
+            setExcelRowCount(Number(data.rowCount || 0));
+            const tf = Array.isArray(data.targetFields) ? data.targetFields : [];
+            setTargetFields(tf);
+            const nextMappings: Record<string, string> = {};
+            tf.forEach((f: { key: string; label: string }) => {
+                const auto = (data.headers || []).find(
+                    (h: string) =>
+                        h.trim().toLowerCase().replace(/[^a-z0-9]+/g, "") ===
+                        f.label.toLowerCase().replace(/[^a-z0-9]+/g, ""),
+                );
+                nextMappings[f.key] = auto || "";
+            });
+            setMappings(nextMappings);
+            setImportMessage(`Preview loaded: ${Number(data.rowCount || 0)} rows found.`);
+        } catch (err: unknown) {
+            setImportMessage(err instanceof Error ? err.message : "Preview failed");
+        } finally {
+            setPreviewLoading(false);
+        }
+    };
+
+    const runExcelImport = async () => {
+        if (!previewToken) {
+            setImportMessage("Preview first, then import.");
+            return;
+        }
+        if (!importDesignerId) {
+            setImportMessage("Please select a designer from DB for imported leads.");
+            return;
+        }
+        if (!sessionId) {
+            setImportMessage("Please login again.");
+            return;
+        }
+        if (!mappings.projectName) {
+            setImportMessage("Please map Project Name field before importing.");
+            return;
+        }
+        setImportLoading(true);
+        setImportMessage(null);
+        try {
+            const res = await fetch(`${API}/api/leads/import-excel/commit`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${sessionId}`,
+                },
+                body: JSON.stringify({ token: previewToken, mappings, defaultDesignerId: importDesignerId }),
+            });
+            const data = await res.json().catch(() => null);
+            if (!res.ok) throw new Error(data?.message || "Import failed");
+            setImportMessage(`Import complete. Imported ${data.imported}/${data.totalRows}. Failed: ${data.failed}.`);
+            setPreviewToken(null);
+            setExcelFile(null);
+            // Refresh dashboard queue after successful import.
+            const headers: Record<string, string> = {};
+            if (sessionId) headers["Authorization"] = `Bearer ${sessionId}`;
+            const qRes = await fetch(`${API}/api/leads/queue`, { headers });
+            const qData = await qRes.json().catch(() => null);
+            if (qRes.ok && Array.isArray(qData)) setProjects(qData);
+        } catch (err: unknown) {
+            setImportMessage(err instanceof Error ? err.message : "Import failed");
+        } finally {
+            setImportLoading(false);
         }
     };
 
@@ -472,6 +695,18 @@ export default function Dashboard() {
                         <table className="w-full min-w-[920px]">
                             <thead>
                                 <tr className="bg-gray-900 text-white text-left text-sm font-semibold">
+                                    {canImportLeads && (
+                                        <th className="py-3 px-3">
+                                            <input
+                                                type="checkbox"
+                                                checked={
+                                                    deduped.length > 0 &&
+                                                    deduped.every((row) => selectedLeadIds.includes(row.id))
+                                                }
+                                                onChange={() => toggleSelectAllVisible(deduped.map((d) => d.id))}
+                                            />
+                                        </th>
+                                    )}
                                     <th className="py-3 px-5">ID / Project Name</th>
                                     <th className="py-3 px-5">Designer</th>
                                     <th className="py-3 px-5">Milestone</th>
@@ -500,6 +735,15 @@ export default function Dashboard() {
                                             className="border-b border-gray-100 hover:bg-gray-50 cursor-pointer"
                                             onClick={() => handleRouter(row.id)}
                                         >
+                                            {canImportLeads && (
+                                                <td className="py-3 px-3" onClick={(e) => e.stopPropagation()}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={selectedLeadIds.includes(row.id)}
+                                                        onChange={() => toggleLeadSelection(row.id)}
+                                                    />
+                                                </td>
+                                            )}
                                             <td className="py-3 px-5">
                                                 <div className="font-medium text-gray-900">PJ-{row.pid || row.id}</div>
                                                 <div className="text-sm text-gray-600 truncate max-w-[180px]" title={row.projectName}>{row.projectName || "—"}</div>
@@ -536,13 +780,44 @@ export default function Dashboard() {
                                                 </span>
                                             </td>
                                             <td className="py-3 px-5" onClick={(e) => e.stopPropagation()}>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => handleRouter(row.id)}
-                                                    className="text-sm font-semibold text-blue-600 hover:underline"
-                                                >
-                                                    View Project
-                                                </button>
+                                                <div className="flex items-center gap-2 flex-wrap">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleRouter(row.id)}
+                                                        className="text-sm font-semibold text-blue-600 hover:underline"
+                                                    >
+                                                        View Project
+                                                    </button>
+                                                    {canImportLeads && (
+                                                        <>
+                                                            <select
+                                                                value={singleAssignByLead[row.id] ?? row.assigned_designer_id ?? ""}
+                                                                onChange={(e) =>
+                                                                    setSingleAssignByLead((prev) => ({
+                                                                        ...prev,
+                                                                        [row.id]: e.target.value ? Number(e.target.value) : "",
+                                                                    }))
+                                                                }
+                                                                className="text-xs border border-gray-300 rounded px-2 py-1"
+                                                            >
+                                                                <option value="">Assign designer</option>
+                                                                {assignableDesigners.map((d) => (
+                                                                    <option key={d.id} value={d.id}>
+                                                                        {d.name}
+                                                                    </option>
+                                                                ))}
+                                                            </select>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => assignSingleLead(row.id)}
+                                                                disabled={singleAssignLoadingLeadId === row.id}
+                                                                className="text-xs px-2 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
+                                                            >
+                                                                {singleAssignLoadingLeadId === row.id ? "..." : "Assign"}
+                                                            </button>
+                                                        </>
+                                                    )}
+                                                </div>
                                             </td>
                                         </tr>
                                     );
@@ -608,7 +883,7 @@ export default function Dashboard() {
                             stroke="currentColor" 
                             className={`size-5 mt-4 font-bold xl:cursor-pointer transition-transform duration-200 ${isDropdownOpen ? 'rotate-180' : ''}`}
                         >
-                            <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
                         </svg>
                     </div>
                     </div>
@@ -625,7 +900,7 @@ export default function Dashboard() {
                                             : 'hover:xl:xl:border-l-4 hover:xl:border-l-green-400 hover:xl:bg-gray-100 hover:xl:text-green-400 hover:xl:font-bold hover:xl:scale-105'
                                     }`}
                                 >
-                                    {type}
+                            {type}
                                 </div>
                             ))}
                         </div>
@@ -688,8 +963,122 @@ export default function Dashboard() {
                                         <button type="button" className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700">
                                             + Add Project
                                         </button>
+                                        {canImportLeads && (
+                                            <button
+                                                type="button"
+                                                onClick={() => setShowImportPanel((v) => !v)}
+                                                className="px-4 py-2 rounded-lg border border-indigo-300 text-indigo-700 text-sm font-medium hover:bg-indigo-50"
+                                            >
+                                                {showImportPanel ? "Close Import" : "Import Excel"}
+                                            </button>
+                                        )}
                                     </div>
                                 </div>
+                                {canImportLeads && showImportPanel && (
+                                    <div className="rounded-xl border border-indigo-100 bg-indigo-50/30 p-4">
+                                        <p className="text-sm font-semibold text-indigo-900">Import Leads from Excel</p>
+                                        <p className="mt-1 text-xs text-indigo-700">
+                                            Upload Excel, map headers to lead fields, then import.
+                                        </p>
+                                        <div className="mt-3 flex flex-wrap items-center gap-3">
+                                            <input
+                                                type="file"
+                                                accept=".xlsx,.xls,.csv"
+                                                onChange={(e) => setExcelFile(e.target.files?.[0] ?? null)}
+                                                className="text-sm"
+                                            />
+                                            <select
+                                                value={importDesignerId}
+                                                onChange={(e) => setImportDesignerId(e.target.value ? Number(e.target.value) : "")}
+                                                className="rounded-md border border-indigo-300 bg-white px-3 py-1.5 text-xs text-indigo-900"
+                                            >
+                                                <option value="">Select designer from DB</option>
+                                                {assignableDesigners.map((d) => (
+                                                    <option key={d.id} value={d.id}>
+                                                        {d.name} ({d.role.replace("_", " ")})
+                                                    </option>
+                                                ))}
+                                            </select>
+                                            <button
+                                                type="button"
+                                                onClick={runExcelPreview}
+                                                disabled={previewLoading || !excelFile}
+                                                className="rounded-md border border-indigo-500 px-3 py-1.5 text-xs font-semibold text-indigo-700 disabled:opacity-50"
+                                            >
+                                                {previewLoading ? "Loading Preview..." : "Preview Headers"}
+                                            </button>
+                                        </div>
+                                        {previewToken && (
+                                            <div className="mt-4">
+                                                <p className="mb-2 text-xs text-gray-600">Rows found: {excelRowCount}</p>
+                                                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                                    {targetFields.map((f) => (
+                                                        <label key={f.key} className="block">
+                                                            <span className="mb-1 block text-xs font-medium text-gray-700">
+                                                                {f.label} {f.required ? <span className="text-red-500">*</span> : null}
+                                                            </span>
+                                                            <select
+                                                                value={mappings[f.key] || ""}
+                                                                onChange={(e) =>
+                                                                    setMappings((prev) => ({ ...prev, [f.key]: e.target.value }))
+                                                                }
+                                                                className="w-full rounded-lg border border-gray-300 bg-white px-2 py-2 text-xs text-gray-900 outline-none focus:border-indigo-500"
+                                                            >
+                                                                <option value="">-- Not mapped --</option>
+                                                                {excelHeaders.map((h) => (
+                                                                    <option key={h} value={h}>
+                                                                        {h}
+                                                                    </option>
+                                                                ))}
+                                                            </select>
+                                                        </label>
+                                                    ))}
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={runExcelImport}
+                                                    disabled={importLoading}
+                                                    className="mt-4 rounded-md bg-indigo-600 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                                                >
+                                                    {importLoading ? "Importing..." : "Import Leads"}
+                                                </button>
+                                            </div>
+                                        )}
+                                        {importMessage && (
+                                            <p className="mt-3 text-xs text-gray-700">{importMessage}</p>
+                                        )}
+                                    </div>
+                                )}
+                                {canImportLeads && (
+                                    <div className="rounded-xl border border-emerald-100 bg-emerald-50/30 p-4 space-y-3">
+                                        <p className="text-sm font-semibold text-emerald-900">Lead Reassignment</p>
+                                        <div className="flex flex-wrap items-center gap-3">
+                                            <select
+                                                value={bulkDesignerId}
+                                                onChange={(e) => setBulkDesignerId(e.target.value ? Number(e.target.value) : "")}
+                                                className="rounded-lg border border-emerald-200 bg-white px-3 py-2 text-sm min-w-[240px]"
+                                            >
+                                                <option value="">Select designer for bulk assign</option>
+                                                {assignableDesigners.map((d) => (
+                                                    <option key={d.id} value={d.id}>
+                                                        {d.name} ({d.role.replace("_", " ")})
+                                                    </option>
+                                                ))}
+                                            </select>
+                                            <button
+                                                type="button"
+                                                onClick={assignBulkLeads}
+                                                disabled={bulkAssignLoading}
+                                                className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-60"
+                                            >
+                                                {bulkAssignLoading ? "Assigning..." : `Bulk Assign (${selectedLeadIds.length})`}
+                                            </button>
+                                        </div>
+                                        {bulkAssignMessage && (
+                                            <p className="text-xs text-emerald-800">{bulkAssignMessage}</p>
+                                        )}
+                                    </div>
+                                )}
                                 {renderContent()}
                             </div>
                         ) : (
@@ -721,4 +1110,4 @@ export default function Dashboard() {
             </main>
         </div>
     );
-}
+    }

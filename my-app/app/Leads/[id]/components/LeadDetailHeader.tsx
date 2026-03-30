@@ -1,8 +1,11 @@
 'use client';
 
+import { useState } from 'react';
+import { useAuth } from '@/app/auth/AuthContext';
 import type { LeadshipTypes } from '@/app/Components/Types/Types';
 import type { ImageType } from '../types';
 import MileStonesArray from '@/app/Components/Types/MileStoneArray';
+import PopupProlance from './popups/PopupProlance';
 
 type Props = {
     project: LeadshipTypes;
@@ -34,6 +37,8 @@ function formatResumeDate(value?: string | null): string {
 }
 
 export default function LeadDetailHeader({ project, image, onAddImage, currentMilestoneIndex, onHoldClick, onResumeClick, hideNavTabs, hideStepper, hideProlanceHoldResume }: Props) {
+    const { sessionId } = useAuth();
+    const [prolanceOpen, setProlanceOpen] = useState(false);
     const holdLabel = project.isOnHold ? `On hold${project.resumeAt ? ` till ${formatResumeDate(project.resumeAt)}` : ''}` : project.projectStage;
     return (
         <div className="w-full px-4 xl:px-6 pt-4 pb-4">
@@ -52,9 +57,19 @@ export default function LeadDetailHeader({ project, image, onAddImage, currentMi
                 </div>
                 {!hideProlanceHoldResume && (
                 <div className="flex flex-wrap items-center gap-4 xl:gap-6">
-                    <div className="border border-gray-400 rounded-md px-4 py-2 font-bold text-purple-100 hover:text-green-900 hover:bg-purple-50 transition-colors cursor-pointer">
+                    <PopupProlance
+                        open={prolanceOpen}
+                        onClose={() => setProlanceOpen(false)}
+                        sessionId={sessionId}
+                        leadPid={project.id}
+                    />
+                    <button
+                        type="button"
+                        onClick={() => setProlanceOpen(true)}
+                        className="border border-gray-400 rounded-md px-4 py-2 font-bold text-purple-100 hover:text-green-900 hover:bg-purple-50 transition-colors cursor-pointer"
+                    >
                         Prolance
-                    </div>
+                    </button>
                     <div className="flex items-center -space-x-3">
                         {image.map((imgdata) => {
                             const initials = (imgdata.name || '').trim()
