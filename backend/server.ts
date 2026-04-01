@@ -578,12 +578,12 @@ function normalizeHeaderKey(value: unknown): string {
 
 function canImportLeads(role: string | null | undefined): boolean {
   const r = (role || "").toLowerCase();
-  return r === "admin" || r === "territorial_design_manager" || r === "design_manager";
+  return r === "admin" || r === "territorial_design_manager" || r === "deputy_general_manager" || r === "design_manager";
 }
 
 function canAssignLeads(role: string | null | undefined): boolean {
   const r = (role || "").toLowerCase();
-  return r === "admin" || r === "territorial_design_manager" || r === "design_manager";
+  return r === "admin" || r === "territorial_design_manager" || r === "deputy_general_manager" || r === "design_manager";
 }
 
 type ImportedPreview = {
@@ -949,13 +949,16 @@ app.all("/api/auth/register-mmt-executive", async (req: Request, res: Response) 
   }
 });
 
-// Admin: create TDM (Territorial Design Manager)
+// Admin or Deputy General Manager: create TDM (Territorial Design Manager)
 app.all("/api/auth/create-tdm", async (req: Request, res: Response) => {
   if (req.method !== "POST") return res.status(405).json({ message: "Use POST" });
   try {
-    const admin = await getUserFromSession(req);
-    if (!admin) return res.status(401).json({ message: "Unauthorized" });
-    if (admin.role !== "admin") return res.status(403).json({ message: "Only admin can create TDM" });
+    const current = await getUserFromSession(req);
+    if (!current) return res.status(401).json({ message: "Unauthorized" });
+    const role = (current.role || "").toLowerCase();
+    if (role !== "admin" && role !== "deputy_general_manager") {
+      return res.status(403).json({ message: "Only admin or Deputy General Manager can create TDM" });
+    }
     const { email, password, name, phone } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
@@ -972,6 +975,32 @@ app.all("/api/auth/create-tdm", async (req: Request, res: Response) => {
     if (err?.code === "ER_DUP_ENTRY") return res.status(400).json({ message: "A user with this email already exists" });
     console.error("create-tdm error", err);
     return res.status(500).json({ message: "Failed to create Territorial Design Manager" });
+  }
+});
+
+// Admin: create Deputy General Manager (same access model as TDM)
+app.all("/api/auth/create-deputy-general-manager", async (req: Request, res: Response) => {
+  if (req.method !== "POST") return res.status(405).json({ message: "Use POST" });
+  try {
+    const admin = await getUserFromSession(req);
+    if (!admin) return res.status(401).json({ message: "Unauthorized" });
+    if (admin.role !== "admin") return res.status(403).json({ message: "Only admin can create Deputy General Manager" });
+    const { email, password, name, phone } = req.body || {};
+    const normalized = (email || "").trim().toLowerCase();
+    if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
+    if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
+    const displayName = (name || normalized).trim() || normalized;
+    const phoneVal = phone != null ? String(phone).trim() : null;
+    const [result] = await pool.query(
+      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "deputy_general_manager", phoneVal || null],
+    );
+    const insertId = (result as any).insertId;
+    return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "deputy_general_manager" } });
+  } catch (err: any) {
+    if (err?.code === "ER_DUP_ENTRY") return res.status(400).json({ message: "A user with this email already exists" });
+    console.error("create-deputy-general-manager error", err);
+    return res.status(500).json({ message: "Failed to create Deputy General Manager" });
   }
 });
 
@@ -1132,14 +1161,14 @@ app.all("/api/auth/register-dqe", async (req: Request, res: Response) => {
   }
 });
 
-// TDM or Admin: register designer or design_manager
+// TDM / Deputy GM / Admin: register designer or design_manager
 app.all("/api/auth/register", async (req: Request, res: Response) => {
   if (req.method !== "POST") return res.status(405).json({ message: "Use POST" });
   try {
     const current = await getUserFromSession(req);
     if (!current) return res.status(401).json({ message: "Unauthorized" });
     const role = (current.role || "").toLowerCase();
-    if (role !== "territorial_design_manager" && role !== "admin") return res.status(403).json({ message: "Only TDM or Admin can register designers" });
+    if (role !== "territorial_design_manager" && role !== "deputy_general_manager" && role !== "admin") return res.status(403).json({ message: "Only TDM, Deputy General Manager, or Admin can register designers" });
     const { email, password, name, phone, role: bodyRole, managerId } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });

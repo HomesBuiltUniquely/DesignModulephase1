@@ -208,6 +208,7 @@ export default function Dashboard() {
     const canImportLeads =
         (user?.role || "").toLowerCase() === "admin" ||
         (user?.role || "").toLowerCase() === "territorial_design_manager" ||
+        (user?.role || "").toLowerCase() === "deputy_general_manager" ||
         (user?.role || "").toLowerCase() === "design_manager";
 
     // Finance: limited access – 10% and 40% payment upload/approve only, no full project list

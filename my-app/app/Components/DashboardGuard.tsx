@@ -46,9 +46,10 @@ export default function DashboardGuard() {
       <header className="bg-white border-b border-gray-200 px-4 py-2 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <a href="/" className="text-green-700 font-semibold">Dashboard</a>
-          {(user.role === 'territorial_design_manager' || user.role === 'dqc_manager' || user.role === 'mmt_manager' || user.role === 'mmt_executive' || user.role === 'finance' || user.role === 'admin') && (
+          {((user.role === 'territorial_design_manager' || user.role === 'deputy_general_manager') || user.role === 'dqc_manager' || user.role === 'mmt_manager' || user.role === 'mmt_executive' || user.role === 'finance' || user.role === 'admin') && (
             <>
-              {user.role === 'territorial_design_manager' && <a href="/tdm/register" className="text-gray-600 hover:text-gray-900 text-sm">Register DM / Designer</a>}
+              {(user.role === 'territorial_design_manager' || user.role === 'deputy_general_manager') && <a href="/tdm/register" className="text-gray-600 hover:text-gray-900 text-sm">Register DM / Designer</a>}
+              {user.role === 'deputy_general_manager' && <a href="/admin/create-tdm" className="text-gray-600 hover:text-gray-900 text-sm">Create TDM</a>}
               {user.role === 'dqc_manager' && <a href="/dqc-manager/register" className="text-gray-600 hover:text-gray-900 text-sm">Register DQE</a>}
               {(user.role === 'finance' || user.role === 'admin') && (
                 <>
