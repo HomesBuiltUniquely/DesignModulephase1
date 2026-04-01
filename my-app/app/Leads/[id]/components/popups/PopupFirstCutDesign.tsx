@@ -22,7 +22,12 @@ type Props = {
     meetingLink?: string;
   }) => void;
   /** Called when designer marks 100% complete; parent should record task complete and close. */
-  onCompleteAndProceed?: () => void;
+  onCompleteAndProceed?: (meta?: {
+    meetingDate?: string;
+    meetingTime?: string;
+    meetingMode?: "online" | "offline";
+    meetingLink?: string;
+  }) => void;
 };
 
 /**
@@ -45,6 +50,7 @@ export default function PopupFirstCutDesign({
   const [meetingLink, setMeetingLink] = useState("");
   const [completionPercent, setCompletionPercent] = useState(0);
   const isMeetingLinkEmpty = meetingLink.trim().length === 0;
+  const isMeetingScheduleIncomplete = !meetingDate || !meetingTime || isMeetingLinkEmpty;
 
   return (
     <div className="w-full">
@@ -302,7 +308,7 @@ export default function PopupFirstCutDesign({
                 meetingLink: meetingLink.trim(),
               })
             }
-            disabled={isMeetingLinkEmpty}
+            disabled={isMeetingScheduleIncomplete}
             className="bg-blue-500 text-white px-4 h-9 rounded-md flex items-center gap-2 font-bold disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Send Invite
@@ -323,8 +329,15 @@ export default function PopupFirstCutDesign({
           </button>
           <button
             type="button"
-            onClick={() => onCompleteAndProceed?.()}
-            disabled={completionPercent < 100 || isMeetingLinkEmpty}
+            onClick={() =>
+              onCompleteAndProceed?.({
+                meetingDate,
+                meetingTime,
+                meetingMode,
+                meetingLink: meetingLink.trim(),
+              })
+            }
+            disabled={completionPercent < 100 || isMeetingScheduleIncomplete}
             className="bg-green-600 text-white px-4 h-9 rounded-md flex items-center gap-2 font-bold disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Mark 100% complete & proceed
