@@ -28,7 +28,7 @@ import {
     GenericMeetingChecklistPopup,
 } from './components';
 import { checklistDefinitions, getChecklistKeyForTask } from './components/Checklists/checklistRegistry';
-import { buildAuthHeaders, getApiBase } from '@/app/lib/apiBase';
+import { getApiBase } from '@/app/lib/apiBase';
 
 const API = getApiBase();
 
@@ -156,9 +156,7 @@ export default function ProjectDetailPage() {
             return;
         }
         setProjectLoaded(false);
-        fetch(`${API}/api/leads/${projectId}`, {
-            headers: buildAuthHeaders(sessionId),
-        })
+        fetch(`${API}/api/leads/${projectId}`)
             .then(async (res) => {
                 const text = await res.text();
                 if (!res.ok) throw new Error('Not ok');
@@ -174,16 +172,14 @@ export default function ProjectDetailPage() {
                 setProject(fallback);
             })
             .finally(() => setProjectLoaded(true));
-    }, [projectId, sessionId]);
+    }, [projectId]);
 
     // When Group Description popup opens, auto-fetch latest profile (designer phone) and lead (client contactNo)
     useEffect(() => {
         const isGroupDesc = popupContext?.milestoneIndex === 0 && popupContext?.taskName === 'Group Description';
         if (!isGroupDesc || projectId == null) return;
         refreshUser();
-        fetch(`${API}/api/leads/${projectId}`, {
-            headers: buildAuthHeaders(sessionId),
-        })
+        fetch(`${API}/api/leads/${projectId}`)
             .then(async (res) => {
                 const text = await res.text();
                 if (!res.ok || !text) return null;
@@ -191,7 +187,7 @@ export default function ProjectDetailPage() {
             })
             .then((data: LeadshipTypes | null) => { if (data) setProject(data); })
             .catch(() => {});
-    }, [popupContext?.milestoneIndex, popupContext?.taskName, projectId, refreshUser, sessionId]);
+    }, [popupContext?.milestoneIndex, popupContext?.taskName, projectId, refreshUser]);
 
     // Load history from server. Only apply response if still for same lead; merge with current state so we never drop recent events.
     const loadHistory = useCallback(() => {
@@ -608,9 +604,10 @@ export default function ProjectDetailPage() {
         // Persist to server only; do not refetch here so we never overwrite with a stale response and lose entries
         if (projectId != null) {
             const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+            if (sessionId) headers['Authorization'] = `Bearer ${sessionId}`;
             fetch(`${API}/api/leads/${projectId}/history`, {
                 method: 'POST',
-                headers: buildAuthHeaders(sessionId, headers),
+                headers,
                 credentials: 'include',
                 body: JSON.stringify(full),
             }).catch((err) => console.error('Failed to persist history event:', err));
@@ -648,7 +645,7 @@ export default function ProjectDetailPage() {
         if (projectId != null) {
             fetch(`${API}/api/leads/${projectId}/complete-task`, {
                 method: 'POST',
-                headers: buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' }),
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ milestoneIndex, taskName, meta: options?.meta }),
             }).catch(() => {});
         }
@@ -693,7 +690,7 @@ export default function ProjectDetailPage() {
                     dqc2ApprovalTasks.forEach((t: string) => {
                         fetch(`${API}/api/leads/${projectId}/complete-task`, {
                             method: 'POST',
-                            headers: buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' }),
+                            headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ milestoneIndex: 4, taskName: t }),
                         }).catch(() => {});
                         markTaskComplete(4, t);
@@ -704,7 +701,7 @@ export default function ProjectDetailPage() {
                     // DQC1: mark only the approval task; other tasks should already be completed manually.
                     fetch(`${API}/api/leads/${projectId}/complete-task`, {
                         method: 'POST',
-                        headers: buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' }),
+                        headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             milestoneIndex,
                             taskName,
@@ -716,7 +713,7 @@ export default function ProjectDetailPage() {
             if (projectId != null) {
                 fetch(`${API}/api/leads/${projectId}/dqc-review`, {
                     method: 'POST',
-                    headers: buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' }),
+                    headers: { 'Content-Type': 'application/json', ...(sessionId ? { Authorization: `Bearer ${sessionId}` } : {}) },
                     body: JSON.stringify({
                         verdict: dqc1Verdict,
                         remarks: dqc1Remarks.map((r) => ({
@@ -1179,14 +1176,14 @@ export default function ProjectDetailPage() {
                                     );
                                 }
                             }}
-                            onCompleteAndProceed={(meta) => {
+                            onCompleteAndProceed={() => {
                                 recordTaskComplete(
                                     1,
                                     'First cut design + quotation discussion meeting request',
                                     {
                                         description:
                                             'First cut design completed (100%) and meeting request submitted.',
-                                        meta: meta ?? {},
+                                        meta: {},
                                     },
                                 );
                                 setDesignUploadFiles([]);
@@ -1391,23 +1388,9 @@ export default function ProjectDetailPage() {
                             onDesignDrop={onDesignDrop}
                             onDesignDragOver={onDesignDragOver}
                             removeDesignFile={removeDesignFile}
-                            onSubmit={async (meta) => {
+                            onSubmit={async () => {
                                 if (!projectId) return;
                                 try {
-                                    await fetch(`${API}/api/leads/${projectId}/schedule-meeting-invite`, {
-                                        method: 'POST',
-                                        headers: {
-                                            'Content-Type': 'application/json',
-                                            Authorization: `Bearer ${sessionId}`,
-                                        },
-                                        body: JSON.stringify({
-                                            meetingType: 'dqc2_material_selection',
-                                            meetingDate: meta?.meetingDate,
-                                            meetingTime: meta?.meetingTime,
-                                            meetingMode: meta?.meetingMode,
-                                            meetingLink: meta?.meetingLink,
-                                        }),
-                                    });
                                     if (designUploadFiles.length > 0 && sessionId) {
                                         const fd = new FormData();
                                         designUploadFiles.forEach((f) =>
@@ -1600,23 +1583,9 @@ export default function ProjectDetailPage() {
                             onDesignDrop={onDesignDrop}
                             onDesignDragOver={onDesignDragOver}
                             removeDesignFile={removeDesignFile}
-                            onSubmit={async (meta) => {
+                            onSubmit={async () => {
                                 if (!projectId) return;
                                 try {
-                                    await fetch(`${API}/api/leads/${projectId}/schedule-meeting-invite`, {
-                                        method: 'POST',
-                                        headers: {
-                                            'Content-Type': 'application/json',
-                                            Authorization: `Bearer ${sessionId}`,
-                                        },
-                                        body: JSON.stringify({
-                                            meetingType: 'design_signoff',
-                                            meetingDate: meta?.meetingDate,
-                                            meetingTime: meta?.meetingTime,
-                                            meetingMode: meta?.meetingMode,
-                                            meetingLink: meta?.meetingLink,
-                                        }),
-                                    });
                                     if (designUploadFiles.length > 0 && sessionId) {
                                         const fd = new FormData();
                                         designUploadFiles.forEach((f) =>
@@ -1784,9 +1753,7 @@ export default function ProjectDetailPage() {
                         <PopupPlaceholder
                             message="POC mail & Timeline submission"
                             onMarkComplete={() => {
-                                // Use popupContext.taskName to preserve any exact spacing/punctuation
-                                // so the milestone "all tasks completed" logic matches.
-                                recordTaskComplete(6, popupContext.taskName);
+                                recordTaskComplete(6, 'POC mail & Timeline submission');
                                 closePopup();
                             }}
                         />
