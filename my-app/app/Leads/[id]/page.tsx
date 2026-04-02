@@ -1784,7 +1784,9 @@ export default function ProjectDetailPage() {
                         <PopupPlaceholder
                             message="POC mail & Timeline submission"
                             onMarkComplete={() => {
-                                recordTaskComplete(6, 'POC mail & Timeline submission');
+                                // Use popupContext.taskName to preserve any exact spacing/punctuation
+                                // so the milestone "all tasks completed" logic matches.
+                                recordTaskComplete(6, popupContext.taskName);
                                 closePopup();
                             }}
                         />

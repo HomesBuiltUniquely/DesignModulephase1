@@ -4647,6 +4647,7 @@ app.get("/api/leads/:leadId/uploads/:uploadId/download", async (req: Request, re
     const user = await getUserFromSession(req);
     const role = (user?.role ?? "").toLowerCase();
     const isMmt = role === "mmt_manager" || role === "mmt_executive";
+    const isFinance = role === "finance" || role === "admin";
     const [rows] = await pool.query(
       `SELECT stored_path as storedPath, original_name as originalName, status, s3_url as s3Url
        FROM lead_uploads WHERE id = ? AND lead_id = ?`,
@@ -4654,7 +4655,8 @@ app.get("/api/leads/:leadId/uploads/:uploadId/download", async (req: Request, re
     );
     const row = (rows as any[])[0];
     if (!row) return res.status(404).json({ message: "Not found" });
-    if (!isMmt && row.status !== "approved")
+    // Finance users need access to payment screenshots even before they are marked approved.
+    if (!isMmt && !isFinance && row.status !== "approved")
       return res.status(403).json({ message: "Only approved uploads are available" });
     if (row.s3Url) {
       try {
@@ -4692,13 +4694,14 @@ app.get("/api/leads/:leadId/uploads/:uploadId/contents", async (req: Request, re
     const user = await getUserFromSession(req);
     const role = (user?.role ?? "").toLowerCase();
     const isMmt = role === "mmt_manager" || role === "mmt_executive";
+    const isFinance = role === "finance" || role === "admin";
     const [rows] = await pool.query(
       `SELECT stored_path as storedPath, original_name as originalName, size_bytes as sizeBytes, status FROM lead_uploads WHERE id = ? AND lead_id = ?`,
       [uploadId, leadId],
     );
     const row = (rows as any[])[0];
     if (!row || !fs.existsSync(row.storedPath)) return res.status(404).json({ message: "Not found" });
-    if (!isMmt && row.status !== "approved")
+    if (!isMmt && !isFinance && row.status !== "approved")
       return res.status(403).json({ message: "Only approved uploads are available" });
     try {
       const zip = new AdmZip(row.storedPath);
@@ -4730,13 +4733,14 @@ app.get("/api/leads/:leadId/uploads/:uploadId/file", async (req: Request, res: R
     const user = await getUserFromSession(req);
     const role = (user?.role ?? "").toLowerCase();
     const isMmt = role === "mmt_manager" || role === "mmt_executive";
+    const isFinance = role === "finance" || role === "admin";
     const [rows] = await pool.query(
       `SELECT stored_path as storedPath, original_name as originalName, status, s3_url as s3Url FROM lead_uploads WHERE id = ? AND lead_id = ?`,
       [uploadId, leadId],
     );
     const row = (rows as any[])[0];
     if (!row) return res.status(404).json({ message: "Not found" });
-    if (!isMmt && row.status !== "approved")
+    if (!isMmt && !isFinance && row.status !== "approved")
       return res.status(403).json({ message: "Only approved uploads are available" });
     const isSingleFile = filePath === row.originalName || filePath === path.basename(row.storedPath);
     if (row.s3Url && isSingleFile) {
