@@ -698,16 +698,22 @@ export default function ProjectDetailPage() {
                     // Force UI to show 40% PAYMENT as current milestone after DQC2 approval.
                     setCurrentMilestoneIndex(5);
                 } else {
-                    // DQC1: mark only the approval task; other tasks should already be completed manually.
-                    fetch(`${API}/api/leads/${projectId}/complete-task`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            milestoneIndex,
-                            taskName,
-                        }),
-                    }).catch(() => {});
-                    markTaskComplete(milestoneIndex, taskName);
+                    // DQC1 approval should move lead to next stage reliably.
+                    // Mark all DQC1 tasks complete when verdict is approved.
+                    const dqc1Tasks = [
+                        'First cut design + quotation discussion meeting request',
+                        'meeting completed',
+                        'DQC 1 submission - dwg + quotation',
+                        'DQC 1 approval',
+                    ];
+                    dqc1Tasks.forEach((t: string) => {
+                        fetch(`${API}/api/leads/${projectId}/complete-task`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ milestoneIndex: 1, taskName: t }),
+                        }).catch(() => {});
+                        markTaskComplete(1, t);
+                    });
                 }
             }
             if (projectId != null) {

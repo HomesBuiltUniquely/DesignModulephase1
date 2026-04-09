@@ -31,6 +31,8 @@ function formatBody(data: unknown): string {
 export default function PopupProlance({ open, onClose, sessionId, leadPid }: Props) {
   const [plToken, setPlToken] = useState('');
   const [originSession, setOriginSession] = useState('');
+  const [tokenUsername, setTokenUsername] = useState('');
+  const [tokenPassword, setTokenPassword] = useState('');
   const [loginID, setLoginID] = useState('');
   const [password, setPassword] = useState('');
   const [partnerId, setPartnerId] = useState('');
@@ -137,7 +139,7 @@ export default function PopupProlance({ open, onClose, sessionId, leadPid }: Pro
                   const res = await fetch(`${API}/api/prolance/token`, {
                     method: 'POST',
                     headers: appAuthHeaders(),
-                    body: JSON.stringify({}),
+                    body: JSON.stringify({ username: tokenUsername.trim(), password: tokenPassword }),
                   });
                   const { data } = await parseJson(res);
                   const tok = pickAccessToken(data);
@@ -152,6 +154,28 @@ export default function PopupProlance({ open, onClose, sessionId, leadPid }: Pro
           {configOk === false && (
             <p className="text-xs text-amber-200">Server reports PROLANCE_BASE_URL is not set. Ask ops to configure it.</p>
           )}
+
+          <div className="grid grid-cols-1 gap-2 border border-purple-800/40 rounded-lg p-3">
+            <p className="text-xs font-semibold text-purple-200">Token (grant_type=password)</p>
+            <input
+              placeholder="API username"
+              value={tokenUsername}
+              onChange={(e) => setTokenUsername(e.target.value)}
+              className="rounded border border-purple-700/80 bg-slate-950 px-2 py-1.5 text-xs"
+              autoComplete="off"
+            />
+            <input
+              placeholder="API password"
+              type="password"
+              value={tokenPassword}
+              onChange={(e) => setTokenPassword(e.target.value)}
+              className="rounded border border-purple-700/80 bg-slate-950 px-2 py-1.5 text-xs"
+              autoComplete="off"
+            />
+            <p className="text-[11px] text-purple-300">
+              Your Prolance API Key (OriginAPIKey) is handled server-side; you don’t need to paste it here.
+            </p>
+          </div>
 
           <label className="block">
             <span className="text-xs text-purple-300">X-Prolance-Token (paste or use Get API token)</span>

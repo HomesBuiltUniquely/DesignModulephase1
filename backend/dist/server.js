@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -7,48 +40,84 @@ const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const promise_1 = __importDefault(require("mysql2/promise"));
 const client_s3_1 = require("@aws-sdk/client-s3");
+const s3_request_presigner_1 = require("@aws-sdk/s3-request-presigner");
 const multer_1 = __importDefault(require("multer"));
 const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
+const promises_1 = require("node:stream/promises");
 const adm_zip_1 = __importDefault(require("adm-zip"));
-function loadEnvFile() {
-    const envPath = node_path_1.default.join(__dirname, ".env");
-    if (!node_fs_1.default.existsSync(envPath))
-        return;
-    const raw = node_fs_1.default.readFileSync(envPath, "utf8");
-    raw.split(/\r?\n/).forEach((line) => {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith("#"))
-            return;
-        const idx = trimmed.indexOf("=");
-        if (idx === -1)
-            return;
-        const key = trimmed.slice(0, idx).trim();
-        let value = trimmed.slice(idx + 1).trim();
-        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-            value = value.slice(1, -1);
-        }
-        if (!(key in process.env)) {
-            process.env[key] = value;
-        }
-    });
-}
-loadEnvFile();
+const XLSX = __importStar(require("xlsx"));
+const customerNumberApi_1 = require("./routes/customerNumberApi");
+const prolanceApi_1 = require("./routes/prolanceApi");
 const app = (0, express_1.default)();
-const PORT = 3001;
-// Allow frontend origin(s); required for browser requests from design.hubinterior.com
-const allowedOrigins = [
-    "https://design.hubinterior.com",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-];
+const PORT = Number(process.env.PORT || 3001);
+/** Browsers send Origin on cross-origin requests; preflight must allow the exact origin (incl. www). */
+function buildAllowedOrigins() {
+    const fromEnv = (process.env.ALLOWED_ORIGINS || process.env.CORS_ORIGINS || "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+    const defaults = [
+        "https://design.hubinterior.com",
+        "https://www.design.hubinterior.com",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ];
+    const set = new Set([...defaults, ...fromEnv]);
+    const fe = (process.env.FRONTEND_BASE_URL || "").replace(/\/$/, "");
+    if (fe.startsWith("http://") || fe.startsWith("https://"))
+        set.add(fe);
+    return Array.from(set);
+}
+let allowedOrigins = buildAllowedOrigins();
+function reflectCorsHeaders(req, res) {
+    const origin = req.headers.origin;
+    if (typeof origin === "string" && allowedOrigins.includes(origin)) {
+        res.setHeader("Access-Control-Allow-Origin", origin);
+        res.setHeader("Access-Control-Allow-Credentials", "true");
+        res.append("Vary", "Origin");
+    }
+}
+/**
+ * Explicit OPTIONS handler *before* cors(): multipart + Authorization triggers a preflight.
+ * If anything in the stack mishandles OPTIONS, the browser shows a generic CORS error on the real POST.
+ */
+app.use((req, res, next) => {
+    if (req.method !== "OPTIONS")
+        return next();
+    const origin = req.headers.origin;
+    if (typeof origin !== "string" || !allowedOrigins.includes(origin))
+        return next();
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Access-Control-Allow-Methods", "GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Prolance-Token, X-Prolance-Origin-Session, X-Prolance-Customer");
+    res.setHeader("Access-Control-Max-Age", "86400");
+    res.setHeader("Vary", "Origin");
+    return res.status(204).end();
+});
 app.use((0, cors_1.default)({
     origin: (origin, cb) => {
-        if (!origin || allowedOrigins.includes(origin))
+        if (!origin)
             return cb(null, true);
+        if (allowedOrigins.includes(origin))
+            return cb(null, true);
+        console.warn("CORS: blocked origin:", origin, "| allowed count:", allowedOrigins.length);
         return cb(null, false);
     },
     credentials: true,
+    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+        "Content-Type",
+        "Authorization",
+        "X-Requested-With",
+        "Accept",
+        "Origin",
+        "X-Prolance-Token",
+        "X-Prolance-Origin-Session",
+        "X-Prolance-Customer",
+    ],
+    optionsSuccessStatus: 204,
 }));
 // Allow large DQC submissions and uploads (drawing + quotation can be big)
 app.use(express_1.default.json({ limit: "200mb" }));
@@ -61,11 +130,13 @@ app.get("/api/health", (_req, res) => {
 const pool = promise_1.default.createPool({
     host: process.env.DB_HOST || "localhost",
     user: process.env.DB_USER || "root",
-    password: process.env.DB_PASSWORD || "root",
+    password: process.env.DB_PASSWORD || "root@root",
     database: process.env.DB_NAME || "DesignMod",
     port: Number(process.env.DB_PORT || 3306),
     connectionLimit: 10,
 });
+// Standalone route: /api/customer/:customerNumber (see routes/customerNumberApi.ts)
+(0, customerNumberApi_1.registerCustomerNumberRoutes)(app, pool);
 // ----- S3 setup for profile images -----
 const S3_REGION = process.env.AWS_REGION || "ap-south-1";
 const S3_BUCKET = process.env.S3_BUCKET_NAME || "your-profile-images-bucket";
@@ -88,16 +159,6 @@ if (!node_fs_1.default.existsSync(PROFILE_IMAGES_DIR))
     node_fs_1.default.mkdirSync(PROFILE_IMAGES_DIR, { recursive: true });
 const API_BASE = process.env.API_BASE_URL || "http://localhost:3001";
 const FRONTEND_BASE = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CALENDAR_CLIENT_ID || "";
-const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CALENDAR_CLIENT_SECRET || "";
-const GOOGLE_REDIRECT_URI = process.env.GOOGLE_CALENDAR_REDIRECT_URI || `${API_BASE}/api/google-calendar/oauth/callback`;
-const GOOGLE_SCOPE = process.env.GOOGLE_CALENDAR_SCOPE ||
-    "https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/userinfo.email openid profile";
-const GOOGLE_AUTH_URI = "https://accounts.google.com/o/oauth2/v2/auth";
-const GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token";
-const GOOGLE_EVENTS_URI = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
-const GOOGLE_USERINFO_URI = "https://www.googleapis.com/oauth2/v2/userinfo";
-const GOOGLE_TIME_ZONE = "Asia/Kolkata";
 const upload = (0, multer_1.default)({
     storage: multer_1.default.diskStorage({
         destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
@@ -145,6 +206,14 @@ async function uploadProfileImage(userId, dataUrl) {
     return `${API_BASE}/api/profile-images/${safeName}`;
 }
 /** Upload a lead file to S3; returns public URL or null if S3 not configured. */
+/** Stream S3 GetObject body to Express response (avoids loading large PDFs into one Buffer). */
+async function pipeS3BodyToResponse(res, body) {
+    const stream = body;
+    if (!stream || typeof stream.pipe !== "function") {
+        throw new Error("S3 object has no readable body");
+    }
+    await (0, promises_1.pipeline)(stream, res);
+}
 async function uploadLeadFileToS3(leadId, filePath, originalName, mimeType) {
     if (!process.env.AWS_ACCESS_KEY_ID)
         return null;
@@ -164,6 +233,18 @@ async function uploadLeadFileToS3(leadId, filePath, originalName, mimeType) {
         console.error("uploadLeadFileToS3 error", err);
         return null;
     }
+}
+/** Public URL for a key (same pattern as uploadLeadFileToS3). */
+function buildS3PublicUrl(key) {
+    return `https://${S3_BUCKET}.s3.${S3_REGION}.amazonaws.com/${key}`;
+}
+/** Copy object from S3 to local disk (mirrors multer so zip/list/download paths keep working). */
+async function streamS3ObjectToDisk(key, destPath) {
+    const obj = await s3.send(new client_s3_1.GetObjectCommand({ Bucket: S3_BUCKET, Key: key }));
+    const body = obj.Body;
+    if (!body || typeof body.pipe !== "function")
+        throw new Error("S3 object has no body");
+    await (0, promises_1.pipeline)(body, node_fs_1.default.createWriteStream(destPath));
 }
 async function triggerCustomerEmailForLead(leadId, emailRoutePath) {
     try {
@@ -231,36 +312,11 @@ async function initDb() {
         catch {
             // ignore
         }
-        // Add mmt_manager_id for mapping MMT executives to their manager
-        try {
-            const [mmtMgrCol] = await conn.query("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'mmt_manager_id'");
-            if (mmtMgrCol.length === 0) {
-                await conn.query("ALTER TABLE users ADD COLUMN mmt_manager_id INT NULL");
-            }
-        }
-        catch {
-            // ignore
-        }
         await conn.query(`
       CREATE TABLE IF NOT EXISTS sessions (
         id VARCHAR(255) PRIMARY KEY,
         user_id INT NOT NULL,
         created_at DATETIME NOT NULL,
-        FOREIGN KEY (user_id) REFERENCES users(id)
-      );
-    `);
-        await conn.query(`
-      CREATE TABLE IF NOT EXISTS google_calendar_connections (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        user_id INT NOT NULL UNIQUE,
-        google_email VARCHAR(255) NOT NULL,
-        access_token TEXT NOT NULL,
-        refresh_token TEXT NULL,
-        expires_at DATETIME NULL,
-        scope TEXT NULL,
-        active TINYINT(1) NOT NULL DEFAULT 1,
-        created_at DATETIME NOT NULL,
-        updated_at DATETIME NOT NULL,
         FOREIGN KEY (user_id) REFERENCES users(id)
       );
     `);
@@ -413,6 +469,15 @@ async function initDb() {
         UNIQUE KEY uniq_resolution (dqc_review_id, remark_index)
       );
     `);
+        await conn.query(`
+      CREATE TABLE IF NOT EXISTS customer_api_records (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        customer_number VARCHAR(100) NOT NULL,
+        payload JSON NOT NULL,
+        created_at DATETIME NOT NULL,
+        INDEX idx_customer_api_records_number (customer_number)
+      );
+    `);
         // seed admin
         const [rows] = await conn.query("SELECT id FROM users WHERE email = ?", [ADMIN_EMAIL]);
         if (rows.length === 0) {
@@ -473,289 +538,31 @@ async function getUserFromSession(req) {
         phone: user.phone || "",
     };
 }
-function normalizeEmail(value) {
-    return (value || "").trim().toLowerCase();
+function normalizeHeaderKey(value) {
+    return String(value ?? "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "");
 }
-function isGoogleCalendarConfigured() {
-    return Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET && GOOGLE_REDIRECT_URI);
+function canImportLeads(role) {
+    const r = (role || "").toLowerCase();
+    return r === "admin" || r === "territorial_design_manager" || r === "deputy_general_manager" || r === "design_manager";
 }
-function buildGoogleCalendarRedirect(status, message) {
-    const url = new URL("/google-calendar", FRONTEND_BASE);
-    url.searchParams.set("gc_status", status);
-    if (message)
-        url.searchParams.set("gc_message", message);
-    return url.toString();
+function canAssignLeads(role) {
+    const r = (role || "").toLowerCase();
+    return r === "admin" || r === "territorial_design_manager" || r === "deputy_general_manager" || r === "design_manager";
 }
-function buildGoogleCalendarAuthUrl(userId) {
-    if (!isGoogleCalendarConfigured())
-        return null;
-    const url = new URL(GOOGLE_AUTH_URI);
-    url.searchParams.set("client_id", GOOGLE_CLIENT_ID);
-    url.searchParams.set("redirect_uri", GOOGLE_REDIRECT_URI);
-    url.searchParams.set("response_type", "code");
-    url.searchParams.set("access_type", "offline");
-    url.searchParams.set("prompt", "consent");
-    url.searchParams.set("scope", GOOGLE_SCOPE);
-    url.searchParams.set("state", `${userId}:${Date.now()}`);
-    return url.toString();
-}
-function parseGoogleState(state) {
-    const raw = (state || "").trim();
-    const userId = Number(raw.split(":")[0]);
-    return Number.isFinite(userId) ? userId : null;
-}
-function formatGoogleDateTime(meetingDate, meetingTime) {
-    if (!meetingDate || !meetingTime)
-        return null;
-    const time = /^\d{2}:\d{2}$/.test(meetingTime) ? `${meetingTime}:00` : meetingTime;
-    const iso = `${meetingDate}T${time}+05:30`;
-    const parsed = new Date(iso);
-    if (Number.isNaN(parsed.getTime()))
-        return null;
-    return parsed.toISOString();
-}
-function addHoursToIso(iso, hours) {
-    const parsed = new Date(iso);
-    parsed.setHours(parsed.getHours() + hours);
-    return parsed.toISOString();
-}
-function distinctEmails(values) {
-    const seen = new Set();
-    const output = [];
-    for (const value of values) {
-        const email = normalizeEmail(value);
-        if (!email || seen.has(email))
-            continue;
-        seen.add(email);
-        output.push(email);
+const excelImportPreviewStore = new Map();
+const EXCEL_PREVIEW_TTL_MS = 30 * 60 * 1000;
+function saveExcelPreview(rows, headers) {
+    const token = `preview-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    excelImportPreviewStore.set(token, { createdAt: Date.now(), rows, headers });
+    // Best-effort cleanup of expired previews.
+    for (const [k, v] of excelImportPreviewStore.entries()) {
+        if (Date.now() - v.createdAt > EXCEL_PREVIEW_TTL_MS)
+            excelImportPreviewStore.delete(k);
     }
-    return output;
-}
-async function getUserById(userId) {
-    const [rows] = await pool.query("SELECT id, email, name, role FROM users WHERE id = ? LIMIT 1", [userId]);
-    return (rows[0] || null);
-}
-async function getGoogleConnectionByUserId(userId) {
-    const [rows] = await pool.query(`SELECT id, user_id, google_email, access_token, refresh_token, expires_at, scope, active
-     FROM google_calendar_connections
-     WHERE user_id = ? AND active = 1
-     LIMIT 1`, [userId]);
-    return (rows[0] || null);
-}
-async function getCalendarVisibleUsers(currentUser) {
-    const role = (currentUser.role || "").toLowerCase();
-    if (role === "admin" || role === "territorial_design_manager") {
-        const [rows] = await pool.query(`SELECT DISTINCT u.id, u.email, u.name, u.role
-       FROM users u
-       INNER JOIN google_calendar_connections gcc ON gcc.user_id = u.id
-       WHERE gcc.active = 1
-       ORDER BY u.name ASC`);
-        return rows;
-    }
-    if (role === "design_manager") {
-        const [rows] = await pool.query(`SELECT DISTINCT u.id, u.email, u.name, u.role
-       FROM users u
-       INNER JOIN google_calendar_connections gcc ON gcc.user_id = u.id
-       WHERE gcc.active = 1
-         AND (u.id = ? OR (u.role = 'designer' AND u.design_manager_id = ?))
-       ORDER BY u.name ASC`, [currentUser.id, currentUser.id]);
-        return rows;
-    }
-    if (role === "mmt_manager") {
-        const [rows] = await pool.query(`SELECT DISTINCT u.id, u.email, u.name, u.role
-       FROM users u
-       INNER JOIN google_calendar_connections gcc ON gcc.user_id = u.id
-       WHERE gcc.active = 1
-         AND (u.id = ? OR (u.role = 'mmt_executive' AND u.mmt_manager_id = ?))
-       ORDER BY u.name ASC`, [currentUser.id, currentUser.id]);
-        return rows;
-    }
-    return [currentUser];
-}
-async function exchangeGoogleCodeForTokens(code) {
-    const body = new URLSearchParams();
-    body.set("code", code);
-    body.set("client_id", GOOGLE_CLIENT_ID);
-    body.set("client_secret", GOOGLE_CLIENT_SECRET);
-    body.set("redirect_uri", GOOGLE_REDIRECT_URI);
-    body.set("grant_type", "authorization_code");
-    const response = await fetch(GOOGLE_TOKEN_URI, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: body.toString(),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-        throw new Error(data?.error_description || data?.error || "Failed to exchange Google authorization code");
-    }
-    return data;
-}
-async function refreshGoogleAccessToken(connection) {
-    if (!connection.refresh_token) {
-        throw new Error("Google refresh token missing. Please reconnect Google Calendar.");
-    }
-    const body = new URLSearchParams();
-    body.set("client_id", GOOGLE_CLIENT_ID);
-    body.set("client_secret", GOOGLE_CLIENT_SECRET);
-    body.set("refresh_token", connection.refresh_token);
-    body.set("grant_type", "refresh_token");
-    const response = await fetch(GOOGLE_TOKEN_URI, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: body.toString(),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || !data?.access_token) {
-        throw new Error(data?.error_description || data?.error || "Failed to refresh Google access token");
-    }
-    const expiresAt = data.expires_in && Number.isFinite(Number(data.expires_in))
-        ? new Date(Date.now() + Number(data.expires_in) * 1000)
-        : null;
-    await pool.query(`UPDATE google_calendar_connections
-     SET access_token = ?, expires_at = ?, scope = COALESCE(?, scope), updated_at = ?
-     WHERE id = ?`, [data.access_token, expiresAt, data.scope || null, new Date(), connection.id]);
-    return {
-        ...connection,
-        access_token: data.access_token,
-        expires_at: expiresAt,
-        scope: data.scope || connection.scope,
-    };
-}
-async function ensureValidGoogleConnection(userId) {
-    const connection = await getGoogleConnectionByUserId(userId);
-    if (!connection)
-        return null;
-    const expiresAt = connection.expires_at ? new Date(connection.expires_at) : null;
-    const isExpired = expiresAt ? expiresAt.getTime() <= Date.now() + 60000 : false;
-    if (!isExpired)
-        return connection;
-    return refreshGoogleAccessToken(connection);
-}
-async function fetchGoogleUserEmail(accessToken) {
-    const response = await fetch(GOOGLE_USERINFO_URI, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-        throw new Error(data?.error?.message || "Failed to read Google account email");
-    }
-    return normalizeEmail(data?.email || "");
-}
-async function upsertGoogleConnection(args) {
-    const now = new Date();
-    const expiresAt = args.expiresIn && Number.isFinite(Number(args.expiresIn))
-        ? new Date(Date.now() + Number(args.expiresIn) * 1000)
-        : null;
-    await pool.query(`INSERT INTO google_calendar_connections
-      (user_id, google_email, access_token, refresh_token, expires_at, scope, active, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
-     ON DUPLICATE KEY UPDATE
-      google_email = VALUES(google_email),
-      access_token = VALUES(access_token),
-      refresh_token = COALESCE(VALUES(refresh_token), refresh_token),
-      expires_at = VALUES(expires_at),
-      scope = VALUES(scope),
-      active = 1,
-      updated_at = VALUES(updated_at)`, [
-        args.userId,
-        args.googleEmail,
-        args.accessToken,
-        args.refreshToken || null,
-        expiresAt,
-        args.scope || null,
-        now,
-        now,
-    ]);
-}
-async function fetchGoogleEventsForConnection(connection, owner, timeMin, timeMax) {
-    const url = new URL(GOOGLE_EVENTS_URI);
-    url.searchParams.set("singleEvents", "true");
-    url.searchParams.set("orderBy", "startTime");
-    url.searchParams.set("maxResults", "250");
-    if (timeMin)
-        url.searchParams.set("timeMin", new Date(timeMin).toISOString());
-    if (timeMax)
-        url.searchParams.set("timeMax", new Date(timeMax).toISOString());
-    const response = await fetch(url.toString(), {
-        headers: { Authorization: `Bearer ${connection.access_token}` },
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-        throw new Error(data?.error?.message || "Failed to fetch Google Calendar events");
-    }
-    return (data?.items || []).map((event) => ({
-        id: event.id,
-        summary: event.summary || "Untitled event",
-        description: event.description || "",
-        htmlLink: event.htmlLink || "",
-        status: event.status || "confirmed",
-        location: event.location || "",
-        start: event.start?.dateTime || event.start?.date || null,
-        end: event.end?.dateTime || event.end?.date || null,
-        attendees: Array.isArray(event.attendees)
-            ? event.attendees.map((attendee) => ({
-                email: attendee.email || "",
-                displayName: attendee.displayName || "",
-                responseStatus: attendee.responseStatus || "",
-            }))
-            : [],
-        ownerUserId: owner.id,
-        ownerName: owner.name,
-        ownerEmail: owner.email,
-        ownerRole: owner.role,
-        connectedGoogleEmail: connection.google_email,
-    }));
-}
-async function createGoogleCalendarEventForUser(args) {
-    const connection = await ensureValidGoogleConnection(args.userId);
-    if (!connection)
-        return null;
-    const response = await fetch(`${GOOGLE_EVENTS_URI}?sendUpdates=all`, {
-        method: "POST",
-        headers: {
-            Authorization: `Bearer ${connection.access_token}`,
-            "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-            summary: args.summary,
-            description: args.description || "",
-            start: { dateTime: args.startDateTimeIso, timeZone: GOOGLE_TIME_ZONE },
-            end: { dateTime: args.endDateTimeIso, timeZone: GOOGLE_TIME_ZONE },
-            attendees: (args.attendees || []).map((email) => ({ email })),
-        }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-        throw new Error(data?.error?.message || "Failed to create Google Calendar event");
-    }
-    return data;
-}
-async function createGoogleCalendarEventForFirstAvailableUser(args) {
-    let lastError = null;
-    for (const rawUserId of args.userIds) {
-        const userId = Number(rawUserId);
-        if (!userId)
-            continue;
-        try {
-            const event = await createGoogleCalendarEventForUser({
-                userId,
-                summary: args.summary,
-                description: args.description,
-                startDateTimeIso: args.startDateTimeIso,
-                endDateTimeIso: args.endDateTimeIso,
-                attendees: args.attendees,
-            });
-            if (event) {
-                return { ...event, ownerUserId: userId };
-            }
-        }
-        catch (err) {
-            lastError = err;
-        }
-    }
-    if (lastError)
-        throw lastError;
-    return null;
+    return token;
 }
 async function addLeadHistoryEvent(leadId, event) {
     await pool.query("INSERT INTO lead_history (lead_id, event, created_at) VALUES (?, ?, ?)", [leadId, JSON.stringify(event), new Date()]);
@@ -834,163 +641,6 @@ app.get("/api/auth/me", async (req, res) => {
     catch (err) {
         console.error("me error", err);
         return res.status(500).json({ message: "Failed to load user" });
-    }
-});
-app.get("/api/google-calendar/connect-url", async (req, res) => {
-    try {
-        const user = await getUserFromSession(req);
-        if (!user)
-            return res.status(401).json({ message: "Unauthorized" });
-        if (!isGoogleCalendarConfigured()) {
-            return res.status(400).json({ message: "Google Calendar is not configured on the backend." });
-        }
-        const authUrl = buildGoogleCalendarAuthUrl(user.id);
-        if (!authUrl) {
-            return res.status(400).json({ message: "Failed to generate Google connect URL." });
-        }
-        return res.json({ authUrl });
-    }
-    catch (err) {
-        console.error("google-calendar connect-url error", err);
-        return res.status(500).json({ message: "Failed to generate Google connect URL" });
-    }
-});
-app.get("/api/google-calendar/oauth/callback", async (req, res) => {
-    const code = String(req.query.code || "");
-    const error = String(req.query.error || "");
-    const state = String(req.query.state || "");
-    if (error)
-        return res.redirect(buildGoogleCalendarRedirect("error", error));
-    try {
-        if (!code) {
-            return res.redirect(buildGoogleCalendarRedirect("error", "Missing Google authorization code."));
-        }
-        const userId = parseGoogleState(state);
-        if (!userId) {
-            return res.redirect(buildGoogleCalendarRedirect("error", "Invalid Google connection state."));
-        }
-        const user = await getUserById(userId);
-        if (!user) {
-            return res.redirect(buildGoogleCalendarRedirect("error", "User not found for Google connection."));
-        }
-        const tokenData = await exchangeGoogleCodeForTokens(code);
-        const googleEmail = await fetchGoogleUserEmail(tokenData.access_token);
-        if (!googleEmail || normalizeEmail(user.email) !== googleEmail) {
-            return res.redirect(buildGoogleCalendarRedirect("error", `Please connect the same Google email as your module login (${user.email}).`));
-        }
-        await upsertGoogleConnection({
-            userId: user.id,
-            googleEmail,
-            accessToken: tokenData.access_token,
-            refreshToken: tokenData.refresh_token || null,
-            expiresIn: tokenData.expires_in,
-            scope: tokenData.scope || GOOGLE_SCOPE,
-        });
-        return res.redirect(buildGoogleCalendarRedirect("success", "Google Calendar connected successfully."));
-    }
-    catch (err) {
-        console.error("google-calendar callback error", err);
-        return res.redirect(buildGoogleCalendarRedirect("error", err?.message || "Failed to connect Google Calendar."));
-    }
-});
-app.get("/api/google-calendar/status", async (req, res) => {
-    try {
-        const user = await getUserFromSession(req);
-        if (!user)
-            return res.status(401).json({ message: "Unauthorized" });
-        const connection = await getGoogleConnectionByUserId(user.id);
-        return res.json({
-            configured: isGoogleCalendarConfigured(),
-            connected: Boolean(connection),
-            googleEmail: connection?.google_email || null,
-            expiresAt: connection?.expires_at || null,
-        });
-    }
-    catch (err) {
-        console.error("google-calendar status error", err);
-        return res.status(500).json({ message: "Failed to load Google Calendar status" });
-    }
-});
-app.post("/api/google-calendar/disconnect", async (req, res) => {
-    try {
-        const user = await getUserFromSession(req);
-        if (!user)
-            return res.status(401).json({ message: "Unauthorized" });
-        await pool.query("UPDATE google_calendar_connections SET active = 0, updated_at = ? WHERE user_id = ?", [new Date(), user.id]);
-        return res.json({ ok: true });
-    }
-    catch (err) {
-        console.error("google-calendar disconnect error", err);
-        return res.status(500).json({ message: "Failed to disconnect Google Calendar" });
-    }
-});
-app.get("/api/google-calendar/my-events", async (req, res) => {
-    try {
-        const user = await getUserFromSession(req);
-        if (!user)
-            return res.status(401).json({ message: "Unauthorized" });
-        const visibleUsers = await getCalendarVisibleUsers(user);
-        const allEvents = [];
-        for (const visibleUser of visibleUsers) {
-            try {
-                const connection = await ensureValidGoogleConnection(visibleUser.id);
-                if (!connection)
-                    continue;
-                const events = await fetchGoogleEventsForConnection(connection, { id: visibleUser.id, email: visibleUser.email, name: visibleUser.name, role: visibleUser.role }, req.query.timeMin || null, req.query.timeMax || null);
-                allEvents.push(...events);
-            }
-            catch (innerErr) {
-                console.error("google-calendar my-events user fetch error", {
-                    userId: visibleUser.id,
-                    error: innerErr,
-                });
-            }
-        }
-        allEvents.sort((a, b) => String(a.start || "").localeCompare(String(b.start || "")));
-        return res.json({ events: allEvents });
-    }
-    catch (err) {
-        console.error("google-calendar my-events error", err);
-        return res.status(500).json({ message: err?.message || "Failed to load Google Calendar events" });
-    }
-});
-app.get("/api/google-calendar/all-events", async (req, res) => {
-    try {
-        const user = await getUserFromSession(req);
-        if (!user)
-            return res.status(401).json({ message: "Unauthorized" });
-        const role = (user.role || "").toLowerCase();
-        if (role !== "admin" && role !== "territorial_design_manager") {
-            return res.status(403).json({ message: "Only admin or TDM can view all calendar events." });
-        }
-        const [rows] = await pool.query(`SELECT gcc.id, gcc.user_id, gcc.google_email, gcc.access_token, gcc.refresh_token, gcc.expires_at, gcc.scope, gcc.active,
-              u.email as user_email, u.name as user_name, u.role as user_role
-       FROM google_calendar_connections gcc
-       INNER JOIN users u ON u.id = gcc.user_id
-       WHERE gcc.active = 1
-       ORDER BY u.name ASC`);
-        const allEvents = [];
-        for (const row of rows) {
-            try {
-                const connection = await ensureValidGoogleConnection(row.user_id);
-                if (!connection)
-                    continue;
-                const events = await fetchGoogleEventsForConnection(connection, { id: row.user_id, email: row.user_email, name: row.user_name, role: row.user_role }, req.query.timeMin || null, req.query.timeMax || null);
-                allEvents.push(...events);
-            }
-            catch (innerErr) {
-                console.error("google-calendar all-events user fetch error", {
-                    userId: row.user_id,
-                    error: innerErr,
-                });
-            }
-        }
-        allEvents.sort((a, b) => String(a.start || "").localeCompare(String(b.start || "")));
-        return res.json({ events: allEvents });
-    }
-    catch (err) {
-        console.error("google-calendar all-events error", err);
-        return res.status(500).json({ message: "Failed to load admin Google Calendar events" });
     }
 });
 // List MMT executives for assignment (e.g. D1 Measurement popup)
@@ -1196,14 +846,7 @@ app.all("/api/auth/register-mmt-executive", async (req, res) => {
         }
         const displayName = (name || normalized).trim() || normalized;
         const phoneVal = phone != null ? String(phone).trim() : null;
-        const [result] = await pool.query("INSERT INTO users (email, password, name, role, phone, mmt_manager_id) VALUES (?, ?, ?, ?, ?, ?)", [
-            normalized,
-            String(password),
-            displayName,
-            "mmt_executive",
-            phoneVal || null,
-            role === "mmt_manager" ? manager.id : null,
-        ]);
+        const [result] = await pool.query("INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)", [normalized, String(password), displayName, "mmt_executive", phoneVal || null]);
         const insertId = result.insertId;
         return res.status(201).json({
             user: {
@@ -1222,16 +865,18 @@ app.all("/api/auth/register-mmt-executive", async (req, res) => {
         return res.status(500).json({ message: "Failed to register MMT Executive" });
     }
 });
-// Admin: create TDM (Territorial Design Manager)
+// Admin or Deputy General Manager: create TDM (Territorial Design Manager)
 app.all("/api/auth/create-tdm", async (req, res) => {
     if (req.method !== "POST")
         return res.status(405).json({ message: "Use POST" });
     try {
-        const admin = await getUserFromSession(req);
-        if (!admin)
+        const current = await getUserFromSession(req);
+        if (!current)
             return res.status(401).json({ message: "Unauthorized" });
-        if (admin.role !== "admin")
-            return res.status(403).json({ message: "Only admin can create TDM" });
+        const role = (current.role || "").toLowerCase();
+        if (role !== "admin" && role !== "deputy_general_manager") {
+            return res.status(403).json({ message: "Only admin or Deputy General Manager can create TDM" });
+        }
         const { email, password, name, phone } = req.body || {};
         const normalized = (email || "").trim().toLowerCase();
         if (!normalized.endsWith("@hubinterior.com"))
@@ -1249,6 +894,35 @@ app.all("/api/auth/create-tdm", async (req, res) => {
             return res.status(400).json({ message: "A user with this email already exists" });
         console.error("create-tdm error", err);
         return res.status(500).json({ message: "Failed to create Territorial Design Manager" });
+    }
+});
+// Admin: create Deputy General Manager (same access model as TDM)
+app.all("/api/auth/create-deputy-general-manager", async (req, res) => {
+    if (req.method !== "POST")
+        return res.status(405).json({ message: "Use POST" });
+    try {
+        const admin = await getUserFromSession(req);
+        if (!admin)
+            return res.status(401).json({ message: "Unauthorized" });
+        if (admin.role !== "admin")
+            return res.status(403).json({ message: "Only admin can create Deputy General Manager" });
+        const { email, password, name, phone } = req.body || {};
+        const normalized = (email || "").trim().toLowerCase();
+        if (!normalized.endsWith("@hubinterior.com"))
+            return res.status(400).json({ message: "Email must end with @hubinterior.com" });
+        if (!password || String(password).length < 1)
+            return res.status(400).json({ message: "Password is required" });
+        const displayName = (name || normalized).trim() || normalized;
+        const phoneVal = phone != null ? String(phone).trim() : null;
+        const [result] = await pool.query("INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)", [normalized, String(password), displayName, "deputy_general_manager", phoneVal || null]);
+        const insertId = result.insertId;
+        return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "deputy_general_manager" } });
+    }
+    catch (err) {
+        if (err?.code === "ER_DUP_ENTRY")
+            return res.status(400).json({ message: "A user with this email already exists" });
+        console.error("create-deputy-general-manager error", err);
+        return res.status(500).json({ message: "Failed to create Deputy General Manager" });
     }
 });
 // Admin: create Admin
@@ -1426,7 +1100,7 @@ app.all("/api/auth/register-dqe", async (req, res) => {
         return res.status(500).json({ message: "Failed to register DQE" });
     }
 });
-// TDM or Admin: register designer or design_manager
+// TDM / Deputy GM / Admin: register designer or design_manager
 app.all("/api/auth/register", async (req, res) => {
     if (req.method !== "POST")
         return res.status(405).json({ message: "Use POST" });
@@ -1435,8 +1109,8 @@ app.all("/api/auth/register", async (req, res) => {
         if (!current)
             return res.status(401).json({ message: "Unauthorized" });
         const role = (current.role || "").toLowerCase();
-        if (role !== "territorial_design_manager" && role !== "admin")
-            return res.status(403).json({ message: "Only TDM or Admin can register designers" });
+        if (role !== "territorial_design_manager" && role !== "deputy_general_manager" && role !== "admin")
+            return res.status(403).json({ message: "Only TDM, Deputy General Manager, or Admin can register designers" });
         const { email, password, name, phone, role: bodyRole, managerId } = req.body || {};
         const normalized = (email || "").trim().toLowerCase();
         if (!normalized.endsWith("@hubinterior.com"))
@@ -1536,6 +1210,181 @@ app.post("/api/sales-closure", async (req, res) => {
     catch (err) {
         console.error("Error saving lead", err);
         res.status(500).json({ message: "Failed to save sales closure" });
+    }
+});
+// Upload Excel and preview headers/rows for lead import.
+app.post("/api/leads/import-excel/preview", upload.single("file"), async (req, res) => {
+    try {
+        const user = await getUserFromSession(req);
+        if (!user)
+            return res.status(401).json({ message: "Unauthorized" });
+        if (!canImportLeads(user.role)) {
+            return res.status(403).json({ message: "Only admin, TDM, and design manager can import leads" });
+        }
+        const file = req.file;
+        if (!file)
+            return res.status(400).json({ message: "Excel file is required" });
+        const workbook = XLSX.readFile(file.path, { cellDates: false });
+        const firstSheetName = workbook.SheetNames[0];
+        if (!firstSheetName)
+            return res.status(400).json({ message: "Workbook has no sheets" });
+        const sheet = workbook.Sheets[firstSheetName];
+        const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+        if (!matrix.length)
+            return res.status(400).json({ message: "Sheet is empty" });
+        const headers = (matrix[0] || [])
+            .map((h) => String(h || "").trim())
+            .filter((h) => h.length > 0);
+        if (headers.length === 0)
+            return res.status(400).json({ message: "Header row is empty" });
+        const rows = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false });
+        const trimmedRows = rows.slice(0, 1000);
+        const token = saveExcelPreview(trimmedRows, headers);
+        // remove temporary upload
+        try {
+            node_fs_1.default.unlinkSync(file.path);
+        }
+        catch { }
+        return res.json({
+            token,
+            headers,
+            sampleRows: trimmedRows.slice(0, 5),
+            rowCount: trimmedRows.length,
+            targetFields: [
+                { key: "projectName", label: "Project Name", required: true },
+                { key: "customerName", label: "Customer Name", required: false },
+                { key: "clientEmail", label: "Customer Email", required: false },
+                { key: "contactNo", label: "Contact No", required: false },
+                { key: "projectStage", label: "Project Stage", required: false },
+            ],
+        });
+    }
+    catch (err) {
+        console.error("import-excel preview error", err);
+        return res.status(500).json({ message: "Failed to preview excel file" });
+    }
+});
+// Commit lead import from previously previewed Excel data using chosen header mapping.
+app.post("/api/leads/import-excel/commit", async (req, res) => {
+    try {
+        const user = await getUserFromSession(req);
+        if (!user)
+            return res.status(401).json({ message: "Unauthorized" });
+        if (!canImportLeads(user.role)) {
+            return res.status(403).json({ message: "Only admin, TDM, and design manager can import leads" });
+        }
+        const token = String(req.body?.token || "");
+        const mappings = (req.body?.mappings || {});
+        const defaultDesignerIdRaw = req.body?.defaultDesignerId;
+        const defaultDesignerId = defaultDesignerIdRaw === undefined || defaultDesignerIdRaw === null || defaultDesignerIdRaw === ""
+            ? null
+            : Number(defaultDesignerIdRaw);
+        if (!token)
+            return res.status(400).json({ message: "token is required" });
+        if (!mappings || typeof mappings !== "object")
+            return res.status(400).json({ message: "mappings are required" });
+        const cached = excelImportPreviewStore.get(token);
+        if (!cached)
+            return res.status(400).json({ message: "Preview token not found or expired" });
+        if (Date.now() - cached.createdAt > EXCEL_PREVIEW_TTL_MS) {
+            excelImportPreviewStore.delete(token);
+            return res.status(400).json({ message: "Preview token expired. Please upload the file again." });
+        }
+        const pickValue = (row, targetField) => {
+            const mappedHeader = String(mappings[targetField] || "").trim();
+            if (!mappedHeader)
+                return "";
+            if (row[mappedHeader] != null && String(row[mappedHeader]).trim() !== "") {
+                return String(row[mappedHeader]).trim();
+            }
+            const normalizedMapped = normalizeHeaderKey(mappedHeader);
+            const matchedKey = Object.keys(row).find((k) => normalizeHeaderKey(k) === normalizedMapped);
+            return matchedKey ? String(row[matchedKey] ?? "").trim() : "";
+        };
+        let defaultDesignerName = "";
+        if (defaultDesignerId !== null) {
+            if (!Number.isFinite(defaultDesignerId) || defaultDesignerId <= 0) {
+                return res.status(400).json({ message: "Invalid defaultDesignerId" });
+            }
+            const [designerRows] = await pool.query("SELECT id, name, role, design_manager_id FROM users WHERE id = ? AND role IN ('designer', 'design_manager') LIMIT 1", [defaultDesignerId]);
+            const designer = designerRows[0];
+            if (!designer)
+                return res.status(400).json({ message: "Invalid default designer selected" });
+            const role = (user.role || "").toLowerCase();
+            if (role === "design_manager") {
+                const allowed = (designer.role === "design_manager" && Number(designer.id) === Number(user.id)) ||
+                    (designer.role === "designer" && Number(designer.design_manager_id) === Number(user.id));
+                if (!allowed) {
+                    return res.status(403).json({ message: "You can assign only to yourself or your designers" });
+                }
+            }
+            defaultDesignerName = String(designer.name || "");
+        }
+        const rows = cached.rows;
+        let imported = 0;
+        const errors = [];
+        const now = new Date();
+        for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            const projectName = pickValue(row, "projectName");
+            if (!projectName)
+                continue;
+            const customerName = pickValue(row, "customerName");
+            const clientEmail = pickValue(row, "clientEmail") || null;
+            const contactNo = pickValue(row, "contactNo") || null;
+            const projectStage = pickValue(row, "projectStage") || "Active";
+            let assignedDesignerId = null;
+            let designerName = "";
+            if (defaultDesignerId !== null) {
+                assignedDesignerId = defaultDesignerId;
+                designerName = defaultDesignerName;
+            }
+            const payload = {
+                source: "excel_import",
+                importedBy: { id: user.id, name: user.name, role: user.role },
+                importedAt: now.toISOString(),
+                formData: {
+                    customer_name: customerName || projectName,
+                    designer_name: designerName || "",
+                    co_no: contactNo || "",
+                    email: clientEmail || "",
+                    status_of_project: projectStage,
+                },
+                rawRow: row,
+            };
+            try {
+                await pool.query(`INSERT INTO leads
+           (pid, project_name, project_stage, contact_no, client_email,
+            is_on_hold, resume_at, create_at, update_at, payload, assigned_designer_id)
+           VALUES (?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)`, [
+                    "",
+                    projectName,
+                    projectStage,
+                    contactNo,
+                    clientEmail,
+                    now,
+                    now,
+                    JSON.stringify(payload),
+                    assignedDesignerId,
+                ]);
+                imported += 1;
+            }
+            catch (insertErr) {
+                errors.push({ row: i + 2, message: insertErr?.message || "Insert failed" });
+            }
+        }
+        excelImportPreviewStore.delete(token);
+        return res.json({
+            ok: true,
+            imported,
+            totalRows: rows.length,
+            failed: errors.length,
+            errors: errors.slice(0, 50),
+        });
+    }
+    catch (err) {
+        console.error("import-excel commit error", err);
+        return res.status(500).json({ message: "Failed to import leads" });
     }
 });
 // checklist endpoints (persisted in generic checklists table)
@@ -1835,9 +1684,6 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
         return res.status(400).json({ message: "milestoneIndex and taskName are required" });
     }
     try {
-        const actingUser = await getUserFromSession(req);
-        if (!actingUser)
-            return res.status(401).json({ message: "Unauthorized" });
         await pool.query(`INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
        VALUES (?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`, [id, milestoneIndex, taskName, new Date()]);
@@ -2219,9 +2065,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                 try {
                     const [rows] = await pool.query(`SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload,
                     a.masking_date as maskingDate, a.masking_time as maskingTime,
-                    a.assigned_to_user_id as executiveUserId,
-                    u_designer.email as designerEmail, u_designer.name as designerName,
-                    u_designer.mmt_manager_id as executiveManagerId
+                    u_designer.email as designerEmail, u_designer.name as designerName
              FROM leads l
              LEFT JOIN lead_d2_assignments a ON a.lead_id = l.id
              LEFT JOIN users u_designer ON u_designer.id = a.assigned_to_user_id
@@ -2271,29 +2115,6 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                             ? (row.maskingDate instanceof Date ? row.maskingDate.toISOString().split("T")[0] : row.maskingDate)
                             : null;
                         const maskingTime = row.maskingTime || null;
-                        const googleStart = formatGoogleDateTime(maskingDate, maskingTime);
-                        if (googleStart) {
-                            try {
-                                await createGoogleCalendarEventForFirstAvailableUser({
-                                    userIds: [row.executiveUserId, row.executiveManagerId, actingUser.id],
-                                    summary: `D2 Site Masking - ${customerName}`,
-                                    description: [
-                                        `D2 masking visit scheduled for ${customerName}.`,
-                                        designerName ? `Assigned MMT executive: ${designerName}` : null,
-                                        pmName ? `MMT manager: ${pmName}` : null,
-                                    ].filter(Boolean).join("\n"),
-                                    startDateTimeIso: googleStart,
-                                    endDateTimeIso: addHoursToIso(googleStart, 1),
-                                    attendees: distinctEmails([customerEmail, row.designerEmail, pmEmail, actingUser.email]),
-                                });
-                            }
-                            catch (calendarErr) {
-                                console.error("D2 masking Google event create error (non-fatal)", {
-                                    leadId: id,
-                                    error: calendarErr,
-                                });
-                            }
-                        }
                         if (pmEmail && customerName && designerName && ecName) {
                             const [mmtRows] = await pool.query("SELECT name FROM users WHERE role IN ('mmt_manager', 'mmt_executive') AND email IS NOT NULL ORDER BY id ASC LIMIT 1");
                             const mmtName = mmtRows[0]?.name || null;
@@ -2493,25 +2314,6 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                         if (customerEmail) {
                             const meetingDate = meta?.meetingDate || null;
                             const meetingTime = meta?.meetingTime || null;
-                            const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
-                            if (googleStart) {
-                                try {
-                                    const event = await createGoogleCalendarEventForUser({
-                                        userId: actingUser.id,
-                                        summary: `First Cut Design Discussion - ${customerName}`,
-                                        description: `First cut design and quotation discussion for ${customerName}.`,
-                                        startDateTimeIso: googleStart,
-                                        endDateTimeIso: addHoursToIso(googleStart, 1),
-                                        attendees: distinctEmails([customerEmail, actingUser.email]),
-                                    });
-                                }
-                                catch (calendarErr) {
-                                    console.error("DQC1 first-cut Google event create error (non-fatal)", {
-                                        leadId: id,
-                                        error: calendarErr,
-                                    });
-                                }
-                            }
                             fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
                                 method: "POST",
                                 headers: { "Content-Type": "application/json" },
@@ -2545,10 +2347,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                 try {
                     const [rows] = await pool.query(`SELECT a.measurement_date as measurementDate,
                     a.measurement_time as measurementTime,
-                    a.assigned_to_user_id as executiveUserId,
                     u.name as executiveName,
-                    u.email as executiveEmail,
-                    u.mmt_manager_id as executiveManagerId,
                     u.phone as executivePhone,
                     l.client_email as clientEmail,
                     l.project_name as projectName,
@@ -2579,38 +2378,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                 : row.measurementDate || null;
                             const visitTime = row.measurementTime || null;
                             const executiveName = row.executiveName || null;
-                            const executiveEmail = row.executiveEmail || null;
                             const executivePhone = row.executivePhone || null;
-                            const googleStart = formatGoogleDateTime(visitDate, visitTime);
-                            let managerEmail = null;
-                            let managerName = null;
-                            if (row.executiveManagerId) {
-                                const manager = await getUserById(Number(row.executiveManagerId));
-                                managerEmail = manager?.email || null;
-                                managerName = manager?.name || null;
-                            }
-                            if (googleStart) {
-                                try {
-                                    await createGoogleCalendarEventForFirstAvailableUser({
-                                        userIds: [row.executiveUserId, row.executiveManagerId, actingUser.id],
-                                        summary: `D1 Site Measurement - ${customerName}`,
-                                        description: [
-                                            `D1 site measurement scheduled for ${customerName}.`,
-                                            executiveName ? `Assigned MMT executive: ${executiveName}` : null,
-                                            managerName ? `MMT manager: ${managerName}` : null,
-                                        ].filter(Boolean).join("\n"),
-                                        startDateTimeIso: googleStart,
-                                        endDateTimeIso: addHoursToIso(googleStart, 1),
-                                        attendees: distinctEmails([customerEmail, executiveEmail, managerEmail, actingUser.email]),
-                                    });
-                                }
-                                catch (calendarErr) {
-                                    console.error("D1 MMT Google event create error (non-fatal)", {
-                                        leadId: id,
-                                        error: calendarErr,
-                                    });
-                                }
-                            }
                             fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
                                 method: "POST",
                                 headers: { "Content-Type": "application/json" },
@@ -2749,7 +2517,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                 // Design sign off (40% milestone): CX only, pass meeting date/time, designer name
                 try {
                     const [rows] = await pool.query(`SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
-                    u.name as designerName, u.email as designerEmail
+                    u.name as designerName
              FROM leads l
              LEFT JOIN users u ON u.id = l.assigned_designer_id
              WHERE l.id = ?`, [id]);
@@ -2778,44 +2546,23 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                         const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
                         const meetingDate = meta?.meetingDate ?? meta?.signoffDate ?? null;
                         const meetingTime = meta?.meetingTime ?? meta?.signoffTime ?? null;
-                        if (meetingDate && meetingTime) {
-                            const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
-                            if (googleStart) {
-                                try {
-                                    await createGoogleCalendarEventForFirstAvailableUser({
-                                        userIds: [row.assigned_designer_id, actingUser.id],
-                                        summary: `Design Sign-Off - ${customerName}`,
-                                        description: `Design sign-off meeting scheduled for ${customerName}.`,
-                                        startDateTimeIso: googleStart,
-                                        endDateTimeIso: addHoursToIso(googleStart, 1),
-                                        attendees: distinctEmails([customerEmail, row.designerEmail, actingUser.email]),
-                                    });
-                                }
-                                catch (calendarErr) {
-                                    console.error("Design signoff Google event create error (non-fatal)", {
-                                        leadId: id,
-                                        error: calendarErr,
-                                    });
-                                }
-                            }
-                            if (customerEmail) {
-                                fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-                                    method: "POST",
-                                    headers: { "Content-Type": "application/json" },
-                                    body: JSON.stringify({
-                                        to: customerEmail,
-                                        customerName,
-                                        designerName,
-                                        meetingDate: meetingDate || undefined,
-                                        meetingTime: meetingTime || undefined,
-                                    }),
-                                }).catch((err) => {
-                                    console.error("Design signoff meeting scheduled email trigger error (non-fatal)", {
-                                        leadId: id,
-                                        error: err,
-                                    });
+                        if (customerEmail) {
+                            fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                    to: customerEmail,
+                                    customerName,
+                                    designerName,
+                                    meetingDate: meetingDate || undefined,
+                                    meetingTime: meetingTime || undefined,
+                                }),
+                            }).catch((err) => {
+                                console.error("Design signoff meeting scheduled email trigger error (non-fatal)", {
+                                    leadId: id,
+                                    error: err,
                                 });
-                            }
+                            });
                         }
                     }
                 }
@@ -2894,7 +2641,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                 // DQC2 material selection: pass meeting date/time, ec location, designer name
                 try {
                     const [rows] = await pool.query(`SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
-                    u.name as designerName, u.email as designerEmail
+                    u.name as designerName
              FROM leads l
              LEFT JOIN users u ON u.id = l.assigned_designer_id
              WHERE l.id = ?`, [id]);
@@ -2928,45 +2675,24 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                         const meetingDate = meta?.meetingDate ?? null;
                         const meetingTime = meta?.meetingTime ?? null;
                         const ecLocation = meta?.ecLocation ?? meta?.ecAddress ?? ecName;
-                        if (meetingDate && meetingTime) {
-                            const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
-                            if (googleStart) {
-                                try {
-                                    await createGoogleCalendarEventForFirstAvailableUser({
-                                        userIds: [row.assigned_designer_id, actingUser.id],
-                                        summary: `Material Selection - ${customerName}`,
-                                        description: `Material selection meeting at ${ecLocation || ecName}.`,
-                                        startDateTimeIso: googleStart,
-                                        endDateTimeIso: addHoursToIso(googleStart, 1),
-                                        attendees: distinctEmails([customerEmail, row.designerEmail, actingUser.email]),
-                                    });
-                                }
-                                catch (calendarErr) {
-                                    console.error("DQC2 material selection Google event create error (non-fatal)", {
-                                        leadId: id,
-                                        error: calendarErr,
-                                    });
-                                }
-                            }
-                            if (customerEmail) {
-                                fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-                                    method: "POST",
-                                    headers: { "Content-Type": "application/json" },
-                                    body: JSON.stringify({
-                                        to: customerEmail,
-                                        customerName,
-                                        designerName,
-                                        meetingDate,
-                                        meetingTime,
-                                        ecLocation,
-                                    }),
-                                }).catch((err) => {
-                                    console.error("DQC2 material selection email trigger error (non-fatal)", {
-                                        leadId: id,
-                                        error: err,
-                                    });
+                        if (customerEmail) {
+                            fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                    to: customerEmail,
+                                    customerName,
+                                    designerName,
+                                    meetingDate,
+                                    meetingTime,
+                                    ecLocation,
+                                }),
+                            }).catch((err) => {
+                                console.error("DQC2 material selection email trigger error (non-fatal)", {
+                                    leadId: id,
+                                    error: err,
                                 });
-                            }
+                            });
                         }
                     }
                 }
@@ -3645,138 +3371,6 @@ app.post("/api/leads/:id/uploads", upload.single("zip"), async (req, res) => {
         return res.status(500).json({ message: "Failed to upload files" });
     }
 });
-app.post("/api/leads/:id/schedule-meeting-invite", async (req, res) => {
-    const leadId = Number(req.params.id);
-    if (Number.isNaN(leadId))
-        return res.status(400).json({ message: "Invalid id" });
-    try {
-        const actingUser = await getUserFromSession(req);
-        if (!actingUser)
-            return res.status(401).json({ message: "Unauthorized" });
-        const role = (actingUser.role || "").toLowerCase();
-        const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
-        if (!allowed.includes(role)) {
-            return res.status(403).json({ message: "Not allowed to send meeting invites" });
-        }
-        const { meetingType, meetingDate, meetingTime, meetingLink, meetingMode, ecLocation, } = req.body || {};
-        if (!meetingType || !meetingDate || !meetingTime) {
-            return res.status(400).json({ message: "meetingType, meetingDate and meetingTime are required" });
-        }
-        const [rows] = await pool.query(`SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
-              u.name as designerName, u.email as designerEmail
-       FROM leads l
-       LEFT JOIN users u ON u.id = l.assigned_designer_id
-       WHERE l.id = ?`, [leadId]);
-        const row = rows[0];
-        if (!row)
-            return res.status(404).json({ message: "Lead not found" });
-        let payload = {};
-        try {
-            payload = row.payload ? JSON.parse(row.payload) : {};
-        }
-        catch {
-            payload = {};
-        }
-        const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
-        const customerEmail = row.clientEmail ||
-            formData.email ||
-            formData.sales_email ||
-            payload?.email ||
-            payload?.form?.email ||
-            null;
-        const customerName = formData.customer_name ||
-            formData.sales_lead_name ||
-            payload?.customer_name ||
-            payload?.form?.customer_name ||
-            row.projectName ||
-            "Customer";
-        const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
-        const eventStart = formatGoogleDateTime(meetingDate, meetingTime);
-        if (!eventStart) {
-            return res.status(400).json({ message: "Invalid meeting date/time" });
-        }
-        let summary = "";
-        let description = "";
-        let emailRoutePath = "";
-        let emailBody = {};
-        if (meetingType === "dqc2_material_selection") {
-            const resolvedEcLocation = ecLocation ||
-                formData.experience_center ||
-                payload?.experience_center ||
-                payload?.form?.experience_center ||
-                "Experience Center";
-            summary = `Material Selection - ${customerName}`;
-            description = [
-                `Material selection meeting at ${resolvedEcLocation}.`,
-                meetingMode ? `Mode: ${meetingMode}` : null,
-                meetingLink ? `Meeting link: ${meetingLink}` : null,
-            ].filter(Boolean).join("\n");
-            emailRoutePath = "/api/email/send-dqc2-material-selection-scheduled";
-            emailBody = {
-                to: customerEmail,
-                customerName,
-                designerName,
-                meetingDate,
-                meetingTime,
-                ecLocation: resolvedEcLocation,
-            };
-        }
-        else if (meetingType === "design_signoff") {
-            summary = `Design Sign-Off - ${customerName}`;
-            description = [
-                `Design sign-off meeting scheduled for ${customerName}.`,
-                meetingMode ? `Mode: ${meetingMode}` : null,
-                meetingLink ? `Meeting link: ${meetingLink}` : null,
-            ].filter(Boolean).join("\n");
-            emailRoutePath = "/api/email/send-design-signoff-meeting-scheduled";
-            emailBody = {
-                to: customerEmail,
-                customerName,
-                designerName,
-                meetingDate,
-                meetingTime,
-            };
-        }
-        else {
-            return res.status(400).json({ message: "Unsupported meetingType" });
-        }
-        try {
-            await createGoogleCalendarEventForFirstAvailableUser({
-                userIds: [row.assigned_designer_id, actingUser.id],
-                summary,
-                description,
-                startDateTimeIso: eventStart,
-                endDateTimeIso: addHoursToIso(eventStart, 1),
-                attendees: distinctEmails([customerEmail, row.designerEmail, actingUser.email]),
-            });
-        }
-        catch (calendarErr) {
-            console.error("meeting invite Google event create error (non-fatal)", {
-                leadId,
-                meetingType,
-                error: calendarErr,
-            });
-        }
-        if (customerEmail) {
-            fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(emailBody),
-            }).catch((err) => {
-                console.error("meeting invite email trigger error (non-fatal)", {
-                    leadId,
-                    meetingType,
-                    error: err,
-                });
-            });
-        }
-        return res.status(201).json({ ok: true });
-    }
-    catch (err) {
-        console.error("schedule-meeting-invite error", err);
-        return res.status(500).json({ message: "Failed to schedule meeting invite" });
-    }
-});
 // List uploads for a lead (designers see only approved; MMT manager/executive and Finance see all with status)
 app.get("/api/leads/:id/uploads", async (req, res) => {
     const leadId = Number(req.params.id);
@@ -3856,7 +3450,7 @@ app.delete("/api/leads/:leadId/uploads/:uploadId", async (req, res) => {
         return res.status(500).json({ message: "Failed to delete upload" });
     }
 });
-// Download an upload (designers can only download approved uploads)
+// Download an upload (designers can only download approved uploads; finance/admin can download pending too)
 app.get("/api/leads/:leadId/uploads/:uploadId/download", async (req, res) => {
     const leadId = Number(req.params.leadId);
     const uploadId = Number(req.params.uploadId);
@@ -3867,12 +3461,13 @@ app.get("/api/leads/:leadId/uploads/:uploadId/download", async (req, res) => {
         const user = await getUserFromSession(req);
         const role = (user?.role ?? "").toLowerCase();
         const isMmt = role === "mmt_manager" || role === "mmt_executive";
+        const isFinance = role === "finance" || role === "admin";
         const [rows] = await pool.query(`SELECT stored_path as storedPath, original_name as originalName, status, s3_url as s3Url
        FROM lead_uploads WHERE id = ? AND lead_id = ?`, [uploadId, leadId]);
         const row = rows[0];
         if (!row)
             return res.status(404).json({ message: "Not found" });
-        if (!isMmt && row.status !== "approved")
+        if (!isMmt && !isFinance && row.status !== "approved")
             return res.status(403).json({ message: "Only approved uploads are available" });
         if (row.s3Url) {
             try {
@@ -3886,7 +3481,8 @@ app.get("/api/leads/:leadId/uploads/:uploadId/download", async (req, res) => {
                 const mime = { ".pdf": "application/pdf", ".dwg": "application/acad" };
                 res.setHeader("Content-Type", mime[ext] || obj.ContentType || "application/octet-stream");
                 res.setHeader("Content-Disposition", `attachment; filename="${name.replace(/"/g, "%22")}"`);
-                return res.send(Buffer.from(await obj.Body.transformToByteArray()));
+                await pipeS3BodyToResponse(res, obj.Body);
+                return;
             }
             catch (s3Err) {
                 console.error("S3 download error", s3Err);
@@ -3911,11 +3507,12 @@ app.get("/api/leads/:leadId/uploads/:uploadId/contents", async (req, res) => {
         const user = await getUserFromSession(req);
         const role = (user?.role ?? "").toLowerCase();
         const isMmt = role === "mmt_manager" || role === "mmt_executive";
+        const isFinance = role === "finance" || role === "admin";
         const [rows] = await pool.query(`SELECT stored_path as storedPath, original_name as originalName, size_bytes as sizeBytes, status FROM lead_uploads WHERE id = ? AND lead_id = ?`, [uploadId, leadId]);
         const row = rows[0];
         if (!row || !node_fs_1.default.existsSync(row.storedPath))
             return res.status(404).json({ message: "Not found" });
-        if (!isMmt && row.status !== "approved")
+        if (!isMmt && !isFinance && row.status !== "approved")
             return res.status(403).json({ message: "Only approved uploads are available" });
         try {
             const zip = new adm_zip_1.default(row.storedPath);
@@ -3948,11 +3545,12 @@ app.get("/api/leads/:leadId/uploads/:uploadId/file", async (req, res) => {
         const user = await getUserFromSession(req);
         const role = (user?.role ?? "").toLowerCase();
         const isMmt = role === "mmt_manager" || role === "mmt_executive";
+        const isFinance = role === "finance" || role === "admin";
         const [rows] = await pool.query(`SELECT stored_path as storedPath, original_name as originalName, status, s3_url as s3Url FROM lead_uploads WHERE id = ? AND lead_id = ?`, [uploadId, leadId]);
         const row = rows[0];
         if (!row)
             return res.status(404).json({ message: "Not found" });
-        if (!isMmt && row.status !== "approved")
+        if (!isMmt && !isFinance && row.status !== "approved")
             return res.status(403).json({ message: "Only approved uploads are available" });
         const isSingleFile = filePath === row.originalName || filePath === node_path_1.default.basename(row.storedPath);
         if (row.s3Url && isSingleFile) {
@@ -3974,7 +3572,8 @@ app.get("/api/leads/:leadId/uploads/:uploadId/file", async (req, res) => {
                 res.setHeader("Content-Type", contentType);
                 res.setHeader("Content-Disposition", `inline; filename="${(row.originalName || node_path_1.default.basename(filePath)).replace(/"/g, "%22")}"`);
                 res.setHeader("X-Content-Type-Options", "nosniff");
-                return res.send(Buffer.from(await obj.Body.transformToByteArray()));
+                await pipeS3BodyToResponse(res, obj.Body);
+                return;
             }
             catch (s3Err) {
                 console.error("S3 get file error", s3Err);
@@ -4038,8 +3637,436 @@ app.get("/api/leads/:leadId/uploads/:uploadId/file", async (req, res) => {
         return res.status(500).json({ message: "Failed to read file" });
     }
 });
+/** Shared DB + history + email for DQC 1 (multipart or S3-direct flow). */
+async function persistDqc1SubmissionFromMeta(leadId, user, drawingFiles, quotationFiles, drawingS3Urls, quotationS3Urls) {
+    const now = new Date();
+    for (let i = 0; i < drawingFiles.length; i++) {
+        const drawingFile = drawingFiles[i];
+        const drawingS3 = drawingS3Urls[i] ?? null;
+        await pool.query(`INSERT INTO lead_uploads
+       (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc_drawing', ?)`, [leadId, user.id, drawingFile.originalname, drawingFile.filename, drawingFile.path, drawingFile.mimetype, drawingFile.size, now, drawingS3]);
+    }
+    for (let i = 0; i < quotationFiles.length; i++) {
+        const quotationFile = quotationFiles[i];
+        const quotationS3 = quotationS3Urls[i] ?? null;
+        await pool.query(`INSERT INTO lead_uploads
+       (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc_quotation', ?)`, [leadId, user.id, quotationFile.originalname, quotationFile.filename, quotationFile.path, quotationFile.mimetype, quotationFile.size, now, quotationS3]);
+    }
+    const ev = {
+        id: `dqc-submission-${Date.now()}`,
+        type: "file_upload",
+        taskName: "DQC 1 submission - dwg + quotation",
+        milestoneName: "DQC1",
+        timestamp: now.toISOString(),
+        description: `DQC submission: ${[...drawingFiles.map((f) => f.originalname), ...quotationFiles.map((f) => f.originalname)].join(", ")}`,
+        user: { name: user.name ?? "User" },
+        details: {
+            kind: "dqc_submission",
+            drawings: drawingFiles.map((f) => f.originalname),
+            quotations: quotationFiles.map((f) => f.originalname),
+        },
+    };
+    await addLeadHistoryEvent(leadId, ev);
+    try {
+        const [leadRows] = await pool.query("SELECT project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?", [leadId]);
+        const leadRow = leadRows[0];
+        if (leadRow) {
+            let payload = {};
+            try {
+                payload = leadRow.payload ? JSON.parse(leadRow.payload) : {};
+            }
+            catch {
+                payload = {};
+            }
+            const customerName = payload.customer_name || payload?.form?.customer_name || leadRow.projectName || "Customer";
+            const ecName = payload.experience_center || payload?.form?.experience_center || leadRow.experienceCenter || "Experience Center";
+            const designerName = user.name || "Designer";
+            const projectValue = payload.project_value || payload?.form?.project_value || "";
+            const [dqcRows] = await pool.query("SELECT email, name FROM users WHERE role IN ('dqc_manager', 'dqe') ORDER BY id ASC LIMIT 1");
+            const dqcUser = dqcRows[0];
+            if (dqcUser && dqcUser.email) {
+                const to = dqcUser.email;
+                const [ccRows] = await pool.query("SELECT email FROM users WHERE id IN (?, ?, ?) AND email IS NOT NULL", [user.id, payload.manager_user_id || null, payload.tdm_user_id || null]);
+                const ccList = ccRows.map((r) => r.email).filter(Boolean);
+                fetch(`${FRONTEND_BASE}/api/email/send-dqc1-review-request-internal`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        to,
+                        cc: ccList,
+                        customerName,
+                        ecName,
+                        designerName,
+                        projectValue: String(projectValue || ""),
+                        dqcRepName: dqcUser.name || "DQC Team",
+                        ...(drawingS3Urls.some(Boolean) || quotationS3Urls.some(Boolean)
+                            ? {
+                                attachments: [
+                                    ...drawingFiles
+                                        .map((f, idx) => drawingS3Urls[idx]
+                                        ? { filename: f.originalname, path: drawingS3Urls[idx] }
+                                        : null)
+                                        .filter((v) => !!v),
+                                    ...quotationFiles
+                                        .map((f, idx) => quotationS3Urls[idx]
+                                        ? { filename: f.originalname, path: quotationS3Urls[idx] }
+                                        : null)
+                                        .filter((v) => !!v),
+                                ],
+                            }
+                            : {}),
+                    }),
+                }).catch((err) => {
+                    console.error("DQC1 review request internal email trigger error (non-fatal)", {
+                        leadId,
+                        error: err,
+                    });
+                });
+            }
+        }
+    }
+    catch (err) {
+        console.error("DQC1 review request internal email prepare error (non-fatal)", {
+            leadId,
+            error: err,
+        });
+    }
+}
+/** DQC 2: DB + history + pending_dqc2 row (multipart or S3-direct). */
+async function persistDqc2SubmissionFromMeta(leadId, user, drawingFiles, quotationFiles, drawingS3Urls, quotationS3Urls) {
+    const now = new Date();
+    for (let i = 0; i < drawingFiles.length; i++) {
+        const drawingFile = drawingFiles[i];
+        const drawingS3 = drawingS3Urls[i] ?? null;
+        await pool.query(`INSERT INTO lead_uploads
+       (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc2_drawing', ?)`, [leadId, user.id, drawingFile.originalname, drawingFile.filename, drawingFile.path, drawingFile.mimetype, drawingFile.size, now, drawingS3]);
+    }
+    for (let i = 0; i < quotationFiles.length; i++) {
+        const quotationFile = quotationFiles[i];
+        const quotationS3 = quotationS3Urls[i] ?? null;
+        await pool.query(`INSERT INTO lead_uploads
+       (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc2_quotation', ?)`, [leadId, user.id, quotationFile.originalname, quotationFile.filename, quotationFile.path, quotationFile.mimetype, quotationFile.size, now, quotationS3]);
+    }
+    const ev = {
+        id: `dqc2-submission-${Date.now()}`,
+        type: "file_upload",
+        taskName: "DQC 2 submission",
+        milestoneName: "DQC2",
+        timestamp: now.toISOString(),
+        description: `DQC 2 submission: ${[...drawingFiles.map((f) => f.originalname), ...quotationFiles.map((f) => f.originalname)].join(", ")}`,
+        user: { name: user.name ?? "User" },
+        details: {
+            kind: "dqc2_submission",
+            drawings: drawingFiles.map((f) => f.originalname),
+            quotations: quotationFiles.map((f) => f.originalname),
+        },
+    };
+    await addLeadHistoryEvent(leadId, ev);
+    await pool.query(`INSERT INTO lead_dqc_reviews (lead_id, verdict, remarks, created_at, reviewed_by_user_id)
+     VALUES (?, ?, ?, ?, NULL)`, [leadId, "pending_dqc2", JSON.stringify([]), now]);
+}
+// ----- DQC 1: browser uploads directly to S3 (bypasses Nginx body limit); then small JSON "complete" calls API -----
+app.post("/api/leads/:id/dqc-submission/presign", async (req, res) => {
+    const leadId = Number(req.params.id);
+    if (Number.isNaN(leadId))
+        return res.status(400).json({ message: "Invalid id" });
+    if (!process.env.AWS_ACCESS_KEY_ID) {
+        return res.status(501).json({ message: "Direct upload not configured", directUpload: false });
+    }
+    try {
+        const user = await getUserFromSession(req);
+        if (!user)
+            return res.status(401).json({ message: "Unauthorized" });
+        const role = (user?.role ?? "").toLowerCase();
+        const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
+        if (!allowed.includes(role))
+            return res.status(403).json({ message: "Not allowed to submit DQC" });
+        const body = req.body;
+        const drawingsInput = Array.isArray(body.drawings) && body.drawings.length > 0
+            ? body.drawings
+            : [{ name: body.drawingName, mime: body.drawingMime }];
+        const quotationsInput = Array.isArray(body.quotations) && body.quotations.length > 0
+            ? body.quotations
+            : [{ name: body.quotationName, mime: body.quotationMime }];
+        const validDrawings = drawingsInput
+            .map((d) => ({ name: (d?.name || "").trim(), mime: (d?.mime || "application/octet-stream").trim() || "application/octet-stream" }))
+            .filter((d) => d.name);
+        const validQuotations = quotationsInput
+            .map((q) => ({ name: (q?.name || "").trim(), mime: (q?.mime || "application/octet-stream").trim() || "application/octet-stream" }))
+            .filter((q) => q.name);
+        if (validDrawings.length === 0 || validQuotations.length === 0) {
+            return res.status(400).json({ message: "At least one drawing and one quotation are required" });
+        }
+        const ts = Date.now();
+        const drawings = await Promise.all(validDrawings.map(async (d, idx) => {
+            const safe = d.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+            const key = `lead-uploads/lead-${leadId}-${ts}-${idx}-drawing-${safe}`;
+            const cmd = new client_s3_1.PutObjectCommand({ Bucket: S3_BUCKET, Key: key, ContentType: d.mime });
+            return {
+                uploadUrl: await (0, s3_request_presigner_1.getSignedUrl)(s3, cmd, { expiresIn: 900 }),
+                key,
+                contentType: d.mime,
+                publicUrl: buildS3PublicUrl(key),
+            };
+        }));
+        const quotations = await Promise.all(validQuotations.map(async (q, idx) => {
+            const safe = q.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+            const key = `lead-uploads/lead-${leadId}-${ts}-${idx}-quotation-${safe}`;
+            const cmd = new client_s3_1.PutObjectCommand({ Bucket: S3_BUCKET, Key: key, ContentType: q.mime });
+            return {
+                uploadUrl: await (0, s3_request_presigner_1.getSignedUrl)(s3, cmd, { expiresIn: 900 }),
+                key,
+                contentType: q.mime,
+                publicUrl: buildS3PublicUrl(key),
+            };
+        }));
+        return res.json({
+            drawings,
+            quotations,
+        });
+    }
+    catch (err) {
+        console.error("dqc-submission presign error", err);
+        return res.status(500).json({ message: "Failed to prepare upload" });
+    }
+});
+app.post("/api/leads/:id/dqc-submission/complete", async (req, res) => {
+    const leadId = Number(req.params.id);
+    if (Number.isNaN(leadId))
+        return res.status(400).json({ message: "Invalid id" });
+    if (!process.env.AWS_ACCESS_KEY_ID) {
+        return res.status(501).json({ message: "Direct upload not configured" });
+    }
+    try {
+        const user = await getUserFromSession(req);
+        if (!user)
+            return res.status(401).json({ message: "Unauthorized" });
+        const role = (user?.role ?? "").toLowerCase();
+        const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
+        if (!allowed.includes(role))
+            return res.status(403).json({ message: "Not allowed to submit DQC" });
+        const body = req.body;
+        const drawingKeys = Array.isArray(body.drawingKeys) && body.drawingKeys.length > 0
+            ? body.drawingKeys.map((k) => (k || "").trim()).filter(Boolean)
+            : body.drawingKey?.trim()
+                ? [body.drawingKey.trim()]
+                : [];
+        const quotationKeys = Array.isArray(body.quotationKeys) && body.quotationKeys.length > 0
+            ? body.quotationKeys.map((k) => (k || "").trim()).filter(Boolean)
+            : body.quotationKey?.trim()
+                ? [body.quotationKey.trim()]
+                : [];
+        if (drawingKeys.length === 0 || quotationKeys.length === 0) {
+            return res.status(400).json({ message: "At least one drawingKey and one quotationKey are required" });
+        }
+        const prefix = `lead-uploads/lead-${leadId}-`;
+        if (drawingKeys.some((k) => !k.startsWith(prefix)) || quotationKeys.some((k) => !k.startsWith(prefix))) {
+            return res.status(400).json({ message: "Invalid keys for this lead" });
+        }
+        const drawingNamesInput = Array.isArray(body.drawingNames) && body.drawingNames.length > 0
+            ? body.drawingNames
+            : body.drawingName
+                ? [body.drawingName]
+                : [];
+        const quotationNamesInput = Array.isArray(body.quotationNames) && body.quotationNames.length > 0
+            ? body.quotationNames
+            : body.quotationName
+                ? [body.quotationName]
+                : [];
+        const drawingFilesMeta = [];
+        const quotationFilesMeta = [];
+        const drawingS3Urls = [];
+        const quotationS3Urls = [];
+        for (let i = 0; i < drawingKeys.length; i++) {
+            const key = drawingKeys[i];
+            const head = await s3.send(new client_s3_1.HeadObjectCommand({ Bucket: S3_BUCKET, Key: key }));
+            const local = node_path_1.default.join(UPLOADS_DIR, `${Date.now()}-dqc1-d-${i}-${node_path_1.default.basename(key)}`);
+            await streamS3ObjectToDisk(key, local);
+            drawingFilesMeta.push({
+                originalname: (drawingNamesInput[i] || node_path_1.default.basename(key)).trim(),
+                filename: node_path_1.default.basename(local),
+                path: local,
+                mimetype: head.ContentType || "application/octet-stream",
+                size: Number(head.ContentLength || 0),
+            });
+            drawingS3Urls.push(buildS3PublicUrl(key));
+        }
+        for (let i = 0; i < quotationKeys.length; i++) {
+            const key = quotationKeys[i];
+            const head = await s3.send(new client_s3_1.HeadObjectCommand({ Bucket: S3_BUCKET, Key: key }));
+            const local = node_path_1.default.join(UPLOADS_DIR, `${Date.now()}-dqc1-q-${i}-${node_path_1.default.basename(key)}`);
+            await streamS3ObjectToDisk(key, local);
+            quotationFilesMeta.push({
+                originalname: (quotationNamesInput[i] || node_path_1.default.basename(key)).trim(),
+                filename: node_path_1.default.basename(local),
+                path: local,
+                mimetype: head.ContentType || "application/octet-stream",
+                size: Number(head.ContentLength || 0),
+            });
+            quotationS3Urls.push(buildS3PublicUrl(key));
+        }
+        await persistDqc1SubmissionFromMeta(leadId, user, drawingFilesMeta, quotationFilesMeta, drawingS3Urls, quotationS3Urls);
+        return res.status(201).json({ ok: true });
+    }
+    catch (err) {
+        console.error("dqc-submission complete error", err);
+        return res.status(500).json({ message: "Failed to finalize DQC submission" });
+    }
+});
+// ----- DQC 2: same S3-direct flow (keys must contain dqc2-drawing / dqc2-quotation) -----
+app.post("/api/leads/:id/dqc2-submission/presign", async (req, res) => {
+    const leadId = Number(req.params.id);
+    if (Number.isNaN(leadId))
+        return res.status(400).json({ message: "Invalid id" });
+    if (!process.env.AWS_ACCESS_KEY_ID) {
+        return res.status(501).json({ message: "Direct upload not configured", directUpload: false });
+    }
+    try {
+        const user = await getUserFromSession(req);
+        if (!user)
+            return res.status(401).json({ message: "Unauthorized" });
+        const role = (user?.role ?? "").toLowerCase();
+        const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
+        if (!allowed.includes(role))
+            return res.status(403).json({ message: "Not allowed to submit DQC" });
+        const body = req.body;
+        const drawingsInput = Array.isArray(body.drawings) && body.drawings.length > 0
+            ? body.drawings
+            : [{ name: body.drawingName, mime: body.drawingMime }];
+        const quotationsInput = Array.isArray(body.quotations) && body.quotations.length > 0
+            ? body.quotations
+            : [{ name: body.quotationName, mime: body.quotationMime }];
+        const validDrawings = drawingsInput
+            .map((d) => ({ name: (d?.name || "").trim(), mime: (d?.mime || "application/octet-stream").trim() || "application/octet-stream" }))
+            .filter((d) => d.name);
+        const validQuotations = quotationsInput
+            .map((q) => ({ name: (q?.name || "").trim(), mime: (q?.mime || "application/octet-stream").trim() || "application/octet-stream" }))
+            .filter((q) => q.name);
+        if (validDrawings.length === 0 || validQuotations.length === 0) {
+            return res.status(400).json({ message: "At least one drawing and one quotation are required" });
+        }
+        const ts = Date.now();
+        const drawings = await Promise.all(validDrawings.map(async (d, idx) => {
+            const safe = d.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+            const key = `lead-uploads/lead-${leadId}-${ts}-${idx}-dqc2-drawing-${safe}`;
+            const cmd = new client_s3_1.PutObjectCommand({ Bucket: S3_BUCKET, Key: key, ContentType: d.mime });
+            return {
+                uploadUrl: await (0, s3_request_presigner_1.getSignedUrl)(s3, cmd, { expiresIn: 900 }),
+                key,
+                contentType: d.mime,
+                publicUrl: buildS3PublicUrl(key),
+            };
+        }));
+        const quotations = await Promise.all(validQuotations.map(async (q, idx) => {
+            const safe = q.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+            const key = `lead-uploads/lead-${leadId}-${ts}-${idx}-dqc2-quotation-${safe}`;
+            const cmd = new client_s3_1.PutObjectCommand({ Bucket: S3_BUCKET, Key: key, ContentType: q.mime });
+            return {
+                uploadUrl: await (0, s3_request_presigner_1.getSignedUrl)(s3, cmd, { expiresIn: 900 }),
+                key,
+                contentType: q.mime,
+                publicUrl: buildS3PublicUrl(key),
+            };
+        }));
+        return res.json({
+            drawings,
+            quotations,
+        });
+    }
+    catch (err) {
+        console.error("dqc2-submission presign error", err);
+        return res.status(500).json({ message: "Failed to prepare upload" });
+    }
+});
+app.post("/api/leads/:id/dqc2-submission/complete", async (req, res) => {
+    const leadId = Number(req.params.id);
+    if (Number.isNaN(leadId))
+        return res.status(400).json({ message: "Invalid id" });
+    if (!process.env.AWS_ACCESS_KEY_ID) {
+        return res.status(501).json({ message: "Direct upload not configured" });
+    }
+    try {
+        const user = await getUserFromSession(req);
+        if (!user)
+            return res.status(401).json({ message: "Unauthorized" });
+        const role = (user?.role ?? "").toLowerCase();
+        const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
+        if (!allowed.includes(role))
+            return res.status(403).json({ message: "Not allowed to submit DQC" });
+        const body = req.body;
+        const drawingKeys = Array.isArray(body.drawingKeys) && body.drawingKeys.length > 0
+            ? body.drawingKeys.map((k) => (k || "").trim()).filter(Boolean)
+            : body.drawingKey?.trim()
+                ? [body.drawingKey.trim()]
+                : [];
+        const quotationKeys = Array.isArray(body.quotationKeys) && body.quotationKeys.length > 0
+            ? body.quotationKeys.map((k) => (k || "").trim()).filter(Boolean)
+            : body.quotationKey?.trim()
+                ? [body.quotationKey.trim()]
+                : [];
+        if (drawingKeys.length === 0 || quotationKeys.length === 0) {
+            return res.status(400).json({ message: "At least one drawingKey and one quotationKey are required" });
+        }
+        const prefix = `lead-uploads/lead-${leadId}-`;
+        if (drawingKeys.some((k) => !k.startsWith(prefix)) || quotationKeys.some((k) => !k.startsWith(prefix))) {
+            return res.status(400).json({ message: "Invalid keys for this lead" });
+        }
+        const drawingNamesInput = Array.isArray(body.drawingNames) && body.drawingNames.length > 0
+            ? body.drawingNames
+            : body.drawingName
+                ? [body.drawingName]
+                : [];
+        const quotationNamesInput = Array.isArray(body.quotationNames) && body.quotationNames.length > 0
+            ? body.quotationNames
+            : body.quotationName
+                ? [body.quotationName]
+                : [];
+        const drawingFilesMeta = [];
+        const quotationFilesMeta = [];
+        const drawingS3Urls = [];
+        const quotationS3Urls = [];
+        for (let i = 0; i < drawingKeys.length; i++) {
+            const key = drawingKeys[i];
+            const head = await s3.send(new client_s3_1.HeadObjectCommand({ Bucket: S3_BUCKET, Key: key }));
+            const local = node_path_1.default.join(UPLOADS_DIR, `${Date.now()}-dqc2-d-${i}-${node_path_1.default.basename(key)}`);
+            await streamS3ObjectToDisk(key, local);
+            drawingFilesMeta.push({
+                originalname: (drawingNamesInput[i] || node_path_1.default.basename(key)).trim(),
+                filename: node_path_1.default.basename(local),
+                path: local,
+                mimetype: head.ContentType || "application/octet-stream",
+                size: Number(head.ContentLength || 0),
+            });
+            drawingS3Urls.push(buildS3PublicUrl(key));
+        }
+        for (let i = 0; i < quotationKeys.length; i++) {
+            const key = quotationKeys[i];
+            const head = await s3.send(new client_s3_1.HeadObjectCommand({ Bucket: S3_BUCKET, Key: key }));
+            const local = node_path_1.default.join(UPLOADS_DIR, `${Date.now()}-dqc2-q-${i}-${node_path_1.default.basename(key)}`);
+            await streamS3ObjectToDisk(key, local);
+            quotationFilesMeta.push({
+                originalname: (quotationNamesInput[i] || node_path_1.default.basename(key)).trim(),
+                filename: node_path_1.default.basename(local),
+                path: local,
+                mimetype: head.ContentType || "application/octet-stream",
+                size: Number(head.ContentLength || 0),
+            });
+            quotationS3Urls.push(buildS3PublicUrl(key));
+        }
+        await persistDqc2SubmissionFromMeta(leadId, user, drawingFilesMeta, quotationFilesMeta, drawingS3Urls, quotationS3Urls);
+        return res.status(201).json({ ok: true });
+    }
+    catch (err) {
+        console.error("dqc2-submission complete error", err);
+        return res.status(500).json({ message: "Failed to finalize DQC 2 submission" });
+    }
+});
 // DQC Submission: upload drawing + quotation; stored in lead_uploads with upload_type, status approved (shows in Files + DQC approval)
-app.post("/api/leads/:id/dqc-submission", upload.fields([{ name: "drawing", maxCount: 1 }, { name: "quotation", maxCount: 1 }]), async (req, res) => {
+app.post("/api/leads/:id/dqc-submission", upload.fields([{ name: "drawing", maxCount: 20 }, { name: "quotation", maxCount: 20 }]), async (req, res) => {
     const leadId = Number(req.params.id);
     if (Number.isNaN(leadId))
         return res.status(400).json({ message: "Invalid id" });
@@ -4052,105 +4079,18 @@ app.post("/api/leads/:id/dqc-submission", upload.fields([{ name: "drawing", maxC
         if (!allowed.includes(role))
             return res.status(403).json({ message: "Not allowed to submit DQC" });
         const files = req.files;
-        const drawingFile = files?.drawing?.[0];
-        const quotationFile = files?.quotation?.[0];
-        if (!drawingFile || !quotationFile) {
-            return res.status(400).json({ message: "Both drawing and quotation files are required" });
+        const drawingFiles = files?.drawing ?? [];
+        const quotationFiles = files?.quotation ?? [];
+        if (drawingFiles.length === 0 || quotationFiles.length === 0) {
+            return res.status(400).json({ message: "At least one drawing and one quotation file are required" });
         }
-        const now = new Date();
-        let drawingS3 = null;
-        let quotationS3 = null;
+        let drawingS3Urls = [];
+        let quotationS3Urls = [];
         if (process.env.AWS_ACCESS_KEY_ID) {
-            drawingS3 = await uploadLeadFileToS3(leadId, drawingFile.path, drawingFile.originalname, drawingFile.mimetype);
-            quotationS3 = await uploadLeadFileToS3(leadId, quotationFile.path, quotationFile.originalname, quotationFile.mimetype);
+            drawingS3Urls = await Promise.all(drawingFiles.map((f) => uploadLeadFileToS3(leadId, f.path, f.originalname, f.mimetype)));
+            quotationS3Urls = await Promise.all(quotationFiles.map((f) => uploadLeadFileToS3(leadId, f.path, f.originalname, f.mimetype)));
         }
-        await pool.query(`INSERT INTO lead_uploads
-         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc_drawing', ?)`, [leadId, user.id, drawingFile.originalname, drawingFile.filename, drawingFile.path, drawingFile.mimetype, drawingFile.size, now, drawingS3]);
-        await pool.query(`INSERT INTO lead_uploads
-         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc_quotation', ?)`, [leadId, user.id, quotationFile.originalname, quotationFile.filename, quotationFile.path, quotationFile.mimetype, quotationFile.size, now, quotationS3]);
-        const ev = {
-            id: `dqc-submission-${Date.now()}`,
-            type: "file_upload",
-            taskName: "DQC 1 submission - dwg + quotation",
-            milestoneName: "DQC1",
-            timestamp: now.toISOString(),
-            description: `DQC submission: ${drawingFile.originalname}, ${quotationFile.originalname}`,
-            user: { name: user.name ?? "User" },
-            details: { kind: "dqc_submission", drawing: drawingFile.originalname, quotation: quotationFile.originalname },
-        };
-        await addLeadHistoryEvent(leadId, ev);
-        // Fire-and-forget internal DQC 1 review request email
-        try {
-            const [leadRows] = await pool.query("SELECT project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?", [leadId]);
-            const leadRow = leadRows[0];
-            if (leadRow) {
-                let payload = {};
-                try {
-                    payload = leadRow.payload ? JSON.parse(leadRow.payload) : {};
-                }
-                catch {
-                    payload = {};
-                }
-                const customerName = payload.customer_name ||
-                    payload?.form?.customer_name ||
-                    leadRow.projectName ||
-                    "Customer";
-                const ecName = payload.experience_center ||
-                    payload?.form?.experience_center ||
-                    leadRow.experienceCenter ||
-                    "Experience Center";
-                const designerName = user.name || "Designer";
-                const projectValue = payload.project_value ||
-                    payload?.form?.project_value ||
-                    "";
-                // Determine primary DQC recipient and CC list (designer + manager + TDM)
-                const [dqcRows] = await pool.query("SELECT email, name FROM users WHERE role IN ('dqc_manager', 'dqe') ORDER BY id ASC LIMIT 1");
-                const dqcUser = dqcRows[0];
-                if (dqcUser && dqcUser.email) {
-                    const to = dqcUser.email;
-                    const [ccRows] = await pool.query("SELECT email FROM users WHERE id IN (?, ?, ?) AND email IS NOT NULL", [user.id, payload.manager_user_id || null, payload.tdm_user_id || null]);
-                    const ccList = ccRows.map((r) => r.email).filter(Boolean);
-                    fetch(`${FRONTEND_BASE}/api/email/send-dqc1-review-request-internal`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                            to,
-                            cc: ccList,
-                            customerName,
-                            ecName,
-                            designerName,
-                            projectValue: String(projectValue || ""),
-                            dqcRepName: dqcUser.name || "DQC Team",
-                            ...(drawingS3 || quotationS3
-                                ? {
-                                    attachments: [
-                                        ...(drawingS3
-                                            ? [{ filename: drawingFile.originalname, path: drawingS3 }]
-                                            : []),
-                                        ...(quotationS3
-                                            ? [{ filename: quotationFile.originalname, path: quotationS3 }]
-                                            : []),
-                                    ],
-                                }
-                                : {}),
-                        }),
-                    }).catch((err) => {
-                        console.error("DQC1 review request internal email trigger error (non-fatal)", {
-                            leadId,
-                            error: err,
-                        });
-                    });
-                }
-            }
-        }
-        catch (err) {
-            console.error("DQC1 review request internal email prepare error (non-fatal)", {
-                leadId,
-                error: err,
-            });
-        }
+        await persistDqc1SubmissionFromMeta(leadId, user, drawingFiles, quotationFiles, drawingS3Urls, quotationS3Urls);
         return res.status(201).json({ ok: true });
     }
     catch (err) {
@@ -4330,25 +4270,6 @@ app.post("/api/leads/:id/first-cut-design-upload", upload.array("files"), async 
                     row.projectName ||
                     "Customer";
                 if (customerEmail) {
-                    const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
-                    if (googleStart) {
-                        try {
-                            await createGoogleCalendarEventForUser({
-                                userId: user.id,
-                                summary: `First Cut Design Discussion - ${customerName}`,
-                                description: `First cut design and quotation discussion for ${customerName}.`,
-                                startDateTimeIso: googleStart,
-                                endDateTimeIso: addHoursToIso(googleStart, 1),
-                                attendees: distinctEmails([customerEmail, user.email]),
-                            });
-                        }
-                        catch (calendarErr) {
-                            console.error("DQC1 first-cut invite Google event create error (non-fatal)", {
-                                leadId,
-                                error: calendarErr,
-                            });
-                        }
-                    }
                     fetch(`${FRONTEND_BASE}/api/email/send-dqc1-first-cut-design-scheduled`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
@@ -4406,11 +4327,19 @@ app.get("/api/leads/:id/dqc-submission-files", async (req, res) => {
         const list = rows || [];
         const uploadType = (r) => (r.uploadType ?? r.uploadtype ?? "").toString();
         const originalName = (r) => (r.originalName ?? r.originalname ?? "") || "";
-        const drawing = list.find((r) => uploadType(r) === "dqc_drawing");
-        const quotation = list.find((r) => uploadType(r) === "dqc_quotation");
+        const drawingFiles = list
+            .filter((r) => uploadType(r) === "dqc_drawing")
+            .map((r) => ({ id: r.id, originalName: originalName(r) }));
+        const quotationFiles = list
+            .filter((r) => uploadType(r) === "dqc_quotation")
+            .map((r) => ({ id: r.id, originalName: originalName(r) }));
+        const drawing = drawingFiles[0];
+        const quotation = quotationFiles[0];
         return res.json({
-            drawing: drawing ? { id: drawing.id, originalName: originalName(drawing) } : null,
-            quotation: quotation ? { id: quotation.id, originalName: originalName(quotation) } : null,
+            drawing: drawing ?? null,
+            quotation: quotation ?? null,
+            drawingFiles,
+            quotationFiles,
         });
     }
     catch (err) {
@@ -4419,7 +4348,7 @@ app.get("/api/leads/:id/dqc-submission-files", async (req, res) => {
     }
 });
 // DQC 2 Submission: same as DQC 1 – drawing + quotation; stored as dqc2_drawing, dqc2_quotation
-app.post("/api/leads/:id/dqc2-submission", upload.fields([{ name: "drawing", maxCount: 1 }, { name: "quotation", maxCount: 1 }]), async (req, res) => {
+app.post("/api/leads/:id/dqc2-submission", upload.fields([{ name: "drawing", maxCount: 20 }, { name: "quotation", maxCount: 20 }]), async (req, res) => {
     const leadId = Number(req.params.id);
     if (Number.isNaN(leadId))
         return res.status(400).json({ message: "Invalid id" });
@@ -4432,38 +4361,18 @@ app.post("/api/leads/:id/dqc2-submission", upload.fields([{ name: "drawing", max
         if (!allowed.includes(role))
             return res.status(403).json({ message: "Not allowed to submit DQC" });
         const files = req.files;
-        const drawingFile = files?.drawing?.[0];
-        const quotationFile = files?.quotation?.[0];
-        if (!drawingFile || !quotationFile) {
-            return res.status(400).json({ message: "Both drawing and quotation files are required" });
+        const drawingFiles = files?.drawing ?? [];
+        const quotationFiles = files?.quotation ?? [];
+        if (drawingFiles.length === 0 || quotationFiles.length === 0) {
+            return res.status(400).json({ message: "At least one drawing and one quotation file are required" });
         }
-        const now = new Date();
-        let drawingS3 = null;
-        let quotationS3 = null;
+        let drawingS3Urls = [];
+        let quotationS3Urls = [];
         if (process.env.AWS_ACCESS_KEY_ID) {
-            drawingS3 = await uploadLeadFileToS3(leadId, drawingFile.path, drawingFile.originalname, drawingFile.mimetype);
-            quotationS3 = await uploadLeadFileToS3(leadId, quotationFile.path, quotationFile.originalname, quotationFile.mimetype);
+            drawingS3Urls = await Promise.all(drawingFiles.map((f) => uploadLeadFileToS3(leadId, f.path, f.originalname, f.mimetype)));
+            quotationS3Urls = await Promise.all(quotationFiles.map((f) => uploadLeadFileToS3(leadId, f.path, f.originalname, f.mimetype)));
         }
-        await pool.query(`INSERT INTO lead_uploads
-         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc2_drawing', ?)`, [leadId, user.id, drawingFile.originalname, drawingFile.filename, drawingFile.path, drawingFile.mimetype, drawingFile.size, now, drawingS3]);
-        await pool.query(`INSERT INTO lead_uploads
-         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'dqc2_quotation', ?)`, [leadId, user.id, quotationFile.originalname, quotationFile.filename, quotationFile.path, quotationFile.mimetype, quotationFile.size, now, quotationS3]);
-        const ev = {
-            id: `dqc2-submission-${Date.now()}`,
-            type: "file_upload",
-            taskName: "DQC 2 submission",
-            milestoneName: "DQC2",
-            timestamp: now.toISOString(),
-            description: `DQC 2 submission: ${drawingFile.originalname}, ${quotationFile.originalname}`,
-            user: { name: user.name ?? "User" },
-            details: { kind: "dqc2_submission", drawing: drawingFile.originalname, quotation: quotationFile.originalname },
-        };
-        await addLeadHistoryEvent(leadId, ev);
-        // Also create a new DQC review entry in "pending" state so the DQC dashboard shows this lead again for DQC 2.
-        await pool.query(`INSERT INTO lead_dqc_reviews (lead_id, verdict, remarks, created_at, reviewed_by_user_id)
-         VALUES (?, ?, ?, ?, NULL)`, [leadId, "pending_dqc2", JSON.stringify([]), now]);
+        await persistDqc2SubmissionFromMeta(leadId, user, drawingFiles, quotationFiles, drawingS3Urls, quotationS3Urls);
         return res.status(201).json({ ok: true });
     }
     catch (err) {
@@ -4495,11 +4404,19 @@ app.get("/api/leads/:id/dqc2-submission-files", async (req, res) => {
         const list = rows || [];
         const uploadType = (r) => (r.uploadType ?? r.uploadtype ?? "").toString();
         const originalName = (r) => (r.originalName ?? r.originalname ?? "") || "";
-        const drawing = list.find((r) => uploadType(r) === "dqc2_drawing");
-        const quotation = list.find((r) => uploadType(r) === "dqc2_quotation");
+        const drawingFiles = list
+            .filter((r) => uploadType(r) === "dqc2_drawing")
+            .map((r) => ({ id: r.id, originalName: originalName(r) }));
+        const quotationFiles = list
+            .filter((r) => uploadType(r) === "dqc2_quotation")
+            .map((r) => ({ id: r.id, originalName: originalName(r) }));
+        const drawing = drawingFiles[0];
+        const quotation = quotationFiles[0];
         return res.json({
-            drawing: drawing ? { id: drawing.id, originalName: originalName(drawing) } : null,
-            quotation: quotation ? { id: quotation.id, originalName: originalName(quotation) } : null,
+            drawing: drawing ?? null,
+            quotation: quotation ?? null,
+            drawingFiles,
+            quotationFiles,
         });
     }
     catch (err) {
@@ -4865,6 +4782,156 @@ app.get("/api/designers", async (_req, res) => {
         res.status(500).json({ message: "Failed to load designers" });
     }
 });
+// Assignable designers for lead reassignment (admin/TDM/design_manager).
+app.get("/api/designers/assignable", async (req, res) => {
+    try {
+        const user = await getUserFromSession(req);
+        if (!user)
+            return res.status(401).json({ message: "Unauthorized" });
+        const role = (user.role || "").toLowerCase();
+        if (!canAssignLeads(role)) {
+            return res.status(403).json({ message: "Only admin, TDM, or design manager can reassign leads" });
+        }
+        if (role === "design_manager") {
+            const [rows] = await pool.query(`SELECT id, name, role
+         FROM users
+         WHERE role = 'design_manager' AND id = ?
+         UNION
+         SELECT id, name, role
+         FROM users
+         WHERE role = 'designer' AND design_manager_id = ?
+         ORDER BY name ASC`, [user.id, user.id]);
+            return res.json(rows);
+        }
+        const [rows] = await pool.query(`SELECT id, name, role
+       FROM users
+       WHERE role IN ('designer', 'design_manager')
+       ORDER BY name ASC`);
+        return res.json(rows);
+    }
+    catch (err) {
+        console.error("designers/assignable error", err);
+        return res.status(500).json({ message: "Failed to load assignable designers" });
+    }
+});
+// Assign a single lead to a designer/design manager.
+app.post("/api/leads/:id/assign-designer", async (req, res) => {
+    try {
+        const leadId = Number(req.params.id);
+        if (!leadId)
+            return res.status(400).json({ message: "Invalid lead id" });
+        const user = await getUserFromSession(req);
+        if (!user)
+            return res.status(401).json({ message: "Unauthorized" });
+        const role = (user.role || "").toLowerCase();
+        if (!canAssignLeads(role)) {
+            return res.status(403).json({ message: "Only admin, TDM, or design manager can reassign leads" });
+        }
+        const designerId = Number(req.body?.designerId);
+        if (!designerId)
+            return res.status(400).json({ message: "designerId is required" });
+        const [leadRows] = await pool.query("SELECT id, assigned_designer_id FROM leads WHERE id = ? LIMIT 1", [leadId]);
+        const lead = leadRows[0];
+        if (!lead)
+            return res.status(404).json({ message: "Lead not found" });
+        if (role === "design_manager") {
+            const [visibilityRows] = await pool.query(`SELECT 1
+         FROM leads l
+         INNER JOIN users d ON d.id = l.assigned_designer_id
+         WHERE l.id = ? AND d.design_manager_id = ?`, [leadId, user.id]);
+            if (visibilityRows.length === 0) {
+                return res.status(403).json({ message: "You can reassign only leads from your team" });
+            }
+        }
+        const [designerRows] = await pool.query("SELECT id, name, role, design_manager_id FROM users WHERE id = ? AND role IN ('designer', 'design_manager') LIMIT 1", [designerId]);
+        const designer = designerRows[0];
+        if (!designer)
+            return res.status(400).json({ message: "Invalid designer selected" });
+        if (role === "design_manager") {
+            const allowed = (designer.role === "design_manager" && designer.id === user.id) ||
+                (designer.role === "designer" && Number(designer.design_manager_id) === Number(user.id));
+            if (!allowed) {
+                return res.status(403).json({ message: "You can assign only to yourself or your designers" });
+            }
+        }
+        await pool.query("UPDATE leads SET assigned_designer_id = ?, update_at = ? WHERE id = ?", [
+            designerId,
+            new Date(),
+            leadId,
+        ]);
+        return res.json({
+            ok: true,
+            leadId,
+            assignedDesignerId: designerId,
+            designerName: designer.name,
+        });
+    }
+    catch (err) {
+        console.error("assign-designer error", err);
+        return res.status(500).json({ message: "Failed to assign lead" });
+    }
+});
+// Bulk assign multiple leads to one designer.
+app.post("/api/leads/assign-designer/bulk", async (req, res) => {
+    try {
+        const user = await getUserFromSession(req);
+        if (!user)
+            return res.status(401).json({ message: "Unauthorized" });
+        const role = (user.role || "").toLowerCase();
+        if (!canAssignLeads(role)) {
+            return res.status(403).json({ message: "Only admin, TDM, or design manager can reassign leads" });
+        }
+        const leadIds = Array.isArray(req.body?.leadIds)
+            ? req.body.leadIds
+                .map((v) => Number(v))
+                .filter((v) => Number.isFinite(v) && v > 0)
+            : [];
+        const designerId = Number(req.body?.designerId);
+        if (leadIds.length === 0)
+            return res.status(400).json({ message: "leadIds are required" });
+        if (!designerId)
+            return res.status(400).json({ message: "designerId is required" });
+        const [designerRows] = await pool.query("SELECT id, name, role, design_manager_id FROM users WHERE id = ? AND role IN ('designer', 'design_manager') LIMIT 1", [designerId]);
+        const designer = designerRows[0];
+        if (!designer)
+            return res.status(400).json({ message: "Invalid designer selected" });
+        if (role === "design_manager") {
+            const allowed = (designer.role === "design_manager" && designer.id === user.id) ||
+                (designer.role === "designer" && Number(designer.design_manager_id) === Number(user.id));
+            if (!allowed) {
+                return res.status(403).json({ message: "You can assign only to yourself or your designers" });
+            }
+        }
+        const updatedLeadIds = [];
+        for (const leadId of leadIds) {
+            if (role === "design_manager") {
+                const [visibilityRows] = await pool.query(`SELECT 1
+           FROM leads l
+           INNER JOIN users d ON d.id = l.assigned_designer_id
+           WHERE l.id = ? AND d.design_manager_id = ?`, [leadId, user.id]);
+                if (visibilityRows.length === 0)
+                    continue;
+            }
+            await pool.query("UPDATE leads SET assigned_designer_id = ?, update_at = ? WHERE id = ?", [
+                designerId,
+                new Date(),
+                leadId,
+            ]);
+            updatedLeadIds.push(leadId);
+        }
+        return res.json({
+            ok: true,
+            updatedCount: updatedLeadIds.length,
+            updatedLeadIds,
+            assignedDesignerId: designerId,
+            designerName: designer.name,
+        });
+    }
+    catch (err) {
+        console.error("assign-designer bulk error", err);
+        return res.status(500).json({ message: "Failed to bulk assign leads" });
+    }
+});
 // Lead detail by id (for /Leads/[id]); MMT executives only get leads they're assigned to
 app.get("/api/leads/:id", async (req, res) => {
     const id = Number(req.params.id);
@@ -5031,6 +5098,17 @@ app.post("/api/leads/:id/resume", async (req, res) => {
         console.error("resume error", err);
         res.status(500).json({ message: "Failed to resume project" });
     }
+});
+(0, prolanceApi_1.registerProlanceRoutes)(app, pool, getUserFromSession);
+// Ensure CORS headers are present on error responses (multer, etc.) so the browser doesn't only show a generic CORS error
+app.use((err, req, res, _next) => {
+    reflectCorsHeaders(req, res);
+    if (err instanceof multer_1.default.MulterError) {
+        return res.status(400).json({ message: err.message });
+    }
+    const msg = err instanceof Error ? err.message : "Server error";
+    console.error("Express error:", err);
+    return res.status(500).json({ message: msg });
 });
 // ----- Keep process alive on unhandled errors (log instead of exit) -----
 process.on("uncaughtException", (err) => {
