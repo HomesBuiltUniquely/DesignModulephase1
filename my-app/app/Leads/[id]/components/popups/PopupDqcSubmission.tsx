@@ -48,8 +48,8 @@ export default function PopupDqcSubmission({
   onSubmit,
   onUploadSuccess,
 }: Props) {
-  const [drawingFile, setDrawingFile] = useState<File | null>(null);
-  const [quotationFile, setQuotationFile] = useState<File | null>(null);
+  const [drawingFiles, setDrawingFiles] = useState<File[]>([]);
+  const [quotationFiles, setQuotationFiles] = useState<File[]>([]);
   const [drawingDrag, setDrawingDrag] = useState(false);
   const [quotationDrag, setQuotationDrag] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -60,19 +60,19 @@ export default function PopupDqcSubmission({
   const handleDrawingDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDrawingDrag(false);
-    const f = e.dataTransfer.files?.[0];
-    if (f) setDrawingFile(f);
+    const files = Array.from(e.dataTransfer.files || []);
+    if (files.length > 0) setDrawingFiles((prev) => [...prev, ...files]);
   };
 
   const handleQuotationDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setQuotationDrag(false);
-    const f = e.dataTransfer.files?.[0];
-    if (f) setQuotationFile(f);
+    const files = Array.from(e.dataTransfer.files || []);
+    if (files.length > 0) setQuotationFiles((prev) => [...prev, ...files]);
   };
 
   const handleSubmit = async () => {
-    if (!drawingFile || !quotationFile || !leadId || !sessionId) return;
+    if (drawingFiles.length === 0 || quotationFiles.length === 0 || !leadId || !sessionId) return;
     setSubmitError(null);
     setSubmitting(true);
     try {
@@ -84,29 +84,45 @@ export default function PopupDqcSubmission({
         method: 'POST',
         headers: { ...authHeaders, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          drawingName: drawingFile.name,
-          drawingMime: drawingFile.type || 'application/octet-stream',
-          quotationName: quotationFile.name,
-          quotationMime: quotationFile.type || 'application/octet-stream',
+          drawings: drawingFiles.map((f) => ({
+            name: f.name,
+            mime: f.type || 'application/octet-stream',
+          })),
+          quotations: quotationFiles.map((f) => ({
+            name: f.name,
+            mime: f.type || 'application/octet-stream',
+          })),
         }),
       });
 
       if (presignRes.ok) {
         const presign = (await presignRes.json()) as {
-          drawing: { uploadUrl: string; key: string; contentType: string };
-          quotation: { uploadUrl: string; key: string; contentType: string };
+          drawings: Array<{ uploadUrl: string; key: string; contentType: string }>;
+          quotations: Array<{ uploadUrl: string; key: string; contentType: string }>;
         };
-        const putD = await fetch(presign.drawing.uploadUrl, {
-          method: 'PUT',
-          body: drawingFile,
-          headers: { 'Content-Type': presign.drawing.contentType },
-        });
-        const putQ = await fetch(presign.quotation.uploadUrl, {
-          method: 'PUT',
-          body: quotationFile,
-          headers: { 'Content-Type': presign.quotation.contentType },
-        });
-        if (!putD.ok || !putQ.ok) {
+        if (presign.drawings.length !== drawingFiles.length || presign.quotations.length !== quotationFiles.length) {
+          setSubmitError('Upload preparation mismatch. Please try again.');
+          return;
+        }
+        const drawingResults = await Promise.all(
+          presign.drawings.map((u, idx) =>
+            fetch(u.uploadUrl, {
+              method: 'PUT',
+              body: drawingFiles[idx],
+              headers: { 'Content-Type': u.contentType },
+            }),
+          ),
+        );
+        const quotationResults = await Promise.all(
+          presign.quotations.map((u, idx) =>
+            fetch(u.uploadUrl, {
+              method: 'PUT',
+              body: quotationFiles[idx],
+              headers: { 'Content-Type': u.contentType },
+            }),
+          ),
+        );
+        if (drawingResults.some((r) => !r.ok) || quotationResults.some((r) => !r.ok)) {
           setSubmitError('Upload to storage failed. Check S3 bucket CORS or try again.');
           return;
         }
@@ -114,10 +130,10 @@ export default function PopupDqcSubmission({
           method: 'POST',
           headers: { ...authHeaders, 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            drawingKey: presign.drawing.key,
-            quotationKey: presign.quotation.key,
-            drawingName: drawingFile.name,
-            quotationName: quotationFile.name,
+            drawingKeys: presign.drawings.map((u) => u.key),
+            quotationKeys: presign.quotations.map((u) => u.key),
+            drawingNames: drawingFiles.map((f) => f.name),
+            quotationNames: quotationFiles.map((f) => f.name),
           }),
         });
         const doneData = await done.json().catch(() => ({}));
@@ -144,8 +160,8 @@ export default function PopupDqcSubmission({
       }
 
       const form = new FormData();
-      form.append('drawing', drawingFile);
-      form.append('quotation', quotationFile);
+      drawingFiles.forEach((f) => form.append('drawing', f));
+      quotationFiles.forEach((f) => form.append('quotation', f));
       const res = await fetch(`${API}/api/leads/${leadId}/${endpoint}`, {
         method: 'POST',
         headers: authHeaders,
@@ -165,7 +181,7 @@ export default function PopupDqcSubmission({
     }
   };
 
-  const canSubmit = Boolean(drawingFile && quotationFile);
+  const canSubmit = drawingFiles.length > 0 && quotationFiles.length > 0;
 
   return (
     <>
@@ -193,7 +209,7 @@ export default function PopupDqcSubmission({
         {/* Final Sketchup Drawing */}
         <div>
           <div className="flex justify-between items-center mb-2">
-            <span className="font-bold text-sm uppercase text-gray-800">Final Sketchup Drawing</span>
+            <span className="font-bold text-sm uppercase text-gray-800">Final Design PDFs</span>
             <span className="text-xs text-gray-500">(.skp, .dwg, .pdf, .zip)</span>
           </div>
           <div
@@ -207,14 +223,19 @@ export default function PopupDqcSubmission({
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m.75 12 3 3m0 0 3-3m-3 3v-6m-1.5-9H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
               </svg>
               <p className="font-semibold text-gray-700">Drag and drop drawing files here</p>
-              <p className="text-sm text-gray-500">Upload final drawing file for DQC verification</p>
-              {drawingFile && <p className="text-sm text-green-700 font-medium">{drawingFile.name}</p>}
+              <p className="text-sm text-gray-500">Upload final drawing files for DQC verification</p>
+              {drawingFiles.length > 0 && (
+                <p className="text-sm text-green-700 font-medium text-left w-full">
+                  {drawingFiles.map((f) => f.name).join(', ')}
+                </p>
+              )}
               <input
                 ref={drawingInputRef}
                 type="file"
+                multiple
                 accept={DRAWING_ACCEPT}
                 className="hidden"
-                onChange={(e) => setDrawingFile(e.target.files?.[0] ?? null)}
+                onChange={(e) => setDrawingFiles(Array.from(e.target.files || []))}
               />
               <button
                 type="button"
@@ -244,14 +265,19 @@ export default function PopupDqcSubmission({
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
               </svg>
               <p className="font-semibold text-gray-700">Drag and drop quotation files here</p>
-              <p className="text-sm text-gray-500">Upload final quotation aligned with design</p>
-              {quotationFile && <p className="text-sm text-green-700 font-medium">{quotationFile.name}</p>}
+              <p className="text-sm text-gray-500">Upload final quotation files aligned with design</p>
+              {quotationFiles.length > 0 && (
+                <p className="text-sm text-green-700 font-medium text-left w-full">
+                  {quotationFiles.map((f) => f.name).join(', ')}
+                </p>
+              )}
               <input
                 ref={quotationInputRef}
                 type="file"
+                multiple
                 accept={QUOTATION_ACCEPT}
                 className="hidden"
-                onChange={(e) => setQuotationFile(e.target.files?.[0] ?? null)}
+                onChange={(e) => setQuotationFiles(Array.from(e.target.files || []))}
               />
               <button
                 type="button"

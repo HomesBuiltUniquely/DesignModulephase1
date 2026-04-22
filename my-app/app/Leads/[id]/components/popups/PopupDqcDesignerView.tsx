@@ -20,6 +20,8 @@ type DqcRemark = {
   xPct?: number;
   yPct?: number;
   pinNumber?: number;
+  uploadId?: number;
+  uploadName?: string;
 };
 type DqcReview = {
   id: number;
@@ -59,6 +61,8 @@ export default function PopupDqcDesignerView({
   const [pdfLoading, setPdfLoading] = useState(false);
   const [pdfPageNumber, setPdfPageNumber] = useState(1);
   const [pdfNumPages, setPdfNumPages] = useState(0);
+  const [submissionFiles, setSubmissionFiles] = useState<Array<{ id: number; originalName: string }>>([]);
+  const [selectedFileId, setSelectedFileId] = useState<number | null>(null);
   const [highlightedRemarkIndex, setHighlightedRemarkIndex] = useState<number | null>(null);
   const pdfBlobUrlRef = useRef<string | null>(null);
 
@@ -85,6 +89,26 @@ export default function PopupDqcDesignerView({
 
   // Load the same PDF that DQC reviewed (DQC 1 or DQC 2 submission file) so designers see it with comments
   const submissionFilesEndpoint = submissionVariant === 'dqc2' ? 'dqc2-submission-files' : 'dqc-submission-files';
+  const loadFileBlob = useCallback((fileToLoad: { id: number; originalName: string }) => {
+    if (!leadId || !sessionId) return Promise.resolve();
+    const url = `${API}/api/leads/${leadId}/uploads/${fileToLoad.id}/file?path=${encodeURIComponent(fileToLoad.originalName)}`;
+    return fetch(url, { headers: { Authorization: `Bearer ${sessionId}` } })
+      .then((r) => (r.ok ? r.blob() : null))
+      .then((blob) => {
+        if (!blob) return;
+        setPdfLoading(false);
+        if (blob.type === 'application/pdf') {
+          if (pdfBlobUrlRef.current) URL.revokeObjectURL(pdfBlobUrlRef.current);
+          const blobUrl = URL.createObjectURL(blob);
+          pdfBlobUrlRef.current = blobUrl;
+          setPdfUrl(blobUrl);
+          setPdfPageNumber(1);
+        } else {
+          setPdfUrl(null);
+        }
+      });
+  }, [leadId, sessionId]);
+
   useEffect(() => {
     if (!leadId || !sessionId || !review) return;
     setPdfLoading(true);
@@ -93,29 +117,19 @@ export default function PopupDqcDesignerView({
       headers: { Authorization: `Bearer ${sessionId}` },
     })
       .then((res) => (res.ok ? res.json() : null))
-      .then((data: { drawing?: { id: number; originalName: string }; quotation?: { id: number; originalName: string } } | null) => {
+      .then((data: { drawing?: { id: number; originalName: string }; quotation?: { id: number; originalName: string }; drawingFiles?: Array<{ id: number; originalName: string }>; quotationFiles?: Array<{ id: number; originalName: string }> } | null) => {
         if (cancelled) return;
-        const drawing = data?.drawing;
-        const quotation = data?.quotation;
-        const fileToLoad = drawing ?? quotation ?? null;
+        const drawingFiles = Array.isArray(data?.drawingFiles) ? data.drawingFiles : [];
+        const quotationFiles = Array.isArray(data?.quotationFiles) ? data.quotationFiles : [];
+        const allFiles = [...drawingFiles, ...quotationFiles];
+        setSubmissionFiles(allFiles);
+        const fileToLoad = allFiles[0] ?? data?.drawing ?? data?.quotation ?? null;
         if (!fileToLoad) {
           setPdfLoading(false);
           return;
         }
-        const url = `${API}/api/leads/${leadId}/uploads/${fileToLoad.id}/file?path=${encodeURIComponent(fileToLoad.originalName)}`;
-        return fetch(url, { headers: { Authorization: `Bearer ${sessionId}` } })
-          .then((r) => (r.ok ? r.blob() : null))
-          .then((blob) => {
-            if (!blob || cancelled) return;
-            setPdfLoading(false);
-            if (blob.type === 'application/pdf') {
-              if (pdfBlobUrlRef.current) URL.revokeObjectURL(pdfBlobUrlRef.current);
-              const blobUrl = URL.createObjectURL(blob);
-              pdfBlobUrlRef.current = blobUrl;
-              setPdfUrl(blobUrl);
-              setPdfPageNumber(1);
-            }
-          });
+        setSelectedFileId(fileToLoad.id);
+        return loadFileBlob(fileToLoad);
       })
       .catch(() => {
         if (!cancelled) setPdfLoading(false);
@@ -127,7 +141,7 @@ export default function PopupDqcDesignerView({
         pdfBlobUrlRef.current = null;
       }
     };
-  }, [leadId, sessionId, review?.id, submissionVariant]);
+  }, [leadId, sessionId, review?.id, submissionVariant, loadFileBlob]);
 
   const markSolved = async (index: number) => {
     if (!leadId || !sessionId) return;
@@ -145,10 +159,18 @@ export default function PopupDqcDesignerView({
 
   const isRejected = review?.verdict === 'rejected';
   const hasRemarks = review?.remarks?.length && review.remarks.length > 0;
-  const remarksWithPosition = review?.remarks?.filter((r) => r.page != null && r.xPct != null && r.yPct != null) ?? [];
+  const visibleRemarks = (review?.remarks ?? []).filter((r) =>
+    selectedFileId == null ? true : r.uploadId == null || r.uploadId === selectedFileId
+  );
+  const remarksWithPosition = visibleRemarks.filter((r) => r.page != null && r.xPct != null && r.yPct != null) ?? [];
   const remarksWithPositionAndIndex = (review?.remarks ?? [])
     .map((r, index) => ({ remark: r, index }))
-    .filter(({ remark }) => remark.page != null && remark.xPct != null && remark.yPct != null);
+    .filter(({ remark }) =>
+      (selectedFileId == null || remark.uploadId == null || remark.uploadId === selectedFileId) &&
+      remark.page != null &&
+      remark.xPct != null &&
+      remark.yPct != null
+    );
 
   const goToComment = useCallback((index: number) => {
     const r = review?.remarks?.[index];
@@ -173,6 +195,24 @@ export default function PopupDqcDesignerView({
         <div className="flex-1 flex flex-col min-w-0 border-r border-gray-200 bg-gray-50">
           <div className="px-4 py-2 border-b border-gray-200 bg-white flex items-center gap-2 flex-wrap">
             <span className="text-sm font-medium text-gray-700">PDF under review</span>
+            {submissionFiles.length > 1 && (
+              <select
+                value={selectedFileId ?? submissionFiles[0].id}
+                onChange={(e) => {
+                  const id = Number(e.target.value);
+                  const file = submissionFiles.find((f) => f.id === id);
+                  if (!file) return;
+                  setSelectedFileId(id);
+                  setPdfLoading(true);
+                  loadFileBlob(file);
+                }}
+                className="px-2 py-1 rounded border border-gray-300 text-sm max-w-[220px]"
+              >
+                {submissionFiles.map((f) => (
+                  <option key={f.id} value={f.id}>{f.originalName}</option>
+                ))}
+              </select>
+            )}
             <span className="text-xs text-gray-500">
               Page {pdfPageNumber} of {pdfNumPages || 1}
             </span>
@@ -275,10 +315,13 @@ export default function PopupDqcDesignerView({
                 </p>
               </div>
 
-              <h5 className="font-semibold text-gray-900 mb-2">Comments ({review.remarks.length})</h5>
+                <h5 className="font-semibold text-gray-900 mb-2">Comments ({visibleRemarks.length})</h5>
               <p className="text-xs text-gray-500 mb-3">Mark each as solved when you have addressed it.</p>
               <div className="space-y-3">
-                {review.remarks.map((r, index) => {
+                {review.remarks
+                  .map((r, index) => ({ r, index }))
+                  .filter(({ r }) => selectedFileId == null || r.uploadId == null || r.uploadId === selectedFileId)
+                  .map(({ r, index }) => {
                   const hasPosition = r.page != null && r.xPct != null && r.yPct != null;
                   const isHighlighted = highlightedRemarkIndex === index && (r.page ?? 1) === pdfPageNumber;
                   return (

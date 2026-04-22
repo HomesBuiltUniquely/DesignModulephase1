@@ -115,6 +115,8 @@ export default function ProjectDetailPage() {
     const [dqc1SubmissionLoadError, setDqc1SubmissionLoadError] = useState<string | null>(null);
     const [dqc1SubmissionNotPdf, setDqc1SubmissionNotPdf] = useState(false);
     const [dqc1SubmissionLoading, setDqc1SubmissionLoading] = useState(false);
+    const [dqcSubmissionFiles, setDqcSubmissionFiles] = useState<Array<{ id: number; originalName: string }>>([]);
+    const [selectedDqcSubmissionFileId, setSelectedDqcSubmissionFileId] = useState<number | null>(null);
     const [dqc1SelectedPin, setDqc1SelectedPin] = useState<number | null>(null);
     const [dqc1HighlightedPin, setDqc1HighlightedPin] = useState<number | null>(null);
     // Design upload (First cut design popup): selected files
@@ -237,6 +239,34 @@ export default function ProjectDetailPage() {
             .catch(() => {});
     }, [projectId, sessionId]);
 
+    const loadDqcFileBlob = useCallback((fileToLoad: { id: number; originalName: string }) => {
+        if (!projectId || !sessionId) return Promise.resolve();
+        const url = `${API}/api/leads/${projectId}/uploads/${fileToLoad.id}/file?path=${encodeURIComponent(fileToLoad.originalName)}`;
+        return fetch(url, { headers: { Authorization: `Bearer ${sessionId}` } })
+            .then((r) => {
+                if (!r.ok) return Promise.reject(new Error(r.status === 404 ? 'File not found.' : 'Could not load file.'));
+                return r.blob();
+            })
+            .then((blob) => {
+                if (!blob) return;
+                setDqc1SubmissionLoading(false);
+                const isPdf = blob.type === 'application/pdf';
+                setDqc1SubmissionNotPdf(!isPdf);
+                setDqc1PdfFile(new File([blob], fileToLoad.originalName, { type: blob.type }));
+                setDqc1PdfPageNumber(1);
+                setDqc1CommentPopup(null);
+                setDqc1SelectedPin(null);
+                if (isPdf) {
+                    if (dqc1SubmissionBlobUrlRef.current) URL.revokeObjectURL(dqc1SubmissionBlobUrlRef.current);
+                    const blobUrl = URL.createObjectURL(blob);
+                    dqc1SubmissionBlobUrlRef.current = blobUrl;
+                    setDqc1PdfUrl(blobUrl);
+                } else {
+                    setDqc1PdfUrl(null);
+                }
+            });
+    }, [projectId, sessionId]);
+
     // Load the file(s) uploaded in DQC 1 submission (same as in "Files Uploaded") for the Design QC Review panel. Callable so DQC can retry.
     const loadDqcSubmissionFile = useCallback(() => {
         if (!projectId || !sessionId) return;
@@ -262,50 +292,29 @@ export default function ProjectDetailPage() {
                 }
                 return res.json();
             })
-            .then((data: { drawing?: { id: number; originalName: string }; quotation?: { id: number; originalName: string } } | null) => {
+            .then((data: { drawing?: { id: number; originalName: string }; quotation?: { id: number; originalName: string }; drawingFiles?: Array<{ id: number; originalName: string }>; quotationFiles?: Array<{ id: number; originalName: string }> } | null) => {
                 if (data === null) return;
-                const drawing = data?.drawing;
-                const quotation = data?.quotation;
-                const fileToLoad = drawing ?? quotation ?? null;
+                const drawingFiles = Array.isArray(data?.drawingFiles) ? data.drawingFiles : [];
+                const quotationFiles = Array.isArray(data?.quotationFiles) ? data.quotationFiles : [];
+                const allFiles = [...drawingFiles, ...quotationFiles];
+                setDqcSubmissionFiles(allFiles);
+                const fileToLoad = allFiles[0] ?? data?.drawing ?? data?.quotation ?? null;
                 if (!fileToLoad) {
                     setDqc1SubmissionLoadError('No DQC submission files found for this lead.');
                     setDqc1SubmissionLoading(false);
                     return;
                 }
-                const url = `${API}/api/leads/${projectId}/uploads/${fileToLoad.id}/file?path=${encodeURIComponent(fileToLoad.originalName)}`;
-                return fetch(url, { headers: { Authorization: `Bearer ${sessionId}` } })
-                    .then((r) => {
-                        if (!r.ok) return Promise.reject(new Error(r.status === 404 ? 'File not found.' : 'Could not load file.'));
-                        return r.blob();
-                    })
-                    .then((blob) => {
-                        if (!blob) return;
-                        setDqc1SubmissionLoading(false);
-                        const isPdf = blob.type === 'application/pdf';
-                        setDqc1SubmissionNotPdf(!isPdf);
-                        setDqc1PdfFile(new File([blob], fileToLoad.originalName, { type: blob.type }));
-                        setDqc1PdfPageNumber(1);
-                        setDqc1CommentPopup(null);
-                        setDqc1SelectedPin(null);
-                        if (isPdf) {
-                            if (dqc1SubmissionBlobUrlRef.current) URL.revokeObjectURL(dqc1SubmissionBlobUrlRef.current);
-                            const blobUrl = URL.createObjectURL(blob);
-                            dqc1SubmissionBlobUrlRef.current = blobUrl;
-                            setDqc1PdfUrl(blobUrl);
-                        } else {
-                            setDqc1PdfUrl(null);
-                        }
-                    })
-                    .catch((err) => {
-                        setDqc1SubmissionLoadError(err?.message || 'Could not load the submitted file. Use "Choose PDF" to load a file manually.');
-                        setDqc1SubmissionLoading(false);
-                    });
+                setSelectedDqcSubmissionFileId(fileToLoad.id);
+                return loadDqcFileBlob(fileToLoad).catch((err) => {
+                    setDqc1SubmissionLoadError(err?.message || 'Could not load the submitted file. Use "Choose PDF" to load a file manually.');
+                    setDqc1SubmissionLoading(false);
+                });
             })
             .catch(() => {
                 setDqc1SubmissionLoadError('Could not load DQC submission files. Check your connection and try again.');
                 setDqc1SubmissionLoading(false);
             });
-    }, [projectId, sessionId]);
+    }, [projectId, sessionId, loadDqcFileBlob]);
 
     const loadDqc2SubmissionFile = useCallback(() => {
         if (!projectId || !sessionId) return;
@@ -331,50 +340,29 @@ export default function ProjectDetailPage() {
                 }
                 return res.json();
             })
-            .then((data: { drawing?: { id: number; originalName: string }; quotation?: { id: number; originalName: string } } | null) => {
+            .then((data: { drawing?: { id: number; originalName: string }; quotation?: { id: number; originalName: string }; drawingFiles?: Array<{ id: number; originalName: string }>; quotationFiles?: Array<{ id: number; originalName: string }> } | null) => {
                 if (data === null) return;
-                const drawing = data?.drawing;
-                const quotation = data?.quotation;
-                const fileToLoad = drawing ?? quotation ?? null;
+                const drawingFiles = Array.isArray(data?.drawingFiles) ? data.drawingFiles : [];
+                const quotationFiles = Array.isArray(data?.quotationFiles) ? data.quotationFiles : [];
+                const allFiles = [...drawingFiles, ...quotationFiles];
+                setDqcSubmissionFiles(allFiles);
+                const fileToLoad = allFiles[0] ?? data?.drawing ?? data?.quotation ?? null;
                 if (!fileToLoad) {
                     setDqc1SubmissionLoadError('No DQC 2 submission files found for this lead.');
                     setDqc1SubmissionLoading(false);
                     return;
                 }
-                const url = `${API}/api/leads/${projectId}/uploads/${fileToLoad.id}/file?path=${encodeURIComponent(fileToLoad.originalName)}`;
-                return fetch(url, { headers: { Authorization: `Bearer ${sessionId}` } })
-                    .then((r) => {
-                        if (!r.ok) return Promise.reject(new Error(r.status === 404 ? 'File not found.' : 'Could not load file.'));
-                        return r.blob();
-                    })
-                    .then((blob) => {
-                        if (!blob) return;
-                        setDqc1SubmissionLoading(false);
-                        const isPdf = blob.type === 'application/pdf';
-                        setDqc1SubmissionNotPdf(!isPdf);
-                        setDqc1PdfFile(new File([blob], fileToLoad.originalName, { type: blob.type }));
-                        setDqc1PdfPageNumber(1);
-                        setDqc1CommentPopup(null);
-                        setDqc1SelectedPin(null);
-                        if (isPdf) {
-                            if (dqc1SubmissionBlobUrlRef.current) URL.revokeObjectURL(dqc1SubmissionBlobUrlRef.current);
-                            const blobUrl = URL.createObjectURL(blob);
-                            dqc1SubmissionBlobUrlRef.current = blobUrl;
-                            setDqc1PdfUrl(blobUrl);
-                        } else {
-                            setDqc1PdfUrl(null);
-                        }
-                    })
-                    .catch((err) => {
-                        setDqc1SubmissionLoadError(err?.message || 'Could not load the submitted file.');
-                        setDqc1SubmissionLoading(false);
-                    });
+                setSelectedDqcSubmissionFileId(fileToLoad.id);
+                return loadDqcFileBlob(fileToLoad).catch((err) => {
+                    setDqc1SubmissionLoadError(err?.message || 'Could not load the submitted file.');
+                    setDqc1SubmissionLoading(false);
+                });
             })
             .catch(() => {
                 setDqc1SubmissionLoadError('Could not load DQC 2 submission files.');
                 setDqc1SubmissionLoading(false);
             });
-    }, [projectId, sessionId]);
+    }, [projectId, sessionId, loadDqcFileBlob]);
 
     // When DQC 1 approval popup opens, auto-load DQC 1 submission file
     useEffect(() => {
@@ -535,6 +523,8 @@ export default function ProjectDetailPage() {
         setDqc1PdfNumPages(0);
         setDqc1PdfPageNumber(1);
         setDqc1PdfFile(null);
+        setDqcSubmissionFiles([]);
+        setSelectedDqcSubmissionFileId(null);
         setDqc1PdfMaximized(false);
         if (dqc1PdfUrl) URL.revokeObjectURL(dqc1PdfUrl);
         setDqc1PdfUrl(null);
@@ -558,6 +548,8 @@ export default function ProjectDetailPage() {
                 xPct: position.xPct,
                 yPct: position.yPct,
                 page: position.page,
+                uploadId: selectedDqcSubmissionFileId ?? undefined,
+                uploadName: dqc1PdfFile?.name ?? undefined,
                 docX: position.docX,
                 docY: position.docY,
             },
@@ -599,6 +591,7 @@ export default function ProjectDetailPage() {
         setDqc1AnnotateMode(false);
         setDqc1CommentPopup(null);
         setDqc1SelectedPin(null);
+        setSelectedDqcSubmissionFileId(null);
         setDqc1PdfPageNumber(1);
         if (dqc1PdfUrl) URL.revokeObjectURL(dqc1PdfUrl);
         setDqc1PdfUrl(URL.createObjectURL(file));
@@ -708,6 +701,22 @@ export default function ProjectDetailPage() {
                     // Force UI to show 40% PAYMENT as current milestone after DQC2 approval.
                     setCurrentMilestoneIndex(5);
                 } else {
+                    // DQC1 approval should move lead to next stage reliably.
+                    // Mark all DQC1 tasks complete when verdict is approved.
+                    const dqc1Tasks = [
+                        'First cut design + quotation discussion meeting request',
+                        'meeting completed',
+                        'DQC 1 submission - dwg + quotation',
+                        'DQC 1 approval',
+                    ];
+                    dqc1Tasks.forEach((t: string) => {
+                        fetch(`${API}/api/leads/${projectId}/complete-task`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ milestoneIndex: 1, taskName: t }),
+                        }).catch(() => {});
+                        markTaskComplete(1, t);
+                    });
                     // DQC1: mark only the approval task; other tasks should already be completed manually.
                     fetch(`${API}/api/leads/${projectId}/complete-task`, {
                         method: 'POST',
@@ -733,6 +742,8 @@ export default function ProjectDetailPage() {
                             xPct: r.xPct,
                             yPct: r.yPct,
                             pinNumber: r.pinNumber,
+                            uploadId: r.uploadId,
+                            uploadName: r.uploadName,
                         })),
                     }),
                 }).catch(() => {});
@@ -911,7 +922,19 @@ export default function ProjectDetailPage() {
                         dqc1SubmissionLoadError={dqc1SubmissionLoadError}
                         dqc1SubmissionNotPdf={dqc1SubmissionNotPdf}
                         dqc1SubmissionLoading={dqc1SubmissionLoading}
-                        onLoadDqcSubmission={loadDqcSubmissionFile}
+                        onLoadDqcSubmission={dqcStage === 'dqc2' ? loadDqc2SubmissionFile : loadDqcSubmissionFile}
+                        dqcSubmissionFiles={dqcSubmissionFiles}
+                        selectedDqcSubmissionFileId={selectedDqcSubmissionFileId}
+                        onSelectDqcSubmissionFile={(id) => {
+                            const file = dqcSubmissionFiles.find((f) => f.id === id);
+                            if (!file) return;
+                            setSelectedDqcSubmissionFileId(id);
+                            setDqc1SubmissionLoading(true);
+                            loadDqcFileBlob(file).catch(() => {
+                                setDqc1SubmissionLoadError('Could not load selected file.');
+                                setDqc1SubmissionLoading(false);
+                            });
+                        }}
                     />
                 </div>
             </div>
@@ -1349,6 +1372,18 @@ export default function ProjectDetailPage() {
                                 dqc1SubmissionNotPdf={dqc1SubmissionNotPdf}
                                 dqc1SubmissionLoading={dqc1SubmissionLoading}
                                 onLoadDqcSubmission={loadDqc2SubmissionFile}
+                                dqcSubmissionFiles={dqcSubmissionFiles}
+                                selectedDqcSubmissionFileId={selectedDqcSubmissionFileId}
+                                onSelectDqcSubmissionFile={(id) => {
+                                    const file = dqcSubmissionFiles.find((f) => f.id === id);
+                                    if (!file) return;
+                                    setSelectedDqcSubmissionFileId(id);
+                                    setDqc1SubmissionLoading(true);
+                                    loadDqcFileBlob(file).catch(() => {
+                                        setDqc1SubmissionLoadError('Could not load selected file.');
+                                        setDqc1SubmissionLoading(false);
+                                    });
+                                }}
                             />
                         )
                     )}
@@ -1549,6 +1584,18 @@ export default function ProjectDetailPage() {
                                 dqc1SubmissionNotPdf={dqc1SubmissionNotPdf}
                                 dqc1SubmissionLoading={dqc1SubmissionLoading}
                                 onLoadDqcSubmission={loadDqcSubmissionFile}
+                                dqcSubmissionFiles={dqcSubmissionFiles}
+                                selectedDqcSubmissionFileId={selectedDqcSubmissionFileId}
+                                onSelectDqcSubmissionFile={(id) => {
+                                    const file = dqcSubmissionFiles.find((f) => f.id === id);
+                                    if (!file) return;
+                                    setSelectedDqcSubmissionFileId(id);
+                                    setDqc1SubmissionLoading(true);
+                                    loadDqcFileBlob(file).catch(() => {
+                                        setDqc1SubmissionLoadError('Could not load selected file.');
+                                        setDqc1SubmissionLoading(false);
+                                    });
+                                }}
                             />
                         )
                     )}

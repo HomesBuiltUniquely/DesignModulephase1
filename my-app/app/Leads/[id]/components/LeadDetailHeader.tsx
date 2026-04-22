@@ -1,8 +1,11 @@
 'use client';
 
+import { useState } from 'react';
+import { useAuth } from '@/app/auth/AuthContext';
 import type { LeadshipTypes } from '@/app/Components/Types/Types';
 import type { ImageType } from '../types';
 import MileStonesArray from '@/app/Components/Types/MileStoneArray';
+import { getApiBase } from '@/app/lib/apiBase';
 
 type Props = {
     project: LeadshipTypes;
@@ -21,6 +24,7 @@ type Props = {
 };
 
 const TOTAL_STAGES = MileStonesArray.MilestonesName.length;
+const API = getApiBase();
 
 /**
  * Lead/Project detail page header: PID, name, stage progress bar, tabs, team avatars, HOLD/RESUME.
@@ -34,7 +38,32 @@ function formatResumeDate(value?: string | null): string {
 }
 
 export default function LeadDetailHeader({ project, image, onAddImage, currentMilestoneIndex, onHoldClick, onResumeClick, hideNavTabs, hideStepper, hideProlanceHoldResume }: Props) {
+    const { sessionId } = useAuth();
+    const [openingProlance, setOpeningProlance] = useState(false);
     const holdLabel = project.isOnHold ? `On hold${project.resumeAt ? ` till ${formatResumeDate(project.resumeAt)}` : ''}` : project.projectStage;
+
+    const openInProlance = async () => {
+        if (!sessionId || openingProlance) return;
+        setOpeningProlance(true);
+        try {
+            const res = await fetch(`${API}/api/prolance/open/${project.id}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessionId}` },
+                body: JSON.stringify({}),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.message || 'Failed to open Prolance');
+            const openUrl = typeof data?.openUrl === 'string' ? data.openUrl : '';
+            if (!openUrl) throw new Error('Prolance URL not returned');
+            window.open(openUrl, '_blank', 'noopener,noreferrer');
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : 'Failed to open Prolance';
+            window.alert(msg);
+        } finally {
+            setOpeningProlance(false);
+        }
+    };
+
     return (
         <div className="w-full px-4 xl:px-6 pt-4 pb-4">
             {/* Top row: project info (left) | Prolance + avatars + HOLD/RESUME (right) – aligned in one row */}
@@ -52,9 +81,14 @@ export default function LeadDetailHeader({ project, image, onAddImage, currentMi
                 </div>
                 {!hideProlanceHoldResume && (
                 <div className="flex flex-wrap items-center gap-4 xl:gap-6">
-                    <div className="border border-gray-400 rounded-md px-4 py-2 font-bold text-purple-100 hover:text-green-900 hover:bg-purple-50 transition-colors cursor-pointer">
-                        Prolance
-                    </div>
+                    <button
+                        type="button"
+                        onClick={openInProlance}
+                        disabled={!sessionId || openingProlance}
+                        className="border border-gray-400 rounded-md px-4 py-2 font-bold text-purple-100 hover:text-green-900 hover:bg-purple-50 transition-colors cursor-pointer"
+                    >
+                        {openingProlance ? 'Opening...' : 'Open in Prolance'}
+                    </button>
                     <div className="flex items-center -space-x-3">
                         {image.map((imgdata) => {
                             const initials = (imgdata.name || '').trim()

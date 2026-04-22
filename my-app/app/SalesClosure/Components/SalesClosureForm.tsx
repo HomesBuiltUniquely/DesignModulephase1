@@ -298,7 +298,10 @@ export default function SalesClosureForm() {
                     value={form.co_no}
                     maxLength={10}
                     onChange={(e) =>
-                      updateFields("co_no", e.target.value.replace(/\D/g, "").slice(0, 10))
+                      updateFields(
+                        "co_no",
+                        e.target.value.replace(/\D/g, "").slice(0, 10),
+                      )
                     }
                   />
                   {errors.co_no && (
@@ -462,7 +465,6 @@ export default function SalesClosureForm() {
                     <input
                       className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
                       type="date"
-                      readOnly
                       value={form.booking_date}
                       onChange={(e) => {
                         const selectDate = e.target.value;

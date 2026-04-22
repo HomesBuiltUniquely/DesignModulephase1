@@ -16,7 +16,7 @@ export default function LoginPage() {
   useEffect(() => {
     if (loading || !user) return;
     if (user.role === "admin") router.replace("/admin");
-    else if (user.role === "territorial_design_manager")
+    else if (user.role === "territorial_design_manager" || user.role === "deputy_general_manager")
       router.replace("/tdm/register");
     else if (user.role === "dqc_manager")
       router.replace("/dqc-manager/register");
@@ -47,7 +47,7 @@ export default function LoginPage() {
     }
     const role = result.user.role;
     if (role === "admin") router.replace("/admin");
-    else if (role === "territorial_design_manager")
+    else if (role === "territorial_design_manager" || role === "deputy_general_manager")
       router.replace("/tdm/register");
     else if (role === "dqc_manager") router.replace("/dqc-manager/register");
     else if (role === "mmt_manager") router.replace("/mmt-manager/register");

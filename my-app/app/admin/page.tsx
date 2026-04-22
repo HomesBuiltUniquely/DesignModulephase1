@@ -34,6 +34,12 @@ export default function AdminPanelPage() {
       label: 'Create TDM',
     },
     {
+      title: 'Create Deputy General Manager',
+      description: 'Add a new Deputy General Manager with the same access as TDM.',
+      href: '/admin/create-deputy-general-manager',
+      label: 'Create DGM',
+    },
+    {
       title: 'Create DQC Manager',
       description: 'Add a new Design Quality Check Manager who can register DQE (Design Quality Executive).',
       href: '/admin/create-dqc-manager',

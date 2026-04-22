@@ -25,7 +25,7 @@ export default function AdminCreateTdmPage() {
       router.replace('/login');
       return;
     }
-    if (user.role !== 'admin') router.replace('/');
+    if (user.role !== 'admin' && user.role !== 'deputy_general_manager') router.replace('/');
   }, [user, loading, router]);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -75,7 +75,7 @@ export default function AdminCreateTdmPage() {
   }
 
   if (loading || !user) return <div className="p-8">Loading…</div>;
-  if (user.role !== 'admin') return null;
+  if (user.role !== 'admin' && user.role !== 'deputy_general_manager') return null;
 
   return (
     <div className="min-h-screen bg-slate-100">
@@ -99,7 +99,7 @@ export default function AdminCreateTdmPage() {
       </header>
       <main className="max-w-md mx-auto p-8">
         <div className="bg-white rounded-2xl shadow border border-gray-200 p-6">
-          <p className="text-gray-600 text-sm mb-4">Only Admin can create Territorial Design Managers. Email must end with @hubinterior.com.</p>
+          <p className="text-gray-600 text-sm mb-4">Admin and Deputy General Manager can create Territorial Design Managers. Email must end with @hubinterior.com.</p>
           <form onSubmit={handleSubmit} className="space-y-4">
             {message && (
               <div className={`p-3 rounded-lg text-sm ${message.type === 'success' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-700'}`}>

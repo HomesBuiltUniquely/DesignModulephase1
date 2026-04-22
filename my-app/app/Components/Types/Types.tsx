@@ -17,4 +17,5 @@ export type LeadshipTypes = {
     currentMilestoneIndex?: number;
     /** Progress within current milestone 0–100 (tasks completed in that milestone) */
     currentMilestoneProgress?: number | null;
+    assigned_designer_id?: number | null;
 };
