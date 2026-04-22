@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
 import mysql from "mysql2/promise";
@@ -12,6 +13,7 @@ import AdmZip from "adm-zip";
 import * as XLSX from "xlsx";
 import { registerCustomerNumberRoutes } from "./routes/customerNumberApi";
 import { registerProlanceRoutes } from "./routes/prolanceApi";
+import { registerGoogleCalendarRoutes } from "./routes/googleCalendarApi";
 
 const app = express();
 const PORT = Number(process.env.PORT || 3001);
@@ -6159,6 +6161,7 @@ app.post("/api/leads/:id/cancel", async (req: Request, res: Response) => {
 });
 
 registerProlanceRoutes(app, getUserFromSession);
+registerGoogleCalendarRoutes(app, getUserFromSession);
 
 // Ensure CORS headers are present on error responses (multer, etc.) so the browser doesn't only show a generic CORS error
 app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
