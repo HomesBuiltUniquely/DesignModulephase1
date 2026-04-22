@@ -5418,8 +5418,24 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
               u.name as designerName,
               pm.name as projectManagerName,
               NULLIF(TRIM(COALESCE(
-                JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.experience_center')),
-                JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.form.experience_center'))
+                JSON_UNQUOTE(
+                  JSON_EXTRACT(
+                    CASE
+                      WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}'
+                      ELSE l.payload
+                    END,
+                    '$.experience_center'
+                  )
+                ),
+                JSON_UNQUOTE(
+                  JSON_EXTRACT(
+                    CASE
+                      WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}'
+                      ELSE l.payload
+                    END,
+                    '$.form.experience_center'
+                  )
+                )
               )), '') AS experienceCenter
        FROM leads l
        LEFT JOIN users u ON u.id = l.assigned_designer_id
