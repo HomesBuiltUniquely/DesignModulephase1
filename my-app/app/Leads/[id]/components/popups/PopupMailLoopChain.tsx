@@ -36,14 +36,13 @@ export default function PopupMailLoopChain({
   onClose,
 }: Props) {
   const [teamEmails, setTeamEmails] = useState<TeamEmails | null>(null);
-  const [teamEmailsLoaded, setTeamEmailsLoaded] = useState(false);
+  const [teamEmailsLoaded, setTeamEmailsLoaded] = useState(true);
+  const [copyStatus, setCopyStatus] = useState<string>('');
 
   useEffect(() => {
     if (!sessionId) {
-      setTeamEmailsLoaded(true);
       return;
     }
-    setTeamEmailsLoaded(false);
     fetch(`${API}/api/auth/team-emails`, { headers: { Authorization: `Bearer ${sessionId}` } })
       .then(async (res) => {
         const text = await res.text();
@@ -87,10 +86,24 @@ export default function PopupMailLoopChain({
   const mailtoUrl = toList.length > 0
     ? `mailto:${toList.join(',')}?${ccParam ? `cc=${ccParam}&` : ''}subject=${encodeURIComponent(subject)}`
     : '';
+  const gmailComposeUrl = toList.length > 0
+    ? `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(toList.join(','))}&cc=${encodeURIComponent(ccList.join(','))}&su=${encodeURIComponent(subject)}`
+    : '';
 
-  const openMailChain = () => {
-    if (!mailtoUrl) return;
-    window.location.href = mailtoUrl;
+  const copyDraft = async () => {
+    const draftText = [
+      `To: ${toList.join(', ') || '-'}`,
+      `CC: ${ccList.join(', ') || '-'}`,
+      `Subject: ${subject}`,
+    ].join('\n');
+    try {
+      await navigator.clipboard.writeText(draftText);
+      setCopyStatus('Copied To/CC/Subject.');
+      setTimeout(() => setCopyStatus(''), 2000);
+    } catch {
+      setCopyStatus('Copy failed. Please copy manually.');
+      setTimeout(() => setCopyStatus(''), 2500);
+    }
   };
 
   const renderRow = (label: string, email: string, name?: string) => (
@@ -147,15 +160,26 @@ export default function PopupMailLoopChain({
         <p className="text-xs text-gray-500 mb-2">
           <strong>To:</strong> Client · <strong>CC:</strong> Designer (you), Admin(s), TDM(s), DM(s)
         </p>
+        <p className="text-xs text-amber-600 mb-2">
+          If your browser blocks <code>mailto:</code>, use &quot;Open in Gmail&quot; or copy the draft fields below.
+        </p>
         <div className="flex flex-wrap gap-3">
-        <button
-          type="button"
-          onClick={openMailChain}
-          disabled={toList.length === 0 || !teamEmailsLoaded}
-          className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {!teamEmailsLoaded ? 'Loading…' : 'Start email chain'}
-        </button>
+        {toList.length > 0 && teamEmailsLoaded ? (
+          <a
+            href={mailtoUrl}
+            className="inline-flex items-center px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700"
+          >
+            Start email chain
+          </a>
+        ) : (
+          <button
+            type="button"
+            disabled
+            className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-medium opacity-50 cursor-not-allowed"
+          >
+            {!teamEmailsLoaded ? 'Loading…' : 'Start email chain'}
+          </button>
+        )}
         <button
           type="button"
           onClick={() => { onMarkComplete(); onClose(); }}
@@ -163,10 +187,25 @@ export default function PopupMailLoopChain({
         >
           Mark as done
         </button>
-        <button type="button" onClick={onClose} className="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200">
-          Close
+        <a
+          href={gmailComposeUrl || '#'}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={`inline-flex items-center px-4 py-2 rounded-lg text-sm font-medium ${gmailComposeUrl ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-blue-600 text-white opacity-50 pointer-events-none'}`}
+        >
+          Open in Gmail
+        </a>
+        <button
+          type="button"
+          onClick={copyDraft}
+          disabled={toList.length === 0}
+          className="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          Copy draft fields
         </button>
+        
         </div>
+        {!!copyStatus && <p className="text-xs text-gray-600 mt-2">{copyStatus}</p>}
       </div>
     </div>
   );

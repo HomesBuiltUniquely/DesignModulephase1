@@ -6,6 +6,8 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import multer from "multer";
 import fs from "node:fs";
 import path from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import AdmZip from "adm-zip";
 import * as XLSX from "xlsx";
 import { registerCustomerNumberRoutes } from "./routes/customerNumberApi";
@@ -121,7 +123,7 @@ app.get("/api/health", (_req, res) => {
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "root@root",
+  password: process.env.DB_PASSWORD || "root",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -265,10 +267,99 @@ async function streamS3ObjectToDisk(key: string, destPath: string): Promise<void
   await pipeline(body, fs.createWriteStream(destPath));
 }
 
-async function triggerCustomerEmailForLead(leadId: number, emailRoutePath: string): Promise<void> {
+function buildMailChainSubject(
+  projectPid?: string | null,
+  projectName?: string | null,
+  customerName?: string | null,
+): string {
+  if (projectPid || projectName) {
+    return `Project ${projectPid || ""} ${projectName || ""} - Design discussion`.replace(/\s+/g, " ").trim();
+  }
+  return `Project ${customerName || "Customer"} - Design discussion`;
+}
+
+async function getMailLoopCcEmails(extraEmails: Array<string | null | undefined> = []): Promise<string[]> {
+  const [teamRows] = await pool.query(
+    "SELECT email FROM users WHERE role IN ('admin','territorial_design_manager','design_manager') AND email IS NOT NULL",
+  );
+  const teamEmails = (teamRows as { email: string | null }[]).map((r) => r.email || null);
+  return distinctEmails([...extraEmails, ...teamEmails]);
+}
+
+type MailVisibility = "internal" | "external" | "internal+external";
+
+async function triggerMailRouteWithLog(args: {
+  leadId: number;
+  milestoneIndex?: number;
+  taskName: string;
+  route: string;
+  visibility: MailVisibility;
+  payload: Record<string, unknown>;
+}): Promise<void> {
+  const toRaw = args.payload.to;
+  const ccRaw = args.payload.cc;
+  const to = Array.isArray(toRaw) ? toRaw.map(String) : toRaw ? [String(toRaw)] : [];
+  const cc = Array.isArray(ccRaw) ? ccRaw.map(String) : ccRaw ? [String(ccRaw)] : [];
+
+  console.log("[mail-trigger]", {
+    leadId: args.leadId,
+    milestoneIndex: args.milestoneIndex ?? null,
+    taskName: args.taskName,
+    route: args.route,
+    visibility: args.visibility,
+    to,
+    cc,
+  });
+
+  try {
+    const resp = await fetch(`${FRONTEND_BASE}${args.route}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(args.payload),
+    });
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      console.error("[mail-trigger-failed]", {
+        leadId: args.leadId,
+        route: args.route,
+        status: resp.status,
+        taskName: args.taskName,
+        visibility: args.visibility,
+        body,
+      });
+      return;
+    }
+    console.log("[mail-trigger-sent]", {
+      leadId: args.leadId,
+      route: args.route,
+      taskName: args.taskName,
+      visibility: args.visibility,
+      to,
+      cc,
+    });
+  } catch (error) {
+    console.error("[mail-trigger-error]", {
+      leadId: args.leadId,
+      route: args.route,
+      taskName: args.taskName,
+      visibility: args.visibility,
+      error,
+    });
+  }
+}
+
+async function triggerCustomerEmailForLead(
+  leadId: number,
+  emailRoutePath: string,
+  opts?: { actorEmail?: string | null },
+): Promise<void> {
   try {
     const [rows] = await pool.query(
-      "SELECT project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?",
+      `SELECT l.project_name as projectName, l.pid as projectPid, l.client_email as clientEmail, l.payload,
+              d.email as designerEmail
+       FROM leads l
+       LEFT JOIN users d ON d.id = l.assigned_designer_id
+       WHERE l.id = ?`,
       [leadId],
     );
     const row = (rows as any[])[0];
@@ -288,23 +379,30 @@ async function triggerCustomerEmailForLead(leadId: number, emailRoutePath: strin
       payload?.form?.customer_name ||
       row.projectName ||
       "Customer";
+    const mailChainCc = await getMailLoopCcEmails([
+      opts?.actorEmail || null,
+      row.designerEmail || null,
+    ]);
+    const mailChainSubject = buildMailChainSubject(
+      row.projectPid || null,
+      row.projectName || null,
+      customerName,
+    );
 
     if (!customerEmail) return;
 
     // Fire-and-forget; do not block backend response
-    fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    void triggerMailRouteWithLog({
+      leadId,
+      taskName: "customer-email-trigger",
+      route: emailRoutePath,
+      visibility: "external",
+      payload: {
         to: customerEmail,
+        cc: mailChainCc,
+        subject: mailChainSubject,
         customerName,
-      }),
-    }).catch((err) => {
-      console.error("Failed to trigger customer email", {
-        leadId,
-        route: emailRoutePath,
-        error: err,
-      });
+      },
     });
   } catch (err) {
     console.error("triggerCustomerEmailForLead error", { leadId, route: emailRoutePath, error: err });
@@ -1881,6 +1979,8 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
       if (customerEmail) {
         const frontendBase =
           process.env.FRONTEND_BASE_URL || "http://localhost:3000";
+        const mailChainCc = await getMailLoopCcEmails();
+        const mailChainSubject = buildMailChainSubject(pid, lead.projectName, customerName);
 
         // Do not block main response if email fails; just log.
         fetch(`${frontendBase}/api/email/send-d1-site-measurement`, {
@@ -1888,6 +1988,8 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             to: customerEmail,
+            cc: mailChainCc,
+            subject: mailChainSubject,
             customerName,
           }),
         }).catch((err) => {
@@ -2645,12 +2747,16 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             // 1. Internal email to designer: DQC 1 approved, proceed for masking
             if (sendInternal) {
               const url = `${FRONTEND_BASE}/api/email/send-ten-percent-payment-internal`;
+              const mailChainCc = await getMailLoopCcEmails([actingUser.email, designerEmail]);
+              const mailChainSubject = buildMailChainSubject(projectId, leadRow.projectName, customerName);
               try {
                 const r = await fetch(url, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({
                     to: designerEmail,
+                    cc: mailChainCc,
+                    subject: mailChainSubject,
                     customerName,
                     designerName,
                     ecName,
@@ -2674,12 +2780,16 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             // 2. CX email: 10% payment request with account details
             if (sendCx) {
               const url = `${FRONTEND_BASE}/api/email/send-ten-percent-payment-request`;
+              const mailChainCc = await getMailLoopCcEmails([actingUser.email, designerEmail]);
+              const mailChainSubject = buildMailChainSubject(projectId, leadRow.projectName, customerName);
               try {
                 const r = await fetch(url, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({
                     to: customerEmail,
+                    cc: mailChainCc,
+                    subject: mailChainSubject,
                     customerName,
                     projectId,
                     propertyType,
@@ -2803,39 +2913,43 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               });
             }
             if (designerEmail && customerName && designerName && ecName) {
-              fetch(`${FRONTEND_BASE}/api/email/send-ten-percent-payment-internal`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
+              const internalCc = await getMailLoopCcEmails([actingUser.email, designerEmail]);
+              const internalSubject = buildMailChainSubject(projectId, leadRow.projectName, customerName);
+              void triggerMailRouteWithLog({
+                leadId: id,
+                milestoneIndex: 2,
+                taskName: "10% payment collection",
+                route: "/api/email/send-ten-percent-payment-internal",
+                visibility: "internal+external",
+                payload: {
                   to: designerEmail,
+                  cc: internalCc,
+                  subject: internalSubject,
                   customerName,
                   designerName,
                   ecName,
-                }),
-              }).catch((err) => {
-                console.error("10% collection internal email trigger error (non-fatal)", {
-                  leadId: id,
-                  error: err,
-                });
+                },
               });
             }
 
             if (customerEmail) {
-              fetch(`${FRONTEND_BASE}/api/email/send-ten-percent-payment-request`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
+              const mailChainCc = await getMailLoopCcEmails([actingUser.email, designerEmail]);
+              const mailChainSubject = buildMailChainSubject(projectId, leadRow.projectName, customerName);
+              void triggerMailRouteWithLog({
+                leadId: id,
+                milestoneIndex: 2,
+                taskName: "10% payment collection",
+                route: "/api/email/send-ten-percent-payment-request",
+                visibility: "internal+external",
+                payload: {
                   to: customerEmail,
+                  cc: mailChainCc,
+                  subject: mailChainSubject,
                   customerName,
                   projectId,
                   propertyType,
                   amountDue,
-                }),
-              }).catch((err) => {
-                console.error("10% collection CX email trigger error (non-fatal)", {
-                  leadId: id,
-                  error: err,
-                });
+                },
               });
             }
           }
@@ -2939,10 +3053,13 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                 "SELECT name FROM users WHERE role IN ('mmt_manager', 'mmt_executive') AND email IS NOT NULL ORDER BY id ASC LIMIT 1",
               );
               const mmtName = (mmtRows as any[])[0]?.name || null;
-              fetch(`${FRONTEND_BASE}/api/email/send-d2-masking-request-internal`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
+              void triggerMailRouteWithLog({
+                leadId: id,
+                milestoneIndex: 3,
+                taskName: "D2 - masking request raise",
+                route: "/api/email/send-d2-masking-request-internal",
+                visibility: "internal+external",
+                payload: {
                   to: pmEmail,
                   customerName,
                   designerName,
@@ -2951,31 +3068,32 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   pmName,
                   maskingDate,
                   maskingTime,
-                }),
-              }).catch((err) => {
-                console.error("D2 masking internal email trigger error (non-fatal)", {
-                  leadId: id,
-                  error: err,
-                });
+                },
               });
             }
 
             if (customerEmail) {
-              fetch(`${FRONTEND_BASE}/api/email/send-d2-masking-request`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
+              const mailChainCc = await getMailLoopCcEmails([
+                actingUser.email,
+                row.designerEmail,
+                pmEmail,
+              ]);
+              const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
+              void triggerMailRouteWithLog({
+                leadId: id,
+                milestoneIndex: 3,
+                taskName: "D2 - masking request raise",
+                route: "/api/email/send-d2-masking-request",
+                visibility: "internal+external",
+                payload: {
                   to: customerEmail,
+                  cc: mailChainCc,
+                  subject: mailChainSubject,
                   customerName,
                   designerName,
                   maskingDate,
                   maskingTime,
-                }),
-              }).catch((err) => {
-                console.error("D2 masking CX email trigger error (non-fatal)", {
-                  leadId: id,
-                  error: err,
-                });
+                },
               });
             }
           }
@@ -3030,9 +3148,10 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const projectValue = payload.project_value || payload?.form?.project_value || "";
 
           const [dqcRows] = await pool.query(
-            "SELECT email, name FROM users WHERE role IN ('dqc_manager', 'dqe') ORDER BY id ASC LIMIT 1",
+            "SELECT email, name FROM users WHERE role IN ('dqc_manager', 'dqe') AND email IS NOT NULL ORDER BY id ASC",
           );
-          const dqcUser = (dqcRows as any[])[0];
+          const dqcUsers = (dqcRows as any[]).filter((u) => u?.email);
+          const dqcUser = dqcUsers[0];
 
           // Collect latest DQC2 drawing & quotation uploads for this lead (if S3 is configured)
           let attachments: { filename: string; path: string }[] | undefined;
@@ -3069,23 +3188,35 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
           }
 
           if (dqcUser && dqcUser.email && customerName && ecName && designerName && dqcUser.name) {
-            fetch(`${FRONTEND_BASE}/api/email/send-dqc2-final-design-submission-internal`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
+            const ccBase = await getMailLoopCcEmails([actingUser.email, leadRow.designerEmail || null]);
+            const cc = distinctEmails([
+              ...ccBase,
+              ...dqcUsers.slice(1).map((u) => String(u.email || "")),
+            ]);
+            const subject = buildMailChainSubject(null, leadRow.projectName, customerName);
+            void triggerMailRouteWithLog({
+              leadId: id,
+              milestoneIndex: 4,
+              taskName: "DQC 2 submission",
+              route: "/api/email/send-dqc2-final-design-submission-internal",
+              visibility: "internal",
+              payload: {
                 to: dqcUser.email,
+                cc,
+                subject,
                 customerName,
                 ecName,
                 designerName,
                 dqcRepName: dqcUser.name || "DQC Team",
                 projectValue: String(projectValue || ""),
                 ...(attachments ? { attachments } : {}),
-              }),
-            }).catch((err) => {
-              console.error("DQC2 submission internal email trigger error (non-fatal)", {
-                leadId: id,
-                error: err,
-              });
+              },
+            });
+          } else {
+            console.warn("DQC2 internal email skipped: no DQC recipient with email", {
+              leadId: id,
+              customerName,
+              ecName,
             });
           }
             // DQC 2 submission: internal only (no CX email)
@@ -3171,22 +3302,21 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                 }
               }
 
-              fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
+              void triggerMailRouteWithLog({
+                leadId: id,
+                milestoneIndex: 1,
+                taskName: "First cut design + quotation discussion meeting request",
+                route: emailRoutePath,
+                visibility: "external",
+                payload: {
                   to: customerEmail,
+                  cc: await getMailLoopCcEmails([actingUser.email]),
+                  subject: buildMailChainSubject(null, row.projectName, customerName),
                   customerName,
                   meetingDate,
                   meetingTime,
                   ...(attachments ? { attachments } : {}),
-                }),
-              }).catch((err) => {
-                console.error("DQC1 first-cut email trigger error (non-fatal)", {
-                  leadId: id,
-                  route: emailRoutePath,
-                  error: err,
-                });
+                },
               });
             }
           }
@@ -3208,12 +3338,15 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                     u.email as executiveEmail,
                     u.mmt_manager_id as executiveManagerId,
                     u.phone as executivePhone,
+                    d.email as designerEmail,
                     l.client_email as clientEmail,
+                    l.pid as projectPid,
                     l.project_name as projectName,
                     l.payload
              FROM lead_d1_assignments a
              INNER JOIN leads l ON l.id = a.lead_id
              LEFT JOIN users u ON u.id = a.assigned_to_user_id
+             LEFT JOIN users d ON d.id = l.assigned_designer_id
              WHERE a.lead_id = ?
              ORDER BY a.created_at DESC
              LIMIT 1`,
@@ -3244,6 +3377,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               const executiveName = row.executiveName || null;
               const executiveEmail = row.executiveEmail || null;
               const executivePhone = row.executivePhone || null;
+              const designerEmail = row.designerEmail || null;
               const googleStart = formatGoogleDateTime(visitDate, visitTime);
 
               let managerEmail: string | null = null;
@@ -3276,23 +3410,24 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                 }
               }
 
-              fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
+              void triggerMailRouteWithLog({
+                leadId: id,
+                milestoneIndex: 0,
+                taskName: "D1 for MMT request",
+                route: emailRoutePath,
+                visibility: "external",
+                payload: {
                   to: customerEmail,
+                  cc: distinctEmails([actingUser.email, designerEmail, executiveEmail, managerEmail]),
                   customerName,
+                  subject: row.projectPid
+                    ? `Project ${row.projectPid} ${row.projectName || ""} - Design discussion`
+                    : `Project ${row.projectName || customerName} - Design discussion`,
                   visitDate,
                   visitTime,
                   executiveName,
                   executivePhone,
-                }),
-              }).catch((err) => {
-                console.error("D1 MMT email trigger error (non-fatal)", {
-                  leadId: id,
-                  route: emailRoutePath,
-                  error: err,
-                });
+                },
               });
             }
           }
@@ -3315,7 +3450,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             [id],
           );
           const row = (rows as any[])[0];
-          if (row && row.designerEmail && row.designerName) {
+          if (row) {
             let payload: any = {};
             try {
               payload = row.payload ? JSON.parse(row.payload) : {};
@@ -3330,21 +3465,40 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               payload?.form?.customer_name ||
               row.projectName ||
               "Customer";
-
-            fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                to: row.designerEmail,
-                designerName: row.designerName,
-                customerName,
-              }),
-            }).catch((err) => {
-              console.error("DQC2 approval internal email trigger error (non-fatal)", {
+            let designerEmail = row.designerEmail || null;
+            let designerName = row.designerName || null;
+            if (!designerEmail) {
+              const maybeDesigner = formData.designer_name || formData.designerName || payload.designer_name || payload.designerName || "";
+              if (maybeDesigner) {
+                const [uRows] = await pool.query(
+                  "SELECT email, name FROM users WHERE (name = ? OR email = ?) AND role IN ('designer', 'design_manager') LIMIT 1",
+                  [maybeDesigner, maybeDesigner],
+                );
+                const uRow = (uRows as any[])[0];
+                if (uRow) {
+                  designerEmail = uRow.email || designerEmail;
+                  designerName = uRow.name || designerName;
+                }
+              }
+            }
+            if (!designerEmail || !designerName) {
+              console.warn("DQC2 approval internal email skipped: designer recipient missing", { leadId: id });
+            } else {
+              void triggerMailRouteWithLog({
                 leadId: id,
-                error: err,
+                milestoneIndex: 4,
+                taskName: "DQC 2 approval",
+                route: emailRoutePath,
+                visibility: "internal",
+                payload: {
+                  to: designerEmail,
+                  cc: await getMailLoopCcEmails([actingUser.email]),
+                  subject: buildMailChainSubject(null, row.projectName, customerName),
+                  designerName,
+                  customerName,
+                },
               });
-            });
+            }
           }
         } catch (err) {
           console.error("DQC2 approval internal email prepare error (non-fatal)", {
@@ -3390,20 +3544,22 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const laminateSelections = meta?.laminateSelections ?? null;
 
             if (customerEmail) {
-              fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
+              const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
+              const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
+              void triggerMailRouteWithLog({
+                leadId: id,
+                milestoneIndex: 4,
+                taskName: "Material selection meeting completed",
+                route: emailRoutePath,
+                visibility: "external",
+                payload: {
                   to: customerEmail,
+                  cc: mailChainCc,
+                  subject: mailChainSubject,
                   customerName,
                   designerName,
                   laminateSelections,
-                }),
-              }).catch((err) => {
-                console.error("MOM color laminate selection email trigger error (non-fatal)", {
-                  leadId: id,
-                  error: err,
-                });
+                },
               });
             }
           }
@@ -3472,21 +3628,26 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               }
 
               if (customerEmail) {
-                fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
+                const mailChainCc = await getMailLoopCcEmails([
+                  actingUser.email,
+                  row.designerEmail,
+                ]);
+                const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
+                void triggerMailRouteWithLog({
+                  leadId: id,
+                  milestoneIndex: 5,
+                  taskName: "Design sign off",
+                  route: emailRoutePath,
+                  visibility: "external",
+                  payload: {
                     to: customerEmail,
+                    cc: mailChainCc,
+                    subject: mailChainSubject,
                     customerName,
                     designerName,
                     meetingDate: meetingDate || undefined,
                     meetingTime: meetingTime || undefined,
-                  }),
-                }).catch((err) => {
-                  console.error("Design signoff meeting scheduled email trigger error (non-fatal)", {
-                    leadId: id,
-                    error: err,
-                  });
+                  },
                 });
               }
             }
@@ -3538,23 +3699,25 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const ifscCode = meta?.ifscCode ?? "ICIC0007483";
 
             if (customerEmail) {
-              fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
+              const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
+              const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
+              void triggerMailRouteWithLog({
+                leadId: id,
+                milestoneIndex: 5,
+                taskName: "meeting completed & 40% payment request",
+                route: emailRoutePath,
+                visibility: "external",
+                payload: {
                   to: customerEmail,
+                  cc: mailChainCc,
+                  subject: mailChainSubject,
                   customerName,
                   designerName,
                   amount: amount != null ? String(amount) : undefined,
                   accountName,
                   accountNumber,
                   ifscCode,
-                }),
-              }).catch((err) => {
-                console.error("40% payment request email trigger error (non-fatal)", {
-                  leadId: id,
-                  error: err,
-                });
+                },
               });
             }
           }
@@ -3629,22 +3792,27 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               }
 
               if (customerEmail) {
-                fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
+                const mailChainCc = await getMailLoopCcEmails([
+                  actingUser.email,
+                  row.designerEmail,
+                ]);
+                const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
+                void triggerMailRouteWithLog({
+                  leadId: id,
+                  milestoneIndex: 4,
+                  taskName: "Material selection meeting + quotation discussion",
+                  route: emailRoutePath,
+                  visibility: "external",
+                  payload: {
                     to: customerEmail,
+                    cc: mailChainCc,
+                    subject: mailChainSubject,
                     customerName,
                     designerName,
                     meetingDate,
                     meetingTime,
                     ecLocation,
-                  }),
-                }).catch((err) => {
-                  console.error("DQC2 material selection email trigger error (non-fatal)", {
-                    leadId: id,
-                    error: err,
-                  });
+                  },
                 });
               }
             }
@@ -3688,11 +3856,18 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const spmPoc = meta?.spmPoc ?? "SPM automatically";
             const operationManager = meta?.operationManager ?? "Balaji - balaji@hubinterior.com";
             const operationHead = meta?.operationHead ?? "Alex - alex@hubinterior.com";
-            fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
+            const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
+            const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
+            void triggerMailRouteWithLog({
+              leadId: id,
+              milestoneIndex: 6,
+              taskName: "POC mail & Timeline submission",
+              route: emailRoutePath,
+              visibility: "external",
+              payload: {
                 to: row.clientEmail,
+                cc: mailChainCc,
+                subject: mailChainSubject,
                 customerName,
                 designerName,
                 productionPoc,
@@ -3700,12 +3875,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                 spmPoc,
                 operationManager,
                 operationHead,
-              }),
-            }).catch((err) => {
-              console.error("Production POC timeline email trigger error (non-fatal)", {
-                leadId: id,
-                error: err,
-              });
+              },
             });
           }
         } catch (err) {
@@ -3742,19 +3912,21 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               row.projectName ||
               "Customer";
             const designerName = row.designerName || formData.designer_name || formData.designerName || "Team HUB Interiors";
-            fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
+            const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
+            const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
+            void triggerMailRouteWithLog({
+              leadId: id,
+              milestoneIndex: 6,
+              taskName: "Cx approval for production",
+              route: emailRoutePath,
+              visibility: "external",
+              payload: {
                 to: row.clientEmail,
+                cc: mailChainCc,
+                subject: mailChainSubject,
                 customerName,
                 designerName,
-              }),
-            }).catch((err) => {
-              console.error("Production approval request email trigger error (non-fatal)", {
-                leadId: id,
-                error: err,
-              });
+              },
             });
           }
         } catch (err) {
@@ -3764,7 +3936,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
           });
         }
       } else {
-        triggerCustomerEmailForLead(id, emailRoutePath).catch((err) => {
+        triggerCustomerEmailForLead(id, emailRoutePath, { actorEmail: actingUser.email || null }).catch((err) => {
           console.error("complete-task email trigger error (non-fatal)", {
             leadId: id,
             milestoneIndex,
@@ -4063,20 +4235,25 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
         }
 
         if (customerEmail) {
-          fetch(`${FRONTEND_BASE}/api/email/send-ten-percent-payment-approval`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
+          const mailChainCc = await getMailLoopCcEmails([user.email || null]);
+          const mailChainSubject = buildMailChainSubject(projectId, row.projectName, customerName);
+          void triggerMailRouteWithLog({
+            leadId,
+            milestoneIndex: 2,
+            taskName: "10% payment approval",
+            route: "/api/email/send-ten-percent-payment-approval",
+            visibility: "external",
+            payload: {
               to: customerEmail,
+              cc: mailChainCc,
+              subject: mailChainSubject,
               customerName,
               projectId: projectId || undefined,
               amountPaid: amountPaid || undefined,
               paymentDate,
               transactionRef,
               ...(attachments ? { attachments } : {}),
-            }),
-          }).catch((emailErr) => {
-            console.error("10% payment approval email trigger error (non-fatal)", emailErr);
+            },
           });
         }
       }
@@ -4314,20 +4491,23 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
           }
         }
 
-        fetch(`${FRONTEND_BASE}/api/email/send-design-signoff-40pc-payment-approval`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+        void triggerMailRouteWithLog({
+          leadId,
+          milestoneIndex: 5,
+          taskName: "40% payment approval",
+          route: "/api/email/send-design-signoff-40pc-payment-approval",
+          visibility: "external",
+          payload: {
             to: row.clientEmail,
+            cc: await getMailLoopCcEmails([user.email || null]),
+            subject: buildMailChainSubject(null, row.projectName, customerName),
             customerName,
             projectName,
             amountReceived: formData.forty_percent_amount ?? payload?.forty_percent_amount ?? undefined,
             dateOfReceipt: dateStr,
             modeOfPayment: "Bank Transfer",
             ...(attachments ? { attachments } : {}),
-          }),
-        }).catch((emailErr) => {
-          console.error("40% payment approval email trigger error (non-fatal)", emailErr);
+          },
         });
       }
     } catch (e) {
@@ -4488,6 +4668,8 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       emailRoutePath = "/api/email/send-dqc2-material-selection-scheduled";
       emailBody = {
         to: customerEmail,
+        cc: await getMailLoopCcEmails([actingUser.email, row.designerEmail]),
+        subject: buildMailChainSubject(null, row.projectName, customerName),
         customerName,
         designerName,
         meetingDate,
@@ -4504,6 +4686,8 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       emailRoutePath = "/api/email/send-design-signoff-meeting-scheduled";
       emailBody = {
         to: customerEmail,
+        cc: await getMailLoopCcEmails([actingUser.email, row.designerEmail]),
+        subject: buildMailChainSubject(null, row.projectName, customerName),
         customerName,
         designerName,
         meetingDate,
@@ -4531,16 +4715,12 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
     }
 
     if (customerEmail) {
-      fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(emailBody),
-      }).catch((err) => {
-        console.error("meeting invite email trigger error (non-fatal)", {
-          leadId,
-          meetingType,
-          error: err,
-        });
+      void triggerMailRouteWithLog({
+        leadId,
+        taskName: `Schedule ${meetingType} invite`,
+        route: emailRoutePath,
+        visibility: "external",
+        payload: emailBody,
       });
     }
 
@@ -4824,7 +5004,7 @@ app.get("/api/leads/:leadId/uploads/:uploadId/file", async (req: Request, res: R
 /** Shared DB + history + email for DQC 1 (multipart or S3-direct flow). */
 async function persistDqc1SubmissionFromMeta(
   leadId: number,
-  user: { id: number; name?: string | null; role?: string | null },
+  user: { id: number; name?: string | null; role?: string | null; email?: string | null },
   drawingFiles: { originalname: string; filename: string; path: string; mimetype: string; size: number }[],
   quotationFiles: { originalname: string; filename: string; path: string; mimetype: string; size: number }[],
   drawingS3Urls: (string | null)[],
@@ -4889,30 +5069,35 @@ async function persistDqc1SubmissionFromMeta(
       const projectValue = payload.project_value || payload?.form?.project_value || "";
 
       const [dqcRows] = await pool.query(
-        "SELECT email, name FROM users WHERE role IN ('dqc_manager', 'dqe') ORDER BY id ASC LIMIT 1",
+        "SELECT email, name FROM users WHERE role IN ('dqc_manager', 'dqe') AND email IS NOT NULL ORDER BY id ASC",
       );
-      const dqcUser = (dqcRows as any[])[0];
+      const dqcUsers = (dqcRows as any[]).filter((u) => u?.email);
+      const primaryDqc = dqcUsers[0];
 
-      if (dqcUser && dqcUser.email) {
-        const to = dqcUser.email as string;
+      if (primaryDqc && primaryDqc.email) {
+        const to = primaryDqc.email as string;
+        const baseCc = await getMailLoopCcEmails([user?.email || null]);
+        const ccList = distinctEmails([
+          ...baseCc,
+          ...dqcUsers.slice(1).map((u) => String(u.email || "")),
+        ]);
+        const subject = buildMailChainSubject(null, leadRow.projectName, customerName);
 
-        const [ccRows] = await pool.query(
-          "SELECT email FROM users WHERE id IN (?, ?, ?) AND email IS NOT NULL",
-          [user.id, payload.manager_user_id || null, payload.tdm_user_id || null],
-        );
-        const ccList = (ccRows as any[]).map((r) => r.email).filter(Boolean);
-
-        fetch(`${FRONTEND_BASE}/api/email/send-dqc1-review-request-internal`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+        void triggerMailRouteWithLog({
+          leadId,
+          milestoneIndex: 1,
+          taskName: "DQC 1 submission - dwg + quotation",
+          route: "/api/email/send-dqc1-review-request-internal",
+          visibility: "internal",
+          payload: {
             to,
             cc: ccList,
+            subject,
             customerName,
             ecName,
             designerName,
             projectValue: String(projectValue || ""),
-            dqcRepName: dqcUser.name || "DQC Team",
+            dqcRepName: primaryDqc.name || "DQC Team",
             ...(drawingS3Urls.some(Boolean) || quotationS3Urls.some(Boolean)
               ? {
                   attachments: [
@@ -4933,12 +5118,13 @@ async function persistDqc1SubmissionFromMeta(
                   ],
                 }
               : {}),
-          }),
-        }).catch((err) => {
-          console.error("DQC1 review request internal email trigger error (non-fatal)", {
-            leadId,
-            error: err,
-          });
+          },
+        });
+      } else {
+        console.warn("DQC1 internal email skipped: no DQC recipient with email", {
+          leadId,
+          customerName,
+          ecName,
         });
       }
     }
@@ -4953,7 +5139,7 @@ async function persistDqc1SubmissionFromMeta(
 /** DQC 2: DB + history + pending_dqc2 row (multipart or S3-direct). */
 async function persistDqc2SubmissionFromMeta(
   leadId: number,
-  user: { id: number; name?: string | null; role?: string | null },
+  user: { id: number; name?: string | null; role?: string | null; email?: string | null },
   drawingFiles: { originalname: string; filename: string; path: string; mimetype: string; size: number }[],
   quotationFiles: { originalname: string; filename: string; path: string; mimetype: string; size: number }[],
   drawingS3Urls: (string | null)[],
@@ -5623,21 +5809,21 @@ app.post(
               }
             }
 
-            fetch(`${FRONTEND_BASE}/api/email/send-dqc1-first-cut-design-scheduled`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
+            void triggerMailRouteWithLog({
+              leadId,
+              milestoneIndex: 1,
+              taskName: "First cut design + quotation discussion meeting request",
+              route: "/api/email/send-dqc1-first-cut-design-scheduled",
+              visibility: "external",
+              payload: {
                 to: customerEmail,
+                cc: await getMailLoopCcEmails([user.email || null]),
+                subject: buildMailChainSubject(null, row.projectName, customerName),
                 customerName,
                 meetingDate,
                 meetingTime,
                 ...(attachments.length ? { attachments } : {}),
-              }),
-            }).catch((err) => {
-              console.error("DQC1 first-cut invite email trigger error (non-fatal)", {
-                leadId,
-                error: err,
-              });
+              },
             });
           }
         }

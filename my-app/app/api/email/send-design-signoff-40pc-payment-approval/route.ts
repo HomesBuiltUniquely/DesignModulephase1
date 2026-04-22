@@ -6,6 +6,8 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const to = body.to as string | undefined;
+    const cc = body.cc as string[] | string | undefined;
+    const subject = body.subject as string | undefined;
     const customerName = body.customerName as string | undefined;
     const projectName = body.projectName as string | undefined;
     const amountReceived = body.amountReceived as string | undefined;
@@ -31,7 +33,8 @@ export async function POST(request: Request) {
 
     const info = await sendMailForPayment({
       to,
-      subject: 'Payment Receipt – 40% Milestone',
+      ...(cc ? { cc } : {}),
+      subject: subject || 'Payment Receipt – 40% Milestone',
       html,
       ...(attachments && attachments.length ? { attachments } : {}),
     });

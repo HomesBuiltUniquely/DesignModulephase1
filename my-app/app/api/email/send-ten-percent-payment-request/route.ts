@@ -6,6 +6,8 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const to = body.to as string | undefined;
+    const cc = body.cc as string[] | string | undefined;
+    const subject = body.subject as string | undefined;
     const customerName = body.customerName as string | undefined;
     const projectId = body.projectId as string | undefined;
     const propertyType = body.propertyType as string | undefined;
@@ -29,7 +31,8 @@ export async function POST(request: Request) {
 
     const info = await sendMailForPayment({
       to,
-      subject: 'Design Approved – Ready for Site Masking',
+      ...(cc ? { cc } : {}),
+      subject: subject || 'Design Approved – Ready for Site Masking',
       html,
     });
 

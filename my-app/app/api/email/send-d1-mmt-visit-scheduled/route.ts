@@ -6,11 +6,13 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const to = body.to as string | undefined;
+    const cc = body.cc as string[] | string | undefined;
     const customerName = body.customerName as string | undefined;
     const visitDate = body.visitDate as string | undefined;
     const visitTime = body.visitTime as string | undefined;
     const executiveName = body.executiveName as string | undefined;
     const executivePhone = body.executivePhone as string | undefined;
+    const subject = body.subject as string | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -29,7 +31,8 @@ export async function POST(request: Request) {
 
     const info = await sendMail({
       to,
-      subject: 'D1 – Measurement Visit Scheduled',
+      ...(cc ? { cc } : {}),
+      subject: subject || 'D1 – Measurement Visit Scheduled',
       html,
     });
 

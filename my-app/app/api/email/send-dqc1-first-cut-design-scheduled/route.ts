@@ -6,6 +6,8 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const to = body.to as string | undefined;
+    const cc = body.cc as string[] | string | undefined;
+    const subject = body.subject as string | undefined;
     const customerName = body.customerName as string | undefined;
     const meetingDate = body.meetingDate as string | undefined;
     const meetingTime = body.meetingTime as string | undefined;
@@ -33,7 +35,8 @@ export async function POST(request: Request) {
 
     const info = await sendMail({
       to,
-      subject: 'DQC1 – First Cut Design Presentation Scheduled',
+      ...(cc ? { cc } : {}),
+      subject: subject || 'DQC1 – First Cut Design Presentation Scheduled',
       html,
       ...(attachments && attachments.length ? { attachments } : {}),
     });
