@@ -26,7 +26,7 @@ const checklistRoutes: ChecklistRoute[] = [
   },
   {
     milestoneIndex: 5,
-    taskName: "meeting completed & 40% payment request",
+    taskName: "meeting completed",
     key: "design_signoff",
   },
 ];

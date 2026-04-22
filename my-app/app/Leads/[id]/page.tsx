@@ -8,6 +8,7 @@ import MileStonesArray from '@/app/Components/Types/MileStoneArray';
 import type { ImageType, QCRemark, HistoryEvent } from './types';
 import {
     LeadDetailHeader,
+    ClientEmailsSection,
     MilestonesCard,
     HistoryCard,
     FilesCard,
@@ -26,6 +27,9 @@ import {
     PopupGroupDescription,
     PopupMailLoopChain,
     GenericMeetingChecklistPopup,
+    PopupAssignProjectManager,
+    PopupProjectManagerApproval,
+    Popup40pCollection,
 } from './components';
 import { checklistDefinitions, getChecklistKeyForTask } from './components/Checklists/checklistRegistry';
 import { getApiBase } from '@/app/lib/apiBase';
@@ -60,14 +64,24 @@ export default function ProjectDetailPage() {
         setCompletedTaskKeys((prev) => (prev.includes(key) ? prev : [...prev, key]));
     };
 
+    // Keep highlighted milestone in sync with persisted task completions (handles refresh and new tasks).
     useEffect(() => {
-        const milestone = MileStonesArray.MilestonesName[currentMilestoneIndex];
-        if (!milestone || currentMilestoneIndex >= 6) return;
-        const allDone = milestone.taskList.every((t: string) =>
-            completedTaskKeys.includes(taskKey(currentMilestoneIndex, t))
-        );
-        if (allDone) setCurrentMilestoneIndex((prev) => Math.min(prev + 1, 6));
-    }, [completedTaskKeys, currentMilestoneIndex]);
+        const milestones = MileStonesArray.MilestonesName;
+        let idx = 0;
+        for (let i = 0; i < milestones.length; i++) {
+            const m = milestones[i];
+            const allDone = m.taskList.every((t: string) =>
+                completedTaskKeys.includes(taskKey(i, t)),
+            );
+            if (!allDone) {
+                idx = i;
+                break;
+            }
+            idx = i + 1;
+        }
+        const last = milestones.length - 1;
+        setCurrentMilestoneIndex(Math.min(Math.max(0, idx), last));
+    }, [completedTaskKeys]);
 
     // Hydrate completed tasks for this lead from backend so milestone index matches server state
     useEffect(() => {
@@ -127,14 +141,21 @@ export default function ProjectDetailPage() {
     const [momMinutes, setMomMinutes] = useState('');
     const [momReferenceFiles, setMomReferenceFiles] = useState<File[]>([]);
     const momFileInputRef = useRef<HTMLInputElement>(null);
-    // 40% payment screenshot upload (meeting completed & 40% payment request popup)
-    const [payment40pFiles, setPayment40pFiles] = useState<File[]>([]);
-    const payment40pInputRef = useRef<HTMLInputElement>(null);
-
     // Progress history: loaded from API and persisted when new events are added (recorded and maintained)
     const [historyEvents, setHistoryEvents] = useState<HistoryEvent[]>([]);
     const historyLeadIdRef = useRef<number | null>(null);
     const [showHoldModal, setShowHoldModal] = useState(false);
+    const [showCancelModal, setShowCancelModal] = useState(false);
+    const [prolanceBusy, setProlanceBusy] = useState(false);
+    const [getQuoteBusy, setGetQuoteBusy] = useState(false);
+    const [prolanceProjectId, setProlanceProjectId] = useState<number | null>(null);
+    const [manualQuoteProjectId, setManualQuoteProjectId] = useState('');
+    const [showGetQuoteModal, setShowGetQuoteModal] = useState(false);
+    const [getQuoteLastStatus, setGetQuoteLastStatus] = useState<number | null>(null);
+    const [getQuoteLastBody, setGetQuoteLastBody] = useState<unknown>(null);
+    const [latestQuoteResponse, setLatestQuoteResponse] = useState<unknown>(null);
+    const [showQuotePreviewModal, setShowQuotePreviewModal] = useState(false);
+    const [quoteSummaryTab, setQuoteSummaryTab] = useState<'overall' | 'roomwise'>('overall');
     const [holdDate, setHoldDate] = useState<string>('');
     const [selectedHistoryEvent, setSelectedHistoryEvent] = useState<HistoryEvent | null>(null);
     const [uploadsVersion, setUploadsVersion] = useState(0);
@@ -150,13 +171,656 @@ export default function ProjectDetailPage() {
     const [project, setProject] = useState<LeadshipTypes | null>(null);
     const [projectLoaded, setProjectLoaded] = useState(false);
 
+    const extractString = (v: unknown): string | null =>
+        typeof v === 'string' && v.trim() ? v.trim() : null;
+
+    const extractNumber = (v: unknown): number | null => {
+        if (typeof v === 'number' && Number.isFinite(v)) return v;
+        if (typeof v === 'string' && v.trim() && Number.isFinite(Number(v))) return Number(v);
+        return null;
+    };
+
+    const formatCurrency = (v: unknown): string => {
+        const n = extractNumber(v);
+        if (n == null) return '-';
+        return `Rs ${n.toLocaleString('en-IN')}`;
+    };
+
+    const prettyResponse = (v: unknown): string => {
+        if (typeof v === 'string') return v;
+        try {
+            return JSON.stringify(v, null, 2);
+        } catch {
+            return String(v ?? '');
+        }
+    };
+
+    const extractProjectId = (v: unknown): number | null => {
+        if (!v || typeof v !== 'object') return null;
+        const root = v as Record<string, unknown>;
+        const direct = root.projectID ?? root.projectId;
+        if (typeof direct === 'number' && Number.isFinite(direct)) return direct;
+        if (typeof direct === 'string' && direct.trim() && Number.isFinite(Number(direct))) return Number(direct);
+        const arr = root.data;
+        if (Array.isArray(arr) && arr[0] && typeof arr[0] === 'object') {
+            const first = arr[0] as Record<string, unknown>;
+            const nested = first.projectID ?? first.projectId;
+            if (typeof nested === 'number' && Number.isFinite(nested)) return nested;
+            if (typeof nested === 'string' && nested.trim() && Number.isFinite(Number(nested))) return Number(nested);
+        }
+        return null;
+    };
+
+    const parseLeadPayload = (raw: unknown): Record<string, unknown> | null => {
+        if (!raw) return null;
+        if (typeof raw === 'object') return raw as Record<string, unknown>;
+        if (typeof raw !== 'string') return null;
+        try {
+            const parsed = JSON.parse(raw);
+            return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+        } catch {
+            return null;
+        }
+    };
+
+    const normalizeQuoteView = (
+        payload: unknown,
+        leadFallback?: {
+            customerName?: string | null;
+            refId?: string | null;
+            city?: string | null;
+            bhkType?: string | null;
+            projectType?: string | null;
+        },
+    ) => {
+        const root = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
+        const dataArray = Array.isArray(root.data) ? root.data : [];
+        const firstData =
+            dataArray.length > 0 && dataArray[0] && typeof dataArray[0] === 'object'
+                ? (dataArray[0] as Record<string, unknown>)
+                : {};
+        const quoteObj = Object.keys(firstData).length ? firstData : root;
+
+        const pick = (...keys: string[]) => {
+            for (const k of keys) {
+                if (k in quoteObj) return quoteObj[k];
+                if (k in root) return root[k];
+            }
+            return null;
+        };
+
+        const quotationId = pick('quotationId', 'quotationID', 'quoteID', 'quoteId');
+        const quoteNum = pick('quoteNum', 'quoteNo', 'quotationNum');
+        const projectId = pick('projectID', 'projectId');
+        const partnerId = pick('partnerID', 'partnerId');
+        const remarks = pick('remarks');
+        const createdOn = pick('createdOn', 'createdAt');
+        const finalTotalPrice = pick('finalTotalPrice', 'finalPrice', 'netPayable');
+        const totalPrice = pick('totalPrice', 'grossTotalPrice');
+        const discount = pick('discount', 'discountAmount');
+        const downloadURL = pick('downloadURL', 'downloadUrl');
+        const woodWorkFactor = pick('woodWorkFactor');
+        const accessoriesFactor = pick('accessoriesFactor');
+        const hardwareFactor = pick('hardwareFactor');
+        const appliancesFactor = pick('appliancesFactor');
+        const servicesFactor = pick('servicesFactor');
+        const worktopFactor = pick('worktopFactor');
+        const customerName = pick('customer', 'customerName', 'name');
+        const refId = pick('refId', 'referenceId', 'leadRefId');
+        const city = pick('city', 'customerCity');
+        const bhkType = pick('bhkType', 'BHKType', 'bhk');
+        const projectType = pick('projectType', 'pType', 'type');
+
+        const quoteOptionsRaw =
+            (quoteObj.quoteOptionsData as unknown) ||
+            (root.quoteOptionsData as unknown) ||
+            (isPlainObject(quoteObj.data) ? (quoteObj.data as Record<string, unknown>).quoteOptionsData : null);
+        const quoteOptionsData = Array.isArray(quoteOptionsRaw)
+            ? (quoteOptionsRaw
+                  .map((item) => {
+                      if (!item || typeof item !== 'object') return null;
+                      const o = item as Record<string, unknown>;
+                      return {
+                          qoid: extractNumber(o.qoid),
+                          quoteID: extractNumber(o.quoteID ?? o.quoteId),
+                          optionID: extractNumber(o.optionID ?? o.optionId),
+                          roomID: extractNumber(o.roomID ?? o.roomId),
+                          roomName: extractString(o.roomName) || '-',
+                          optionName: extractString(o.optionName) || '-',
+                          totalPrice: extractNumber(o.totalPrice),
+                          totalPriceOld: extractNumber(o.totalPriceOld),
+                          unitsPrice: extractNumber(o.unitsPrice),
+                          loftsPrice: extractNumber(o.loftsPrice),
+                          servicesPrice: extractNumber(o.servicesPrice),
+                          appliancesPrice: extractNumber(o.appliancesPrice),
+                          skirtingsPrice: extractNumber(o.skirtingsPrice),
+                          worktopsPrice: extractNumber(o.worktopsPrice),
+                          additionalHWPrice: extractNumber(o.additionalHWPrice),
+                      };
+                  })
+                  .filter(Boolean) as Array<{
+                  qoid: number | null;
+                  quoteID: number | null;
+                  optionID: number | null;
+                  roomID: number | null;
+                  roomName: string;
+                  optionName: string;
+                  totalPrice: number | null;
+                  totalPriceOld: number | null;
+                  unitsPrice: number | null;
+                  loftsPrice: number | null;
+                  servicesPrice: number | null;
+                  appliancesPrice: number | null;
+                  skirtingsPrice: number | null;
+                  worktopsPrice: number | null;
+                  additionalHWPrice: number | null;
+              }>)
+            : [];
+
+        const candidateListKeys = [
+            'summary',
+            'summaryDetails',
+            'lineItems',
+            'items',
+            'roomWiseSummary',
+            'overallSummary',
+            'quoteDetails',
+            'details',
+        ];
+        let lineItems: Array<{ name: string; amount: number | null; discountedAmount: number | null }> = [];
+        for (const key of candidateListKeys) {
+            const arr = quoteObj[key] || root[key];
+            if (Array.isArray(arr)) {
+                lineItems = arr
+                    .map((x) => {
+                        if (!x || typeof x !== 'object') return null;
+                        const o = x as Record<string, unknown>;
+                        const name =
+                            extractString(o.name) ||
+                            extractString(o.itemName) ||
+                            extractString(o.title) ||
+                            extractString(o.roomName);
+                        if (!name) return null;
+                        return {
+                            name,
+                            amount: extractNumber(o.amount ?? o.baseAmount ?? o.totalAmount),
+                            discountedAmount: extractNumber(o.discountedAmount ?? o.finalAmount ?? o.payableAmount),
+                        };
+                    })
+                    .filter((x): x is { name: string; amount: number; discountedAmount: number | null } => x !== null);
+                if (lineItems.length) break;
+            }
+        }
+
+        // Fallback: build a user-friendly list from object arrays that look like line items.
+        if (!lineItems.length) {
+            const values = [quoteObj, root]
+                .flatMap((o) => Object.values(o))
+                .filter((v) => Array.isArray(v)) as unknown[];
+            for (const arrAny of values) {
+                const arr = arrAny as unknown[];
+                const mapped = arr
+                    .map((x) => {
+                        if (!x || typeof x !== 'object') return null;
+                        const o = x as Record<string, unknown>;
+                        const name =
+                            extractString(o.name) ||
+                            extractString(o.itemName) ||
+                            extractString(o.title) ||
+                            extractString(o.description) ||
+                            extractString(o.roomName) ||
+                            extractString(o.moduleName);
+                        const amount = extractNumber(o.amount ?? o.baseAmount ?? o.totalAmount ?? o.price ?? o.value);
+                        if (!name || amount == null) return null;
+                        return {
+                            name,
+                            amount,
+                            discountedAmount: extractNumber(o.discountedAmount ?? o.finalAmount ?? o.payableAmount ?? o.netAmount),
+                        };
+                    });
+                const cleaned = mapped.filter(Boolean) as Array<{
+                    name: string;
+                    amount: number | null;
+                    discountedAmount: number | null;
+                }>;
+                if (cleaned.length) {
+                    lineItems = cleaned;
+                    break;
+                }
+            }
+        }
+
+        // Fallback: derive overall summary from room-wise quote options.
+        if (!lineItems.length && quoteOptionsData.length) {
+            lineItems = quoteOptionsData.map((opt) => ({
+                name: opt.roomName !== '-' ? opt.roomName : opt.optionName,
+                amount: opt.totalPriceOld,
+                discountedAmount: opt.totalPrice,
+            }));
+        }
+
+        const interiorProjectAmountRaw = pick('interiorProjectAmount', 'projectAmount', 'subTotal', 'totalPrice');
+        const totalPayableAmountRaw = pick('totalPayableAmount', 'totalPayable', 'grandTotal', 'netPayable', 'finalTotalPrice');
+        const discountRaw = pick('discount', 'discountAmount');
+        const interiorProjectAmountNum = extractNumber(interiorProjectAmountRaw);
+        const totalPayableAmountNum = extractNumber(totalPayableAmountRaw);
+        const discountNum = extractNumber(discountRaw);
+        const computedDiscount =
+            interiorProjectAmountNum != null && totalPayableAmountNum != null
+                ? Math.max(0, interiorProjectAmountNum - totalPayableAmountNum)
+                : null;
+        const effectiveDiscount =
+            discountNum != null && discountNum > 0
+                ? discountNum
+                : computedDiscount;
+
+        const totals = {
+            interiorProjectAmount: interiorProjectAmountRaw,
+            designAndManagementFees: pick('designAndManagementFees', 'designFee', 'managementFee', 'servicesPrice'),
+            discount: effectiveDiscount,
+            totalPayableAmount: totalPayableAmountRaw,
+        };
+
+        return {
+            quotationId: extractString(quotationId) || (extractNumber(quotationId) != null ? String(extractNumber(quotationId)) : '-'),
+            quoteNum: extractString(quoteNum) || (extractNumber(quoteNum) != null ? String(extractNumber(quoteNum)) : '-'),
+            projectId: extractString(projectId) || (extractNumber(projectId) != null ? String(extractNumber(projectId)) : '-'),
+            customerName: extractString(customerName) || extractString(leadFallback?.customerName) || '-',
+            refId: extractString(refId) || extractString(leadFallback?.refId) || '-',
+            city: extractString(city) || extractString(leadFallback?.city) || '-',
+            bhkType: extractString(bhkType) || extractString(leadFallback?.bhkType) || '-',
+            projectType: extractString(projectType) || extractString(leadFallback?.projectType) || '-',
+            quoteMeta: {
+                partnerId: extractString(partnerId) || (extractNumber(partnerId) != null ? String(extractNumber(partnerId)) : '-'),
+                remarks: extractString(remarks) || '-',
+                createdOn: extractString(createdOn) || '-',
+                downloadURL: extractString(downloadURL) || '-',
+                totalPrice,
+                finalTotalPrice,
+                discount,
+                computedDiscount: effectiveDiscount,
+                woodWorkFactor,
+                accessoriesFactor,
+                hardwareFactor,
+                appliancesFactor,
+                servicesFactor,
+                worktopFactor,
+            },
+            lineItems,
+            quoteOptionsData,
+            totals,
+        };
+    };
+
+    const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+        Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+
+    const humanizeKey = (key: string): string =>
+        key
+            .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+            .replace(/[_-]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .replace(/^./, (s) => s.toUpperCase());
+
+    const renderPrimitive = (value: unknown) => {
+        if (value === null || value === undefined || value === '') return '-';
+        if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+        if (typeof value === 'number') return value.toLocaleString('en-IN');
+        return String(value);
+    };
+
+    const renderResponseValue = (value: unknown, path: string, depth = 0): React.ReactNode => {
+        if (depth > 3) {
+            return (
+                <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600">
+                    Nested data available
+                </div>
+            );
+        }
+
+        if (!isPlainObject(value) && !Array.isArray(value)) {
+            return <span className="text-sm text-gray-900">{renderPrimitive(value)}</span>;
+        }
+
+        if (Array.isArray(value)) {
+            if (!value.length) {
+                return <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm text-gray-500">No items</div>;
+            }
+            const allPrimitive = value.every((item) => !isPlainObject(item) && !Array.isArray(item));
+            if (allPrimitive) {
+                return (
+                    <div className="flex flex-wrap gap-2">
+                        {value.map((item, idx) => (
+                            <span key={`${path}-${idx}`} className="rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-700">
+                                {renderPrimitive(item)}
+                            </span>
+                        ))}
+                    </div>
+                );
+            }
+
+            const objectRows = value.filter(isPlainObject);
+            if (objectRows.length === value.length) {
+                const columns = Array.from(
+                    new Set(objectRows.flatMap((row) => Object.keys(row)).slice(0, 50)),
+                ).slice(0, 8);
+                return (
+                    <div className="overflow-auto rounded-lg border border-gray-200">
+                        <table className="min-w-full text-sm">
+                            <thead className="bg-gray-100 text-xs uppercase text-gray-600">
+                                <tr>
+                                    {columns.map((col) => (
+                                        <th key={`${path}-h-${col}`} className="px-3 py-2 text-left font-semibold">
+                                            {humanizeKey(col)}
+                                        </th>
+                                    ))}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {objectRows.map((row, rowIdx) => (
+                                    <tr key={`${path}-r-${rowIdx}`} className="border-t border-gray-100">
+                                        {columns.map((col) => {
+                                            const cell = row[col];
+                                            const isSimple = !isPlainObject(cell) && !Array.isArray(cell);
+                                            return (
+                                                <td key={`${path}-c-${rowIdx}-${col}`} className="px-3 py-2 align-top text-gray-800">
+                                                    {isSimple ? renderPrimitive(cell) : 'Details'}
+                                                </td>
+                                            );
+                                        })}
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="space-y-2">
+                    {value.map((item, idx) => (
+                        <div key={`${path}-item-${idx}`} className="rounded-lg border border-gray-200 p-3">
+                            {renderResponseValue(item, `${path}.${idx}`, depth + 1)}
+                        </div>
+                    ))}
+                </div>
+            );
+        }
+
+        const entries = Object.entries(value);
+        const scalarEntries = entries.filter(([, v]) => !isPlainObject(v) && !Array.isArray(v));
+        const nestedEntries = entries.filter(([, v]) => isPlainObject(v) || Array.isArray(v));
+
+        return (
+            <div className="space-y-3">
+                {!!scalarEntries.length && (
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                        {scalarEntries.map(([k, v]) => (
+                            <div key={`${path}-s-${k}`} className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                                <p className="text-[11px] uppercase tracking-wide text-gray-500">{humanizeKey(k)}</p>
+                                <p className="mt-1 text-sm font-medium text-gray-900">{renderPrimitive(v)}</p>
+                            </div>
+                        ))}
+                    </div>
+                )}
+                {nestedEntries.map(([k, v]) => (
+                    <div key={`${path}-n-${k}`} className="rounded-lg border border-gray-200 p-3">
+                        <p className="mb-2 text-xs font-semibold text-gray-600">{humanizeKey(k)}</p>
+                        {renderResponseValue(v, `${path}.${k}`, depth + 1)}
+                    </div>
+                ))}
+            </div>
+        );
+    };
+
+    const triggerProlanceCreate = async () => {
+        if (!sessionId || !project) {
+            setBlockedTaskMessage('Please sign in and load project details first.');
+            setTimeout(() => setBlockedTaskMessage(null), 3000);
+            return;
+        }
+        const payloadObj = parseLeadPayload((project as unknown as Record<string, unknown>)?.payload);
+        const formData = (payloadObj?.formData && typeof payloadObj.formData === 'object'
+            ? (payloadObj.formData as Record<string, unknown>)
+            : null);
+
+        const payload = {
+            partnerID:
+                Number(
+                    (project as unknown as Record<string, unknown>)?.partnerID ||
+                        formData?.partnerID ||
+                        payloadObj?.partnerID ||
+                        23226,
+                ) || 23226,
+            pName: extractString(project.projectName) || 'Untitled Project',
+            customer:
+                extractString((project as unknown as Record<string, unknown>)?.customer) ||
+                extractString(formData?.customer_name) ||
+                extractString(formData?.sales_lead_name) ||
+                extractString(project.projectName) ||
+                'Customer',
+            city:
+                extractString((project as unknown as Record<string, unknown>)?.city) ||
+                extractString(formData?.city) ||
+                'Bengaluru',
+            state:
+                extractString((project as unknown as Record<string, unknown>)?.state) ||
+                extractString(formData?.state) ||
+                'Karnataka',
+            projectType:
+                extractString((project as unknown as Record<string, unknown>)?.projectType) ||
+                extractString(formData?.projectType) ||
+                'CYO',
+        };
+
+        try {
+            setProlanceBusy(true);
+            const appHeaders: Record<string, string> = {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${sessionId}`,
+            };
+
+            // 1) Generate Prolance API token (uses backend env creds if body is empty)
+            const tokenRes = await fetch(`${API}/api/prolance-test/token`, {
+                method: 'POST',
+                headers: appHeaders,
+                body: JSON.stringify({}),
+            });
+            const tokenText = await tokenRes.text();
+            let tokenBody: any = null;
+            try { tokenBody = tokenText ? JSON.parse(tokenText) : null; } catch { tokenBody = tokenText; }
+            const prolanceToken =
+                (tokenBody && typeof tokenBody === 'object' && (tokenBody.access_token || tokenBody.accessToken || tokenBody.token)) || '';
+            if (!tokenRes.ok || !String(prolanceToken).trim()) {
+                const msg =
+                    (tokenBody && typeof tokenBody === 'object' && (tokenBody.message || tokenBody.error)) ||
+                    'Failed to generate Prolance token.';
+                setBlockedTaskMessage(String(msg));
+                setTimeout(() => setBlockedTaskMessage(null), 5000);
+                return;
+            }
+
+            // 2) Partner login to get OriginSessionID / PartnerID
+            const partnerHeaders: Record<string, string> = {
+                ...appHeaders,
+                'X-Prolance-Token': String(prolanceToken).trim(),
+            };
+            const partnerRes = await fetch(`${API}/api/prolance-test/partners/login`, {
+                method: 'POST',
+                headers: partnerHeaders,
+                body: JSON.stringify({}),
+            });
+            const partnerText = await partnerRes.text();
+            let partnerBody: any = null;
+            try { partnerBody = partnerText ? JSON.parse(partnerText) : null; } catch { partnerBody = partnerText; }
+            const partnerData0 =
+                partnerBody && typeof partnerBody === 'object' && Array.isArray(partnerBody.data) ? partnerBody.data[0] : null;
+            const originSessionID =
+                (partnerData0 && typeof partnerData0 === 'object' && (partnerData0.sessionID || partnerData0.sessionId)) || '';
+            const partnerIDFromLogin =
+                (partnerData0 && typeof partnerData0 === 'object' && (partnerData0.partnerID || partnerData0.partnerId)) || null;
+            if (!partnerRes.ok || !String(originSessionID).trim()) {
+                const msg =
+                    (partnerBody && typeof partnerBody === 'object' && (partnerBody.message || partnerBody.error)) ||
+                    'Failed to login partner / fetch origin session.';
+                setBlockedTaskMessage(String(msg));
+                setTimeout(() => setBlockedTaskMessage(null), 5000);
+                return;
+            }
+
+            // Prefer partnerID returned by login when available.
+            if (partnerIDFromLogin != null && Number(partnerIDFromLogin)) {
+                payload.partnerID = Number(partnerIDFromLogin);
+            }
+
+            // 3) Create project
+            const createHeaders: Record<string, string> = {
+                ...appHeaders,
+                'X-Prolance-Token': String(prolanceToken).trim(),
+                'X-Prolance-Origin-Session': String(originSessionID).trim(),
+            };
+            const res = await fetch(`${API}/api/prolance-test/projects/create`, {
+                method: 'PUT',
+                headers: createHeaders,
+                body: JSON.stringify(payload),
+            });
+            const txt = await res.text();
+            let body: any = null;
+            try { body = txt ? JSON.parse(txt) : null; } catch { body = txt; }
+            if (res.ok) {
+                const createdProjectId = extractProjectId(body);
+                if (createdProjectId != null) setProlanceProjectId(createdProjectId);
+                setBlockedTaskMessage(
+                    createdProjectId != null
+                        ? `Prolance create project triggered (Project ID: ${createdProjectId}).`
+                        : 'Prolance create project triggered successfully.',
+                );
+                setTimeout(() => setBlockedTaskMessage(null), 3500);
+            } else {
+                const msg =
+                    (body && typeof body === 'object' && (body.message || body.error)) ||
+                    `Create project failed (HTTP ${res.status}).`;
+                setBlockedTaskMessage(String(msg));
+                setTimeout(() => setBlockedTaskMessage(null), 5000);
+            }
+        } catch {
+            setBlockedTaskMessage('Failed to trigger Prolance create project.');
+            setTimeout(() => setBlockedTaskMessage(null), 4000);
+        } finally {
+            setProlanceBusy(false);
+        }
+    };
+
+    const triggerProlanceGetQuote = async (explicitProjectId?: number | null) => {
+        if (!sessionId) {
+            setBlockedTaskMessage('Please sign in first.');
+            setTimeout(() => setBlockedTaskMessage(null), 3000);
+            return;
+        }
+        const quoteProjectId = explicitProjectId || Number((manualQuoteProjectId || '').trim()) || prolanceProjectId;
+        if (!quoteProjectId) {
+            setBlockedTaskMessage('Project ID missing. Click Prolance first to create a project.');
+            setTimeout(() => setBlockedTaskMessage(null), 4000);
+            return;
+        }
+
+        try {
+            setGetQuoteBusy(true);
+            const appHeaders: Record<string, string> = {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${sessionId}`,
+            };
+
+            const tokenRes = await fetch(`${API}/api/prolance-test/token`, {
+                method: 'POST',
+                headers: appHeaders,
+                body: JSON.stringify({}),
+            });
+            const tokenText = await tokenRes.text();
+            let tokenBody: any = null;
+            try { tokenBody = tokenText ? JSON.parse(tokenText) : null; } catch { tokenBody = tokenText; }
+            const prolanceToken =
+                (tokenBody && typeof tokenBody === 'object' && (tokenBody.access_token || tokenBody.accessToken || tokenBody.token)) || '';
+            if (!tokenRes.ok || !String(prolanceToken).trim()) {
+                const msg =
+                    (tokenBody && typeof tokenBody === 'object' && (tokenBody.message || tokenBody.error)) ||
+                    'Failed to generate Prolance token.';
+                setBlockedTaskMessage(String(msg));
+                setTimeout(() => setBlockedTaskMessage(null), 5000);
+                return;
+            }
+
+            const partnerRes = await fetch(`${API}/api/prolance-test/partners/login`, {
+                method: 'POST',
+                headers: {
+                    ...appHeaders,
+                    'X-Prolance-Token': String(prolanceToken).trim(),
+                },
+                body: JSON.stringify({}),
+            });
+            const partnerText = await partnerRes.text();
+            let partnerBody: any = null;
+            try { partnerBody = partnerText ? JSON.parse(partnerText) : null; } catch { partnerBody = partnerText; }
+            const partnerData0 =
+                partnerBody && typeof partnerBody === 'object' && Array.isArray(partnerBody.data) ? partnerBody.data[0] : null;
+            const originSessionID =
+                (partnerData0 && typeof partnerData0 === 'object' && (partnerData0.sessionID || partnerData0.sessionId)) || '';
+            if (!partnerRes.ok || !String(originSessionID).trim()) {
+                const msg =
+                    (partnerBody && typeof partnerBody === 'object' && (partnerBody.message || partnerBody.error)) ||
+                    'Failed to login partner / fetch origin session.';
+                setBlockedTaskMessage(String(msg));
+                setTimeout(() => setBlockedTaskMessage(null), 5000);
+                return;
+            }
+
+            const quoteRes = await fetch(
+                `${API}/api/prolance-test/quotes/${encodeURIComponent(String(quoteProjectId))}`,
+                {
+                    method: 'GET',
+                    headers: {
+                        ...appHeaders,
+                        'X-Prolance-Token': String(prolanceToken).trim(),
+                        'X-Prolance-Origin-Session': String(originSessionID).trim(),
+                    },
+                },
+            );
+            const quoteText = await quoteRes.text();
+            let quoteBody: any = null;
+            try { quoteBody = quoteText ? JSON.parse(quoteText) : null; } catch { quoteBody = quoteText; }
+            setGetQuoteLastStatus(quoteRes.status);
+            setGetQuoteLastBody(quoteBody);
+            if (quoteRes.ok) {
+                setLatestQuoteResponse(quoteBody);
+                setQuoteSummaryTab('overall');
+                setShowQuotePreviewModal(true);
+                setBlockedTaskMessage(`Get quote triggered successfully for Project ID ${quoteProjectId}.`);
+                setTimeout(() => setBlockedTaskMessage(null), 3500);
+            } else {
+                const msg =
+                    (quoteBody && typeof quoteBody === 'object' && (quoteBody.message || quoteBody.error)) ||
+                    `Get quote failed (HTTP ${quoteRes.status}).`;
+                setBlockedTaskMessage(String(msg));
+                setTimeout(() => setBlockedTaskMessage(null), 5000);
+            }
+        } catch {
+            setBlockedTaskMessage('Failed to trigger Prolance get quote.');
+            setTimeout(() => setBlockedTaskMessage(null), 4000);
+        } finally {
+            setGetQuoteBusy(false);
+        }
+    };
+
     useEffect(() => {
         if (projectId == null) {
             setProjectLoaded(true);
             return;
         }
         setProjectLoaded(false);
-        fetch(`${API}/api/leads/${projectId}`)
+        fetch(`${API}/api/leads/${projectId}`, {
+            headers: sessionId ? { Authorization: `Bearer ${sessionId}` } : {},
+        })
             .then(async (res) => {
                 const text = await res.text();
                 if (!res.ok) throw new Error('Not ok');
@@ -172,7 +836,7 @@ export default function ProjectDetailPage() {
                 setProject(fallback);
             })
             .finally(() => setProjectLoaded(true));
-    }, [projectId]);
+    }, [projectId, sessionId]);
 
     // When Group Description popup opens, auto-fetch latest profile (designer phone) and lead (client contactNo)
     useEffect(() => {
@@ -437,6 +1101,10 @@ export default function ProjectDetailPage() {
         return <div className="p-8">Project Not Found</div>;
     }
 
+    const canCancelLead = ['admin', 'territorial_design_manager', 'deputy_general_manager'].includes(
+        (authUser?.role || '').toLowerCase(),
+    );
+
     const handleImageAdding = () => {
         // TODO: wire to "add user to project" when backend supports it
         const maxId = image.length > 0 ? Math.max(...image.map((img) => img.id)) : 0;
@@ -470,6 +1138,11 @@ export default function ProjectDetailPage() {
     };
 
     const openTaskPopup = (milestoneIndex: number, taskName: string) => {
+        if (project && (project.projectStage || '').trim().toLowerCase() === 'cancelled') {
+            setBlockedTaskMessage('This project has been cancelled.');
+            setTimeout(() => setBlockedTaskMessage(null), 3000);
+            return;
+        }
         // Only allow opening tasks for the current or past milestones; next milestones unlock after current is completed
         if (milestoneIndex > currentMilestoneIndex) {
             setBlockedTaskMessage('Complete the current milestone first.');
@@ -481,6 +1154,42 @@ export default function ProjectDetailPage() {
         if (!milestone) return;
 
         // If this task has a checklist, force the checklist to be completed before showing the popup.
+        const tTrim = taskName.trim();
+        if (milestoneIndex === 4 && tTrim === 'Assign project manager') {
+            const dqc2Approved = completedTaskKeys.includes(taskKey(4, 'DQC 2 approval '));
+            if (!dqc2Approved) {
+                setBlockedTaskMessage('Complete DQC 2 approval before assigning a project manager.');
+                setTimeout(() => setBlockedTaskMessage(null), 4000);
+                return;
+            }
+            const assignerRole = (authUser?.role || '').toLowerCase();
+            const canAssignPm = ['admin', 'territorial_design_manager', 'deputy_general_manager', 'senior_project_manager'].includes(
+                assignerRole,
+            );
+            if (!canAssignPm) {
+                setBlockedTaskMessage(
+                    'Only Admin, Territorial Design Manager, Deputy General Manager, or Senior Project Manager can assign a project manager.',
+                );
+                setTimeout(() => setBlockedTaskMessage(null), 5000);
+                return;
+            }
+        }
+        if (milestoneIndex === 4 && tTrim === 'Project manager approval') {
+            const assignDone = completedTaskKeys.includes(taskKey(4, 'Assign project manager'));
+            if (!assignDone) {
+                setBlockedTaskMessage('Assign a project manager first.');
+                setTimeout(() => setBlockedTaskMessage(null), 4000);
+                return;
+            }
+            const role = (authUser?.role || '').toLowerCase();
+            const pmId = project?.assigned_project_manager_id;
+            if (role !== 'project_manager' || !pmId || !authUser?.id || pmId !== authUser.id) {
+                setBlockedTaskMessage('Only the assigned project manager can open this approval step.');
+                setTimeout(() => setBlockedTaskMessage(null), 4000);
+                return;
+            }
+        }
+
         const checklistKey = getChecklistKeyForTask(milestoneIndex, taskName);
         if (checklistKey) {
             const key = taskKey(milestoneIndex, taskName);
@@ -643,11 +1352,24 @@ export default function ProjectDetailPage() {
         });
         // persist completion for this lead so refresh keeps it completed
         if (projectId != null) {
+            const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+            if (sessionId) headers.Authorization = `Bearer ${sessionId}`;
             fetch(`${API}/api/leads/${projectId}/complete-task`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({ milestoneIndex, taskName, meta: options?.meta }),
-            }).catch(() => {});
+            })
+                .then(async (res) => {
+                    if (!res.ok) {
+                        const data = await res.json().catch(() => ({}));
+                        const msg = (data as { message?: string })?.message;
+                        if (msg) {
+                            setBlockedTaskMessage(msg);
+                            setTimeout(() => setBlockedTaskMessage(null), 5000);
+                        }
+                    }
+                })
+                .catch(() => {});
         }
         markTaskComplete(milestoneIndex, taskName);
     };
@@ -688,15 +1410,15 @@ export default function ProjectDetailPage() {
                     // Material meeting + submission tasks are completed earlier when designer does them.
                     const dqc2ApprovalTasks = ['DQC 2 approval '];
                     dqc2ApprovalTasks.forEach((t: string) => {
+                        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+                        if (sessionId) headers.Authorization = `Bearer ${sessionId}`;
                         fetch(`${API}/api/leads/${projectId}/complete-task`, {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
+                            headers,
                             body: JSON.stringify({ milestoneIndex: 4, taskName: t }),
                         }).catch(() => {});
                         markTaskComplete(4, t);
                     });
-                    // Force UI to show 40% PAYMENT as current milestone after DQC2 approval.
-                    setCurrentMilestoneIndex(5);
                 } else {
                     // DQC1 approval should move lead to next stage reliably.
                     // Mark all DQC1 tasks complete when verdict is approved.
@@ -776,23 +1498,6 @@ export default function ProjectDetailPage() {
         setMomReferenceFiles((prev) => [...prev, ...files].slice(0, 2));
     };
     const removeMomFile = (index: number) => setMomReferenceFiles((prev) => prev.filter((_, i) => i !== index));
-
-    const openPayment40pUpload = (accept: string) => {
-        payment40pInputRef.current?.setAttribute('accept', accept);
-        payment40pInputRef.current?.click();
-    };
-    const onPayment40pFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const files = e.target.files ? Array.from(e.target.files) : [];
-        setPayment40pFiles((prev) => [...prev, ...files]);
-        e.target.value = '';
-    };
-    const onPayment40pDrop = (e: React.DragEvent) => {
-        e.preventDefault();
-        const files = Array.from(e.dataTransfer.files || []);
-        setPayment40pFiles((prev) => [...prev, ...files]);
-    };
-    const onPayment40pDragOver = (e: React.DragEvent) => e.preventDefault();
-    const removePayment40pFile = (index: number) => setPayment40pFiles((prev) => prev.filter((_, i) => i !== index));
 
     const scrollMilestoneCards = (direction: 'left' | 'right') => {
         const el = milestoneCardsScrollRef.current;
@@ -949,9 +1654,33 @@ export default function ProjectDetailPage() {
                             // ignore
                         }
                     }}
+                    showCancelButton={canCancelLead && !isMmtUser}
+                    onCancelClick={() => setShowCancelModal(true)}
                     hideNavTabs={isMmtUser}
                     hideStepper={isMmtUser}
                     hideProlanceHoldResume={isMmtUser}
+                    onProlanceClick={triggerProlanceCreate}
+                    prolanceBusy={prolanceBusy}
+                    onGetQuoteClick={() => {
+                        if (!manualQuoteProjectId && prolanceProjectId) {
+                            setManualQuoteProjectId(String(prolanceProjectId));
+                        }
+                        setGetQuoteLastStatus(null);
+                        setGetQuoteLastBody(null);
+                        setShowGetQuoteModal(true);
+                    }}
+                    getQuoteBusy={getQuoteBusy}
+                    canGetQuote
+                />
+            )}
+
+            {project && !activeCard && (
+                <ClientEmailsSection
+                    leadId={projectId}
+                    project={project}
+                    sessionId={sessionId}
+                    readOnly={(authUser?.role || '').toLowerCase() === 'designer'}
+                    onUpdate={(patch) => setProject((prev) => (prev ? { ...prev, ...patch } : prev))}
                 />
             )}
 
@@ -961,12 +1690,327 @@ export default function ProjectDetailPage() {
                 </div>
             )}
 
+            {showGetQuoteModal && (
+                <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/60">
+                    <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md space-y-4">
+                        <h2 className="text-lg font-semibold text-gray-900">Get Quote</h2>
+                        <p className="text-sm text-gray-600">Enter existing Prolance Project ID to trigger quote API.</p>
+                        <input
+                            value={manualQuoteProjectId}
+                            onChange={(e) => setManualQuoteProjectId(e.target.value)}
+                            placeholder="Project ID"
+                            className="w-full border border-gray-300 rounded-lg px-3 py-2"
+                        />
+                        <div className="flex justify-end gap-2">
+                            <button
+                                type="button"
+                                onClick={() => setShowGetQuoteModal(false)}
+                                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50"
+                                disabled={getQuoteBusy}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                disabled={getQuoteBusy || !manualQuoteProjectId.trim()}
+                                onClick={async () => {
+                                    const parsed = Number(manualQuoteProjectId.trim());
+                                    if (!Number.isFinite(parsed) || parsed <= 0) {
+                                        setBlockedTaskMessage('Please enter a valid project ID.');
+                                        setTimeout(() => setBlockedTaskMessage(null), 3000);
+                                        return;
+                                    }
+                                    await triggerProlanceGetQuote(parsed);
+                                }}
+                                className="px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40"
+                            >
+                                {getQuoteBusy ? 'Triggering...' : 'Get Quote'}
+                            </button>
+                        </div>
+                        {(getQuoteLastStatus !== null || Boolean(getQuoteLastBody)) && (
+                            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                                <p className="text-xs font-semibold text-gray-600">
+                                    Last Get Quote response{getQuoteLastStatus !== null ? ` (HTTP ${getQuoteLastStatus})` : ''}
+                                </p>
+                                <pre className="mt-2 max-h-48 overflow-auto text-[11px] leading-relaxed text-gray-800">
+                                    {prettyResponse(getQuoteLastBody) || '—'}
+                                </pre>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {showQuotePreviewModal && (
+                <div className="fixed inset-0 z-[96] flex items-center justify-center bg-black/70 p-4">
+                    <div className="w-full max-w-6xl max-h-[94vh] overflow-y-auto rounded-2xl bg-[#f3f3f3] shadow-2xl">
+                        <div className="sticky top-0 z-10 flex items-center justify-between bg-[#303135] px-6 py-4 text-white">
+                            <div>
+                                <h2 className="text-lg font-bold tracking-wide">HUBINTERIOR</h2>
+                                <p className="text-[11px] text-gray-200">Quotation View</p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setShowQuotePreviewModal(false)}
+                                className="rounded-md bg-rose-500 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-600"
+                            >
+                                Close
+                            </button>
+                        </div>
+
+                        {(() => {
+                            const payloadObj = parseLeadPayload((project as unknown as Record<string, unknown>)?.payload);
+                            const formData =
+                                payloadObj?.formData && typeof payloadObj.formData === 'object'
+                                    ? (payloadObj.formData as Record<string, unknown>)
+                                    : null;
+                            const fetchedData =
+                                payloadObj?.fetchedData && typeof payloadObj.fetchedData === 'object'
+                                    ? (payloadObj.fetchedData as Record<string, unknown>)
+                                    : null;
+                            const leadFallback = {
+                                customerName:
+                                    extractString(project?.projectName) ||
+                                    extractString((project as unknown as Record<string, unknown>)?.customerName) ||
+                                    extractString(formData?.customer_name) ||
+                                    extractString(formData?.sales_lead_name),
+                                refId:
+                                    extractString((project as unknown as Record<string, unknown>)?.pid) ||
+                                    extractString(formData?.reference_id) ||
+                                    extractString(payloadObj?.pid),
+                                city:
+                                    extractString((project as unknown as Record<string, unknown>)?.city) ||
+                                    extractString(formData?.city) ||
+                                    extractString(fetchedData?.city),
+                                bhkType:
+                                    extractString((project as unknown as Record<string, unknown>)?.bhkType) ||
+                                    extractString(formData?.bhk_type) ||
+                                    extractString(formData?.bhkType),
+                                projectType:
+                                    extractString((project as unknown as Record<string, unknown>)?.projectType) ||
+                                    extractString(formData?.project_type) ||
+                                    extractString(formData?.projectType),
+                            };
+                            const view = normalizeQuoteView(latestQuoteResponse, leadFallback);
+                            const hasFinancialTotals =
+                                extractNumber(view.totals.interiorProjectAmount) != null ||
+                                extractNumber(view.totals.designAndManagementFees) != null ||
+                                extractNumber(view.totals.discount) != null ||
+                                extractNumber(view.totals.totalPayableAmount) != null;
+                            return (
+                                <div className="mx-auto max-w-5xl space-y-5 px-6 py-6">
+                                    <div className="rounded-2xl bg-white p-6 shadow-sm">
+                                        <p className="text-xs font-semibold tracking-wide text-gray-500">QUOTATION ID : {view.quotationId}</p>
+                                        <h3 className="mt-2 text-3xl font-bold text-gray-800">
+                                            Hey {view.customerName !== '-' ? view.customerName : 'Customer'}, your quotation is ready!
+                                        </h3>
+                                    </div>
+
+                                    <div className="rounded-2xl bg-white p-4 shadow-sm">
+                                        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                                        {[
+                                            ['Customer Name', view.customerName],
+                                            ['Ref ID', view.refId],
+                                            ['City', view.city],
+                                            ['BHK Type', view.bhkType],
+                                            ['Project Type', view.projectType],
+                                            ['Project ID', view.projectId],
+                                            ['Quote Number', view.quoteNum],
+                                        ].map(([label, value]) => (
+                                            <div key={label} className="rounded-lg bg-gray-50 p-3">
+                                                <p className="text-[10px] uppercase tracking-wide text-gray-500">{label}</p>
+                                                <p className="mt-1 text-xl font-bold text-gray-900">{value}</p>
+                                            </div>
+                                        ))}
+                                        </div>
+                                    </div>
+
+                                    <div className="rounded-2xl bg-white p-4 shadow-sm">
+                                        <p className="text-3xl font-bold text-gray-800">Summary Detail</p>
+                                        <div className="mt-4 grid grid-cols-2 rounded-xl border border-gray-200 p-1">
+                                            <button
+                                                type="button"
+                                                onClick={() => setQuoteSummaryTab('overall')}
+                                                className={`rounded-lg py-2 text-sm font-semibold ${quoteSummaryTab === 'overall' ? 'bg-rose-500 text-white' : 'text-gray-700'}`}
+                                            >
+                                                Overall Summary
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setQuoteSummaryTab('roomwise')}
+                                                className={`rounded-lg py-2 text-sm font-semibold ${quoteSummaryTab === 'roomwise' ? 'bg-rose-500 text-white' : 'text-gray-700'}`}
+                                            >
+                                                Room Wise Summary
+                                            </button>
+                                        </div>
+
+                                        {quoteSummaryTab === 'overall' ? (
+                                            <>
+                                                <div className="mt-5 rounded-xl bg-[#efeff2] py-10 text-center">
+                                                    <p className="text-lg font-semibold text-gray-700">
+                                                        Total <span className="text-2xl text-gray-900">{formatCurrency(view.totals.totalPayableAmount)}</span>
+                                                    </p>
+                                                </div>
+
+                                                <div className="mt-4 grid grid-cols-12 px-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                                                    <div className="col-span-8">Name</div>
+                                                    <div className="col-span-4 text-right">Amount</div>
+                                                </div>
+
+                                                {view.lineItems.length ? (
+                                                    view.lineItems.map((item, idx) => (
+                                                        <div key={`${item.name}-${idx}`} className="grid grid-cols-12 items-center border-t border-gray-100 py-4 text-sm">
+                                                            <div className="col-span-8 flex items-center gap-3">
+                                                                <span className="h-6 w-2 rounded-full bg-violet-400" />
+                                                                <span className="font-semibold text-gray-800">{item.name}</span>
+                                                            </div>
+                                                            <div className="col-span-4 text-right">
+                                                                {item.amount != null &&
+                                                                    item.discountedAmount != null &&
+                                                                    item.amount > item.discountedAmount && (
+                                                                        <span className="mr-2 text-xs text-rose-400 line-through">
+                                                                            {formatCurrency(item.amount)}
+                                                                        </span>
+                                                                    )}
+                                                                <span className="text-lg font-semibold text-gray-900">
+                                                                    {formatCurrency(item.discountedAmount ?? item.amount)}
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                    ))
+                                                ) : (
+                                                    <div className="px-4 py-5 text-sm text-gray-500">
+                                                        Quote details are being prepared. Please verify totals below.
+                                                    </div>
+                                                )}
+
+                                                <div className="mt-5 space-y-3 rounded-xl border border-gray-200 p-4">
+                                                    {hasFinancialTotals ? (
+                                                        <>
+                                                            <div className="flex items-start justify-between">
+                                                                <div>
+                                                                    <p className="text-xl font-semibold text-gray-900">Interior Project Amount</p>
+                                                                    <p className="text-xs text-gray-500">*Design & Management Fees are not included</p>
+                                                                </div>
+                                                                <p className="text-lg font-semibold text-gray-900">{formatCurrency(view.totals.interiorProjectAmount)}</p>
+                                                            </div>
+                                                            <div className="flex justify-between border-t border-gray-100 pt-3">
+                                                                <span className="text-sm text-gray-600">Design and Management Fees</span>
+                                                                <span className="font-semibold text-gray-900">{formatCurrency(view.totals.designAndManagementFees)}</span>
+                                                            </div>
+                                                            <div className="flex justify-between border-t border-gray-100 pt-3">
+                                                                <span className="text-sm text-gray-600">Discount</span>
+                                                                <span className="font-semibold text-gray-900">{formatCurrency(view.totals.discount)}</span>
+                                                            </div>
+                                                            <div className="flex justify-between border-t border-gray-200 pt-3">
+                                                                <div>
+                                                                    <p className="text-xl font-bold text-gray-900">Total Payable Amount</p>
+                                                                    <p className="text-xs text-gray-500">Inclusive of all taxes & discount</p>
+                                                                </div>
+                                                                <span className="text-2xl font-bold text-gray-900">{formatCurrency(view.totals.totalPayableAmount)}</span>
+                                                            </div>
+                                                        </>
+                                                    ) : (
+                                                        <div className="rounded-lg bg-amber-50 border border-amber-200 p-3">
+                                                            <p className="text-sm font-semibold text-amber-900">Pricing details not available in this API response</p>
+                                                            <p className="mt-1 text-xs text-amber-800">
+                                                                This response currently returns quote metadata (like quote ID/project ID). Item-level price breakup may require a follow-up quote-details endpoint.
+                                                            </p>
+                                                        </div>
+                                                    )}
+                                                </div>
+
+                                                <div className="mt-5 rounded-xl border border-gray-200 p-4">
+                                                    <p className="mb-3 text-sm font-semibold text-gray-800">Quote Overview</p>
+                                                    <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                                                        {[
+                                                            ['Partner ID', view.quoteMeta.partnerId],
+                                                            ['Remarks', view.quoteMeta.remarks],
+                                                            ['Created On', view.quoteMeta.createdOn],
+                                                            ['Total Price', formatCurrency(view.quoteMeta.totalPrice)],
+                                                            ['Final Total Price', formatCurrency(view.quoteMeta.finalTotalPrice)],
+                                                            ['Discount', formatCurrency(view.quoteMeta.computedDiscount ?? view.quoteMeta.discount)],
+                                                            ['Wood Work Factor', renderPrimitive(view.quoteMeta.woodWorkFactor)],
+                                                            ['Accessories Factor', renderPrimitive(view.quoteMeta.accessoriesFactor)],
+                                                            ['Hardware Factor', renderPrimitive(view.quoteMeta.hardwareFactor)],
+                                                            ['Appliances Factor', renderPrimitive(view.quoteMeta.appliancesFactor)],
+                                                            ['Services Factor', renderPrimitive(view.quoteMeta.servicesFactor)],
+                                                            ['Worktop Factor', renderPrimitive(view.quoteMeta.worktopFactor)],
+                                                        ].map(([label, value]) => (
+                                                            <div key={label} className="rounded-lg bg-gray-50 p-3">
+                                                                <p className="text-[10px] uppercase tracking-wide text-gray-500">{label}</p>
+                                                                <p className="mt-1 text-sm font-semibold text-gray-900 break-words">{value}</p>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            </>
+                                        ) : (
+                                            <div className="mt-5 space-y-4">
+                                                {view.quoteOptionsData.length ? (
+                                                    view.quoteOptionsData.map((opt, idx) => {
+                                                        const oldP = extractNumber(opt.totalPriceOld);
+                                                        const curP = extractNumber(opt.totalPrice);
+                                                        const saving = oldP != null && curP != null ? oldP - curP : null;
+                                                        return (
+                                                            <div key={`${opt.qoid ?? idx}-${opt.optionID ?? idx}`} className="rounded-xl border border-gray-200 p-4">
+                                                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                                                    <div>
+                                                                        <p className="text-lg font-semibold text-gray-900">{opt.roomName}</p>
+                                                                        <p className="text-sm text-gray-600">{opt.optionName}</p>
+                                                                    </div>
+                                                                    <div className="text-right">
+                                                                        <p className="text-xs text-gray-500">Room Total</p>
+                                                                        <p className="text-xl font-bold text-gray-900">{formatCurrency(curP)}</p>
+                                                                        {oldP != null && (
+                                                                            <p className="text-xs text-rose-400 line-through">{formatCurrency(oldP)}</p>
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+                                                                <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
+                                                                    {[
+                                                                        ['Units', opt.unitsPrice],
+                                                                        ['Lofts', opt.loftsPrice],
+                                                                        ['Services', opt.servicesPrice],
+                                                                        ['Appliances', opt.appliancesPrice],
+                                                                        ['Skirtings', opt.skirtingsPrice],
+                                                                        ['Worktops', opt.worktopsPrice],
+                                                                        ['Additional HW', opt.additionalHWPrice],
+                                                                        ['Savings', saving],
+                                                                    ].map(([label, value]) => (
+                                                                        <div key={`${opt.optionID}-${label}`} className="rounded-lg bg-gray-50 p-2">
+                                                                            <p className="text-[10px] uppercase tracking-wide text-gray-500">{label}</p>
+                                                                            <p className={`mt-1 text-sm font-semibold ${label === 'Savings' ? 'text-emerald-700' : 'text-gray-900'}`}>
+                                                                                {formatCurrency(value)}
+                                                                            </p>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })
+                                                ) : (
+                                                    <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm text-amber-900">
+                                                        Room-wise summary is not available in this response.
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+
+                                </div>
+                            );
+                        })()}
+                    </div>
+                </div>
+            )}
+
             {/* --- MAIN GRID --- */}
             <main className={`xl:grid xl:grid-cols-7 xl:gap-5 xl:m-4 transition-all duration-300 ${activeCard ? 'block' : ''}`}>
                 
                 {!isMmtUser && (
                     <MilestonesCard
-                        cardClass={getCardClass('milestones', 'xl:col-span-3 xl:bg-purple-50 xl:h-[70vh] xl:rounded-3xl relative xl:pt-6 xl:pb-6 xl:px-4')}
+                        cardClass={getCardClass('milestones', 'xl:col-span-3 xl:bg-purple-50 xl:h-[70vh] xl:min-h-0 xl:overflow-hidden xl:rounded-3xl relative xl:pt-6 xl:pb-6 xl:px-4 min-h-0 max-h-[min(88dvh,920px)]')}
                         isMaximized={activeCard === 'milestones'}
                         currentMilestoneIndex={currentMilestoneIndex}
                         onToggleMaximize={() => toggleMaximize('milestones')}
@@ -1044,6 +2088,60 @@ export default function ProjectDetailPage() {
                 </div>
 
             </main>
+
+            {showCancelModal && (
+                <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/60">
+                    <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md space-y-4">
+                        <h2 className="text-lg font-semibold text-gray-900">Mark project as cancelled?</h2>
+                        <p className="text-sm text-gray-600">
+                            This moves the project to the <strong>Cancelled</strong> queue on the dashboard. Hold will be cleared. This action is intended for Admin, TDM, or Deputy General Manager only.
+                        </p>
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button
+                                type="button"
+                                onClick={() => setShowCancelModal(false)}
+                                className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium hover:bg-gray-50"
+                            >
+                                Back
+                            </button>
+                            <button
+                                type="button"
+                                className="px-4 py-2 rounded-lg bg-amber-700 text-white text-sm font-semibold hover:bg-amber-800 disabled:opacity-60"
+                                disabled={!sessionId}
+                                onClick={async () => {
+                                    if (!projectId || !sessionId) return;
+                                    try {
+                                        const res = await fetch(`${API}/api/leads/${projectId}/cancel`, {
+                                            method: 'POST',
+                                            headers: {
+                                                'Content-Type': 'application/json',
+                                                Authorization: `Bearer ${sessionId}`,
+                                            },
+                                        });
+                                        const data = await res.json().catch(() => ({}));
+                                        if (!res.ok) throw new Error(data?.message || 'Request failed');
+                                        setProject((prev) =>
+                                            prev
+                                                ? {
+                                                      ...prev,
+                                                      projectStage: 'Cancelled',
+                                                      isOnHold: false,
+                                                      resumeAt: null,
+                                                  }
+                                                : prev,
+                                        );
+                                        setShowCancelModal(false);
+                                    } catch {
+                                        // optional: toast
+                                    }
+                                }}
+                            >
+                                Mark as cancelled
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {showHoldModal && (
                 <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/60">
@@ -1123,6 +2221,7 @@ export default function ProjectDetailPage() {
                     {popupContext.milestoneIndex === 0 && popupContext.taskName === 'Mail loop chain 2 initiate' && (
                         <PopupMailLoopChain
                             clientEmail={project?.clientEmail ?? ''}
+                            alternateClientEmail={project?.alternateClientEmail ?? ''}
                             designerEmail={authUser?.email ?? ''}
                             projectPid={project?.pid}
                             projectName={project?.projectName}
@@ -1572,10 +2671,55 @@ export default function ProjectDetailPage() {
                             />
                         )
                     )}
+                    {popupContext.milestoneIndex === 4 && popupContext.taskName === 'Assign project manager' && projectId != null && project && (
+                        <PopupAssignProjectManager
+                            leadId={projectId}
+                            apiBase={API}
+                            sessionId={sessionId}
+                            currentPmId={project.assigned_project_manager_id}
+                            currentPmName={project.projectManagerName}
+                            onClose={closePopup}
+                            onAssigned={() => {
+                                recordTaskComplete(4, 'Assign project manager');
+                                if (sessionId) {
+                                    fetch(`${API}/api/leads/${projectId}`, {
+                                        headers: { Authorization: `Bearer ${sessionId}` },
+                                    })
+                                        .then(async (res) => {
+                                            const text = await res.text();
+                                            if (!res.ok || !text) return null;
+                                            try {
+                                                return JSON.parse(text) as LeadshipTypes;
+                                            } catch {
+                                                return null;
+                                            }
+                                        })
+                                        .then((data: LeadshipTypes | null) => {
+                                            if (data) setProject(data);
+                                        })
+                                        .catch(() => {});
+                                }
+                                closePopup();
+                            }}
+                        />
+                    )}
+                    {popupContext.milestoneIndex === 4 && popupContext.taskName === 'Project manager approval' && project && (
+                        <PopupProjectManagerApproval
+                            projectName={project.projectName}
+                            projectManagerName={authUser?.name ?? project.projectManagerName ?? null}
+                            onClose={closePopup}
+                            onApprove={() => {
+                                recordTaskComplete(4, 'Project manager approval');
+                                closePopup();
+                            }}
+                        />
+                    )}
                     {popupContext.milestoneIndex === 4 &&
                         popupContext.taskName !== 'DQC 2 submission' &&
                         popupContext.taskName !== 'DQC 2 approval' &&
                         popupContext.taskName !== 'DQC 2 approval ' &&
+                        popupContext.taskName !== 'Assign project manager' &&
+                        popupContext.taskName !== 'Project manager approval' &&
                         popupContext.taskName !== 'Material selection meeting + quotation discussion' &&
                         popupContext.taskName !== 'Material selection meeting completed' && (
                         <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(4, popupContext.taskName); closePopup(); }} />
@@ -1637,10 +2781,14 @@ export default function ProjectDetailPage() {
                     {popupContext.milestoneIndex === 5 && popupContext.taskName === '40% payment approval' && (
                         <PopupPlaceholder message="40% payment approval is done by the finance team from their queue. Once they approve, this milestone will advance automatically—no action needed here." />
                     )}
-                    {popupContext.milestoneIndex === 5 && popupContext.taskName !== 'meeting completed & 40% payment request' && popupContext.taskName !== 'Design sign off' && popupContext.taskName !== '40% payment approval' && (
+                    {popupContext.milestoneIndex === 5 &&
+                        popupContext.taskName !== 'meeting completed' &&
+                        popupContext.taskName !== '40% collection' &&
+                        popupContext.taskName !== 'Design sign off' &&
+                        popupContext.taskName !== '40% payment approval' && (
                         <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(5, popupContext.taskName); closePopup(); }} />
                     )}
-                    {popupContext.milestoneIndex === 5 && popupContext.taskName === 'meeting completed & 40% payment request' && (
+                    {popupContext.milestoneIndex === 5 && popupContext.taskName === 'meeting completed' && (
                         <PopupMeetingCompleted
                             momMinutes={momMinutes}
                             setMomMinutes={setMomMinutes}
@@ -1651,14 +2799,7 @@ export default function ProjectDetailPage() {
                             onMomDrop={onMomDrop}
                             removeMomFile={removeMomFile}
                             onClose={closePopup}
-                            show40pUpload={true}
-                            payment40pFiles={payment40pFiles}
-                            payment40pInputRef={payment40pInputRef}
-                            openPayment40pUpload={openPayment40pUpload}
-                            onPayment40pFilesSelected={onPayment40pFilesSelected}
-                            onPayment40pDrop={onPayment40pDrop}
-                            onPayment40pDragOver={onPayment40pDragOver}
-                            removePayment40pFile={removePayment40pFile}
+                            show40pUpload={false}
                             onShareMom={async () => {
                                 if (!projectId) return;
                                 try {
@@ -1672,41 +2813,38 @@ export default function ProjectDetailPage() {
                                             body: fd,
                                         });
                                     }
-                                    if (payment40pFiles.length > 0 && sessionId) {
-                                        const fd40 = new FormData();
-                                        payment40pFiles.forEach((f) => fd40.append('files', f));
-                                        await fetch(`${API}/api/leads/${projectId}/40p-payment-upload`, {
-                                            method: 'POST',
-                                            headers: { Authorization: `Bearer ${sessionId}` },
-                                            body: fd40,
-                                        });
-                                    }
-                                    const hasPaymentScreenshots = payment40pFiles.length > 0;
-                                    recordTaskComplete(5, 'meeting completed & 40% payment request', {
-                                        description: hasPaymentScreenshots
-                                            ? 'Meeting completed & 40% payment request shared with payment screenshots for finance.'
-                                            : 'Meeting completed & 40% payment request shared.',
-                                        details: hasPaymentScreenshots
-                                            ? {
-                                                  kind: 'mom',
-                                                  minutes: momMinutes,
-                                                  referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
-                                              }
-                                            : {
-                                                  kind: 'mom',
-                                                  minutes: momMinutes,
-                                                  referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
-                                              },
+                                    recordTaskComplete(5, 'meeting completed', {
+                                        description: 'Design sign-off meeting completed. Minutes of meeting shared.',
+                                        details: {
+                                            kind: 'mom',
+                                            minutes: momMinutes,
+                                            referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                        },
                                     });
                                     setMomMinutes('');
                                     setMomReferenceFiles([]);
-                                    setPayment40pFiles([]);
                                     setUploadsVersion((v) => v + 1);
                                     closePopup();
                                 } catch (err) {
-                                    console.error('MOM / 40% upload failed', err);
+                                    console.error('MOM upload failed', err);
                                     alert('Failed to save. Please try again.');
                                 }
+                            }}
+                        />
+                    )}
+                    {popupContext.milestoneIndex === 5 && popupContext.taskName === '40% collection' && projectId != null && (
+                        <Popup40pCollection
+                            leadId={projectId}
+                            apiBase={API}
+                            sessionId={sessionId}
+                            onClose={closePopup}
+                            onSuccess={() => {
+                                recordTaskComplete(5, '40% collection', {
+                                    description: '40% collection: payment screenshots uploaded for finance review.',
+                                    details: { kind: 'file_upload', fileName: '40% payment screenshots' },
+                                });
+                                setUploadsVersion((v) => v + 1);
+                                closePopup();
                             }}
                         />
                     )}

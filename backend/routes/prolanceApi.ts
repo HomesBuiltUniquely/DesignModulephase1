@@ -1,163 +1,15 @@
 import type { Express, Request, Response } from "express";
-import type { Pool } from "mysql2/promise";
+import http from "node:http";
+import https from "node:https";
 
 type SessionUser = { id: number; role: string };
-
-type LeadRow = {
-  id: number;
-  projectName: string | null;
-  payload: string | null;
-};
-
-type TenantConfig = {
-  apiBaseUrl?: string;
-  apiKey?: string;
-  staticToken?: string;
-  username?: string;
-  password?: string;
-  partnerLoginId?: string;
-  partnerPassword?: string;
-  projectUrlTemplate?: string;
-  appBaseUrl?: string;
-  noEncryption?: string;
-};
 
 function envTrim(name: string): string {
   return (process.env[name] || "").trim();
 }
 
-function stripTrailingSlash(value: string): string {
-  return value.replace(/\/$/, "");
-}
-
-function slugify(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
-function getTenantConfigMap(): Record<string, TenantConfig> {
-  const raw = envTrim("PROLANCE_TENANT_CONFIG_JSON");
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw) as Record<string, TenantConfig>;
-    if (!parsed || typeof parsed !== "object") return {};
-    const result: Record<string, TenantConfig> = {};
-    for (const [k, v] of Object.entries(parsed)) {
-      if (v && typeof v === "object") result[slugify(k)] = v;
-    }
-    return result;
-  } catch {
-    return {};
-  }
-}
-
-function resolveTenantConfig(customerSlug: string | null): TenantConfig {
-  const map = getTenantConfigMap();
-  const key = slugify(customerSlug || "");
-  const defaultKey = slugify(envTrim("PROLANCE_DEFAULT_CUSTOMER_SLUG"));
-  const mapKeys = Object.keys(map);
-  const inferredSingleKey = mapKeys.length === 1 ? mapKeys[0] : "";
-  const selectedKey = key && map[key] ? key : defaultKey && map[defaultKey] ? defaultKey : inferredSingleKey;
-  const fromMap = selectedKey ? map[selectedKey] || {} : {};
-  const apiBaseUrl =
-    fromMap.apiBaseUrl ||
-    envTrim("PROLANCE_API_BASE_URL") ||
-    envTrim("PROLANCE_BASE_URL") ||
-    (selectedKey ? `https://prolance-api.${selectedKey}.com` : "");
-  return {
-    apiBaseUrl,
-    apiKey: fromMap.apiKey || envTrim("PROLANCE_API_KEY") || envTrim("PROLANCE_ORIGIN_API_KEY"),
-    staticToken: fromMap.staticToken || envTrim("PROLANCE_STATIC_TOKEN"),
-    username: fromMap.username || envTrim("PROLANCE_USERNAME"),
-    password: fromMap.password || envTrim("PROLANCE_PASSWORD"),
-    partnerLoginId: fromMap.partnerLoginId || envTrim("PROLANCE_PARTNER_LOGIN_ID"),
-    partnerPassword: fromMap.partnerPassword || envTrim("PROLANCE_PARTNER_PASSWORD"),
-    projectUrlTemplate: fromMap.projectUrlTemplate || envTrim("PROLANCE_PROJECT_URL_TEMPLATE"),
-    appBaseUrl: fromMap.appBaseUrl || envTrim("PROLANCE_APP_BASE_URL"),
-    noEncryption: fromMap.noEncryption || envTrim("PROLANCE_NO_ENCRYPTION") || "1",
-  };
-}
-
-function getApiBaseUrl(cfg: TenantConfig): string {
-  return stripTrailingSlash(cfg.apiBaseUrl || "");
-}
-
-function getTokenBaseUrl(cfg: TenantConfig): string {
-  const base = getApiBaseUrl(cfg);
-  return stripTrailingSlash(base.replace(/\/Origin\/?$/i, ""));
-}
-
-function getOriginBaseUrl(cfg: TenantConfig): string {
-  const base = getApiBaseUrl(cfg);
-  if (/\/Origin$/i.test(base)) return base;
-  return `${base}/Origin`;
-}
-
-function prolanceUrl(base: string, path: string): string {
-  const p = path.startsWith("/") ? path : `/${path}`;
-  return `${base}${p}`;
-}
-
-async function prolanceRequest(params: {
-  method: "GET" | "POST" | "PUT";
-  baseUrl: string;
-  path: string;
-  token?: string | null;
-  originSessionId?: string | null;
-  includeOriginHeaders?: boolean;
-  apiKey?: string | null;
-  noEncryption?: string | null;
-  body?: unknown;
-  asFormUrlEncoded?: boolean;
-}): Promise<{ status: number; data: unknown }> {
-  if (!params.baseUrl) throw new Error("Prolance base URL is not configured");
-  const url = prolanceUrl(params.baseUrl, params.path);
-
-  const headers: Record<string, string> = {};
-  let body: string | undefined;
-  if (params.token) headers.Authorization = `Bearer ${params.token}`;
-  if (params.originSessionId) headers.OriginSessionID = params.originSessionId;
-  if (params.includeOriginHeaders) {
-    const apiKey = (params.apiKey || "").trim();
-    if (!apiKey) throw new Error("PROLANCE_API_KEY is not configured");
-    headers.OriginAPIKey = apiKey;
-    headers.NoEncryption = (params.noEncryption || "").trim() || "1";
-  }
-
-  if (params.body != null) {
-    if (params.asFormUrlEncoded) {
-      headers["Content-Type"] = "application/x-www-form-urlencoded";
-      body = new URLSearchParams(params.body as Record<string, string>).toString();
-    } else {
-      headers["Content-Type"] = "application/json";
-      body = JSON.stringify(params.body);
-    }
-  }
-
-  const resp = await fetch(url, { method: params.method, headers, body });
-  const text = await resp.text();
-  let data: unknown = text;
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch {
-    // keep raw text
-  }
-  return { status: resp.status, data };
-}
-
-function readProlanceForwardHeaders(req: Request, cfg: TenantConfig): { token: string | null; originSessionId: string | null } {
-  const token =
-    (typeof req.headers["x-prolance-token"] === "string" && req.headers["x-prolance-token"].trim()) ||
-    (cfg.staticToken || "").trim() ||
-    null;
-  const originSessionId =
-    (typeof req.headers["x-prolance-origin-session"] === "string" && req.headers["x-prolance-origin-session"].trim()) ||
-    envTrim("PROLANCE_ORIGIN_SESSION_ID") ||
-    null;
-  return { token, originSessionId };
+function baseUrl(): string {
+  return (envTrim("PROLANCE_API_BASE_URL") || "https://api.prolance.design").replace(/\/$/, "");
 }
 
 function canUseProlance(role: string | null | undefined): boolean {
@@ -173,12 +25,8 @@ function canUseProlance(role: string | null | undefined): boolean {
   );
 }
 
-function sendUpstream(res: Response, status: number, data: unknown): void {
-  if (typeof data === "string") {
-    res.status(status).type("text/plain").send(data);
-  } else {
-    res.status(status).json(data);
-  }
+function asString(val: unknown): string | null {
+  return typeof val === "string" && val.trim() ? val.trim() : null;
 }
 
 function pathSegment(param: string | string[] | undefined): string {
@@ -186,177 +34,127 @@ function pathSegment(param: string | string[] | undefined): string {
   return encodeURIComponent(String(raw ?? ""));
 }
 
-function parseLeadPayload(raw: string | null): Record<string, unknown> {
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
+function readToken(req: Request): string | null {
+  return asString(req.headers["x-prolance-token"]) || asString(req.body?.token) || asString(envTrim("PROLANCE_TOKEN"));
 }
 
-async function getLead(pool: Pool, leadId: number): Promise<LeadRow | null> {
-  const [rows] = await pool.query(
-    "SELECT id, project_name as projectName, payload FROM leads WHERE id = ? LIMIT 1",
-    [leadId],
+function readOriginSessionId(req: Request): string | null {
+  return (
+    asString(req.headers["originsessionid"]) ||
+    asString(req.headers["x-prolance-origin-session"]) ||
+    asString(req.body?.sessionId) ||
+    asString(envTrim("PROLANCE_ORIGIN_SESSION_ID"))
   );
-  const row = (rows as LeadRow[])[0];
-  return row || null;
 }
 
-async function saveLeadPayload(pool: Pool, leadId: number, payload: Record<string, unknown>): Promise<void> {
-  await pool.query("UPDATE leads SET payload = ?, update_at = ? WHERE id = ?", [JSON.stringify(payload), new Date(), leadId]);
+function readApiKey(req: Request): string | null {
+  return asString(req.headers["x-prolance-api-key"]) || asString(envTrim("PROLANCE_API_KEY"));
 }
 
-function extractArrayData(data: unknown): any[] {
-  if (Array.isArray(data)) return data;
-  if (data && typeof data === "object") {
-    const arr = (data as { data?: unknown }).data;
-    if (Array.isArray(arr)) return arr;
-  }
-  return [];
-}
+async function proxiedFetch(params: {
+  method: "GET" | "POST" | "PUT";
+  path: string;
+  token?: string | null;
+  originSessionId?: string | null;
+  includeOriginApiHeaders?: boolean;
+  body?: unknown;
+  asForm?: boolean;
+  apiKey?: string | null;
+}): Promise<{ status: number; data: unknown }> {
+  const url = `${baseUrl()}${params.path.startsWith("/") ? params.path : `/${params.path}`}`;
+  const target = new URL(url);
+  const headers: Record<string, string> = {};
+  let body: string | undefined;
 
-function extractPartnerAndSession(data: unknown): { partnerId: number | null; sessionId: string | null } {
-  const arr = extractArrayData(data);
-  const first = (arr[0] ?? {}) as Record<string, unknown>;
-  const partnerRaw = first.partnerID ?? first.partnerId ?? first.PartnerID;
-  const partnerId = Number(partnerRaw);
-  const sessionRaw = first.sessionID ?? first.sessionId ?? first.SessionID;
-  return {
-    partnerId: Number.isFinite(partnerId) ? partnerId : null,
-    sessionId: typeof sessionRaw === "string" && sessionRaw.trim() ? sessionRaw.trim() : null,
-  };
-}
-
-function buildProjectOpenUrl(cfg: TenantConfig, projectId: number | null, partnerId: number | null): string {
-  const template = cfg.projectUrlTemplate || "";
-  if (template) {
-    return template
-      .replace(/\{projectId\}/g, String(projectId ?? ""))
-      .replace(/\{partnerId\}/g, String(partnerId ?? ""));
-  }
-  const fallback = cfg.appBaseUrl || "https://prolance.design";
-  const base = stripTrailingSlash(fallback);
-  if (projectId != null && partnerId != null) return `${base}/projects/${projectId}`;
-  if (projectId != null) return `${base}/projects/${projectId}`;
-  return base;
-}
-
-function readProlanceNode(payload: Record<string, unknown>): Record<string, unknown> {
-  const p = payload.prolance;
-  return p && typeof p === "object" ? ({ ...(p as Record<string, unknown>) }) : {};
-}
-
-async function ensureAccessTokenForTenant(req: Request, cfg: TenantConfig): Promise<string> {
-  const direct = readProlanceForwardHeaders(req, cfg).token;
-  if (direct) return direct;
-
-  const username = (cfg.username || "").trim();
-  const password = (cfg.password || "").trim();
-  if (!username || !password) {
-    throw new Error("Missing token and PROLANCE_USERNAME/PROLANCE_PASSWORD are not configured");
+  if (params.token) headers.Authorization = `Bearer ${params.token}`;
+  if (params.originSessionId) headers.OriginSessionID = params.originSessionId;
+  if (params.includeOriginApiHeaders) {
+    const apiKey = (params.apiKey || "").trim();
+    if (!apiKey) throw new Error("PROLANCE_API_KEY is required");
+    headers.OriginAPIKey = apiKey;
+    headers.NoEncryption = envTrim("PROLANCE_NO_ENCRYPTION") || "1";
   }
 
-  const tokenResp = await prolanceRequest({
-    method: "POST",
-    baseUrl: getTokenBaseUrl(cfg),
-    path: "/token",
-    body: {
-      grant_type: "password",
-      username,
-      password,
-    },
-    asFormUrlEncoded: true,
+  if (params.body != null) {
+    if (params.asForm) {
+      headers["Content-Type"] = "application/x-www-form-urlencoded";
+      body = new URLSearchParams(params.body as Record<string, string>).toString();
+    } else {
+      headers["Content-Type"] = "application/json";
+      body = JSON.stringify(params.body);
+    }
+  }
+
+  const timeoutMs = Number(envTrim("PROLANCE_FETCH_TIMEOUT_MS") || 120000);
+  const transport = target.protocol === "https:" ? https : http;
+
+  const { status, responseText } = await new Promise<{ status: number; responseText: string }>((resolve, reject) => {
+    const req = transport.request(
+      target,
+      {
+        method: params.method,
+        headers,
+      },
+      (resp) => {
+        const statusCode = resp.statusCode || 500;
+        const chunks: Buffer[] = [];
+        resp.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        resp.on("end", () => resolve({ status: statusCode, responseText: Buffer.concat(chunks).toString("utf8") }));
+      },
+    );
+
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Request timeout after ${timeoutMs}ms`));
+    });
+    req.on("error", reject);
+    if (body) req.write(body);
+    req.end();
   });
 
-  if (tokenResp.status < 200 || tokenResp.status >= 300) {
-    throw new Error(`Token request failed with status ${tokenResp.status}`);
+  let data: unknown = responseText;
+  try {
+    data = responseText ? JSON.parse(responseText) : {};
+  } catch {
+    // keep text
   }
-  if (!tokenResp.data || typeof tokenResp.data !== "object") {
-    throw new Error("Token response format invalid");
+
+  return { status, data };
+}
+
+function asErrorMessage(err: unknown): string {
+  if (err && typeof err === "object") {
+    const msg = (err as { message?: unknown }).message;
+    const cause = (err as { cause?: unknown }).cause;
+    if (cause && typeof cause === "object") {
+      const code = (cause as { code?: unknown }).code;
+      if (code === "UND_ERR_HEADERS_TIMEOUT") return "Prolance API timeout while waiting for response headers";
+      if (code === "ENOTFOUND") return "Prolance API host could not be resolved";
+      const causeMsg = (cause as { message?: unknown }).message;
+      if (typeof causeMsg === "string" && causeMsg.trim()) return causeMsg;
+    }
+    if (typeof msg === "string" && msg.trim()) return msg;
   }
-  const token = (tokenResp.data as Record<string, unknown>).access_token;
-  if (typeof token !== "string" || !token.trim()) throw new Error("Token missing in response");
-  return token.trim();
+  return "Prolance request failed";
 }
 
-function inferCustomerSlug(payload: Record<string, unknown>, lead?: LeadRow | null): string | null {
-  const prolance = readProlanceNode(payload);
-  const fromProlance = typeof prolance.customerSlug === "string" ? prolance.customerSlug : "";
-  if (fromProlance.trim()) return slugify(fromProlance);
-
-  const direct = payload.customerSlug;
-  if (typeof direct === "string" && direct.trim()) return slugify(direct);
-
-  const form = (payload.formData || payload.form || payload) as Record<string, unknown>;
-  const customer = form.customer_name || form.customerName || form.client_name || form.clientName;
-  if (typeof customer === "string" && customer.trim()) return slugify(customer);
-  const exp = form.experience_center || form.experienceCenter;
-  if (typeof exp === "string" && exp.trim()) return slugify(exp);
-  if (lead?.projectName && lead.projectName.trim()) return slugify(lead.projectName);
-  return null;
+function send(res: Response, status: number, data: unknown): void {
+  if (typeof data === "string") res.status(status).type("text/plain").send(data);
+  else res.status(status).json(data);
 }
 
-function buildProjectCreatePayload(lead: LeadRow, leadPayload: Record<string, unknown>): Record<string, unknown> {
-  const form = (leadPayload.formData || leadPayload.form || leadPayload) as Record<string, unknown>;
-  const customerName =
-    String(form.customer_name || form.customerName || form.client_name || form.clientName || lead.projectName || `CRM Lead ${lead.id}`);
-  const city = String(form.city || form.customer_city || form.site_city || "Bengaluru");
-  const state = String(form.state || form.customer_state || form.site_state || "Karnataka");
-  return {
-    pName: lead.projectName || `CRM Lead ${lead.id}`,
-    customer: customerName,
-    city,
-    state,
-  };
-}
-
-function normalizeText(value: unknown): string {
-  return String(value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, " ");
-}
-
-function isAccessDeniedResponse(data: unknown): boolean {
-  if (!data || typeof data !== "object") return false;
-  const message = (data as Record<string, unknown>).message;
-  return normalizeText(message) === "access denied";
-}
-
-function findProjectIdFromList(
-  listResp: unknown,
-  expectedProjectName: string,
-  expectedCustomer: string,
-): number | null {
-  const rows = extractArrayData(listResp);
-  if (!rows.length) return null;
-  const pName = normalizeText(expectedProjectName);
-  const customer = normalizeText(expectedCustomer);
-
-  let fallbackByName: number | null = null;
-  for (const r of rows) {
-    if (!r || typeof r !== "object") continue;
-    const row = r as Record<string, unknown>;
-    const rowProjectId = Number(row.projectID ?? row.projectId ?? row.id);
-    if (!Number.isFinite(rowProjectId)) continue;
-    const rowPName = normalizeText(row.pName ?? row.projectName);
-    const rowCustomer = normalizeText(row.customer ?? row.clientName);
-
-    if (rowPName && rowPName === pName && rowCustomer && rowCustomer === customer) return rowProjectId;
-    if (rowPName && rowPName === pName && fallbackByName == null) fallbackByName = rowProjectId;
-  }
-  return fallbackByName;
+function maskValue(value: string | null | undefined, visibleStart = 6, visibleEnd = 4): string {
+  const raw = String(value || "");
+  if (!raw) return "(missing)";
+  if (raw.length <= visibleStart + visibleEnd) return "*".repeat(raw.length);
+  return `${raw.slice(0, visibleStart)}...${raw.slice(-visibleEnd)}`;
 }
 
 export function registerProlanceRoutes(
   app: Express,
-  pool: Pool,
   getUserFromSession: (req: Request) => Promise<SessionUser | null>,
 ): void {
-  const requireProlanceUser = async (req: Request, res: Response): Promise<SessionUser | null> => {
+  const TEST_PREFIX = "/api/prolance-test";
+  const requireUser = async (req: Request, res: Response): Promise<SessionUser | null> => {
     const user = await getUserFromSession(req);
     if (!user) {
       res.status(401).json({ message: "Unauthorized" });
@@ -369,348 +167,178 @@ export function registerProlanceRoutes(
     return user;
   };
 
-  app.get("/api/prolance/status", async (req: Request, res: Response) => {
-    const user = await requireProlanceUser(req, res);
+  app.get(`${TEST_PREFIX}/status`, async (req: Request, res: Response) => {
+    const user = await requireUser(req, res);
     if (!user) return;
-    const customerSlug =
-      (typeof req.query.customerSlug === "string" && slugify(req.query.customerSlug)) ||
-      (typeof req.headers["x-prolance-customer"] === "string" && slugify(req.headers["x-prolance-customer"])) ||
-      null;
-    const cfg = resolveTenantConfig(customerSlug);
-    res.json({
-      customerSlug,
-      configured: Boolean(getApiBaseUrl(cfg)),
-      hasApiKey: Boolean(cfg.apiKey),
-      hasStaticToken: Boolean(cfg.staticToken),
-      hasTokenCredentials: Boolean(cfg.username && cfg.password),
-      hasPartnerCredentials: Boolean(cfg.partnerLoginId && cfg.partnerPassword),
+    return res.json({
+      baseUrl: baseUrl(),
+      hasApiKey: Boolean(readApiKey(req)),
+      hasToken: Boolean(readToken(req)),
     });
   });
 
-  app.post("/api/prolance/token", async (req: Request, res: Response) => {
-    const user = await requireProlanceUser(req, res);
+  // Collection: POST https://api.prolance.design/token
+  app.post(`${TEST_PREFIX}/token`, async (req: Request, res: Response) => {
+    const user = await requireUser(req, res);
     if (!user) return;
     try {
-      const customerSlug =
-        (typeof req.body?.customerSlug === "string" && slugify(req.body.customerSlug)) ||
-        (typeof req.headers["x-prolance-customer"] === "string" && slugify(req.headers["x-prolance-customer"])) ||
-        null;
-      const cfg = resolveTenantConfig(customerSlug);
-      const username = (req.body?.username as string) || (cfg.username || "");
-      const password = (req.body?.password as string) || (cfg.password || "");
+      const username = asString(req.body?.username) || asString(envTrim("PROLANCE_USERNAME"));
+      const password = asString(req.body?.password) || asString(envTrim("PROLANCE_PASSWORD"));
       if (!username || !password) {
-        return res.status(400).json({ message: "username and password are required to generate a token" });
+        return res.status(400).json({ message: "username and password are required" });
       }
-      const { status, data } = await prolanceRequest({
+      const upstream = await proxiedFetch({
         method: "POST",
-        baseUrl: getTokenBaseUrl(cfg),
         path: "/token",
+        asForm: true,
         body: { grant_type: "password", username, password },
-        asFormUrlEncoded: true,
       });
-      sendUpstream(res, status, data);
+      return send(res, upstream.status, upstream.data);
     } catch (err) {
       console.error("prolance token error", err);
-      res.status(500).json({ message: err instanceof Error ? err.message : "Prolance token request failed" });
+      return res.status(500).json({ message: asErrorMessage(err) });
     }
   });
 
-  app.post("/api/prolance/open/:leadId", async (req: Request, res: Response) => {
-    const user = await requireProlanceUser(req, res);
+  // Collection: POST {{base_url}}/Origin/Partners/LoginAPI
+  app.post(`${TEST_PREFIX}/partners/login`, async (req: Request, res: Response) => {
+    const user = await requireUser(req, res);
     if (!user) return;
-
-    const leadId = Number(req.params.leadId);
-    if (!leadId) return res.status(400).json({ message: "Invalid lead id" });
-
     try {
-      const lead = await getLead(pool, leadId);
-      if (!lead) return res.status(404).json({ message: "Lead not found" });
+      const token = readToken(req);
+      const apiKey = readApiKey(req);
+      if (!token) return res.status(400).json({ message: "token is required (X-Prolance-Token or body.token)" });
+      if (!apiKey) return res.status(400).json({ message: "Origin API key is required (env PROLANCE_API_KEY)" });
 
-      const payload = parseLeadPayload(lead.payload);
-      const prolance = readProlanceNode(payload);
-      const requestedSlug =
-        (typeof req.body?.customerSlug === "string" && slugify(req.body.customerSlug)) ||
-        (typeof req.headers["x-prolance-customer"] === "string" && slugify(req.headers["x-prolance-customer"])) ||
-        null;
-      const customerSlug = requestedSlug || inferCustomerSlug(payload, lead);
-      const cfg = resolveTenantConfig(customerSlug);
-      const token = await ensureAccessTokenForTenant(req, cfg);
+      const loginID = asString(req.body?.loginID) || asString(req.body?.LoginID) || asString(envTrim("PROLANCE_PARTNER_LOGIN_ID"));
+      const password = asString(req.body?.password) || asString(req.body?.Password) || asString(envTrim("PROLANCE_PARTNER_PASSWORD"));
+      if (!loginID || !password) return res.status(400).json({ message: "LoginID/password are required" });
 
-      let partnerId = Number(prolance.partnerId ?? NaN);
-      let originSessionId = typeof prolance.sessionId === "string" ? prolance.sessionId : null;
-
-      if (!Number.isFinite(partnerId) || !originSessionId) {
-        const loginID = (req.body?.loginID as string) || (cfg.partnerLoginId || "");
-        const password = (req.body?.password as string) || (cfg.partnerPassword || "");
-        if (!loginID || !password) {
-          return res.status(400).json({
-            message:
-              "Partner credentials missing. Provide loginID/password in request body or set PROLANCE_PARTNER_LOGIN_ID and PROLANCE_PARTNER_PASSWORD.",
-          });
-        }
-
-        const loginResp = await prolanceRequest({
-          method: "POST",
-          baseUrl: getOriginBaseUrl(cfg),
-          path: "/Partners/Login",
-          token,
-          includeOriginHeaders: true,
-          apiKey: cfg.apiKey || null,
-          noEncryption: cfg.noEncryption || "1",
-          body: { LoginID: loginID, Password: password, LoginFrom: 1 },
-        });
-
-        if (loginResp.status < 200 || loginResp.status >= 300) {
-          return sendUpstream(res, loginResp.status, loginResp.data);
-        }
-
-        const extracted = extractPartnerAndSession(loginResp.data);
-        partnerId = extracted.partnerId ?? partnerId;
-        originSessionId = extracted.sessionId ?? originSessionId;
-      }
-
-      if (!Number.isFinite(partnerId) || !originSessionId) {
-        return res.status(400).json({ message: "Could not resolve partnerId/sessionId from Prolance login" });
-      }
-
-      let projectId = Number(prolance.projectId ?? NaN);
-      if (!Number.isFinite(projectId)) {
-        const createPayload =
-          (req.body?.projectPayload && typeof req.body.projectPayload === "object" ? req.body.projectPayload : null) ||
-          buildProjectCreatePayload(lead, payload);
-        const createBody = {
-          partnerID: partnerId,
-          ...(createPayload as Record<string, unknown>),
-        };
-
-        const createResp = await prolanceRequest({
-          method: "PUT",
-          baseUrl: getOriginBaseUrl(cfg),
-          path: "/PROJECTS/CREATE",
-          token,
-          originSessionId,
-          includeOriginHeaders: true,
-          apiKey: cfg.apiKey || null,
-          noEncryption: cfg.noEncryption || "1",
-          body: createBody,
-        });
-
-        if (createResp.status >= 200 && createResp.status < 300) {
-          const createDataArr = extractArrayData(createResp.data);
-          const first = (createDataArr[0] ?? createResp.data ?? {}) as Record<string, unknown>;
-          const candidate = Number(first.projectID ?? first.projectId ?? first.id ?? first.ProjectID);
-          if (!Number.isFinite(candidate)) {
-            return res.status(500).json({ message: "Project created but project id not returned by Prolance" });
-          }
-          projectId = candidate;
-        } else if (isAccessDeniedResponse(createResp.data)) {
-          // Fallback: if create is not allowed for this API key, try finding existing project.
-          const listResp = await prolanceRequest({
-            method: "GET",
-            baseUrl: getOriginBaseUrl(cfg),
-            path: `/PROJECTS/${encodeURIComponent(String(partnerId))}`,
-            token,
-            originSessionId,
-            includeOriginHeaders: true,
-            apiKey: cfg.apiKey || null,
-            noEncryption: cfg.noEncryption || "1",
-          });
-          if (listResp.status < 200 || listResp.status >= 300) {
-            return sendUpstream(res, listResp.status, listResp.data);
-          }
-          const matched = findProjectIdFromList(
-            listResp.data,
-            String((createBody as Record<string, unknown>).pName || lead.projectName || ""),
-            String((createBody as Record<string, unknown>).customer || ""),
-          );
-          if (!Number.isFinite(matched || NaN)) {
-            return res.status(403).json({
-              message:
-                "Access denied for project create, and no matching existing project found in partner project list.",
-            });
-          }
-          projectId = Number(matched);
-        } else {
-          return sendUpstream(res, createResp.status, createResp.data);
-        }
-      }
-
-      const openUrl = buildProjectOpenUrl(cfg, projectId, partnerId);
-
-      const nextProlance = {
-        ...prolance,
-        customerSlug,
-        partnerId,
-        projectId,
-        sessionId: originSessionId,
-        openUrl,
-        tokenRefreshedAt: new Date().toISOString(),
-      };
-      const nextPayload = { ...payload, prolance: nextProlance };
-      await saveLeadPayload(pool, leadId, nextPayload);
-
-      return res.json({
-        status: true,
-        leadId,
-        partnerId,
-        projectId,
-        sessionId: originSessionId,
-        openUrl,
+      const upstream = await proxiedFetch({
+        method: "POST",
+        path: "/Origin/Partners/LoginAPI",
+        token,
+        includeOriginApiHeaders: true,
+        apiKey,
+        body: { LoginID: loginID, Password: password, LoginFrom: 1 },
       });
+      return send(res, upstream.status, upstream.data);
     } catch (err) {
-      console.error("prolance open error", err);
-      return res.status(500).json({ message: err instanceof Error ? err.message : "Failed to open Prolance project" });
+      console.error("prolance partners login error", err);
+      return res.status(500).json({ message: asErrorMessage(err) });
     }
   });
 
-  app.post("/api/prolance/sync-quote/:leadId", async (req: Request, res: Response) => {
-    const user = await requireProlanceUser(req, res);
+  // Collection: GET {{base_url}}/Origin/Projects/{{partner_id}}
+  app.get(`${TEST_PREFIX}/projects/:partnerId`, async (req: Request, res: Response) => {
+    const user = await requireUser(req, res);
     if (!user) return;
-
-    const leadId = Number(req.params.leadId);
-    if (!leadId) return res.status(400).json({ message: "Invalid lead id" });
-
     try {
-      const lead = await getLead(pool, leadId);
-      if (!lead) return res.status(404).json({ message: "Lead not found" });
-      const payload = parseLeadPayload(lead.payload);
-      const prolance = readProlanceNode(payload);
-      const customerSlug =
-        (typeof req.body?.customerSlug === "string" && slugify(req.body.customerSlug)) ||
-        inferCustomerSlug(payload, lead);
-      const cfg = resolveTenantConfig(customerSlug);
-      const token = await ensureAccessTokenForTenant(req, cfg);
-      const originSessionId =
-        (typeof req.body?.sessionId === "string" && req.body.sessionId.trim()) ||
-        (typeof prolance.sessionId === "string" ? prolance.sessionId : null) ||
-        readProlanceForwardHeaders(req, cfg).originSessionId;
-      const projectId = Number(prolance.projectId ?? req.body?.projectId ?? NaN);
-      if (!Number.isFinite(projectId)) {
-        return res.status(400).json({ message: "No Prolance project id linked to this lead" });
-      }
+      const token = readToken(req);
+      const originSessionId = readOriginSessionId(req);
+      const apiKey = readApiKey(req);
+      if (!token) return res.status(400).json({ message: "token is required" });
+      if (!originSessionId) return res.status(400).json({ message: "OriginSessionID is required" });
+      if (!apiKey) return res.status(400).json({ message: "Origin API key is required" });
 
-      const quoteResp = await prolanceRequest({
+      const upstream = await proxiedFetch({
         method: "GET",
-        baseUrl: getOriginBaseUrl(cfg),
-        path: `/ROOMS/QUOTES/${encodeURIComponent(String(projectId))}`,
+        path: `/Origin/Projects/${pathSegment(req.params.partnerId)}`,
         token,
         originSessionId,
-        includeOriginHeaders: true,
-        apiKey: cfg.apiKey || null,
-        noEncryption: cfg.noEncryption || "1",
+        includeOriginApiHeaders: true,
+        apiKey,
       });
-      if (quoteResp.status < 200 || quoteResp.status >= 300) {
-        return sendUpstream(res, quoteResp.status, quoteResp.data);
-      }
-
-      let boqData: unknown = null;
-      const optionIdFromBody = Number(req.body?.optionId ?? NaN);
-      const optionIdFromPayload = Number((prolance as any).optionId ?? NaN);
-      const optionId = Number.isFinite(optionIdFromBody) ? optionIdFromBody : optionIdFromPayload;
-      if (Number.isFinite(optionId)) {
-        const boqResp = await prolanceRequest({
-          method: "GET",
-          baseUrl: getOriginBaseUrl(cfg),
-          path: `/ROOMS/OPTIONS/MODULESBOQ/${encodeURIComponent(String(optionId))}`,
-          token,
-          originSessionId,
-          includeOriginHeaders: true,
-          apiKey: cfg.apiKey || null,
-          noEncryption: cfg.noEncryption || "1",
-        });
-        if (boqResp.status >= 200 && boqResp.status < 300) boqData = boqResp.data;
-      }
-
-      const quoteSnapshot = {
-        syncedAt: new Date().toISOString(),
-        projectId,
-        optionId: Number.isFinite(optionId) ? optionId : null,
-        quotes: quoteResp.data,
-        boq: boqData,
-      };
-
-      const nextPayload = {
-        ...payload,
-        prolance: {
-          ...prolance,
-          projectId,
-          sessionId: originSessionId,
-          quoteSnapshot,
-        },
-      };
-      await saveLeadPayload(pool, leadId, nextPayload);
-
-      return res.json({ status: true, leadId, quoteSnapshot });
+      return send(res, upstream.status, upstream.data);
     } catch (err) {
-      console.error("prolance sync quote error", err);
-      return res.status(500).json({ message: err instanceof Error ? err.message : "Failed to sync Prolance quote" });
+      console.error("prolance projects list error", err);
+      return res.status(500).json({ message: asErrorMessage(err) });
     }
   });
 
-  // Manual proxy: update existing project in Prolance (PUT /Origin/PROJECTS/UPDATE)
-  app.put("/api/prolance/projects/update", async (req: Request, res: Response) => {
-    const user = await requireProlanceUser(req, res);
+  // Collection: PUT {{base_url}}/Origin/V2/Projects/Create
+  app.put(`${TEST_PREFIX}/projects/create`, async (req: Request, res: Response) => {
+    const user = await requireUser(req, res);
     if (!user) return;
-
     try {
-      const customerSlug =
-        (typeof req.body?.customerSlug === "string" && slugify(req.body.customerSlug)) ||
-        (typeof req.headers["x-prolance-customer"] === "string" && slugify(req.headers["x-prolance-customer"])) ||
-        null;
-      const cfg = resolveTenantConfig(customerSlug);
-      const token = await ensureAccessTokenForTenant(req, cfg);
-      const originSessionId =
-        (typeof req.body?.sessionId === "string" && req.body.sessionId.trim()) ||
-        readProlanceForwardHeaders(req, cfg).originSessionId;
+      const token = readToken(req);
+      const originSessionId = readOriginSessionId(req);
+      const apiKey = readApiKey(req);
+      const upstreamPath = "/Origin/V2/Projects/Create";
+      if (!token) return res.status(400).json({ message: "token is required" });
+      if (!originSessionId) return res.status(400).json({ message: "OriginSessionID is required" });
+      if (!apiKey) return res.status(400).json({ message: "Origin API key is required" });
 
-      const body = req.body?.project && typeof req.body.project === "object" ? req.body.project : req.body;
-      const projectId = Number((body as Record<string, unknown>)?.projectID ?? (body as Record<string, unknown>)?.projectId);
-      if (!Number.isFinite(projectId)) {
-        return res.status(400).json({ message: "projectID is required in payload for PROJECTS/UPDATE" });
-      }
-
-      const upstream = await prolanceRequest({
+      let upstream = await proxiedFetch({
         method: "PUT",
-        baseUrl: getOriginBaseUrl(cfg),
-        path: "/PROJECTS/UPDATE",
+        path: upstreamPath,
         token,
         originSessionId,
-        includeOriginHeaders: true,
-        apiKey: cfg.apiKey || null,
-        noEncryption: cfg.noEncryption || "1",
-        body,
+        includeOriginApiHeaders: true,
+        apiKey,
+        body: req.body,
       });
-      return sendUpstream(res, upstream.status, upstream.data);
+      if (upstream.status === 401) {
+        // Some Prolance tenants authorize create by OriginSessionID + OriginAPIKey only.
+        // Retry once without bearer token while preserving other required headers.
+        upstream = await proxiedFetch({
+          method: "PUT",
+          path: upstreamPath,
+          token: null,
+          originSessionId,
+          includeOriginApiHeaders: true,
+          apiKey,
+          body: req.body,
+        });
+      }
+      if (upstream.status === 401) {
+        const debug = {
+          upstreamUrl: `${baseUrl()}${upstreamPath}`,
+          sentHeaders: {
+            Authorization: token ? `Bearer ${maskValue(token, 8, 6)}` : "(missing)",
+            OriginSessionID: maskValue(originSessionId, 10, 8),
+            OriginAPIKey: maskValue(apiKey, 8, 6),
+            NoEncryption: envTrim("PROLANCE_NO_ENCRYPTION") || "1",
+            "Content-Type": "application/json",
+          },
+          requestBody: req.body,
+        };
+        if (upstream.data && typeof upstream.data === "object") {
+          return res.status(401).json({ ...(upstream.data as Record<string, unknown>), debug });
+        }
+        return res.status(401).json({ message: "Unauthorized access", upstream: upstream.data, debug });
+      }
+      return send(res, upstream.status, upstream.data);
     } catch (err) {
-      console.error("prolance projects update error", err);
-      return res.status(500).json({ message: err instanceof Error ? err.message : "Failed to update Prolance project" });
+      console.error("prolance projects create error", err);
+      return res.status(500).json({ message: asErrorMessage(err) });
     }
   });
 
-  app.get("/api/prolance/quote/:leadId", async (req: Request, res: Response) => {
-    const user = await requireProlanceUser(req, res);
+  // Collection: GET {{base_url}}/Origin/Quotes/{{project_id}}
+  app.get(`${TEST_PREFIX}/quotes/:projectId`, async (req: Request, res: Response) => {
+    const user = await requireUser(req, res);
     if (!user) return;
-
-    const leadId = Number(req.params.leadId);
-    if (!leadId) return res.status(400).json({ message: "Invalid lead id" });
-
     try {
-      const lead = await getLead(pool, leadId);
-      if (!lead) return res.status(404).json({ message: "Lead not found" });
-      const payload = parseLeadPayload(lead.payload);
-      const prolance = readProlanceNode(payload);
-      return res.json({
-        status: true,
-        leadId,
-        partnerId: prolance.partnerId ?? null,
-        projectId: prolance.projectId ?? null,
-        sessionId: prolance.sessionId ?? null,
-        openUrl: prolance.openUrl ?? null,
-        quoteSnapshot: prolance.quoteSnapshot ?? null,
+      const token = readToken(req);
+      const originSessionId = readOriginSessionId(req);
+      const apiKey = readApiKey(req);
+      if (!token) return res.status(400).json({ message: "token is required" });
+      if (!originSessionId) return res.status(400).json({ message: "OriginSessionID is required" });
+      if (!apiKey) return res.status(400).json({ message: "Origin API key is required" });
+
+      const upstream = await proxiedFetch({
+        method: "GET",
+        path: `/Origin/Quotes/${pathSegment(req.params.projectId)}`,
+        token,
+        originSessionId,
+        includeOriginApiHeaders: true,
+        apiKey,
       });
+      return send(res, upstream.status, upstream.data);
     } catch (err) {
-      console.error("prolance quote read error", err);
-      return res.status(500).json({ message: err instanceof Error ? err.message : "Failed to read Prolance quote" });
+      console.error("prolance quotes fetch error", err);
+      return res.status(500).json({ message: asErrorMessage(err) });
     }
   });
 }

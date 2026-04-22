@@ -1,24 +1,39 @@
 'use client';
 
-import { SideDashboard } from "../Enums/Enums";
+import { SideDashboard, SideDashboardStatus } from "../Enums/Enums";
 import { useRouter } from "next/navigation";
 import { LeadshipTypes } from "./Types/Types";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../auth/AuthContext";
 import { getApiBase } from "@/app/lib/apiBase";
+import { BRANCH_OPTIONS } from "../constants/branches";
 
-// Stage column: only Active or Inactive (status)
-function getStatusDisplay(stage: string): "Active" | "Inactive" {
+// Stage column: Active / Inactive (sales) / Cancelled (TDM admin DGM)
+function getStatusDisplay(stage: string): "Active" | "Inactive" | "Cancelled" {
     if (!stage) return "Active";
     const s = stage.trim();
+    if (/^cancelled$/i.test(s)) return "Cancelled";
     if (s === "Inactive") return "Inactive";
     return "Active";
+}
+
+function passesWorkspaceStatusFilter(p: LeadshipTypes, statusTab: string): boolean {
+    if (statusTab === SideDashboardStatus.All_Statuses) return true;
+    if (statusTab === SideDashboardStatus.On_Hold) return !!p.isOnHold;
+    if (statusTab === SideDashboardStatus.Active) {
+        return !p.isOnHold && getStatusDisplay(p.projectStage) === "Active";
+    }
+    if (statusTab === SideDashboardStatus.Cancelled) {
+        return !p.isOnHold && getStatusDisplay(p.projectStage) === "Cancelled";
+    }
+    return true;
 }
 
 // Phase bucket from project_stage (fallback when milestone not available)
 function getStageBucket(stage: string): string {
     if (!stage) return "Pre 10%";
     const s = stage.trim();
+    if (/^cancelled$/i.test(s)) return "Pre 10%";
     if (s === "Inactive") return "Pre 10%";
     if (s === "Active") return "10-20%";
     if (s === "10-20%") return "10-20%";
@@ -177,6 +192,33 @@ function getInitials(name: string | null | undefined): string {
     return name.slice(0, 2).toUpperCase();
 }
 
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
+
+/** Page numbers with ellipsis (e.g. 1 2 3 4 5 … 106). */
+function getPaginationRange(current: number, total: number): (number | "ellipsis")[] {
+    if (total <= 1) return [1];
+    if (total <= 9) {
+        return Array.from({ length: total }, (_, i) => i + 1);
+    }
+    const delta = 2;
+    const range: number[] = [];
+    for (let i = 1; i <= total; i++) {
+        if (i === 1 || i === total || (i >= current - delta && i <= current + delta)) {
+            range.push(i);
+        }
+    }
+    const out: (number | "ellipsis")[] = [];
+    let prev: number | undefined;
+    for (const i of range) {
+        if (prev !== undefined && i - prev > 1) {
+            out.push("ellipsis");
+        }
+        out.push(i);
+        prev = i;
+    }
+    return out;
+}
+
 const API = getApiBase();
 
 type DqcQueueItem = {
@@ -203,6 +245,7 @@ export default function Dashboard() {
     const targetLeadRef = useRef<number | null>(null);
 
     const isMmtUser = ["mmt_manager", "mmt_executive"].includes((user?.role || "").toLowerCase());
+    const isDesigner = (user?.role || "").toLowerCase() === "designer";
     const isDqcUser = ["dqc_manager", "dqe"].includes((user?.role || "").toLowerCase());
     const isFinanceUser = (user?.role || "").toLowerCase() === "finance";
     const canImportLeads =
@@ -304,14 +347,22 @@ export default function Dashboard() {
     };
     
     const allTypes = Object.values(SideDashboard);
+    const allStatusTypes = Object.values(SideDashboardStatus);
     const [isDropdownOpen, setIsDropdownOpen] = useState(true);
+    const [designPhasesOpen, setDesignPhasesOpen] = useState(true);
+    const [projectStatusOpen, setProjectStatusOpen] = useState(true);
     const [isSelected, setIsSelected] = useState<string>(allTypes[0]); // "All Projects (10-60%)"
+    const [statusSelected, setStatusSelected] = useState<string>(allStatusTypes[0]);
     const [searchQuery, setSearchQuery] = useState("");
     const [milestoneFilter, setMilestoneFilter] = useState<string>("");
+    /** Branch (experience center); only applied for non-designers on the design queue */
+    const [branchFilter, setBranchFilter] = useState<string>("");
+    /** "" = all, "__unassigned__", or designer user id */
+    const [designerFilter, setDesignerFilter] = useState<string>("");
     const [filterDropdownOpen, setFilterDropdownOpen] = useState(false);
     const filterDropdownRef = useRef<HTMLDivElement>(null);
     const [page, setPage] = useState(1);
-    const PAGE_SIZE = 10;
+    const [pageSize, setPageSize] = useState(20);
     const [showImportPanel, setShowImportPanel] = useState(false);
     const [excelFile, setExcelFile] = useState<File | null>(null);
     const [previewToken, setPreviewToken] = useState<string | null>(null);
@@ -331,12 +382,17 @@ export default function Dashboard() {
     const [singleAssignByLead, setSingleAssignByLead] = useState<Record<number, number | "">>({});
     const [singleAssignLoadingLeadId, setSingleAssignLoadingLeadId] = useState<number | null>(null);
 
-    const filteredProjects = isSelected === "All Projects (10-60%)"
-        ? projects.filter((p) => {
-            const phase = getPhaseBucket(p);
-            return phase === "10-20%" || phase === "20-60%";
-          })
-        : projects.filter((p) => getPhaseBucket(p) === isSelected);
+    const phaseFilteredProjects =
+        isSelected === "All Projects (10-60%)"
+            ? projects.filter((p) => {
+                  const phase = getPhaseBucket(p);
+                  return phase === "10-20%" || phase === "20-60%";
+              })
+            : projects.filter((p) => getPhaseBucket(p) === isSelected);
+
+    const filteredProjects = phaseFilteredProjects.filter((p) =>
+        passesWorkspaceStatusFilter(p, statusSelected),
+    );
 
     const searchFiltered = searchQuery.trim()
         ? filteredProjects.filter(
@@ -346,14 +402,51 @@ export default function Dashboard() {
           )
         : filteredProjects;
 
+    const showBranchDesignerFilters =
+        !isDesigner && !isDqcUser && !isMmtUser && !isFinanceUser;
+
+    const designerFilterOptions = useMemo(() => {
+        const map = new Map<number, string>();
+        for (const p of projects) {
+            const id = p.assigned_designer_id;
+            if (id == null) continue;
+            const label = (p.designerName || "").trim() || `Designer #${id}`;
+            if (!map.has(id)) map.set(id, label);
+        }
+        return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+    }, [projects]);
+
+    const hasUnassignedInQueue = useMemo(
+        () => projects.some((p) => p.assigned_designer_id == null),
+        [projects],
+    );
+
+    let queueFilterFiltered = searchFiltered;
+    if (showBranchDesignerFilters) {
+        if (branchFilter) {
+            const b = branchFilter.trim().toUpperCase();
+            queueFilterFiltered = queueFilterFiltered.filter(
+                (p) => (p.experienceCenter || "").trim().toUpperCase() === b,
+            );
+        }
+        if (designerFilter === "__unassigned__") {
+            queueFilterFiltered = queueFilterFiltered.filter((p) => p.assigned_designer_id == null);
+        } else if (designerFilter) {
+            const id = Number(designerFilter);
+            if (!Number.isNaN(id)) {
+                queueFilterFiltered = queueFilterFiltered.filter((p) => p.assigned_designer_id === id);
+            }
+        }
+    }
+
     const milestoneFiltered = milestoneFilter
-        ? searchFiltered.filter((p) => (p.currentMilestoneName ?? "") === milestoneFilter)
-        : searchFiltered;
+        ? queueFilterFiltered.filter((p) => (p.currentMilestoneName ?? "") === milestoneFilter)
+        : queueFilterFiltered;
 
     const totalItems = milestoneFiltered.length;
-    const totalPages = Math.max(1, Math.ceil(totalItems / PAGE_SIZE));
+    const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
     const currentPage = Math.min(Math.max(1, page), totalPages);
-    const paginatedProjects = milestoneFiltered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+    const paginatedProjects = milestoneFiltered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
     const stats = {
         total: milestoneFiltered.length,
@@ -368,13 +461,17 @@ export default function Dashboard() {
 
     const handleSelection = (type: string) => {
         setIsSelected(type);
-    }
+    };
+
+    const handleStatusSelection = (status: string) => {
+        setStatusSelected(status);
+    };
 
     const router = useRouter();
 
     useEffect(() => {
         setPage(1);
-    }, [isSelected, searchQuery, milestoneFilter]);
+    }, [isSelected, statusSelected, searchQuery, milestoneFilter, branchFilter, designerFilter, pageSize]);
 
     // Close filter dropdown when clicking outside
     useEffect(() => {
@@ -830,30 +927,78 @@ export default function Dashboard() {
                         <div className="py-12 text-center text-gray-500 text-sm">No projects match the current filter or search.</div>
                     )}
                     {totalItems > 0 && (
-                        <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-3 border-t border-gray-200 bg-gray-50 text-sm">
-                            <span className="text-gray-600">
-                                Showing {(currentPage - 1) * PAGE_SIZE + 1}-{Math.min(currentPage * PAGE_SIZE, totalItems)} of {totalItems} projects
+                        <div className="flex flex-col gap-3 px-4 py-3 border-t border-gray-200 bg-white text-sm sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+                            <span className="text-gray-600 shrink-0">
+                                Showing {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, totalItems)} of {totalItems}{" "}
+                                projects
                             </span>
-                            <div className="flex items-center gap-2">
-                                <button
-                                    type="button"
-                                    onClick={() => setPage((p) => Math.max(1, p - 1))}
-                                    disabled={currentPage <= 1}
-                                    className="px-3 py-1.5 rounded border border-gray-300 bg-white text-gray-700 disabled:opacity-50 hover:bg-gray-50"
-                                >
-                                    ←
-                                </button>
-                                <span className="px-2 text-gray-600">
-                                    Page {currentPage} of {totalPages}
-                                </span>
-                                <button
-                                    type="button"
-                                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                                    disabled={currentPage >= totalPages}
-                                    className="px-3 py-1.5 rounded border border-gray-300 bg-white text-gray-700 disabled:opacity-50 hover:bg-gray-50"
-                                >
-                                    →
-                                </button>
+                            <div className="flex flex-wrap items-center justify-between gap-3 sm:justify-end">
+                                <div className="flex items-center gap-1">
+                                    <button
+                                        type="button"
+                                        aria-label="Previous page"
+                                        onClick={() => setPage((p) => Math.max(1, p - 1))}
+                                        disabled={currentPage <= 1}
+                                        className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                    >
+                                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">
+                                            <path
+                                                fillRule="evenodd"
+                                                d="M12.79 5.23a.75.75 0 0 1-.02 1.06L8.832 10l3.938 3.71a.75.75 0 1 1-1.04 1.08l-4.5-4.25a.75.75 0 0 1 0-1.08l4.5-4.25a.75.75 0 0 1 1.06.02Z"
+                                                clipRule="evenodd"
+                                            />
+                                        </svg>
+                                    </button>
+                                    {getPaginationRange(currentPage, totalPages).map((item, idx) =>
+                                        item === "ellipsis" ? (
+                                            <span key={`ellipsis-${idx}`} className="px-1.5 text-gray-400 select-none">
+                                                …
+                                            </span>
+                                        ) : (
+                                            <button
+                                                key={item}
+                                                type="button"
+                                                onClick={() => setPage(item)}
+                                                className={`min-h-9 min-w-9 rounded-lg px-2 text-sm font-medium transition-colors ${
+                                                    item === currentPage
+                                                        ? "border-2 border-violet-500 bg-violet-50 text-violet-800 shadow-sm"
+                                                        : "border border-transparent text-gray-600 hover:bg-gray-100"
+                                                }`}
+                                            >
+                                                {item}
+                                            </button>
+                                        ),
+                                    )}
+                                    <button
+                                        type="button"
+                                        aria-label="Next page"
+                                        onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                                        disabled={currentPage >= totalPages}
+                                        className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                    >
+                                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">
+                                            <path
+                                                fillRule="evenodd"
+                                                d="M7.21 14.77a.75.75 0 0 1 .02-1.06L11.168 10 7.23 6.29a.75.75 0 1 1 1.04-1.08l4.5 4.25a.75.75 0 0 1 0 1.08l-4.5 4.25a.75.75 0 0 1-1.06-.02Z"
+                                                clipRule="evenodd"
+                                            />
+                                        </svg>
+                                    </button>
+                                </div>
+                                <label className="inline-flex items-center gap-2 text-gray-700">
+                                    <span className="sr-only">Leads per page</span>
+                                    <select
+                                        value={pageSize}
+                                        onChange={(e) => setPageSize(Number(e.target.value))}
+                                        className="cursor-pointer rounded-lg border-2 border-violet-200 bg-white px-3 py-2 text-sm font-medium text-gray-800 shadow-sm hover:border-violet-300 focus:outline-none focus:ring-2 focus:ring-violet-400"
+                                    >
+                                        {PAGE_SIZE_OPTIONS.map((n) => (
+                                            <option key={n} value={n}>
+                                                {n} / page
+                                            </option>
+                                        ))}
+                                    </select>
+                                </label>
                             </div>
                         </div>
                     )}
@@ -870,40 +1015,119 @@ export default function Dashboard() {
 
                     {!isDqcUser && (
                         <>
-                    <div 
-                        className="xl:flex xl:justify-between xl:items-center mb-2 xl:pr-2 xl:py-4 xl:cursor-pointer"
+                    <button
+                        type="button"
+                        id="workspace-sidebar-trigger"
+                        aria-expanded={isDropdownOpen}
+                        aria-controls="workspace-sidebar-panel"
+                        className="flex w-full items-center justify-between gap-2 mb-1 rounded-lg py-3 pl-2 pr-2 text-left cursor-pointer hover:bg-gray-100 transition-colors xl:mb-2 xl:py-4 xl:pr-2"
                         onClick={toggleDropdown}
                     >
-                    <div className="xl:text-lg xl:font-semibold xl:pl-2 xl:pt-4">My WorkSpace</div>
-                    <div>
-                        <svg 
-                            xmlns="http://www.w3.org/2000/svg" 
-                            fill="none" 
-                            viewBox="0 0 24 24" 
-                            strokeWidth="1.5" 
-                            stroke="currentColor" 
-                            className={`size-5 mt-4 font-bold xl:cursor-pointer transition-transform duration-200 ${isDropdownOpen ? 'rotate-180' : ''}`}
+                        <span className="text-base font-semibold text-gray-900 xl:text-lg xl:pl-2 xl:pt-0">My WorkSpace</span>
+                        <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            strokeWidth={1.5}
+                            stroke="currentColor"
+                            className={`size-5 shrink-0 text-gray-700 transition-transform duration-200 ${isDropdownOpen ? 'rotate-180' : ''}`}
+                            aria-hidden
                         >
-                        <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+                            <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
                         </svg>
-                    </div>
-                    </div>
+                    </button>
                     {isDropdownOpen && (
-                        <div className="xl:transition-all xl:duration-200">
-                            <p className="xl:pl-2 xl:pt-2 xl:pb-1 text-xs font-bold text-gray-500 uppercase tracking-wide">Design Phases</p>
-                            {allTypes.map((type, index) => (
-                                <div
-                                    key={index}
-                                    onClick={() => handleSelection(type)}
-                                    className={`xl:p-4 xl:border-gray-300 xl:cursor-pointer xl:font-semibold xl:inline-block xl:w-66.25 text-left xl:transition-all xl:duration-200 ${
-                                        isSelected === type 
-                                            ? 'xl:border-l-4 xl:border-l-green-400 xl:bg-gray-100 xl:text-green-400 xl:font-bold' 
-                                            : 'hover:xl:xl:border-l-4 hover:xl:border-l-green-400 hover:xl:bg-gray-100 hover:xl:text-green-400 hover:xl:font-bold hover:xl:scale-105'
-                                    }`}
+                        <div id="workspace-sidebar-panel" className="transition-all duration-200 space-y-1">
+                            <button
+                                type="button"
+                                aria-expanded={designPhasesOpen}
+                                aria-controls="workspace-design-phases"
+                                className="flex w-full items-center justify-between gap-2 rounded-lg py-2 pl-2 pr-2 text-left cursor-pointer hover:bg-gray-100 transition-colors xl:pl-2"
+                                onClick={() => setDesignPhasesOpen((o) => !o)}
+                            >
+                                <span className="text-xs font-bold text-gray-500 uppercase tracking-wide">Design Phases</span>
+                                <svg
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    strokeWidth={1.5}
+                                    stroke="currentColor"
+                                    className={`size-4 shrink-0 text-gray-600 transition-transform duration-200 ${designPhasesOpen ? 'rotate-180' : ''}`}
+                                    aria-hidden
                                 >
-                            {type}
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+                                </svg>
+                            </button>
+                            {designPhasesOpen && (
+                                <div id="workspace-design-phases" role="region" aria-label="Design phases">
+                                    {allTypes.map((type, index) => (
+                                        <div
+                                            key={index}
+                                            role="button"
+                                            tabIndex={0}
+                                            onClick={() => handleSelection(type)}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter' || e.key === ' ') {
+                                                    e.preventDefault();
+                                                    handleSelection(type);
+                                                }
+                                            }}
+                                            className={`p-3 cursor-pointer font-semibold text-left w-full transition-all duration-200 xl:p-4 xl:inline-block xl:w-66.25 ${
+                                                isSelected === type
+                                                    ? 'border-l-4 border-l-green-400 bg-gray-100 text-green-600 font-bold xl:border-gray-300 xl:text-green-400'
+                                                    : 'border-l-4 border-l-transparent hover:border-l-green-400 hover:bg-gray-100 hover:text-green-600 xl:hover:scale-105'
+                                            }`}
+                                        >
+                                            {type}
+                                        </div>
+                                    ))}
                                 </div>
-                            ))}
+                            )}
+                            <button
+                                type="button"
+                                aria-expanded={projectStatusOpen}
+                                aria-controls="workspace-project-status"
+                                className="flex w-full items-center justify-between gap-2 rounded-lg py-2 pl-2 pr-2 text-left cursor-pointer hover:bg-gray-100 transition-colors mt-2 xl:pl-2"
+                                onClick={() => setProjectStatusOpen((o) => !o)}
+                            >
+                                <span className="text-xs font-bold text-gray-500 uppercase tracking-wide">Project status</span>
+                                <svg
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    strokeWidth={1.5}
+                                    stroke="currentColor"
+                                    className={`size-4 shrink-0 text-gray-600 transition-transform duration-200 ${projectStatusOpen ? 'rotate-180' : ''}`}
+                                    aria-hidden
+                                >
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+                                </svg>
+                            </button>
+                            {projectStatusOpen && (
+                                <div id="workspace-project-status" role="region" aria-label="Project status">
+                                    {allStatusTypes.map((status, index) => (
+                                        <div
+                                            key={`status-${index}`}
+                                            role="button"
+                                            tabIndex={0}
+                                            onClick={() => handleStatusSelection(status)}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter' || e.key === ' ') {
+                                                    e.preventDefault();
+                                                    handleStatusSelection(status);
+                                                }
+                                            }}
+                                            className={`p-3 cursor-pointer font-semibold text-left w-full transition-all duration-200 xl:p-4 xl:inline-block xl:w-66.25 ${
+                                                statusSelected === status
+                                                    ? 'border-l-4 border-l-green-400 bg-gray-100 text-green-600 font-bold xl:text-green-400'
+                                                    : 'border-l-4 border-l-transparent hover:border-l-green-400 hover:bg-gray-100 hover:text-green-600 xl:hover:scale-105'
+                                            }`}
+                                        >
+                                            {status}
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     )}   
                         </>
@@ -928,6 +1152,39 @@ export default function Dashboard() {
                                             onChange={(e) => setSearchQuery(e.target.value)}
                                             className="px-3 py-2 border border-gray-300 rounded-lg text-sm w-full sm:w-48 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                                         />
+                                        {showBranchDesignerFilters && (
+                                            <>
+                                                <select
+                                                    value={branchFilter}
+                                                    onChange={(e) => setBranchFilter(e.target.value)}
+                                                    aria-label="Filter by branch"
+                                                    className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white text-gray-800 min-w-[7rem] focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                                >
+                                                    <option value="">All branches</option>
+                                                    {BRANCH_OPTIONS.map((b) => (
+                                                        <option key={b} value={b}>
+                                                            {b}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                                <select
+                                                    value={designerFilter}
+                                                    onChange={(e) => setDesignerFilter(e.target.value)}
+                                                    aria-label="Filter by designer"
+                                                    className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white text-gray-800 min-w-[10rem] max-w-[14rem] focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                                >
+                                                    <option value="">All designers</option>
+                                                    {hasUnassignedInQueue && (
+                                                        <option value="__unassigned__">Unassigned</option>
+                                                    )}
+                                                    {designerFilterOptions.map(([id, name]) => (
+                                                        <option key={id} value={String(id)}>
+                                                            {name}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                            </>
+                                        )}
                                         <div className="relative" ref={filterDropdownRef}>
                                             <button
                                                 type="button"

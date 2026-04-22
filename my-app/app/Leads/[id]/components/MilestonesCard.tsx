@@ -56,7 +56,7 @@ export default function MilestonesCard({
       );
 
   return (
-    <div className={`${cardClass} ${isMaximized ? "flex flex-col" : ""}`}>
+    <div className={`${cardClass} flex h-full min-h-0 flex-col`}>
       {isMaximized ? (
         <div className="flex-shrink-0 flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-gray-200">
           <div>
@@ -136,7 +136,7 @@ export default function MilestonesCard({
           </div>
         </div>
       ) : (
-        <div className="flex items-center justify-between mb-4">
+        <div className="mb-4 flex flex-shrink-0 items-center justify-between">
           <h2 className="text-xl font-bold text-green-950">Project Tracker</h2>
           <button
             onClick={onToggleMaximize}
@@ -211,18 +211,18 @@ export default function MilestonesCard({
       )}
 
       <div
-        className={`flex-1 min-h-0 flex flex-col ${isMaximized ? "overflow-hidden pt-17" : ""}`}
+        className={`flex min-h-0 flex-1 flex-col overflow-hidden ${isMaximized ? "pt-17" : ""}`}
       >
         <div
           className={
             isMaximized
-              ? "flex justify-center w-full overflow-hidden flex-1 min-h-0"
-              : ""
+              ? "flex min-h-0 w-full flex-1 justify-center overflow-hidden"
+              : "flex min-h-0 w-full flex-1 flex-col overflow-hidden"
           }
         >
           <div
             ref={scrollRef}
-            className={`flex gap-10 overflow-y-hidden pb-2 min-h-0 ${isMaximized ? "overflow-x-auto scroll-smooth snap-x snap-mandatory max-w-[95vw] mx-auto" : "overflow-x-hidden justify-center"}`}
+            className={`flex min-h-0 gap-10 pb-2 ${isMaximized ? "mx-auto max-w-[95vw] flex-1 snap-x snap-mandatory overflow-x-auto overflow-y-hidden scroll-smooth" : "w-full flex-1 flex-col items-center overflow-hidden"}`}
             style={{ scrollbarWidth: "thin" }}
           >
             {milestones.map((milestone, idx) => {
@@ -249,9 +249,9 @@ export default function MilestonesCard({
               return (
                 <div
                   key={milestone.id}
-                  className={`flex-shrink-0 w-[380px] xl:w-[550px] ${isMaximized ? "snap-start" : ""}`}
+                  className={`flex min-h-0 w-[380px] min-w-0 flex-col xl:w-[550px] ${isMaximized ? "flex-shrink-0 snap-start" : "min-h-0 flex-1"}`}
                 >
-                  <div className="mb-4 flex justify-between">
+                  <div className="mb-4 flex flex-shrink-0 justify-between">
                     <span
                       className={`text-xs font-bold uppercase tracking-wide ${isCurrent ? "text-green-900" : isNextOrLater ? "text-gray-400" : "text-gray-500"}`}
                     >
@@ -264,20 +264,20 @@ export default function MilestonesCard({
                     </span>
                   </div>
                   <div
-                    className={`rounded-2xl shadow-sm border p-4 min-h-[52vh] flex flex-col transition-all ${isCurrent ? "bg-white border-green-900 ring-2 ring-green-200" : isNextOrLater ? "bg-gray-100 border-gray-200 opacity-75" : "bg-white border-gray-200"}`}
+                    className={`flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border p-4 shadow-sm transition-all ${isCurrent ? "bg-white border-green-900 ring-2 ring-green-200" : isNextOrLater ? "bg-gray-100 border-gray-200 opacity-75" : "bg-white border-gray-200"}`}
                   >
                     <h3
-                      className={`text-lg font-bold mb-3 ${isNextOrLater ? "text-gray-500" : "text-green-950"}`}
+                      className={`text-lg font-bold mb-3 flex-shrink-0 ${isNextOrLater ? "text-gray-500" : "text-green-950"}`}
                     >
                       {milestone.name}
                     </h3>
-                    <div className="h-2 bg-gray-200 rounded-full overflow-hidden mb-4">
+                    <div className="h-2 bg-gray-200 rounded-full overflow-hidden mb-4 flex-shrink-0">
                       <div
                         className="h-full bg-blue-500 rounded-full transition-all"
                         style={{ width: `${progressPercent}%` }}
                       />
                     </div>
-                    <div className="space-y-2 flex-1">
+                    <div className="space-y-2 flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain pr-1 [scrollbar-gutter:stable]">
                       {taskList.map((task: string, taskIndex: number) => {
                         const canVisitChecklist = hasChecklistForTask(
                           milestoneIndex,

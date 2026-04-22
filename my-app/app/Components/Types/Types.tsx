@@ -7,7 +7,9 @@ export type LeadshipTypes = {
     createAt: string;
     updateAt: string;
     contactNo?: string; // client contact from sales closure (for WhatsApp group)
-    clientEmail?: string; // client email from sales closure (for mail chain)
+    clientEmail?: string | null; // client email from sales closure (for mail chain)
+    /** Secondary client email when primary is missing or for CC / backup */
+    alternateClientEmail?: string | null;
     isOnHold?: boolean;
     resumeAt?: string | null;
     designerName?: string | null; // from sales closure payload (for DQC review panel)
@@ -18,4 +20,8 @@ export type LeadshipTypes = {
     /** Progress within current milestone 0–100 (tasks completed in that milestone) */
     currentMilestoneProgress?: number | null;
     assigned_designer_id?: number | null;
+    assigned_project_manager_id?: number | null;
+    projectManagerName?: string | null;
+    /** Sales closure experience center / branch (from lead payload) */
+    experienceCenter?: string | null;
 };

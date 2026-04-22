@@ -58,7 +58,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   res.setHeader("Access-Control-Allow-Methods", "GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Prolance-Token, X-Prolance-Origin-Session, X-Prolance-Customer",
+    "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Prolance-Token, X-Prolance-Origin-Session, X-Prolance-Api-Key",
   );
   res.setHeader("Access-Control-Max-Age", "86400");
   res.setHeader("Vary", "Origin");
@@ -83,7 +83,7 @@ app.use(
       "Origin",
       "X-Prolance-Token",
       "X-Prolance-Origin-Session",
-      "X-Prolance-Customer",
+      "X-Prolance-Api-Key",
     ],
     optionsSuccessStatus: 204,
   })
@@ -236,7 +236,7 @@ async function streamS3ObjectToDisk(key: string, destPath: string): Promise<void
 async function triggerCustomerEmailForLead(leadId: number, emailRoutePath: string): Promise<void> {
   try {
     const [rows] = await pool.query(
-      "SELECT project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?",
+      "SELECT project_name as projectName, client_email as clientEmail, client_email_alt as alternateClientEmail, payload FROM leads WHERE id = ?",
       [leadId],
     );
     const row = (rows as any[])[0];
@@ -250,7 +250,11 @@ async function triggerCustomerEmailForLead(leadId: number, emailRoutePath: strin
     }
 
     const customerEmail =
-      row.clientEmail || payload.email || payload?.form?.email || null;
+      row.clientEmail ||
+      row.alternateClientEmail ||
+      payload.email ||
+      payload?.form?.email ||
+      null;
     const customerName =
       payload.customer_name ||
       payload?.form?.customer_name ||
@@ -350,6 +354,32 @@ async function initDb() {
       if ((designerCol as any[]).length === 0) {
         await conn.query(
           "ALTER TABLE leads ADD COLUMN assigned_designer_id INT NULL",
+        );
+      }
+    } catch {
+      // ignore
+    }
+
+    try {
+      const [altEmailCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'leads' AND COLUMN_NAME = 'client_email_alt'",
+      );
+      if ((altEmailCol as any[]).length === 0) {
+        await conn.query(
+          "ALTER TABLE leads ADD COLUMN client_email_alt VARCHAR(255) NULL",
+        );
+      }
+    } catch {
+      // ignore
+    }
+
+    try {
+      const [pmCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'leads' AND COLUMN_NAME = 'assigned_project_manager_id'",
+      );
+      if ((pmCol as any[]).length === 0) {
+        await conn.query(
+          "ALTER TABLE leads ADD COLUMN assigned_project_manager_id INT NULL",
         );
       }
     } catch {
@@ -585,6 +615,17 @@ function canImportLeads(role: string | null | undefined): boolean {
 function canAssignLeads(role: string | null | undefined): boolean {
   const r = (role || "").toLowerCase();
   return r === "admin" || r === "territorial_design_manager" || r === "deputy_general_manager" || r === "design_manager";
+}
+
+/** Who may pick the project manager on a lead (after DQC 2 approval). */
+function canAssignProjectManagerRole(role: string | null | undefined): boolean {
+  const r = (role || "").toLowerCase();
+  return (
+    r === "admin" ||
+    r === "territorial_design_manager" ||
+    r === "deputy_general_manager" ||
+    r === "senior_project_manager"
+  );
 }
 
 type ImportedPreview = {
@@ -1083,13 +1124,19 @@ app.all("/api/auth/create-escalation-manager", async (req: Request, res: Respons
   }
 });
 
-// Admin: create Project Manager
+// Admin / TDM / DGM: create Project Manager
 app.all("/api/auth/create-project-manager", async (req: Request, res: Response) => {
   if (req.method !== "POST") return res.status(405).json({ message: "Use POST" });
   try {
     const admin = await getUserFromSession(req);
     if (!admin) return res.status(401).json({ message: "Unauthorized" });
-    if (admin.role !== "admin") return res.status(403).json({ message: "Only admin can create Project Manager" });
+    const r = (admin.role || "").toLowerCase();
+    const allowed = ["admin", "territorial_design_manager", "deputy_general_manager"];
+    if (!allowed.includes(r)) {
+      return res.status(403).json({
+        message: "Only Admin, Territorial Design Manager, or Deputy General Manager can create a Project Manager",
+      });
+    }
     const { email, password, name, phone } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
@@ -1106,6 +1153,55 @@ app.all("/api/auth/create-project-manager", async (req: Request, res: Response) 
     if (err?.code === "ER_DUP_ENTRY") return res.status(400).json({ message: "A user with this email already exists" });
     console.error("create-project-manager error", err);
     return res.status(500).json({ message: "Failed to create Project Manager" });
+  }
+});
+
+// Admin: create Senior Project Manager (full project visibility; assigns PMs on leads)
+app.all("/api/auth/create-senior-project-manager", async (req: Request, res: Response) => {
+  if (req.method !== "POST") return res.status(405).json({ message: "Use POST" });
+  try {
+    const admin = await getUserFromSession(req);
+    if (!admin) return res.status(401).json({ message: "Unauthorized" });
+    if ((admin.role || "").toLowerCase() !== "admin") {
+      return res.status(403).json({ message: "Only admin can create a Senior Project Manager" });
+    }
+    const { email, password, name, phone } = req.body || {};
+    const normalized = (email || "").trim().toLowerCase();
+    if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
+    if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
+    const displayName = (name || normalized).trim() || normalized;
+    const phoneVal = phone != null ? String(phone).trim() : null;
+    const [result] = await pool.query(
+      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "senior_project_manager", phoneVal || null],
+    );
+    const insertId = (result as any).insertId;
+    return res.status(201).json({
+      user: { id: insertId, email: normalized, name: displayName, role: "senior_project_manager" },
+    });
+  } catch (err: any) {
+    if (err?.code === "ER_DUP_ENTRY") return res.status(400).json({ message: "A user with this email already exists" });
+    console.error("create-senior-project-manager error", err);
+    return res.status(500).json({ message: "Failed to create Senior Project Manager" });
+  }
+});
+
+// List project managers (for assigning to a lead after DQC 2)
+app.get("/api/auth/project-managers", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user.role || "").toLowerCase();
+    if (!canAssignProjectManagerRole(role)) {
+      return res.status(403).json({ message: "Not allowed to list project managers" });
+    }
+    const [rows] = await pool.query(
+      "SELECT id, name, email FROM users WHERE role = 'project_manager' ORDER BY name ASC",
+    );
+    return res.json(rows);
+  } catch (err) {
+    console.error("project-managers list error", err);
+    return res.status(500).json({ message: "Failed to load project managers" });
   }
 });
 
@@ -1286,6 +1382,111 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("Error saving lead", err);
     res.status(500).json({ message: "Failed to save sales closure" });
+  }
+});
+
+// External system intake: create a lead directly in Pre 10%.
+// This endpoint is meant to be called by another project/service.
+app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
+  const expectedKey = (process.env.EXTERNAL_LEAD_INGEST_API_KEY || "").trim();
+  if (!expectedKey) {
+    return res.status(503).json({
+      message: "External lead intake is disabled (missing EXTERNAL_LEAD_INGEST_API_KEY)",
+    });
+  }
+
+  const apiKeyHeader = String(req.headers["x-external-api-key"] || "").trim();
+  const bearer = String(req.headers.authorization || "")
+    .replace(/^Bearer\s+/i, "")
+    .trim();
+  const providedKey = apiKeyHeader || bearer;
+  if (!providedKey || providedKey !== expectedKey) {
+    return res.status(401).json({ message: "Unauthorized" });
+  }
+
+  const payload = req.body || {};
+  const formData = payload?.formData || payload?.form_data || payload || {};
+  const fetched = payload?.fetchedData || formData || {};
+
+  const projectName =
+    String(
+      payload.projectName ||
+        payload.customer_name ||
+        payload.sales_lead_name ||
+        formData.projectName ||
+        formData.customer_name ||
+        formData.sales_lead_name ||
+        fetched.customer_name ||
+        fetched.sales_lead_name ||
+        "",
+    ).trim() || "Unnamed";
+
+  const contactNo =
+    String(
+      payload.contactNo ||
+        payload.contact_no ||
+        payload.phone ||
+        formData.co_no ||
+        fetched.co_no ||
+        "",
+    ).trim() || null;
+
+  const clientEmail =
+    String(
+      payload.clientEmail ||
+        payload.client_email ||
+        payload.email ||
+        formData.email ||
+        fetched.email ||
+        "",
+    ).trim() || null;
+
+  const pid = String(payload.pid || payload.externalLeadId || payload.referenceId || "").trim();
+  const sourceProject = String(payload.sourceProject || payload.source || "").trim() || null;
+  const now = new Date();
+
+  try {
+    const payloadToPersist = {
+      source: "external_intake_api",
+      sourceProject,
+      externalReferenceId: pid || null,
+      receivedAt: now.toISOString(),
+      formData: {
+        customer_name: projectName,
+        co_no: contactNo || "",
+        email: clientEmail || "",
+        status_of_project: "Pre 10%",
+      },
+      rawPayload: payload,
+    };
+
+    const [result] = await pool.query(
+      `INSERT INTO leads
+       (pid, project_name, project_stage, contact_no, client_email,
+        is_on_hold, resume_at, create_at, update_at, payload, assigned_designer_id)
+       VALUES (?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, NULL)`,
+      [
+        pid,
+        projectName,
+        "Pre 10%",
+        contactNo,
+        clientEmail,
+        now,
+        now,
+        JSON.stringify(payloadToPersist),
+      ],
+    );
+
+    return res.status(201).json({
+      ok: true,
+      leadId: (result as any)?.insertId ?? null,
+      projectName,
+      projectStage: "Pre 10%",
+      message: "Lead received via external intake",
+    });
+  } catch (err) {
+    console.error("external-intake error", err);
+    return res.status(500).json({ message: "Failed to create lead from external intake" });
   }
 });
 
@@ -1819,6 +2020,44 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
     return res.status(400).json({ message: "milestoneIndex and taskName are required" });
   }
   try {
+    const tNorm = String(taskName).trim();
+    if (milestoneIndex === 4 && tNorm === "Project manager approval") {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const role = (user.role || "").toLowerCase();
+      if (role !== "project_manager") {
+        return res.status(403).json({ message: "Only the assigned Project Manager can complete this task" });
+      }
+      const [lr] = await pool.query(
+        "SELECT assigned_project_manager_id as pmId FROM leads WHERE id = ?",
+        [id],
+      );
+      const pmId = (lr as any[])[0]?.pmId;
+      if (!pmId || Number(pmId) !== user.id) {
+        return res.status(403).json({ message: "You are not the assigned Project Manager for this lead" });
+      }
+    }
+    if (milestoneIndex === 4 && tNorm === "Assign project manager") {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const role = (user.role || "").toLowerCase();
+      if (!canAssignProjectManagerRole(role)) {
+        return res.status(403).json({
+          message:
+            "Only Admin, Territorial Design Manager, Deputy General Manager, or Senior Project Manager can complete this step",
+        });
+      }
+      const [ar] = await pool.query(
+        "SELECT assigned_project_manager_id as pmId FROM leads WHERE id = ?",
+        [id],
+      );
+      if (!(ar as any[])[0]?.pmId) {
+        return res
+          .status(400)
+          .json({ message: "Choose a project manager and save before marking this step complete" });
+      }
+    }
+
     await pool.query(
       `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
        VALUES (?, ?, ?, ?)
@@ -1899,8 +2138,8 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             // Sl no 14 – design sign‑off meeting request (after DQC2 approval)
             return "/api/email/send-design-signoff-meeting-scheduled";
           }
-          if (t === "meeting completed & 40% payment request") {
-            // Sl no 15 – meeting completed & 40% payment request
+          if (t === "40% collection" || t === "meeting completed & 40% payment request") {
+            // Sl no 15 – 40% collection (CX payment request; legacy combined task name still triggers)
             return "/api/email/send-design-signoff-40pc-payment-request";
           }
           // 40% payment approval email is triggered in /api/leads/:id/approve-40p-payment
@@ -2776,7 +3015,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
           });
         }
       } else if (emailRoutePath === "/api/email/send-design-signoff-40pc-payment-request") {
-        // Meeting completed & 40% payment request: CX only, pass amount, bank details, designer
+        // 40% collection: CX payment request email; pass amount, bank details, designer
         try {
           const [rows] = await pool.query(
             `SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
@@ -3375,7 +3614,7 @@ app.post(
       const ev = {
         id: `40p-upload-${Date.now()}`,
         type: "file_upload",
-        taskName: "meeting completed & 40% payment request",
+        taskName: "40% collection",
         milestoneName: "40% PAYMENT",
         timestamp: now.toISOString(),
         description: `40% payment screenshots uploaded for finance review: ${files.map((f) => f.originalname).join(", ")}`,
@@ -3408,12 +3647,13 @@ app.get("/api/leads/finance-40p-queue", async (req: Request, res: Response) => {
       "SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName FROM lead_task_completions"
     );
     const compList = completions as { leadId: number; milestoneIndex: number; taskName: string }[];
-    const has40pMeetingDone = (leadId: number) =>
+    const has40pCollectionDone = (leadId: number) =>
       compList.some(
         (c) =>
           c.leadId === leadId &&
           c.milestoneIndex === 5 &&
-          c.taskName === "meeting completed & 40% payment request"
+          (c.taskName === "40% collection" ||
+            c.taskName === "meeting completed & 40% payment request"),
       );
     const has40pApproval = (leadId: number) =>
       compList.some((c) => c.leadId === leadId && c.milestoneIndex === 5 && c.taskName === "40% payment approval");
@@ -3422,7 +3662,7 @@ app.get("/api/leads/finance-40p-queue", async (req: Request, res: Response) => {
     );
     const has40pUpload = (leadId: number) =>
       (uploadRows as { leadId: number }[]).some((r) => r.leadId === leadId);
-    const at40p = leads.filter((l) => has40pMeetingDone(l.id) && !has40pApproval(l.id));
+    const at40p = leads.filter((l) => has40pCollectionDone(l.id) && !has40pApproval(l.id));
     const list = at40p.map((l) => ({
       id: l.id,
       projectName: l.projectName || "—",
@@ -3465,7 +3705,7 @@ app.post(
       const ev = {
         id: `payment-40p-screenshot-${Date.now()}`,
         type: "file_upload",
-        taskName: "40% payment collection",
+        taskName: "40% collection",
         milestoneName: "40% PAYMENT",
         timestamp: now.toISOString(),
         description: `40% payment screenshot uploaded: ${file.originalname}`,
@@ -3667,8 +3907,19 @@ app.get("/api/leads/:id/uploads", async (req: Request, res: Response) => {
     const user = await getUserFromSession(req);
     const role = (user?.role ?? "").toLowerCase();
     const isMmt = role === "mmt_manager" || role === "mmt_executive";
-    const isFinance = role === "finance" || role === "admin";
-    const onlyApproved = !isMmt && !isFinance;
+    const seesAllUploadStatuses =
+      role === "finance" || role === "admin" || role === "senior_project_manager";
+    let onlyApproved = !isMmt && !seesAllUploadStatuses;
+    if (user && role === "project_manager") {
+      const [lr] = await pool.query(
+        "SELECT assigned_project_manager_id as pmId FROM leads WHERE id = ?",
+        [leadId],
+      );
+      const pmId = (lr as any[])[0]?.pmId;
+      if (pmId && Number(pmId) === user.id) {
+        onlyApproved = false;
+      }
+    }
 
     const [rows] = await pool.query(
       onlyApproved
@@ -4755,6 +5006,7 @@ app.get("/api/leads/:id/dqc-submission-files", async (req: Request, res: Respons
       role === "dqc_manager" ||
       role === "dqe" ||
       role === "admin" ||
+      role === "senior_project_manager" ||
       role === "designer" ||
       role === "design_manager" ||
       role === "territorial_design_manager";
@@ -4835,13 +5087,22 @@ app.get("/api/leads/:id/dqc2-submission-files", async (req: Request, res: Respon
     const user = await getUserFromSession(req);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
     const role = (user.role ?? "").toLowerCase();
-    const canAccess =
+    let canAccess =
       role === "dqc_manager" ||
       role === "dqe" ||
       role === "admin" ||
+      role === "senior_project_manager" ||
       role === "designer" ||
       role === "design_manager" ||
       role === "territorial_design_manager";
+    if (!canAccess && role === "project_manager") {
+      const [lr] = await pool.query(
+        "SELECT assigned_project_manager_id as pmId FROM leads WHERE id = ?",
+        [leadId],
+      );
+      const pmId = (lr as any[])[0]?.pmId;
+      if (pmId && Number(pmId) === user.id) canAccess = true;
+    }
     if (!canAccess) {
       return res.status(403).json({ message: "Only DQC roles or designers can access DQC submission files" });
     }
@@ -5047,8 +5308,10 @@ const MILESTONE_TASKS: string[][] = [
     "Material selection meeting completed",
     "DQC 2 submission",
     "DQC 2 approval ",
+    "Assign project manager",
+    "Project manager approval",
   ],
-  ["Design sign off", "meeting completed & 40% payment request", "40% payment approval"],
+  ["Design sign off", "meeting completed", "40% collection", "40% payment approval"],
   ["Cx approval for production", "POC mail & Timeline submission "],
 ];
 
@@ -5149,15 +5412,24 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
               l.is_on_hold as isOnHold, l.resume_at as resumeAt,
               l.create_at as createAt, l.update_at as updateAt,
               l.assigned_designer_id,
-              u.name as designerName
+              l.assigned_project_manager_id,
+              u.name as designerName,
+              pm.name as projectManagerName,
+              NULLIF(TRIM(COALESCE(
+                JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.experience_center')),
+                JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.form.experience_center'))
+              )), '') AS experienceCenter
        FROM leads l
        LEFT JOIN users u ON u.id = l.assigned_designer_id
+       LEFT JOIN users pm ON pm.id = l.assigned_project_manager_id
        ORDER BY l.id ASC`,
     );
     const baseList = (rows as any[]).map((r) => ({
       ...r,
       isOnHold: !!r.isOnHold,
       designerName: r.designerName ?? null,
+      projectManagerName: r.projectManagerName ?? null,
+      experienceCenter: r.experienceCenter ?? null,
     }));
 
     // Enrich with current milestone (from task completions) for Design Phase dashboard
@@ -5210,6 +5482,13 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
       const allowedIds = new Set((dmRows as { id: number }[]).map((r) => r.id));
       const filtered = enrichedList.filter((l: any) =>
         allowedIds.has(l.id),
+      );
+      return res.json(filtered);
+    }
+
+    if (user && role === "project_manager") {
+      const filtered = enrichedList.filter(
+        (l: any) => l.assigned_project_manager_id && l.assigned_project_manager_id === user.id,
       );
       return res.json(filtered);
     }
@@ -5475,6 +5754,40 @@ app.post("/api/leads/assign-designer/bulk", async (req: Request, res: Response) 
   }
 });
 
+// Assign project manager on a lead (after DQC 2 approval; same roles as completing "Assign project manager")
+app.patch("/api/leads/:id/assign-project-manager", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+  const pmId = Number((req.body || {}).projectManagerId);
+  if (!Number.isFinite(pmId) || pmId < 1) {
+    return res.status(400).json({ message: "projectManagerId is required" });
+  }
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user.role || "").toLowerCase();
+    if (!canAssignProjectManagerRole(role)) {
+      return res.status(403).json({
+        message:
+          "Only Admin, Territorial Design Manager, Deputy General Manager, or Senior Project Manager can assign a project manager",
+      });
+    }
+    const [urows] = await pool.query("SELECT id, role FROM users WHERE id = ?", [pmId]);
+    const target = (urows as any[])[0];
+    if (!target || String(target.role || "").toLowerCase() !== "project_manager") {
+      return res.status(400).json({ message: "Invalid project manager" });
+    }
+    await pool.query(
+      "UPDATE leads SET assigned_project_manager_id = ?, update_at = ? WHERE id = ?",
+      [pmId, new Date(), id],
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("assign-project-manager error", err);
+    return res.status(500).json({ message: "Failed to assign project manager" });
+  }
+});
+
 // Lead detail by id (for /Leads/[id]); MMT executives only get leads they're assigned to
 app.get("/api/leads/:id", async (req: Request, res: Response) => {
   const id = Number(req.params.id);
@@ -5485,13 +5798,17 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
     const role = (user?.role ?? "").toLowerCase();
 
     const [rows] = await pool.query(
-      `SELECT id, pid, project_name as projectName, project_stage as projectStage,
-              contact_no as contactNo, client_email as clientEmail,
-              is_on_hold as isOnHold, resume_at as resumeAt,
-              create_at as createAt, update_at as updateAt, payload,
-              assigned_designer_id
-       FROM leads
-       WHERE id = ?`,
+      `SELECT l.id, l.pid, l.project_name as projectName, l.project_stage as projectStage,
+              l.contact_no as contactNo, l.client_email as clientEmail,
+              l.client_email_alt as alternateClientEmail,
+              l.is_on_hold as isOnHold, l.resume_at as resumeAt,
+              l.create_at as createAt, l.update_at as updateAt, l.payload,
+              l.assigned_designer_id,
+              l.assigned_project_manager_id,
+              pm.name as projectManagerName
+       FROM leads l
+       LEFT JOIN users pm ON pm.id = l.assigned_project_manager_id
+       WHERE l.id = ?`,
       [id],
     );
     const row = (rows as any[])[0];
@@ -5526,6 +5843,12 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
       }
     }
 
+    if (user && role === "project_manager") {
+      if (!row.assigned_project_manager_id || row.assigned_project_manager_id !== user.id) {
+        return res.status(404).json({ message: "Lead not found" });
+      }
+    }
+
     // auto-resume if date is reached
     if (row.isOnHold && row.resumeAt && new Date(row.resumeAt) <= new Date()) {
       await pool.query(
@@ -5554,10 +5877,107 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
       isOnHold: !!row.isOnHold,
       designerName: designerName || null,
       revision: revision || "v1.0 (Latest)",
+      alternateClientEmail: row.alternateClientEmail ?? null,
+      projectManagerName: row.projectManagerName ?? null,
     });
   } catch (err) {
     console.error("lead detail error", err);
     return res.status(500).json({ message: "Failed to load lead" });
+  }
+});
+
+// Update primary / alternate client email (everyone except designers).
+app.patch("/api/leads/:id/client-emails", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+
+  const parseEmailField = (
+    v: unknown,
+  ): { kind: "omit" } | { kind: "null" } | { kind: "value"; value: string } | { kind: "invalid" } => {
+    if (v === undefined) return { kind: "omit" };
+    if (v === null || v === "") return { kind: "null" };
+    const s = String(v).trim();
+    if (!s) return { kind: "null" };
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)) return { kind: "invalid" };
+    return { kind: "value", value: s };
+  };
+
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user.role ?? "").toLowerCase();
+    if (role === "designer") {
+      return res.status(403).json({ message: "Designers cannot update client emails" });
+    }
+
+    const [rows] = await pool.query(
+      "SELECT id, assigned_designer_id, client_email as clientEmail, client_email_alt as alternateClientEmail FROM leads WHERE id = ?",
+      [id],
+    );
+    const row = (rows as any[])[0];
+    if (!row) return res.status(404).json({ message: "Lead not found" });
+
+    if (role === "mmt_executive" && user.id) {
+      const [assignRows] = await pool.query(
+        "SELECT 1 FROM lead_d1_assignments WHERE lead_id = ? AND assigned_to_user_id = ?",
+        [id, user.id],
+      );
+      if ((assignRows as any[]).length === 0) {
+        const [d2Rows] = await pool.query(
+          "SELECT 1 FROM lead_d2_assignments WHERE lead_id = ? AND assigned_to_user_id = ?",
+          [id, user.id],
+        );
+        if ((d2Rows as any[]).length === 0) {
+          return res.status(404).json({ message: "Lead not found" });
+        }
+      }
+    }
+
+    if (role === "design_manager") {
+      const [dmCheck] = await pool.query(
+        `SELECT 1 FROM users d WHERE d.id = ? AND d.design_manager_id = ?`,
+        [row.assigned_designer_id, user.id],
+      );
+      if (!row.assigned_designer_id || (dmCheck as any[]).length === 0) {
+        return res.status(404).json({ message: "Lead not found" });
+      }
+    }
+
+    const body = req.body || {};
+    const pPrimary = parseEmailField(body.clientEmail);
+    const pAlt = parseEmailField(body.alternateClientEmail);
+    if (pPrimary.kind === "invalid" || pAlt.kind === "invalid") {
+      return res.status(400).json({ message: "Invalid email format" });
+    }
+    if (pPrimary.kind === "omit" && pAlt.kind === "omit") {
+      return res.status(400).json({ message: "Provide clientEmail and/or alternateClientEmail" });
+    }
+
+    const mergedPrimary =
+      pPrimary.kind === "omit"
+        ? (row.clientEmail ?? null)
+        : pPrimary.kind === "null"
+          ? null
+          : pPrimary.value;
+    const mergedAlt =
+      pAlt.kind === "omit"
+        ? (row.alternateClientEmail ?? null)
+        : pAlt.kind === "null"
+          ? null
+          : pAlt.value;
+
+    await pool.query(
+      "UPDATE leads SET client_email = ?, client_email_alt = ?, update_at = ? WHERE id = ?",
+      [mergedPrimary, mergedAlt, new Date(), id],
+    );
+
+    return res.json({
+      clientEmail: mergedPrimary,
+      alternateClientEmail: mergedAlt,
+    });
+  } catch (err) {
+    console.error("client-emails patch error", err);
+    return res.status(500).json({ message: "Failed to update client emails" });
   }
 });
 
@@ -5651,11 +6071,14 @@ app.post("/api/leads/:id/hold", async (req: Request, res: Response) => {
 
   try {
     const [rows] = await pool.query(
-      "SELECT id FROM leads WHERE id = ?",
+      "SELECT id, project_stage as projectStage FROM leads WHERE id = ?",
       [id],
     );
     const lead = (rows as any[])[0];
     if (!lead) return res.status(404).json({ message: "Lead not found" });
+    if (String(lead.projectStage ?? "").trim().toLowerCase() === "cancelled") {
+      return res.status(400).json({ message: "Cannot put a cancelled project on hold" });
+    }
 
     await pool.query(
       "UPDATE leads SET is_on_hold = 1, resume_at = ?, update_at = ? WHERE id = ?",
@@ -5698,7 +6121,44 @@ app.post("/api/leads/:id/resume", async (req: Request, res: Response) => {
   }
 });
 
-registerProlanceRoutes(app, pool, getUserFromSession);
+// Mark project as cancelled (Admin, TDM, or Deputy General Manager only). Clears hold.
+app.post("/api/leads/:id/cancel", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user.role ?? "").toLowerCase();
+    const allowed = ["admin", "territorial_design_manager", "deputy_general_manager"];
+    if (!allowed.includes(role)) {
+      return res.status(403).json({ message: "Only Admin, TDM, or Deputy General Manager can cancel a project" });
+    }
+
+    const [rows] = await pool.query(
+      "SELECT id, project_stage as projectStage FROM leads WHERE id = ?",
+      [id],
+    );
+    const lead = (rows as any[])[0];
+    if (!lead) return res.status(404).json({ message: "Lead not found" });
+    const st = String(lead.projectStage ?? "").trim().toLowerCase();
+    if (st === "cancelled") {
+      return res.json({ success: true, message: "Project is already cancelled", projectStage: "Cancelled" });
+    }
+
+    await pool.query(
+      "UPDATE leads SET project_stage = 'Cancelled', is_on_hold = 0, resume_at = NULL, update_at = ? WHERE id = ?",
+      [new Date(), id],
+    );
+
+    res.json({ success: true, message: "Project marked as cancelled", projectStage: "Cancelled" });
+  } catch (err) {
+    console.error("cancel lead error", err);
+    res.status(500).json({ message: "Failed to cancel project" });
+  }
+});
+
+registerProlanceRoutes(app, getUserFromSession);
 
 // Ensure CORS headers are present on error responses (multer, etc.) so the browser doesn't only show a generic CORS error
 app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
@@ -5721,7 +6181,7 @@ process.on("unhandledRejection", (reason, promise) => {
 
 const server = app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
-  console.log("Auth create/register routes: create-mmt-manager, register-mmt-executive, create-tdm, create-admin, create-dqc-manager, create-escalation-manager, create-project-manager, create-finance, register-dqe, register (TDM designer/design_manager)");
+  console.log("Auth create/register routes: create-mmt-manager, register-mmt-executive, create-tdm, create-admin, create-dqc-manager, create-escalation-manager, create-project-manager, create-senior-project-manager, create-finance, register-dqe, register (TDM designer/design_manager)");
 });
 
 server.on("error", (err) => {

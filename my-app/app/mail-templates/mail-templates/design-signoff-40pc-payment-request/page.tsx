@@ -1,6 +1,6 @@
 /**
  * Milestone: 40% PAYMENT – Design sign off (Sl no: 15)
- * Task: "meeting completed & 40% payment request"
+ * Task: "40% collection" (after design sign-off meeting completed)
  * Trigger: Design sign‑off meeting completed; MOM + payable‑now amount submitted.
  *
  * Sheet references:

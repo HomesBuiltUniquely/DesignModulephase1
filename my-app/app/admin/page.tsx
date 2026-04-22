@@ -59,15 +59,27 @@ export default function AdminPanelPage() {
     },
     {
       title: 'Create Project Manager',
-      description: 'Add a new Project Manager who can manage projects and timelines.',
+      description: 'Create Project Manager logins (Admin, TDM, or DGM). They sign in on the main login page and use the dashboard.',
       href: '/admin/create-project-manager',
       label: 'Create Project Manager',
+    },
+    {
+      title: 'Create Senior Project Manager',
+      description: 'Create SPM logins (Admin only). They see all projects and assign project managers after DQC 2 with Admin, TDM, and DGM.',
+      href: '/admin/create-senior-project-manager',
+      label: 'Create Senior Project Manager',
     },
     {
       title: 'Create Escalation Manager',
       description: 'Add a new Escalation Manager who can handle escalations.',
       href: '/admin/create-escalation-manager',
       label: 'Create Escalation Manager',
+    },
+    {
+      title: 'Prolance API Test',
+      description: 'Call Prolance test proxy APIs from UI (token, partner login, projects, create project).',
+      href: '/admin/prolance-test',
+      label: 'Open Prolance Test',
     },
   ];
 

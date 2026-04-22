@@ -44,6 +44,8 @@ const MileStonesArray: MileStonesTypes = {
         "Material selection meeting completed",
         "DQC 2 submission",
         "DQC 2 approval ",
+        "Assign project manager",
+        "Project manager approval",
       ],
       Css: "xl:w-75  xl:mx-auto xl:mt-20  xl:border-2 xl:border-dashed xl:border-red-300 xl:hover:bg-blue-50  xl:cursor-pointer xl:overflow-y-auto xl:rounded-2xl xl:my-30",
     },
@@ -52,7 +54,8 @@ const MileStonesArray: MileStonesTypes = {
       name: "40% PAYMENT",
       taskList: [
         "Design sign off",
-        "meeting completed & 40% payment request",
+        "meeting completed",
+        "40% collection",
         "40% payment approval",
       ],
       Css: "xl:w-75  xl:mx-auto xl:mt-20  xl:border-2 xl:border-dashed xl:border-red-300 xl:hover:bg-blue-50  xl:cursor-pointer xl:overflow-y-auto xl:rounded-2xl xl:my-30",
@@ -62,7 +65,7 @@ const MileStonesArray: MileStonesTypes = {
       name: "PUSH TO PRODUCTION",
       taskList: [
         "Cx approval for production",
-        "POC mail & Timeline submission ",
+        "POC mail ",
       ],
       Css: "xl:w-75 xl:mt-5 xl:mx-auto xl:mt-12  border-2 border-dashed border-red-300 hover:bg-blue-50  cursor-pointer overflow-y-auto xl:rounded-2xl xl:my-20",
     },
