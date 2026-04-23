@@ -130,6 +130,35 @@ async function ensureGoogleCalendarTable(pool: Pool): Promise<void> {
       INDEX idx_google_calendar_user (user_id)
     )
   `);
+
+  // Backward-compatible migration for environments that already had an older table shape.
+  const [cols] = await pool.query(
+    `SELECT COLUMN_NAME AS columnName
+     FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'google_calendar_connections'`,
+  );
+  const existing = new Set((cols as any[]).map((c) => String(c.columnName || "").toLowerCase()));
+  const required: Array<{ name: string; ddl: string }> = [
+    { name: "google_email", ddl: "ADD COLUMN google_email VARCHAR(255) NULL" },
+    { name: "access_token", ddl: "ADD COLUMN access_token TEXT NULL" },
+    { name: "refresh_token", ddl: "ADD COLUMN refresh_token TEXT NULL" },
+    { name: "token_type", ddl: "ADD COLUMN token_type VARCHAR(50) NULL" },
+    { name: "scope", ddl: "ADD COLUMN scope TEXT NULL" },
+    { name: "expiry_date", ddl: "ADD COLUMN expiry_date BIGINT NULL" },
+    {
+      name: "created_at",
+      ddl: "ADD COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    },
+    {
+      name: "updated_at",
+      ddl: "ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
+    },
+  ];
+  for (const col of required) {
+    if (!existing.has(col.name)) {
+      await pool.query(`ALTER TABLE google_calendar_connections ${col.ddl}`);
+    }
+  }
 }
 
 async function exchangeCodeForTokens(code: string): Promise<{
