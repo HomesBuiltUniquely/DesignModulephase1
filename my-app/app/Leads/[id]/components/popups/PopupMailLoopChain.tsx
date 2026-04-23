@@ -20,6 +20,8 @@ type Props = {
   designerEmail: string;
   projectPid?: string;
   projectName?: string;
+  designManagerEmail?: string;
+  tdmEmail?: string;
   sessionId: string | null;
   onMarkComplete: () => void;
   onClose: () => void;
@@ -34,6 +36,8 @@ export default function PopupMailLoopChain({
   designerEmail,
   projectPid,
   projectName,
+  designManagerEmail = '',
+  tdmEmail = '',
   sessionId,
   onMarkComplete,
   onClose,
@@ -61,27 +65,61 @@ export default function PopupMailLoopChain({
       });
   }, [sessionId]);
 
+  const normalizeEmail = (raw: string) => {
+    const t = (raw || '').trim().toLowerCase();
+    return t && t.includes('@') ? t : '';
+  };
+
+  const uniqueMembers = (members: TeamMemberEmail[]) => {
+    const seen = new Set<string>();
+    const out: TeamMemberEmail[] = [];
+    members.forEach((m) => {
+      const email = normalizeEmail(m.email);
+      if (!email || seen.has(email)) return;
+      seen.add(email);
+      out.push({ ...m, email });
+    });
+    return out;
+  };
+
+  const filterByExpectedEmail = (members: TeamMemberEmail[], expectedEmail?: string) => {
+    const expected = normalizeEmail(expectedEmail || '');
+    if (!expected) return [];
+    const matched = uniqueMembers(members).filter((m) => normalizeEmail(m.email) === expected);
+    if (matched.length > 0) return matched;
+    return [{ name: expected.split('@')[0], email: expected }];
+  };
+
+  const designerEmailNorm = normalizeEmail(designerEmail);
+  const adminsForLoop = uniqueMembers(teamEmails?.admins || []).filter(
+    (m) => normalizeEmail(m.email) !== designerEmailNorm,
+  );
+  const tdmForLoop = filterByExpectedEmail(
+    (teamEmails?.territorial_design_managers || []).filter((m) => normalizeEmail(m.email) !== designerEmailNorm),
+    tdmEmail,
+  );
+  const dmForLoop = filterByExpectedEmail(
+    (teamEmails?.design_managers || []).filter((m) => normalizeEmail(m.email) !== designerEmailNorm),
+    designManagerEmail,
+  );
+
   // To: client only (email goes from designer to client). CC: designer, admin, TDM, DM.
   const toEmails = (): string[] => {
-    const pick = (raw: string) => {
-      const t = (raw || '').trim().toLowerCase();
-      return t && t.includes('@') ? t : '';
-    };
-    const primary = pick(clientEmail);
+    const primary = normalizeEmail(clientEmail);
     if (primary) return [primary];
-    const alt = pick(alternateClientEmail);
+    const alt = normalizeEmail(alternateClientEmail);
     return alt ? [alt] : [];
   };
   const ccEmails = (): string[] => {
     const set = new Set<string>();
     const add = (e: string) => {
-      const t = (e || '').trim().toLowerCase();
-      if (t && t.includes('@')) set.add(t);
+      const t = normalizeEmail(e);
+      if (t) set.add(t);
     };
     add(designerEmail);
-    (teamEmails?.admins || []).forEach((m) => add(m.email));
-    (teamEmails?.territorial_design_managers || []).forEach((m) => add(m.email));
-    (teamEmails?.design_managers || []).forEach((m) => add(m.email));
+    adminsForLoop.forEach((m) => add(m.email));
+    tdmForLoop.forEach((m) => add(m.email));
+    dmForLoop.forEach((m) => add(m.email));
     return Array.from(set);
   };
 
@@ -167,9 +205,9 @@ export default function PopupMailLoopChain({
         )}
         {teamEmailsLoaded && teamEmails && (
           <>
-            {renderRoleSection('Admin(s)', teamEmails.admins || [])}
-            {renderRoleSection('Territorial Design Manager(s)', teamEmails.territorial_design_managers || [])}
-            {renderRoleSection('Design Manager(s)', teamEmails.design_managers || [])}
+            {renderRoleSection('Admin(s)', adminsForLoop)}
+            {renderRoleSection('Territorial Design Manager(s)', tdmForLoop)}
+            {renderRoleSection('Design Manager(s)', dmForLoop)}
           </>
         )}
       </div>
