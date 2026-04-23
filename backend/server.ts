@@ -6918,9 +6918,14 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
               l.create_at as createAt, l.update_at as updateAt, l.payload,
               l.assigned_designer_id,
               l.assigned_project_manager_id,
-              pm.name as projectManagerName
+              pm.name as projectManagerName,
+              d.email as designerEmail,
+              CASE WHEN d.role = 'design_manager' THEN d.email ELSE dm.email END as designManagerEmail,
+              CASE WHEN d.role = 'design_manager' THEN d.name ELSE dm.name END as designManagerName
        FROM leads l
        LEFT JOIN users pm ON pm.id = l.assigned_project_manager_id
+       LEFT JOIN users d ON d.id = l.assigned_designer_id
+       LEFT JOIN users dm ON dm.id = d.design_manager_id
        WHERE l.id = ?`,
       [id],
     );
@@ -6989,6 +6994,9 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
       ...rest,
       isOnHold: !!row.isOnHold,
       designerName: designerName || null,
+      designerEmail: row.designerEmail ?? null,
+      designManagerEmail: row.designManagerEmail ?? null,
+      designManagerName: row.designManagerName ?? null,
       revision: revision || "v1.0 (Latest)",
       alternateClientEmail: row.alternateClientEmail ?? null,
       projectManagerName: row.projectManagerName ?? null,
