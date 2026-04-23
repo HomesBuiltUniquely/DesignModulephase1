@@ -62,6 +62,13 @@ function getPhaseBucket(p: LeadshipTypes): string {
     const fromMilestone = getPhaseFromMilestone(p.currentMilestoneIndex, p.currentMilestoneProgress);
     const fromStage = getStageBucket(p.projectStage);
 
+    // Production data can have project_stage already promoted to 20-60%
+    // while milestone task completion trails behind. In that case, trust stage
+    // so the lead appears in the 20-60 bucket selected by users.
+    if (fromStage === "20-60%") {
+        return "20-60%";
+    }
+
     // If milestone says "Pre 10%" but sales closure stage is already 10–20% or 20–60%,
     // trust the stage so new FULL_10% leads appear in the 10–20% bucket.
     if (fromMilestone === "Pre 10%" && fromStage !== "Pre 10%") {
