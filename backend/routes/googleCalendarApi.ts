@@ -47,7 +47,7 @@ export function registerGoogleCalendarRoutes(
   app: Express,
   getUserFromSession: (req: Request) => Promise<SessionUser | null>,
 ): void {
-  const PREFIX = "/api/google-calendar/oauth/callback";
+  const PREFIX = "/api/google-calendar";
 
   const requireUser = async (req: Request, res: Response): Promise<SessionUser | null> => {
     const user = await getUserFromSession(req);
