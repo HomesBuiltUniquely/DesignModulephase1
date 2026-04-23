@@ -6177,7 +6177,7 @@ app.post("/api/leads/:id/cancel", async (req: Request, res: Response) => {
 });
 
 registerProlanceRoutes(app, getUserFromSession);
-registerGoogleCalendarRoutes(app, getUserFromSession);
+registerGoogleCalendarRoutes(app, getUserFromSession, pool);
 
 // Ensure CORS headers are present on error responses (multer, etc.) so the browser doesn't only show a generic CORS error
 app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
