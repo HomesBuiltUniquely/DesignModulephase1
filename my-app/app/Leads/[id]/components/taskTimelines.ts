@@ -18,6 +18,12 @@ export const TIMELINE_1BHK: Record<string, string> = {
   // Milestone 3: 10% PAYMENT
   "10% PAYMENT::10% payment collection": "48 hrs from last meeting",
   "10% PAYMENT::10% payment approval": "24 hrs of DQC1 file sent",
+
+  // Milestone 6 (40% PAYMENT in product): design sign-off → meeting → collection → finance approval
+  "40% PAYMENT::Design sign off": "After PM approval / as scheduled",
+  "40% PAYMENT::meeting completed": "As per meeting date (MOM submission)",
+  "40% PAYMENT::40% collection": "48 hrs from sign-off meeting",
+  "40% PAYMENT::40% payment approval": "After finance verification",
 };
 
 export function getTaskTimeline(

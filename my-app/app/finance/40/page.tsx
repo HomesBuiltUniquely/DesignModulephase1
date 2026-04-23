@@ -21,7 +21,7 @@ type UploadItem = {
 
 /**
  * Finance 40% payment queue: same as 10% – Lead ID, Lead name, Status, Upload (screenshots), Approve.
- * Leads appear after "meeting completed & 40% payment request" is done. Finance uploads then approves.
+ * Leads appear after the "40% collection" step is done. Finance uploads then approves.
  */
 export default function Finance40pPage() {
   const { user, sessionId } = useAuth();
@@ -205,7 +205,7 @@ export default function Finance40pPage() {
           </div>
           {leads.length === 0 ? (
             <div className="px-4 py-6 text-sm text-gray-600">
-              {loading ? 'Loading…' : 'No leads at 40% payment stage. Leads appear here after meeting completed & 40% payment request.'}
+              {loading ? 'Loading…' : 'No leads at 40% payment stage. Leads appear here after the 40% collection step is completed.'}
             </div>
           ) : (
             leads.map((l) => {

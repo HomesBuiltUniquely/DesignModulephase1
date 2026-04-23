@@ -15,6 +15,8 @@ type TeamEmails = {
 
 type Props = {
   clientEmail: string;
+  /** Used as “To” when primary is empty */
+  alternateClientEmail?: string;
   designerEmail: string;
   projectPid?: string;
   projectName?: string;
@@ -28,6 +30,7 @@ type Props = {
  */
 export default function PopupMailLoopChain({
   clientEmail,
+  alternateClientEmail = '',
   designerEmail,
   projectPid,
   projectName,
@@ -60,8 +63,14 @@ export default function PopupMailLoopChain({
 
   // To: client only (email goes from designer to client). CC: designer, admin, TDM, DM.
   const toEmails = (): string[] => {
-    const t = (clientEmail || '').trim().toLowerCase();
-    return t && t.includes('@') ? [t] : [];
+    const pick = (raw: string) => {
+      const t = (raw || '').trim().toLowerCase();
+      return t && t.includes('@') ? t : '';
+    };
+    const primary = pick(clientEmail);
+    if (primary) return [primary];
+    const alt = pick(alternateClientEmail);
+    return alt ? [alt] : [];
   };
   const ccEmails = (): string[] => {
     const set = new Set<string>();
@@ -135,10 +144,18 @@ export default function PopupMailLoopChain({
       </p>
       <div className="space-y-4">
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Client email (from sales closure)</label>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Client email (primary)</label>
           {renderRow('', clientEmail)}
-          {!clientEmail?.trim() && (
-            <p className="text-xs text-amber-600 mt-1">Client email is set from the sales closure form for this lead.</p>
+          {alternateClientEmail?.trim() && (
+            <>
+              <label className="block text-sm font-medium text-gray-700 mb-1 mt-3">Alternate client email</label>
+              {renderRow('', alternateClientEmail)}
+            </>
+          )}
+          {!clientEmail?.trim() && !alternateClientEmail?.trim() && (
+            <p className="text-xs text-amber-600 mt-1">
+              No client email yet. Ask your manager to add a primary or alternate on the lead page.
+            </p>
           )}
         </div>
         <div>

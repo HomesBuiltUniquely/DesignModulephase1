@@ -438,7 +438,7 @@ export default function GoogleCalendarView() {
           <div className="flex items-center gap-3 px-2">
             <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#e8f0fe] text-xl font-semibold text-[#1a73e8]">20</div>
             <div>
-              <h1 className="text-[34px] font-normal leading-none">Calendar</h1>
+              <h1 className="text-[34px] font-normal leading-none">HUB Calendar</h1>
               <p className="mt-1 text-sm text-[#5f6368]">
                 {role === 'admin'
                   ? 'Admin view of all connected calendars'

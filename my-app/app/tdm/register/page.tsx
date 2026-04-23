@@ -95,9 +95,15 @@ export default function TdmRegisterPage() {
   return (
     <div className="min-h-screen bg-slate-100">
       <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center gap-4">
           <h1 className="text-xl font-bold text-gray-900">Register Design Manager / Designer</h1>
           <a href="/" className="text-sm text-green-600 hover:underline">Dashboard</a>
+          <a
+            href="/admin/create-project-manager"
+            className="text-sm font-medium text-blue-700 hover:text-blue-900 hover:underline"
+          >
+            Create Project Manager
+          </a>
         </div>
         <div className="flex items-center gap-4">
           <a href="/change-password" className="text-sm text-gray-600 hover:text-gray-900">Change password</a>

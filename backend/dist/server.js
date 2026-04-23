@@ -114,7 +114,7 @@ app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Credentials", "true");
     res.setHeader("Access-Control-Allow-Methods", "GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Prolance-Token, X-Prolance-Origin-Session, X-Prolance-Customer");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Prolance-Token, X-Prolance-Origin-Session, X-Prolance-Api-Key");
     res.setHeader("Access-Control-Max-Age", "86400");
     res.setHeader("Vary", "Origin");
     return res.status(204).end();
@@ -138,7 +138,7 @@ app.use((0, cors_1.default)({
         "Origin",
         "X-Prolance-Token",
         "X-Prolance-Origin-Session",
-        "X-Prolance-Customer",
+        "X-Prolance-Api-Key",
     ],
     optionsSuccessStatus: 204,
 }));
@@ -6071,7 +6071,7 @@ app.post("/api/leads/:id/resume", async (req, res) => {
         res.status(500).json({ message: "Failed to resume project" });
     }
 });
-(0, prolanceApi_1.registerProlanceRoutes)(app, pool, getUserFromSession);
+(0, prolanceApi_1.registerProlanceRoutes)(app, getUserFromSession);
 // Ensure CORS headers are present on error responses (multer, etc.) so the browser doesn't only show a generic CORS error
 app.use((err, req, res, _next) => {
     reflectCorsHeaders(req, res);

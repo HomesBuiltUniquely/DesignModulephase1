@@ -13,7 +13,7 @@ type Props = {
     removeMomFile: (index: number) => void;
     onClose: () => void;
     onShareMom?: () => void;
-    /** When true, show 40% payment screenshot upload section (for "meeting completed & 40% payment request"). */
+    /** When true, show 40% payment screenshot upload section (for the "40% collection" task). */
     show40pUpload?: boolean;
     payment40pFiles?: File[];
     payment40pInputRef?: RefObject<HTMLInputElement | null>;

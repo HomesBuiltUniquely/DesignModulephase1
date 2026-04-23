@@ -8,9 +8,7 @@ import { BRANCH_OPTIONS } from '../../constants/branches';
 import { getApiBase } from '@/app/lib/apiBase';
 const API = getApiBase();
 
-const CAN_CREATE_PM = new Set(['admin', 'territorial_design_manager', 'deputy_general_manager']);
-
-export default function AdminCreateProjectManagerPage() {
+export default function AdminCreateSeniorProjectManagerPage() {
   const router = useRouter();
   const { user, sessionId, loading, logout } = useAuth();
   const [email, setEmail] = useState('');
@@ -27,7 +25,7 @@ export default function AdminCreateProjectManagerPage() {
       router.replace('/login');
       return;
     }
-    if (!CAN_CREATE_PM.has((user.role || '').toLowerCase())) router.replace('/');
+    if ((user.role || '').toLowerCase() !== 'admin') router.replace('/');
   }, [user, loading, router]);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -40,20 +38,26 @@ export default function AdminCreateProjectManagerPage() {
     }
     setSubmitting(true);
     try {
-      const res = await fetch(`${API}/api/auth/create-project-manager`, {
+      const res = await fetch(`${API}/api/auth/create-senior-project-manager`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${sessionId}`,
         },
-        body: JSON.stringify({ email: email.trim(), password, name: name.trim() || email.trim(), phone: phone.trim(), branch: branch || BRANCH_OPTIONS[0] }),
+        body: JSON.stringify({
+          email: email.trim(),
+          password,
+          name: name.trim() || email.trim(),
+          phone: phone.trim(),
+          branch: branch || BRANCH_OPTIONS[0],
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setMessage({ type: 'error', text: data.message || 'Failed to create Project Manager' });
+        setMessage({ type: 'error', text: data.message || 'Failed to create Senior Project Manager' });
         return;
       }
-      setMessage({ type: 'success', text: `Project Manager created: ${data.user?.email}` });
+      setMessage({ type: 'success', text: `Senior Project Manager created: ${data.user?.email}` });
       setEmail('');
       setPassword('');
       setName('');
@@ -65,23 +69,15 @@ export default function AdminCreateProjectManagerPage() {
   }
 
   if (loading || !user) return <div className="p-8">Loading…</div>;
-  if (!CAN_CREATE_PM.has((user.role || '').toLowerCase())) return null;
-
-  const isAdmin = (user.role || '').toLowerCase() === 'admin';
+  if ((user.role || '').toLowerCase() !== 'admin') return null;
 
   return (
     <div className="min-h-screen bg-slate-100">
       <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <h1 className="text-xl font-bold text-gray-900">
-            {isAdmin ? 'Admin — Create Project Manager' : 'Create Project Manager'}
-          </h1>
+          <h1 className="text-xl font-bold text-gray-900">Admin — Create Senior Project Manager</h1>
           <a href="/" className="text-sm text-green-600 hover:underline">Dashboard</a>
-          {isAdmin ? (
-            <a href="/admin" className="text-sm text-gray-600 hover:text-gray-900">Admin Panel</a>
-          ) : (
-            <a href="/tdm/register" className="text-sm text-gray-600 hover:text-gray-900">TDM / DGM hub</a>
-          )}
+          <a href="/admin" className="text-sm text-gray-600 hover:text-gray-900">Admin Panel</a>
         </div>
         <div className="flex items-center gap-4">
           <a href="/change-password" className="text-sm text-gray-600 hover:text-gray-900">Change password</a>
@@ -98,7 +94,8 @@ export default function AdminCreateProjectManagerPage() {
       <main className="max-w-md mx-auto p-8">
         <div className="bg-white rounded-2xl shadow border border-gray-200 p-6">
           <p className="text-gray-600 text-sm mb-4">
-            Admins, Territorial Design Managers, and Deputy General Managers can create Project Manager logins. They sign in with the main login page and use the dashboard. Email must end with @hubinterior.com.
+            Senior Project Managers see all projects on the dashboard and, together with Admin, TDM, and Deputy GM, assign
+            project managers to leads after DQC 2 approval. Email must end with @hubinterior.com.
           </p>
           <form onSubmit={handleSubmit} className="space-y-4">
             {message && (
@@ -124,7 +121,7 @@ export default function AdminCreateProjectManagerPage() {
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 className="w-full border border-gray-300 rounded-lg px-4 py-2.5"
-                placeholder="Project Manager name"
+                placeholder="Senior Project Manager name"
               />
             </div>
             <div>
@@ -160,7 +157,7 @@ export default function AdminCreateProjectManagerPage() {
               disabled={submitting}
               className="w-full py-2.5 rounded-lg bg-green-600 text-white font-medium hover:bg-green-700 disabled:opacity-60"
             >
-              {submitting ? 'Creating…' : 'Create Project Manager'}
+              {submitting ? 'Creating…' : 'Create Senior Project Manager'}
             </button>
           </form>
         </div>

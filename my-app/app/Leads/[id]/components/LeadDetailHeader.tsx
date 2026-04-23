@@ -1,11 +1,8 @@
 'use client';
 
-import { useState } from 'react';
-import { useAuth } from '@/app/auth/AuthContext';
 import type { LeadshipTypes } from '@/app/Components/Types/Types';
 import type { ImageType } from '../types';
 import MileStonesArray from '@/app/Components/Types/MileStoneArray';
-import { getApiBase } from '@/app/lib/apiBase';
 
 type Props = {
     project: LeadshipTypes;
@@ -15,16 +12,23 @@ type Props = {
     currentMilestoneIndex: number;
     onHoldClick: () => void;
     onResumeClick: () => void;
+    /** Admin / TDM / DGM: mark project cancelled */
+    showCancelButton?: boolean;
+    onCancelClick?: () => void;
     /** Hide the Overview/BOQ/Payment/Escalation navbar (e.g. for MMT). */
     hideNavTabs?: boolean;
     /** Hide the milestone progress stepper (e.g. for MMT). */
     hideStepper?: boolean;
     /** Hide Prolance, avatars, HOLD and RESUME (e.g. for MMT). */
     hideProlanceHoldResume?: boolean;
+    onProlanceClick?: () => void;
+    prolanceBusy?: boolean;
+    onGetQuoteClick?: () => void;
+    getQuoteBusy?: boolean;
+    canGetQuote?: boolean;
 };
 
 const TOTAL_STAGES = MileStonesArray.MilestonesName.length;
-const API = getApiBase();
 
 /**
  * Lead/Project detail page header: PID, name, stage progress bar, tabs, team avatars, HOLD/RESUME.
@@ -37,32 +41,30 @@ function formatResumeDate(value?: string | null): string {
     return d.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
-export default function LeadDetailHeader({ project, image, onAddImage, currentMilestoneIndex, onHoldClick, onResumeClick, hideNavTabs, hideStepper, hideProlanceHoldResume }: Props) {
-    const { sessionId } = useAuth();
-    const [openingProlance, setOpeningProlance] = useState(false);
-    const holdLabel = project.isOnHold ? `On hold${project.resumeAt ? ` till ${formatResumeDate(project.resumeAt)}` : ''}` : project.projectStage;
-
-    const openInProlance = async () => {
-        if (!sessionId || openingProlance) return;
-        setOpeningProlance(true);
-        try {
-            const res = await fetch(`${API}/api/prolance/open/${project.id}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessionId}` },
-                body: JSON.stringify({}),
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data?.message || 'Failed to open Prolance');
-            const openUrl = typeof data?.openUrl === 'string' ? data.openUrl : '';
-            if (!openUrl) throw new Error('Prolance URL not returned');
-            window.open(openUrl, '_blank', 'noopener,noreferrer');
-        } catch (err) {
-            const msg = err instanceof Error ? err.message : 'Failed to open Prolance';
-            window.alert(msg);
-        } finally {
-            setOpeningProlance(false);
-        }
-    };
+export default function LeadDetailHeader({
+    project,
+    image,
+    onAddImage,
+    currentMilestoneIndex,
+    onHoldClick,
+    onResumeClick,
+    hideNavTabs,
+    hideStepper,
+    hideProlanceHoldResume,
+    onProlanceClick,
+    prolanceBusy,
+    onGetQuoteClick,
+    getQuoteBusy,
+    canGetQuote,
+    showCancelButton,
+    onCancelClick,
+}: Props) {
+    const isCancelled = (project.projectStage || '').trim().toLowerCase() === 'cancelled';
+    const holdLabel = isCancelled
+        ? 'Cancelled'
+        : project.isOnHold
+          ? `On hold${project.resumeAt ? ` till ${formatResumeDate(project.resumeAt)}` : ''}`
+          : project.projectStage;
 
     return (
         <div className="w-full px-4 xl:px-6 pt-4 pb-4">
@@ -83,11 +85,19 @@ export default function LeadDetailHeader({ project, image, onAddImage, currentMi
                 <div className="flex flex-wrap items-center gap-4 xl:gap-6">
                     <button
                         type="button"
-                        onClick={openInProlance}
-                        disabled={!sessionId || openingProlance}
+                        onClick={onProlanceClick}
+                        disabled={prolanceBusy}
                         className="border border-gray-400 rounded-md px-4 py-2 font-bold text-purple-100 hover:text-green-900 hover:bg-purple-50 transition-colors cursor-pointer"
                     >
-                        {openingProlance ? 'Opening...' : 'Open in Prolance'}
+                        {prolanceBusy ? 'Prolance...' : 'Prolance'}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={onGetQuoteClick}
+                        disabled={getQuoteBusy || !canGetQuote}
+                        className="border border-gray-400 rounded-md px-4 py-2 font-bold text-purple-100 hover:text-green-900 hover:bg-purple-50 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                    >
+                        {getQuoteBusy ? 'Get Quote...' : 'Get Quote'}
                     </button>
                     <div className="flex items-center -space-x-3">
                         {image.map((imgdata) => {
@@ -122,22 +132,32 @@ export default function LeadDetailHeader({ project, image, onAddImage, currentMi
                             +
                         </button>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                         <button
                             type="button"
                             onClick={onHoldClick}
-                            className="px-4 py-2 border border-gray-400 rounded-md font-bold text-purple-100 hover:text-green-900 hover:bg-purple-50 transition-colors cursor-pointer"
+                            disabled={isCancelled}
+                            className="px-4 py-2 border border-gray-400 rounded-md font-bold text-purple-100 hover:text-green-900 hover:bg-purple-50 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                         >
                             HOLD
                         </button>
                         <button
                             type="button"
                             onClick={onResumeClick}
-                            className="px-4 py-2 border border-gray-400 rounded-md font-bold text-purple-100 hover:text-green-900 hover:bg-purple-50 transition-colors cursor-pointer"
-                            disabled={!project.isOnHold}
+                            className="px-4 py-2 border border-gray-400 rounded-md font-bold text-purple-100 hover:text-green-900 hover:bg-purple-50 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                            disabled={!project.isOnHold || isCancelled}
                         >
                             RESUME
                         </button>
+                        {showCancelButton && !isCancelled && onCancelClick && (
+                            <button
+                                type="button"
+                                onClick={onCancelClick}
+                                className="px-4 py-2 border border-amber-400/80 rounded-md font-bold text-amber-100 hover:text-amber-950 hover:bg-amber-50 transition-colors cursor-pointer"
+                            >
+                                CANCELLED
+                            </button>
+                        )}
                     </div>
                 </div>
                 )}

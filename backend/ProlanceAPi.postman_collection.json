@@ -1,0 +1,303 @@
+{
+  "info": {
+    "_postman_id": "f4226400-2f96-4e30-8d01-2442894dbb08",
+    "name": "ProlanceAPi",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "32052112"
+  },
+  "item": [
+    {
+      "name": "https://api.prolance.design/token",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var jsonData = pm.response.json();",
+              "",
+              "pm.globals.set(\"my_auth_token\", jsonData.access_token);"
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/x-www-form-urlencoded",
+            "type": "text"
+          },
+          {
+            "key": "",
+            "value": "",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "grant_type",
+              "value": "password",
+              "type": "text",
+              "uuid": "354202d1-ae11-4950-9294-e2fdfb37f52f"
+            },
+            {
+              "key": "username",
+              "value": "hubapi",
+              "type": "text",
+              "uuid": "26ea3ca3-7b44-44d3-8a52-5ae24a6a0f39"
+            },
+            {
+              "key": "password",
+              "value": "Hub@API#26",
+              "type": "text",
+              "uuid": "d673335c-b371-4972-97f4-32a21a78b19b"
+            }
+          ]
+        },
+        "url": {
+          "raw": "https://api.prolance.design/token",
+          "protocol": "https",
+          "host": [
+            "api",
+            "prolance",
+            "design"
+          ],
+          "path": [
+            "token"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "https://api.prolance.design/Origin/Partners/Login",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var jsonData = pm.response.json();",
+              "",
+              "pm.globals.set(\"partner_id\", jsonData.data[0].partnerID);",
+              "",
+              "pm.globals.set(\"session_id\", jsonData.data[0].sessionID);",
+              "",
+              "console.log(\"Variables saved successfully!\");"
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{my_auth_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          },
+          {
+            "key": "OriginAPIKey",
+            "value": "c4b24d7c25cc11f1a660066e82f6587b",
+            "type": "text"
+          },
+          {
+            "key": "NoEncryption",
+            "value": "1",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n \"LoginID\": \"susmita@hubinterior.com\",\n \"Password\": \"AdMiN@HuB4\",\n \"LoginFrom\": 1\n}\n",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/Origin/Partners/LoginAPI",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "Origin",
+            "Partners",
+            "LoginAPI"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "{{base_url}}/Origin/Projects/{{partner_id}}",
+      "protocolProfileBehavior": {
+        "disableBodyPruning": true
+      },
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{my_auth_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "GET",
+        "header": [
+          {
+            "key": "OriginSessionID",
+            "value": "{{session_id}}",
+            "type": "text"
+          },
+          {
+            "key": "NoEncryption",
+            "value": "1",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          },
+          {
+            "key": "OriginAPIKey",
+            "value": "c4b24d7c25cc11f1a660066e82f6587b",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/Origin/Projects/{{partner_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "Origin",
+            "Projects",
+            "{{partner_id}}"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "{{base_url}}/Origin/Projects/Create",
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{my_auth_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "PUT",
+        "header": [
+          {
+            "key": "OriginSessionID",
+            "value": "{{session_id}}",
+            "type": "text"
+          },
+          {
+            "key": "NoEncryption",
+            "value": "1",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          },
+          {
+            "key": "OriginAPIKey",
+            "value": "c4b24d7c25cc11f1a660066e82f6587b",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n \"partnerID\": {{partner_id}},\n \"pName\": \"Bharath-test\",\n \"customer\": \"Bharath-test\",\n \"city\": \"Bengaluru\",\n \"state\": \"Karnataka\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/Origin/Projects/Create",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "Origin",
+            "Projects",
+            "Create"
+          ]
+        }
+      },
+      "response": []
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "packages": {},
+        "requests": {},
+        "exec": [
+          ""
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "packages": {},
+        "requests": {},
+        "exec": [
+          ""
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base-url",
+      "value": ""
+    }
+  ]
+}

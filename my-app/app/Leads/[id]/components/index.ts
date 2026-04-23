@@ -1,4 +1,5 @@
 export { default as LeadDetailHeader } from './LeadDetailHeader';
+export { default as ClientEmailsSection } from './ClientEmailsSection';
 export { default as MilestonesCard } from './MilestonesCard';
 export { default as HistoryCard } from './HistoryCard';
 export { default as FilesCard } from './FilesCard';
@@ -18,3 +19,6 @@ export { default as Popup10pPaymentCollection } from './popups/Popup10pPaymentCo
 export { default as PopupGroupDescription } from './popups/PopupGroupDescription';
 export { default as PopupMailLoopChain } from './popups/PopupMailLoopChain';
 export { default as GenericMeetingChecklistPopup } from './popups/GenericMeetingChecklistPopup';
+export { default as PopupAssignProjectManager } from './popups/PopupAssignProjectManager';
+export { default as PopupProjectManagerApproval } from './popups/PopupProjectManagerApproval';
+export { default as Popup40pCollection } from './popups/Popup40pCollection';

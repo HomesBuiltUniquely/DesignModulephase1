@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { getApiBase } from '@/app/lib/apiBase';
 
-export type AuthRole = 'admin' | 'territorial_design_manager' | 'deputy_general_manager' | 'design_manager' | 'designer' | 'dqc_manager' | 'dqe' | 'mmt_manager' | 'mmt_executive' | 'finance' | 'project_manager' | 'escalation_manager';
+export type AuthRole = 'admin' | 'territorial_design_manager' | 'deputy_general_manager' | 'design_manager' | 'designer' | 'dqc_manager' | 'dqe' | 'mmt_manager' | 'mmt_executive' | 'finance' | 'project_manager' | 'senior_project_manager' | 'escalation_manager';
 
 export type AuthUser = {
   id: number;
