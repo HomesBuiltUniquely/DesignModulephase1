@@ -3,7 +3,7 @@ type Dqc1ReviewRequestParams = {
   customerName: string;
   ecName: string;
   designerName: string;
-  projectValue: string;
+  projectValue?: string;
   drawingFileName?: string;
   quotationFileName?: string;
 };
@@ -91,10 +91,12 @@ export function renderDqc1ReviewRequestInternalEmail(params: Dqc1ReviewRequestPa
                         <td style="padding:4px 0;color:#6b7280;">Designer</td>
                         <td style="padding:4px 0;font-weight:500;color:#111827;">${designerName}</td>
                       </tr>
+                      ${projectValue ? `
                       <tr>
                         <td style="padding:4px 0;color:#6b7280;">Project Value</td>
                         <td style="padding:4px 0;font-weight:600;color:#16a34a;">₹ ${projectValue}</td>
                       </tr>
+                      ` : ''}
                     </table>
                   </td>
                 </tr>

@@ -49,6 +49,29 @@ const adm_zip_1 = __importDefault(require("adm-zip"));
 const XLSX = __importStar(require("xlsx"));
 const customerNumberApi_1 = require("./routes/customerNumberApi");
 const prolanceApi_1 = require("./routes/prolanceApi");
+function loadEnvFile() {
+    const envPath = node_path_1.default.join(__dirname, ".env");
+    if (!node_fs_1.default.existsSync(envPath))
+        return;
+    const raw = node_fs_1.default.readFileSync(envPath, "utf8");
+    raw.split(/\r?\n/).forEach((line) => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#"))
+            return;
+        const idx = trimmed.indexOf("=");
+        if (idx === -1)
+            return;
+        const key = trimmed.slice(0, idx).trim();
+        let value = trimmed.slice(idx + 1).trim();
+        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+            value = value.slice(1, -1);
+        }
+        if (!(key in process.env)) {
+            process.env[key] = value;
+        }
+    });
+}
+loadEnvFile();
 const app = (0, express_1.default)();
 const PORT = Number(process.env.PORT || 3001);
 /** Browsers send Origin on cross-origin requests; preflight must allow the exact origin (incl. www). */
@@ -130,7 +153,7 @@ app.get("/api/health", (_req, res) => {
 const pool = promise_1.default.createPool({
     host: process.env.DB_HOST || "localhost",
     user: process.env.DB_USER || "root",
-    password: process.env.DB_PASSWORD || "root@root",
+    password: process.env.DB_PASSWORD || "root",
     database: process.env.DB_NAME || "DesignMod",
     port: Number(process.env.DB_PORT || 3306),
     connectionLimit: 10,
@@ -159,6 +182,16 @@ if (!node_fs_1.default.existsSync(PROFILE_IMAGES_DIR))
     node_fs_1.default.mkdirSync(PROFILE_IMAGES_DIR, { recursive: true });
 const API_BASE = process.env.API_BASE_URL || "http://localhost:3001";
 const FRONTEND_BASE = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CALENDAR_CLIENT_ID || "";
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CALENDAR_CLIENT_SECRET || "";
+const GOOGLE_REDIRECT_URI = process.env.GOOGLE_CALENDAR_REDIRECT_URI || `${API_BASE}/api/google-calendar/oauth/callback`;
+const GOOGLE_SCOPE = process.env.GOOGLE_CALENDAR_SCOPE ||
+    "https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/userinfo.email openid profile";
+const GOOGLE_AUTH_URI = "https://accounts.google.com/o/oauth2/v2/auth";
+const GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token";
+const GOOGLE_EVENTS_URI = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
+const GOOGLE_USERINFO_URI = "https://www.googleapis.com/oauth2/v2/userinfo";
+const GOOGLE_TIME_ZONE = "Asia/Kolkata";
 const upload = (0, multer_1.default)({
     storage: multer_1.default.diskStorage({
         destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
@@ -246,9 +279,75 @@ async function streamS3ObjectToDisk(key, destPath) {
         throw new Error("S3 object has no body");
     await (0, promises_1.pipeline)(body, node_fs_1.default.createWriteStream(destPath));
 }
-async function triggerCustomerEmailForLead(leadId, emailRoutePath) {
+function buildMailChainSubject(projectPid, projectName, customerName) {
+    if (projectPid || projectName) {
+        return `Project ${projectPid || ""} ${projectName || ""} - Design discussion`.replace(/\s+/g, " ").trim();
+    }
+    return `Project ${customerName || "Customer"} - Design discussion`;
+}
+async function getMailLoopCcEmails(extraEmails = []) {
+    const [teamRows] = await pool.query("SELECT email FROM users WHERE role IN ('admin','territorial_design_manager','design_manager') AND email IS NOT NULL");
+    const teamEmails = teamRows.map((r) => r.email || null);
+    return distinctEmails([...extraEmails, ...teamEmails]);
+}
+async function triggerMailRouteWithLog(args) {
+    const toRaw = args.payload.to;
+    const ccRaw = args.payload.cc;
+    const to = Array.isArray(toRaw) ? toRaw.map(String) : toRaw ? [String(toRaw)] : [];
+    const cc = Array.isArray(ccRaw) ? ccRaw.map(String) : ccRaw ? [String(ccRaw)] : [];
+    console.log("[mail-trigger]", {
+        leadId: args.leadId,
+        milestoneIndex: args.milestoneIndex ?? null,
+        taskName: args.taskName,
+        route: args.route,
+        visibility: args.visibility,
+        to,
+        cc,
+    });
     try {
-        const [rows] = await pool.query("SELECT project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?", [leadId]);
+        const resp = await fetch(`${FRONTEND_BASE}${args.route}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(args.payload),
+        });
+        if (!resp.ok) {
+            const body = await resp.text().catch(() => "");
+            console.error("[mail-trigger-failed]", {
+                leadId: args.leadId,
+                route: args.route,
+                status: resp.status,
+                taskName: args.taskName,
+                visibility: args.visibility,
+                body,
+            });
+            return;
+        }
+        console.log("[mail-trigger-sent]", {
+            leadId: args.leadId,
+            route: args.route,
+            taskName: args.taskName,
+            visibility: args.visibility,
+            to,
+            cc,
+        });
+    }
+    catch (error) {
+        console.error("[mail-trigger-error]", {
+            leadId: args.leadId,
+            route: args.route,
+            taskName: args.taskName,
+            visibility: args.visibility,
+            error,
+        });
+    }
+}
+async function triggerCustomerEmailForLead(leadId, emailRoutePath, opts) {
+    try {
+        const [rows] = await pool.query(`SELECT l.project_name as projectName, l.pid as projectPid, l.client_email as clientEmail, l.payload,
+              d.email as designerEmail
+       FROM leads l
+       LEFT JOIN users d ON d.id = l.assigned_designer_id
+       WHERE l.id = ?`, [leadId]);
         const row = rows[0];
         if (!row)
             return;
@@ -264,22 +363,25 @@ async function triggerCustomerEmailForLead(leadId, emailRoutePath) {
             payload?.form?.customer_name ||
             row.projectName ||
             "Customer";
+        const mailChainCc = await getMailLoopCcEmails([
+            opts?.actorEmail || null,
+            row.designerEmail || null,
+        ]);
+        const mailChainSubject = buildMailChainSubject(row.projectPid || null, row.projectName || null, customerName);
         if (!customerEmail)
             return;
         // Fire-and-forget; do not block backend response
-        fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
+        void triggerMailRouteWithLog({
+            leadId,
+            taskName: "customer-email-trigger",
+            route: emailRoutePath,
+            visibility: "external",
+            payload: {
                 to: customerEmail,
+                cc: mailChainCc,
+                subject: mailChainSubject,
                 customerName,
-            }),
-        }).catch((err) => {
-            console.error("Failed to trigger customer email", {
-                leadId,
-                route: emailRoutePath,
-                error: err,
-            });
+            },
         });
     }
     catch (err) {
@@ -312,11 +414,36 @@ async function initDb() {
         catch {
             // ignore
         }
+        // Add mmt_manager_id for mapping MMT executives to their manager
+        try {
+            const [mmtMgrCol] = await conn.query("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'mmt_manager_id'");
+            if (mmtMgrCol.length === 0) {
+                await conn.query("ALTER TABLE users ADD COLUMN mmt_manager_id INT NULL");
+            }
+        }
+        catch {
+            // ignore
+        }
         await conn.query(`
       CREATE TABLE IF NOT EXISTS sessions (
         id VARCHAR(255) PRIMARY KEY,
         user_id INT NOT NULL,
         created_at DATETIME NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id)
+      );
+    `);
+        await conn.query(`
+      CREATE TABLE IF NOT EXISTS google_calendar_connections (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL UNIQUE,
+        google_email VARCHAR(255) NOT NULL,
+        access_token TEXT NOT NULL,
+        refresh_token TEXT NULL,
+        expires_at DATETIME NULL,
+        scope TEXT NULL,
+        active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at DATETIME NOT NULL,
+        updated_at DATETIME NOT NULL,
         FOREIGN KEY (user_id) REFERENCES users(id)
       );
     `);
@@ -538,6 +665,290 @@ async function getUserFromSession(req) {
         phone: user.phone || "",
     };
 }
+function normalizeEmail(value) {
+    return (value || "").trim().toLowerCase();
+}
+function isGoogleCalendarConfigured() {
+    return Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET && GOOGLE_REDIRECT_URI);
+}
+function buildGoogleCalendarRedirect(status, message) {
+    const url = new URL("/google-calendar", FRONTEND_BASE);
+    url.searchParams.set("gc_status", status);
+    if (message)
+        url.searchParams.set("gc_message", message);
+    return url.toString();
+}
+function buildGoogleCalendarAuthUrl(userId) {
+    if (!isGoogleCalendarConfigured())
+        return null;
+    const url = new URL(GOOGLE_AUTH_URI);
+    url.searchParams.set("client_id", GOOGLE_CLIENT_ID);
+    url.searchParams.set("redirect_uri", GOOGLE_REDIRECT_URI);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("access_type", "offline");
+    url.searchParams.set("prompt", "consent");
+    url.searchParams.set("scope", GOOGLE_SCOPE);
+    url.searchParams.set("state", `${userId}:${Date.now()}`);
+    return url.toString();
+}
+function parseGoogleState(state) {
+    const raw = (state || "").trim();
+    const userId = Number(raw.split(":")[0]);
+    return Number.isFinite(userId) ? userId : null;
+}
+function formatGoogleDateTime(meetingDate, meetingTime) {
+    if (!meetingDate || !meetingTime)
+        return null;
+    const time = /^\d{2}:\d{2}$/.test(meetingTime) ? `${meetingTime}:00` : meetingTime;
+    const iso = `${meetingDate}T${time}+05:30`;
+    const parsed = new Date(iso);
+    if (Number.isNaN(parsed.getTime()))
+        return null;
+    return parsed.toISOString();
+}
+function addHoursToIso(iso, hours) {
+    const parsed = new Date(iso);
+    parsed.setHours(parsed.getHours() + hours);
+    return parsed.toISOString();
+}
+function distinctEmails(values) {
+    const seen = new Set();
+    const output = [];
+    for (const value of values) {
+        const email = normalizeEmail(value);
+        if (!email || seen.has(email))
+            continue;
+        seen.add(email);
+        output.push(email);
+    }
+    return output;
+}
+async function getUserById(userId) {
+    const [rows] = await pool.query("SELECT id, email, name, role FROM users WHERE id = ? LIMIT 1", [userId]);
+    return (rows[0] || null);
+}
+async function getGoogleConnectionByUserId(userId) {
+    const [rows] = await pool.query(`SELECT id, user_id, google_email, access_token, refresh_token, expires_at, scope, active
+     FROM google_calendar_connections
+     WHERE user_id = ? AND active = 1
+     LIMIT 1`, [userId]);
+    return (rows[0] || null);
+}
+async function getCalendarVisibleUsers(currentUser) {
+    const role = (currentUser.role || "").toLowerCase();
+    if (role === "admin" || role === "territorial_design_manager") {
+        const [rows] = await pool.query(`SELECT DISTINCT u.id, u.email, u.name, u.role
+       FROM users u
+       INNER JOIN google_calendar_connections gcc ON gcc.user_id = u.id
+       WHERE gcc.active = 1
+       ORDER BY u.name ASC`);
+        return rows;
+    }
+    if (role === "design_manager") {
+        const [rows] = await pool.query(`SELECT DISTINCT u.id, u.email, u.name, u.role
+       FROM users u
+       INNER JOIN google_calendar_connections gcc ON gcc.user_id = u.id
+       WHERE gcc.active = 1
+         AND (u.id = ? OR (u.role = 'designer' AND u.design_manager_id = ?))
+       ORDER BY u.name ASC`, [currentUser.id, currentUser.id]);
+        return rows;
+    }
+    if (role === "mmt_manager") {
+        const [rows] = await pool.query(`SELECT DISTINCT u.id, u.email, u.name, u.role
+       FROM users u
+       INNER JOIN google_calendar_connections gcc ON gcc.user_id = u.id
+       WHERE gcc.active = 1
+         AND (u.id = ? OR (u.role = 'mmt_executive' AND u.mmt_manager_id = ?))
+       ORDER BY u.name ASC`, [currentUser.id, currentUser.id]);
+        return rows;
+    }
+    return [currentUser];
+}
+async function exchangeGoogleCodeForTokens(code) {
+    const body = new URLSearchParams();
+    body.set("code", code);
+    body.set("client_id", GOOGLE_CLIENT_ID);
+    body.set("client_secret", GOOGLE_CLIENT_SECRET);
+    body.set("redirect_uri", GOOGLE_REDIRECT_URI);
+    body.set("grant_type", "authorization_code");
+    const response = await fetch(GOOGLE_TOKEN_URI, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: body.toString(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        throw new Error(data?.error_description || data?.error || "Failed to exchange Google authorization code");
+    }
+    return data;
+}
+async function refreshGoogleAccessToken(connection) {
+    if (!connection.refresh_token) {
+        throw new Error("Google refresh token missing. Please reconnect Google Calendar.");
+    }
+    const body = new URLSearchParams();
+    body.set("client_id", GOOGLE_CLIENT_ID);
+    body.set("client_secret", GOOGLE_CLIENT_SECRET);
+    body.set("refresh_token", connection.refresh_token);
+    body.set("grant_type", "refresh_token");
+    const response = await fetch(GOOGLE_TOKEN_URI, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: body.toString(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data?.access_token) {
+        throw new Error(data?.error_description || data?.error || "Failed to refresh Google access token");
+    }
+    const expiresAt = data.expires_in && Number.isFinite(Number(data.expires_in))
+        ? new Date(Date.now() + Number(data.expires_in) * 1000)
+        : null;
+    await pool.query(`UPDATE google_calendar_connections
+     SET access_token = ?, expires_at = ?, scope = COALESCE(?, scope), updated_at = ?
+     WHERE id = ?`, [data.access_token, expiresAt, data.scope || null, new Date(), connection.id]);
+    return {
+        ...connection,
+        access_token: data.access_token,
+        expires_at: expiresAt,
+        scope: data.scope || connection.scope,
+    };
+}
+async function ensureValidGoogleConnection(userId) {
+    const connection = await getGoogleConnectionByUserId(userId);
+    if (!connection)
+        return null;
+    const expiresAt = connection.expires_at ? new Date(connection.expires_at) : null;
+    const isExpired = expiresAt ? expiresAt.getTime() <= Date.now() + 60000 : false;
+    if (!isExpired)
+        return connection;
+    return refreshGoogleAccessToken(connection);
+}
+async function fetchGoogleUserEmail(accessToken) {
+    const response = await fetch(GOOGLE_USERINFO_URI, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        throw new Error(data?.error?.message || "Failed to read Google account email");
+    }
+    return normalizeEmail(data?.email || "");
+}
+async function upsertGoogleConnection(args) {
+    const now = new Date();
+    const expiresAt = args.expiresIn && Number.isFinite(Number(args.expiresIn))
+        ? new Date(Date.now() + Number(args.expiresIn) * 1000)
+        : null;
+    await pool.query(`INSERT INTO google_calendar_connections
+      (user_id, google_email, access_token, refresh_token, expires_at, scope, active, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+     ON DUPLICATE KEY UPDATE
+      google_email = VALUES(google_email),
+      access_token = VALUES(access_token),
+      refresh_token = COALESCE(VALUES(refresh_token), refresh_token),
+      expires_at = VALUES(expires_at),
+      scope = VALUES(scope),
+      active = 1,
+      updated_at = VALUES(updated_at)`, [
+        args.userId,
+        args.googleEmail,
+        args.accessToken,
+        args.refreshToken || null,
+        expiresAt,
+        args.scope || null,
+        now,
+        now,
+    ]);
+}
+async function fetchGoogleEventsForConnection(connection, owner, timeMin, timeMax) {
+    const url = new URL(GOOGLE_EVENTS_URI);
+    url.searchParams.set("singleEvents", "true");
+    url.searchParams.set("orderBy", "startTime");
+    url.searchParams.set("maxResults", "250");
+    if (timeMin)
+        url.searchParams.set("timeMin", new Date(timeMin).toISOString());
+    if (timeMax)
+        url.searchParams.set("timeMax", new Date(timeMax).toISOString());
+    const response = await fetch(url.toString(), {
+        headers: { Authorization: `Bearer ${connection.access_token}` },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        throw new Error(data?.error?.message || "Failed to fetch Google Calendar events");
+    }
+    return (data?.items || []).map((event) => ({
+        id: event.id,
+        summary: event.summary || "Untitled event",
+        description: event.description || "",
+        htmlLink: event.htmlLink || "",
+        status: event.status || "confirmed",
+        location: event.location || "",
+        start: event.start?.dateTime || event.start?.date || null,
+        end: event.end?.dateTime || event.end?.date || null,
+        attendees: Array.isArray(event.attendees)
+            ? event.attendees.map((attendee) => ({
+                email: attendee.email || "",
+                displayName: attendee.displayName || "",
+                responseStatus: attendee.responseStatus || "",
+            }))
+            : [],
+        ownerUserId: owner.id,
+        ownerName: owner.name,
+        ownerEmail: owner.email,
+        ownerRole: owner.role,
+        connectedGoogleEmail: connection.google_email,
+    }));
+}
+async function createGoogleCalendarEventForUser(args) {
+    const connection = await ensureValidGoogleConnection(args.userId);
+    if (!connection)
+        return null;
+    const response = await fetch(`${GOOGLE_EVENTS_URI}?sendUpdates=all`, {
+        method: "POST",
+        headers: {
+            Authorization: `Bearer ${connection.access_token}`,
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+            summary: args.summary,
+            description: args.description || "",
+            start: { dateTime: args.startDateTimeIso, timeZone: GOOGLE_TIME_ZONE },
+            end: { dateTime: args.endDateTimeIso, timeZone: GOOGLE_TIME_ZONE },
+            attendees: (args.attendees || []).map((email) => ({ email })),
+        }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        throw new Error(data?.error?.message || "Failed to create Google Calendar event");
+    }
+    return data;
+}
+async function createGoogleCalendarEventForFirstAvailableUser(args) {
+    let lastError = null;
+    for (const rawUserId of args.userIds) {
+        const userId = Number(rawUserId);
+        if (!userId)
+            continue;
+        try {
+            const event = await createGoogleCalendarEventForUser({
+                userId,
+                summary: args.summary,
+                description: args.description,
+                startDateTimeIso: args.startDateTimeIso,
+                endDateTimeIso: args.endDateTimeIso,
+                attendees: args.attendees,
+            });
+            if (event) {
+                return { ...event, ownerUserId: userId };
+            }
+        }
+        catch (err) {
+            lastError = err;
+        }
+    }
+    if (lastError)
+        throw lastError;
+    return null;
+}
 function normalizeHeaderKey(value) {
     return String(value ?? "")
         .trim()
@@ -641,6 +1052,163 @@ app.get("/api/auth/me", async (req, res) => {
     catch (err) {
         console.error("me error", err);
         return res.status(500).json({ message: "Failed to load user" });
+    }
+});
+app.get("/api/google-calendar/connect-url", async (req, res) => {
+    try {
+        const user = await getUserFromSession(req);
+        if (!user)
+            return res.status(401).json({ message: "Unauthorized" });
+        if (!isGoogleCalendarConfigured()) {
+            return res.status(400).json({ message: "Google Calendar is not configured on the backend." });
+        }
+        const authUrl = buildGoogleCalendarAuthUrl(user.id);
+        if (!authUrl) {
+            return res.status(400).json({ message: "Failed to generate Google connect URL." });
+        }
+        return res.json({ authUrl });
+    }
+    catch (err) {
+        console.error("google-calendar connect-url error", err);
+        return res.status(500).json({ message: "Failed to generate Google connect URL" });
+    }
+});
+app.get("/api/google-calendar/oauth/callback", async (req, res) => {
+    const code = String(req.query.code || "");
+    const error = String(req.query.error || "");
+    const state = String(req.query.state || "");
+    if (error)
+        return res.redirect(buildGoogleCalendarRedirect("error", error));
+    try {
+        if (!code) {
+            return res.redirect(buildGoogleCalendarRedirect("error", "Missing Google authorization code."));
+        }
+        const userId = parseGoogleState(state);
+        if (!userId) {
+            return res.redirect(buildGoogleCalendarRedirect("error", "Invalid Google connection state."));
+        }
+        const user = await getUserById(userId);
+        if (!user) {
+            return res.redirect(buildGoogleCalendarRedirect("error", "User not found for Google connection."));
+        }
+        const tokenData = await exchangeGoogleCodeForTokens(code);
+        const googleEmail = await fetchGoogleUserEmail(tokenData.access_token);
+        if (!googleEmail || normalizeEmail(user.email) !== googleEmail) {
+            return res.redirect(buildGoogleCalendarRedirect("error", `Please connect the same Google email as your module login (${user.email}).`));
+        }
+        await upsertGoogleConnection({
+            userId: user.id,
+            googleEmail,
+            accessToken: tokenData.access_token,
+            refreshToken: tokenData.refresh_token || null,
+            expiresIn: tokenData.expires_in,
+            scope: tokenData.scope || GOOGLE_SCOPE,
+        });
+        return res.redirect(buildGoogleCalendarRedirect("success", "Google Calendar connected successfully."));
+    }
+    catch (err) {
+        console.error("google-calendar callback error", err);
+        return res.redirect(buildGoogleCalendarRedirect("error", err?.message || "Failed to connect Google Calendar."));
+    }
+});
+app.get("/api/google-calendar/status", async (req, res) => {
+    try {
+        const user = await getUserFromSession(req);
+        if (!user)
+            return res.status(401).json({ message: "Unauthorized" });
+        const connection = await getGoogleConnectionByUserId(user.id);
+        return res.json({
+            configured: isGoogleCalendarConfigured(),
+            connected: Boolean(connection),
+            googleEmail: connection?.google_email || null,
+            expiresAt: connection?.expires_at || null,
+        });
+    }
+    catch (err) {
+        console.error("google-calendar status error", err);
+        return res.status(500).json({ message: "Failed to load Google Calendar status" });
+    }
+});
+app.post("/api/google-calendar/disconnect", async (req, res) => {
+    try {
+        const user = await getUserFromSession(req);
+        if (!user)
+            return res.status(401).json({ message: "Unauthorized" });
+        await pool.query("UPDATE google_calendar_connections SET active = 0, updated_at = ? WHERE user_id = ?", [new Date(), user.id]);
+        return res.json({ ok: true });
+    }
+    catch (err) {
+        console.error("google-calendar disconnect error", err);
+        return res.status(500).json({ message: "Failed to disconnect Google Calendar" });
+    }
+});
+app.get("/api/google-calendar/my-events", async (req, res) => {
+    try {
+        const user = await getUserFromSession(req);
+        if (!user)
+            return res.status(401).json({ message: "Unauthorized" });
+        const visibleUsers = await getCalendarVisibleUsers(user);
+        const allEvents = [];
+        for (const visibleUser of visibleUsers) {
+            try {
+                const connection = await ensureValidGoogleConnection(visibleUser.id);
+                if (!connection)
+                    continue;
+                const events = await fetchGoogleEventsForConnection(connection, { id: visibleUser.id, email: visibleUser.email, name: visibleUser.name, role: visibleUser.role }, req.query.timeMin || null, req.query.timeMax || null);
+                allEvents.push(...events);
+            }
+            catch (innerErr) {
+                console.error("google-calendar my-events user fetch error", {
+                    userId: visibleUser.id,
+                    error: innerErr,
+                });
+            }
+        }
+        allEvents.sort((a, b) => String(a.start || "").localeCompare(String(b.start || "")));
+        return res.json({ events: allEvents });
+    }
+    catch (err) {
+        console.error("google-calendar my-events error", err);
+        return res.status(500).json({ message: err?.message || "Failed to load Google Calendar events" });
+    }
+});
+app.get("/api/google-calendar/all-events", async (req, res) => {
+    try {
+        const user = await getUserFromSession(req);
+        if (!user)
+            return res.status(401).json({ message: "Unauthorized" });
+        const role = (user.role || "").toLowerCase();
+        if (role !== "admin" && role !== "territorial_design_manager") {
+            return res.status(403).json({ message: "Only admin or TDM can view all calendar events." });
+        }
+        const [rows] = await pool.query(`SELECT gcc.id, gcc.user_id, gcc.google_email, gcc.access_token, gcc.refresh_token, gcc.expires_at, gcc.scope, gcc.active,
+              u.email as user_email, u.name as user_name, u.role as user_role
+       FROM google_calendar_connections gcc
+       INNER JOIN users u ON u.id = gcc.user_id
+       WHERE gcc.active = 1
+       ORDER BY u.name ASC`);
+        const allEvents = [];
+        for (const row of rows) {
+            try {
+                const connection = await ensureValidGoogleConnection(row.user_id);
+                if (!connection)
+                    continue;
+                const events = await fetchGoogleEventsForConnection(connection, { id: row.user_id, email: row.user_email, name: row.user_name, role: row.user_role }, req.query.timeMin || null, req.query.timeMax || null);
+                allEvents.push(...events);
+            }
+            catch (innerErr) {
+                console.error("google-calendar all-events user fetch error", {
+                    userId: row.user_id,
+                    error: innerErr,
+                });
+            }
+        }
+        allEvents.sort((a, b) => String(a.start || "").localeCompare(String(b.start || "")));
+        return res.json({ events: allEvents });
+    }
+    catch (err) {
+        console.error("google-calendar all-events error", err);
+        return res.status(500).json({ message: "Failed to load admin Google Calendar events" });
     }
 });
 // List MMT executives for assignment (e.g. D1 Measurement popup)
@@ -846,7 +1414,14 @@ app.all("/api/auth/register-mmt-executive", async (req, res) => {
         }
         const displayName = (name || normalized).trim() || normalized;
         const phoneVal = phone != null ? String(phone).trim() : null;
-        const [result] = await pool.query("INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)", [normalized, String(password), displayName, "mmt_executive", phoneVal || null]);
+        const [result] = await pool.query("INSERT INTO users (email, password, name, role, phone, mmt_manager_id) VALUES (?, ?, ?, ?, ?, ?)", [
+            normalized,
+            String(password),
+            displayName,
+            "mmt_executive",
+            phoneVal || null,
+            role === "mmt_manager" ? manager.id : null,
+        ]);
         const insertId = result.insertId;
         return res.status(201).json({
             user: {
@@ -1186,12 +1761,16 @@ app.post("/api/sales-closure", async (req, res) => {
                 "Customer";
             if (customerEmail) {
                 const frontendBase = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
+                const mailChainCc = await getMailLoopCcEmails();
+                const mailChainSubject = buildMailChainSubject(pid, lead.projectName, customerName);
                 // Do not block main response if email fails; just log.
                 fetch(`${frontendBase}/api/email/send-d1-site-measurement`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
                         to: customerEmail,
+                        cc: mailChainCc,
+                        subject: mailChainSubject,
                         customerName,
                     }),
                 }).catch((err) => {
@@ -1684,6 +2263,9 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
         return res.status(400).json({ message: "milestoneIndex and taskName are required" });
     }
     try {
+        const actingUser = await getUserFromSession(req);
+        if (!actingUser)
+            return res.status(401).json({ message: "Unauthorized" });
         await pool.query(`INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
        VALUES (?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`, [id, milestoneIndex, taskName, new Date()]);
@@ -1867,12 +2449,16 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                         // 1. Internal email to designer: DQC 1 approved, proceed for masking
                         if (sendInternal) {
                             const url = `${FRONTEND_BASE}/api/email/send-ten-percent-payment-internal`;
+                            const mailChainCc = await getMailLoopCcEmails([actingUser.email, designerEmail]);
+                            const mailChainSubject = buildMailChainSubject(projectId, leadRow.projectName, customerName);
                             try {
                                 const r = await fetch(url, {
                                     method: "POST",
                                     headers: { "Content-Type": "application/json" },
                                     body: JSON.stringify({
                                         to: designerEmail,
+                                        cc: mailChainCc,
+                                        subject: mailChainSubject,
                                         customerName,
                                         designerName,
                                         ecName,
@@ -1897,12 +2483,16 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                         // 2. CX email: 10% payment request with account details
                         if (sendCx) {
                             const url = `${FRONTEND_BASE}/api/email/send-ten-percent-payment-request`;
+                            const mailChainCc = await getMailLoopCcEmails([actingUser.email, designerEmail]);
+                            const mailChainSubject = buildMailChainSubject(projectId, leadRow.projectName, customerName);
                             try {
                                 const r = await fetch(url, {
                                     method: "POST",
                                     headers: { "Content-Type": "application/json" },
                                     body: JSON.stringify({
                                         to: customerEmail,
+                                        cc: mailChainCc,
+                                        subject: mailChainSubject,
                                         customerName,
                                         projectId,
                                         propertyType,
@@ -2018,11 +2608,15 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                             });
                         }
                         if (designerEmail && customerName && designerName && ecName) {
+                            const internalCc = await getMailLoopCcEmails([actingUser.email, designerEmail]);
+                            const internalSubject = buildMailChainSubject(projectId, leadRow.projectName, customerName);
                             fetch(`${FRONTEND_BASE}/api/email/send-ten-percent-payment-internal`, {
                                 method: "POST",
                                 headers: { "Content-Type": "application/json" },
                                 body: JSON.stringify({
                                     to: designerEmail,
+                                    cc: internalCc,
+                                    subject: internalSubject,
                                     customerName,
                                     designerName,
                                     ecName,
@@ -2035,11 +2629,15 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                             });
                         }
                         if (customerEmail) {
+                            const mailChainCc = await getMailLoopCcEmails([actingUser.email, designerEmail]);
+                            const mailChainSubject = buildMailChainSubject(projectId, leadRow.projectName, customerName);
                             fetch(`${FRONTEND_BASE}/api/email/send-ten-percent-payment-request`, {
                                 method: "POST",
                                 headers: { "Content-Type": "application/json" },
                                 body: JSON.stringify({
                                     to: customerEmail,
+                                    cc: mailChainCc,
+                                    subject: mailChainSubject,
                                     customerName,
                                     projectId,
                                     propertyType,
@@ -2065,7 +2663,9 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                 try {
                     const [rows] = await pool.query(`SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload,
                     a.masking_date as maskingDate, a.masking_time as maskingTime,
-                    u_designer.email as designerEmail, u_designer.name as designerName
+                    a.assigned_to_user_id as executiveUserId,
+                    u_designer.email as designerEmail, u_designer.name as designerName,
+                    u_designer.mmt_manager_id as executiveManagerId
              FROM leads l
              LEFT JOIN lead_d2_assignments a ON a.lead_id = l.id
              LEFT JOIN users u_designer ON u_designer.id = a.assigned_to_user_id
@@ -2115,6 +2715,29 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                             ? (row.maskingDate instanceof Date ? row.maskingDate.toISOString().split("T")[0] : row.maskingDate)
                             : null;
                         const maskingTime = row.maskingTime || null;
+                        const googleStart = formatGoogleDateTime(maskingDate, maskingTime);
+                        if (googleStart) {
+                            try {
+                                await createGoogleCalendarEventForFirstAvailableUser({
+                                    userIds: [row.executiveUserId, row.executiveManagerId, actingUser.id],
+                                    summary: `D2 Site Masking - ${customerName}`,
+                                    description: [
+                                        `D2 masking visit scheduled for ${customerName}.`,
+                                        designerName ? `Assigned MMT executive: ${designerName}` : null,
+                                        pmName ? `MMT manager: ${pmName}` : null,
+                                    ].filter(Boolean).join("\n"),
+                                    startDateTimeIso: googleStart,
+                                    endDateTimeIso: addHoursToIso(googleStart, 1),
+                                    attendees: distinctEmails([customerEmail, row.designerEmail, pmEmail, actingUser.email]),
+                                });
+                            }
+                            catch (calendarErr) {
+                                console.error("D2 masking Google event create error (non-fatal)", {
+                                    leadId: id,
+                                    error: calendarErr,
+                                });
+                            }
+                        }
                         if (pmEmail && customerName && designerName && ecName) {
                             const [mmtRows] = await pool.query("SELECT name FROM users WHERE role IN ('mmt_manager', 'mmt_executive') AND email IS NOT NULL ORDER BY id ASC LIMIT 1");
                             const mmtName = mmtRows[0]?.name || null;
@@ -2139,11 +2762,19 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                             });
                         }
                         if (customerEmail) {
+                            const mailChainCc = await getMailLoopCcEmails([
+                                actingUser.email,
+                                row.designerEmail,
+                                pmEmail,
+                            ]);
+                            const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
                             fetch(`${FRONTEND_BASE}/api/email/send-d2-masking-request`, {
                                 method: "POST",
                                 headers: { "Content-Type": "application/json" },
                                 body: JSON.stringify({
                                     to: customerEmail,
+                                    cc: mailChainCc,
+                                    subject: mailChainSubject,
                                     customerName,
                                     designerName,
                                     maskingDate,
@@ -2203,8 +2834,9 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                             "Experience Center";
                         const designerName = leadRow.designerName || "Designer";
                         const projectValue = payload.project_value || payload?.form?.project_value || "";
-                        const [dqcRows] = await pool.query("SELECT email, name FROM users WHERE role IN ('dqc_manager', 'dqe') ORDER BY id ASC LIMIT 1");
-                        const dqcUser = dqcRows[0];
+                        const [dqcRows] = await pool.query("SELECT email, name FROM users WHERE role IN ('dqc_manager', 'dqe') AND email IS NOT NULL ORDER BY id ASC");
+                        const dqcUsers = dqcRows.filter((u) => u?.email);
+                        const dqcUser = dqcUsers[0];
                         // Collect latest DQC2 drawing & quotation uploads for this lead (if S3 is configured)
                         let attachments;
                         if (process.env.AWS_ACCESS_KEY_ID) {
@@ -2238,23 +2870,36 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                             }
                         }
                         if (dqcUser && dqcUser.email && customerName && ecName && designerName && dqcUser.name) {
-                            fetch(`${FRONTEND_BASE}/api/email/send-dqc2-final-design-submission-internal`, {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({
+                            const ccBase = await getMailLoopCcEmails([actingUser.email, leadRow.designerEmail || null]);
+                            const cc = distinctEmails([
+                                ...ccBase,
+                                ...dqcUsers.slice(1).map((u) => String(u.email || "")),
+                            ]);
+                            const subject = buildMailChainSubject(null, leadRow.projectName, customerName);
+                            void triggerMailRouteWithLog({
+                                leadId: id,
+                                milestoneIndex: 4,
+                                taskName: "DQC 2 submission",
+                                route: "/api/email/send-dqc2-final-design-submission-internal",
+                                visibility: "internal",
+                                payload: {
                                     to: dqcUser.email,
+                                    cc,
+                                    subject,
                                     customerName,
                                     ecName,
                                     designerName,
                                     dqcRepName: dqcUser.name || "DQC Team",
                                     projectValue: String(projectValue || ""),
                                     ...(attachments ? { attachments } : {}),
-                                }),
-                            }).catch((err) => {
-                                console.error("DQC2 submission internal email trigger error (non-fatal)", {
-                                    leadId: id,
-                                    error: err,
-                                });
+                                },
+                            });
+                        }
+                        else {
+                            console.warn("DQC2 internal email skipped: no DQC recipient with email", {
+                                leadId: id,
+                                customerName,
+                                ecName,
                             });
                         }
                         // DQC 2 submission: internal only (no CX email)
@@ -2314,11 +2959,32 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                         if (customerEmail) {
                             const meetingDate = meta?.meetingDate || null;
                             const meetingTime = meta?.meetingTime || null;
+                            const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
+                            if (googleStart) {
+                                try {
+                                    const event = await createGoogleCalendarEventForUser({
+                                        userId: actingUser.id,
+                                        summary: `First Cut Design Discussion - ${customerName}`,
+                                        description: `First cut design and quotation discussion for ${customerName}.`,
+                                        startDateTimeIso: googleStart,
+                                        endDateTimeIso: addHoursToIso(googleStart, 1),
+                                        attendees: distinctEmails([customerEmail, actingUser.email]),
+                                    });
+                                }
+                                catch (calendarErr) {
+                                    console.error("DQC1 first-cut Google event create error (non-fatal)", {
+                                        leadId: id,
+                                        error: calendarErr,
+                                    });
+                                }
+                            }
                             fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
                                 method: "POST",
                                 headers: { "Content-Type": "application/json" },
                                 body: JSON.stringify({
                                     to: customerEmail,
+                                    cc: await getMailLoopCcEmails([actingUser.email]),
+                                    subject: buildMailChainSubject(null, row.projectName, customerName),
                                     customerName,
                                     meetingDate,
                                     meetingTime,
@@ -2347,14 +3013,20 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                 try {
                     const [rows] = await pool.query(`SELECT a.measurement_date as measurementDate,
                     a.measurement_time as measurementTime,
+                    a.assigned_to_user_id as executiveUserId,
                     u.name as executiveName,
+                    u.email as executiveEmail,
+                    u.mmt_manager_id as executiveManagerId,
                     u.phone as executivePhone,
+                    d.email as designerEmail,
                     l.client_email as clientEmail,
+                    l.pid as projectPid,
                     l.project_name as projectName,
                     l.payload
              FROM lead_d1_assignments a
              INNER JOIN leads l ON l.id = a.lead_id
              LEFT JOIN users u ON u.id = a.assigned_to_user_id
+             LEFT JOIN users d ON d.id = l.assigned_designer_id
              WHERE a.lead_id = ?
              ORDER BY a.created_at DESC
              LIMIT 1`, [id]);
@@ -2378,13 +3050,49 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                 : row.measurementDate || null;
                             const visitTime = row.measurementTime || null;
                             const executiveName = row.executiveName || null;
+                            const executiveEmail = row.executiveEmail || null;
                             const executivePhone = row.executivePhone || null;
+                            const designerEmail = row.designerEmail || null;
+                            const googleStart = formatGoogleDateTime(visitDate, visitTime);
+                            let managerEmail = null;
+                            let managerName = null;
+                            if (row.executiveManagerId) {
+                                const manager = await getUserById(Number(row.executiveManagerId));
+                                managerEmail = manager?.email || null;
+                                managerName = manager?.name || null;
+                            }
+                            if (googleStart) {
+                                try {
+                                    await createGoogleCalendarEventForFirstAvailableUser({
+                                        userIds: [row.executiveUserId, row.executiveManagerId, actingUser.id],
+                                        summary: `D1 Site Measurement - ${customerName}`,
+                                        description: [
+                                            `D1 site measurement scheduled for ${customerName}.`,
+                                            executiveName ? `Assigned MMT executive: ${executiveName}` : null,
+                                            managerName ? `MMT manager: ${managerName}` : null,
+                                        ].filter(Boolean).join("\n"),
+                                        startDateTimeIso: googleStart,
+                                        endDateTimeIso: addHoursToIso(googleStart, 1),
+                                        attendees: distinctEmails([customerEmail, executiveEmail, managerEmail, actingUser.email]),
+                                    });
+                                }
+                                catch (calendarErr) {
+                                    console.error("D1 MMT Google event create error (non-fatal)", {
+                                        leadId: id,
+                                        error: calendarErr,
+                                    });
+                                }
+                            }
                             fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
                                 method: "POST",
                                 headers: { "Content-Type": "application/json" },
                                 body: JSON.stringify({
                                     to: customerEmail,
+                                    cc: distinctEmails([actingUser.email, designerEmail, executiveEmail, managerEmail]),
                                     customerName,
+                                    subject: row.projectPid
+                                        ? `Project ${row.projectPid} ${row.projectName || ""} - Design discussion`
+                                        : `Project ${row.projectName || customerName} - Design discussion`,
                                     visitDate,
                                     visitTime,
                                     executiveName,
@@ -2417,7 +3125,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
              LEFT JOIN users u ON u.id = l.assigned_designer_id
              WHERE l.id = ?`, [id]);
                     const row = rows[0];
-                    if (row && row.designerEmail && row.designerName) {
+                    if (row) {
                         let payload = {};
                         try {
                             payload = row.payload ? JSON.parse(row.payload) : {};
@@ -2432,20 +3140,38 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                             payload?.form?.customer_name ||
                             row.projectName ||
                             "Customer";
-                        fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
-                                to: row.designerEmail,
-                                designerName: row.designerName,
-                                customerName,
-                            }),
-                        }).catch((err) => {
-                            console.error("DQC2 approval internal email trigger error (non-fatal)", {
+                        let designerEmail = row.designerEmail || null;
+                        let designerName = row.designerName || null;
+                        if (!designerEmail) {
+                            const maybeDesigner = formData.designer_name || formData.designerName || payload.designer_name || payload.designerName || "";
+                            if (maybeDesigner) {
+                                const [uRows] = await pool.query("SELECT email, name FROM users WHERE (name = ? OR email = ?) AND role IN ('designer', 'design_manager') LIMIT 1", [maybeDesigner, maybeDesigner]);
+                                const uRow = uRows[0];
+                                if (uRow) {
+                                    designerEmail = uRow.email || designerEmail;
+                                    designerName = uRow.name || designerName;
+                                }
+                            }
+                        }
+                        if (!designerEmail || !designerName) {
+                            console.warn("DQC2 approval internal email skipped: designer recipient missing", { leadId: id });
+                        }
+                        else {
+                            void triggerMailRouteWithLog({
                                 leadId: id,
-                                error: err,
+                                milestoneIndex: 4,
+                                taskName: "DQC 2 approval",
+                                route: emailRoutePath,
+                                visibility: "internal",
+                                payload: {
+                                    to: designerEmail,
+                                    cc: await getMailLoopCcEmails([actingUser.email]),
+                                    subject: buildMailChainSubject(null, row.projectName, customerName),
+                                    designerName,
+                                    customerName,
+                                },
                             });
-                        });
+                        }
                     }
                 }
                 catch (err) {
@@ -2488,11 +3214,15 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                         const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
                         const laminateSelections = meta?.laminateSelections ?? null;
                         if (customerEmail) {
+                            const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
+                            const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
                             fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
                                 method: "POST",
                                 headers: { "Content-Type": "application/json" },
                                 body: JSON.stringify({
                                     to: customerEmail,
+                                    cc: mailChainCc,
+                                    subject: mailChainSubject,
                                     customerName,
                                     designerName,
                                     laminateSelections,
@@ -2517,7 +3247,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                 // Design sign off (40% milestone): CX only, pass meeting date/time, designer name
                 try {
                     const [rows] = await pool.query(`SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
-                    u.name as designerName
+                    u.name as designerName, u.email as designerEmail
              FROM leads l
              LEFT JOIN users u ON u.id = l.assigned_designer_id
              WHERE l.id = ?`, [id]);
@@ -2546,23 +3276,51 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                         const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
                         const meetingDate = meta?.meetingDate ?? meta?.signoffDate ?? null;
                         const meetingTime = meta?.meetingTime ?? meta?.signoffTime ?? null;
-                        if (customerEmail) {
-                            fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({
-                                    to: customerEmail,
-                                    customerName,
-                                    designerName,
-                                    meetingDate: meetingDate || undefined,
-                                    meetingTime: meetingTime || undefined,
-                                }),
-                            }).catch((err) => {
-                                console.error("Design signoff meeting scheduled email trigger error (non-fatal)", {
-                                    leadId: id,
-                                    error: err,
+                        if (meetingDate && meetingTime) {
+                            const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
+                            if (googleStart) {
+                                try {
+                                    await createGoogleCalendarEventForFirstAvailableUser({
+                                        userIds: [row.assigned_designer_id, actingUser.id],
+                                        summary: `Design Sign-Off - ${customerName}`,
+                                        description: `Design sign-off meeting scheduled for ${customerName}.`,
+                                        startDateTimeIso: googleStart,
+                                        endDateTimeIso: addHoursToIso(googleStart, 1),
+                                        attendees: distinctEmails([customerEmail, row.designerEmail, actingUser.email]),
+                                    });
+                                }
+                                catch (calendarErr) {
+                                    console.error("Design signoff Google event create error (non-fatal)", {
+                                        leadId: id,
+                                        error: calendarErr,
+                                    });
+                                }
+                            }
+                            if (customerEmail) {
+                                const mailChainCc = await getMailLoopCcEmails([
+                                    actingUser.email,
+                                    row.designerEmail,
+                                ]);
+                                const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
+                                fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({
+                                        to: customerEmail,
+                                        cc: mailChainCc,
+                                        subject: mailChainSubject,
+                                        customerName,
+                                        designerName,
+                                        meetingDate: meetingDate || undefined,
+                                        meetingTime: meetingTime || undefined,
+                                    }),
+                                }).catch((err) => {
+                                    console.error("Design signoff meeting scheduled email trigger error (non-fatal)", {
+                                        leadId: id,
+                                        error: err,
+                                    });
                                 });
-                            });
+                            }
                         }
                     }
                 }
@@ -2609,11 +3367,15 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                         const accountNumber = meta?.accountNumber ?? "748305000519";
                         const ifscCode = meta?.ifscCode ?? "ICIC0007483";
                         if (customerEmail) {
+                            const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
+                            const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
                             fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
                                 method: "POST",
                                 headers: { "Content-Type": "application/json" },
                                 body: JSON.stringify({
                                     to: customerEmail,
+                                    cc: mailChainCc,
+                                    subject: mailChainSubject,
                                     customerName,
                                     designerName,
                                     amount: amount != null ? String(amount) : undefined,
@@ -2641,7 +3403,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                 // DQC2 material selection: pass meeting date/time, ec location, designer name
                 try {
                     const [rows] = await pool.query(`SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
-                    u.name as designerName
+                    u.name as designerName, u.email as designerEmail
              FROM leads l
              LEFT JOIN users u ON u.id = l.assigned_designer_id
              WHERE l.id = ?`, [id]);
@@ -2675,24 +3437,52 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                         const meetingDate = meta?.meetingDate ?? null;
                         const meetingTime = meta?.meetingTime ?? null;
                         const ecLocation = meta?.ecLocation ?? meta?.ecAddress ?? ecName;
-                        if (customerEmail) {
-                            fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({
-                                    to: customerEmail,
-                                    customerName,
-                                    designerName,
-                                    meetingDate,
-                                    meetingTime,
-                                    ecLocation,
-                                }),
-                            }).catch((err) => {
-                                console.error("DQC2 material selection email trigger error (non-fatal)", {
-                                    leadId: id,
-                                    error: err,
+                        if (meetingDate && meetingTime) {
+                            const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
+                            if (googleStart) {
+                                try {
+                                    await createGoogleCalendarEventForFirstAvailableUser({
+                                        userIds: [row.assigned_designer_id, actingUser.id],
+                                        summary: `Material Selection - ${customerName}`,
+                                        description: `Material selection meeting at ${ecLocation || ecName}.`,
+                                        startDateTimeIso: googleStart,
+                                        endDateTimeIso: addHoursToIso(googleStart, 1),
+                                        attendees: distinctEmails([customerEmail, row.designerEmail, actingUser.email]),
+                                    });
+                                }
+                                catch (calendarErr) {
+                                    console.error("DQC2 material selection Google event create error (non-fatal)", {
+                                        leadId: id,
+                                        error: calendarErr,
+                                    });
+                                }
+                            }
+                            if (customerEmail) {
+                                const mailChainCc = await getMailLoopCcEmails([
+                                    actingUser.email,
+                                    row.designerEmail,
+                                ]);
+                                const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
+                                fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({
+                                        to: customerEmail,
+                                        cc: mailChainCc,
+                                        subject: mailChainSubject,
+                                        customerName,
+                                        designerName,
+                                        meetingDate,
+                                        meetingTime,
+                                        ecLocation,
+                                    }),
+                                }).catch((err) => {
+                                    console.error("DQC2 material selection email trigger error (non-fatal)", {
+                                        leadId: id,
+                                        error: err,
+                                    });
                                 });
-                            });
+                            }
                         }
                     }
                 }
@@ -2733,11 +3523,15 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                         const spmPoc = meta?.spmPoc ?? "SPM automatically";
                         const operationManager = meta?.operationManager ?? "Balaji - balaji@hubinterior.com";
                         const operationHead = meta?.operationHead ?? "Alex - alex@hubinterior.com";
+                        const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
+                        const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
                         fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({
                                 to: row.clientEmail,
+                                cc: mailChainCc,
+                                subject: mailChainSubject,
                                 customerName,
                                 designerName,
                                 productionPoc,
@@ -2786,11 +3580,15 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                             row.projectName ||
                             "Customer";
                         const designerName = row.designerName || formData.designer_name || formData.designerName || "Team HUB Interiors";
+                        const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
+                        const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
                         fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({
                                 to: row.clientEmail,
+                                cc: mailChainCc,
+                                subject: mailChainSubject,
                                 customerName,
                                 designerName,
                             }),
@@ -2810,7 +3608,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                 }
             }
             else {
-                triggerCustomerEmailForLead(id, emailRoutePath).catch((err) => {
+                triggerCustomerEmailForLead(id, emailRoutePath, { actorEmail: actingUser.email || null }).catch((err) => {
                     console.error("complete-task email trigger error (non-fatal)", {
                         leadId: id,
                         milestoneIndex,
@@ -3070,11 +3868,15 @@ app.post("/api/leads/:id/approve-10p-payment", async (req, res) => {
                     }
                 }
                 if (customerEmail) {
+                    const mailChainCc = await getMailLoopCcEmails([user.email || null]);
+                    const mailChainSubject = buildMailChainSubject(projectId, row.projectName, customerName);
                     fetch(`${FRONTEND_BASE}/api/email/send-ten-percent-payment-approval`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
                             to: customerEmail,
+                            cc: mailChainCc,
+                            subject: mailChainSubject,
                             customerName,
                             projectId: projectId || undefined,
                             amountPaid: amountPaid || undefined,
@@ -3297,6 +4099,8 @@ app.post("/api/leads/:id/approve-40p-payment", async (req, res) => {
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
                         to: row.clientEmail,
+                        cc: await getMailLoopCcEmails([user.email || null]),
+                        subject: buildMailChainSubject(null, row.projectName, customerName),
                         customerName,
                         projectName,
                         amountReceived: formData.forty_percent_amount ?? payload?.forty_percent_amount ?? undefined,
@@ -3369,6 +4173,142 @@ app.post("/api/leads/:id/uploads", upload.single("zip"), async (req, res) => {
     catch (err) {
         console.error("lead upload error", err);
         return res.status(500).json({ message: "Failed to upload files" });
+    }
+});
+app.post("/api/leads/:id/schedule-meeting-invite", async (req, res) => {
+    const leadId = Number(req.params.id);
+    if (Number.isNaN(leadId))
+        return res.status(400).json({ message: "Invalid id" });
+    try {
+        const actingUser = await getUserFromSession(req);
+        if (!actingUser)
+            return res.status(401).json({ message: "Unauthorized" });
+        const role = (actingUser.role || "").toLowerCase();
+        const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
+        if (!allowed.includes(role)) {
+            return res.status(403).json({ message: "Not allowed to send meeting invites" });
+        }
+        const { meetingType, meetingDate, meetingTime, meetingLink, meetingMode, ecLocation, } = req.body || {};
+        if (!meetingType || !meetingDate || !meetingTime) {
+            return res.status(400).json({ message: "meetingType, meetingDate and meetingTime are required" });
+        }
+        const [rows] = await pool.query(`SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
+              u.name as designerName, u.email as designerEmail
+       FROM leads l
+       LEFT JOIN users u ON u.id = l.assigned_designer_id
+       WHERE l.id = ?`, [leadId]);
+        const row = rows[0];
+        if (!row)
+            return res.status(404).json({ message: "Lead not found" });
+        let payload = {};
+        try {
+            payload = row.payload ? JSON.parse(row.payload) : {};
+        }
+        catch {
+            payload = {};
+        }
+        const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
+        const customerEmail = row.clientEmail ||
+            formData.email ||
+            formData.sales_email ||
+            payload?.email ||
+            payload?.form?.email ||
+            null;
+        const customerName = formData.customer_name ||
+            formData.sales_lead_name ||
+            payload?.customer_name ||
+            payload?.form?.customer_name ||
+            row.projectName ||
+            "Customer";
+        const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
+        const eventStart = formatGoogleDateTime(meetingDate, meetingTime);
+        if (!eventStart) {
+            return res.status(400).json({ message: "Invalid meeting date/time" });
+        }
+        let summary = "";
+        let description = "";
+        let emailRoutePath = "";
+        let emailBody = {};
+        if (meetingType === "dqc2_material_selection") {
+            const resolvedEcLocation = ecLocation ||
+                formData.experience_center ||
+                payload?.experience_center ||
+                payload?.form?.experience_center ||
+                "Experience Center";
+            summary = `Material Selection - ${customerName}`;
+            description = [
+                `Material selection meeting at ${resolvedEcLocation}.`,
+                meetingMode ? `Mode: ${meetingMode}` : null,
+                meetingLink ? `Meeting link: ${meetingLink}` : null,
+            ].filter(Boolean).join("\n");
+            emailRoutePath = "/api/email/send-dqc2-material-selection-scheduled";
+            emailBody = {
+                to: customerEmail,
+                cc: await getMailLoopCcEmails([actingUser.email, row.designerEmail]),
+                subject: buildMailChainSubject(null, row.projectName, customerName),
+                customerName,
+                designerName,
+                meetingDate,
+                meetingTime,
+                ecLocation: resolvedEcLocation,
+            };
+        }
+        else if (meetingType === "design_signoff") {
+            summary = `Design Sign-Off - ${customerName}`;
+            description = [
+                `Design sign-off meeting scheduled for ${customerName}.`,
+                meetingMode ? `Mode: ${meetingMode}` : null,
+                meetingLink ? `Meeting link: ${meetingLink}` : null,
+            ].filter(Boolean).join("\n");
+            emailRoutePath = "/api/email/send-design-signoff-meeting-scheduled";
+            emailBody = {
+                to: customerEmail,
+                cc: await getMailLoopCcEmails([actingUser.email, row.designerEmail]),
+                subject: buildMailChainSubject(null, row.projectName, customerName),
+                customerName,
+                designerName,
+                meetingDate,
+                meetingTime,
+            };
+        }
+        else {
+            return res.status(400).json({ message: "Unsupported meetingType" });
+        }
+        try {
+            await createGoogleCalendarEventForFirstAvailableUser({
+                userIds: [row.assigned_designer_id, actingUser.id],
+                summary,
+                description,
+                startDateTimeIso: eventStart,
+                endDateTimeIso: addHoursToIso(eventStart, 1),
+                attendees: distinctEmails([customerEmail, row.designerEmail, actingUser.email]),
+            });
+        }
+        catch (calendarErr) {
+            console.error("meeting invite Google event create error (non-fatal)", {
+                leadId,
+                meetingType,
+                error: calendarErr,
+            });
+        }
+        if (customerEmail) {
+            fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(emailBody),
+            }).catch((err) => {
+                console.error("meeting invite email trigger error (non-fatal)", {
+                    leadId,
+                    meetingType,
+                    error: err,
+                });
+            });
+        }
+        return res.status(201).json({ ok: true });
+    }
+    catch (err) {
+        console.error("schedule-meeting-invite error", err);
+        return res.status(500).json({ message: "Failed to schedule meeting invite" });
     }
 });
 // List uploads for a lead (designers see only approved; MMT manager/executive and Finance see all with status)
@@ -3684,23 +4624,32 @@ async function persistDqc1SubmissionFromMeta(leadId, user, drawingFiles, quotati
             const ecName = payload.experience_center || payload?.form?.experience_center || leadRow.experienceCenter || "Experience Center";
             const designerName = user.name || "Designer";
             const projectValue = payload.project_value || payload?.form?.project_value || "";
-            const [dqcRows] = await pool.query("SELECT email, name FROM users WHERE role IN ('dqc_manager', 'dqe') ORDER BY id ASC LIMIT 1");
-            const dqcUser = dqcRows[0];
-            if (dqcUser && dqcUser.email) {
-                const to = dqcUser.email;
-                const [ccRows] = await pool.query("SELECT email FROM users WHERE id IN (?, ?, ?) AND email IS NOT NULL", [user.id, payload.manager_user_id || null, payload.tdm_user_id || null]);
-                const ccList = ccRows.map((r) => r.email).filter(Boolean);
-                fetch(`${FRONTEND_BASE}/api/email/send-dqc1-review-request-internal`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
+            const [dqcRows] = await pool.query("SELECT email, name FROM users WHERE role IN ('dqc_manager', 'dqe') AND email IS NOT NULL ORDER BY id ASC");
+            const dqcUsers = dqcRows.filter((u) => u?.email);
+            const primaryDqc = dqcUsers[0];
+            if (primaryDqc && primaryDqc.email) {
+                const to = primaryDqc.email;
+                const baseCc = await getMailLoopCcEmails([user?.email || null]);
+                const ccList = distinctEmails([
+                    ...baseCc,
+                    ...dqcUsers.slice(1).map((u) => String(u.email || "")),
+                ]);
+                const subject = buildMailChainSubject(null, leadRow.projectName, customerName);
+                void triggerMailRouteWithLog({
+                    leadId,
+                    milestoneIndex: 1,
+                    taskName: "DQC 1 submission - dwg + quotation",
+                    route: "/api/email/send-dqc1-review-request-internal",
+                    visibility: "internal",
+                    payload: {
                         to,
                         cc: ccList,
+                        subject,
                         customerName,
                         ecName,
                         designerName,
                         projectValue: String(projectValue || ""),
-                        dqcRepName: dqcUser.name || "DQC Team",
+                        dqcRepName: primaryDqc.name || "DQC Team",
                         ...(drawingS3Urls.some(Boolean) || quotationS3Urls.some(Boolean)
                             ? {
                                 attachments: [
@@ -3717,12 +4666,14 @@ async function persistDqc1SubmissionFromMeta(leadId, user, drawingFiles, quotati
                                 ],
                             }
                             : {}),
-                    }),
-                }).catch((err) => {
-                    console.error("DQC1 review request internal email trigger error (non-fatal)", {
-                        leadId,
-                        error: err,
-                    });
+                    },
+                });
+            }
+            else {
+                console.warn("DQC1 internal email skipped: no DQC recipient with email", {
+                    leadId,
+                    customerName,
+                    ecName,
                 });
             }
         }
@@ -4270,11 +5221,32 @@ app.post("/api/leads/:id/first-cut-design-upload", upload.array("files"), async 
                     row.projectName ||
                     "Customer";
                 if (customerEmail) {
+                    const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
+                    if (googleStart) {
+                        try {
+                            await createGoogleCalendarEventForUser({
+                                userId: user.id,
+                                summary: `First Cut Design Discussion - ${customerName}`,
+                                description: `First cut design and quotation discussion for ${customerName}.`,
+                                startDateTimeIso: googleStart,
+                                endDateTimeIso: addHoursToIso(googleStart, 1),
+                                attendees: distinctEmails([customerEmail, user.email]),
+                            });
+                        }
+                        catch (calendarErr) {
+                            console.error("DQC1 first-cut invite Google event create error (non-fatal)", {
+                                leadId,
+                                error: calendarErr,
+                            });
+                        }
+                    }
                     fetch(`${FRONTEND_BASE}/api/email/send-dqc1-first-cut-design-scheduled`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
                             to: customerEmail,
+                            cc: await getMailLoopCcEmails([user.email || null]),
+                            subject: buildMailChainSubject(null, row.projectName, customerName),
                             customerName,
                             meetingDate,
                             meetingTime,

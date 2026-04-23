@@ -6,6 +6,8 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const to = body.to as string | undefined;
+    const cc = body.cc as string[] | string | undefined;
+    const subject = body.subject as string | undefined;
     const customerName = body.customerName as string | undefined;
     const designerName = body.designerName as string | undefined;
 
@@ -23,7 +25,8 @@ export async function POST(request: Request) {
 
     const info = await sendMail({
       to,
-      subject: 'Final Approval Required – Production Initiation',
+      ...(cc ? { cc } : {}),
+      subject: subject || 'Final Approval Required – Production Initiation',
       html,
     });
 

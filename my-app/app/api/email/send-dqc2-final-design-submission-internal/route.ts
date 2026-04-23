@@ -6,7 +6,8 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const to = body.to as string | undefined;
-    const cc = body.cc as string[] | undefined;
+    const cc = body.cc as string[] | string | undefined;
+    const subjectOverride = body.subject as string | undefined;
     const customerName = body.customerName as string | undefined;
     const ecName = body.ecName as string | undefined;
     const designerName = body.designerName as string | undefined;
@@ -32,13 +33,13 @@ export async function POST(request: Request) {
 
     const info = await sendMail({
       to,
-      subject,
+      subject: subjectOverride || subject,
       html,
       ...(cc && cc.length ? { cc } : {}),
       ...(attachments && attachments.length ? { attachments } : {}),
-    } as any);
+    });
 
-    return NextResponse.json({ success: true, messageId: (info as any).messageId });
+    return NextResponse.json({ success: true, messageId: info.messageId });
   } catch (error) {
     // eslint-disable-next-line no-console
     console.error('DQC2 final design submission internal email error', error);

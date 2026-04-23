@@ -32,7 +32,7 @@ import {
     Popup40pCollection,
 } from './components';
 import { checklistDefinitions, getChecklistKeyForTask } from './components/Checklists/checklistRegistry';
-import { getApiBase } from '@/app/lib/apiBase';
+import { buildAuthHeaders, getApiBase } from '@/app/lib/apiBase';
 
 const API = getApiBase();
 
@@ -819,7 +819,7 @@ export default function ProjectDetailPage() {
         }
         setProjectLoaded(false);
         fetch(`${API}/api/leads/${projectId}`, {
-            headers: sessionId ? { Authorization: `Bearer ${sessionId}` } : {},
+            headers: buildAuthHeaders(sessionId),
         })
             .then(async (res) => {
                 const text = await res.text();
@@ -843,7 +843,9 @@ export default function ProjectDetailPage() {
         const isGroupDesc = popupContext?.milestoneIndex === 0 && popupContext?.taskName === 'Group Description';
         if (!isGroupDesc || projectId == null) return;
         refreshUser();
-        fetch(`${API}/api/leads/${projectId}`)
+        fetch(`${API}/api/leads/${projectId}`, {
+            headers: buildAuthHeaders(sessionId),
+        })
             .then(async (res) => {
                 const text = await res.text();
                 if (!res.ok || !text) return null;
@@ -851,7 +853,7 @@ export default function ProjectDetailPage() {
             })
             .then((data: LeadshipTypes | null) => { if (data) setProject(data); })
             .catch(() => {});
-    }, [popupContext?.milestoneIndex, popupContext?.taskName, projectId, refreshUser]);
+    }, [popupContext?.milestoneIndex, popupContext?.taskName, projectId, refreshUser, sessionId]);
 
     // Load history from server. Only apply response if still for same lead; merge with current state so we never drop recent events.
     const loadHistory = useCallback(() => {
@@ -1313,10 +1315,9 @@ export default function ProjectDetailPage() {
         // Persist to server only; do not refetch here so we never overwrite with a stale response and lose entries
         if (projectId != null) {
             const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-            if (sessionId) headers['Authorization'] = `Bearer ${sessionId}`;
             fetch(`${API}/api/leads/${projectId}/history`, {
                 method: 'POST',
-                headers,
+                headers: buildAuthHeaders(sessionId, headers),
                 credentials: 'include',
                 body: JSON.stringify(full),
             }).catch((err) => console.error('Failed to persist history event:', err));
@@ -1356,7 +1357,7 @@ export default function ProjectDetailPage() {
             if (sessionId) headers.Authorization = `Bearer ${sessionId}`;
             fetch(`${API}/api/leads/${projectId}/complete-task`, {
                 method: 'POST',
-                headers,
+                headers: buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' }),
                 body: JSON.stringify({ milestoneIndex, taskName, meta: options?.meta }),
             })
                 .then(async (res) => {
@@ -1414,7 +1415,7 @@ export default function ProjectDetailPage() {
                         if (sessionId) headers.Authorization = `Bearer ${sessionId}`;
                         fetch(`${API}/api/leads/${projectId}/complete-task`, {
                             method: 'POST',
-                            headers,
+                            headers: buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' }),
                             body: JSON.stringify({ milestoneIndex: 4, taskName: t }),
                         }).catch(() => {});
                         markTaskComplete(4, t);
@@ -1436,12 +1437,22 @@ export default function ProjectDetailPage() {
                         }).catch(() => {});
                         markTaskComplete(1, t);
                     });
+                    // DQC1: mark only the approval task; other tasks should already be completed manually.
+                    fetch(`${API}/api/leads/${projectId}/complete-task`, {
+                        method: 'POST',
+                        headers: buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' }),
+                        body: JSON.stringify({
+                            milestoneIndex,
+                            taskName,
+                        }),
+                    }).catch(() => {});
+                    markTaskComplete(milestoneIndex, taskName);
                 }
             }
             if (projectId != null) {
                 fetch(`${API}/api/leads/${projectId}/dqc-review`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json', ...(sessionId ? { Authorization: `Bearer ${sessionId}` } : {}) },
+                    headers: buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' }),
                     body: JSON.stringify({
                         verdict: dqc1Verdict,
                         remarks: dqc1Remarks.map((r) => ({
@@ -2281,14 +2292,14 @@ export default function ProjectDetailPage() {
                                     );
                                 }
                             }}
-                            onCompleteAndProceed={() => {
+                            onCompleteAndProceed={(meta) => {
                                 recordTaskComplete(
                                     1,
                                     'First cut design + quotation discussion meeting request',
                                     {
                                         description:
                                             'First cut design completed (100%) and meeting request submitted.',
-                                        meta: {},
+                                        meta: meta ?? {},
                                     },
                                 );
                                 setDesignUploadFiles([]);
@@ -2493,9 +2504,23 @@ export default function ProjectDetailPage() {
                             onDesignDrop={onDesignDrop}
                             onDesignDragOver={onDesignDragOver}
                             removeDesignFile={removeDesignFile}
-                            onSubmit={async () => {
+                            onSubmit={async (meta) => {
                                 if (!projectId) return;
                                 try {
+                                    await fetch(`${API}/api/leads/${projectId}/schedule-meeting-invite`, {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/json',
+                                            Authorization: `Bearer ${sessionId}`,
+                                        },
+                                        body: JSON.stringify({
+                                            meetingType: 'dqc2_material_selection',
+                                            meetingDate: meta?.meetingDate,
+                                            meetingTime: meta?.meetingTime,
+                                            meetingMode: meta?.meetingMode,
+                                            meetingLink: meta?.meetingLink,
+                                        }),
+                                    });
                                     if (designUploadFiles.length > 0 && sessionId) {
                                         const fd = new FormData();
                                         designUploadFiles.forEach((f) =>
@@ -2733,9 +2758,23 @@ export default function ProjectDetailPage() {
                             onDesignDrop={onDesignDrop}
                             onDesignDragOver={onDesignDragOver}
                             removeDesignFile={removeDesignFile}
-                            onSubmit={async () => {
+                            onSubmit={async (meta) => {
                                 if (!projectId) return;
                                 try {
+                                    await fetch(`${API}/api/leads/${projectId}/schedule-meeting-invite`, {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/json',
+                                            Authorization: `Bearer ${sessionId}`,
+                                        },
+                                        body: JSON.stringify({
+                                            meetingType: 'design_signoff',
+                                            meetingDate: meta?.meetingDate,
+                                            meetingTime: meta?.meetingTime,
+                                            meetingMode: meta?.meetingMode,
+                                            meetingLink: meta?.meetingLink,
+                                        }),
+                                    });
                                     if (designUploadFiles.length > 0 && sessionId) {
                                         const fd = new FormData();
                                         designUploadFiles.forEach((f) =>

@@ -6,6 +6,8 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const to = body.to as string | undefined;
+    const cc = body.cc as string[] | string | undefined;
+    const subjectOverride = body.subject as string | undefined;
     const designerName = body.designerName as string | undefined;
     const customerName = body.customerName as string | undefined;
 
@@ -23,11 +25,12 @@ export async function POST(request: Request) {
 
     const info = await sendMail({
       to,
-      subject,
+      ...(cc ? { cc } : {}),
+      subject: subjectOverride || subject,
       html,
     });
 
-    return NextResponse.json({ success: true, messageId: (info as any).messageId });
+    return NextResponse.json({ success: true, messageId: info.messageId });
   } catch (error) {
     // eslint-disable-next-line no-console
     console.error('DQC2 approval internal email error', error);

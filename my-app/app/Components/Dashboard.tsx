@@ -1,7 +1,7 @@
 'use client';
 
 import { SideDashboard, SideDashboardStatus } from "../Enums/Enums";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { LeadshipTypes } from "./Types/Types";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../auth/AuthContext";
@@ -244,6 +244,7 @@ type AssignableDesigner = {
 };
 
 export default function Dashboard() {
+    const pathname = usePathname();
     const { user, sessionId } = useAuth();
     const [projects, setProjects] = useState<LeadshipTypes[]>([]);
     const [dqcProjects, setDqcProjects] = useState<DqcQueueItem[]>([]);
@@ -352,7 +353,7 @@ export default function Dashboard() {
             targetLeadRef.current = null;
         }
     };
-    
+
     const allTypes = Object.values(SideDashboard);
     const allStatusTypes = Object.values(SideDashboardStatus);
     const [isDropdownOpen, setIsDropdownOpen] = useState(true);
@@ -1375,4 +1376,4 @@ export default function Dashboard() {
             </main>
         </div>
     );
-    }
+}
