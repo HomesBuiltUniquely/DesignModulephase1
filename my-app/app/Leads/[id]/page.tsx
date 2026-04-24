@@ -2231,6 +2231,7 @@ export default function ProjectDetailPage() {
                     )}
                     {popupContext.milestoneIndex === 0 && popupContext.taskName === 'Mail loop chain 2 initiate' && (
                         <PopupMailLoopChain
+                            leadId={projectId}
                             clientEmail={project?.clientEmail ?? ''}
                             alternateClientEmail={project?.alternateClientEmail ?? ''}
                             designerEmail={authUser?.email ?? ''}

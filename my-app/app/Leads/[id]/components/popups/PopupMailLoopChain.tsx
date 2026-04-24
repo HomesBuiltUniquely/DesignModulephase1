@@ -14,6 +14,7 @@ type TeamEmails = {
 };
 
 type Props = {
+  leadId?: number | null;
   clientEmail: string;
   /** Used as “To” when primary is empty */
   alternateClientEmail?: string;
@@ -31,6 +32,7 @@ type Props = {
  * Task: Mail loop chain 2 initiate — create email chain with client, designer, TDM, DM, admin.
  */
 export default function PopupMailLoopChain({
+  leadId,
   clientEmail,
   alternateClientEmail = '',
   designerEmail,
@@ -45,6 +47,7 @@ export default function PopupMailLoopChain({
   const [teamEmails, setTeamEmails] = useState<TeamEmails | null>(null);
   const [teamEmailsLoaded, setTeamEmailsLoaded] = useState(true);
   const [copyStatus, setCopyStatus] = useState<string>('');
+  const [isSendingChain, setIsSendingChain] = useState(false);
 
   useEffect(() => {
     if (!sessionId) {
@@ -128,14 +131,37 @@ export default function PopupMailLoopChain({
   const subject = projectPid || projectName
     ? `Project ${projectPid || ''} ${projectName || ''} – Design discussion`.trim()
     : 'Design discussion – Mail chain';
-  // Build cc param: some clients parse multiple addresses better when commas are not encoded
-  const ccParam = ccList.length ? ccList.map((e) => encodeURIComponent(e)).join(',') : '';
-  const mailtoUrl = toList.length > 0
-    ? `mailto:${toList.join(',')}?${ccParam ? `cc=${ccParam}&` : ''}subject=${encodeURIComponent(subject)}`
-    : '';
-  const gmailComposeUrl = toList.length > 0
-    ? `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(toList.join(','))}&cc=${encodeURIComponent(ccList.join(','))}&su=${encodeURIComponent(subject)}`
-    : '';
+  const gmailInboxUrl = `https://mail.google.com/mail/u/0/#search/${encodeURIComponent(subject)}`;
+
+  const triggerMailChain = async (openGmailInbox = false) => {
+    if (!sessionId || !leadId || toList.length === 0 || isSendingChain) return;
+    setIsSendingChain(true);
+    setCopyStatus('');
+    try {
+      const resp = await fetch(`${API}/api/leads/${leadId}/mail-loop-chain-initiate`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${sessionId}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({}),
+      });
+      if (!resp.ok) {
+        const txt = await resp.text().catch(() => '');
+        throw new Error(txt || `HTTP ${resp.status}`);
+      }
+      setCopyStatus('Mail chain sent via communication@hubinterior.com');
+      if (openGmailInbox) {
+        window.open(gmailInboxUrl, '_blank', 'noopener,noreferrer');
+      }
+      setTimeout(() => setCopyStatus(''), 2500);
+    } catch {
+      setCopyStatus('Mail send failed. Please retry.');
+      setTimeout(() => setCopyStatus(''), 3000);
+    } finally {
+      setIsSendingChain(false);
+    }
+  };
 
   const copyDraft = async () => {
     const draftText = [
@@ -216,16 +242,18 @@ export default function PopupMailLoopChain({
           <strong>To:</strong> Client · <strong>CC:</strong> Designer (you), Admin(s), TDM(s), DM(s)
         </p>
         <p className="text-xs text-amber-600 mb-2">
-          If your browser blocks <code>mailto:</code>, use &quot;Open in Gmail&quot; or copy the draft fields below.
+          Both actions below send from <code>communication@hubinterior.com</code> via SMTP.
         </p>
         <div className="flex flex-wrap gap-3">
         {toList.length > 0 && teamEmailsLoaded ? (
-          <a
-            href={mailtoUrl}
+          <button
+            type="button"
+            onClick={() => triggerMailChain(false)}
+            disabled={isSendingChain}
             className="inline-flex items-center px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700"
           >
-            Start email chain
-          </a>
+            {isSendingChain ? 'Sending…' : 'Start email chain'}
+          </button>
         ) : (
           <button
             type="button"
@@ -242,14 +270,14 @@ export default function PopupMailLoopChain({
         >
           Mark as done
         </button>
-        <a
-          href={gmailComposeUrl || '#'}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={`inline-flex items-center px-4 py-2 rounded-lg text-sm font-medium ${gmailComposeUrl ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-blue-600 text-white opacity-50 pointer-events-none'}`}
+        <button
+          type="button"
+          onClick={() => triggerMailChain(true)}
+          disabled={toList.length === 0 || !teamEmailsLoaded || isSendingChain}
+          className={`inline-flex items-center px-4 py-2 rounded-lg text-sm font-medium ${toList.length > 0 && teamEmailsLoaded && !isSendingChain ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-blue-600 text-white opacity-50 cursor-not-allowed'}`}
         >
           Open in Gmail
-        </a>
+        </button>
         <button
           type="button"
           onClick={copyDraft}

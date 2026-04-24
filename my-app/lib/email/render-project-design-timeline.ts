@@ -1,161 +1,95 @@
-export function renderProjectDesignTimelineEmail(params: { customerName: string }) {
-  const { customerName } = params;
-
-  const steps = [
-    { id: 1, title: 'Initial Consultation', description: 'Within 2 days' },
-    { id: 2, title: 'Site Measurement', description: 'Scheduled within 1 week' },
-    { id: 3, title: 'Concept Development', description: '3–5 Business days' },
-    { id: 4, title: 'Design Presentation', description: 'Scheduled session' },
-    { id: 5, title: 'Material Selection', description: '2–4 Business days' },
-    { id: 6, title: 'Revised Drafts', description: 'Within 3 days' },
-    { id: 7, title: 'Final Design Approval', description: 'Major milestone' },
-    { id: 8, title: 'Budget Estimation', description: '2 Business days' },
-    { id: 9, title: 'Contract Signing', description: 'Upon review' },
-    { id: 10, title: 'Procurement', description: 'Ongoing process' },
-    { id: 11, title: 'Site Preparation', description: 'Site ready for installation' },
-    { id: 12, title: 'Installation & Styling', description: 'On-site execution' },
-    { id: 13, title: 'Final Handover', description: 'Project completion' },
-  ];
-
-  const stepsHtml = steps
-    .map(
-      (step) => `
-        <tr>
-          <td align="center" valign="top" width="40" style="padding-top:6px;">
-            <div style="width:28px;height:28px;border-radius:9999px;background-color:#d62323;color:#ffffff;font-size:13px;font-weight:600;text-align:center;line-height:28px;margin:0 auto;">
-              ${step.id}
-            </div>
-          </td>
-          <td align="left" valign="top" style="padding-left:8px;padding-bottom:12px;">
-            <p style="margin:0 0 2px 0;font-size:15px;font-weight:600;color:#111827;">
-              ${step.title}
-            </p>
-            <p style="margin:0;font-size:13px;color:#6b7280;">
-              ${step.description}
-            </p>
-          </td>
-        </tr>`
-    )
-    .join('');
-
+export function renderProjectDesignTimelineEmail(params: { customerName: string; designerName?: string }) {
+  const { customerName, designerName } = params;
+  const finalDesignerName = (designerName || '').trim() || 'Designer';
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charSet="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Project Design Timeline</title>
+  <title>Project Design Timeline – Upcoming Stages</title>
 </head>
-<body style="margin:0;padding:0;background-color:#f3e5d8;">
-  <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color:#f3e5d8;padding:40px 16px;">
-    <tr>
-      <td align="center">
-        <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="640" style="max-width:640px;background-color:#fdf9f3;border-radius:28px;box-shadow:0 1px 3px rgba(0,0,0,0.08);overflow:hidden;">
-          <tr>
-            <td style="padding:40px 32px 24px 32px;background-color:#fdf9f3;">
-              <table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td align="center" style="padding-bottom:20px;">
-                    <table role="presentation" border="0" cellpadding="0" cellspacing="0">
-                      <tr>
-                        <td align="center" valign="middle" style="padding-right:8px;">
-                          <div style="width:36px;height:36px;background-color:#d62323;border-radius:8px;text-align:center;line-height:36px;">
-                            <span style="color:#ffffff;font-weight:700;font-size:12px;display:inline-block;line-height:36px;">HI</span>
-                          </div>
-                        </td>
-                        <td align="left" valign="middle">
-                          <span style="display:block;font-size:18px;font-weight:600;color:#111827;line-height:1.2;">
-                            HUB Interior
-                          </span>
-                        </td>
-                      </tr>
-                    </table>
-                    <div style="height:1px;background-color:#f0e0ce;width:100%;margin-top:16px;"></div>
-                  </td>
-                </tr>
-                <tr>
-                  <td align="center" style="padding-top:4px;">
-                    <h1 style="margin:0 0 6px 0;font-size:26px;line-height:1.3;font-weight:600;color:#111827;">
-                      Project Design Timeline
-                    </h1>
-                    <p style="margin:0;font-size:14px;line-height:1.6;color:#6b7280;max-width:360px;">
-                      Hi ${customerName}, your journey to a beautiful space starts here. Here&apos;s an overview of the key stages ahead.
-                    </p>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
+<body style="margin:0;padding:0;background-color:#f3e5d8;font-family:Arial,Helvetica,sans-serif;color:#111827;">
+  <div style="min-height:100vh;background-color:#f3e5d8;padding:32px 14px;">
+    <div style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:24px;overflow:hidden;">
+      <div style="padding:28px 32px 12px 32px;">
+        <div style="text-align:center;margin-bottom:10px;">
+          <span style="display:inline-block;width:32px;height:32px;line-height:32px;border-radius:8px;background:#d62323;color:#fff;font-size:12px;font-weight:700;letter-spacing:.04em;">HI</span>
+          <span style="display:inline-block;margin-left:8px;font-size:24px;line-height:1;font-weight:600;color:#111;vertical-align:middle;">HUB Interior</span>
+        </div>
+        <div style="height:1px;background:#eadfce;margin:14px 0 20px;"></div>
 
-          <tr>
-            <td style="padding:0 32px 24px 32px;background-color:#fdf9f3;">
-              <table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:24px;padding:24px;box-shadow:0 1px 2px rgba(0,0,0,0.03);">
-                <tr>
-                  <td style="position:relative;">
-                    <table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0">
-                      ${stepsHtml}
-                    </table>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
+        <h1 style="margin:0 0 8px 0;text-align:center;font-size:30px;line-height:1.25;color:#0f172a;">Project Design Timeline</h1>
+        <p style="margin:0;text-align:center;font-size:17px;line-height:1.5;color:#6b7280;">
+          Hi ${customerName}, your journey to a beautiful space starts here.<br/>
+          Here's an overview of the key stages ahead.
+        </p>
+      </div>
 
-          <tr>
-            <td style="padding:0 32px 32px 32px;background-color:#fdf9f3;">
-              <table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0" style="background-color:#ffe7e7;border-radius:18px;padding:20px;box-shadow:0 1px 2px rgba(0,0,0,0.03);">
-                <tr>
-                  <td>
-                    <p style="margin:0 0 4px 0;font-size:15px;font-weight:600;color:#111827;">
-                      We&apos;re excited to bring your vision to life.
-                    </p>
-                    <p style="margin:0 0 12px 0;font-size:13px;line-height:1.6;color:#4b5563;">
-                      Our team is dedicated to crafting a space that reflects your unique style and needs.
-                    </p>
-                    <p style="margin:0 0 2px 0;font-size:13px;color:#4b5563;">
-                      Warmly,
-                    </p>
-                    <p style="margin:0 0 12px 0;font-size:13px;font-weight:600;color:#d62323;">
-                      Team HUB
-                    </p>
-                    <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
-                      <tr>
-                        <td align="right">
-                          <a href="#" style="display:inline-block;padding:10px 24px;background-color:#e0392f;color:#ffffff;font-size:13px;font-weight:600;border-radius:9999px;text-decoration:none;">
-                            Project Dashboard
-                            <span style="margin-left:6px;font-size:16px;" aria-hidden="true">→</span>
-                          </a>
-                        </td>
-                      </tr>
-                    </table>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
+      <div style="padding:8px 32px 24px 32px;">
+        <div style="background:#f5f5f5;border-radius:20px;padding:20px 22px;">
+          ${[
+            ["1", "First Cut Design Presentation", "Within 2 days from receipt of site measurements"],
+            ["2", "Design Freezing Meeting", "Within 2 days after the First Cut discussion"],
+            ["3", "10% Payment Collection", "Within 1 day after Design Freezing"],
+            ["4", "DQC 1 Submission (Internal Review)", "Same day of 10% payment confirmation"],
+            ["5", "DQC 1 Approval", "Within 1 day of submission"],
+            ["6", "D2 – Site Masking", "Same day or 1 day after DQC 1 approval"],
+            ["7", "Color Selection Meeting", "Within 1 day after D2 completion"],
+            ["8", "DQC 2 Submission", "Within 2 days from color selection"],
+            ["9", "DQC 2 Approval", "Within 2 days from submission"],
+            ["10", "Design Sign-Off Meeting", "Same day or 1 day after DQC 2 approval"],
+            ["11", "40% Payment", "Same day or 1 day after sign-off"],
+            ["12", "Customer Approval for Production", "Same day or next day of payment"],
+            ["13", "Push to Production (P2P)", "Same day of production approval"],
+          ]
+            .map(
+              ([num, title, subtitle]) => `
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 13px 0;">
+              <tr>
+                <td style="width:44px;vertical-align:top;padding-top:2px;">
+                  <div style="width:30px;height:30px;border-radius:9999px;background:#d62323;color:#fff;text-align:center;line-height:30px;font-size:14px;font-weight:700;">${num}</div>
+                </td>
+                <td style="vertical-align:top;">
+                  <div style="font-size:18px;line-height:1.35;font-weight:700;color:#111827;">${title}</div>
+                  <div style="font-size:14px;line-height:1.5;color:#4b5563;">${subtitle}</div>
+                </td>
+              </tr>
+            </table>`,
+            )
+            .join("")}
+        </div>
+      </div>
 
-          <tr>
-            <td style="background-color:#efddc8;padding:24px 24px 22px 24px;text-align:center;">
-              <p style="margin:0 0 4px 0;font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:#8b7660;">
-                © 2024 HUB INTERIOR DESIGN STUDIO
-              </p>
-              <p style="margin:0 0 4px 0;font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:#8b7660;">
-                HBR LAYOUT, BANGALORE, 1ST FLOOR, 6TH CROSS RD, 1ST STAGE, HBR LAYOUT 4TH BLOCK, HBR LAYOUT, BENGALURU, KARNATAKA 560044
-              </p>
-              <p style="margin:0 0 10px 0;font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:#8b7660;">
-                COMMUNICATION@HUBINTERIOR.COM
-              </p>
-              <p style="margin:0 0 2px 0;font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#b1997f;">
-                This email was sent to you regarding your project with HUB Interior.
-              </p>
-              <p style="margin:0;font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#b1997f;">
-                Manage email preferences
-              </p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
+      <div style="padding:0 32px 24px 32px;">
+        <div style="background:#f3dfe2;border-radius:18px;padding:20px 22px;">
+          <p style="margin:0 0 10px 0;font-size:22px;line-height:1.3;font-weight:700;color:#111;">We're excited to bring your vision to life.</p>
+          <p style="margin:0 0 14px 0;font-size:15px;line-height:1.5;color:#374151;">
+            Our team is dedicated to crafting a space that reflects your unique style and needs.
+          </p>
+          <p style="margin:0 0 2px 0;font-size:14px;color:#374151;">Warmly,</p>
+          <p style="margin:0 0 10px 0;font-size:14px;color:#d62323;font-weight:600;">${finalDesignerName}<br/>Team HUB</p>
+          <div style="text-align:right;">
+            <a href="#" style="display:inline-block;background:#e53935;color:#fff;text-decoration:none;padding:10px 22px;border-radius:9999px;font-size:13px;font-weight:700;">
+              Project Dashboard →
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <div style="background:#f0ebe3;padding:18px 20px 20px;text-align:center;">
+        <p style="margin:0 0 6px 0;font-size:15px;letter-spacing:.08em;text-transform:uppercase;color:#8b6f54;">
+          © 2024 HUB INTERIOR DESIGN STUDIO
+        </p>
+        <p style="margin:0 0 4px 0;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:#8b6f54;">
+          HBR LAYOUT, BANGALORE, 1ST FLOOR, 6TH CROSS RD, 1ST STAGE, HBR LAYOUT 4TH BLOCK,<br/>
+          HBR LAYOUT, BENGALURU, KARNATAKA 560044
+        </p>
+        <p style="margin:0;font-size:12px;">
+          <a href="mailto:communication@hubinterior.com" style="color:#2563eb;text-decoration:underline;">COMMUNICATION@HUBINTERIOR.COM</a>
+        </p>
+      </div>
+    </div>
+  </div>
 </body>
 </html>`;
 
