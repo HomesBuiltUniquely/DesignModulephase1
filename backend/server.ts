@@ -356,7 +356,16 @@ async function triggerCustomerEmailForLead(
 ): Promise<void> {
   try {
     const [rows] = await pool.query(
-      "SELECT project_name as projectName, client_email as clientEmail, client_email_alt as alternateClientEmail, payload FROM leads WHERE id = ?",
+      `SELECT l.pid as projectPid,
+              l.project_name as projectName,
+              l.client_email as clientEmail,
+              l.client_email_alt as alternateClientEmail,
+              l.payload,
+              u.name as designerName,
+              u.email as designerEmail
+       FROM leads l
+       LEFT JOIN users u ON u.id = l.assigned_designer_id
+       WHERE l.id = ?`,
       [leadId],
     );
     const row = (rows as any[])[0];
@@ -380,6 +389,13 @@ async function triggerCustomerEmailForLead(
       payload?.form?.customer_name ||
       row.projectName ||
       "Customer";
+    const designerName =
+      row.designerName ||
+      payload?.designer_name ||
+      payload?.designerName ||
+      payload?.form?.designer_name ||
+      payload?.form?.designerName ||
+      "Designer";
     const mailChainCc = await getMailLoopCcEmails([
       opts?.actorEmail || null,
       row.designerEmail || null,
@@ -403,6 +419,7 @@ async function triggerCustomerEmailForLead(
         cc: mailChainCc,
         subject: mailChainSubject,
         customerName,
+        designerName,
       },
     });
   } catch (err) {
@@ -2792,6 +2809,10 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
       switch (milestoneIndex) {
         // Milestone 0: D1 SITE MEASUREMENT
         case 0:
+          if (t === "Mail loop chain 2 initiate") {
+            // Sl no 2 – initiate customer mail loop chain from backend SMTP
+            return "/api/email/send-mail-loop-chain-initiate";
+          }
           if (t === "D1 for MMT request") {
             // Sl no 3 – D1 for MMT request (measurement visit scheduling)
             return "/api/email/send-d1-mmt-visit-scheduled";
@@ -4188,6 +4209,27 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
   } catch (err) {
     console.error("complete-task error", err);
     return res.status(500).json({ message: "Failed to save completion" });
+  }
+});
+
+// Trigger mail loop chain initiation mail (SMTP-backed).
+app.post("/api/leads/:id/mail-loop-chain-initiate", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+
+    await triggerCustomerEmailForLead(
+      id,
+      "/api/email/send-mail-loop-chain-initiate",
+      { actorEmail: actingUser.email || null },
+    );
+
+    return res.status(201).json({ ok: true });
+  } catch (err) {
+    console.error("mail-loop-chain-initiate error", { leadId: id, error: err });
+    return res.status(500).json({ message: "Failed to start mail chain" });
   }
 });
 
@@ -6917,9 +6959,14 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
               l.create_at as createAt, l.update_at as updateAt, l.payload,
               l.assigned_designer_id,
               l.assigned_project_manager_id,
-              pm.name as projectManagerName
+              pm.name as projectManagerName,
+              d.email as designerEmail,
+              CASE WHEN d.role = 'design_manager' THEN d.email ELSE dm.email END as designManagerEmail,
+              CASE WHEN d.role = 'design_manager' THEN d.name ELSE dm.name END as designManagerName
        FROM leads l
        LEFT JOIN users pm ON pm.id = l.assigned_project_manager_id
+       LEFT JOIN users d ON d.id = l.assigned_designer_id
+       LEFT JOIN users dm ON dm.id = d.design_manager_id
        WHERE l.id = ?`,
       [id],
     );
@@ -6988,6 +7035,9 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
       ...rest,
       isOnHold: !!row.isOnHold,
       designerName: designerName || null,
+      designerEmail: row.designerEmail ?? null,
+      designManagerEmail: row.designManagerEmail ?? null,
+      designManagerName: row.designManagerName ?? null,
       revision: revision || "v1.0 (Latest)",
       alternateClientEmail: row.alternateClientEmail ?? null,
       projectManagerName: row.projectManagerName ?? null,

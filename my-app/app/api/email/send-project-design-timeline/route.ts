@@ -9,6 +9,7 @@ export async function POST(request: Request) {
     const cc = body.cc as string[] | string | undefined;
     const subject = body.subject as string | undefined;
     const customerName = body.customerName as string | undefined;
+    const designerName = body.designerName as string | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -17,12 +18,12 @@ export async function POST(request: Request) {
       );
     }
 
-    const html = renderProjectDesignTimelineEmail({ customerName });
+    const html = renderProjectDesignTimelineEmail({ customerName, designerName });
 
     const info = await sendMail({
       to,
       ...(cc ? { cc } : {}),
-      subject: subject || 'Your Project Design Timeline – HUB Interior',
+      subject: subject || 'Project Design Timeline – Upcoming Stages',
       html,
     });
 

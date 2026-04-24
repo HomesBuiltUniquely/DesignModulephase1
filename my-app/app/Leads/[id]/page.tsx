@@ -2231,11 +2231,23 @@ export default function ProjectDetailPage() {
                     )}
                     {popupContext.milestoneIndex === 0 && popupContext.taskName === 'Mail loop chain 2 initiate' && (
                         <PopupMailLoopChain
+                            leadId={projectId}
                             clientEmail={project?.clientEmail ?? ''}
                             alternateClientEmail={project?.alternateClientEmail ?? ''}
                             designerEmail={authUser?.email ?? ''}
                             projectPid={project?.pid}
                             projectName={project?.projectName}
+                            designManagerEmail={
+                                (project as any)?.designManagerEmail ||
+                                (project as any)?.design_manager_email ||
+                                (project as any)?.designer_lead_email ||
+                                ''
+                            }
+                            tdmEmail={
+                                (project as any)?.tdmEmail ||
+                                (project as any)?.tdm_email ||
+                                ''
+                            }
                             sessionId={sessionId}
                             onMarkComplete={() => { recordTaskComplete(0, 'Mail loop chain 2 initiate'); closePopup(); }}
                             onClose={closePopup}

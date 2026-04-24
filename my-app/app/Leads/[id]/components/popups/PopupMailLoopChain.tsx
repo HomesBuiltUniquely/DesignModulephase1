@@ -14,12 +14,15 @@ type TeamEmails = {
 };
 
 type Props = {
+  leadId?: number | null;
   clientEmail: string;
   /** Used as “To” when primary is empty */
   alternateClientEmail?: string;
   designerEmail: string;
   projectPid?: string;
   projectName?: string;
+  designManagerEmail?: string;
+  tdmEmail?: string;
   sessionId: string | null;
   onMarkComplete: () => void;
   onClose: () => void;
@@ -29,11 +32,14 @@ type Props = {
  * Task: Mail loop chain 2 initiate — create email chain with client, designer, TDM, DM, admin.
  */
 export default function PopupMailLoopChain({
+  leadId,
   clientEmail,
   alternateClientEmail = '',
   designerEmail,
   projectPid,
   projectName,
+  designManagerEmail = '',
+  tdmEmail = '',
   sessionId,
   onMarkComplete,
   onClose,
@@ -41,6 +47,7 @@ export default function PopupMailLoopChain({
   const [teamEmails, setTeamEmails] = useState<TeamEmails | null>(null);
   const [teamEmailsLoaded, setTeamEmailsLoaded] = useState(true);
   const [copyStatus, setCopyStatus] = useState<string>('');
+  const [isSendingChain, setIsSendingChain] = useState(false);
 
   useEffect(() => {
     if (!sessionId) {
@@ -61,27 +68,61 @@ export default function PopupMailLoopChain({
       });
   }, [sessionId]);
 
+  const normalizeEmail = (raw: string) => {
+    const t = (raw || '').trim().toLowerCase();
+    return t && t.includes('@') ? t : '';
+  };
+
+  const uniqueMembers = (members: TeamMemberEmail[]) => {
+    const seen = new Set<string>();
+    const out: TeamMemberEmail[] = [];
+    members.forEach((m) => {
+      const email = normalizeEmail(m.email);
+      if (!email || seen.has(email)) return;
+      seen.add(email);
+      out.push({ ...m, email });
+    });
+    return out;
+  };
+
+  const filterByExpectedEmail = (members: TeamMemberEmail[], expectedEmail?: string) => {
+    const expected = normalizeEmail(expectedEmail || '');
+    if (!expected) return [];
+    const matched = uniqueMembers(members).filter((m) => normalizeEmail(m.email) === expected);
+    if (matched.length > 0) return matched;
+    return [{ name: expected.split('@')[0], email: expected }];
+  };
+
+  const designerEmailNorm = normalizeEmail(designerEmail);
+  const adminsForLoop = uniqueMembers(teamEmails?.admins || []).filter(
+    (m) => normalizeEmail(m.email) !== designerEmailNorm,
+  );
+  const tdmForLoop = filterByExpectedEmail(
+    (teamEmails?.territorial_design_managers || []).filter((m) => normalizeEmail(m.email) !== designerEmailNorm),
+    tdmEmail,
+  );
+  const dmForLoop = filterByExpectedEmail(
+    (teamEmails?.design_managers || []).filter((m) => normalizeEmail(m.email) !== designerEmailNorm),
+    designManagerEmail,
+  );
+
   // To: client only (email goes from designer to client). CC: designer, admin, TDM, DM.
   const toEmails = (): string[] => {
-    const pick = (raw: string) => {
-      const t = (raw || '').trim().toLowerCase();
-      return t && t.includes('@') ? t : '';
-    };
-    const primary = pick(clientEmail);
+    const primary = normalizeEmail(clientEmail);
     if (primary) return [primary];
-    const alt = pick(alternateClientEmail);
+    const alt = normalizeEmail(alternateClientEmail);
     return alt ? [alt] : [];
   };
   const ccEmails = (): string[] => {
     const set = new Set<string>();
     const add = (e: string) => {
-      const t = (e || '').trim().toLowerCase();
-      if (t && t.includes('@')) set.add(t);
+      const t = normalizeEmail(e);
+      if (t) set.add(t);
     };
     add(designerEmail);
-    (teamEmails?.admins || []).forEach((m) => add(m.email));
-    (teamEmails?.territorial_design_managers || []).forEach((m) => add(m.email));
-    (teamEmails?.design_managers || []).forEach((m) => add(m.email));
+    adminsForLoop.forEach((m) => add(m.email));
+    tdmForLoop.forEach((m) => add(m.email));
+    dmForLoop.forEach((m) => add(m.email));
     return Array.from(set);
   };
 
@@ -90,14 +131,37 @@ export default function PopupMailLoopChain({
   const subject = projectPid || projectName
     ? `Project ${projectPid || ''} ${projectName || ''} – Design discussion`.trim()
     : 'Design discussion – Mail chain';
-  // Build cc param: some clients parse multiple addresses better when commas are not encoded
-  const ccParam = ccList.length ? ccList.map((e) => encodeURIComponent(e)).join(',') : '';
-  const mailtoUrl = toList.length > 0
-    ? `mailto:${toList.join(',')}?${ccParam ? `cc=${ccParam}&` : ''}subject=${encodeURIComponent(subject)}`
-    : '';
-  const gmailComposeUrl = toList.length > 0
-    ? `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(toList.join(','))}&cc=${encodeURIComponent(ccList.join(','))}&su=${encodeURIComponent(subject)}`
-    : '';
+  const gmailInboxUrl = `https://mail.google.com/mail/u/0/#search/${encodeURIComponent(subject)}`;
+
+  const triggerMailChain = async (openGmailInbox = false) => {
+    if (!sessionId || !leadId || toList.length === 0 || isSendingChain) return;
+    setIsSendingChain(true);
+    setCopyStatus('');
+    try {
+      const resp = await fetch(`${API}/api/leads/${leadId}/mail-loop-chain-initiate`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${sessionId}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({}),
+      });
+      if (!resp.ok) {
+        const txt = await resp.text().catch(() => '');
+        throw new Error(txt || `HTTP ${resp.status}`);
+      }
+      setCopyStatus('Mail chain sent via communication@hubinterior.com');
+      if (openGmailInbox) {
+        window.open(gmailInboxUrl, '_blank', 'noopener,noreferrer');
+      }
+      setTimeout(() => setCopyStatus(''), 2500);
+    } catch {
+      setCopyStatus('Mail send failed. Please retry.');
+      setTimeout(() => setCopyStatus(''), 3000);
+    } finally {
+      setIsSendingChain(false);
+    }
+  };
 
   const copyDraft = async () => {
     const draftText = [
@@ -167,9 +231,9 @@ export default function PopupMailLoopChain({
         )}
         {teamEmailsLoaded && teamEmails && (
           <>
-            {renderRoleSection('Admin(s)', teamEmails.admins || [])}
-            {renderRoleSection('Territorial Design Manager(s)', teamEmails.territorial_design_managers || [])}
-            {renderRoleSection('Design Manager(s)', teamEmails.design_managers || [])}
+            {renderRoleSection('Admin(s)', adminsForLoop)}
+            {renderRoleSection('Territorial Design Manager(s)', tdmForLoop)}
+            {renderRoleSection('Design Manager(s)', dmForLoop)}
           </>
         )}
       </div>
@@ -178,16 +242,18 @@ export default function PopupMailLoopChain({
           <strong>To:</strong> Client · <strong>CC:</strong> Designer (you), Admin(s), TDM(s), DM(s)
         </p>
         <p className="text-xs text-amber-600 mb-2">
-          If your browser blocks <code>mailto:</code>, use &quot;Open in Gmail&quot; or copy the draft fields below.
+          Both actions below send from <code>communication@hubinterior.com</code> via SMTP.
         </p>
         <div className="flex flex-wrap gap-3">
         {toList.length > 0 && teamEmailsLoaded ? (
-          <a
-            href={mailtoUrl}
+          <button
+            type="button"
+            onClick={() => triggerMailChain(false)}
+            disabled={isSendingChain}
             className="inline-flex items-center px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700"
           >
-            Start email chain
-          </a>
+            {isSendingChain ? 'Sending…' : 'Start email chain'}
+          </button>
         ) : (
           <button
             type="button"
@@ -204,14 +270,14 @@ export default function PopupMailLoopChain({
         >
           Mark as done
         </button>
-        <a
-          href={gmailComposeUrl || '#'}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={`inline-flex items-center px-4 py-2 rounded-lg text-sm font-medium ${gmailComposeUrl ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-blue-600 text-white opacity-50 pointer-events-none'}`}
+        <button
+          type="button"
+          onClick={() => triggerMailChain(true)}
+          disabled={toList.length === 0 || !teamEmailsLoaded || isSendingChain}
+          className={`inline-flex items-center px-4 py-2 rounded-lg text-sm font-medium ${toList.length > 0 && teamEmailsLoaded && !isSendingChain ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-blue-600 text-white opacity-50 cursor-not-allowed'}`}
         >
           Open in Gmail
-        </a>
+        </button>
         <button
           type="button"
           onClick={copyDraft}
