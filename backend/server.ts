@@ -168,6 +168,8 @@ const GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token";
 const GOOGLE_EVENTS_URI = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 const GOOGLE_USERINFO_URI = "https://www.googleapis.com/oauth2/v2/userinfo";
 const GOOGLE_TIME_ZONE = "Asia/Kolkata";
+const GOOGLE_SHARED_EVENT_PROPERTY_KEY = "source";
+const GOOGLE_SHARED_EVENT_PROPERTY_VALUE = "Project-ERP";
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -465,6 +467,19 @@ async function initDb() {
       if ((mmtMgrCol as any[]).length === 0) {
         await conn.query(
           "ALTER TABLE users ADD COLUMN mmt_manager_id INT NULL",
+        );
+      }
+    } catch {
+      // ignore
+    }
+    // Add territorial_design_manager_id for mapping design managers to their TDM
+    try {
+      const [tdmMgrCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'territorial_design_manager_id'",
+      );
+      if ((tdmMgrCol as any[]).length === 0) {
+        await conn.query(
+          "ALTER TABLE users ADD COLUMN territorial_design_manager_id INT NULL",
         );
       }
     } catch {
@@ -868,16 +883,50 @@ async function getGoogleConnectionByUserId(userId: number) {
   return ((rows as any[])[0] || null) as GoogleCalendarConnectionRow | null;
 }
 
+function canAccessHubCalendar(role: string | null | undefined) {
+  const normalizedRole = (role || "").toLowerCase();
+  return (
+    normalizedRole === "admin" ||
+    normalizedRole === "deputy_general_manager" ||
+    normalizedRole === "territorial_design_manager" ||
+    normalizedRole === "design_manager" ||
+    normalizedRole === "designer"
+  );
+}
+
+function canViewAllHubCalendarEvents(role: string | null | undefined) {
+  const normalizedRole = (role || "").toLowerCase();
+  return normalizedRole === "admin" || normalizedRole === "deputy_general_manager";
+}
+
 async function getCalendarVisibleUsers(currentUser: { id: number; email: string; name: string; role: string }) {
   const role = (currentUser.role || "").toLowerCase();
 
-  if (role === "admin" || role === "territorial_design_manager") {
+  if (role === "admin" || role === "deputy_general_manager") {
     const [rows] = await pool.query(
       `SELECT DISTINCT u.id, u.email, u.name, u.role
        FROM users u
        INNER JOIN google_calendar_connections gcc ON gcc.user_id = u.id
        WHERE gcc.active = 1
        ORDER BY u.name ASC`,
+    );
+    return rows as { id: number; email: string; name: string; role: string }[];
+  }
+
+  if (role === "territorial_design_manager") {
+    const [rows] = await pool.query(
+      `SELECT DISTINCT u.id, u.email, u.name, u.role
+       FROM users u
+       INNER JOIN google_calendar_connections gcc ON gcc.user_id = u.id
+       LEFT JOIN users dm ON dm.id = u.design_manager_id
+       WHERE gcc.active = 1
+         AND (
+           u.id = ?
+           OR (u.role = 'design_manager' AND u.territorial_design_manager_id = ?)
+           OR (u.role = 'designer' AND dm.territorial_design_manager_id = ?)
+         )
+       ORDER BY u.name ASC`,
+      [currentUser.id, currentUser.id, currentUser.id],
     );
     return rows as { id: number; email: string; name: string; role: string }[];
   }
@@ -889,19 +938,6 @@ async function getCalendarVisibleUsers(currentUser: { id: number; email: string;
        INNER JOIN google_calendar_connections gcc ON gcc.user_id = u.id
        WHERE gcc.active = 1
          AND (u.id = ? OR (u.role = 'designer' AND u.design_manager_id = ?))
-       ORDER BY u.name ASC`,
-      [currentUser.id, currentUser.id],
-    );
-    return rows as { id: number; email: string; name: string; role: string }[];
-  }
-
-  if (role === "mmt_manager") {
-    const [rows] = await pool.query(
-      `SELECT DISTINCT u.id, u.email, u.name, u.role
-       FROM users u
-       INNER JOIN google_calendar_connections gcc ON gcc.user_id = u.id
-       WHERE gcc.active = 1
-         AND (u.id = ? OR (u.role = 'mmt_executive' AND u.mmt_manager_id = ?))
        ORDER BY u.name ASC`,
       [currentUser.id, currentUser.id],
     );
@@ -1048,6 +1084,10 @@ async function fetchGoogleEventsForConnection(
   url.searchParams.set("singleEvents", "true");
   url.searchParams.set("orderBy", "startTime");
   url.searchParams.set("maxResults", "250");
+  url.searchParams.set(
+    "sharedExtendedProperty",
+    `${GOOGLE_SHARED_EVENT_PROPERTY_KEY}=${GOOGLE_SHARED_EVENT_PROPERTY_VALUE}`,
+  );
   if (timeMin) url.searchParams.set("timeMin", new Date(timeMin).toISOString());
   if (timeMax) url.searchParams.set("timeMax", new Date(timeMax).toISOString());
 
@@ -1106,6 +1146,11 @@ async function createGoogleCalendarEventForUser(args: {
       start: { dateTime: args.startDateTimeIso, timeZone: GOOGLE_TIME_ZONE },
       end: { dateTime: args.endDateTimeIso, timeZone: GOOGLE_TIME_ZONE },
       attendees: (args.attendees || []).map((email) => ({ email })),
+      extendedProperties: {
+        shared: {
+          [GOOGLE_SHARED_EVENT_PROPERTY_KEY]: GOOGLE_SHARED_EVENT_PROPERTY_VALUE,
+        },
+      },
     }),
   });
   const data = await response.json().catch(() => ({}));
@@ -1301,6 +1346,9 @@ app.get("/api/google-calendar/connect-url", async (req: Request, res: Response) 
   try {
     const user = await getUserFromSession(req);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
+    if (!canAccessHubCalendar(user.role)) {
+      return res.status(403).json({ message: "You do not have access to HUB Calendar." });
+    }
     if (!isGoogleCalendarConfigured()) {
       return res.status(400).json({ message: "Google Calendar is not configured on the backend." });
     }
@@ -1365,6 +1413,9 @@ app.get("/api/google-calendar/status", async (req: Request, res: Response) => {
   try {
     const user = await getUserFromSession(req);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
+    if (!canAccessHubCalendar(user.role)) {
+      return res.status(403).json({ message: "You do not have access to HUB Calendar." });
+    }
     const connection = await getGoogleConnectionByUserId(user.id);
     return res.json({
       configured: isGoogleCalendarConfigured(),
@@ -1382,6 +1433,9 @@ app.post("/api/google-calendar/disconnect", async (req: Request, res: Response) 
   try {
     const user = await getUserFromSession(req);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
+    if (!canAccessHubCalendar(user.role)) {
+      return res.status(403).json({ message: "You do not have access to HUB Calendar." });
+    }
     await pool.query(
       "UPDATE google_calendar_connections SET active = 0, updated_at = ? WHERE user_id = ?",
       [new Date(), user.id],
@@ -1397,6 +1451,9 @@ app.get("/api/google-calendar/my-events", async (req: Request, res: Response) =>
   try {
     const user = await getUserFromSession(req);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
+    if (!canAccessHubCalendar(user.role)) {
+      return res.status(403).json({ message: "You do not have access to HUB Calendar." });
+    }
     const visibleUsers = await getCalendarVisibleUsers(user);
     const allEvents: any[] = [];
 
@@ -1432,9 +1489,8 @@ app.get("/api/google-calendar/all-events", async (req: Request, res: Response) =
   try {
     const user = await getUserFromSession(req);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
-    const role = (user.role || "").toLowerCase();
-    if (role !== "admin" && role !== "territorial_design_manager") {
-      return res.status(403).json({ message: "Only admin or TDM can view all calendar events." });
+    if (!canViewAllHubCalendarEvents(user.role)) {
+      return res.status(403).json({ message: "Only admin or Deputy General Manager can view all calendar events." });
     }
 
     const [rows] = await pool.query(
@@ -2005,22 +2061,31 @@ app.all("/api/auth/register", async (req: Request, res: Response) => {
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
     let designManagerId: number | null = null;
+    let territorialDesignManagerId: number | null = null;
+    const isTdm = role === "territorial_design_manager";
+    if (targetRole === "design_manager" && isTdm) {
+      territorialDesignManagerId = current.id;
+    }
     if (targetRole === "designer" && managerId != null && managerId !== "") {
       const idNum = Number(managerId);
       if (!Number.isNaN(idNum)) {
         const [mgrRows] = await pool.query(
-          "SELECT id FROM users WHERE id = ? AND role = 'design_manager'",
+          "SELECT id, territorial_design_manager_id FROM users WHERE id = ? AND role = 'design_manager'",
           [idNum],
         );
         if ((mgrRows as any[]).length === 0) {
           return res.status(400).json({ message: "Invalid design manager selected" });
         }
+        const manager = (mgrRows as any[])[0];
+        if (isTdm && Number(manager.territorial_design_manager_id) !== Number(current.id)) {
+          return res.status(403).json({ message: "You can assign designers only under your own design managers" });
+        }
         designManagerId = idNum;
       }
     }
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone, design_manager_id) VALUES (?, ?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, targetRole, phoneVal || null, designManagerId],
+      "INSERT INTO users (email, password, name, role, phone, design_manager_id, territorial_design_manager_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, targetRole, phoneVal || null, designManagerId, territorialDesignManagerId],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: targetRole } });
@@ -6715,18 +6780,27 @@ app.get("/api/leads/dqc-queue", async (req: Request, res: Response) => {
 });
 
 // Designers for Sales Closure form (from users with role designer or design_manager)
-app.get("/api/designers", async (_req: Request, res: Response) => {
+app.get("/api/designers", async (req: Request, res: Response) => {
   try {
-    const [rows] = await pool.query(
-      `SELECT u.id,
-              u.name,
-              u.role,
-              COALESCE(m.name, '') as leadName
-       FROM users u
-       LEFT JOIN users m ON u.design_manager_id = m.id
-       WHERE u.role IN ('designer', 'design_manager')
-       ORDER BY u.name ASC`,
-    );
+    const currentUser = await getUserFromSession(req);
+    const currentRole = (currentUser?.role || "").toLowerCase();
+    let query = `SELECT u.id,
+                        u.name,
+                        u.role,
+                        COALESCE(m.name, '') as leadName
+                 FROM users u
+                 LEFT JOIN users m ON u.design_manager_id = m.id
+                 WHERE u.role IN ('designer', 'design_manager')`;
+    const params: number[] = [];
+    if (currentRole === "territorial_design_manager" && currentUser) {
+      query += ` AND (
+        (u.role = 'design_manager' AND u.territorial_design_manager_id = ?)
+        OR (u.role = 'designer' AND m.territorial_design_manager_id = ?)
+      )`;
+      params.push(currentUser.id, currentUser.id);
+    }
+    query += " ORDER BY u.name ASC";
+    const [rows] = await pool.query(query, params);
     res.json(rows);
   } catch (err) {
     console.error("designers error", err);

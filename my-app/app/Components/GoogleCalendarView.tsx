@@ -305,8 +305,12 @@ export default function GoogleCalendarView() {
   const scrollAreaRef = useRef<HTMLDivElement | null>(null);
 
   const role = (user?.role || '').toLowerCase();
-  const canSeeAllEvents = role === 'admin' || role === 'territorial_design_manager';
-  const canSeeOwnerLabels = role === 'admin' || role === 'territorial_design_manager' || role === 'design_manager' || role === 'mmt_manager';
+  const canSeeAllEvents = role === 'admin' || role === 'deputy_general_manager';
+  const canSeeOwnerLabels =
+    role === 'admin' ||
+    role === 'deputy_general_manager' ||
+    role === 'territorial_design_manager' ||
+    role === 'design_manager';
   const weekStart = useMemo(() => startOfWeek(currentDate), [currentDate]);
   const weekDays = useMemo(() => buildWeekDays(weekStart), [weekStart]);
   const miniCalendarDays = useMemo(() => buildMiniCalendarDays(currentDate), [currentDate]);
@@ -442,12 +446,12 @@ export default function GoogleCalendarView() {
               <p className="mt-1 text-sm text-[#5f6368]">
                 {role === 'admin'
                   ? 'Admin view of all connected calendars'
+                  : role === 'deputy_general_manager'
+                    ? 'Deputy General Manager view of all connected calendars'
                   : role === 'territorial_design_manager'
-                    ? 'TDM view of all connected calendars'
+                    ? 'Your events plus the calendars in your design team tree'
                     : role === 'design_manager'
                       ? 'Your events plus all designer events under you'
-                      : role === 'mmt_manager'
-                        ? 'Your events plus all MMT executive events under you'
                       : 'Your HUB Calendar events in one place'}
               </p>
             </div>
