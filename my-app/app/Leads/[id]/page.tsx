@@ -148,6 +148,8 @@ export default function ProjectDetailPage() {
     const [showCancelModal, setShowCancelModal] = useState(false);
     const [prolanceBusy, setProlanceBusy] = useState(false);
     const [getQuoteBusy, setGetQuoteBusy] = useState(false);
+    const [prolancePartnerId, setProlancePartnerId] = useState<number | null>(null);
+    const [prolanceQuoteId, setProlanceQuoteId] = useState<number | null>(null);
     const [prolanceProjectId, setProlanceProjectId] = useState<number | null>(null);
     const [manualQuoteProjectId, setManualQuoteProjectId] = useState('');
     const [showGetQuoteModal, setShowGetQuoteModal] = useState(false);
@@ -156,6 +158,8 @@ export default function ProjectDetailPage() {
     const [latestQuoteResponse, setLatestQuoteResponse] = useState<unknown>(null);
     const [showQuotePreviewModal, setShowQuotePreviewModal] = useState(false);
     const [quoteSummaryTab, setQuoteSummaryTab] = useState<'overall' | 'roomwise'>('overall');
+    const [expandedQuoteRooms, setExpandedQuoteRooms] = useState<Record<string, boolean>>({});
+    const [quoteLinkCopied, setQuoteLinkCopied] = useState(false);
     const [holdDate, setHoldDate] = useState<string>('');
     const [selectedHistoryEvent, setSelectedHistoryEvent] = useState<HistoryEvent | null>(null);
     const [uploadsVersion, setUploadsVersion] = useState(0);
@@ -211,6 +215,38 @@ export default function ProjectDetailPage() {
         return null;
     };
 
+    const extractQuoteId = (v: unknown): number | null => {
+        if (!v || typeof v !== 'object') return null;
+        const root = v as Record<string, unknown>;
+        const direct = root.quoteID ?? root.quoteId ?? root.quotationId ?? root.quotationID;
+        if (typeof direct === 'number' && Number.isFinite(direct)) return direct;
+        if (typeof direct === 'string' && direct.trim() && Number.isFinite(Number(direct))) return Number(direct);
+        const arr = root.data;
+        if (Array.isArray(arr) && arr[0] && typeof arr[0] === 'object') {
+            const first = arr[0] as Record<string, unknown>;
+            const nested = first.quoteID ?? first.quoteId ?? first.quotationId ?? first.quotationID;
+            if (typeof nested === 'number' && Number.isFinite(nested)) return nested;
+            if (typeof nested === 'string' && nested.trim() && Number.isFinite(Number(nested))) return Number(nested);
+        }
+        return null;
+    };
+
+    const hasQuotePricingDetails = (v: unknown): boolean => {
+        if (!v || typeof v !== 'object') return false;
+        const root = v as Record<string, unknown>;
+        const first =
+            Array.isArray(root.data) && root.data[0] && typeof root.data[0] === 'object'
+                ? (root.data[0] as Record<string, unknown>)
+                : null;
+        const obj = first || root;
+        const options = obj.quoteOptionsData || root.quoteOptionsData;
+        if (Array.isArray(options) && options.length > 0) return true;
+        const hasTotals =
+            extractNumber(obj.totalPayableAmount ?? root.totalPayableAmount ?? obj.finalTotalPrice ?? root.finalTotalPrice) != null ||
+            extractNumber(obj.interiorProjectAmount ?? root.interiorProjectAmount ?? obj.totalPrice ?? root.totalPrice) != null;
+        return hasTotals;
+    };
+
     const parseLeadPayload = (raw: unknown): Record<string, unknown> | null => {
         if (!raw) return null;
         if (typeof raw === 'object') return raw as Record<string, unknown>;
@@ -223,6 +259,28 @@ export default function ProjectDetailPage() {
         }
     };
 
+    const deepFindByKeys = (value: unknown, keys: string[]): unknown => {
+        const normalizedKeys = keys.map((k) => k.toLowerCase());
+        const seen = new Set<unknown>();
+        const queue: unknown[] = [value];
+        while (queue.length) {
+            const current = queue.shift();
+            if (!current || seen.has(current)) continue;
+            seen.add(current);
+            if (Array.isArray(current)) {
+                for (const item of current) queue.push(item);
+                continue;
+            }
+            if (typeof current !== 'object') continue;
+            const obj = current as Record<string, unknown>;
+            for (const [k, v] of Object.entries(obj)) {
+                if (normalizedKeys.includes(k.toLowerCase()) && v != null) return v;
+                if (v && (typeof v === 'object' || Array.isArray(v))) queue.push(v);
+            }
+        }
+        return null;
+    };
+
     const normalizeQuoteView = (
         payload: unknown,
         leadFallback?: {
@@ -231,21 +289,32 @@ export default function ProjectDetailPage() {
             city?: string | null;
             bhkType?: string | null;
             projectType?: string | null;
+            partnerId?: string | number | null;
         },
     ) => {
         const root = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
         const dataArray = Array.isArray(root.data) ? root.data : [];
+        const dataObject =
+            root.data && typeof root.data === 'object' && !Array.isArray(root.data)
+                ? (root.data as Record<string, unknown>)
+                : null;
         const firstData =
             dataArray.length > 0 && dataArray[0] && typeof dataArray[0] === 'object'
                 ? (dataArray[0] as Record<string, unknown>)
                 : {};
-        const quoteObj = Object.keys(firstData).length ? firstData : root;
+        const quoteObj = Object.keys(firstData).length
+            ? firstData
+            : dataObject && Object.keys(dataObject).length
+                ? dataObject
+                : root;
 
         const pick = (...keys: string[]) => {
             for (const k of keys) {
                 if (k in quoteObj) return quoteObj[k];
                 if (k in root) return root[k];
             }
+            const deep = deepFindByKeys(payload, keys);
+            if (deep != null) return deep;
             return null;
         };
 
@@ -274,28 +343,95 @@ export default function ProjectDetailPage() {
         const quoteOptionsRaw =
             (quoteObj.quoteOptionsData as unknown) ||
             (root.quoteOptionsData as unknown) ||
-            (isPlainObject(quoteObj.data) ? (quoteObj.data as Record<string, unknown>).quoteOptionsData : null);
+            (isPlainObject(quoteObj.data) ? (quoteObj.data as Record<string, unknown>).quoteOptionsData : null) ||
+            deepFindByKeys(payload, ['quoteOptionsData', 'roomWiseSummary', 'optionsData', 'optionDetails']);
         const quoteOptionsData = Array.isArray(quoteOptionsRaw)
             ? (quoteOptionsRaw
                   .map((item) => {
                       if (!item || typeof item !== 'object') return null;
                       const o = item as Record<string, unknown>;
+                      const appliancesPrice = extractNumber(o.appliancesPrice);
+                      const worktopsPrice = extractNumber(o.worktopsPrice);
+                      const servicesPrice = extractNumber(o.servicesPrice);
+                      const unitsPrice = extractNumber(o.unitsPrice ?? o.woodWorkPrice);
+                      const units = Array.isArray(o.units) ? (o.units as Record<string, unknown>[]) : [];
+                      const lofts = Array.isArray(o.lofts) ? (o.lofts as Record<string, unknown>[]) : [];
+                      const worktops = Array.isArray(o.worktops) ? (o.worktops as Record<string, unknown>[]) : [];
+                      const skirts = Array.isArray(o.skirts) ? (o.skirts as Record<string, unknown>[]) : [];
+                      const appliances = Array.isArray(o.appliances) ? (o.appliances as Record<string, unknown>[]) : [];
+                      const hardwares = Array.isArray(o.hardwares) ? (o.hardwares as Record<string, unknown>[]) : [];
+                      const decors = Array.isArray(o.decors) ? (o.decors as Record<string, unknown>[]) : [];
+                      const services = Array.isArray(o.services) ? (o.services as Record<string, unknown>[]) : [];
+                      const sumPrice = (arr: Record<string, unknown>[]) =>
+                          arr.reduce((sum, item) => sum + (extractNumber(item.price) || 0), 0);
+                      const detailedRoomTotal = [
+                          sumPrice(units),
+                          sumPrice(lofts),
+                          sumPrice(worktops),
+                          sumPrice(skirts),
+                          sumPrice(appliances),
+                          sumPrice(services),
+                          sumPrice(hardwares),
+                          sumPrice(decors),
+                      ].reduce((a, b) => a + b, 0);
+                      const directRoomBucketTotal =
+                          (unitsPrice || 0) +
+                          (servicesPrice || 0) +
+                          (worktopsPrice || 0) +
+                          (appliancesPrice || 0) +
+                          (extractNumber(o.skirtingsPrice) || 0);
+                      // Prolance space row often matches BOQ line sums; `totalPrice` / `unitsPrice` can be a higher aggregate.
+                      const explicitNetTotal = extractNumber(
+                          o.netPrice ??
+                              o.finalPrice ??
+                              o.roomTotal ??
+                              o.optionTotal ??
+                              o.payableAmount ??
+                              o.discountedTotal ??
+                              o.netOptionPrice,
+                      );
                       return {
                           qoid: extractNumber(o.qoid),
                           quoteID: extractNumber(o.quoteID ?? o.quoteId),
                           optionID: extractNumber(o.optionID ?? o.optionId),
                           roomID: extractNumber(o.roomID ?? o.roomId),
                           roomName: extractString(o.roomName) || '-',
-                          optionName: extractString(o.optionName) || '-',
-                          totalPrice: extractNumber(o.totalPrice),
-                          totalPriceOld: extractNumber(o.totalPriceOld),
-                          unitsPrice: extractNumber(o.unitsPrice),
+                          optionName: extractString(o.optionName ?? o.roomType) || '-',
+                          totalPrice:
+                              explicitNetTotal ??
+                              extractNumber(o.totalPrice) ??
+                              (detailedRoomTotal > 0 ? Math.round(detailedRoomTotal) : null) ??
+                              (directRoomBucketTotal > 0 ? Math.round(directRoomBucketTotal) : null),
+                          totalPriceOld:
+                              extractNumber(o.totalPriceOld ?? o.unitsPrice ?? o.woodWorkPrice),
+                          unitsPrice,
                           loftsPrice: extractNumber(o.loftsPrice),
-                          servicesPrice: extractNumber(o.servicesPrice),
+                          servicesPrice,
                           appliancesPrice: extractNumber(o.appliancesPrice),
                           skirtingsPrice: extractNumber(o.skirtingsPrice),
                           worktopsPrice: extractNumber(o.worktopsPrice),
                           additionalHWPrice: extractNumber(o.additionalHWPrice),
+                          matlInfo: extractString(o.matlInfo) || '',
+                          roomRev: extractString(o.roomRev) || '',
+                          units: units.map((u) => ({
+                              label: extractString(u.label) || '-',
+                              cabinetClass: extractString(u.cabinetClass) || '-',
+                              description: extractString(u.description) || '-',
+                              dimensions: extractString(u.dimensions) || '-',
+                              price: extractNumber(u.price),
+                          })),
+                          lofts: lofts.map((l) => ({
+                              description: extractString(l.description) || '-',
+                              dimensions: extractString(l.dimensions) || '-',
+                              price: extractNumber(l.price),
+                          })),
+                          servicesList: services.map((s) => ({
+                              category: extractString(s.category) || '-',
+                              description: extractString(s.description) || '-',
+                              qty: extractNumber(s.qty),
+                              uom: extractString(s.uom) || '-',
+                              price: extractNumber(s.price),
+                          })),
                       };
                   })
                   .filter(Boolean) as Array<{
@@ -314,6 +450,11 @@ export default function ProjectDetailPage() {
                   skirtingsPrice: number | null;
                   worktopsPrice: number | null;
                   additionalHWPrice: number | null;
+                  matlInfo: string;
+                  roomRev: string;
+                  units: Array<{ label: string; cabinetClass: string; description: string; dimensions: string; price: number | null }>;
+                  lofts: Array<{ description: string; dimensions: string; price: number | null }>;
+                  servicesList: Array<{ category: string; description: string; qty: number | null; uom: string; price: number | null }>;
               }>)
             : [];
 
@@ -399,9 +540,31 @@ export default function ProjectDetailPage() {
             }));
         }
 
-        const interiorProjectAmountRaw = pick('interiorProjectAmount', 'projectAmount', 'subTotal', 'totalPrice');
-        const totalPayableAmountRaw = pick('totalPayableAmount', 'totalPayable', 'grandTotal', 'netPayable', 'finalTotalPrice');
-        const discountRaw = pick('discount', 'discountAmount');
+        const optionDetails = Array.isArray(quoteObj.optionDetails)
+            ? (quoteObj.optionDetails as Record<string, unknown>[])
+            : [];
+        const optionDetailsTotal = quoteOptionsData.reduce((sum, opt) => sum + (extractNumber(opt.totalPrice) || 0), 0);
+        const computedInteriorAmount = optionDetails.reduce((sum, item) => {
+            const units = extractNumber(item.unitsPrice) || 0;
+            return sum + units;
+        }, 0);
+        const computedDiscountFromFactors =
+            (optionDetails.reduce((sum, item) => sum + (extractNumber(item.woodWorkPrice) || 0), 0) *
+                ((extractNumber(quoteObj.woodWorkDiscount) || 0) / 100)) +
+            (optionDetails.reduce((sum, item) => sum + (extractNumber(item.accessoriesPrice) || 0), 0) *
+                ((extractNumber(quoteObj.accessoriesDiscount) || 0) / 100)) +
+            (optionDetails.reduce((sum, item) => sum + (extractNumber(item.servicesPrice) || 0), 0) *
+                ((extractNumber(quoteObj.servicesDiscount) || 0) / 100)) +
+            (extractNumber(quoteObj.flatDiscount) || 0);
+
+        const interiorProjectAmountRaw =
+            pick('interiorProjectAmount', 'projectAmount', 'subTotal', 'totalPrice', 'grossAmount') ??
+            (computedInteriorAmount > 0 ? computedInteriorAmount : null);
+        const totalPayableAmountRaw =
+            pick('totalPayableAmount', 'totalPayable', 'grandTotal', 'netPayable', 'finalTotalPrice', 'totalAmount') ??
+            (optionDetailsTotal > 0 ? optionDetailsTotal : null);
+        const discountRaw =
+            pick('discount', 'discountAmount') ?? (computedDiscountFromFactors > 0 ? computedDiscountFromFactors : null);
         const interiorProjectAmountNum = extractNumber(interiorProjectAmountRaw);
         const totalPayableAmountNum = extractNumber(totalPayableAmountRaw);
         const discountNum = extractNumber(discountRaw);
@@ -449,6 +612,8 @@ export default function ProjectDetailPage() {
             lineItems,
             quoteOptionsData,
             totals,
+            leadFallback,
+            rawQuoteId: extractNumber(quotationId),
         };
     };
 
@@ -660,6 +825,9 @@ export default function ProjectDetailPage() {
                 (partnerData0 && typeof partnerData0 === 'object' && (partnerData0.sessionID || partnerData0.sessionId)) || '';
             const partnerIDFromLogin =
                 (partnerData0 && typeof partnerData0 === 'object' && (partnerData0.partnerID || partnerData0.partnerId)) || null;
+            if (partnerIDFromLogin != null && Number.isFinite(Number(partnerIDFromLogin))) {
+                setProlancePartnerId(Number(partnerIDFromLogin));
+            }
             if (!partnerRes.ok || !String(originSessionID).trim()) {
                 const msg =
                     (partnerBody && typeof partnerBody === 'object' && (partnerBody.message || partnerBody.error)) ||
@@ -766,6 +934,11 @@ export default function ProjectDetailPage() {
                 partnerBody && typeof partnerBody === 'object' && Array.isArray(partnerBody.data) ? partnerBody.data[0] : null;
             const originSessionID =
                 (partnerData0 && typeof partnerData0 === 'object' && (partnerData0.sessionID || partnerData0.sessionId)) || '';
+            const partnerIDFromLogin =
+                (partnerData0 && typeof partnerData0 === 'object' && (partnerData0.partnerID || partnerData0.partnerId)) || null;
+            if (partnerIDFromLogin != null && Number.isFinite(Number(partnerIDFromLogin))) {
+                setProlancePartnerId(Number(partnerIDFromLogin));
+            }
             if (!partnerRes.ok || !String(originSessionID).trim()) {
                 const msg =
                     (partnerBody && typeof partnerBody === 'object' && (partnerBody.message || partnerBody.error)) ||
@@ -789,18 +962,120 @@ export default function ProjectDetailPage() {
             const quoteText = await quoteRes.text();
             let quoteBody: any = null;
             try { quoteBody = quoteText ? JSON.parse(quoteText) : null; } catch { quoteBody = quoteText; }
-            setGetQuoteLastStatus(quoteRes.status);
+            let effectiveStatus = quoteRes.status;
+            const quoteIdFromGetQuote = extractQuoteId(quoteBody);
+            if (quoteIdFromGetQuote != null) {
+                setProlanceQuoteId(quoteIdFromGetQuote);
+            }
+
+            // Always call FullDetails endpoint after base quote call.
+            // Use quote_id generated by Get Quote API for the FullDetails call.
+            if (quoteIdFromGetQuote != null) {
+                const fullRes = await fetch(
+                    `${API}/api/prolance-test/quotes/full-details/${encodeURIComponent(String(quoteIdFromGetQuote))}`,
+                    {
+                        method: 'GET',
+                        headers: {
+                            ...appHeaders,
+                            'X-Prolance-Token': String(prolanceToken).trim(),
+                            'X-Prolance-Origin-Session': String(originSessionID).trim(),
+                        },
+                    },
+                );
+                const fullText = await fullRes.text();
+                let fullBody: any = null;
+                try { fullBody = fullText ? JSON.parse(fullText) : null; } catch { fullBody = fullText; }
+                if (fullRes.ok && fullBody) {
+                    // Keep room totals from /quotes payload (matches Prolance summary),
+                    // but hydrate with FullDetails for units/material breakdown.
+                    const baseQuoteData =
+                        quoteBody && typeof quoteBody === 'object' && Array.isArray(quoteBody.data) ? quoteBody.data[0] : null;
+                    const baseQuoteOptionsData =
+                        baseQuoteData && typeof baseQuoteData === 'object' && Array.isArray(baseQuoteData.quoteOptionsData)
+                            ? baseQuoteData.quoteOptionsData
+                            : null;
+                    if (
+                        fullBody &&
+                        typeof fullBody === 'object' &&
+                        fullBody.data &&
+                        typeof fullBody.data === 'object' &&
+                        Array.isArray(baseQuoteOptionsData) &&
+                        baseQuoteOptionsData.length > 0
+                    ) {
+                        const baseByOptionKey = new Map<string, any>();
+                        baseQuoteOptionsData.forEach((item: any, idx: number) => {
+                            const optionKey =
+                                (item && (item.optionID ?? item.optionId ?? item.roomID ?? item.roomId)) != null
+                                    ? String(item.optionID ?? item.optionId ?? item.roomID ?? item.roomId)
+                                    : `idx-${idx}`;
+                            baseByOptionKey.set(optionKey, item);
+                        });
+                        const fullOptionsData = Array.isArray((fullBody.data as any).quoteOptionsData)
+                            ? (fullBody.data as any).quoteOptionsData
+                            : Array.isArray((fullBody.data as any).optionDetails)
+                                ? (fullBody.data as any).optionDetails
+                                : [];
+                        const mergedOptionsData = fullOptionsData.map((item: any, idx: number) => {
+                            const optionKey =
+                                (item && (item.optionID ?? item.optionId ?? item.roomID ?? item.roomId)) != null
+                                    ? String(item.optionID ?? item.optionId ?? item.roomID ?? item.roomId)
+                                    : `idx-${idx}`;
+                            const baseItem = baseByOptionKey.get(optionKey);
+                            if (!baseItem || typeof baseItem !== 'object') return item;
+                            return {
+                                ...item,
+                                // Keep detailed FullDetails fields (units/matlInfo/etc),
+                                // but use summary pricing from /quotes endpoint to match Prolance cards.
+                                totalPrice: baseItem.totalPrice ?? item.totalPrice,
+                                totalPriceOld: baseItem.totalPriceOld ?? item.totalPriceOld,
+                                unitsPrice: baseItem.unitsPrice ?? item.unitsPrice,
+                                loftsPrice: baseItem.loftsPrice ?? item.loftsPrice,
+                                servicesPrice: baseItem.servicesPrice ?? item.servicesPrice,
+                                appliancesPrice: baseItem.appliancesPrice ?? item.appliancesPrice,
+                                skirtingsPrice: baseItem.skirtingsPrice ?? item.skirtingsPrice,
+                                worktopsPrice: baseItem.worktopsPrice ?? item.worktopsPrice,
+                                additionalHWPrice: baseItem.additionalHWPrice ?? item.additionalHWPrice,
+                            };
+                        });
+                        if (mergedOptionsData.length > 0) {
+                            quoteBody = {
+                                ...fullBody,
+                                data: {
+                                    ...(fullBody.data as Record<string, unknown>),
+                                    quoteOptionsData: mergedOptionsData,
+                                },
+                            };
+                        } else {
+                            quoteBody = fullBody;
+                        }
+                    } else {
+                        quoteBody = fullBody;
+                    }
+                    effectiveStatus = fullRes.status;
+                } else if (!quoteRes.ok && fullRes.ok && fullBody) {
+                    quoteBody = fullBody;
+                    effectiveStatus = fullRes.status;
+                } else if (!hasQuotePricingDetails(quoteBody) && fullBody) {
+                    // Preserve full-details error/debug body when base response has no pricing data.
+                    quoteBody = fullBody;
+                    effectiveStatus = fullRes.status;
+                }
+            }
+
+            setGetQuoteLastStatus(effectiveStatus);
             setGetQuoteLastBody(quoteBody);
-            if (quoteRes.ok) {
+            const quoteSucceeded = effectiveStatus >= 200 && effectiveStatus < 300;
+            if (quoteSucceeded) {
                 setLatestQuoteResponse(quoteBody);
                 setQuoteSummaryTab('overall');
+                setExpandedQuoteRooms({});
                 setShowQuotePreviewModal(true);
                 setBlockedTaskMessage(`Get quote triggered successfully for Project ID ${quoteProjectId}.`);
                 setTimeout(() => setBlockedTaskMessage(null), 3500);
             } else {
                 const msg =
                     (quoteBody && typeof quoteBody === 'object' && (quoteBody.message || quoteBody.error)) ||
-                    `Get quote failed (HTTP ${quoteRes.status}).`;
+                    `Get quote failed (HTTP ${effectiveStatus}).`;
                 setBlockedTaskMessage(String(msg));
                 setTimeout(() => setBlockedTaskMessage(null), 5000);
             }
@@ -1801,8 +2076,26 @@ export default function ProjectDetailPage() {
                                     extractString((project as unknown as Record<string, unknown>)?.projectType) ||
                                     extractString(formData?.project_type) ||
                                     extractString(formData?.projectType),
+                                partnerId: prolancePartnerId != null ? String(prolancePartnerId) : null,
                             };
                             const view = normalizeQuoteView(latestQuoteResponse, leadFallback);
+                            const displayedPartnerId =
+                                leadFallback.partnerId || view.quoteMeta.partnerId || '-';
+                            const displayedQuoteNumber =
+                                view.quoteNum !== '-'
+                                    ? view.quoteNum
+                                    : prolanceQuoteId != null
+                                        ? String(prolanceQuoteId)
+                                        : '-';
+                            const shareQuoteIdRaw =
+                                extractNumber(view.quotationId) ??
+                                extractNumber(displayedQuoteNumber) ??
+                                prolanceQuoteId;
+                            const shareQuoteId = shareQuoteIdRaw != null ? String(Math.trunc(Number(shareQuoteIdRaw))) : '';
+                            const shareQuoteLink =
+                                shareQuoteId && typeof window !== 'undefined'
+                                    ? `${window.location.origin}/quote/${encodeURIComponent(shareQuoteId)}`
+                                    : '';
                             const hasFinancialTotals =
                                 extractNumber(view.totals.interiorProjectAmount) != null ||
                                 extractNumber(view.totals.designAndManagementFees) != null ||
@@ -1811,7 +2104,27 @@ export default function ProjectDetailPage() {
                             return (
                                 <div className="mx-auto max-w-5xl space-y-5 px-6 py-6">
                                     <div className="rounded-2xl bg-white p-6 shadow-sm">
-                                        <p className="text-xs font-semibold tracking-wide text-gray-500">QUOTATION ID : {view.quotationId}</p>
+                                        <div className="flex flex-wrap items-center justify-between gap-2">
+                                            <p className="text-xs font-semibold tracking-wide text-gray-500">QUOTATION ID : {view.quotationId}</p>
+                                            {shareQuoteLink ? (
+                                                <button
+                                                    type="button"
+                                                    onClick={async () => {
+                                                        try {
+                                                            await navigator.clipboard.writeText(shareQuoteLink);
+                                                            setQuoteLinkCopied(true);
+                                                            setTimeout(() => setQuoteLinkCopied(false), 1800);
+                                                        } catch {
+                                                            setBlockedTaskMessage('Could not copy quote link.');
+                                                            setTimeout(() => setBlockedTaskMessage(null), 2500);
+                                                        }
+                                                    }}
+                                                    className="rounded-md border border-indigo-300 px-3 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50"
+                                                >
+                                                    {quoteLinkCopied ? 'Link Copied' : 'Copy Share Link'}
+                                                </button>
+                                            ) : null}
+                                        </div>
                                         <h3 className="mt-2 text-3xl font-bold text-gray-800">
                                             Hey {view.customerName !== '-' ? view.customerName : 'Customer'}, your quotation is ready!
                                         </h3>
@@ -1826,7 +2139,7 @@ export default function ProjectDetailPage() {
                                             ['BHK Type', view.bhkType],
                                             ['Project Type', view.projectType],
                                             ['Project ID', view.projectId],
-                                            ['Quote Number', view.quoteNum],
+                                            ['Quote Number', displayedQuoteNumber],
                                         ].map(([label, value]) => (
                                             <div key={label} className="rounded-lg bg-gray-50 p-3">
                                                 <p className="text-[10px] uppercase tracking-wide text-gray-500">{label}</p>
@@ -1935,7 +2248,7 @@ export default function ProjectDetailPage() {
                                                     <p className="mb-3 text-sm font-semibold text-gray-800">Quote Overview</p>
                                                     <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
                                                         {[
-                                                            ['Partner ID', view.quoteMeta.partnerId],
+                                                            ['Partner ID', displayedPartnerId],
                                                             ['Remarks', view.quoteMeta.remarks],
                                                             ['Created On', view.quoteMeta.createdOn],
                                                             ['Total Price', formatCurrency(view.quoteMeta.totalPrice)],
@@ -1997,6 +2310,82 @@ export default function ProjectDetailPage() {
                                                                         </div>
                                                                     ))}
                                                                 </div>
+                                                                <div className="mt-4">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() =>
+                                                                            setExpandedQuoteRooms((prev) => ({
+                                                                                ...prev,
+                                                                                [`${opt.qoid ?? idx}-${opt.optionID ?? idx}`]:
+                                                                                    !prev[`${opt.qoid ?? idx}-${opt.optionID ?? idx}`],
+                                                                            }))
+                                                                        }
+                                                                        className="text-sm font-semibold text-indigo-700 hover:text-indigo-900"
+                                                                    >
+                                                                        {expandedQuoteRooms[`${opt.qoid ?? idx}-${opt.optionID ?? idx}`] ? 'Read less' : 'Read more'}
+                                                                    </button>
+                                                                </div>
+                                                                {expandedQuoteRooms[`${opt.qoid ?? idx}-${opt.optionID ?? idx}`] && (
+                                                                    <div className="mt-3 space-y-3 rounded-lg border border-indigo-100 bg-indigo-50/40 p-3">
+                                                                        {opt.roomRev ? (
+                                                                            <p className="text-xs text-gray-600">
+                                                                                <span className="font-semibold text-gray-800">Room Revision:</span> {opt.roomRev}
+                                                                            </p>
+                                                                        ) : null}
+                                                                        {opt.matlInfo ? (
+                                                                            <div>
+                                                                                <p className="text-xs font-semibold uppercase tracking-wide text-gray-700">Material Info</p>
+                                                                                <pre className="mt-1 whitespace-pre-wrap text-xs text-gray-700">{opt.matlInfo}</pre>
+                                                                            </div>
+                                                                        ) : null}
+                                                                        {opt.units.length ? (
+                                                                            <div>
+                                                                                <p className="text-xs font-semibold uppercase tracking-wide text-gray-700">Base Cabinets / Units</p>
+                                                                                <div className="mt-2 space-y-2">
+                                                                                    {opt.units.map((u, uIdx) => (
+                                                                                        <div key={`${u.label}-${uIdx}`} className="rounded border border-gray-200 bg-white p-2 text-xs">
+                                                                                            <p className="font-semibold text-gray-900">{u.label} - {u.cabinetClass}</p>
+                                                                                            <p className="text-gray-700">{u.description}</p>
+                                                                                            <p className="text-gray-600">Size: {u.dimensions}</p>
+                                                                                            <p className="font-semibold text-gray-900">Price: {formatCurrency(u.price)}</p>
+                                                                                        </div>
+                                                                                    ))}
+                                                                                </div>
+                                                                            </div>
+                                                                        ) : null}
+                                                                        {opt.lofts.length ? (
+                                                                            <div>
+                                                                                <p className="text-xs font-semibold uppercase tracking-wide text-gray-700">Lofts</p>
+                                                                                <div className="mt-2 space-y-2">
+                                                                                    {opt.lofts.map((l, lIdx) => (
+                                                                                        <div key={`${l.description}-${lIdx}`} className="rounded border border-gray-200 bg-white p-2 text-xs">
+                                                                                            <p className="font-semibold text-gray-900">{l.description}</p>
+                                                                                            <p className="text-gray-600">Size: {l.dimensions}</p>
+                                                                                            <p className="font-semibold text-gray-900">Price: {formatCurrency(l.price)}</p>
+                                                                                        </div>
+                                                                                    ))}
+                                                                                </div>
+                                                                            </div>
+                                                                        ) : null}
+                                                                        {opt.servicesList.length ? (
+                                                                            <div>
+                                                                                <p className="text-xs font-semibold uppercase tracking-wide text-gray-700">Services</p>
+                                                                                <div className="mt-2 space-y-2">
+                                                                                    {opt.servicesList.map((s, sIdx) => (
+                                                                                        <div key={`${s.category}-${sIdx}`} className="rounded border border-gray-200 bg-white p-2 text-xs">
+                                                                                            <p className="font-semibold text-gray-900">{s.category}</p>
+                                                                                            <p className="text-gray-700">{s.description}</p>
+                                                                                            <p className="text-gray-600">
+                                                                                                Qty: {s.qty ?? '-'} {s.uom}
+                                                                                            </p>
+                                                                                            <p className="font-semibold text-gray-900">Price: {formatCurrency(s.price)}</p>
+                                                                                        </div>
+                                                                                    ))}
+                                                                                </div>
+                                                                            </div>
+                                                                        ) : null}
+                                                                    </div>
+                                                                )}
                                                             </div>
                                                         );
                                                     })

@@ -142,6 +142,37 @@ function send(res: Response, status: number, data: unknown): void {
   else res.status(status).json(data);
 }
 
+function extractQuoteIdFromResponse(data: unknown): string | null {
+  if (!data || typeof data !== "object") return null;
+  const root = data as Record<string, unknown>;
+  const direct = root.quoteID ?? root.quoteId ?? root.quotationId ?? root.quotationID;
+  if (typeof direct === "number" && Number.isFinite(direct)) return String(direct);
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+  const arr = root.data;
+  if (Array.isArray(arr) && arr[0] && typeof arr[0] === "object") {
+    const first = arr[0] as Record<string, unknown>;
+    const nested = first.quoteID ?? first.quoteId ?? first.quotationId ?? first.quotationID;
+    if (typeof nested === "number" && Number.isFinite(nested)) return String(nested);
+    if (typeof nested === "string" && nested.trim()) return nested.trim();
+  }
+  return null;
+}
+
+function hasDetailedQuoteData(data: unknown): boolean {
+  if (!data || typeof data !== "object") return false;
+  const root = data as Record<string, unknown>;
+  const direct = root.quoteOptionsData;
+  if (Array.isArray(direct) && direct.length > 0) return true;
+  const arr = root.data;
+  if (Array.isArray(arr) && arr[0] && typeof arr[0] === "object") {
+    const first = arr[0] as Record<string, unknown>;
+    if (Array.isArray(first.quoteOptionsData) && first.quoteOptionsData.length > 0) return true;
+    if (first.totalPayableAmount != null || first.finalTotalPrice != null || first.totalPrice != null) return true;
+  }
+  if (root.totalPayableAmount != null || root.finalTotalPrice != null || root.totalPrice != null) return true;
+  return false;
+}
+
 function maskValue(value: string | null | undefined, visibleStart = 6, visibleEnd = 4): string {
   const raw = String(value || "");
   if (!raw) return "(missing)";
@@ -315,6 +346,175 @@ export function registerProlanceRoutes(
     }
   });
 
+  // Public share: quote by ID (no app-session auth). Must be registered BEFORE `/quotes/:projectId`
+  // or Express will treat "share" as a project id.
+  const handlePublicQuoteView = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const quoteId = String(req.params.quoteId || "").trim();
+      if (!quoteId) {
+        res.status(400).json({ message: "quoteId is required" });
+        return;
+      }
+      const apiKey = readApiKey(req);
+      if (!apiKey) {
+        res.status(500).json({ message: "Origin API key is not configured" });
+        return;
+      }
+
+      const username = asString(envTrim("PROLANCE_USERNAME"));
+      const password = asString(envTrim("PROLANCE_PASSWORD"));
+      if (!username || !password) {
+        res.status(500).json({ message: "Prolance API credentials are not configured" });
+        return;
+      }
+
+      const tokenResp = await proxiedFetch({
+        method: "POST",
+        path: "/token",
+        asForm: true,
+        body: { grant_type: "password", username, password },
+      });
+      if (tokenResp.status < 200 || tokenResp.status >= 300 || !tokenResp.data || typeof tokenResp.data !== "object") {
+        send(res, tokenResp.status, tokenResp.data);
+        return;
+      }
+      const tokenObj = tokenResp.data as Record<string, unknown>;
+      const token = asString(tokenObj.access_token) || asString(tokenObj.accessToken) || asString(tokenObj.token);
+      if (!token) {
+        res.status(500).json({ message: "Failed to generate Prolance token" });
+        return;
+      }
+
+      const loginID = asString(envTrim("PROLANCE_PARTNER_LOGIN_ID"));
+      const partnerPassword = asString(envTrim("PROLANCE_PARTNER_PASSWORD"));
+      if (!loginID || !partnerPassword) {
+        res.status(500).json({ message: "Partner login credentials are not configured" });
+        return;
+      }
+
+      const partnerResp = await proxiedFetch({
+        method: "POST",
+        path: "/Origin/Partners/LoginAPI",
+        token,
+        includeOriginApiHeaders: true,
+        apiKey,
+        body: { LoginID: loginID, Password: partnerPassword, LoginFrom: 1 },
+      });
+      if (partnerResp.status < 200 || partnerResp.status >= 300 || !partnerResp.data || typeof partnerResp.data !== "object") {
+        send(res, partnerResp.status, partnerResp.data);
+        return;
+      }
+      const partnerRoot = partnerResp.data as Record<string, unknown>;
+      const partnerData = Array.isArray(partnerRoot.data) && partnerRoot.data[0] && typeof partnerRoot.data[0] === "object"
+        ? (partnerRoot.data[0] as Record<string, unknown>)
+        : {};
+      const originSessionId =
+        asString(partnerData.sessionID) ||
+        asString(partnerData.sessionId) ||
+        asString(partnerData.originSessionID) ||
+        asString(partnerData.originSessionId);
+      if (!originSessionId) {
+        res.status(500).json({ message: "Failed to get OriginSessionID from Prolance partner login" });
+        return;
+      }
+
+      let fullDetails = await proxiedFetch({
+        method: "GET",
+        path: `/Origin/Quotes/FullDetails/${pathSegment(quoteId)}`,
+        token,
+        originSessionId,
+        includeOriginApiHeaders: true,
+        apiKey,
+      });
+      if (fullDetails.status === 401) {
+        fullDetails = await proxiedFetch({
+          method: "GET",
+          path: `/Origin/Quotes/FullDetails/${pathSegment(quoteId)}`,
+          token: null,
+          originSessionId,
+          includeOriginApiHeaders: true,
+          apiKey,
+        });
+      }
+      if (fullDetails.status < 200 || fullDetails.status >= 300 || !fullDetails.data || typeof fullDetails.data !== "object") {
+        send(res, fullDetails.status, fullDetails.data);
+        return;
+      }
+
+      const fullRoot = fullDetails.data as Record<string, unknown>;
+      const fullData = (fullRoot.data && typeof fullRoot.data === "object")
+        ? (fullRoot.data as Record<string, unknown>)
+        : fullRoot;
+      const projectIdRaw = fullData.projectID ?? fullData.projectId;
+      const projectId = typeof projectIdRaw === "number" && Number.isFinite(projectIdRaw)
+        ? String(projectIdRaw)
+        : asString(projectIdRaw);
+
+      if (!projectId) {
+        send(res, 200, fullDetails.data);
+        return;
+      }
+
+      let quotesResp = await proxiedFetch({
+        method: "GET",
+        path: `/Origin/Quotes/${pathSegment(projectId)}`,
+        token,
+        originSessionId,
+        includeOriginApiHeaders: true,
+        apiKey,
+      });
+      if (quotesResp.status === 401) {
+        quotesResp = await proxiedFetch({
+          method: "GET",
+          path: `/Origin/Quotes/${pathSegment(projectId)}`,
+          token: null,
+          originSessionId,
+          includeOriginApiHeaders: true,
+          apiKey,
+        });
+      }
+      if (quotesResp.status < 200 || quotesResp.status >= 300 || !quotesResp.data || typeof quotesResp.data !== "object") {
+        send(res, 200, fullDetails.data);
+        return;
+      }
+
+      const quotesRoot = quotesResp.data as Record<string, unknown>;
+      const quoteList = Array.isArray(quotesRoot.data) ? quotesRoot.data : [];
+      const matchedQuote = quoteList.find((q) => {
+        if (!q || typeof q !== "object") return false;
+        const qo = q as Record<string, unknown>;
+        const qid = qo.quoteID ?? qo.quoteId ?? qo.quotationId ?? qo.quotationID;
+        return String(qid ?? "") === String(quoteId);
+      });
+      if (!matchedQuote || typeof matchedQuote !== "object") {
+        send(res, 200, fullDetails.data);
+        return;
+      }
+
+      const matched = matchedQuote as Record<string, unknown>;
+      const summaryOptionsData = Array.isArray(matched.quoteOptionsData) ? matched.quoteOptionsData : [];
+
+      const merged = {
+        ...fullRoot,
+        data: {
+          ...fullData,
+          totalPrice: matched.totalPrice ?? fullData.totalPrice,
+          finalTotalPrice: matched.finalTotalPrice ?? fullData.finalTotalPrice,
+          discount: matched.discount ?? fullData.discount,
+          quoteNum: matched.quoteNum ?? fullData.quoteNum,
+          quoteOptionsData: summaryOptionsData.length > 0 ? summaryOptionsData : (fullData.quoteOptionsData ?? fullData.optionDetails),
+        },
+      };
+      send(res, 200, merged);
+    } catch (err) {
+      console.error("prolance public quote view fetch error", err);
+      res.status(500).json({ message: asErrorMessage(err) });
+    }
+  };
+
+  app.get(`${TEST_PREFIX}/quotes/share/:quoteId`, handlePublicQuoteView);
+  app.get(`${TEST_PREFIX}/public/quotes/view/:quoteId`, handlePublicQuoteView);
+
   // Collection: GET {{base_url}}/Origin/Quotes/{{project_id}}
   app.get(`${TEST_PREFIX}/quotes/:projectId`, async (req: Request, res: Response) => {
     const user = await requireUser(req, res);
@@ -327,7 +527,7 @@ export function registerProlanceRoutes(
       if (!originSessionId) return res.status(400).json({ message: "OriginSessionID is required" });
       if (!apiKey) return res.status(400).json({ message: "Origin API key is required" });
 
-      const upstream = await proxiedFetch({
+      let upstream = await proxiedFetch({
         method: "GET",
         path: `/Origin/Quotes/${pathSegment(req.params.projectId)}`,
         token,
@@ -335,9 +535,139 @@ export function registerProlanceRoutes(
         includeOriginApiHeaders: true,
         apiKey,
       });
+      if (upstream.status === 401) {
+        upstream = await proxiedFetch({
+          method: "GET",
+          path: `/Origin/Quotes/${pathSegment(req.params.projectId)}`,
+          token: null,
+          originSessionId,
+          includeOriginApiHeaders: true,
+          apiKey,
+        });
+      }
+      if (!upstream || upstream.status < 200 || upstream.status >= 300) {
+        if (upstream?.status === 401) {
+          const debug = {
+            upstreamUrl: `${baseUrl()}/Origin/Quotes/${pathSegment(req.params.projectId)}`,
+            projectId: String(req.params.projectId || ""),
+            sentHeaders: {
+              Authorization: token ? `Bearer ${maskValue(token, 8, 6)}` : "(missing)",
+              OriginSessionID: maskValue(originSessionId, 10, 8),
+              OriginAPIKey: maskValue(apiKey, 8, 6),
+              NoEncryption: envTrim("PROLANCE_NO_ENCRYPTION") || "1",
+            },
+            retries: ["with_bearer", "without_bearer"],
+          };
+          if (upstream.data && typeof upstream.data === "object") {
+            return res.status(401).json({ ...(upstream.data as Record<string, unknown>), debug });
+          }
+          return res.status(401).json({ message: "Authorization has been denied for this request.", upstream: upstream.data, debug });
+        }
+        return send(res, upstream.status, upstream.data);
+      }
+
+      // If this response has only quote metadata, auto-hydrate with FullDetails.
+      if (!hasDetailedQuoteData(upstream.data)) {
+        const quoteId = extractQuoteIdFromResponse(upstream.data);
+        if (quoteId) {
+          let fullDetails = await proxiedFetch({
+            method: "GET",
+            path: `/Origin/Quotes/FullDetails/${pathSegment(quoteId)}`,
+            token,
+            originSessionId,
+            includeOriginApiHeaders: true,
+            apiKey,
+          });
+          if (fullDetails.status === 401) {
+            fullDetails = await proxiedFetch({
+              method: "GET",
+              path: `/Origin/Quotes/FullDetails/${pathSegment(quoteId)}`,
+              token: null,
+              originSessionId,
+              includeOriginApiHeaders: true,
+              apiKey,
+            });
+          }
+          if (fullDetails.status >= 200 && fullDetails.status < 300) {
+            return send(res, fullDetails.status, fullDetails.data);
+          }
+          if (fullDetails.status === 401) {
+            const debug = {
+              upstreamUrl: `${baseUrl()}/Origin/Quotes/FullDetails/${pathSegment(quoteId)}`,
+              quoteId: String(quoteId),
+              sentHeaders: {
+                Authorization: token ? `Bearer ${maskValue(token, 8, 6)}` : "(missing)",
+                OriginSessionID: maskValue(originSessionId, 10, 8),
+                OriginAPIKey: maskValue(apiKey, 8, 6),
+                NoEncryption: envTrim("PROLANCE_NO_ENCRYPTION") || "1",
+              },
+              retries: ["with_bearer", "without_bearer"],
+            };
+            if (fullDetails.data && typeof fullDetails.data === "object") {
+              return res.status(401).json({ ...(fullDetails.data as Record<string, unknown>), debug });
+            }
+            return res.status(401).json({ message: "Authorization has been denied for this request.", upstream: fullDetails.data, debug });
+          }
+        }
+      }
+
       return send(res, upstream.status, upstream.data);
     } catch (err) {
       console.error("prolance quotes fetch error", err);
+      return res.status(500).json({ message: asErrorMessage(err) });
+    }
+  });
+
+  // Collection: GET {{base_url}}/Origin/Quotes/FullDetails/{{quote_id}}
+  app.get(`${TEST_PREFIX}/quotes/full-details/:quoteId`, async (req: Request, res: Response) => {
+    const user = await requireUser(req, res);
+    if (!user) return;
+    try {
+      const token = readToken(req);
+      const originSessionId = readOriginSessionId(req);
+      const apiKey = readApiKey(req);
+      if (!token) return res.status(400).json({ message: "token is required" });
+      if (!originSessionId) return res.status(400).json({ message: "OriginSessionID is required" });
+      if (!apiKey) return res.status(400).json({ message: "Origin API key is required" });
+
+      let upstream = await proxiedFetch({
+        method: "GET",
+        path: `/Origin/Quotes/FullDetails/${pathSegment(req.params.quoteId)}`,
+        token,
+        originSessionId,
+        includeOriginApiHeaders: true,
+        apiKey,
+      });
+      if (upstream.status === 401) {
+        upstream = await proxiedFetch({
+          method: "GET",
+          path: `/Origin/Quotes/FullDetails/${pathSegment(req.params.quoteId)}`,
+          token: null,
+          originSessionId,
+          includeOriginApiHeaders: true,
+          apiKey,
+        });
+      }
+      if (upstream.status === 401) {
+        const debug = {
+          upstreamUrl: `${baseUrl()}/Origin/Quotes/FullDetails/${pathSegment(req.params.quoteId)}`,
+          quoteId: String(req.params.quoteId || ""),
+          sentHeaders: {
+            Authorization: token ? `Bearer ${maskValue(token, 8, 6)}` : "(missing)",
+            OriginSessionID: maskValue(originSessionId, 10, 8),
+            OriginAPIKey: maskValue(apiKey, 8, 6),
+            NoEncryption: envTrim("PROLANCE_NO_ENCRYPTION") || "1",
+          },
+          retries: ["with_bearer", "without_bearer"],
+        };
+        if (upstream.data && typeof upstream.data === "object") {
+          return res.status(401).json({ ...(upstream.data as Record<string, unknown>), debug });
+        }
+        return res.status(401).json({ message: "Authorization has been denied for this request.", upstream: upstream.data, debug });
+      }
+      return send(res, upstream.status, upstream.data);
+    } catch (err) {
+      console.error("prolance quote full-details fetch error", err);
       return res.status(500).json({ message: asErrorMessage(err) });
     }
   });

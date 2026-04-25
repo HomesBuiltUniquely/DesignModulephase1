@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "dev": "nodemon --watch server.ts --exec ts-node server.ts",
+    "dev": "nodemon --watch server.ts --watch routes --ext ts --exec ts-node server.ts",
     "start": "ts-node server.ts",
     "build": "tsc",
     "start:prod": "node dist/server.js"
