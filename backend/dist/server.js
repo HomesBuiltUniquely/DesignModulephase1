@@ -36,6 +36,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+require("dotenv/config");
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const promise_1 = __importDefault(require("mysql2/promise"));
@@ -153,7 +154,7 @@ app.get("/api/health", (_req, res) => {
 const pool = promise_1.default.createPool({
     host: process.env.DB_HOST || "localhost",
     user: process.env.DB_USER || "root",
-    password: process.env.DB_PASSWORD || "root",
+    password: process.env.DB_PASSWORD || "Root@123",
     database: process.env.DB_NAME || "DesignMod",
     port: Number(process.env.DB_PORT || 3306),
     connectionLimit: 10,
@@ -192,6 +193,8 @@ const GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token";
 const GOOGLE_EVENTS_URI = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 const GOOGLE_USERINFO_URI = "https://www.googleapis.com/oauth2/v2/userinfo";
 const GOOGLE_TIME_ZONE = "Asia/Kolkata";
+const GOOGLE_SHARED_EVENT_PROPERTY_KEY = "source";
+const GOOGLE_SHARED_EVENT_PROPERTY_VALUE = "Project-ERP";
 const upload = (0, multer_1.default)({
     storage: multer_1.default.diskStorage({
         destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
@@ -343,10 +346,15 @@ async function triggerMailRouteWithLog(args) {
 }
 async function triggerCustomerEmailForLead(leadId, emailRoutePath, opts) {
     try {
-        const [rows] = await pool.query(`SELECT l.project_name as projectName, l.pid as projectPid, l.client_email as clientEmail, l.payload,
-              d.email as designerEmail
+        const [rows] = await pool.query(`SELECT l.pid as projectPid,
+              l.project_name as projectName,
+              l.client_email as clientEmail,
+              l.client_email_alt as alternateClientEmail,
+              l.payload,
+              u.name as designerName,
+              u.email as designerEmail
        FROM leads l
-       LEFT JOIN users d ON d.id = l.assigned_designer_id
+       LEFT JOIN users u ON u.id = l.assigned_designer_id
        WHERE l.id = ?`, [leadId]);
         const row = rows[0];
         if (!row)
@@ -358,11 +366,21 @@ async function triggerCustomerEmailForLead(leadId, emailRoutePath, opts) {
         catch {
             payload = {};
         }
-        const customerEmail = row.clientEmail || payload.email || payload?.form?.email || null;
+        const customerEmail = row.clientEmail ||
+            row.alternateClientEmail ||
+            payload.email ||
+            payload?.form?.email ||
+            null;
         const customerName = payload.customer_name ||
             payload?.form?.customer_name ||
             row.projectName ||
             "Customer";
+        const designerName = row.designerName ||
+            payload?.designer_name ||
+            payload?.designerName ||
+            payload?.form?.designer_name ||
+            payload?.form?.designerName ||
+            "Designer";
         const mailChainCc = await getMailLoopCcEmails([
             opts?.actorEmail || null,
             row.designerEmail || null,
@@ -381,6 +399,7 @@ async function triggerCustomerEmailForLead(leadId, emailRoutePath, opts) {
                 cc: mailChainCc,
                 subject: mailChainSubject,
                 customerName,
+                designerName,
             },
         });
     }
@@ -419,6 +438,16 @@ async function initDb() {
             const [mmtMgrCol] = await conn.query("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'mmt_manager_id'");
             if (mmtMgrCol.length === 0) {
                 await conn.query("ALTER TABLE users ADD COLUMN mmt_manager_id INT NULL");
+            }
+        }
+        catch {
+            // ignore
+        }
+        // Add territorial_design_manager_id for mapping design managers to their TDM
+        try {
+            const [tdmMgrCol] = await conn.query("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'territorial_design_manager_id'");
+            if (tdmMgrCol.length === 0) {
+                await conn.query("ALTER TABLE users ADD COLUMN territorial_design_manager_id INT NULL");
             }
         }
         catch {
@@ -473,6 +502,24 @@ async function initDb() {
             const [designerCol] = await conn.query("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'leads' AND COLUMN_NAME = 'assigned_designer_id'");
             if (designerCol.length === 0) {
                 await conn.query("ALTER TABLE leads ADD COLUMN assigned_designer_id INT NULL");
+            }
+        }
+        catch {
+            // ignore
+        }
+        try {
+            const [altEmailCol] = await conn.query("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'leads' AND COLUMN_NAME = 'client_email_alt'");
+            if (altEmailCol.length === 0) {
+                await conn.query("ALTER TABLE leads ADD COLUMN client_email_alt VARCHAR(255) NULL");
+            }
+        }
+        catch {
+            // ignore
+        }
+        try {
+            const [pmCol] = await conn.query("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'leads' AND COLUMN_NAME = 'assigned_project_manager_id'");
+            if (pmCol.length === 0) {
+                await conn.query("ALTER TABLE leads ADD COLUMN assigned_project_manager_id INT NULL");
             }
         }
         catch {
@@ -734,14 +781,40 @@ async function getGoogleConnectionByUserId(userId) {
      LIMIT 1`, [userId]);
     return (rows[0] || null);
 }
+function canAccessHubCalendar(role) {
+    const normalizedRole = (role || "").toLowerCase();
+    return (normalizedRole === "admin" ||
+        normalizedRole === "deputy_general_manager" ||
+        normalizedRole === "territorial_design_manager" ||
+        normalizedRole === "design_manager" ||
+        normalizedRole === "designer");
+}
+function canViewAllHubCalendarEvents(role) {
+    const normalizedRole = (role || "").toLowerCase();
+    return normalizedRole === "admin" || normalizedRole === "deputy_general_manager";
+}
 async function getCalendarVisibleUsers(currentUser) {
     const role = (currentUser.role || "").toLowerCase();
-    if (role === "admin" || role === "territorial_design_manager") {
+    if (role === "admin" || role === "deputy_general_manager") {
         const [rows] = await pool.query(`SELECT DISTINCT u.id, u.email, u.name, u.role
        FROM users u
        INNER JOIN google_calendar_connections gcc ON gcc.user_id = u.id
        WHERE gcc.active = 1
        ORDER BY u.name ASC`);
+        return rows;
+    }
+    if (role === "territorial_design_manager") {
+        const [rows] = await pool.query(`SELECT DISTINCT u.id, u.email, u.name, u.role
+       FROM users u
+       INNER JOIN google_calendar_connections gcc ON gcc.user_id = u.id
+       LEFT JOIN users dm ON dm.id = u.design_manager_id
+       WHERE gcc.active = 1
+         AND (
+           u.id = ?
+           OR (u.role = 'design_manager' AND u.territorial_design_manager_id = ?)
+           OR (u.role = 'designer' AND dm.territorial_design_manager_id = ?)
+         )
+       ORDER BY u.name ASC`, [currentUser.id, currentUser.id, currentUser.id]);
         return rows;
     }
     if (role === "design_manager") {
@@ -750,15 +823,6 @@ async function getCalendarVisibleUsers(currentUser) {
        INNER JOIN google_calendar_connections gcc ON gcc.user_id = u.id
        WHERE gcc.active = 1
          AND (u.id = ? OR (u.role = 'designer' AND u.design_manager_id = ?))
-       ORDER BY u.name ASC`, [currentUser.id, currentUser.id]);
-        return rows;
-    }
-    if (role === "mmt_manager") {
-        const [rows] = await pool.query(`SELECT DISTINCT u.id, u.email, u.name, u.role
-       FROM users u
-       INNER JOIN google_calendar_connections gcc ON gcc.user_id = u.id
-       WHERE gcc.active = 1
-         AND (u.id = ? OR (u.role = 'mmt_executive' AND u.mmt_manager_id = ?))
        ORDER BY u.name ASC`, [currentUser.id, currentUser.id]);
         return rows;
     }
@@ -864,6 +928,7 @@ async function fetchGoogleEventsForConnection(connection, owner, timeMin, timeMa
     url.searchParams.set("singleEvents", "true");
     url.searchParams.set("orderBy", "startTime");
     url.searchParams.set("maxResults", "250");
+    url.searchParams.set("sharedExtendedProperty", `${GOOGLE_SHARED_EVENT_PROPERTY_KEY}=${GOOGLE_SHARED_EVENT_PROPERTY_VALUE}`);
     if (timeMin)
         url.searchParams.set("timeMin", new Date(timeMin).toISOString());
     if (timeMax)
@@ -914,6 +979,11 @@ async function createGoogleCalendarEventForUser(args) {
             start: { dateTime: args.startDateTimeIso, timeZone: GOOGLE_TIME_ZONE },
             end: { dateTime: args.endDateTimeIso, timeZone: GOOGLE_TIME_ZONE },
             attendees: (args.attendees || []).map((email) => ({ email })),
+            extendedProperties: {
+                shared: {
+                    [GOOGLE_SHARED_EVENT_PROPERTY_KEY]: GOOGLE_SHARED_EVENT_PROPERTY_VALUE,
+                },
+            },
         }),
     });
     const data = await response.json().catch(() => ({}));
@@ -962,6 +1032,14 @@ function canImportLeads(role) {
 function canAssignLeads(role) {
     const r = (role || "").toLowerCase();
     return r === "admin" || r === "territorial_design_manager" || r === "deputy_general_manager" || r === "design_manager";
+}
+/** Who may pick the project manager on a lead (after DQC 2 approval). */
+function canAssignProjectManagerRole(role) {
+    const r = (role || "").toLowerCase();
+    return (r === "admin" ||
+        r === "territorial_design_manager" ||
+        r === "deputy_general_manager" ||
+        r === "senior_project_manager");
 }
 const excelImportPreviewStore = new Map();
 const EXCEL_PREVIEW_TTL_MS = 30 * 60 * 1000;
@@ -1059,6 +1137,9 @@ app.get("/api/google-calendar/connect-url", async (req, res) => {
         const user = await getUserFromSession(req);
         if (!user)
             return res.status(401).json({ message: "Unauthorized" });
+        if (!canAccessHubCalendar(user.role)) {
+            return res.status(403).json({ message: "You do not have access to HUB Calendar." });
+        }
         if (!isGoogleCalendarConfigured()) {
             return res.status(400).json({ message: "Google Calendar is not configured on the backend." });
         }
@@ -1116,6 +1197,9 @@ app.get("/api/google-calendar/status", async (req, res) => {
         const user = await getUserFromSession(req);
         if (!user)
             return res.status(401).json({ message: "Unauthorized" });
+        if (!canAccessHubCalendar(user.role)) {
+            return res.status(403).json({ message: "You do not have access to HUB Calendar." });
+        }
         const connection = await getGoogleConnectionByUserId(user.id);
         return res.json({
             configured: isGoogleCalendarConfigured(),
@@ -1134,6 +1218,9 @@ app.post("/api/google-calendar/disconnect", async (req, res) => {
         const user = await getUserFromSession(req);
         if (!user)
             return res.status(401).json({ message: "Unauthorized" });
+        if (!canAccessHubCalendar(user.role)) {
+            return res.status(403).json({ message: "You do not have access to HUB Calendar." });
+        }
         await pool.query("UPDATE google_calendar_connections SET active = 0, updated_at = ? WHERE user_id = ?", [new Date(), user.id]);
         return res.json({ ok: true });
     }
@@ -1147,6 +1234,9 @@ app.get("/api/google-calendar/my-events", async (req, res) => {
         const user = await getUserFromSession(req);
         if (!user)
             return res.status(401).json({ message: "Unauthorized" });
+        if (!canAccessHubCalendar(user.role)) {
+            return res.status(403).json({ message: "You do not have access to HUB Calendar." });
+        }
         const visibleUsers = await getCalendarVisibleUsers(user);
         const allEvents = [];
         for (const visibleUser of visibleUsers) {
@@ -1177,9 +1267,8 @@ app.get("/api/google-calendar/all-events", async (req, res) => {
         const user = await getUserFromSession(req);
         if (!user)
             return res.status(401).json({ message: "Unauthorized" });
-        const role = (user.role || "").toLowerCase();
-        if (role !== "admin" && role !== "territorial_design_manager") {
-            return res.status(403).json({ message: "Only admin or TDM can view all calendar events." });
+        if (!canViewAllHubCalendarEvents(user.role)) {
+            return res.status(403).json({ message: "Only admin or Deputy General Manager can view all calendar events." });
         }
         const [rows] = await pool.query(`SELECT gcc.id, gcc.user_id, gcc.google_email, gcc.access_token, gcc.refresh_token, gcc.expires_at, gcc.scope, gcc.active,
               u.email as user_email, u.name as user_name, u.role as user_role
@@ -1587,7 +1676,7 @@ app.all("/api/auth/create-escalation-manager", async (req, res) => {
         return res.status(500).json({ message: "Failed to create Escalation Manager" });
     }
 });
-// Admin: create Project Manager
+// Admin / TDM / DGM: create Project Manager
 app.all("/api/auth/create-project-manager", async (req, res) => {
     if (req.method !== "POST")
         return res.status(405).json({ message: "Use POST" });
@@ -1595,8 +1684,13 @@ app.all("/api/auth/create-project-manager", async (req, res) => {
         const admin = await getUserFromSession(req);
         if (!admin)
             return res.status(401).json({ message: "Unauthorized" });
-        if (admin.role !== "admin")
-            return res.status(403).json({ message: "Only admin can create Project Manager" });
+        const r = (admin.role || "").toLowerCase();
+        const allowed = ["admin", "territorial_design_manager", "deputy_general_manager"];
+        if (!allowed.includes(r)) {
+            return res.status(403).json({
+                message: "Only Admin, Territorial Design Manager, or Deputy General Manager can create a Project Manager",
+            });
+        }
         const { email, password, name, phone } = req.body || {};
         const normalized = (email || "").trim().toLowerCase();
         if (!normalized.endsWith("@hubinterior.com"))
@@ -1614,6 +1708,56 @@ app.all("/api/auth/create-project-manager", async (req, res) => {
             return res.status(400).json({ message: "A user with this email already exists" });
         console.error("create-project-manager error", err);
         return res.status(500).json({ message: "Failed to create Project Manager" });
+    }
+});
+// Admin: create Senior Project Manager (full project visibility; assigns PMs on leads)
+app.all("/api/auth/create-senior-project-manager", async (req, res) => {
+    if (req.method !== "POST")
+        return res.status(405).json({ message: "Use POST" });
+    try {
+        const admin = await getUserFromSession(req);
+        if (!admin)
+            return res.status(401).json({ message: "Unauthorized" });
+        if ((admin.role || "").toLowerCase() !== "admin") {
+            return res.status(403).json({ message: "Only admin can create a Senior Project Manager" });
+        }
+        const { email, password, name, phone } = req.body || {};
+        const normalized = (email || "").trim().toLowerCase();
+        if (!normalized.endsWith("@hubinterior.com"))
+            return res.status(400).json({ message: "Email must end with @hubinterior.com" });
+        if (!password || String(password).length < 1)
+            return res.status(400).json({ message: "Password is required" });
+        const displayName = (name || normalized).trim() || normalized;
+        const phoneVal = phone != null ? String(phone).trim() : null;
+        const [result] = await pool.query("INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)", [normalized, String(password), displayName, "senior_project_manager", phoneVal || null]);
+        const insertId = result.insertId;
+        return res.status(201).json({
+            user: { id: insertId, email: normalized, name: displayName, role: "senior_project_manager" },
+        });
+    }
+    catch (err) {
+        if (err?.code === "ER_DUP_ENTRY")
+            return res.status(400).json({ message: "A user with this email already exists" });
+        console.error("create-senior-project-manager error", err);
+        return res.status(500).json({ message: "Failed to create Senior Project Manager" });
+    }
+});
+// List project managers (for assigning to a lead after DQC 2)
+app.get("/api/auth/project-managers", async (req, res) => {
+    try {
+        const user = await getUserFromSession(req);
+        if (!user)
+            return res.status(401).json({ message: "Unauthorized" });
+        const role = (user.role || "").toLowerCase();
+        if (!canAssignProjectManagerRole(role)) {
+            return res.status(403).json({ message: "Not allowed to list project managers" });
+        }
+        const [rows] = await pool.query("SELECT id, name, email FROM users WHERE role = 'project_manager' ORDER BY name ASC");
+        return res.json(rows);
+    }
+    catch (err) {
+        console.error("project-managers list error", err);
+        return res.status(500).json({ message: "Failed to load project managers" });
     }
 });
 // Admin: create Finance
@@ -1696,17 +1840,26 @@ app.all("/api/auth/register", async (req, res) => {
         const displayName = (name || normalized).trim() || normalized;
         const phoneVal = phone != null ? String(phone).trim() : null;
         let designManagerId = null;
+        let territorialDesignManagerId = null;
+        const isTdm = role === "territorial_design_manager";
+        if (targetRole === "design_manager" && isTdm) {
+            territorialDesignManagerId = current.id;
+        }
         if (targetRole === "designer" && managerId != null && managerId !== "") {
             const idNum = Number(managerId);
             if (!Number.isNaN(idNum)) {
-                const [mgrRows] = await pool.query("SELECT id FROM users WHERE id = ? AND role = 'design_manager'", [idNum]);
+                const [mgrRows] = await pool.query("SELECT id, territorial_design_manager_id FROM users WHERE id = ? AND role = 'design_manager'", [idNum]);
                 if (mgrRows.length === 0) {
                     return res.status(400).json({ message: "Invalid design manager selected" });
+                }
+                const manager = mgrRows[0];
+                if (isTdm && Number(manager.territorial_design_manager_id) !== Number(current.id)) {
+                    return res.status(403).json({ message: "You can assign designers only under your own design managers" });
                 }
                 designManagerId = idNum;
             }
         }
-        const [result] = await pool.query("INSERT INTO users (email, password, name, role, phone, design_manager_id) VALUES (?, ?, ?, ?, ?, ?)", [normalized, String(password), displayName, targetRole, phoneVal || null, designManagerId]);
+        const [result] = await pool.query("INSERT INTO users (email, password, name, role, phone, design_manager_id, territorial_design_manager_id) VALUES (?, ?, ?, ?, ?, ?, ?)", [normalized, String(password), displayName, targetRole, phoneVal || null, designManagerId, territorialDesignManagerId]);
         const insertId = result.insertId;
         return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: targetRole } });
     }
@@ -1789,6 +1942,90 @@ app.post("/api/sales-closure", async (req, res) => {
     catch (err) {
         console.error("Error saving lead", err);
         res.status(500).json({ message: "Failed to save sales closure" });
+    }
+});
+// External system intake: create a lead directly in Pre 10%.
+// This endpoint is meant to be called by another project/service.
+app.post("/api/leads/external-intake", async (req, res) => {
+    const expectedKey = (process.env.EXTERNAL_LEAD_INGEST_API_KEY || "").trim();
+    if (!expectedKey) {
+        return res.status(503).json({
+            message: "External lead intake is disabled (missing EXTERNAL_LEAD_INGEST_API_KEY)",
+        });
+    }
+    const apiKeyHeader = String(req.headers["x-external-api-key"] || "").trim();
+    const bearer = String(req.headers.authorization || "")
+        .replace(/^Bearer\s+/i, "")
+        .trim();
+    const providedKey = apiKeyHeader || bearer;
+    if (!providedKey || providedKey !== expectedKey) {
+        return res.status(401).json({ message: "Unauthorized" });
+    }
+    const payload = req.body || {};
+    const formData = payload?.formData || payload?.form_data || payload || {};
+    const fetched = payload?.fetchedData || formData || {};
+    const projectName = String(payload.projectName ||
+        payload.customer_name ||
+        payload.sales_lead_name ||
+        formData.projectName ||
+        formData.customer_name ||
+        formData.sales_lead_name ||
+        fetched.customer_name ||
+        fetched.sales_lead_name ||
+        "").trim() || "Unnamed";
+    const contactNo = String(payload.contactNo ||
+        payload.contact_no ||
+        payload.phone ||
+        formData.co_no ||
+        fetched.co_no ||
+        "").trim() || null;
+    const clientEmail = String(payload.clientEmail ||
+        payload.client_email ||
+        payload.email ||
+        formData.email ||
+        fetched.email ||
+        "").trim() || null;
+    const pid = String(payload.pid || payload.externalLeadId || payload.referenceId || "").trim();
+    const sourceProject = String(payload.sourceProject || payload.source || "").trim() || null;
+    const now = new Date();
+    try {
+        const payloadToPersist = {
+            source: "external_intake_api",
+            sourceProject,
+            externalReferenceId: pid || null,
+            receivedAt: now.toISOString(),
+            formData: {
+                customer_name: projectName,
+                co_no: contactNo || "",
+                email: clientEmail || "",
+                status_of_project: "Pre 10%",
+            },
+            rawPayload: payload,
+        };
+        const [result] = await pool.query(`INSERT INTO leads
+       (pid, project_name, project_stage, contact_no, client_email,
+        is_on_hold, resume_at, create_at, update_at, payload, assigned_designer_id)
+       VALUES (?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, NULL)`, [
+            pid,
+            projectName,
+            "Pre 10%",
+            contactNo,
+            clientEmail,
+            now,
+            now,
+            JSON.stringify(payloadToPersist),
+        ]);
+        return res.status(201).json({
+            ok: true,
+            leadId: result?.insertId ?? null,
+            projectName,
+            projectStage: "Pre 10%",
+            message: "Lead received via external intake",
+        });
+    }
+    catch (err) {
+        console.error("external-intake error", err);
+        return res.status(500).json({ message: "Failed to create lead from external intake" });
     }
 });
 // Upload Excel and preview headers/rows for lead import.
@@ -2263,6 +2500,38 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
         return res.status(400).json({ message: "milestoneIndex and taskName are required" });
     }
     try {
+        const tNorm = String(taskName).trim();
+        if (milestoneIndex === 4 && tNorm === "Project manager approval") {
+            const user = await getUserFromSession(req);
+            if (!user)
+                return res.status(401).json({ message: "Unauthorized" });
+            const role = (user.role || "").toLowerCase();
+            if (role !== "project_manager") {
+                return res.status(403).json({ message: "Only the assigned Project Manager can complete this task" });
+            }
+            const [lr] = await pool.query("SELECT assigned_project_manager_id as pmId FROM leads WHERE id = ?", [id]);
+            const pmId = lr[0]?.pmId;
+            if (!pmId || Number(pmId) !== user.id) {
+                return res.status(403).json({ message: "You are not the assigned Project Manager for this lead" });
+            }
+        }
+        if (milestoneIndex === 4 && tNorm === "Assign project manager") {
+            const user = await getUserFromSession(req);
+            if (!user)
+                return res.status(401).json({ message: "Unauthorized" });
+            const role = (user.role || "").toLowerCase();
+            if (!canAssignProjectManagerRole(role)) {
+                return res.status(403).json({
+                    message: "Only Admin, Territorial Design Manager, Deputy General Manager, or Senior Project Manager can complete this step",
+                });
+            }
+            const [ar] = await pool.query("SELECT assigned_project_manager_id as pmId FROM leads WHERE id = ?", [id]);
+            if (!ar[0]?.pmId) {
+                return res
+                    .status(400)
+                    .json({ message: "Choose a project manager and save before marking this step complete" });
+            }
+        }
         const actingUser = await getUserFromSession(req);
         if (!actingUser)
             return res.status(401).json({ message: "Unauthorized" });
@@ -2275,6 +2544,10 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
             switch (milestoneIndex) {
                 // Milestone 0: D1 SITE MEASUREMENT
                 case 0:
+                    if (t === "Mail loop chain 2 initiate") {
+                        // Sl no 2 – initiate customer mail loop chain from backend SMTP
+                        return "/api/email/send-mail-loop-chain-initiate";
+                    }
                     if (t === "D1 for MMT request") {
                         // Sl no 3 – D1 for MMT request (measurement visit scheduling)
                         return "/api/email/send-d1-mmt-visit-scheduled";
@@ -2337,8 +2610,8 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                         // Sl no 14 – design sign‑off meeting request (after DQC2 approval)
                         return "/api/email/send-design-signoff-meeting-scheduled";
                     }
-                    if (t === "meeting completed & 40% payment request") {
-                        // Sl no 15 – meeting completed & 40% payment request
+                    if (t === "40% collection" || t === "meeting completed & 40% payment request") {
+                        // Sl no 15 – 40% collection (CX payment request; legacy combined task name still triggers)
                         return "/api/email/send-design-signoff-40pc-payment-request";
                     }
                     // 40% payment approval email is triggered in /api/leads/:id/approve-40p-payment
@@ -2610,31 +2883,32 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                         if (designerEmail && customerName && designerName && ecName) {
                             const internalCc = await getMailLoopCcEmails([actingUser.email, designerEmail]);
                             const internalSubject = buildMailChainSubject(projectId, leadRow.projectName, customerName);
-                            fetch(`${FRONTEND_BASE}/api/email/send-ten-percent-payment-internal`, {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({
+                            void triggerMailRouteWithLog({
+                                leadId: id,
+                                milestoneIndex: 2,
+                                taskName: "10% payment collection",
+                                route: "/api/email/send-ten-percent-payment-internal",
+                                visibility: "internal+external",
+                                payload: {
                                     to: designerEmail,
                                     cc: internalCc,
                                     subject: internalSubject,
                                     customerName,
                                     designerName,
                                     ecName,
-                                }),
-                            }).catch((err) => {
-                                console.error("10% collection internal email trigger error (non-fatal)", {
-                                    leadId: id,
-                                    error: err,
-                                });
+                                },
                             });
                         }
                         if (customerEmail) {
                             const mailChainCc = await getMailLoopCcEmails([actingUser.email, designerEmail]);
                             const mailChainSubject = buildMailChainSubject(projectId, leadRow.projectName, customerName);
-                            fetch(`${FRONTEND_BASE}/api/email/send-ten-percent-payment-request`, {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({
+                            void triggerMailRouteWithLog({
+                                leadId: id,
+                                milestoneIndex: 2,
+                                taskName: "10% payment collection",
+                                route: "/api/email/send-ten-percent-payment-request",
+                                visibility: "internal+external",
+                                payload: {
                                     to: customerEmail,
                                     cc: mailChainCc,
                                     subject: mailChainSubject,
@@ -2642,12 +2916,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                     projectId,
                                     propertyType,
                                     amountDue,
-                                }),
-                            }).catch((err) => {
-                                console.error("10% collection CX email trigger error (non-fatal)", {
-                                    leadId: id,
-                                    error: err,
-                                });
+                                },
                             });
                         }
                     }
@@ -2741,10 +3010,13 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                         if (pmEmail && customerName && designerName && ecName) {
                             const [mmtRows] = await pool.query("SELECT name FROM users WHERE role IN ('mmt_manager', 'mmt_executive') AND email IS NOT NULL ORDER BY id ASC LIMIT 1");
                             const mmtName = mmtRows[0]?.name || null;
-                            fetch(`${FRONTEND_BASE}/api/email/send-d2-masking-request-internal`, {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({
+                            void triggerMailRouteWithLog({
+                                leadId: id,
+                                milestoneIndex: 3,
+                                taskName: "D2 - masking request raise",
+                                route: "/api/email/send-d2-masking-request-internal",
+                                visibility: "internal+external",
+                                payload: {
                                     to: pmEmail,
                                     customerName,
                                     designerName,
@@ -2753,12 +3025,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                     pmName,
                                     maskingDate,
                                     maskingTime,
-                                }),
-                            }).catch((err) => {
-                                console.error("D2 masking internal email trigger error (non-fatal)", {
-                                    leadId: id,
-                                    error: err,
-                                });
+                                },
                             });
                         }
                         if (customerEmail) {
@@ -2768,10 +3035,13 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                 pmEmail,
                             ]);
                             const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
-                            fetch(`${FRONTEND_BASE}/api/email/send-d2-masking-request`, {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({
+                            void triggerMailRouteWithLog({
+                                leadId: id,
+                                milestoneIndex: 3,
+                                taskName: "D2 - masking request raise",
+                                route: "/api/email/send-d2-masking-request",
+                                visibility: "internal+external",
+                                payload: {
                                     to: customerEmail,
                                     cc: mailChainCc,
                                     subject: mailChainSubject,
@@ -2779,12 +3049,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                     designerName,
                                     maskingDate,
                                     maskingTime,
-                                }),
-                            }).catch((err) => {
-                                console.error("D2 masking CX email trigger error (non-fatal)", {
-                                    leadId: id,
-                                    error: err,
-                                });
+                                },
                             });
                         }
                     }
@@ -2978,10 +3243,13 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                     });
                                 }
                             }
-                            fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({
+                            void triggerMailRouteWithLog({
+                                leadId: id,
+                                milestoneIndex: 1,
+                                taskName: "First cut design + quotation discussion meeting request",
+                                route: emailRoutePath,
+                                visibility: "external",
+                                payload: {
                                     to: customerEmail,
                                     cc: await getMailLoopCcEmails([actingUser.email]),
                                     subject: buildMailChainSubject(null, row.projectName, customerName),
@@ -2989,13 +3257,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                     meetingDate,
                                     meetingTime,
                                     ...(attachments ? { attachments } : {}),
-                                }),
-                            }).catch((err) => {
-                                console.error("DQC1 first-cut email trigger error (non-fatal)", {
-                                    leadId: id,
-                                    route: emailRoutePath,
-                                    error: err,
-                                });
+                                },
                             });
                         }
                     }
@@ -3083,10 +3345,13 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                     });
                                 }
                             }
-                            fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({
+                            void triggerMailRouteWithLog({
+                                leadId: id,
+                                milestoneIndex: 0,
+                                taskName: "D1 for MMT request",
+                                route: emailRoutePath,
+                                visibility: "external",
+                                payload: {
                                     to: customerEmail,
                                     cc: distinctEmails([actingUser.email, designerEmail, executiveEmail, managerEmail]),
                                     customerName,
@@ -3097,13 +3362,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                     visitTime,
                                     executiveName,
                                     executivePhone,
-                                }),
-                            }).catch((err) => {
-                                console.error("D1 MMT email trigger error (non-fatal)", {
-                                    leadId: id,
-                                    route: emailRoutePath,
-                                    error: err,
-                                });
+                                },
                             });
                         }
                     }
@@ -3216,22 +3475,20 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                         if (customerEmail) {
                             const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
                             const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
-                            fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({
+                            void triggerMailRouteWithLog({
+                                leadId: id,
+                                milestoneIndex: 4,
+                                taskName: "Material selection meeting completed",
+                                route: emailRoutePath,
+                                visibility: "external",
+                                payload: {
                                     to: customerEmail,
                                     cc: mailChainCc,
                                     subject: mailChainSubject,
                                     customerName,
                                     designerName,
                                     laminateSelections,
-                                }),
-                            }).catch((err) => {
-                                console.error("MOM color laminate selection email trigger error (non-fatal)", {
-                                    leadId: id,
-                                    error: err,
-                                });
+                                },
                             });
                         }
                     }
@@ -3302,10 +3559,13 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                     row.designerEmail,
                                 ]);
                                 const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
-                                fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-                                    method: "POST",
-                                    headers: { "Content-Type": "application/json" },
-                                    body: JSON.stringify({
+                                void triggerMailRouteWithLog({
+                                    leadId: id,
+                                    milestoneIndex: 5,
+                                    taskName: "Design sign off",
+                                    route: emailRoutePath,
+                                    visibility: "external",
+                                    payload: {
                                         to: customerEmail,
                                         cc: mailChainCc,
                                         subject: mailChainSubject,
@@ -3313,12 +3573,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                         designerName,
                                         meetingDate: meetingDate || undefined,
                                         meetingTime: meetingTime || undefined,
-                                    }),
-                                }).catch((err) => {
-                                    console.error("Design signoff meeting scheduled email trigger error (non-fatal)", {
-                                        leadId: id,
-                                        error: err,
-                                    });
+                                    },
                                 });
                             }
                         }
@@ -3332,7 +3587,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                 }
             }
             else if (emailRoutePath === "/api/email/send-design-signoff-40pc-payment-request") {
-                // Meeting completed & 40% payment request: CX only, pass amount, bank details, designer
+                // 40% collection: CX payment request email; pass amount, bank details, designer
                 try {
                     const [rows] = await pool.query(`SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
                     u.name as designerName
@@ -3369,10 +3624,13 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                         if (customerEmail) {
                             const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
                             const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
-                            fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({
+                            void triggerMailRouteWithLog({
+                                leadId: id,
+                                milestoneIndex: 5,
+                                taskName: "meeting completed & 40% payment request",
+                                route: emailRoutePath,
+                                visibility: "external",
+                                payload: {
                                     to: customerEmail,
                                     cc: mailChainCc,
                                     subject: mailChainSubject,
@@ -3382,12 +3640,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                     accountName,
                                     accountNumber,
                                     ifscCode,
-                                }),
-                            }).catch((err) => {
-                                console.error("40% payment request email trigger error (non-fatal)", {
-                                    leadId: id,
-                                    error: err,
-                                });
+                                },
                             });
                         }
                     }
@@ -3463,10 +3716,13 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                     row.designerEmail,
                                 ]);
                                 const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
-                                fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-                                    method: "POST",
-                                    headers: { "Content-Type": "application/json" },
-                                    body: JSON.stringify({
+                                void triggerMailRouteWithLog({
+                                    leadId: id,
+                                    milestoneIndex: 4,
+                                    taskName: "Material selection meeting + quotation discussion",
+                                    route: emailRoutePath,
+                                    visibility: "external",
+                                    payload: {
                                         to: customerEmail,
                                         cc: mailChainCc,
                                         subject: mailChainSubject,
@@ -3475,12 +3731,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                         meetingDate,
                                         meetingTime,
                                         ecLocation,
-                                    }),
-                                }).catch((err) => {
-                                    console.error("DQC2 material selection email trigger error (non-fatal)", {
-                                        leadId: id,
-                                        error: err,
-                                    });
+                                    },
                                 });
                             }
                         }
@@ -3525,10 +3776,13 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                         const operationHead = meta?.operationHead ?? "Alex - alex@hubinterior.com";
                         const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
                         const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
-                        fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
+                        void triggerMailRouteWithLog({
+                            leadId: id,
+                            milestoneIndex: 6,
+                            taskName: "POC mail & Timeline submission",
+                            route: emailRoutePath,
+                            visibility: "external",
+                            payload: {
                                 to: row.clientEmail,
                                 cc: mailChainCc,
                                 subject: mailChainSubject,
@@ -3539,12 +3793,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                 spmPoc,
                                 operationManager,
                                 operationHead,
-                            }),
-                        }).catch((err) => {
-                            console.error("Production POC timeline email trigger error (non-fatal)", {
-                                leadId: id,
-                                error: err,
-                            });
+                            },
                         });
                     }
                 }
@@ -3582,21 +3831,19 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                         const designerName = row.designerName || formData.designer_name || formData.designerName || "Team HUB Interiors";
                         const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
                         const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
-                        fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
+                        void triggerMailRouteWithLog({
+                            leadId: id,
+                            milestoneIndex: 6,
+                            taskName: "Cx approval for production",
+                            route: emailRoutePath,
+                            visibility: "external",
+                            payload: {
                                 to: row.clientEmail,
                                 cc: mailChainCc,
                                 subject: mailChainSubject,
                                 customerName,
                                 designerName,
-                            }),
-                        }).catch((err) => {
-                            console.error("Production approval request email trigger error (non-fatal)", {
-                                leadId: id,
-                                error: err,
-                            });
+                            },
                         });
                     }
                 }
@@ -3624,6 +3871,23 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
     catch (err) {
         console.error("complete-task error", err);
         return res.status(500).json({ message: "Failed to save completion" });
+    }
+});
+// Trigger mail loop chain initiation mail (SMTP-backed).
+app.post("/api/leads/:id/mail-loop-chain-initiate", async (req, res) => {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id))
+        return res.status(400).json({ message: "Invalid id" });
+    try {
+        const actingUser = await getUserFromSession(req);
+        if (!actingUser)
+            return res.status(401).json({ message: "Unauthorized" });
+        await triggerCustomerEmailForLead(id, "/api/email/send-mail-loop-chain-initiate", { actorEmail: actingUser.email || null });
+        return res.status(201).json({ ok: true });
+    }
+    catch (err) {
+        console.error("mail-loop-chain-initiate error", { leadId: id, error: err });
+        return res.status(500).json({ message: "Failed to start mail chain" });
     }
 });
 // Get all completed tasks for a lead (used to hydrate milestone progress on load)
@@ -3870,10 +4134,13 @@ app.post("/api/leads/:id/approve-10p-payment", async (req, res) => {
                 if (customerEmail) {
                     const mailChainCc = await getMailLoopCcEmails([user.email || null]);
                     const mailChainSubject = buildMailChainSubject(projectId, row.projectName, customerName);
-                    fetch(`${FRONTEND_BASE}/api/email/send-ten-percent-payment-approval`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
+                    void triggerMailRouteWithLog({
+                        leadId,
+                        milestoneIndex: 2,
+                        taskName: "10% payment approval",
+                        route: "/api/email/send-ten-percent-payment-approval",
+                        visibility: "external",
+                        payload: {
                             to: customerEmail,
                             cc: mailChainCc,
                             subject: mailChainSubject,
@@ -3883,9 +4150,7 @@ app.post("/api/leads/:id/approve-10p-payment", async (req, res) => {
                             paymentDate,
                             transactionRef,
                             ...(attachments ? { attachments } : {}),
-                        }),
-                    }).catch((emailErr) => {
-                        console.error("10% payment approval email trigger error (non-fatal)", emailErr);
+                        },
                     });
                 }
             }
@@ -3925,7 +4190,7 @@ app.post("/api/leads/:id/40p-payment-upload", upload.array("files"), async (req,
         const ev = {
             id: `40p-upload-${Date.now()}`,
             type: "file_upload",
-            taskName: "meeting completed & 40% payment request",
+            taskName: "40% collection",
             milestoneName: "40% PAYMENT",
             timestamp: now.toISOString(),
             description: `40% payment screenshots uploaded for finance review: ${files.map((f) => f.originalname).join(", ")}`,
@@ -3954,13 +4219,14 @@ app.get("/api/leads/finance-40p-queue", async (req, res) => {
         const leads = allLeads;
         const [completions] = await pool.query("SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName FROM lead_task_completions");
         const compList = completions;
-        const has40pMeetingDone = (leadId) => compList.some((c) => c.leadId === leadId &&
+        const has40pCollectionDone = (leadId) => compList.some((c) => c.leadId === leadId &&
             c.milestoneIndex === 5 &&
-            c.taskName === "meeting completed & 40% payment request");
+            (c.taskName === "40% collection" ||
+                c.taskName === "meeting completed & 40% payment request"));
         const has40pApproval = (leadId) => compList.some((c) => c.leadId === leadId && c.milestoneIndex === 5 && c.taskName === "40% payment approval");
         const [uploadRows] = await pool.query("SELECT lead_id as leadId FROM lead_uploads WHERE upload_type = 'payment_40p'");
         const has40pUpload = (leadId) => uploadRows.some((r) => r.leadId === leadId);
-        const at40p = leads.filter((l) => has40pMeetingDone(l.id) && !has40pApproval(l.id));
+        const at40p = leads.filter((l) => has40pCollectionDone(l.id) && !has40pApproval(l.id));
         const list = at40p.map((l) => ({
             id: l.id,
             projectName: l.projectName || "—",
@@ -4000,7 +4266,7 @@ app.post("/api/leads/:id/payment-40p-screenshots", upload.single("file"), async 
         const ev = {
             id: `payment-40p-screenshot-${Date.now()}`,
             type: "file_upload",
-            taskName: "40% payment collection",
+            taskName: "40% collection",
             milestoneName: "40% PAYMENT",
             timestamp: now.toISOString(),
             description: `40% payment screenshot uploaded: ${file.originalname}`,
@@ -4094,10 +4360,13 @@ app.post("/api/leads/:id/approve-40p-payment", async (req, res) => {
                         });
                     }
                 }
-                fetch(`${FRONTEND_BASE}/api/email/send-design-signoff-40pc-payment-approval`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
+                void triggerMailRouteWithLog({
+                    leadId,
+                    milestoneIndex: 5,
+                    taskName: "40% payment approval",
+                    route: "/api/email/send-design-signoff-40pc-payment-approval",
+                    visibility: "external",
+                    payload: {
                         to: row.clientEmail,
                         cc: await getMailLoopCcEmails([user.email || null]),
                         subject: buildMailChainSubject(null, row.projectName, customerName),
@@ -4107,9 +4376,7 @@ app.post("/api/leads/:id/approve-40p-payment", async (req, res) => {
                         dateOfReceipt: dateStr,
                         modeOfPayment: "Bank Transfer",
                         ...(attachments ? { attachments } : {}),
-                    }),
-                }).catch((emailErr) => {
-                    console.error("40% payment approval email trigger error (non-fatal)", emailErr);
+                    },
                 });
             }
         }
@@ -4292,16 +4559,12 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req, res) => {
             });
         }
         if (customerEmail) {
-            fetch(`${FRONTEND_BASE}${emailRoutePath}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(emailBody),
-            }).catch((err) => {
-                console.error("meeting invite email trigger error (non-fatal)", {
-                    leadId,
-                    meetingType,
-                    error: err,
-                });
+            void triggerMailRouteWithLog({
+                leadId,
+                taskName: `Schedule ${meetingType} invite`,
+                route: emailRoutePath,
+                visibility: "external",
+                payload: emailBody,
             });
         }
         return res.status(201).json({ ok: true });
@@ -4320,8 +4583,15 @@ app.get("/api/leads/:id/uploads", async (req, res) => {
         const user = await getUserFromSession(req);
         const role = (user?.role ?? "").toLowerCase();
         const isMmt = role === "mmt_manager" || role === "mmt_executive";
-        const isFinance = role === "finance" || role === "admin";
-        const onlyApproved = !isMmt && !isFinance;
+        const seesAllUploadStatuses = role === "finance" || role === "admin" || role === "senior_project_manager";
+        let onlyApproved = !isMmt && !seesAllUploadStatuses;
+        if (user && role === "project_manager") {
+            const [lr] = await pool.query("SELECT assigned_project_manager_id as pmId FROM leads WHERE id = ?", [leadId]);
+            const pmId = lr[0]?.pmId;
+            if (pmId && Number(pmId) === user.id) {
+                onlyApproved = false;
+            }
+        }
         const [rows] = await pool.query(onlyApproved
             ? `SELECT id, original_name as originalName, uploaded_at as uploadedAt, status, upload_type as uploadType, s3_url as s3Url
            FROM lead_uploads WHERE lead_id = ? AND status = 'approved' ORDER BY uploaded_at DESC`
@@ -5240,10 +5510,13 @@ app.post("/api/leads/:id/first-cut-design-upload", upload.array("files"), async 
                             });
                         }
                     }
-                    fetch(`${FRONTEND_BASE}/api/email/send-dqc1-first-cut-design-scheduled`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
+                    void triggerMailRouteWithLog({
+                        leadId,
+                        milestoneIndex: 1,
+                        taskName: "First cut design + quotation discussion meeting request",
+                        route: "/api/email/send-dqc1-first-cut-design-scheduled",
+                        visibility: "external",
+                        payload: {
                             to: customerEmail,
                             cc: await getMailLoopCcEmails([user.email || null]),
                             subject: buildMailChainSubject(null, row.projectName, customerName),
@@ -5251,12 +5524,7 @@ app.post("/api/leads/:id/first-cut-design-upload", upload.array("files"), async 
                             meetingDate,
                             meetingTime,
                             ...(attachments.length ? { attachments } : {}),
-                        }),
-                    }).catch((err) => {
-                        console.error("DQC1 first-cut invite email trigger error (non-fatal)", {
-                            leadId,
-                            error: err,
-                        });
+                        },
                     });
                 }
             }
@@ -5287,6 +5555,7 @@ app.get("/api/leads/:id/dqc-submission-files", async (req, res) => {
         const canAccess = role === "dqc_manager" ||
             role === "dqe" ||
             role === "admin" ||
+            role === "senior_project_manager" ||
             role === "designer" ||
             role === "design_manager" ||
             role === "territorial_design_manager";
@@ -5361,12 +5630,19 @@ app.get("/api/leads/:id/dqc2-submission-files", async (req, res) => {
         if (!user)
             return res.status(401).json({ message: "Unauthorized" });
         const role = (user.role ?? "").toLowerCase();
-        const canAccess = role === "dqc_manager" ||
+        let canAccess = role === "dqc_manager" ||
             role === "dqe" ||
             role === "admin" ||
+            role === "senior_project_manager" ||
             role === "designer" ||
             role === "design_manager" ||
             role === "territorial_design_manager";
+        if (!canAccess && role === "project_manager") {
+            const [lr] = await pool.query("SELECT assigned_project_manager_id as pmId FROM leads WHERE id = ?", [leadId]);
+            const pmId = lr[0]?.pmId;
+            if (pmId && Number(pmId) === user.id)
+                canAccess = true;
+        }
         if (!canAccess) {
             return res.status(403).json({ message: "Only DQC roles or designers can access DQC submission files" });
         }
@@ -5561,8 +5837,10 @@ const MILESTONE_TASKS = [
         "Material selection meeting completed",
         "DQC 2 submission",
         "DQC 2 approval ",
+        "Assign project manager",
+        "Project manager approval",
     ],
-    ["Design sign off", "meeting completed & 40% payment request", "40% payment approval"],
+    ["Design sign off", "meeting completed", "40% collection", "40% payment approval"],
     ["Cx approval for production", "POC mail & Timeline submission "],
 ];
 function getCurrentMilestoneIndex(completions) {
@@ -5637,14 +5915,39 @@ app.get("/api/leads/queue", async (req, res) => {
               l.is_on_hold as isOnHold, l.resume_at as resumeAt,
               l.create_at as createAt, l.update_at as updateAt,
               l.assigned_designer_id,
-              u.name as designerName
+              l.assigned_project_manager_id,
+              u.name as designerName,
+              pm.name as projectManagerName,
+              NULLIF(TRIM(COALESCE(
+                JSON_UNQUOTE(
+                  JSON_EXTRACT(
+                    CASE
+                      WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}'
+                      ELSE l.payload
+                    END,
+                    '$.experience_center'
+                  )
+                ),
+                JSON_UNQUOTE(
+                  JSON_EXTRACT(
+                    CASE
+                      WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}'
+                      ELSE l.payload
+                    END,
+                    '$.form.experience_center'
+                  )
+                )
+              )), '') AS experienceCenter
        FROM leads l
        LEFT JOIN users u ON u.id = l.assigned_designer_id
+       LEFT JOIN users pm ON pm.id = l.assigned_project_manager_id
        ORDER BY l.id ASC`);
         const baseList = rows.map((r) => ({
             ...r,
             isOnHold: !!r.isOnHold,
             designerName: r.designerName ?? null,
+            projectManagerName: r.projectManagerName ?? null,
+            experienceCenter: r.experienceCenter ?? null,
         }));
         // Enrich with current milestone (from task completions) for Design Phase dashboard
         const [completionRows] = await pool.query(`SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName FROM lead_task_completions`);
@@ -5678,6 +5981,10 @@ app.get("/api/leads/queue", async (req, res) => {
          WHERE d.design_manager_id = ?`, [user.id]);
             const allowedIds = new Set(dmRows.map((r) => r.id));
             const filtered = enrichedList.filter((l) => allowedIds.has(l.id));
+            return res.json(filtered);
+        }
+        if (user && role === "project_manager") {
+            const filtered = enrichedList.filter((l) => l.assigned_project_manager_id && l.assigned_project_manager_id === user.id);
             return res.json(filtered);
         }
         // Admins, TDMs, and others keep full list
@@ -5737,16 +6044,27 @@ app.get("/api/leads/dqc-queue", async (req, res) => {
     }
 });
 // Designers for Sales Closure form (from users with role designer or design_manager)
-app.get("/api/designers", async (_req, res) => {
+app.get("/api/designers", async (req, res) => {
     try {
-        const [rows] = await pool.query(`SELECT u.id,
-              u.name,
-              u.role,
-              COALESCE(m.name, '') as leadName
-       FROM users u
-       LEFT JOIN users m ON u.design_manager_id = m.id
-       WHERE u.role IN ('designer', 'design_manager')
-       ORDER BY u.name ASC`);
+        const currentUser = await getUserFromSession(req);
+        const currentRole = (currentUser?.role || "").toLowerCase();
+        let query = `SELECT u.id,
+                        u.name,
+                        u.role,
+                        COALESCE(m.name, '') as leadName
+                 FROM users u
+                 LEFT JOIN users m ON u.design_manager_id = m.id
+                 WHERE u.role IN ('designer', 'design_manager')`;
+        const params = [];
+        if (currentRole === "territorial_design_manager" && currentUser) {
+            query += ` AND (
+        (u.role = 'design_manager' AND u.territorial_design_manager_id = ?)
+        OR (u.role = 'designer' AND m.territorial_design_manager_id = ?)
+      )`;
+            params.push(currentUser.id, currentUser.id);
+        }
+        query += " ORDER BY u.name ASC";
+        const [rows] = await pool.query(query, params);
         res.json(rows);
     }
     catch (err) {
@@ -5904,6 +6222,38 @@ app.post("/api/leads/assign-designer/bulk", async (req, res) => {
         return res.status(500).json({ message: "Failed to bulk assign leads" });
     }
 });
+// Assign project manager on a lead (after DQC 2 approval; same roles as completing "Assign project manager")
+app.patch("/api/leads/:id/assign-project-manager", async (req, res) => {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id))
+        return res.status(400).json({ message: "Invalid id" });
+    const pmId = Number((req.body || {}).projectManagerId);
+    if (!Number.isFinite(pmId) || pmId < 1) {
+        return res.status(400).json({ message: "projectManagerId is required" });
+    }
+    try {
+        const user = await getUserFromSession(req);
+        if (!user)
+            return res.status(401).json({ message: "Unauthorized" });
+        const role = (user.role || "").toLowerCase();
+        if (!canAssignProjectManagerRole(role)) {
+            return res.status(403).json({
+                message: "Only Admin, Territorial Design Manager, Deputy General Manager, or Senior Project Manager can assign a project manager",
+            });
+        }
+        const [urows] = await pool.query("SELECT id, role FROM users WHERE id = ?", [pmId]);
+        const target = urows[0];
+        if (!target || String(target.role || "").toLowerCase() !== "project_manager") {
+            return res.status(400).json({ message: "Invalid project manager" });
+        }
+        await pool.query("UPDATE leads SET assigned_project_manager_id = ?, update_at = ? WHERE id = ?", [pmId, new Date(), id]);
+        return res.json({ ok: true });
+    }
+    catch (err) {
+        console.error("assign-project-manager error", err);
+        return res.status(500).json({ message: "Failed to assign project manager" });
+    }
+});
 // Lead detail by id (for /Leads/[id]); MMT executives only get leads they're assigned to
 app.get("/api/leads/:id", async (req, res) => {
     const id = Number(req.params.id);
@@ -5912,13 +6262,22 @@ app.get("/api/leads/:id", async (req, res) => {
     try {
         const user = await getUserFromSession(req);
         const role = (user?.role ?? "").toLowerCase();
-        const [rows] = await pool.query(`SELECT id, pid, project_name as projectName, project_stage as projectStage,
-              contact_no as contactNo, client_email as clientEmail,
-              is_on_hold as isOnHold, resume_at as resumeAt,
-              create_at as createAt, update_at as updateAt, payload,
-              assigned_designer_id
-       FROM leads
-       WHERE id = ?`, [id]);
+        const [rows] = await pool.query(`SELECT l.id, l.pid, l.project_name as projectName, l.project_stage as projectStage,
+              l.contact_no as contactNo, l.client_email as clientEmail,
+              l.client_email_alt as alternateClientEmail,
+              l.is_on_hold as isOnHold, l.resume_at as resumeAt,
+              l.create_at as createAt, l.update_at as updateAt, l.payload,
+              l.assigned_designer_id,
+              l.assigned_project_manager_id,
+              pm.name as projectManagerName,
+              d.email as designerEmail,
+              CASE WHEN d.role = 'design_manager' THEN d.email ELSE dm.email END as designManagerEmail,
+              CASE WHEN d.role = 'design_manager' THEN d.name ELSE dm.name END as designManagerName
+       FROM leads l
+       LEFT JOIN users pm ON pm.id = l.assigned_project_manager_id
+       LEFT JOIN users d ON d.id = l.assigned_designer_id
+       LEFT JOIN users dm ON dm.id = d.design_manager_id
+       WHERE l.id = ?`, [id]);
         const row = rows[0];
         if (!row)
             return res.status(404).json({ message: "Lead not found" });
@@ -5939,6 +6298,11 @@ app.get("/api/leads/:id", async (req, res) => {
          FROM users d
          WHERE d.id = ? AND d.design_manager_id = ?`, [row.assigned_designer_id, user.id]);
             if (dmCheck.length === 0) {
+                return res.status(404).json({ message: "Lead not found" });
+            }
+        }
+        if (user && role === "project_manager") {
+            if (!row.assigned_project_manager_id || row.assigned_project_manager_id !== user.id) {
                 return res.status(404).json({ message: "Lead not found" });
             }
         }
@@ -5966,12 +6330,91 @@ app.get("/api/leads/:id", async (req, res) => {
             ...rest,
             isOnHold: !!row.isOnHold,
             designerName: designerName || null,
+            designerEmail: row.designerEmail ?? null,
+            designManagerEmail: row.designManagerEmail ?? null,
+            designManagerName: row.designManagerName ?? null,
             revision: revision || "v1.0 (Latest)",
+            alternateClientEmail: row.alternateClientEmail ?? null,
+            projectManagerName: row.projectManagerName ?? null,
         });
     }
     catch (err) {
         console.error("lead detail error", err);
         return res.status(500).json({ message: "Failed to load lead" });
+    }
+});
+// Update primary / alternate client email (everyone except designers).
+app.patch("/api/leads/:id/client-emails", async (req, res) => {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id))
+        return res.status(400).json({ message: "Invalid id" });
+    const parseEmailField = (v) => {
+        if (v === undefined)
+            return { kind: "omit" };
+        if (v === null || v === "")
+            return { kind: "null" };
+        const s = String(v).trim();
+        if (!s)
+            return { kind: "null" };
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s))
+            return { kind: "invalid" };
+        return { kind: "value", value: s };
+    };
+    try {
+        const user = await getUserFromSession(req);
+        if (!user)
+            return res.status(401).json({ message: "Unauthorized" });
+        const role = (user.role ?? "").toLowerCase();
+        if (role === "designer") {
+            return res.status(403).json({ message: "Designers cannot update client emails" });
+        }
+        const [rows] = await pool.query("SELECT id, assigned_designer_id, client_email as clientEmail, client_email_alt as alternateClientEmail FROM leads WHERE id = ?", [id]);
+        const row = rows[0];
+        if (!row)
+            return res.status(404).json({ message: "Lead not found" });
+        if (role === "mmt_executive" && user.id) {
+            const [assignRows] = await pool.query("SELECT 1 FROM lead_d1_assignments WHERE lead_id = ? AND assigned_to_user_id = ?", [id, user.id]);
+            if (assignRows.length === 0) {
+                const [d2Rows] = await pool.query("SELECT 1 FROM lead_d2_assignments WHERE lead_id = ? AND assigned_to_user_id = ?", [id, user.id]);
+                if (d2Rows.length === 0) {
+                    return res.status(404).json({ message: "Lead not found" });
+                }
+            }
+        }
+        if (role === "design_manager") {
+            const [dmCheck] = await pool.query(`SELECT 1 FROM users d WHERE d.id = ? AND d.design_manager_id = ?`, [row.assigned_designer_id, user.id]);
+            if (!row.assigned_designer_id || dmCheck.length === 0) {
+                return res.status(404).json({ message: "Lead not found" });
+            }
+        }
+        const body = req.body || {};
+        const pPrimary = parseEmailField(body.clientEmail);
+        const pAlt = parseEmailField(body.alternateClientEmail);
+        if (pPrimary.kind === "invalid" || pAlt.kind === "invalid") {
+            return res.status(400).json({ message: "Invalid email format" });
+        }
+        if (pPrimary.kind === "omit" && pAlt.kind === "omit") {
+            return res.status(400).json({ message: "Provide clientEmail and/or alternateClientEmail" });
+        }
+        const mergedPrimary = pPrimary.kind === "omit"
+            ? (row.clientEmail ?? null)
+            : pPrimary.kind === "null"
+                ? null
+                : pPrimary.value;
+        const mergedAlt = pAlt.kind === "omit"
+            ? (row.alternateClientEmail ?? null)
+            : pAlt.kind === "null"
+                ? null
+                : pAlt.value;
+        await pool.query("UPDATE leads SET client_email = ?, client_email_alt = ?, update_at = ? WHERE id = ?", [mergedPrimary, mergedAlt, new Date(), id]);
+        return res.json({
+            clientEmail: mergedPrimary,
+            alternateClientEmail: mergedAlt,
+        });
+    }
+    catch (err) {
+        console.error("client-emails patch error", err);
+        return res.status(500).json({ message: "Failed to update client emails" });
     }
 });
 // Involved users for a lead (D1/D2 assignees + uploaders); used for header avatars (profile images)
@@ -6037,10 +6480,13 @@ app.post("/api/leads/:id/hold", async (req, res) => {
     if (Number.isNaN(date.getTime()))
         return res.status(400).json({ message: "Invalid resumeAt date" });
     try {
-        const [rows] = await pool.query("SELECT id FROM leads WHERE id = ?", [id]);
+        const [rows] = await pool.query("SELECT id, project_stage as projectStage FROM leads WHERE id = ?", [id]);
         const lead = rows[0];
         if (!lead)
             return res.status(404).json({ message: "Lead not found" });
+        if (String(lead.projectStage ?? "").trim().toLowerCase() === "cancelled") {
+            return res.status(400).json({ message: "Cannot put a cancelled project on hold" });
+        }
         await pool.query("UPDATE leads SET is_on_hold = 1, resume_at = ?, update_at = ? WHERE id = ?", [date, new Date(), id]);
         res.json({
             success: true,
@@ -6071,6 +6517,36 @@ app.post("/api/leads/:id/resume", async (req, res) => {
         res.status(500).json({ message: "Failed to resume project" });
     }
 });
+// Mark project as cancelled (Admin, TDM, or Deputy General Manager only). Clears hold.
+app.post("/api/leads/:id/cancel", async (req, res) => {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id))
+        return res.status(400).json({ message: "Invalid id" });
+    try {
+        const user = await getUserFromSession(req);
+        if (!user)
+            return res.status(401).json({ message: "Unauthorized" });
+        const role = (user.role ?? "").toLowerCase();
+        const allowed = ["admin", "territorial_design_manager", "deputy_general_manager"];
+        if (!allowed.includes(role)) {
+            return res.status(403).json({ message: "Only Admin, TDM, or Deputy General Manager can cancel a project" });
+        }
+        const [rows] = await pool.query("SELECT id, project_stage as projectStage FROM leads WHERE id = ?", [id]);
+        const lead = rows[0];
+        if (!lead)
+            return res.status(404).json({ message: "Lead not found" });
+        const st = String(lead.projectStage ?? "").trim().toLowerCase();
+        if (st === "cancelled") {
+            return res.json({ success: true, message: "Project is already cancelled", projectStage: "Cancelled" });
+        }
+        await pool.query("UPDATE leads SET project_stage = 'Cancelled', is_on_hold = 0, resume_at = NULL, update_at = ? WHERE id = ?", [new Date(), id]);
+        res.json({ success: true, message: "Project marked as cancelled", projectStage: "Cancelled" });
+    }
+    catch (err) {
+        console.error("cancel lead error", err);
+        res.status(500).json({ message: "Failed to cancel project" });
+    }
+});
 (0, prolanceApi_1.registerProlanceRoutes)(app, getUserFromSession);
 // Ensure CORS headers are present on error responses (multer, etc.) so the browser doesn't only show a generic CORS error
 app.use((err, req, res, _next) => {
@@ -6091,7 +6567,7 @@ process.on("unhandledRejection", (reason, promise) => {
 });
 const server = app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
-    console.log("Auth create/register routes: create-mmt-manager, register-mmt-executive, create-tdm, create-admin, create-dqc-manager, create-escalation-manager, create-project-manager, create-finance, register-dqe, register (TDM designer/design_manager)");
+    console.log("Auth create/register routes: create-mmt-manager, register-mmt-executive, create-tdm, create-admin, create-dqc-manager, create-escalation-manager, create-project-manager, create-senior-project-manager, create-finance, register-dqe, register (TDM designer/design_manager)");
 });
 server.on("error", (err) => {
     console.error("Server listen error:", err);
