@@ -353,7 +353,7 @@ export default function Dashboard() {
             targetLeadRef.current = null;
         }
     };
-
+    
     const allTypes = Object.values(SideDashboard);
     const allStatusTypes = Object.values(SideDashboardStatus);
     const [isDropdownOpen, setIsDropdownOpen] = useState(true);
@@ -1041,7 +1041,7 @@ export default function Dashboard() {
                             className={`size-5 shrink-0 text-gray-700 transition-transform duration-200 ${isDropdownOpen ? 'rotate-180' : ''}`}
                             aria-hidden
                         >
-                            <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
                         </svg>
                     </button>
                     {isDropdownOpen && (
@@ -1313,7 +1313,7 @@ export default function Dashboard() {
                                         {importMessage && (
                                             <p className="mt-3 text-xs text-gray-700">{importMessage}</p>
                                         )}
-                                    </div>
+                    </div>
                                 )}
                                 {canImportLeads && (
                                     <div className="rounded-xl border border-emerald-100 bg-emerald-50/30 p-4 space-y-3">
@@ -1328,8 +1328,8 @@ export default function Dashboard() {
                                                 {assignableDesigners.map((d) => (
                                                     <option key={d.id} value={d.id}>
                                                         {d.name} ({d.role.replace("_", " ")})
-                                                    </option>
-                                                ))}
+                        </option>
+                    ))}   
                                             </select>
                                             <button
                                                 type="button"
@@ -1360,7 +1360,7 @@ export default function Dashboard() {
                                         </>
                                     )}
                                     {!isDqcUser && isMmtUser && <div className="xl:text-center">Upload</div>}
-                                </div>
+                    </div>
                                 {renderContent()}
                             </>
                         )}
@@ -1376,4 +1376,4 @@ export default function Dashboard() {
             </main>
         </div>
     );
-}
+    }

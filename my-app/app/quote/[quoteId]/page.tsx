@@ -2,6 +2,7 @@
 
 import { use, useEffect, useMemo, useState } from 'react';
 import { getApiBase } from '@/app/lib/apiBase';
+import { useSearchParams } from 'next/navigation';
 
 const API = getApiBase();
 
@@ -12,7 +13,9 @@ function asNum(v: unknown): number | null {
 }
 
 function asStr(v: unknown): string {
-  return typeof v === 'string' && v.trim() ? v.trim() : '-';
+  if (typeof v === 'string' && v.trim()) return v.trim();
+  if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+  return '-';
 }
 
 function money(v: unknown): string {
@@ -78,7 +81,7 @@ type NormalizedQuote = {
   interiorProjectAmount: number | null;
   designAndManagementFees: number | null;
   discount: number | null;
-  lineItems: Array<{ name: string; amount: number | null; discountedAmount: number | null }>;
+  lineItems: Array<{ roomKey: string; name: string; amount: number | null; discountedAmount: number | null }>;
   rooms: QuoteRoom[];
 };
 
@@ -166,6 +169,7 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
     .filter((r) => r.roomName !== '-');
 
   const lineItems = rooms.map((r) => ({
+    roomKey: r.key,
     name: r.optionName !== '-' ? r.optionName : r.roomName,
     amount: r.totalPriceOld,
     discountedAmount: r.totalPrice,
@@ -208,12 +212,17 @@ type PageProps = { params: Promise<{ quoteId: string }> };
 
 export default function SharedQuotePage(props: PageProps) {
   const { quoteId: quoteIdRaw } = use(props.params);
+  const searchParams = useSearchParams();
   const quoteId = String(quoteIdRaw ?? '').trim();
+  const isInternalMode = searchParams.get('internal') === '1';
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [payload, setPayload] = useState<Record<string, unknown> | null>(null);
   const [summaryTab, setSummaryTab] = useState<'overall' | 'roomwise'>('overall');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [linkCopiedState, setLinkCopiedState] = useState<'customer' | 'internal' | null>(null);
+  const [themeMode, setThemeMode] = useState<'light' | 'dark'>('light');
+  const [metaDraft, setMetaDraft] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -254,6 +263,130 @@ export default function SharedQuotePage(props: PageProps) {
   }, [quoteId]);
 
   const quote = useMemo(() => normalizeQuote(payload, quoteId), [payload, quoteId]);
+  const customerShareLink =
+    typeof window !== 'undefined' ? `${window.location.origin}/quote/${encodeURIComponent(String(quoteId))}` : '';
+  const internalShareLink =
+    typeof window !== 'undefined' ? `${window.location.origin}/quote/${encodeURIComponent(String(quoteId))}?internal=1` : '';
+  const [roomDiscounts, setRoomDiscounts] = useState<Record<string, number>>({});
+  const [roomDiscountDraft, setRoomDiscountDraft] = useState<number>(0);
+  const [activeRoomKey, setActiveRoomKey] = useState<string>('all');
+  const [selectedCabinetClasses, setSelectedCabinetClasses] = useState<string[]>([]);
+
+  useEffect(() => {
+    setRoomDiscounts({});
+    setRoomDiscountDraft(0);
+    setActiveRoomKey('all');
+    setSelectedCabinetClasses([]);
+  }, [quote.quotationId, quote.discount]);
+
+  useEffect(() => {
+    setMetaDraft({
+      customerName: quote.customerName,
+      refId: quote.refId,
+      city: quote.city,
+      bhkType: quote.bhkType,
+      projectType: quote.projectType,
+      projectId: quote.projectId,
+      quoteNum: quote.quoteNum,
+    });
+  }, [
+    quote.customerName,
+    quote.refId,
+    quote.city,
+    quote.bhkType,
+    quote.projectType,
+    quote.projectId,
+    quote.quoteNum,
+  ]);
+
+  useEffect(() => {
+    setSelectedCabinetClasses([]);
+  }, [activeRoomKey]);
+
+  const baseTotal = useMemo(() => {
+    return quote.totalPayableAmount ?? (quote.rooms.length ? quote.rooms.reduce((sum, r) => sum + (r.totalPrice || 0), 0) : null);
+  }, [quote.totalPayableAmount, quote.rooms]);
+  const selectedRoomSet = useMemo(() => {
+    if (activeRoomKey === 'all') return new Set(quote.rooms.map((r) => r.key));
+    return new Set([activeRoomKey]);
+  }, [activeRoomKey, quote.rooms]);
+  const activeRoom = useMemo(
+    () => (activeRoomKey === 'all' ? null : quote.rooms.find((r) => r.key === activeRoomKey) || null),
+    [activeRoomKey, quote.rooms],
+  );
+  const cabinetClassOptions = useMemo(() => {
+    const set = new Set<string>();
+    const roomsForCabinets = activeRoom ? [activeRoom] : quote.rooms;
+    roomsForCabinets.forEach((room) => {
+      room.units.forEach((u) => {
+        if (u.cabinetClass && u.cabinetClass !== '-') set.add(u.cabinetClass);
+      });
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [quote.rooms, activeRoom]);
+  const selectedCabinetSet = useMemo(() => new Set(selectedCabinetClasses), [selectedCabinetClasses]);
+  const activeRoomEligibleBase = useMemo(() => {
+    if (!activeRoom) return 0;
+    if (selectedCabinetSet.size === 0) return activeRoom.totalPrice || 0;
+    return activeRoom.units.reduce((sum, u) => {
+      if (!u.cabinetClass || u.cabinetClass === '-' || !selectedCabinetSet.has(u.cabinetClass)) return sum;
+      return sum + (u.price || 0);
+    }, 0);
+  }, [activeRoom, selectedCabinetSet]);
+  const roomEligibleBases = useMemo(() => {
+    const map = new Map<string, number>();
+    quote.rooms.forEach((room) => {
+      if (!selectedRoomSet.has(room.key)) {
+        map.set(room.key, 0);
+        return;
+      }
+      // If no cabinet filter is chosen, full room total is discount eligible.
+      if (selectedCabinetSet.size === 0) {
+        map.set(room.key, room.totalPrice || 0);
+        return;
+      }
+      const unitsEligible = room.units.reduce((sum, u) => {
+        if (!u.cabinetClass || u.cabinetClass === '-' || !selectedCabinetSet.has(u.cabinetClass)) return sum;
+        return sum + (u.price || 0);
+      }, 0);
+      map.set(room.key, unitsEligible);
+    });
+    return map;
+  }, [quote.rooms, selectedRoomSet, selectedCabinetSet]);
+  const discountBase = useMemo(() => {
+    let sum = 0;
+    roomEligibleBases.forEach((v) => {
+      sum += v || 0;
+    });
+    return sum;
+  }, [roomEligibleBases]);
+  const totalSavedDiscount = useMemo(
+    () => Object.values(roomDiscounts).reduce((sum, val) => sum + (Number.isFinite(val) ? val : 0), 0),
+    [roomDiscounts],
+  );
+  const normalizedDiscount = totalSavedDiscount;
+  const discountedTotal = useMemo(() => {
+    if (baseTotal == null) return null;
+    return Math.max(baseTotal - totalSavedDiscount, 0);
+  }, [baseTotal, totalSavedDiscount]);
+
+  const adjustedRoomTotals = useMemo(() => {
+    const map = new Map<string, number | null>();
+    quote.rooms.forEach((room) => {
+      const raw = room.totalPrice || 0;
+      const saved = roomDiscounts[room.key] || 0;
+      map.set(room.key, Math.max(raw - saved, 0));
+    });
+    return map;
+  }, [quote.rooms, roomDiscounts]);
+
+  useEffect(() => {
+    if (!activeRoom) {
+      setRoomDiscountDraft(0);
+      return;
+    }
+    setRoomDiscountDraft(roomDiscounts[activeRoom.key] || 0);
+  }, [activeRoom, roomDiscounts]);
 
   if (loading) {
     return <div className="min-h-screen bg-[#f5f5f8] p-6 text-gray-700">Loading quote...</div>;
@@ -262,43 +395,229 @@ export default function SharedQuotePage(props: PageProps) {
     return <div className="min-h-screen bg-[#f5f5f8] p-6 text-rose-700">{error}</div>;
   }
 
+  const isDark = themeMode === 'dark';
+  const pageBg = isDark ? 'bg-[#161a22]' : 'bg-[#f3f3f5]';
+  const panelBg = isDark ? 'bg-[#1e2430] border border-slate-700' : 'bg-white';
+  const cardBg = isDark ? 'bg-[#232b39]' : 'bg-white';
+  const headingText = isDark ? 'text-slate-100' : 'text-gray-800';
+  const mutedText = isDark ? 'text-slate-300' : 'text-gray-500';
+
   return (
-    <div className="min-h-screen bg-[#f3f3f5] py-6">
-      <div className="mx-auto w-full max-w-5xl rounded-xl bg-white shadow-sm">
+    <div className={`min-h-screen ${pageBg} py-6`}>
+      <div className={`mx-auto w-full ${isInternalMode ? 'max-w-7xl lg:grid lg:max-h-[calc(100vh-2rem)] lg:grid-cols-12 lg:gap-4 lg:overflow-hidden' : 'max-w-5xl'}`}>
+        {isInternalMode ? (
+          <aside className="lg:col-span-4">
+            <div className={`rounded-3xl p-4 shadow-sm lg:sticky lg:top-4 ${panelBg}`}>
+              <div className="rounded-2xl bg-gradient-to-r from-fuchsia-500 via-rose-500 to-violet-500 p-4 text-white shadow">
+                <p className="text-xs uppercase tracking-wide text-white/80">Internal Workspace</p>
+                <p className="mt-1 text-xl font-bold">Discount Dashboard</p>
+                <p className="mt-1 text-xs text-white/90">Room and cabinet level pricing control</p>
+              </div>
+
+              <div className="mt-4 grid grid-cols-1 gap-3">
+                <label className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+                  <p className="text-[10px] uppercase tracking-wide text-gray-500">Discount Amount (Rs)</p>
+                  <input
+                    type="number"
+                    min={0}
+                    step="1"
+                    value={Number.isFinite(roomDiscountDraft) ? roomDiscountDraft : 0}
+                    onChange={(e) => setRoomDiscountDraft(Number(e.target.value || 0))}
+                    className="mt-2 w-full rounded-lg border border-gray-300 bg-white px-2 py-2 text-sm font-semibold text-gray-900 outline-none focus:border-fuchsia-400"
+                    disabled={!activeRoom}
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={!activeRoom}
+                  onClick={() => {
+                    if (!activeRoom) return;
+                    const cap = activeRoomEligibleBase > 0 ? activeRoomEligibleBase : activeRoom.totalPrice || 0;
+                    const safe = Math.max(0, Math.min(Number.isFinite(roomDiscountDraft) ? roomDiscountDraft : 0, cap));
+                    setRoomDiscounts((prev) => ({ ...prev, [activeRoom.key]: safe }));
+                    setRoomDiscountDraft(safe);
+                  }}
+                  className="rounded-lg bg-fuchsia-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Save {activeRoom ? `${activeRoom.roomName} Discount` : 'Room Discount'}
+                </button>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="rounded-xl bg-gray-50 p-3">
+                    <p className="text-[10px] uppercase tracking-wide text-gray-500">Original</p>
+                    <p className="mt-1 text-base font-bold text-gray-900">{money(baseTotal)}</p>
+                  </div>
+                  <div className="rounded-xl bg-emerald-50 p-3">
+                    <p className="text-[10px] uppercase tracking-wide text-emerald-700">Discounted</p>
+                    <p className="mt-1 text-base font-bold text-emerald-700">{money(discountedTotal)}</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-xl border border-gray-200 p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Rooms</p>
+                <div className="mt-2 max-h-36 space-y-1 overflow-auto pr-1 text-sm">
+                  <button
+                    type="button"
+                    onClick={() => setActiveRoomKey('all')}
+                    className={`w-full rounded-lg px-3 py-2 text-left font-medium ${
+                      activeRoomKey === 'all'
+                        ? 'bg-fuchsia-100 text-fuchsia-800'
+                        : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
+                    }`}
+                  >
+                    All Projects / Rooms
+                  </button>
+                  {quote.rooms.map((room) => {
+                    const checked = activeRoomKey === room.key;
+                    return (
+                      <button
+                        type="button"
+                        key={`room-${room.key}`}
+                        onClick={() => setActiveRoomKey(room.key)}
+                        className={`w-full rounded-lg px-3 py-2 text-left font-medium ${
+                          checked ? 'bg-fuchsia-100 text-fuchsia-800' : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
+                        }`}
+                      >
+                        {room.roomName}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="mt-3 rounded-xl border border-gray-200 p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                  {activeRoom ? `${activeRoom.roomName} Cabinets` : 'Cabinet Classes'}
+                </p>
+                <p className="mt-1 text-[11px] text-gray-500">
+                  {activeRoom ? 'Choose cabinets for selected room.' : 'Choose cabinet classes across all rooms.'}
+                </p>
+                <div className="mt-2 max-h-44 space-y-1 overflow-auto pr-1 text-sm">
+                  {cabinetClassOptions.length ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedCabinetClasses([])}
+                        className={`w-full rounded-lg px-3 py-2 text-left font-medium ${
+                          selectedCabinetClasses.length === 0
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
+                        }`}
+                      >
+                        All Cabinet Classes
+                      </button>
+                      {cabinetClassOptions.map((cab) => {
+                        const checked = selectedCabinetSet.has(cab);
+                        return (
+                          <button
+                            type="button"
+                            key={`cab-${cab}`}
+                            onClick={() =>
+                              setSelectedCabinetClasses((prev) =>
+                                checked ? prev.filter((c) => c !== cab) : Array.from(new Set([...prev, cab])),
+                              )
+                            }
+                            className={`w-full rounded-lg px-3 py-2 text-left font-medium ${
+                              checked ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
+                            }`}
+                          >
+                            {cab}
+                          </button>
+                        );
+                      })}
+                    </>
+                  ) : (
+                    <p className="text-xs text-gray-500">No cabinet classes found in this quote.</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-3 rounded-xl bg-gray-50 p-3">
+                <p className="text-[11px] text-gray-600">
+                  {activeRoom ? `${activeRoom.roomName} Eligible Base` : 'Eligible Discount Base'}
+                </p>
+                <p className="mt-1 text-lg font-bold text-gray-900">{money(activeRoom ? activeRoomEligibleBase : discountBase)}</p>
+                <p className="mt-1 text-[11px] text-gray-500">Saved total discount: {money(totalSavedDiscount)}</p>
+              </div>
+            </div>
+          </aside>
+        ) : null}
+
+      <div className={`${isInternalMode ? 'lg:col-span-8 lg:overflow-y-auto' : ''} rounded-xl shadow-sm ${panelBg}`}>
         <div className="rounded-t-xl bg-[#282a2f] px-5 py-4">
-          <p className="text-xl font-bold text-white">HUBINTERIOR</p>
-          <p className="text-[11px] text-gray-300">Quotation View</p>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="text-xl font-bold text-white">HUBINTERIOR</p>
+              <p className="text-[11px] text-gray-300">Quotation View</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!customerShareLink) return;
+                  await navigator.clipboard.writeText(customerShareLink);
+                  setLinkCopiedState('customer');
+                  setTimeout(() => setLinkCopiedState(null), 1600);
+                }}
+                className="rounded-md border border-emerald-400/60 bg-emerald-500/15 px-3 py-1.5 text-xs font-semibold text-emerald-100 hover:bg-emerald-500/25"
+              >
+                {linkCopiedState === 'customer' ? 'Customer Link Copied' : 'Copy Customer Link'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setThemeMode((prev) => (prev === 'light' ? 'dark' : 'light'))}
+                className="rounded-md border border-white/25 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/20"
+              >
+                {isDark ? 'Light Mode' : 'Dark Mode'}
+              </button>
+            </div>
+          </div>
         </div>
 
         <div className="space-y-4 p-5">
-          <div className="rounded-2xl bg-white p-6 shadow-sm">
-            <p className="text-xs font-semibold tracking-wide text-gray-500">QUOTATION ID : {quote.quotationId}</p>
-            <h3 className="mt-2 text-4xl font-bold text-gray-800">
+          <div className={`rounded-2xl p-6 shadow-sm ${cardBg}`}>
+            <p className={`text-xs font-semibold tracking-wide ${mutedText}`}>QUOTATION ID : {quote.quotationId}</p>
+            <h3 className={`mt-2 text-4xl font-bold ${headingText}`}>
               Hey {quote.customerName !== '-' ? quote.customerName : 'Customer'}, your quotation is ready!
             </h3>
           </div>
 
-          <div className="rounded-2xl bg-white p-4 shadow-sm">
+          <div className={`rounded-2xl p-4 shadow-sm ${cardBg}`}>
             <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
               {[
-                ['Customer Name', quote.customerName],
-                ['Ref ID', quote.refId],
-                ['City', quote.city],
-                ['BHK Type', quote.bhkType],
-                ['Project Type', quote.projectType],
-                ['Project ID', quote.projectId],
-                ['Quote Number', quote.quoteNum],
-              ].map(([label, value]) => (
-                <div key={label} className="rounded-lg bg-gray-50 p-3">
+                ['Customer Name', 'customerName', quote.customerName],
+                ['Ref ID', 'refId', quote.refId],
+                ['City', 'city', quote.city],
+                ['BHK Type', 'bhkType', quote.bhkType],
+                ['Project Type', 'projectType', quote.projectType],
+                ['Project ID', 'projectId', quote.projectId],
+                ['Quote Number', 'quoteNum', quote.quoteNum],
+              ].map(([label, key, value]) => (
+                <div key={String(label)} className="rounded-lg bg-gray-50 p-3">
                   <p className="text-[10px] uppercase tracking-wide text-gray-500">{label}</p>
-                  <p className="mt-1 text-xl font-bold text-gray-900">{value}</p>
+                  {String(value) === '-' ? (
+                    <input
+                      value={metaDraft[String(key)] || ''}
+                      onChange={(e) =>
+                        setMetaDraft((prev) => ({
+                          ...prev,
+                          [String(key)]: e.target.value,
+                        }))
+                      }
+                      placeholder={`Enter ${String(label).toLowerCase()}`}
+                      className="mt-1 w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-base font-semibold text-gray-900"
+                    />
+                  ) : (
+                    <p className="mt-1 text-xl font-bold text-gray-900">{value}</p>
+                  )}
                 </div>
               ))}
             </div>
           </div>
 
-          <div className="rounded-2xl bg-white p-4 shadow-sm">
-            <p className="text-3xl font-bold text-gray-800">Summary Detail</p>
+          <div className={`rounded-2xl p-4 shadow-sm ${cardBg}`}>
+            <p className={`text-3xl font-bold ${headingText}`}>Summary Detail</p>
             <div className="mt-4 grid grid-cols-2 rounded-xl border border-gray-200 p-1">
               <button
                 type="button"
@@ -320,7 +639,7 @@ export default function SharedQuotePage(props: PageProps) {
               <>
                 <div className="mt-5 rounded-xl bg-[#efeff2] py-10 text-center">
                   <p className="text-lg font-semibold text-gray-700">
-                    Total <span className="text-2xl text-gray-900">{money(quote.totalPayableAmount)}</span>
+                    Total <span className="text-2xl text-gray-900">{money(discountedTotal)}</span>
                   </p>
                 </div>
 
@@ -336,7 +655,9 @@ export default function SharedQuotePage(props: PageProps) {
                         <p className="font-semibold text-gray-800">{item.name}</p>
                       </div>
                       <div className="col-span-4 text-right">
-                        <p className="font-semibold text-gray-900">{money(item.discountedAmount ?? item.amount)}</p>
+                        <p className="font-semibold text-gray-900">
+                          {money(adjustedRoomTotals.get(item.roomKey) ?? item.discountedAmount ?? item.amount)}
+                        </p>
                       </div>
                     </div>
                   ))
@@ -360,14 +681,14 @@ export default function SharedQuotePage(props: PageProps) {
                   </div>
                   <div className="flex justify-between border-t border-gray-100 pt-3">
                     <span className="text-sm text-gray-600">Discount</span>
-                    <span className="font-semibold text-gray-900">{money(quote.discount)}</span>
+                    <span className="font-semibold text-gray-900">{money(normalizedDiscount)}</span>
                   </div>
                   <div className="flex justify-between border-t border-gray-200 pt-3">
                     <div>
                       <p className="text-xl font-bold text-gray-900">Total Payable Amount</p>
                       <p className="text-xs text-gray-500">Inclusive of all taxes &amp; discount</p>
                     </div>
-                    <span className="text-2xl font-bold text-gray-900">{money(quote.totalPayableAmount)}</span>
+                    <span className="text-2xl font-bold text-gray-900">{money(discountedTotal)}</span>
                   </div>
                 </div>
               </>
@@ -375,8 +696,9 @@ export default function SharedQuotePage(props: PageProps) {
               <div className="mt-5 space-y-4">
                 {quote.rooms.length ? (
                   quote.rooms.map((room) => {
+                    const adjustedRoomTotal = adjustedRoomTotals.get(room.key) ?? room.totalPrice;
                     const saving =
-                      room.totalPriceOld != null && room.totalPrice != null ? room.totalPriceOld - room.totalPrice : null;
+                      room.totalPriceOld != null && adjustedRoomTotal != null ? room.totalPriceOld - adjustedRoomTotal : null;
                     return (
                       <div key={room.key} className="rounded-xl border border-gray-200 p-4">
                         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -386,7 +708,7 @@ export default function SharedQuotePage(props: PageProps) {
                           </div>
                           <div className="text-right">
                             <p className="text-xs text-gray-500">Room Total</p>
-                            <p className="text-xl font-bold text-gray-900">{money(room.totalPrice)}</p>
+                            <p className="text-xl font-bold text-gray-900">{money(adjustedRoomTotal)}</p>
                             {room.totalPriceOld != null ? (
                               <p className="text-xs text-rose-400 line-through">{money(room.totalPriceOld)}</p>
                             ) : null}
@@ -496,6 +818,7 @@ export default function SharedQuotePage(props: PageProps) {
           </div>
         </div>
       </div>
+    </div>
     </div>
   );
 }

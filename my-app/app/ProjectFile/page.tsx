@@ -75,7 +75,7 @@ export default function ProjectFile() {
     }
   };
 
-  return (
+    return (
     <main className="min-h-screen bg-[#eceef7] py-8">
       <div className="mx-auto w-full max-w-6xl px-4">
         <div className="overflow-hidden rounded-2xl border border-[#d6d9ef] bg-white shadow-lg">
@@ -279,5 +279,5 @@ export default function ProjectFile() {
         </div>
       </div>
     </main>
-  );
+    );
 }

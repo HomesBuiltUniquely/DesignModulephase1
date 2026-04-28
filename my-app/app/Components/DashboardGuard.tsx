@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import Dashboard from './Dashboard';
 import GoogleCalendarView from './GoogleCalendarView';
+import ThemeModeToggle from './ThemeModeToggle';
 
 export default function DashboardGuard() {
   const router = useRouter();
@@ -94,6 +95,7 @@ export default function DashboardGuard() {
           )}
         </div>
         <div className="flex items-center gap-3">
+          <ThemeModeToggle />
           <div className="relative" ref={settingsRef}>
             <button
               type="button"

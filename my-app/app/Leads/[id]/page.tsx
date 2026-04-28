@@ -1069,7 +1069,13 @@ export default function ProjectDetailPage() {
                 setLatestQuoteResponse(quoteBody);
                 setQuoteSummaryTab('overall');
                 setExpandedQuoteRooms({});
-                setShowQuotePreviewModal(true);
+                setShowQuotePreviewModal(false);
+                const redirectQuoteId = extractQuoteId(quoteBody) ?? quoteIdFromGetQuote;
+                if (redirectQuoteId != null) {
+                    window.open(`/quote/${encodeURIComponent(String(redirectQuoteId))}?internal=1`, '_blank');
+                } else {
+                    setShowQuotePreviewModal(true);
+                }
                 setBlockedTaskMessage(`Get quote triggered successfully for Project ID ${quoteProjectId}.`);
                 setTimeout(() => setBlockedTaskMessage(null), 3500);
             } else {
