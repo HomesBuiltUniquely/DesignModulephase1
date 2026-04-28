@@ -107,4 +107,6 @@ export type HistoryEvent = {
     description: string;
     user: HistoryEventUser;
     details?: HistoryEventDetails;
+    /** Metadata stored during task completion (e.g., meeting date/time) */
+    meta?: any;
 };

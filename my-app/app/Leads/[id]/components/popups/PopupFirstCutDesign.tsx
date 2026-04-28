@@ -60,7 +60,7 @@ export default function PopupFirstCutDesign({
 }: Props) {
   const [meetingDate, setMeetingDate] = useState(initialDate || "");
   const [meetingTime, setMeetingTime] = useState(initialTime || "");
-  const [meetingMode, setMeetingMode] = useState<"online" | "offline">(initialMode || "online" );
+  const [meetingMode, setMeetingMode] = useState<"online" | "offline">(initialMode || "online");
   const [meetingLink, setMeetingLink] = useState(initialLink || "");
   const [completionPercent, setCompletionPercent] = useState(0);
 
@@ -331,6 +331,7 @@ export default function PopupFirstCutDesign({
                 meetingTime,
                 meetingMode,
                 meetingLink: meetingLink.trim(),
+                ecLocation,
               })
             }
             disabled={isMeetingScheduleIncomplete}
@@ -360,6 +361,7 @@ export default function PopupFirstCutDesign({
                 meetingTime,
                 meetingMode,
                 meetingLink: meetingLink.trim(),
+                ecLocation,
               })
             }
             disabled={completionPercent < 100 || isMeetingScheduleIncomplete}

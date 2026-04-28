@@ -2656,47 +2656,72 @@ export default function ProjectDetailPage() {
                             onDesignDrop={onDesignDrop}
                             onDesignDragOver={onDesignDragOver}
                             removeDesignFile={removeDesignFile}
+                            ecLocation={project?.experienceCenter || (project as any)?.experience_center || 'Experience Center'}
+                            initialDate={(() => {
+                                const ev = historyEvents.find(e => e.taskName === 'First cut design + quotation discussion meeting request' && (e.meta as any)?.meetingDate);
+                                return (ev?.meta as any)?.meetingDate || '';
+                            })()}
+                            initialTime={(() => {
+                                const ev = historyEvents.find(e => e.taskName === 'First cut design + quotation discussion meeting request' && (e.meta as any)?.meetingTime);
+                                return (ev?.meta as any)?.meetingTime || '';
+                            })()}
+                            initialMode={(() => {
+                                const ev = historyEvents.find(e => e.taskName === 'First cut design + quotation discussion meeting request' && (e.meta as any)?.meetingMode);
+                                return (ev?.meta as any)?.meetingMode || 'online';
+                            })()}
+                            initialLink={(() => {
+                                const ev = historyEvents.find(e => e.taskName === 'First cut design + quotation discussion meeting request' && (e.meta as any)?.meetingLink);
+                                return (ev?.meta as any)?.meetingLink || '';
+                            })()}
                             onSubmit={async (meta) => {
                                 if (!projectId) return;
                                 try {
+                                    let uploadedAttachments: any[] = [];
                                     if (designUploadFiles.length > 0 && sessionId) {
                                         const fd = new FormData();
-                                        // meeting meta is used by backend to personalise the invite email
-                                        if (meta?.meetingDate) {
-                                            fd.append('meetingDate', meta.meetingDate);
-                                        }
-                                        if (meta?.meetingTime) {
-                                            fd.append('meetingTime', meta.meetingTime);
-                                        }
-                                        if (meta?.meetingMode) {
-                                            fd.append('meetingMode', meta.meetingMode);
-                                        }
-                                        if (meta?.meetingLink) {
-                                            fd.append('meetingLink', meta.meetingLink);
-                                        }
-                                        designUploadFiles.forEach((f) =>
-                                            fd.append('files', f),
-                                        );
-                                        await fetch(
+                                        if (meta?.meetingDate) fd.append('meetingDate', meta.meetingDate);
+                                        if (meta?.meetingTime) fd.append('meetingTime', meta.meetingTime);
+                                        if (meta?.meetingMode) fd.append('meetingMode', meta.meetingMode);
+                                        if (meta?.meetingLink) fd.append('meetingLink', meta.meetingLink);
+                                        
+                                        designUploadFiles.forEach((f) => fd.append('files', f));
+                                        const uploadRes = await fetch(
                                             `${API}/api/leads/${projectId}/first-cut-design-upload`,
                                             {
                                                 method: 'POST',
-                                                headers: {
-                                                    Authorization: `Bearer ${sessionId}`,
-                                                },
+                                                headers: { Authorization: `Bearer ${sessionId}` },
                                                 body: fd,
                                             },
                                         );
+                                        if (uploadRes.ok) {
+                                            const uploadData = await uploadRes.json();
+                                            if (uploadData.attachments) {
+                                                uploadedAttachments = uploadData.attachments;
+                                            }
+                                        }
                                     }
+
+                                    // Manual invite trigger if not already handled by upload endpoint or for re-sending
+                                    await fetch(`${API}/api/leads/${projectId}/schedule-meeting-invite`, {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/json',
+                                            Authorization: `Bearer ${sessionId}`,
+                                        },
+                                        body: JSON.stringify({
+                                            meetingType: 'dqc1_first_cut',
+                                            meetingDate: meta?.meetingDate,
+                                            meetingTime: meta?.meetingTime,
+                                            meetingMode: meta?.meetingMode,
+                                            meetingLink: meta?.meetingLink,
+                                            ecLocation: meta?.ecLocation || project?.experienceCenter || (project as any)?.experience_center,
+                                            attachments: uploadedAttachments,
+                                        }),
+                                    });
                                     setDesignUploadFiles([]);
                                 } catch (err) {
-                                    console.error(
-                                        'first-cut-design upload failed',
-                                        err,
-                                    );
-                                    alert(
-                                        'Failed to upload design files. Please try again.',
-                                    );
+                                    console.error('first-cut-design submission failed', err);
+                                    alert('Failed to submit design request. Please try again.');
                                 }
                             }}
                             onCompleteAndProceed={(meta) => {
@@ -2704,9 +2729,11 @@ export default function ProjectDetailPage() {
                                     1,
                                     'First cut design + quotation discussion meeting request',
                                     {
-                                        description:
-                                            'First cut design completed (100%) and meeting request submitted.',
-                                        meta: meta ?? {},
+                                        description: 'First cut design completed (100%) and meeting request submitted.',
+                                        meta: {
+                                            ...meta,
+                                            ecLocation: meta?.ecLocation || project?.experienceCenter || (project as any)?.experience_center,
+                                        },
                                     },
                                 );
                                 setDesignUploadFiles([]);
@@ -2911,6 +2938,23 @@ export default function ProjectDetailPage() {
                             onDesignDrop={onDesignDrop}
                             onDesignDragOver={onDesignDragOver}
                             removeDesignFile={removeDesignFile}
+                            ecLocation={project?.experienceCenter || (project as any)?.experience_center || 'Experience Center'}
+                            initialDate={(() => {
+                                const ev = historyEvents.find(e => e.taskName === 'Material selection meeting + quotation discussion' && (e.meta as any)?.meetingDate);
+                                return (ev?.meta as any)?.meetingDate || '';
+                            })()}
+                            initialTime={(() => {
+                                const ev = historyEvents.find(e => e.taskName === 'Material selection meeting + quotation discussion' && (e.meta as any)?.meetingTime);
+                                return (ev?.meta as any)?.meetingTime || '';
+                            })()}
+                            initialMode={(() => {
+                                const ev = historyEvents.find(e => e.taskName === 'Material selection meeting + quotation discussion' && (e.meta as any)?.meetingMode);
+                                return (ev?.meta as any)?.meetingMode || 'online';
+                            })()}
+                            initialLink={(() => {
+                                const ev = historyEvents.find(e => e.taskName === 'Material selection meeting + quotation discussion' && (e.meta as any)?.meetingLink);
+                                return (ev?.meta as any)?.meetingLink || '';
+                            })()}
                             onSubmit={async (meta) => {
                                 if (!projectId) return;
                                 try {
@@ -2946,6 +2990,7 @@ export default function ProjectDetailPage() {
                                             meetingTime: meta?.meetingTime,
                                             meetingMode: meta?.meetingMode,
                                             meetingLink: meta?.meetingLink,
+                                            ecLocation: meta?.ecLocation || project?.experienceCenter || (project as any)?.experience_center,
                                             ...(attachments.length ? { attachments } : {}),
                                         }),
                                     });
@@ -2955,14 +3000,16 @@ export default function ProjectDetailPage() {
                                     alert('Failed to schedule meeting. Please try again.');
                                 }
                             }}
-                            onCompleteAndProceed={() => {
+                            onCompleteAndProceed={(meta) => {
                                 recordTaskComplete(
                                     4,
                                     'Material selection meeting + quotation discussion',
                                     {
-                                        description:
-                                            'Material selection meeting completed (100%) and meeting request submitted.',
-                                        meta: {},
+                                        description: 'Material selection meeting completed (100%) and meeting request submitted.',
+                                        meta: {
+                                            ...meta,
+                                            ecLocation: meta?.ecLocation || project?.experienceCenter || (project as any)?.experience_center,
+                                        },
                                     },
                                 );
                                 setDesignUploadFiles([]);
