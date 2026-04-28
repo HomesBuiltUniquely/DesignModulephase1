@@ -1,5 +1,12 @@
-export function renderD1SiteMeasurementEmail(params: { customerName: string }) {
-  const { customerName } = params;
+export function renderD1SiteMeasurementEmail(params: {
+  customerName: string;
+  projectId?: number | string;
+  propertyType?: string;
+}) {
+  const { customerName, projectId, propertyType } = params;
+
+  const displayProjectId = projectId ? String(projectId) : '#HUB-2024-892';
+  const displayPropertyType = propertyType || '4-Room Apartment';
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -128,7 +135,7 @@ export function renderD1SiteMeasurementEmail(params: { customerName: string }) {
                     Project ID
                   </p>
                   <p style="font-size:14px;font-weight:600;color:#111827;margin:0;">
-                    #HUB-2024-892
+                    ${displayProjectId}
                   </p>
                 </div>
               </td>
@@ -138,7 +145,7 @@ export function renderD1SiteMeasurementEmail(params: { customerName: string }) {
                     Property Type
                   </p>
                   <p style="font-size:14px;font-weight:600;color:#111827;margin:0;">
-                    4-Room Apartment
+                    ${displayPropertyType}
                   </p>
                 </div>
               </td>

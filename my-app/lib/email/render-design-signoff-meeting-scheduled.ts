@@ -1,14 +1,22 @@
 export function renderDesignSignoffMeetingScheduledEmail(params: {
   customerName: string;
+  projectId?: string;
   meetingDate?: string;
   meetingTime?: string;
   designerName?: string;
+  meetingMode?: "online" | "offline";
+  meetingLink?: string;
+  ecLocation?: string;
 }) {
   const {
     customerName,
+    projectId,
     meetingDate = "[Date]",
     meetingTime = "[Time]",
     designerName = "Design Team",
+    meetingMode,
+    meetingLink,
+    ecLocation,
   } = params;
 
   const html = `<!DOCTYPE html>
@@ -37,6 +45,9 @@ export function renderDesignSignoffMeetingScheduledEmail(params: {
         <p style="margin:0 0 20px 0;font-size:17px;line-height:1.6;color:#4a4a4a;">
           Dear ${customerName},
         </p>
+        <p style="margin:0 0 10px 0;font-size:14px;color:#6b7280;">
+          Project ID: <span style="font-weight:600;color:#111827;">${projectId || "N/A"}</span>
+        </p>
         <p style="margin:0 0 20px 0;font-size:17px;line-height:1.6;color:#4a4a4a;">
           We're pleased to inform you that your project has successfully cleared the DQC 2 review.
         </p>
@@ -56,9 +67,21 @@ export function renderDesignSignoffMeetingScheduledEmail(params: {
           <p style="margin:0 0 8px 0;font-size:15px;color:#333;">
             <strong>📅 Proposed Date:</strong> ${meetingDate}
           </p>
-          <p style="margin:0;font-size:15px;color:#333;">
+          <p style="margin:0 0 8px 0;font-size:15px;color:#333;">
             <strong>🕒 Time:</strong> ${meetingTime}
           </p>
+          <p style="margin:0 0 8px 0;font-size:15px;color:#333;">
+            <strong>📍 Mode:</strong> ${meetingMode === 'online' ? 'Online' : 'Offline (In-person)'}
+          </p>
+          ${meetingMode === 'online' && meetingLink ? `
+          <p style="margin:0;font-size:15px;color:#333;">
+            <strong>🔗 Meeting Link:</strong> <a href="${meetingLink}" style="color:#2563eb;text-decoration:none;">Join Here</a>
+          </p>
+          ` : (meetingMode === 'offline' && ecLocation ? `
+          <p style="margin:0;font-size:15px;color:#333;">
+            <strong>🏢 Location:</strong> ${ecLocation} branch
+          </p>
+          ` : '')}
         </div>
         <p style="margin:0 0 20px 0;font-size:17px;line-height:1.6;color:#4a4a4a;">
           I hope this schedule works for you. Please let me know if any adjustment is required.
@@ -77,5 +100,5 @@ export function renderDesignSignoffMeetingScheduledEmail(params: {
 </body>
 </html>`;
 
-  return html;
+  return { subject: `Design Approved – Let's Schedule Final Sign-Off – ${customerName}`, html };
 }

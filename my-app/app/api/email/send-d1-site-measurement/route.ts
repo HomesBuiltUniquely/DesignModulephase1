@@ -9,6 +9,8 @@ export async function POST(request: Request) {
     const cc = body.cc as string[] | string | undefined;
     const subject = body.subject as string | undefined;
     const customerName = body.customerName as string | undefined;
+    const projectId = body.projectId;
+    const propertyType = body.propertyType;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -17,7 +19,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const html = renderD1SiteMeasurementEmail({ customerName });
+    const html = renderD1SiteMeasurementEmail({ customerName, projectId, propertyType });
 
     const info = await sendMail({
       to,

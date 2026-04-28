@@ -3,6 +3,8 @@ export function renderDqc2MaterialSelectionScheduledEmail(params: {
   designerName?: string;
   meetingDate?: string | null;
   meetingTime?: string | null;
+  meetingMode?: string | null;
+  meetingLink?: string | null;
   ecLocation?: string | null;
 }) {
   const {
@@ -10,8 +12,26 @@ export function renderDqc2MaterialSelectionScheduledEmail(params: {
     designerName = "Designer",
     meetingDate = "–",
     meetingTime = "–",
+    meetingMode,
+    meetingLink,
     ecLocation = "–",
   } = params;
+
+  let timeDisplay = meetingTime;
+  if (meetingTime && meetingTime.includes(":")) {
+    const [h, m] = meetingTime.split(":");
+    const hours = parseInt(h, 10);
+    if (!isNaN(hours)) {
+      const suffix = hours >= 12 ? 'PM' : 'AM';
+      const hour12 = ((hours % 12) || 12).toString().padStart(2, '0');
+      timeDisplay = `${hour12}:${m} ${suffix}`;
+    }
+  }
+
+  const isOnline = meetingMode === 'online';
+  const locationDisplay = isOnline ? 
+    `Online Meeting - <a href="${meetingLink || '#'}" style="color:#da4b3a;text-decoration:underline;">Join Here</a>` : 
+    `${ecLocation} Branch`;
 
   const subject = "Color & Material Selection Meeting – Scheduled";
 
@@ -58,8 +78,8 @@ export function renderDqc2MaterialSelectionScheduledEmail(params: {
         <div style="background-color:#f8efdf;border-radius:18px;padding:18px 24px;box-shadow:0 6px 18px rgba(0,0,0,0.03);margin-bottom:20px;">
           <div style="font-size:13px;color:#3b3b3b;line-height:1.8;">
             <p style="margin:0 0 8px 0;">📅 Date: ${meetingDate}</p>
-            <p style="margin:0 0 8px 0;">🕒 Time: ${meetingTime}</p>
-            <p style="margin:0;">📍 Location: ${ecLocation}</p>
+            <p style="margin:0 0 8px 0;">🕒 Time: ${timeDisplay}</p>
+            <p style="margin:0;">📍 Location: ${locationDisplay}</p>
           </div>
         </div>
         <p style="margin:0 0 12px 0;font-size:14px;line-height:1.7;color:#4b5563;">
