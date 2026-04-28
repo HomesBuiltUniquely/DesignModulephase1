@@ -11,6 +11,8 @@ export async function POST(request: Request) {
     const customerName = body.customerName as string | undefined;
     const meetingDate = body.meetingDate as string | undefined;
     const meetingTime = body.meetingTime as string | undefined;
+    const meetingMode = body.meetingMode as string | undefined;
+    const meetingLink = body.meetingLink as string | undefined;
     const designerName = body.designerName as string | undefined;
     const designerTitle = body.designerTitle as string | undefined;
     const designerAvatarUrl = body.designerAvatarUrl as string | undefined;
@@ -28,6 +30,8 @@ export async function POST(request: Request) {
       customerName,
       meetingDate,
       meetingTime,
+      meetingMode,
+      meetingLink,
       designerName,
       designerTitle,
       designerAvatarUrl,

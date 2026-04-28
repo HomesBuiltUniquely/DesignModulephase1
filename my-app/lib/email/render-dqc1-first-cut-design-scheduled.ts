@@ -2,6 +2,8 @@ export function renderDqc1FirstCutDesignScheduledEmail(params: {
   customerName: string;
   meetingDate?: string;
   meetingTime?: string;
+  meetingMode?: string;
+  meetingLink?: string;
   designerName?: string;
   designerTitle?: string;
   /**
@@ -14,6 +16,8 @@ export function renderDqc1FirstCutDesignScheduledEmail(params: {
     customerName,
     meetingDate,
     meetingTime,
+    meetingMode,
+    meetingLink,
     designerName,
     designerTitle,
     designerAvatarUrl,
@@ -158,7 +162,10 @@ export function renderDqc1FirstCutDesignScheduledEmail(params: {
             </td>
             <td style="vertical-align:top;">
               <p style="margin:0;font-size:15px;font-weight:400;color:#333333;line-height:1.6;">
-                The virtual meeting link will be sent automatically to your calendar once you confirm the time below.
+                ${meetingMode === 'offline' 
+                  ? 'We look forward to hosting you for an in-person design discussion. Please visit us at our experience center during the selected time.' 
+                  : `This meeting will be held <strong>Online</strong>. You can join the meeting using the following link:<br/>
+                     <a href="${meetingLink || '#'}" style="color:#da4b3a;text-decoration:underline;">${meetingLink || 'Link will be shared soon'}</a>`}
               </p>
             </td>
           </tr>

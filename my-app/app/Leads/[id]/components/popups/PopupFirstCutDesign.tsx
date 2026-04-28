@@ -15,11 +15,19 @@ type Props = {
    * Send meeting invite + upload; does not complete task or close.
    * Can be called multiple times.
    */
+  /** Sales closure experience center / branch (from lead payload) */
+  ecLocation?: string | null;
+  /** Pre-fill values if available */
+  initialDate?: string;
+  initialTime?: string;
+  initialMode?: "online" | "offline";
+  initialLink?: string;
   onSubmit?: (meta?: {
     meetingDate?: string;
     meetingTime?: string;
     meetingMode?: "online" | "offline";
     meetingLink?: string;
+    ecLocation?: string | null;
   }) => void;
   /** Called when designer marks 100% complete; parent should record task complete and close. */
   onCompleteAndProceed?: (meta?: {
@@ -27,6 +35,7 @@ type Props = {
     meetingTime?: string;
     meetingMode?: "online" | "offline";
     meetingLink?: string;
+    ecLocation?: string | null;
   }) => void;
 };
 
@@ -41,16 +50,23 @@ export default function PopupFirstCutDesign({
   onDesignDrop,
   onDesignDragOver,
   removeDesignFile,
+  ecLocation,
+  initialDate,
+  initialTime,
+  initialMode,
+  initialLink,
   onSubmit,
   onCompleteAndProceed,
 }: Props) {
-  const [meetingDate, setMeetingDate] = useState("");
-  const [meetingTime, setMeetingTime] = useState("");
-  const [meetingMode, setMeetingMode] = useState<"online" | "offline">("online");
-  const [meetingLink, setMeetingLink] = useState("");
+  const [meetingDate, setMeetingDate] = useState(initialDate || "");
+  const [meetingTime, setMeetingTime] = useState(initialTime || "");
+  const [meetingMode, setMeetingMode] = useState<"online" | "offline">(initialMode || "online");
+  const [meetingLink, setMeetingLink] = useState(initialLink || "");
   const [completionPercent, setCompletionPercent] = useState(0);
+
   const isMeetingLinkEmpty = meetingLink.trim().length === 0;
-  const isMeetingScheduleIncomplete = !meetingDate || !meetingTime || isMeetingLinkEmpty;
+  // If offline, meeting link is not mandatory
+  const isMeetingScheduleIncomplete = !meetingDate || !meetingTime || (meetingMode === "online" && isMeetingLinkEmpty);
 
   return (
     <div className="w-full">
@@ -77,18 +93,20 @@ export default function PopupFirstCutDesign({
         </div>
         <div className="px-6 pt-2">
           <div className="font-bold text-sm text-black mb-1">
-            Meeting link <span className="text-red-500">*</span>
+            Meeting link {meetingMode === "online" && <span className="text-red-500">*</span>}
           </div>
           <input
             type="url"
-            placeholder="Paste Google Meet / Teams / Zoom link"
+            placeholder={meetingMode === "online" ? "Paste Google Meet / Teams / Zoom link" : "Meeting Link (Optional for Offline)"}
             className="w-full border border-gray-300 rounded-md p-2 text-sm"
             value={meetingLink}
             onChange={(e) => setMeetingLink(e.target.value)}
           />
-          <p className="mt-1 text-xs text-gray-500">
-            This link is mandatory and will be included in the meeting email.
-          </p>
+          {meetingMode === "online" && (
+            <p className="mt-1 text-xs text-gray-500">
+              This link is mandatory for online meetings and will be included in the email.
+            </p>
+          )}
         </div>
         <div className="flex items-center justify-between gap-2 px-6 py-2">
           <div>
@@ -127,29 +145,36 @@ export default function PopupFirstCutDesign({
           </svg>
           <div className="text-[14px] font-bold text-black">MEETING MODE</div>
         </div>
-        <div className="flex justify-start gap-4 bg-gray-200 w-47 h-12 rounded-md ml-5">
-          <button
-            type="button"
-            onClick={() => setMeetingMode("online")}
-            className={`w-24 h-[4.5vh] text-center font-bold mt-1.5 pt-1.5 ml-1.5 rounded-md ${
-              meetingMode === "online"
-                ? "bg-white text-blue-500"
-                : "bg-transparent text-gray-500"
-            }`}
-          >
-            Online
-          </button>
-          <button
-            type="button"
-            onClick={() => setMeetingMode("offline")}
-            className={`w-24 h-[4.5vh] text-center font-bold mt-1.5 pt-1.5 rounded-md ${
-              meetingMode === "offline"
-                ? "bg-white text-blue-500"
-                : "bg-transparent text-gray-500"
-            }`}
-          >
-            Offline
-          </button>
+        <div className="flex items-center gap-4 ml-5">
+          <div className="flex justify-start gap-4 bg-gray-200 w-fit p-1 rounded-md">
+            <button
+              type="button"
+              onClick={() => setMeetingMode("online")}
+              className={`w-24 h-[4.5vh] text-center font-bold rounded-md ${
+                meetingMode === "online"
+                  ? "bg-white text-blue-500"
+                  : "bg-transparent text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              Online
+            </button>
+            <button
+              type="button"
+              onClick={() => setMeetingMode("offline")}
+              className={`w-24 h-[4.5vh] text-center font-bold rounded-md ${
+                meetingMode === "offline"
+                  ? "bg-white text-blue-500"
+                  : "bg-transparent text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              Offline
+            </button>
+          </div>
+          {meetingMode === "offline" && ecLocation && (
+            <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 border border-blue-100 rounded-lg">
+              <span className="text-sm font-semibold text-blue-700">📍 {ecLocation} branch</span>
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2 py-4 px-6 mt-4">
           <svg
@@ -306,6 +331,7 @@ export default function PopupFirstCutDesign({
                 meetingTime,
                 meetingMode,
                 meetingLink: meetingLink.trim(),
+                ecLocation,
               })
             }
             disabled={isMeetingScheduleIncomplete}
@@ -335,6 +361,7 @@ export default function PopupFirstCutDesign({
                 meetingTime,
                 meetingMode,
                 meetingLink: meetingLink.trim(),
+                ecLocation,
               })
             }
             disabled={completionPercent < 100 || isMeetingScheduleIncomplete}

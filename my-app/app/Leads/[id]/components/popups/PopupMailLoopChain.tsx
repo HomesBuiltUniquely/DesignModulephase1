@@ -97,9 +97,8 @@ export default function PopupMailLoopChain({
   const adminsForLoop = uniqueMembers(teamEmails?.admins || []).filter(
     (m) => normalizeEmail(m.email) !== designerEmailNorm,
   );
-  const tdmForLoop = filterByExpectedEmail(
-    (teamEmails?.territorial_design_managers || []).filter((m) => normalizeEmail(m.email) !== designerEmailNorm),
-    tdmEmail,
+  const tdmForLoop = uniqueMembers(teamEmails?.territorial_design_managers || []).filter(
+    (m) => normalizeEmail(m.email) !== designerEmailNorm,
   );
   const dmForLoop = filterByExpectedEmail(
     (teamEmails?.design_managers || []).filter((m) => normalizeEmail(m.email) !== designerEmailNorm),
