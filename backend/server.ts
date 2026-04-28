@@ -81,7 +81,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   res.setHeader("Access-Control-Allow-Methods", "GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Prolance-Token, X-Prolance-Origin-Session, X-Prolance-Api-Key",
+    "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Prolance-Token, X-Prolance-Origin-Session, X-Prolance-Api-Key, X-External-Api-Key",
   );
   res.setHeader("Access-Control-Max-Age", "86400");
   res.setHeader("Vary", "Origin");
@@ -107,6 +107,7 @@ app.use(
       "X-Prolance-Token",
       "X-Prolance-Origin-Session",
       "X-Prolance-Api-Key",
+      "X-External-Api-Key",
     ],
     optionsSuccessStatus: 204,
   })
