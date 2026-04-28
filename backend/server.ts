@@ -283,11 +283,26 @@ function buildMailChainSubject(
 }
 
 async function getMailLoopCcEmails(extraEmails: Array<string | null | undefined> = []): Promise<string[]> {
+  const validExtras = extraEmails.filter(Boolean) as string[];
+
   const [teamRows] = await pool.query(
-    "SELECT email FROM users WHERE role IN ('admin','territorial_design_manager','design_manager') AND email IS NOT NULL",
+    "SELECT email FROM users WHERE role IN ('admin','territorial_design_manager') AND email IS NOT NULL",
   );
-  const teamEmails = (teamRows as { email: string | null }[]).map((r) => r.email || null);
-  return distinctEmails([...extraEmails, ...teamEmails]);
+  let teamEmails = (teamRows as { email: string | null }[]).map((r) => r.email || null);
+
+  if (validExtras.length > 0) {
+    const [dmRows] = await pool.query(
+      `SELECT dm.email 
+       FROM users u 
+       JOIN users dm ON dm.id = u.design_manager_id 
+       WHERE u.email IN (?) AND dm.email IS NOT NULL`,
+      [validExtras]
+    );
+    const dmEmails = (dmRows as { email: string | null }[]).map((r) => r.email || null);
+    teamEmails = [...teamEmails, ...dmEmails];
+  }
+
+  return distinctEmails([...validExtras, ...teamEmails]);
 }
 
 type MailVisibility = "internal" | "external" | "internal+external";
@@ -423,6 +438,7 @@ async function triggerCustomerEmailForLead(
         subject: mailChainSubject,
         customerName,
         designerName,
+        leadPayload: payload,
       },
     });
   } catch (err) {
@@ -2124,7 +2140,7 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
       // ignore mapping errors; assignedDesignerId stays null
     }
 
-    await pool.query(
+    const [result] = await pool.query(
       `INSERT INTO leads
        (pid, project_name, project_stage, contact_no, client_email,
         is_on_hold, resume_at, create_at, update_at, payload, assigned_designer_id)
@@ -2141,6 +2157,7 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
         assignedDesignerId,
       ],
     );
+    const insertId = (result as any).insertId;
 
     // Fire-and-forget: trigger D1 Site Measurement welcome email via frontend mail service
     try {
@@ -2159,6 +2176,8 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
         const mailChainSubject = buildMailChainSubject(pid, lead.projectName, customerName);
 
         // Do not block main response if email fails; just log.
+        const propertyType = payload.property_configuration || payload?.formData?.property_configuration || payload?.form?.property_configuration || "Apartment";
+
         fetch(`${frontendBase}/api/email/send-d1-site-measurement`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -2167,6 +2186,8 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
             cc: mailChainCc,
             subject: mailChainSubject,
             customerName,
+            projectId: `PJ-${insertId}`,
+            propertyType,
           }),
         }).catch((err) => {
           console.error("Failed to trigger D1 email from backend", err);
@@ -3034,7 +3055,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               }
             }
 
-            const projectId = leadRow.pid || "";
+            const projectId = leadRow.pid || `PJ-${id}`;
             const propertyType = formData.property_configuration || "";
             const rawOrderValue = formData.order_value ?? payload.order_value ?? null;
             let amountDue: string | undefined;
@@ -3117,6 +3138,24 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                     projectId,
                     propertyType,
                     amountDue,
+                    attachments: await (async () => {
+                      try {
+                        const [ups] = await pool.query(
+                          `SELECT original_name as originalName, s3_url as s3Url, stored_path as storedPath
+                           FROM lead_uploads
+                           WHERE lead_id = ? AND upload_type = 'first_cut_design' AND status = 'approved'
+                           ORDER BY id DESC`,
+                          [id],
+                        );
+                        return ((ups as any[]) || []).map((u) => ({
+                          filename: (u.originalName || "Attachment").toString(),
+                          path: (u.s3Url || u.storedPath || "").toString(),
+                        })).filter(a => a.path);
+                      } catch (e) {
+                        console.error("10% fetch attachments error", e);
+                        return [];
+                      }
+                    })(),
                   }),
                 });
                 const text = await r.text();
@@ -3432,11 +3471,8 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             `SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload,
                     u.id as designerId, u.email as designerEmail, u.name as designerName
              FROM leads l
-             LEFT JOIN lead_d1_assignments a ON a.lead_id = l.id
-             LEFT JOIN users u ON u.id = a.assigned_to_user_id
-             WHERE l.id = ?
-             ORDER BY a.created_at DESC
-             LIMIT 1`,
+             LEFT JOIN users u ON u.id = l.assigned_designer_id
+             WHERE l.id = ?`,
             [id],
           );
           const leadRow = (leadRows as any[])[0];
@@ -3553,7 +3589,11 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
       } else if (emailRoutePath === ("/api/email/send-dqc1-first-cut-design-scheduled" as string)) {
         try {
           const [rows] = await pool.query(
-            "SELECT project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?",
+            `SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload,
+                    u.name as designerName, u.role as designerRole, u.profileImage as designerAvatarUrl
+             FROM leads l
+             LEFT JOIN users u ON l.assigned_designer_id = u.id
+             WHERE l.id = ?`,
             [id],
           );
           const row = (rows as any[])[0];
@@ -3572,34 +3612,32 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               row.projectName ||
               "Customer";
 
-            // Collect latest first-cut design uploads (if any) to attach when S3 URLs are available.
+            // Collect latest first-cut design uploads (if any) to attach.
             let attachments: { filename: string; path: string }[] | undefined;
-            if (process.env.AWS_ACCESS_KEY_ID) {
-              try {
-                const [uploadRows] = await pool.query(
-                  `SELECT original_name as originalName, s3_url as s3Url
-                   FROM lead_uploads
-                   WHERE lead_id = ? AND upload_type = 'first_cut_design' AND status = 'approved' AND s3_url IS NOT NULL
-                   ORDER BY id DESC`,
-                  [id],
-                );
-                const list = (uploadRows as any[]) || [];
-                attachments = list
-                  .map((r) => {
-                    const name = (r.originalName || "").toString();
-                    const url = (r.s3Url || "").toString();
-                    return name && url ? { filename: name, path: url } : null;
-                  })
-                  .filter((v): v is { filename: string; path: string } => !!v);
-                if (attachments.length === 0) {
-                  attachments = undefined;
-                }
-              } catch (attachErr) {
-                console.error("Failed to load first-cut design attachments (non-fatal)", {
-                  leadId: id,
-                  error: attachErr,
-                });
+            try {
+              const [uploadRows] = await pool.query(
+                `SELECT original_name as originalName, s3_url as s3Url, stored_path as storedPath
+                 FROM lead_uploads
+                 WHERE lead_id = ? AND upload_type = 'first_cut_design' AND status = 'approved'
+                 ORDER BY id DESC`,
+                [id],
+              );
+              const list = (uploadRows as any[]) || [];
+              attachments = list
+                .map((r) => {
+                  const name = (r.originalName || "").toString();
+                  const url = (r.s3Url || r.storedPath || "").toString();
+                  return name && url ? { filename: name, path: url } : null;
+                })
+                .filter((v): v is { filename: string; path: string } => !!v);
+              if (attachments.length === 0) {
+                attachments = undefined;
               }
+            } catch (attachErr) {
+              console.error("Failed to load first-cut design attachments (non-fatal)", {
+                leadId: id,
+                error: attachErr,
+              });
             }
 
             if (customerEmail) {
@@ -3638,6 +3676,11 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   customerName,
                   meetingDate,
                   meetingTime,
+                  meetingMode: meta?.meetingMode || null,
+                  meetingLink: meta?.meetingLink || null,
+                  designerName: row.designerName || actingUser.name,
+                  designerTitle: row.designerRole === 'designer' ? 'Lead Designer, HUB Interior' : (row.designerRole || 'Lead Designer, HUB Interior'),
+                  designerAvatarUrl: row.designerAvatarUrl || null,
                   ...(attachments ? { attachments } : {}),
                 },
               });
@@ -3834,7 +3877,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         try {
           const [rows] = await pool.query(
             `SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
-                    u.name as designerName
+                    u.name as designerName, u.email as designerEmail
              FROM leads l
              LEFT JOIN users u ON u.id = l.assigned_designer_id
              WHERE l.id = ?`,
@@ -3866,8 +3909,36 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
             const laminateSelections = meta?.laminateSelections ?? null;
 
+            console.log("[mom-color-laminate-email] customerEmail:", customerEmail || "MISSING", "| leadId:", id);
+
             if (customerEmail) {
-              const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
+              // Fetch MOM reference files – prioritization: meta.attachments > (last 10 mins uploads) > Database query
+              let attachments: { filename: string; path: string }[] | undefined = (meta?.attachments as any[]) || undefined;
+
+              if (!attachments) {
+                try {
+                  const [uploadRows] = await pool.query(
+                    `SELECT original_name as originalName, s3_url as s3Url, stored_path as storedPath
+                     FROM lead_uploads
+                     WHERE lead_id = ? AND upload_type = 'mom_attachment' AND status = 'approved'
+                     ORDER BY id DESC LIMIT 10`,
+                    [id],
+                  );
+                  const list = (uploadRows as any[]) || [];
+                  attachments = list
+                    .map((r) => {
+                      const name = (r.originalName || "").toString();
+                      const url = (r.s3Url || r.storedPath || "").toString();
+                      return name && url ? { filename: name, path: url } : null;
+                    })
+                    .filter((v): v is { filename: string; path: string } => !!v);
+                  if (attachments.length === 0) attachments = undefined;
+                } catch (attachErr) {
+                  console.error("Failed to load MOM attachments (non-fatal)", { leadId: id, error: attachErr });
+                }
+              }
+
+              const mailChainCc = await getMailLoopCcEmails([actingUser.email, row.designerEmail || null]);
               const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
               void triggerMailRouteWithLog({
                 leadId: id,
@@ -3882,8 +3953,11 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   customerName,
                   designerName,
                   laminateSelections,
+                  ...(attachments ? { attachments } : {}),
                 },
               });
+            } else {
+              console.warn("[mom-color-laminate-email] Skipped – no customerEmail found for leadId:", id);
             }
           }
         } catch (err) {
@@ -3896,7 +3970,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         // Design sign off (40% milestone): CX only, pass meeting date/time, designer name
         try {
           const [rows] = await pool.query(
-            `SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
+            `SELECT l.pid, l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
                     u.name as designerName, u.email as designerEmail
              FROM leads l
              LEFT JOIN users u ON u.id = l.assigned_designer_id
@@ -3927,52 +4001,63 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               row.projectName ||
               "Customer";
             const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
+            const projectId = row.pid || `PJ-${id}`;
+            
             const meetingDate = meta?.meetingDate ?? meta?.signoffDate ?? null;
             const meetingTime = meta?.meetingTime ?? meta?.signoffTime ?? null;
+            const meetingMode = meta?.meetingMode ?? null;
+            const meetingLink = meta?.meetingLink ?? null;
+            const attachments = (meta?.attachments as any[]) || undefined;
+
+            const resolvedEcLocation =
+              (meta as any)?.ecLocation ||
+              formData.experience_center ||
+              payload?.experience_center ||
+              payload?.form?.experience_center ||
+              "Experience Center";
+
             if (meetingDate && meetingTime) {
               const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
-
               if (googleStart) {
                 try {
                   await createGoogleCalendarEventForFirstAvailableUser({
                     userIds: [row.assigned_designer_id, actingUser.id],
                     summary: `Design Sign-Off - ${customerName}`,
-                    description: `Design sign-off meeting scheduled for ${customerName}.`,
+                    description: `Design sign-off meeting at ${resolvedEcLocation}.`,
                     startDateTimeIso: googleStart,
                     endDateTimeIso: addHoursToIso(googleStart, 1),
                     attendees: distinctEmails([customerEmail, row.designerEmail, actingUser.email]),
                   });
                 } catch (calendarErr) {
-                  console.error("Design signoff Google event create error (non-fatal)", {
-                    leadId: id,
-                    error: calendarErr,
-                  });
+                  console.error("Design signoff Google event create error (non-fatal)", { leadId: id, error: calendarErr });
                 }
               }
+            }
 
-              if (customerEmail) {
-                const mailChainCc = await getMailLoopCcEmails([
-                  actingUser.email,
-                  row.designerEmail,
-                ]);
-                const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
-                void triggerMailRouteWithLog({
-                  leadId: id,
-                  milestoneIndex: 5,
-                  taskName: "Design sign off",
-                  route: emailRoutePath,
-                  visibility: "external",
-                  payload: {
-                    to: customerEmail,
-                    cc: mailChainCc,
-                    subject: mailChainSubject,
-                    customerName,
-                    designerName,
-                    meetingDate: meetingDate || undefined,
-                    meetingTime: meetingTime || undefined,
-                  },
-                });
-              }
+            if (customerEmail) {
+              const mailChainCc = await getMailLoopCcEmails([actingUser.email, row.designerEmail]);
+              const mailChainSubject = buildMailChainSubject(projectId, row.projectName, customerName);
+              void triggerMailRouteWithLog({
+                leadId: id,
+                milestoneIndex: 5,
+                taskName: "Design sign off",
+                route: emailRoutePath,
+                visibility: "external",
+                payload: {
+                  to: customerEmail,
+                  cc: mailChainCc,
+                  subject: mailChainSubject,
+                  customerName,
+                  projectId,
+                  designerName,
+                  meetingDate: meetingDate || undefined,
+                  meetingTime: meetingTime || undefined,
+                  meetingMode: meetingMode || undefined,
+                  meetingLink: meetingLink || undefined,
+                  ecLocation: resolvedEcLocation,
+                  ...(attachments && attachments.length ? { attachments } : {}),
+                },
+              });
             }
           }
         } catch (err) {
@@ -4092,6 +4177,8 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
             const meetingDate = meta?.meetingDate ?? null;
             const meetingTime = meta?.meetingTime ?? null;
+            const meetingMode = meta?.meetingMode ?? null;
+            const meetingLink = meta?.meetingLink ?? null;
             const ecLocation = meta?.ecLocation ?? meta?.ecAddress ?? ecName;
             if (meetingDate && meetingTime) {
               const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
@@ -4134,6 +4221,8 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                     designerName,
                     meetingDate,
                     meetingTime,
+                    meetingMode,
+                    meetingLink,
                     ecLocation,
                   },
                 });
@@ -4531,7 +4620,7 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
           payload?.form?.customer_name ||
           row.projectName ||
           "Customer";
-        const projectId = row.pid || "";
+        const projectId = row.pid || `PJ-${leadId}`;
         const rawOrderValue = formData.order_value ?? payload.order_value ?? null;
         let amountPaid: string | undefined;
         if (typeof rawOrderValue === "number") {
@@ -4947,6 +5036,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       meetingLink,
       meetingMode,
       ecLocation,
+      attachments,
     } = req.body || {};
 
     if (!meetingType || !meetingDate || !meetingTime) {
@@ -4954,7 +5044,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
     }
 
     const [rows] = await pool.query(
-      `SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
+      `SELECT l.pid, l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
               u.name as designerName, u.email as designerEmail
        FROM leads l
        LEFT JOIN users u ON u.id = l.assigned_designer_id
@@ -4987,6 +5077,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       row.projectName ||
       "Customer";
     const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
+    const projectId = row.pid || `PJ-${leadId}`;
     const eventStart = formatGoogleDateTime(meetingDate, meetingTime);
     if (!eventStart) {
       return res.status(400).json({ message: "Invalid meeting date/time" });
@@ -4997,13 +5088,14 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
     let emailRoutePath = "";
     let emailBody: Record<string, unknown> = {};
 
+    const resolvedEcLocation =
+      ecLocation ||
+      formData.experience_center ||
+      payload?.experience_center ||
+      payload?.form?.experience_center ||
+      "Experience Center";
+
     if (meetingType === "dqc2_material_selection") {
-      const resolvedEcLocation =
-        ecLocation ||
-        formData.experience_center ||
-        payload?.experience_center ||
-        payload?.form?.experience_center ||
-        "Experience Center";
       summary = `Material Selection - ${customerName}`;
       description = [
         `Material selection meeting at ${resolvedEcLocation}.`,
@@ -5014,17 +5106,21 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       emailBody = {
         to: customerEmail,
         cc: await getMailLoopCcEmails([actingUser.email, row.designerEmail]),
-        subject: buildMailChainSubject(null, row.projectName, customerName),
+        subject: buildMailChainSubject(projectId, row.projectName, customerName),
         customerName,
+        projectId,
         designerName,
         meetingDate,
         meetingTime,
+        meetingMode,
+        meetingLink,
         ecLocation: resolvedEcLocation,
+        ...(Array.isArray(attachments) && attachments.length ? { attachments } : {}),
       };
     } else if (meetingType === "design_signoff") {
       summary = `Design Sign-Off - ${customerName}`;
       description = [
-        `Design sign-off meeting scheduled for ${customerName}.`,
+        `Design sign-off meeting at ${resolvedEcLocation}.`,
         meetingMode ? `Mode: ${meetingMode}` : null,
         meetingLink ? `Meeting link: ${meetingLink}` : null,
       ].filter(Boolean).join("\n");
@@ -5032,11 +5128,16 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       emailBody = {
         to: customerEmail,
         cc: await getMailLoopCcEmails([actingUser.email, row.designerEmail]),
-        subject: buildMailChainSubject(null, row.projectName, customerName),
+        subject: buildMailChainSubject(projectId, row.projectName, customerName),
         customerName,
+        projectId,
         designerName,
         meetingDate,
         meetingTime,
+        meetingMode,
+        meetingLink,
+        ecLocation: resolvedEcLocation,
+        ...(Array.isArray(attachments) && attachments.length ? { attachments } : {}),
       };
     } else {
       return res.status(400).json({ message: "Unsupported meetingType" });
@@ -5075,6 +5176,53 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
     return res.status(500).json({ message: "Failed to schedule meeting invite" });
   }
 });
+
+// Material selection file upload – stores files and returns paths (NO email side-effect)
+app.post(
+  "/api/leads/:id/material-selection-upload",
+  upload.array("files"),
+  async (req: Request, res: Response) => {
+    const leadId = Number(req.params.id);
+    if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+    try {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const role = (user?.role ?? "").toLowerCase();
+      const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
+      if (!allowed.includes(role)) {
+        return res.status(403).json({ message: "Not allowed to upload material selection files" });
+      }
+      const files = (req as any).files as Express.Multer.File[] | undefined;
+      if (!files || files.length === 0) {
+        return res.status(400).json({ message: "At least one file is required" });
+      }
+      const now = new Date();
+      const attachments: { filename: string; path: string }[] = [];
+
+      for (const file of files) {
+        let s3Url: string | null = null;
+        if (process.env.AWS_ACCESS_KEY_ID) {
+          s3Url = await uploadLeadFileToS3(leadId, file.path, file.originalname, file.mimetype);
+        }
+        await pool.query(
+          `INSERT INTO lead_uploads
+           (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'material_selection', ?)`,
+          [leadId, user.id, file.originalname, file.filename, file.path, file.mimetype, file.size, now, s3Url],
+        );
+        const filePath = s3Url || file.path;
+        if (filePath) {
+          attachments.push({ filename: file.originalname, path: filePath });
+        }
+      }
+
+      return res.status(201).json({ ok: true, attachments });
+    } catch (err) {
+      console.error("material-selection-upload error", err);
+      return res.status(500).json({ message: "Failed to upload material selection files" });
+    }
+  },
+);
 
 // List uploads for a lead (designers see only approved; MMT manager/executive and Finance see all with status)
 app.get("/api/leads/:id/uploads", async (req: Request, res: Response) => {
@@ -5958,38 +6106,29 @@ app.post(
 
       const now = new Date();
 
+      const attachments: { filename: string; path: string }[] = [];
+
       // Save reference files
       if (files && files.length > 0) {
         for (const file of files) {
           let s3Url: string | null = null;
           if (process.env.AWS_ACCESS_KEY_ID) {
-            s3Url = await uploadLeadFileToS3(
-              leadId,
-              file.path,
-              file.originalname,
-              file.mimetype,
-            );
+            s3Url = await uploadLeadFileToS3(leadId, file.path, file.originalname, file.mimetype);
           }
           await pool.query(
             `INSERT INTO lead_uploads
              (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'mom_attachment', ?)`,
-            [
-              leadId,
-              user.id,
-              file.originalname,
-              file.filename,
-              file.path,
-              file.mimetype,
-              file.size,
-              now,
-              s3Url,
-            ],
+            [leadId, user.id, file.originalname, file.filename, file.path, file.mimetype, file.size, now, s3Url],
           );
+          attachments.push({
+            filename: file.originalname,
+            path: s3Url || file.path,
+          });
         }
       }
 
-      // Save MOM minutes as a text file entry so it also appears under Files
+      // Save MOM minutes as a text file entry
       if (minutes) {
         const baseName = `MOM-${now.toISOString().slice(0, 10)}-${Date.now()}.txt`;
         const storedName = baseName;
@@ -5999,30 +6138,16 @@ app.post(
 
         let s3UrlText: string | null = null;
         if (process.env.AWS_ACCESS_KEY_ID) {
-          s3UrlText = await uploadLeadFileToS3(
-            leadId,
-            storedPath,
-            baseName,
-            "text/plain",
-          );
+          s3UrlText = await uploadLeadFileToS3(leadId, storedPath, baseName, "text/plain");
         }
 
         await pool.query(
           `INSERT INTO lead_uploads
            (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'mom_minutes', ?)`,
-          [
-            leadId,
-            user.id,
-            baseName,
-            storedName,
-            storedPath,
-            "text/plain",
-            sizeBytes,
-            now,
-            s3UrlText,
-          ],
+          [leadId, user.id, baseName, storedName, storedPath, "text/plain", sizeBytes, now, s3UrlText],
         );
+        // No longer adding minutes file to attachments array as per user request
       }
 
       const attachmentNames = files && files.length > 0 ? files.map((f) => f.originalname) : [];
@@ -6039,12 +6164,12 @@ app.post(
         details: {
           kind: "mom",
           hasMinutes: !!minutes,
-          attachments: attachmentNames.map((name) => ({ name })),
+          attachments: attachments.map((a) => ({ name: a.filename })),
         },
       };
       await addLeadHistoryEvent(leadId, ev);
 
-      return res.status(201).json({ ok: true });
+      return res.status(201).json({ ok: true, attachments });
     } catch (err) {
       console.error("mom-upload error", err);
       return res.status(500).json({ message: "Failed to save MOM" });
@@ -6074,8 +6199,12 @@ app.post(
       const now = new Date();
       const meetingDateRaw = (req.body as any)?.meetingDate;
       const meetingTimeRaw = (req.body as any)?.meetingTime;
+      const meetingModeRaw = (req.body as any)?.meetingMode;
+      const meetingLinkRaw = (req.body as any)?.meetingLink;
       const meetingDate = typeof meetingDateRaw === "string" && meetingDateRaw.trim() ? meetingDateRaw.trim() : null;
       const meetingTime = typeof meetingTimeRaw === "string" && meetingTimeRaw.trim() ? meetingTimeRaw.trim() : null;
+      const meetingMode = typeof meetingModeRaw === "string" && meetingModeRaw.trim() ? meetingModeRaw.trim() : null;
+      const meetingLink = typeof meetingLinkRaw === "string" && meetingLinkRaw.trim() ? meetingLinkRaw.trim() : null;
       const attachments: { filename: string; path: string }[] = [];
       for (const file of files) {
         let s3Url: string | null = null;
@@ -6108,6 +6237,11 @@ app.post(
             filename: file.originalname,
             path: s3Url,
           });
+        } else if (file.path) {
+          attachments.push({
+            filename: file.originalname,
+            path: file.path,
+          });
         }
       }
       const names = files.map((f) => f.originalname).join(", ");
@@ -6125,7 +6259,11 @@ app.post(
       // Fire-and-forget: send first-cut design invite email immediately when designer clicks "Send Invite"
       try {
         const [rows] = await pool.query(
-          "SELECT project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?",
+          `SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload,
+                  u.name as designerName, u.role as designerRole, u.profileImage as designerAvatarUrl
+           FROM leads l
+           LEFT JOIN users u ON l.assigned_designer_id = u.id
+           WHERE l.id = ?`,
           [leadId],
         );
         const row = (rows as any[])[0];
@@ -6178,6 +6316,11 @@ app.post(
                 customerName,
                 meetingDate,
                 meetingTime,
+                meetingMode,
+                meetingLink,
+                designerName: row.designerName || user.name,
+                designerTitle: row.designerRole === 'designer' ? 'Lead Designer, HUB Interior' : (row.designerRole || 'Lead Designer, HUB Interior'),
+                designerAvatarUrl: row.designerAvatarUrl || null,
                 ...(attachments.length ? { attachments } : {}),
               },
             });
@@ -6190,7 +6333,7 @@ app.post(
         });
       }
 
-      return res.status(201).json({ ok: true });
+      return res.status(201).json({ ok: true, attachments });
     } catch (err) {
       console.error("first-cut-design-upload error", err);
       return res.status(500).json({ message: "Failed to upload first cut design" });

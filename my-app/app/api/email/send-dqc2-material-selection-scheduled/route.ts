@@ -13,6 +13,9 @@ export async function POST(request: Request) {
     const meetingDate = body.meetingDate as string | null | undefined;
     const meetingTime = body.meetingTime as string | null | undefined;
     const ecLocation = body.ecLocation as string | null | undefined;
+    const meetingMode = body.meetingMode as string | null | undefined;
+    const meetingLink = body.meetingLink as string | null | undefined;
+    const attachments = body.attachments as { filename: string; path: string }[] | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -26,6 +29,8 @@ export async function POST(request: Request) {
       designerName,
       meetingDate,
       meetingTime,
+      meetingMode,
+      meetingLink,
       ecLocation,
     });
 
@@ -34,6 +39,7 @@ export async function POST(request: Request) {
       ...(cc ? { cc } : {}),
       subject: subjectOverride || subject,
       html,
+      ...(attachments && attachments.length ? { attachments } : {}),
     });
 
     return NextResponse.json({ success: true, messageId: info.messageId });

@@ -12,7 +12,17 @@ export function renderD2MaskingRequestEmail(params: {
   } = params;
 
   const dateDisplay = maskingDate || "–";
-  const timeDisplay = maskingTime || "–";
+  let timeDisplay = maskingTime || "–";
+
+  if (maskingTime && maskingTime.includes(":")) {
+    const [h, m] = maskingTime.split(":");
+    const hours = parseInt(h, 10);
+    if (!isNaN(hours)) {
+      const suffix = hours >= 12 ? 'PM' : 'AM';
+      const hour12 = ((hours % 12) || 12).toString().padStart(2, '0');
+      timeDisplay = `${hour12}:${m} ${suffix}`;
+    }
+  }
 
   const subject = "Site Masking Scheduled – Detailed Development Stage";
 

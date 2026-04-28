@@ -14,6 +14,7 @@ export async function POST(request: Request) {
     const customerName = body.customerName as string | undefined;
     const designerName = body.designerName as string | undefined;
     const laminateSelections = body.laminateSelections as LaminateSelections | undefined;
+    const attachments = body.attachments as { filename: string; path: string }[] | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -33,6 +34,7 @@ export async function POST(request: Request) {
       ...(cc ? { cc } : {}),
       subject: subjectOverride || subject,
       html,
+      ...(attachments && attachments.length ? { attachments } : {}),
     });
 
     return NextResponse.json({ success: true, messageId: info.messageId });

@@ -7,11 +7,16 @@ export async function POST(request: Request) {
     const body = await request.json();
     const to = body.to as string | undefined;
     const cc = body.cc as string[] | string | undefined;
-    const subject = body.subject as string | undefined;
+    const subjectOverride = body.subject as string | undefined;
     const customerName = body.customerName as string | undefined;
+    const projectId = body.projectId as string | undefined;
     const meetingDate = body.meetingDate as string | undefined;
     const meetingTime = body.meetingTime as string | undefined;
     const designerName = body.designerName as string | undefined;
+    const meetingMode = body.meetingMode as 'online' | 'offline' | undefined;
+    const meetingLink = body.meetingLink as string | undefined;
+    const ecLocation = body.ecLocation as string | undefined;
+    const attachments = body.attachments as { filename: string; path: string }[] | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -20,18 +25,23 @@ export async function POST(request: Request) {
       );
     }
 
-    const html = renderDesignSignoffMeetingScheduledEmail({
+    const { subject, html } = renderDesignSignoffMeetingScheduledEmail({
       customerName,
+      projectId,
       meetingDate,
       meetingTime,
       designerName,
+      meetingMode,
+      meetingLink,
+      ecLocation,
     });
 
     const info = await sendMail({
       to,
       ...(cc ? { cc } : {}),
-      subject: subject || 'Design Approved – Let\'s Schedule Final Sign-Off',
+      subject: subjectOverride || subject,
       html,
+      ...(attachments && attachments.length ? { attachments } : {}),
     });
 
     return NextResponse.json({ success: true, messageId: info.messageId });

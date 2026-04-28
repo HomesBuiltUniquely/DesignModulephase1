@@ -13,6 +13,7 @@ export async function POST(request: Request) {
     const propertyType = body.propertyType as string | undefined;
     const amountDue = body.amountDue as string | undefined;
     const dueDate = body.dueDate as string | undefined;
+    const attachments = body.attachments as { filename: string; path: string }[] | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -34,6 +35,7 @@ export async function POST(request: Request) {
       ...(cc ? { cc } : {}),
       subject: subject || 'Design Approved – Ready for Site Masking',
       html,
+      ...(attachments && attachments.length ? { attachments } : {}),
     });
 
     return NextResponse.json({ success: true, messageId: info.messageId });
