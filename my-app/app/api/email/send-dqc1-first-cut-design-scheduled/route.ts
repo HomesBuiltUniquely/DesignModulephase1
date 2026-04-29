@@ -37,13 +37,29 @@ export async function POST(request: Request) {
       designerAvatarUrl,
     });
 
-    const info = await sendMail({
-      to,
-      ...(cc ? { cc } : {}),
-      subject: subject || 'DQC1 – First Cut Design Presentation Scheduled',
-      html,
-      ...(attachments && attachments.length ? { attachments } : {}),
-    });
+    let info;
+    try {
+      info = await sendMail({
+        to,
+        ...(cc ? { cc } : {}),
+        subject: subject || 'DQC1 – First Cut Design Presentation Scheduled',
+        html,
+        ...(attachments && attachments.length ? { attachments } : {}),
+      });
+    } catch (sendErr) {
+      // eslint-disable-next-line no-console
+      console.warn('Failed to send DQC1 First Cut Design with attachments, retrying without...', sendErr);
+      if (attachments && attachments.length) {
+        info = await sendMail({
+          to,
+          ...(cc ? { cc } : {}),
+          subject: subject || 'DQC1 – First Cut Design Presentation Scheduled',
+          html,
+        });
+      } else {
+        throw sendErr;
+      }
+    }
 
     return NextResponse.json({ success: true, messageId: info.messageId });
   } catch (error) {

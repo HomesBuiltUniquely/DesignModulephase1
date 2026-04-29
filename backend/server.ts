@@ -2965,9 +2965,11 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         case 5: {
           if (t === "Design sign off") {
             // Sl no 14 – design sign‑off meeting request (after DQC2 approval)
-            return "/api/email/send-design-signoff-meeting-scheduled";
+            // Email invite is triggered directly from /api/leads/:id/schedule-meeting-invite (Send Invite button).
+            // Do not fire an additional email on task completion.
+            // return "/api/email/send-design-signoff-meeting-scheduled";
           }
-          if (t === "40% collection" || t === "meeting completed & 40% payment request") {
+          if (t === "meeting completed" || t === "40% collection" || t === "meeting completed & 40% payment request") {
             // Sl no 15 – 40% collection (CX payment request; legacy combined task name still triggers)
             return "/api/email/send-design-signoff-40pc-payment-request";
           }
@@ -2981,7 +2983,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             // Sl no 16 – CX approval for production
             return "/api/email/send-production-approval-request";
           }
-          if (t === "POC mail & Timeline submission" || t === "POC mail & Timeline submission ") {
+          if (t === "POC mail" || t === "POC mail " || t === "POC mail & Timeline submission" || t === "POC mail & Timeline submission ") {
             // Sl no 16 (second task) – POC mail & timeline submission
             return "/api/email/send-production-poc-timeline";
           }
@@ -4240,14 +4242,16 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         try {
           const [rows] = await pool.query(
             `SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
-                    u.name as designerName
+                    u.name as designerName,
+                    pm.name as pmName, pm.email as pmEmail
              FROM leads l
              LEFT JOIN users u ON u.id = l.assigned_designer_id
+             LEFT JOIN users pm ON pm.id = l.assigned_project_manager_id
              WHERE l.id = ?`,
             [id],
           );
           const row = (rows as any[])[0];
-          if (row?.clientEmail) {
+          if (row) {
             let payload: any = {};
             try {
               payload = row.payload ? JSON.parse(row.payload) : {};
@@ -4255,40 +4259,54 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               payload = {};
             }
             const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
-            const customerName =
-              formData.customer_name ||
-              formData.sales_lead_name ||
-              payload?.customer_name ||
-              payload?.form?.customer_name ||
-              row.projectName ||
-              "Customer";
-            const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
-            const productionPoc = meta?.productionPoc ?? "Prajwal - prajwal@hubinterior.com";
-            const executionPoc = meta?.executionPoc ?? "Project Manager - PM automatically";
-            const spmPoc = meta?.spmPoc ?? "SPM automatically";
-            const operationManager = meta?.operationManager ?? "Balaji - balaji@hubinterior.com";
-            const operationHead = meta?.operationHead ?? "Alex - alex@hubinterior.com";
-            const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
-            const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
-            void triggerMailRouteWithLog({
-              leadId: id,
-              milestoneIndex: 6,
-              taskName: "POC mail & Timeline submission",
-              route: emailRoutePath,
-              visibility: "external",
-              payload: {
-                to: row.clientEmail,
-                cc: mailChainCc,
-                subject: mailChainSubject,
-                customerName,
-                designerName,
-                productionPoc,
-                executionPoc,
-                spmPoc,
-                operationManager,
-                operationHead,
-              },
-            });
+            const customerEmail =
+              row.clientEmail ||
+              formData.client_email ||
+              formData.email ||
+              formData.customer_email ||
+              payload?.email ||
+              payload?.customer_email ||
+              payload?.form?.email ||
+              null;
+
+            if (customerEmail) {
+              const customerName =
+                formData.customer_name ||
+                formData.sales_lead_name ||
+                payload?.customer_name ||
+                payload?.form?.customer_name ||
+                row.projectName ||
+                "Customer";
+              const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
+              const productionPoc = meta?.productionPoc ?? "Prajwal - prajwal@hubinterior.com";
+              const executionPoc = row.pmName && row.pmEmail ? `${row.pmName} - ${row.pmEmail}` : (meta?.executionPoc ?? "Project Manager - PM automatically");
+              const spmPoc = meta?.spmPoc ?? "Dummy SPM - dummy.spm@hubinterior.com";
+              const operationManager = meta?.operationManager ?? "Balaji - balaji@hubinterior.com";
+              const operationHead = meta?.operationHead ?? "Alex - alex@hubinterior.com";
+              const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
+              const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
+              void triggerMailRouteWithLog({
+                leadId: id,
+                milestoneIndex: 6,
+                taskName: "POC mail & Timeline submission",
+                route: emailRoutePath,
+                visibility: "external",
+                payload: {
+                  to: customerEmail,
+                  cc: mailChainCc,
+                  subject: mailChainSubject,
+                  customerName,
+                  designerName,
+                  productionPoc,
+                  executionPoc,
+                  spmPoc,
+                  operationManager,
+                  operationHead,
+                },
+              });
+            } else {
+              console.warn("[complete-task] No customer email found for POC timeline email", { leadId: id });
+            }
           }
         } catch (err) {
           console.error("Production POC timeline email prepare error (non-fatal)", {
@@ -4308,7 +4326,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             [id],
           );
           const row = (rows as any[])[0];
-          if (row?.clientEmail) {
+          if (row) {
             let payload: any = {};
             try {
               payload = row.payload ? JSON.parse(row.payload) : {};
@@ -4316,30 +4334,44 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               payload = {};
             }
             const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
-            const customerName =
-              formData.customer_name ||
-              formData.sales_lead_name ||
-              payload?.customer_name ||
-              payload?.form?.customer_name ||
-              row.projectName ||
-              "Customer";
-            const designerName = row.designerName || formData.designer_name || formData.designerName || "Team HUB Interiors";
-            const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
-            const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
-            void triggerMailRouteWithLog({
-              leadId: id,
-              milestoneIndex: 6,
-              taskName: "Cx approval for production",
-              route: emailRoutePath,
-              visibility: "external",
-              payload: {
-                to: row.clientEmail,
-                cc: mailChainCc,
-                subject: mailChainSubject,
-                customerName,
-                designerName,
-              },
-            });
+            const customerEmail =
+              row.clientEmail ||
+              formData.client_email ||
+              formData.email ||
+              formData.customer_email ||
+              payload?.email ||
+              payload?.customer_email ||
+              payload?.form?.email ||
+              null;
+
+            if (customerEmail) {
+              const customerName =
+                formData.customer_name ||
+                formData.sales_lead_name ||
+                payload?.customer_name ||
+                payload?.form?.customer_name ||
+                row.projectName ||
+                "Customer";
+              const designerName = row.designerName || formData.designer_name || formData.designerName || "Team HUB Interiors";
+              const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
+              const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
+              void triggerMailRouteWithLog({
+                leadId: id,
+                milestoneIndex: 6,
+                taskName: "Cx approval for production",
+                route: emailRoutePath,
+                visibility: "external",
+                payload: {
+                  to: customerEmail,
+                  cc: mailChainCc,
+                  subject: mailChainSubject,
+                  customerName,
+                  designerName,
+                },
+              });
+            } else {
+              console.warn("[complete-task] No customer email found for Production approval email", { leadId: id });
+            }
           }
         } catch (err) {
           console.error("Production approval request email prepare error (non-fatal)", {
@@ -6256,82 +6288,6 @@ app.post(
         details: { kind: "first_cut_design", files: files.map((f) => ({ name: f.originalname })) },
       };
       await addLeadHistoryEvent(leadId, ev);
-      // Fire-and-forget: send first-cut design invite email immediately when designer clicks "Send Invite"
-      try {
-        const [rows] = await pool.query(
-          `SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload,
-                  u.name as designerName, u.role as designerRole, u.profileImage as designerAvatarUrl
-           FROM leads l
-           LEFT JOIN users u ON l.assigned_designer_id = u.id
-           WHERE l.id = ?`,
-          [leadId],
-        );
-        const row = (rows as any[])[0];
-        if (row) {
-          let payload: any = {};
-          try {
-            payload = row.payload ? JSON.parse(row.payload) : {};
-          } catch {
-            payload = {};
-          }
-          const customerEmail =
-            row.clientEmail || payload.email || payload?.form?.email || null;
-          const customerName =
-            payload.customer_name ||
-            payload?.form?.customer_name ||
-            row.projectName ||
-            "Customer";
-
-          if (customerEmail) {
-            const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
-
-            if (googleStart) {
-              try {
-                await createGoogleCalendarEventForUser({
-                  userId: user.id,
-                  summary: `First Cut Design Discussion - ${customerName}`,
-                  description: `First cut design and quotation discussion for ${customerName}.`,
-                  startDateTimeIso: googleStart,
-                  endDateTimeIso: addHoursToIso(googleStart, 1),
-                  attendees: distinctEmails([customerEmail, user.email]),
-                });
-              } catch (calendarErr) {
-                console.error("DQC1 first-cut invite Google event create error (non-fatal)", {
-                  leadId,
-                  error: calendarErr,
-                });
-              }
-            }
-
-            void triggerMailRouteWithLog({
-              leadId,
-              milestoneIndex: 1,
-              taskName: "First cut design + quotation discussion meeting request",
-              route: "/api/email/send-dqc1-first-cut-design-scheduled",
-              visibility: "external",
-              payload: {
-                to: customerEmail,
-                cc: await getMailLoopCcEmails([user.email || null]),
-                subject: buildMailChainSubject(null, row.projectName, customerName),
-                customerName,
-                meetingDate,
-                meetingTime,
-                meetingMode,
-                meetingLink,
-                designerName: row.designerName || user.name,
-                designerTitle: row.designerRole === 'designer' ? 'Lead Designer, HUB Interior' : (row.designerRole || 'Lead Designer, HUB Interior'),
-                designerAvatarUrl: row.designerAvatarUrl || null,
-                ...(attachments.length ? { attachments } : {}),
-              },
-            });
-          }
-        }
-      } catch (emailErr) {
-        console.error("DQC1 first-cut invite email prepare error (non-fatal)", {
-          leadId,
-          error: emailErr,
-        });
-      }
 
       return res.status(201).json({ ok: true, attachments });
     } catch (err) {
