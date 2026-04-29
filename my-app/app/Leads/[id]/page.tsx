@@ -3420,16 +3420,16 @@ export default function ProjectDetailPage() {
                             }}
                         />
                     )}
-                    {popupContext.milestoneIndex === 6 && (popupContext.taskName === 'POC mail & Timeline submission' || popupContext.taskName === 'POC mail & Timeline submission ') && (
+                    {popupContext.milestoneIndex === 6 && (popupContext.taskName === 'POC mail' || popupContext.taskName === 'POC mail & Timeline submission' || popupContext.taskName === 'POC mail & Timeline submission ') && (
                         <PopupPlaceholder
-                            message="POC mail & Timeline submission"
+                            message={popupContext.taskName}
                             onMarkComplete={() => {
-                                recordTaskComplete(6, 'POC mail & Timeline submission');
+                                recordTaskComplete(6, popupContext.taskName);
                                 closePopup();
                             }}
                         />
                     )}
-                    {popupContext.milestoneIndex === 6 && popupContext.taskName !== 'Cx approval for production' && popupContext.taskName !== 'POC mail & Timeline submission' && popupContext.taskName !== 'POC mail & Timeline submission ' && (
+                    {popupContext.milestoneIndex === 6 && popupContext.taskName !== 'Cx approval for production' && popupContext.taskName !== 'POC mail' && popupContext.taskName !== 'POC mail & Timeline submission' && popupContext.taskName !== 'POC mail & Timeline submission ' && (
                         <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(6, popupContext.taskName); closePopup(); }} />
                     )}
                 </TaskModal>

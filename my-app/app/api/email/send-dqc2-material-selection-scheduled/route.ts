@@ -34,13 +34,29 @@ export async function POST(request: Request) {
       ecLocation,
     });
 
-    const info = await sendMail({
-      to,
-      ...(cc ? { cc } : {}),
-      subject: subjectOverride || subject,
-      html,
-      ...(attachments && attachments.length ? { attachments } : {}),
-    });
+    let info;
+    try {
+      info = await sendMail({
+        to,
+        ...(cc ? { cc } : {}),
+        subject: subjectOverride || subject,
+        html,
+        ...(attachments && attachments.length ? { attachments } : {}),
+      });
+    } catch (sendErr) {
+      // eslint-disable-next-line no-console
+      console.warn('Failed to send DQC2 material selection with attachments, retrying without...', sendErr);
+      if (attachments && attachments.length) {
+        info = await sendMail({
+          to,
+          ...(cc ? { cc } : {}),
+          subject: subjectOverride || subject,
+          html,
+        });
+      } else {
+        throw sendErr;
+      }
+    }
 
     return NextResponse.json({ success: true, messageId: info.messageId });
   } catch (error) {

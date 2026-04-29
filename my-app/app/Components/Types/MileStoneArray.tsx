@@ -65,7 +65,7 @@ const MileStonesArray: MileStonesTypes = {
       name: "PUSH TO PRODUCTION",
       taskList: [
         "Cx approval for production",
-        "POC mail ",
+        "POC mail",
       ],
       Css: "xl:w-75 xl:mt-5 xl:mx-auto xl:mt-12  border-2 border-dashed border-red-300 hover:bg-blue-50  cursor-pointer overflow-y-auto xl:rounded-2xl xl:my-20",
     },
