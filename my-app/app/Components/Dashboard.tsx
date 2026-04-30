@@ -300,8 +300,8 @@ export default function Dashboard() {
             .then((res) => res.text().then((t) => { try { return t ? JSON.parse(t) : null; } catch { return null; } }))
             .then((data) => {
                 if (cancelled) return;
-                if (isDqcUser && Array.isArray(data)) setDqcProjects(data);
-                else if (!isDqcUser && Array.isArray(data)) setProjects(data);
+                if (isDqcUser && Array.isArray(data)) setDqcProjects([...data].sort((a, b) => b.id - a.id));
+                else if (!isDqcUser && Array.isArray(data)) setProjects([...data].sort((a, b) => b.id - a.id));
             })
             .catch(() => {
                 if (!cancelled) {
@@ -522,7 +522,7 @@ export default function Dashboard() {
         if (sessionId) headers.Authorization = `Bearer ${sessionId}`;
         const res = await fetch(`${API}/api/leads/queue`, { headers });
         const data = await res.json().catch(() => null);
-        if (res.ok && Array.isArray(data)) setProjects(data);
+        if (res.ok && Array.isArray(data)) setProjects([...data].sort((a, b) => b.id - a.id));
     };
 
     const assignSingleLead = async (leadId: number) => {
@@ -677,7 +677,7 @@ export default function Dashboard() {
             if (sessionId) headers["Authorization"] = `Bearer ${sessionId}`;
             const qRes = await fetch(`${API}/api/leads/queue`, { headers });
             const qData = await qRes.json().catch(() => null);
-            if (qRes.ok && Array.isArray(qData)) setProjects(qData);
+            if (qRes.ok && Array.isArray(qData)) setProjects([...qData].sort((a, b) => b.id - a.id));
         } catch (err: unknown) {
             setImportMessage(err instanceof Error ? err.message : "Import failed");
         } finally {
