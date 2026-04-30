@@ -404,10 +404,10 @@ export default function SharedQuotePage(props: PageProps) {
 
   return (
     <div className={`min-h-screen ${pageBg} py-6`}>
-      <div className={`mx-auto w-full ${isInternalMode ? 'max-w-7xl lg:grid lg:max-h-[calc(100vh-2rem)] lg:grid-cols-12 lg:gap-4 lg:overflow-hidden' : 'max-w-5xl'}`}>
+      <div className={`mx-auto w-full ${isInternalMode ? 'max-w-7xl lg:grid lg:h-[calc(100vh-2rem)] lg:grid-cols-12 lg:gap-4 lg:overflow-hidden' : 'max-w-5xl'}`}>
         {isInternalMode ? (
           <aside className="lg:col-span-4">
-            <div className={`rounded-3xl p-4 shadow-sm lg:sticky lg:top-4 ${panelBg}`}>
+            <div className={`rounded-3xl p-4 shadow-sm lg:h-[calc(100vh-2rem)] lg:overflow-y-auto ${panelBg}`}>
               <div className="rounded-2xl bg-gradient-to-r from-fuchsia-500 via-rose-500 to-violet-500 p-4 text-white shadow">
                 <p className="text-xs uppercase tracking-wide text-white/80">Internal Workspace</p>
                 <p className="mt-1 text-xl font-bold">Discount Dashboard</p>
@@ -544,7 +544,7 @@ export default function SharedQuotePage(props: PageProps) {
           </aside>
         ) : null}
 
-      <div className={`${isInternalMode ? 'lg:col-span-8 lg:overflow-y-auto' : ''} rounded-xl shadow-sm ${panelBg}`}>
+      <div className={`${isInternalMode ? 'lg:col-span-8 lg:h-[calc(100vh-2rem)] lg:overflow-y-auto' : ''} rounded-xl shadow-sm ${panelBg}`}>
         <div className="rounded-t-xl bg-[#282a2f] px-5 py-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
