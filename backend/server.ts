@@ -125,7 +125,7 @@ app.get("/api/health", (_req, res) => {
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "root@root",
+  password: process.env.DB_PASSWORD || "Root@123",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -142,9 +142,9 @@ const s3 = new S3Client({
   region: S3_REGION,
   credentials: process.env.AWS_ACCESS_KEY_ID
     ? {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || "",
-      }
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || "",
+    }
     : undefined,
 });
 
@@ -157,6 +157,71 @@ const PROFILE_IMAGES_DIR = path.join(UPLOADS_DIR, "profile-images");
 if (!fs.existsSync(PROFILE_IMAGES_DIR)) fs.mkdirSync(PROFILE_IMAGES_DIR, { recursive: true });
 const API_BASE = process.env.API_BASE_URL || "http://localhost:3001";
 const FRONTEND_BASE = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
+const ERP_BASE_URL = process.env.ERP_BASE_URL || "https://hows.hubinterior.com";
+const ERP_USERNAME = process.env.ERP_USERNAME || "admin@hubinterior.com";
+const ERP_PASSWORD = process.env.ERP_PASSWORD || "admin123";
+
+let cachedErpToken: string | null = null;
+
+async function getErpToken(forceRefresh = false): Promise<string | null> {
+  if (cachedErpToken && !forceRefresh) return cachedErpToken;
+
+  try {
+    let res = await fetch(`${ERP_BASE_URL}/api/auth/signin`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: ERP_USERNAME, password: ERP_PASSWORD })
+    });
+
+    if (!res.ok) {
+      res = await fetch(`${ERP_BASE_URL}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: ERP_USERNAME, password: ERP_PASSWORD })
+      });
+    }
+
+    if (res.ok) {
+      const data = await res.json();
+      cachedErpToken = data.accessToken || data.token || data.jwt || null;
+      return cachedErpToken;
+    }
+    
+    console.error("Failed to login to ERP:", await res.text());
+    return null;
+  } catch (err) {
+    console.error("Error logging into ERP:", err);
+    return null;
+  }
+}
+
+async function fetchFromErpWithRetry(endpoint: string) {
+  let token = await getErpToken();
+  if (!token) throw new Error("Could not get ERP auth token");
+
+  let res = await fetch(`${ERP_BASE_URL}${endpoint}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+  });
+
+  if (res.status === 401) {
+    token = await getErpToken(true);
+    if (!token) throw new Error("Could not refresh ERP auth token");
+    
+    res = await fetch(`${ERP_BASE_URL}${endpoint}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+    });
+  }
+
+  if (!res.ok) throw new Error(`ERP API error: ${res.status}`);
+  return res.json();
+}
+
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CALENDAR_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CALENDAR_CLIENT_SECRET || "";
 const GOOGLE_REDIRECT_URI =
@@ -184,7 +249,7 @@ const upload = multer({
       const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
       cb(null, `${Date.now()}-${safe}`);
     },
-  }), 
+  }),
   limits: { fileSize: 200 * 1024 * 1024 }, // 200MB
 });
 
@@ -272,14 +337,13 @@ async function streamS3ObjectToDisk(key: string, destPath: string): Promise<void
 }
 
 function buildMailChainSubject(
-  projectPid?: string | null,
+  idOrPid?: string | number | null,
   projectName?: string | null,
   customerName?: string | null,
 ): string {
-  if (projectPid || projectName) {
-    return `Project ${projectPid || ""} ${projectName || ""} - Design discussion`.replace(/\s+/g, " ").trim();
-  }
-  return `Project ${customerName || "Customer"} - Design discussion`;
+  const name = customerName || projectName || "CUSTOMER";
+  // The user requested the format: HUB [Client Name] DESIGN JOURNEY
+  return `HUB ${name.toUpperCase()} DESIGN JOURNEY`.replace(/\s+/g, " ").trim();
 }
 
 async function getMailLoopCcEmails(extraEmails: Array<string | null | undefined> = []): Promise<string[]> {
@@ -1127,10 +1191,10 @@ async function fetchGoogleEventsForConnection(
     end: event.end?.dateTime || event.end?.date || null,
     attendees: Array.isArray(event.attendees)
       ? event.attendees.map((attendee: any) => ({
-          email: attendee.email || "",
-          displayName: attendee.displayName || "",
-          responseStatus: attendee.responseStatus || "",
-        }))
+        email: attendee.email || "",
+        displayName: attendee.displayName || "",
+        responseStatus: attendee.responseStatus || "",
+      }))
       : [],
     ownerUserId: owner.id,
     ownerName: owner.name,
@@ -2233,34 +2297,34 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
   const projectName =
     String(
       payload.projectName ||
-        payload.customer_name ||
-        payload.sales_lead_name ||
-        formData.projectName ||
-        formData.customer_name ||
-        formData.sales_lead_name ||
-        fetched.customer_name ||
-        fetched.sales_lead_name ||
-        "",
+      payload.customer_name ||
+      payload.sales_lead_name ||
+      formData.projectName ||
+      formData.customer_name ||
+      formData.sales_lead_name ||
+      fetched.customer_name ||
+      fetched.sales_lead_name ||
+      "",
     ).trim() || "Unnamed";
 
   const contactNo =
     String(
       payload.contactNo ||
-        payload.contact_no ||
-        payload.phone ||
-        formData.co_no ||
-        fetched.co_no ||
-        "",
+      payload.contact_no ||
+      payload.phone ||
+      formData.co_no ||
+      fetched.co_no ||
+      "",
     ).trim() || null;
 
   const clientEmail =
     String(
       payload.clientEmail ||
-        payload.client_email ||
-        payload.email ||
-        formData.email ||
-        fetched.email ||
-        "",
+      payload.client_email ||
+      payload.email ||
+      formData.email ||
+      fetched.email ||
+      "",
     ).trim() || null;
 
   const pid = String(payload.pid || payload.externalLeadId || payload.referenceId || "").trim();
@@ -2339,7 +2403,7 @@ app.post("/api/leads/import-excel/preview", upload.single("file"), async (req: R
     const token = saveExcelPreview(trimmedRows, headers);
 
     // remove temporary upload
-    try { fs.unlinkSync(file.path); } catch {}
+    try { fs.unlinkSync(file.path); } catch { }
 
     return res.json({
       token,
@@ -3442,7 +3506,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                 row.designerEmail,
                 pmEmail,
               ]);
-              const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
+              const mailChainSubject = buildMailChainSubject(id, row.projectName, customerName);
               void triggerMailRouteWithLog({
                 leadId: id,
                 milestoneIndex: 3,
@@ -3508,78 +3572,78 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const designerName = leadRow.designerName || "Designer";
             const projectValue = payload.project_value || payload?.form?.project_value || "";
 
-          const [dqcRows] = await pool.query(
-            "SELECT email, name FROM users WHERE role IN ('dqc_manager', 'dqe') AND email IS NOT NULL ORDER BY id ASC",
-          );
-          const dqcUsers = (dqcRows as any[]).filter((u) => u?.email);
-          const dqcUser = dqcUsers[0];
+            const [dqcRows] = await pool.query(
+              "SELECT email, name FROM users WHERE role IN ('dqc_manager', 'dqe') AND email IS NOT NULL ORDER BY id ASC",
+            );
+            const dqcUsers = (dqcRows as any[]).filter((u) => u?.email);
+            const dqcUser = dqcUsers[0];
 
-          // Collect latest DQC2 drawing & quotation uploads for this lead (if S3 is configured)
-          let attachments: { filename: string; path: string }[] | undefined;
-          if (process.env.AWS_ACCESS_KEY_ID) {
-            try {
-              const [uploadRows] = await pool.query(
-                `SELECT original_name as originalName, upload_type as uploadType, s3_url as s3Url
+            // Collect latest DQC2 drawing & quotation uploads for this lead (if S3 is configured)
+            let attachments: { filename: string; path: string }[] | undefined;
+            if (process.env.AWS_ACCESS_KEY_ID) {
+              try {
+                const [uploadRows] = await pool.query(
+                  `SELECT original_name as originalName, upload_type as uploadType, s3_url as s3Url
                  FROM lead_uploads
                  WHERE lead_id = ? AND upload_type IN ('dqc2_drawing', 'dqc2_quotation') AND status = 'approved' AND s3_url IS NOT NULL
                  ORDER BY id DESC`,
-                [id],
-              );
-              const list = (uploadRows as any[]) || [];
-              const seenTypes = new Set<string>();
-              attachments = list
-                .map((r) => {
-                  const type = (r.uploadType || r.uploadtype || "").toString();
-                  if (!type || seenTypes.has(type)) return null;
-                  seenTypes.add(type);
-                  const name = (r.originalName || "").toString();
-                  const url = (r.s3Url || "").toString();
-                  return name && url ? { filename: name, path: url } : null;
-                })
-                .filter((v): v is { filename: string; path: string } => !!v);
-              if (attachments.length === 0) {
-                attachments = undefined;
+                  [id],
+                );
+                const list = (uploadRows as any[]) || [];
+                const seenTypes = new Set<string>();
+                attachments = list
+                  .map((r) => {
+                    const type = (r.uploadType || r.uploadtype || "").toString();
+                    if (!type || seenTypes.has(type)) return null;
+                    seenTypes.add(type);
+                    const name = (r.originalName || "").toString();
+                    const url = (r.s3Url || "").toString();
+                    return name && url ? { filename: name, path: url } : null;
+                  })
+                  .filter((v): v is { filename: string; path: string } => !!v);
+                if (attachments.length === 0) {
+                  attachments = undefined;
+                }
+              } catch (attachErr) {
+                console.error("Failed to load DQC2 submission attachments (non-fatal)", {
+                  leadId: id,
+                  error: attachErr,
+                });
               }
-            } catch (attachErr) {
-              console.error("Failed to load DQC2 submission attachments (non-fatal)", {
-                leadId: id,
-                error: attachErr,
-              });
             }
-          }
 
-          if (dqcUser && dqcUser.email && customerName && ecName && designerName && dqcUser.name) {
-            const ccBase = await getMailLoopCcEmails([actingUser.email, leadRow.designerEmail || null]);
-            const cc = distinctEmails([
-              ...ccBase,
-              ...dqcUsers.slice(1).map((u) => String(u.email || "")),
-            ]);
-            const subject = buildMailChainSubject(null, leadRow.projectName, customerName);
-            void triggerMailRouteWithLog({
-              leadId: id,
-              milestoneIndex: 4,
-              taskName: "DQC 2 submission",
-              route: "/api/email/send-dqc2-final-design-submission-internal",
-              visibility: "internal",
-              payload: {
-                to: dqcUser.email,
-                cc,
-                subject,
+            if (dqcUser && dqcUser.email && customerName && ecName && designerName && dqcUser.name) {
+              const ccBase = await getMailLoopCcEmails([actingUser.email, leadRow.designerEmail || null]);
+              const cc = distinctEmails([
+                ...ccBase,
+                ...dqcUsers.slice(1).map((u) => String(u.email || "")),
+              ]);
+              const subject = buildMailChainSubject(id, leadRow.projectName, customerName);
+              void triggerMailRouteWithLog({
+                leadId: id,
+                milestoneIndex: 4,
+                taskName: "DQC 2 submission",
+                route: "/api/email/send-dqc2-final-design-submission-internal",
+                visibility: "internal",
+                payload: {
+                  to: dqcUser.email,
+                  cc,
+                  subject,
+                  customerName,
+                  ecName,
+                  designerName,
+                  dqcRepName: dqcUser.name || "DQC Team",
+                  projectValue: String(projectValue || ""),
+                  ...(attachments ? { attachments } : {}),
+                },
+              });
+            } else {
+              console.warn("DQC2 internal email skipped: no DQC recipient with email", {
+                leadId: id,
                 customerName,
                 ecName,
-                designerName,
-                dqcRepName: dqcUser.name || "DQC Team",
-                projectValue: String(projectValue || ""),
-                ...(attachments ? { attachments } : {}),
-              },
-            });
-          } else {
-            console.warn("DQC2 internal email skipped: no DQC recipient with email", {
-              leadId: id,
-              customerName,
-              ecName,
-            });
-          }
+              });
+            }
             // DQC 2 submission: internal only (no CX email)
           }
         } catch (err) {
@@ -3674,7 +3738,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                 payload: {
                   to: customerEmail,
                   cc: await getMailLoopCcEmails([actingUser.email]),
-                  subject: buildMailChainSubject(null, row.projectName, customerName),
+                  subject: buildMailChainSubject(id, row.projectName, customerName),
                   customerName,
                   meetingDate,
                   meetingTime,
@@ -3861,7 +3925,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                 payload: {
                   to: designerEmail,
                   cc: await getMailLoopCcEmails([actingUser.email]),
-                  subject: buildMailChainSubject(null, row.projectName, customerName),
+                  subject: buildMailChainSubject(id, row.projectName, customerName),
                   designerName,
                   customerName,
                 },
@@ -3870,6 +3934,64 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
           }
         } catch (err) {
           console.error("DQC2 approval internal email prepare error (non-fatal)", {
+            leadId: id,
+            error: err,
+          });
+        }
+
+        // ── Also fire: "Assign Project Manager" internal notification ──
+        try {
+          const [pmRows] = await pool.query(
+            `SELECT l.pid, l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
+                    u.name as designerName
+             FROM leads l
+             LEFT JOIN users u ON u.id = l.assigned_designer_id
+             WHERE l.id = ?`,
+            [id],
+          );
+          const pmRow = (pmRows as any[])[0];
+          if (pmRow) {
+            let pmPayload: any = {};
+            try {
+              pmPayload = pmRow.payload ? JSON.parse(pmRow.payload) : {};
+            } catch {
+              pmPayload = {};
+            }
+            const pmFormData = pmPayload?.formData || pmPayload?.form_data || pmPayload?.form || pmPayload || {};
+            const pmCustomerName =
+              pmFormData.customer_name ||
+              pmFormData.sales_lead_name ||
+              pmPayload?.customer_name ||
+              pmPayload?.form?.customer_name ||
+              pmRow.projectName ||
+              "Customer";
+            const pmDesignerName = pmRow.designerName || pmFormData.designer_name || pmFormData.designerName || "Design Team";
+            const pmBranch = pmFormData.sales_closure_ec || pmFormData.branch || pmFormData.experience_center || pmPayload?.branch || null;
+            const pmProjectId = pmRow.pid || `PJ-${id}`;
+
+            // Send to admin + CC the mail loop
+            const adminCc = await getMailLoopCcEmails([actingUser.email]);
+            const adminTo = "admin@hubinterior.com";
+            void triggerMailRouteWithLog({
+              leadId: id,
+              milestoneIndex: 4,
+              taskName: "DQC 2 approval – Assign PM",
+              route: "/api/email/send-dqc2-assign-pm-internal",
+              visibility: "internal",
+              payload: {
+                to: adminTo,
+                cc: adminCc,
+                subject: `Action Required – Assign Project Manager for ${pmCustomerName}`,
+                customerName: pmCustomerName,
+                projectName: pmRow.projectName || undefined,
+                projectId: pmProjectId,
+                designerName: pmDesignerName,
+                branchLocation: pmBranch || undefined,
+              },
+            });
+          }
+        } catch (err) {
+          console.error("DQC2 assign-PM internal email prepare error (non-fatal)", {
             leadId: id,
             error: err,
           });
@@ -3941,7 +4063,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               }
 
               const mailChainCc = await getMailLoopCcEmails([actingUser.email, row.designerEmail || null]);
-              const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
+              const mailChainSubject = buildMailChainSubject(id, row.projectName, customerName);
               void triggerMailRouteWithLog({
                 leadId: id,
                 milestoneIndex: 4,
@@ -4004,7 +4126,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               "Customer";
             const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
             const projectId = row.pid || `PJ-${id}`;
-            
+
             const meetingDate = meta?.meetingDate ?? meta?.signoffDate ?? null;
             const meetingTime = meta?.meetingTime ?? meta?.signoffTime ?? null;
             const meetingMode = meta?.meetingMode ?? null;
@@ -4110,7 +4232,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
 
             if (customerEmail) {
               const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
-              const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
+              const mailChainSubject = buildMailChainSubject(id, row.projectName, customerName);
               void triggerMailRouteWithLog({
                 leadId: id,
                 milestoneIndex: 5,
@@ -4208,7 +4330,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   actingUser.email,
                   row.designerEmail,
                 ]);
-                const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
+                const mailChainSubject = buildMailChainSubject(id, row.projectName, customerName);
                 void triggerMailRouteWithLog({
                   leadId: id,
                   milestoneIndex: 4,
@@ -4284,7 +4406,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               const operationManager = meta?.operationManager ?? "Balaji - balaji@hubinterior.com";
               const operationHead = meta?.operationHead ?? "Alex - alex@hubinterior.com";
               const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
-              const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
+              const mailChainSubject = buildMailChainSubject(id, row.projectName, customerName);
               void triggerMailRouteWithLog({
                 leadId: id,
                 milestoneIndex: 6,
@@ -4354,7 +4476,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                 "Customer";
               const designerName = row.designerName || formData.designer_name || formData.designerName || "Team HUB Interiors";
               const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
-              const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
+              const mailChainSubject = buildMailChainSubject(id, row.projectName, customerName);
               void triggerMailRouteWithLog({
                 leadId: id,
                 milestoneIndex: 6,
@@ -4966,7 +5088,7 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
           payload: {
             to: row.clientEmail,
             cc: await getMailLoopCcEmails([user.email || null]),
-            subject: buildMailChainSubject(null, row.projectName, customerName),
+            subject: buildMailChainSubject(leadId, row.projectName, customerName),
             customerName,
             projectName,
             amountReceived: formData.forty_percent_amount ?? payload?.forty_percent_amount ?? undefined,
@@ -5617,7 +5739,7 @@ async function persistDqc1SubmissionFromMeta(
           ...baseCc,
           ...dqcUsers.slice(1).map((u) => String(u.email || "")),
         ]);
-        const subject = buildMailChainSubject(null, leadRow.projectName, customerName);
+        const subject = buildMailChainSubject(leadId, leadRow.projectName, customerName);
 
         void triggerMailRouteWithLog({
           leadId,
@@ -5636,23 +5758,23 @@ async function persistDqc1SubmissionFromMeta(
             dqcRepName: primaryDqc.name || "DQC Team",
             ...(drawingS3Urls.some(Boolean) || quotationS3Urls.some(Boolean)
               ? {
-                  attachments: [
-                    ...drawingFiles
-                      .map((f, idx) =>
-                        drawingS3Urls[idx]
-                          ? { filename: f.originalname, path: drawingS3Urls[idx] as string }
-                          : null,
-                      )
-                      .filter((v): v is { filename: string; path: string } => !!v),
-                    ...quotationFiles
-                      .map((f, idx) =>
-                        quotationS3Urls[idx]
-                          ? { filename: f.originalname, path: quotationS3Urls[idx] as string }
-                          : null,
-                      )
-                      .filter((v): v is { filename: string; path: string } => !!v),
-                  ],
-                }
+                attachments: [
+                  ...drawingFiles
+                    .map((f, idx) =>
+                      drawingS3Urls[idx]
+                        ? { filename: f.originalname, path: drawingS3Urls[idx] as string }
+                        : null,
+                    )
+                    .filter((v): v is { filename: string; path: string } => !!v),
+                  ...quotationFiles
+                    .map((f, idx) =>
+                      quotationS3Urls[idx]
+                        ? { filename: f.originalname, path: quotationS3Urls[idx] as string }
+                        : null,
+                    )
+                    .filter((v): v is { filename: string; path: string } => !!v),
+                ],
+              }
               : {}),
           },
         });
@@ -6879,6 +7001,28 @@ app.get("/api/leads/dqc-queue", async (req: Request, res: Response) => {
   }
 });
 
+// Sales Managers for Sales Closure form (proxy to Project-ERP)
+app.get("/api/sales-managers", async (req: Request, res: Response) => {
+  try {
+    const data = await fetchFromErpWithRetry("/api/auth/users/SALES_MANAGER");
+    res.json(data);
+  } catch (err) {
+    console.error("sales-managers proxy error", err);
+    res.status(500).json({ message: "Failed to load sales managers" });
+  }
+});
+
+// Sales Admins for Sales Closure form (proxy to Project-ERP)
+app.get("/api/sales-admins", async (req: Request, res: Response) => {
+  try {
+    const data = await fetchFromErpWithRetry("/api/auth/users/SALES_ADMIN");
+    res.json(data);
+  } catch (err) {
+    console.error("sales-admins proxy error", err);
+    res.status(500).json({ message: "Failed to load sales admins" });
+  }
+});
+
 // Designers for Sales Closure form (from users with role designer or design_manager)
 app.get("/api/designers", async (req: Request, res: Response) => {
   try {
@@ -7026,8 +7170,8 @@ app.post("/api/leads/assign-designer/bulk", async (req: Request, res: Response) 
 
     const leadIds = Array.isArray(req.body?.leadIds)
       ? (req.body.leadIds as unknown[])
-          .map((v) => Number(v))
-          .filter((v) => Number.isFinite(v) && v > 0)
+        .map((v) => Number(v))
+        .filter((v) => Number.isFinite(v) && v > 0)
       : [];
     const designerId = Number(req.body?.designerId);
     if (leadIds.length === 0) return res.status(400).json({ message: "leadIds are required" });
@@ -7109,6 +7253,63 @@ app.patch("/api/leads/:id/assign-project-manager", async (req: Request, res: Res
       "UPDATE leads SET assigned_project_manager_id = ?, update_at = ? WHERE id = ?",
       [pmId, new Date(), id],
     );
+
+    // ── Fire internal email to the newly assigned Project Manager ──
+    try {
+      const [leadRows] = await pool.query(
+        `SELECT l.pid, l.project_name as projectName, l.payload, l.assigned_designer_id,
+                u.name as designerName,
+                pm.name as pmName, pm.email as pmEmail
+         FROM leads l
+         LEFT JOIN users u ON u.id = l.assigned_designer_id
+         LEFT JOIN users pm ON pm.id = ?
+         WHERE l.id = ?`,
+        [pmId, id],
+      );
+      const leadRow = (leadRows as any[])[0];
+      if (leadRow && leadRow.pmEmail) {
+        let lpayload: any = {};
+        try {
+          lpayload = leadRow.payload ? JSON.parse(leadRow.payload) : {};
+        } catch {
+          lpayload = {};
+        }
+        const fd = lpayload?.formData || lpayload?.form_data || lpayload?.form || lpayload || {};
+        const customerName =
+          fd.customer_name ||
+          fd.sales_lead_name ||
+          lpayload?.customer_name ||
+          lpayload?.form?.customer_name ||
+          leadRow.projectName ||
+          "Customer";
+        const designerName = leadRow.designerName || fd.designer_name || fd.designerName || "Design Team";
+        const branch = fd.sales_closure_ec || fd.branch || fd.experience_center || lpayload?.branch || null;
+        const projectId = leadRow.pid || `PJ-${id}`;
+
+        const ccList = await getMailLoopCcEmails([user.email || null]);
+        void triggerMailRouteWithLog({
+          leadId: id,
+          milestoneIndex: 4,
+          taskName: "Assign project manager",
+          route: "/api/email/send-pm-assignment-notification",
+          visibility: "internal",
+          payload: {
+            to: leadRow.pmEmail,
+            cc: ccList,
+            subject: `You've Been Assigned – ${customerName} Project`,
+            pmName: leadRow.pmName || "Project Manager",
+            customerName,
+            projectName: leadRow.projectName || undefined,
+            projectId,
+            designerName,
+            branchLocation: branch || undefined,
+          },
+        });
+      }
+    } catch (mailErr) {
+      console.error("PM assignment notification email error (non-fatal)", { leadId: id, error: mailErr });
+    }
+
     return res.json({ ok: true });
   } catch (err) {
     console.error("assign-project-manager error", err);
@@ -7500,7 +7701,7 @@ registerProlanceRoutes(app, getUserFromSession);
 app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
   reflectCorsHeaders(req, res);
   if (err instanceof multer.MulterError) {
-    return res.status(400).json({ message: err.message });
+    return res.status(400).json({ message: (err as any).message });
   }
   const msg = err instanceof Error ? err.message : "Server error";
   console.error("Express error:", err);
