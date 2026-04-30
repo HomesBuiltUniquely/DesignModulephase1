@@ -157,6 +157,71 @@ const PROFILE_IMAGES_DIR = path.join(UPLOADS_DIR, "profile-images");
 if (!fs.existsSync(PROFILE_IMAGES_DIR)) fs.mkdirSync(PROFILE_IMAGES_DIR, { recursive: true });
 const API_BASE = process.env.API_BASE_URL || "http://localhost:3001";
 const FRONTEND_BASE = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
+const ERP_BASE_URL = process.env.ERP_BASE_URL || "https://hows.hubinterior.com";
+const ERP_USERNAME = process.env.ERP_USERNAME || "admin@hubinterior.com";
+const ERP_PASSWORD = process.env.ERP_PASSWORD || "admin123";
+
+let cachedErpToken: string | null = null;
+
+async function getErpToken(forceRefresh = false): Promise<string | null> {
+  if (cachedErpToken && !forceRefresh) return cachedErpToken;
+
+  try {
+    let res = await fetch(`${ERP_BASE_URL}/api/auth/signin`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: ERP_USERNAME, password: ERP_PASSWORD })
+    });
+
+    if (!res.ok) {
+      res = await fetch(`${ERP_BASE_URL}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: ERP_USERNAME, password: ERP_PASSWORD })
+      });
+    }
+
+    if (res.ok) {
+      const data = await res.json();
+      cachedErpToken = data.accessToken || data.token || data.jwt || null;
+      return cachedErpToken;
+    }
+    
+    console.error("Failed to login to ERP:", await res.text());
+    return null;
+  } catch (err) {
+    console.error("Error logging into ERP:", err);
+    return null;
+  }
+}
+
+async function fetchFromErpWithRetry(endpoint: string) {
+  let token = await getErpToken();
+  if (!token) throw new Error("Could not get ERP auth token");
+
+  let res = await fetch(`${ERP_BASE_URL}${endpoint}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+  });
+
+  if (res.status === 401) {
+    token = await getErpToken(true);
+    if (!token) throw new Error("Could not refresh ERP auth token");
+    
+    res = await fetch(`${ERP_BASE_URL}${endpoint}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+    });
+  }
+
+  if (!res.ok) throw new Error(`ERP API error: ${res.status}`);
+  return res.json();
+}
+
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CALENDAR_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CALENDAR_CLIENT_SECRET || "";
 const GOOGLE_REDIRECT_URI =
@@ -6933,6 +6998,28 @@ app.get("/api/leads/dqc-queue", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("dqc-queue error", err);
     return res.status(500).json({ message: "Failed to load DQC queue" });
+  }
+});
+
+// Sales Managers for Sales Closure form (proxy to Project-ERP)
+app.get("/api/sales-managers", async (req: Request, res: Response) => {
+  try {
+    const data = await fetchFromErpWithRetry("/api/auth/users/SALES_MANAGER");
+    res.json(data);
+  } catch (err) {
+    console.error("sales-managers proxy error", err);
+    res.status(500).json({ message: "Failed to load sales managers" });
+  }
+});
+
+// Sales Admins for Sales Closure form (proxy to Project-ERP)
+app.get("/api/sales-admins", async (req: Request, res: Response) => {
+  try {
+    const data = await fetchFromErpWithRetry("/api/auth/users/SALES_ADMIN");
+    res.json(data);
+  } catch (err) {
+    console.error("sales-admins proxy error", err);
+    res.status(500).json({ message: "Failed to load sales admins" });
   }
 });
 

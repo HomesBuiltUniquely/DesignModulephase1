@@ -62,13 +62,30 @@ export default function SalesClosureForm() {
     | "dis_on_service"
     | "dis_on_accessories";
   type Designer = { id: number; name: string; role: string; leadName: string };
+  type SalesPerson = { id: number; fullName: string | null; username: string; email?: string };
   const [designers, setDesigners] = useState<Designer[]>([]);
+  const [salesManagers, setSalesManagers] = useState<SalesPerson[]>([]);
+  const [salesAdmins, setSalesAdmins] = useState<SalesPerson[]>([]);
 
   useEffect(() => {
     fetch(`${getApiBase()}/api/designers`)
       .then((res) => res.json())
       .then((data: Designer[]) => {
         if (Array.isArray(data)) setDesigners(data);
+      })
+      .catch(() => {});
+
+    fetch(`${getApiBase()}/api/sales-managers`)
+      .then((res) => res.json())
+      .then((data: SalesPerson[]) => {
+        if (Array.isArray(data)) setSalesManagers(data);
+      })
+      .catch(() => {});
+
+    fetch(`${getApiBase()}/api/sales-admins`)
+      .then((res) => res.json())
+      .then((data: SalesPerson[]) => {
+        if (Array.isArray(data)) setSalesAdmins(data);
       })
       .catch(() => {});
   }, []);
@@ -589,15 +606,20 @@ export default function SalesClosureForm() {
                     <label className="block text-sm text-green-950 font-medium mb-1">
                       Sales Lead Name
                     </label>
-                    <input
-                      className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                      type="text"
-                      placeholder="Enter Lead Name"
+                    <select
+                      className="w-full border p-2.5 rounded-lg text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
                       value={form.sales_lead_name}
                       onChange={(e) =>
                         updateFields("sales_lead_name", e.target.value)
                       }
-                    />
+                    >
+                      <option value="">Select Sales Lead</option>
+                      {salesManagers.map((m) => (
+                        <option key={m.id} value={m.fullName || m.username}>
+                          {m.fullName || m.username}
+                        </option>
+                      ))}
+                    </select>
                     {errors.sales_lead_name && (
                       <p className="text-red-500 text-sm">
                         {errors.sales_lead_name}
@@ -608,15 +630,20 @@ export default function SalesClosureForm() {
                     <label className="block text-sm text-green-950 font-medium mb-1">
                       Sales SPOC
                     </label>
-                    <input
-                      className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                      type="text"
-                      placeholder="Enter SPOC"
+                    <select
+                      className="w-full border p-2.5 rounded-lg text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
                       value={form.sales_spoc}
                       onChange={(e) =>
                         updateFields("sales_spoc", e.target.value)
                       }
-                    />
+                    >
+                      <option value="">Select Sales SPOC</option>
+                      {salesAdmins.map((a) => (
+                        <option key={a.id} value={a.fullName || a.username}>
+                          {a.fullName || a.username}
+                        </option>
+                      ))}
+                    </select>
                     {errors.sales_spoc && (
                       <p className="text-red-500 text-sm">
                         {errors.sales_spoc}
