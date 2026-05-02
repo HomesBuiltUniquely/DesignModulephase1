@@ -182,6 +182,7 @@ export default function Finance10pPage() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <a href="/finance/sales-closure" className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-semibold hover:bg-gray-50">Sales Closure</a>
             <a href="/finance/40" className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-semibold hover:bg-gray-50">40% Payment</a>
             <button
               type="button"

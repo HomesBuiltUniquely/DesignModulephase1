@@ -40,12 +40,29 @@ export default function ReviewPage() {
         </div>
       </div>
 
+      {/* Finance approval notice */}
+      <div className="rounded-xl border border-amber-200 bg-amber-50 p-5 flex gap-3">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-amber-100 mt-0.5">
+          <svg className="h-5 w-5 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M12 3a9 9 0 110 18A9 9 0 0112 3z" />
+          </svg>
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-amber-800">Pending Finance Approval</p>
+          <p className="text-sm text-amber-700 mt-1 leading-relaxed">
+            Your payment screenshot has been sent to the Finance team for review.
+            Once Finance approves the payment, this lead will automatically appear on the assigned designer&apos;s dashboard.
+            If your payment is rejected, you will receive an email notification with instructions to re-submit.
+          </p>
+        </div>
+      </div>
+
       <div className="flex gap-3 flex-wrap">
         <button
           onClick={() => router.push("/")}
           className="px-5 py-2 rounded-lg bg-green-600 text-white font-medium hover:bg-green-700"
         >
-          View in Queue
+          Go to Dashboard
         </button>
         <button
           onClick={() => router.push("/SalesClosure")}
@@ -66,3 +83,4 @@ export default function ReviewPage() {
     </div>
   );
 }
+

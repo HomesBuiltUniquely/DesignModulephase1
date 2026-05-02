@@ -125,7 +125,7 @@ app.get("/api/health", (_req, res) => {
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "root@root",
+  password: process.env.DB_PASSWORD || "Root@123",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -186,7 +186,7 @@ async function getErpToken(forceRefresh = false): Promise<string | null> {
       cachedErpToken = data.accessToken || data.token || data.jwt || null;
       return cachedErpToken;
     }
-    
+
     console.error("Failed to login to ERP:", await res.text());
     return null;
   } catch (err) {
@@ -209,7 +209,7 @@ async function fetchFromErpWithRetry(endpoint: string) {
   if (res.status === 401) {
     token = await getErpToken(true);
     if (!token) throw new Error("Could not refresh ERP auth token");
-    
+
     res = await fetch(`${ERP_BASE_URL}${endpoint}`, {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -2182,6 +2182,9 @@ app.all("/api/auth/register", async (req: Request, res: Response) => {
 app.post("/api/sales-closure", async (req: Request, res: Response) => {
   const payload = req.body;
   console.log("Received sales-closure:", payload);
+  if (payload) {
+    payload.sales_closure_finance_approved = false;
+  }
 
   const lead = toLeadRow(payload);
   const pid = ""; // keep empty or generate PID if required
@@ -4560,6 +4563,239 @@ app.get("/api/leads/:id/completions", async (req: Request, res: Response) => {
   }
 });
 
+// Search a lead by its CRM Lead ID stored inside the payload JSON (used by Sales Closure form re-submission)
+app.get("/api/leads/by-crm-id/:crmLeadId", async (req: Request, res: Response) => {
+  const crmLeadId = (req.params.crmLeadId as string)?.trim();
+  if (!crmLeadId) return res.status(400).json({ message: "CRM Lead ID is required" });
+  try {
+    const [rows] = await pool.query(
+      `SELECT id, project_name as projectName, contact_no as contactNo, client_email as clientEmail, payload
+       FROM leads
+       WHERE JSON_UNQUOTE(
+         JSON_EXTRACT(
+           CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END,
+           '$.crm_lead_id'
+         )
+       ) = ?
+       LIMIT 1`,
+      [crmLeadId]
+    );
+    const row = (rows as any[])[0];
+    if (!row) return res.status(404).json({ message: "No lead found with that CRM Lead ID" });
+    // Parse payload before returning
+    let payloadObj: Record<string, unknown> = {};
+    try { payloadObj = row.payload ? JSON.parse(row.payload) : {}; } catch { /* ignore */ }
+    return res.json({ ...row, payload: payloadObj });
+  } catch (err) {
+    console.error("by-crm-id error", err);
+    return res.status(500).json({ message: "Failed to search by CRM Lead ID" });
+  }
+});
+
+// ----- Finance Sales Closure Approval -----
+app.get("/api/leads/finance-sales-closure-queue", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user?.role ?? "").toLowerCase();
+    if (role !== "finance" && role !== "admin") {
+      return res.status(403).json({ message: "Only finance or admin can access this queue" });
+    }
+    const [rows] = await pool.query(`
+      SELECT 
+        id, 
+        project_name as projectName, 
+        project_stage as projectStage,
+        JSON_UNQUOTE(JSON_EXTRACT(CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, '$.payment_received')) as paymentReceived,
+        JSON_UNQUOTE(JSON_EXTRACT(CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, '$.mode_of_payment')) as paymentMode,
+        JSON_UNQUOTE(JSON_EXTRACT(CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, '$.payment_screenshot')) as paymentScreenshot
+      FROM leads
+      WHERE JSON_UNQUOTE(JSON_EXTRACT(CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, '$.sales_closure_finance_approved')) = 'false'
+        AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, '$.sales_closure_finance_rejected')), 'false') != 'true'
+      ORDER BY id ASC
+    `);
+
+    const list = (rows as any[]).map((r) => ({
+      id: r.id,
+      projectName: r.projectName || "—",
+      status: "Pending approval",
+      paymentReceived: r.paymentReceived || "—",
+      paymentMode: r.paymentMode || "—",
+      paymentScreenshot: r.paymentScreenshot || null,
+      canApprove: true,
+    }));
+    return res.json(list);
+  } catch (err) {
+    console.error("finance-sales-closure-queue error", err);
+    return res.status(500).json({ message: "Failed to load queue" });
+  }
+});
+
+app.post("/api/leads/:id/approve-sales-closure", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user?.role ?? "").toLowerCase();
+    if (role !== "finance" && role !== "admin") {
+      return res.status(403).json({ message: "Only finance or admin can approve" });
+    }
+    const leadId = Number(req.params.id);
+    if (!leadId) return res.status(400).json({ message: "Invalid lead ID" });
+
+    await pool.query(`
+      UPDATE leads 
+      SET payload = JSON_SET(
+        CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, 
+        '$.sales_closure_finance_approved', 
+        true
+      )
+      WHERE id = ?
+    `, [leadId]);
+
+    // Optional event tracking for lead history
+    await addLeadHistoryEvent(leadId, {
+      id: `approve-sales-closure-${Date.now()}`,
+      type: "note",
+      taskName: "Sales Closure Payment Approval",
+      milestoneName: "Pre 10%",
+      timestamp: new Date().toISOString(),
+      description: "Finance approved sales closure payment",
+      user: { name: user.name || "Finance" },
+      details: { kind: "note", noteText: "Sales Closure payment screenshot approved." },
+    });
+
+    return res.json({ success: true, message: "Sales closure approved successfully" });
+  } catch (err) {
+    console.error("approve-sales-closure error", err);
+    return res.status(500).json({ message: "Failed to approve sales closure" });
+  }
+});
+
+// Finance: Reject sales closure payment screenshot and notify sales person via email
+app.post("/api/leads/:id/reject-sales-closure", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user?.role ?? "").toLowerCase();
+    if (role !== "finance" && role !== "admin") {
+      return res.status(403).json({ message: "Only finance or admin can reject" });
+    }
+    const leadId = Number(req.params.id);
+    if (!leadId) return res.status(400).json({ message: "Invalid lead ID" });
+
+    // Mark as rejected in payload (keep finance_approved: false, add finance_rejected: true)
+    await pool.query(`
+      UPDATE leads
+      SET payload = JSON_SET(
+        CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END,
+        '$.sales_closure_finance_approved', false,
+        '$.sales_closure_finance_rejected', true
+      )
+      WHERE id = ?
+    `, [leadId]);
+
+    // Fetch payload to get emails for notification
+    const [rows] = await pool.query(
+      `SELECT project_name as projectName, payload FROM leads WHERE id = ?`,
+      [leadId]
+    );
+    const row = (rows as any[])[0];
+    const payloadObj = (() => {
+      try { return row?.payload ? JSON.parse(row.payload) : {}; } catch { return {}; }
+    })();
+
+    const salesEmail: string | null = payloadObj.sales_email || null;
+    const salesLeadEmail: string | null = payloadObj.sales_lead_email || null;
+    const salesSpocEmail: string | null = payloadObj.sales_spoc_email || null;
+    const customerName: string = payloadObj.customer_name || row?.projectName || "Customer";
+
+    // Send rejection email to sales person, CC sales lead and SPOC if available
+    if (salesEmail) {
+      const ccList: string[] = [];
+      if (salesLeadEmail) ccList.push(salesLeadEmail);
+      if (salesSpocEmail) ccList.push(salesSpocEmail);
+
+      void triggerMailRouteWithLog({
+        leadId,
+        taskName: "Sales Closure Payment Rejection",
+        route: "/api/email/send-sales-closure-payment-rejected",
+        visibility: "internal",
+        payload: {
+          to: salesEmail,
+          ...(ccList.length > 0 ? { cc: ccList } : {}),
+          subject: `Action Required: Sales Closure Payment Rejected – Lead #${leadId}`,
+          salesPersonName: payloadObj.sales_email || undefined,
+          customerName,
+          leadId,
+        },
+      });
+    } else {
+      console.warn(`[reject-sales-closure] No sales_email in payload for lead ${leadId} – skipping email`);
+    }
+
+    // Log rejection event in lead history
+    await addLeadHistoryEvent(leadId, {
+      id: `reject-sales-closure-${Date.now()}`,
+      type: "note",
+      taskName: "Sales Closure Payment Rejection",
+      milestoneName: "Pre 10%",
+      timestamp: new Date().toISOString(),
+      description: "Finance rejected sales closure payment screenshot",
+      user: { name: user.name || "Finance" },
+      details: { kind: "note", noteText: "Sales Closure payment screenshot rejected. Notification sent to sales." },
+    });
+
+    return res.json({ success: true, message: "Sales closure rejected and sales person notified" });
+  } catch (err) {
+    console.error("reject-sales-closure error", err);
+    return res.status(500).json({ message: "Failed to reject sales closure" });
+  }
+});
+
+// Sales: Update an existing sales closure lead (payment details only) after rejection
+// Resets finance_rejected and sales_closure_finance_approved so it goes back to Finance queue
+app.put("/api/sales-closure/:id", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (!leadId || Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid lead ID" });
+
+  try {
+    // Fetch existing payload
+    const [rows] = await pool.query(
+      `SELECT payload FROM leads WHERE id = ?`,
+      [leadId]
+    );
+    const row = (rows as any[])[0];
+    if (!row) return res.status(404).json({ message: "Lead not found" });
+
+    const existingPayload = (() => {
+      try { return row.payload ? JSON.parse(row.payload) : {}; } catch { return {}; }
+    })();
+
+    const incoming = req.body;
+
+    // Only allow updating payment-related fields; all other fields are retained from existing payload
+    const updatedPayload = {
+      ...existingPayload,
+      payment_received: incoming.payment_received ?? existingPayload.payment_received,
+      mode_of_payment: incoming.mode_of_payment ?? existingPayload.mode_of_payment,
+      payment_screenshot: incoming.payment_screenshot ?? existingPayload.payment_screenshot,
+      // Reset approval flags so it goes back to Finance queue
+      sales_closure_finance_approved: false,
+      sales_closure_finance_rejected: false,
+    };
+
+    await pool.query(
+      `UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`,
+      [JSON.stringify(updatedPayload), new Date(), leadId]
+    );
+
+    return res.json({ success: true, message: "Sales closure updated and sent back for finance approval" });
+  } catch (err) {
+    console.error("put-sales-closure error", err);
+    return res.status(500).json({ message: "Failed to update sales closure" });
+  }
+});
+
 // ----- Finance 10% payment: queue (limited fields), upload screenshots, approve -----
 // Finance team sees only leads at 10% payment stage with id, name, status, upload, approve.
 app.get("/api/leads/finance-10p-queue", async (req: Request, res: Response) => {
@@ -6840,6 +7076,15 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
               l.assigned_project_manager_id,
               u.name as designerName,
               pm.name as projectManagerName,
+              JSON_UNQUOTE(
+                JSON_EXTRACT(
+                  CASE
+                    WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}'
+                    ELSE l.payload
+                  END,
+                  '$.sales_closure_finance_approved'
+                )
+              ) AS financeApprovedRaw,
               NULLIF(TRIM(COALESCE(
                 JSON_UNQUOTE(
                   JSON_EXTRACT(
@@ -6865,13 +7110,15 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
        LEFT JOIN users pm ON pm.id = l.assigned_project_manager_id
        ORDER BY l.id ASC`,
     );
-    const baseList = (rows as any[]).map((r) => ({
-      ...r,
-      isOnHold: !!r.isOnHold,
-      designerName: r.designerName ?? null,
-      projectManagerName: r.projectManagerName ?? null,
-      experienceCenter: r.experienceCenter ?? null,
-    }));
+    const baseList = (rows as any[])
+      .filter((r) => r.financeApprovedRaw !== "false")
+      .map((r) => ({
+        ...r,
+        isOnHold: !!r.isOnHold,
+        designerName: r.designerName ?? null,
+        projectManagerName: r.projectManagerName ?? null,
+        experienceCenter: r.experienceCenter ?? null,
+      }));
 
     // Enrich with current milestone (from task completions) for Design Phase dashboard
     const [completionRows] = await pool.query(
@@ -6953,10 +7200,13 @@ app.get("/api/leads/dqc-queue", async (req: Request, res: Response) => {
       return res.status(403).json({ message: "Only DQC Manager or DQE can access DQC queue" });
     }
     const [leadRows] = await pool.query(
-      `SELECT id, project_name as projectName, project_stage as projectStage
+      `SELECT id, project_name as projectName, project_stage as projectStage,
+              JSON_UNQUOTE(JSON_EXTRACT(CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, '$.sales_closure_finance_approved')) AS financeApprovedRaw
        FROM leads ORDER BY id ASC`,
     );
-    const leads = leadRows as { id: number; projectName: string; projectStage: string }[];
+    const leads = (leadRows as any[])
+      .filter((l) => l.financeApprovedRaw !== "false")
+      .map((l) => ({ id: l.id, projectName: l.projectName, projectStage: l.projectStage }));
     const [reviewRows] = await pool.query(
       `SELECT lead_id as leadId, verdict FROM lead_dqc_reviews ORDER BY id DESC`,
     );
