@@ -1,4 +1,5 @@
 import type { Express, Request, Response } from "express";
+import type { Pool } from "mysql2/promise";
 import http from "node:http";
 import https from "node:https";
 
@@ -145,16 +146,29 @@ function send(res: Response, status: number, data: unknown): void {
 function extractQuoteIdFromResponse(data: unknown): string | null {
   if (!data || typeof data !== "object") return null;
   const root = data as Record<string, unknown>;
+
+  const idFromQuoteList = (arr: unknown): string | null => {
+    if (!Array.isArray(arr) || arr.length === 0) return null;
+    const objectRows = arr.filter((x) => x && typeof x === "object" && !Array.isArray(x));
+    const pickRow =
+      objectRows.length >= 2
+        ? pickPreferredQuoteObjectFromList(arr)
+        : arr[0] && typeof arr[0] === "object"
+          ? (arr[0] as Record<string, unknown>)
+          : null;
+    if (!pickRow) return null;
+    const nested = pickRow.quoteID ?? pickRow.quoteId ?? pickRow.quotationId ?? pickRow.quotationID;
+    if (typeof nested === "number" && Number.isFinite(nested)) return String(nested);
+    if (typeof nested === "string" && nested.trim()) return nested.trim();
+    return null;
+  };
+
+  const fromList = idFromQuoteList(root.data) ?? idFromQuoteList(root.Data);
+  if (fromList) return fromList;
+
   const direct = root.quoteID ?? root.quoteId ?? root.quotationId ?? root.quotationID;
   if (typeof direct === "number" && Number.isFinite(direct)) return String(direct);
   if (typeof direct === "string" && direct.trim()) return direct.trim();
-  const arr = root.data;
-  if (Array.isArray(arr) && arr[0] && typeof arr[0] === "object") {
-    const first = arr[0] as Record<string, unknown>;
-    const nested = first.quoteID ?? first.quoteId ?? first.quotationId ?? first.quotationID;
-    if (typeof nested === "number" && Number.isFinite(nested)) return String(nested);
-    if (typeof nested === "string" && nested.trim()) return nested.trim();
-  }
   return null;
 }
 
@@ -173,6 +187,115 @@ function hasDetailedQuoteData(data: unknown): boolean {
   return false;
 }
 
+/** Align with my-app `prolanceApiGetQuote.preferLatestProlanceQuotesEnvelope`: multi-quote payloads list draft/old first. */
+function readPositiveIntQuote(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v) && v >= 1) return Math.floor(v);
+  if (typeof v === "string" && v.trim()) {
+    const n = Number(v.trim());
+    if (Number.isFinite(n) && n >= 1) return Math.floor(n);
+  }
+  return null;
+}
+
+function isLikelyDraftQuoteRow(row: Record<string, unknown>): boolean {
+  if (row.isDraft === true) return true;
+  const st =
+    row.quoteStatus ??
+    row.status ??
+    row.quotationStatus ??
+    row.stage ??
+    row.quoteStage ??
+    row.quoteState;
+  if (typeof st === "string" && /\bdraft\b/i.test(st)) return true;
+  return false;
+}
+
+function parseTrailingNumericSuffix(quoteNum: unknown): number {
+  const s = String(quoteNum ?? "").trim();
+  if (!s) return 0;
+  const m = s.match(/(\d{1,9})\s*$/);
+  return m ? Number(m[1]) : 0;
+}
+
+function rowCreatedMs(row: Record<string, unknown>): number {
+  const d =
+    row.createdOn ??
+    row.createdAt ??
+    row.createdDate ??
+    row.createDate ??
+    row.modifiedAt ??
+    row.updatedAt;
+  if (d == null) return 0;
+  const t = new Date(String(d)).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
+function scoreQuoteRowForLatestPreference(row: Record<string, unknown>): number {
+  let score = 0;
+  if (!isLikelyDraftQuoteRow(row)) score += 1_000_000_000;
+  const idPart = readPositiveIntQuote(row.quoteID ?? row.quoteId ?? row.quotationId ?? row.quotationID);
+  if (idPart != null) score += idPart * 1_000;
+  score += parseTrailingNumericSuffix(row.quoteNum ?? row.quoteNo ?? row.quotationNum) * 10;
+  score += Math.floor(rowCreatedMs(row) / 86_400_000);
+  return score;
+}
+
+function pickPreferredQuoteObjectFromList(items: unknown[]): Record<string, unknown> | null {
+  const objects = items
+    .map((item, i) =>
+      item && typeof item === "object" && !Array.isArray(item)
+        ? { row: item as Record<string, unknown>, i }
+        : null,
+    )
+    .filter(Boolean) as { row: Record<string, unknown>; i: number }[];
+  if (objects.length === 0) return null;
+  if (objects.length === 1) return objects[0].row;
+  const sorted = [...objects].sort((a, b) => {
+    const sb = scoreQuoteRowForLatestPreference(b.row);
+    const sa = scoreQuoteRowForLatestPreference(a.row);
+    if (sb !== sa) return sb - sa;
+    return a.i - b.i;
+  });
+  return sorted[0].row;
+}
+
+function reorderQuoteRowsPreferredFirst(arr: unknown[]): unknown[] {
+  const indexed = arr.map((item, i) => ({ item, i }));
+  const objects = indexed.filter(
+    (x) => x.item && typeof x.item === "object" && !Array.isArray(x.item),
+  );
+  if (objects.length < 2) return arr;
+  const ranked = [...objects].sort((a, b) => {
+    const sb = scoreQuoteRowForLatestPreference(b.item as Record<string, unknown>);
+    const sa = scoreQuoteRowForLatestPreference(a.item as Record<string, unknown>);
+    if (sb !== sa) return sb - sa;
+    return a.i - b.i;
+  });
+  const preferredItems = ranked.map((r) => r.item);
+  const rest = indexed
+    .filter((x) => !x.item || typeof x.item !== "object" || Array.isArray(x.item))
+    .map((x) => x.item);
+  return [...preferredItems, ...rest];
+}
+
+function preferLatestProlanceQuotesEnvelope(envelope: unknown): unknown {
+  if (!envelope || typeof envelope !== "object") return envelope;
+  const root = envelope as Record<string, unknown>;
+  let out: Record<string, unknown> | null = null;
+  const apply = (key: "data" | "Data") => {
+    const arr = (out ?? root)[key];
+    if (!Array.isArray(arr) || arr.length < 2) return;
+    const nextArr = reorderQuoteRowsPreferredFirst(arr);
+    if (nextArr !== arr) {
+      if (!out) out = { ...root };
+      out[key] = nextArr;
+    }
+  };
+  apply("data");
+  apply("Data");
+  return out ?? envelope;
+}
+
 function maskValue(value: string | null | undefined, visibleStart = 6, visibleEnd = 4): string {
   const raw = String(value || "");
   if (!raw) return "(missing)";
@@ -183,6 +306,7 @@ function maskValue(value: string | null | undefined, visibleStart = 6, visibleEn
 export function registerProlanceRoutes(
   app: Express,
   getUserFromSession: (req: Request) => Promise<SessionUser | null>,
+  pool: Pool,
 ): void {
   const TEST_PREFIX = "/api/prolance-test";
   const requireUser = async (req: Request, res: Response): Promise<SessionUser | null> => {
@@ -346,6 +470,73 @@ export function registerProlanceRoutes(
     }
   });
 
+  async function loadQuoteVersionsForLeadPublic(leadId: number): Promise<Array<{ quoteId: number; createdAt: string }>> {
+    const [rows] = await pool.query(
+      `SELECT quote_id AS quoteId, created_at AS createdAt
+       FROM lead_prolance_quote_versions
+       WHERE lead_id = ?
+       ORDER BY created_at ASC, id ASC`,
+      [leadId],
+    );
+    const toIso = (d: unknown) =>
+      d instanceof Date ? d.toISOString() : typeof d === "string" ? d : new Date().toISOString();
+    const list = (rows as { quoteId: unknown; createdAt: unknown }[]).map((r) => ({
+      quoteId: Number(r.quoteId),
+      createdAt: toIso(r.createdAt),
+    }));
+    const [lr] = await pool.query(`SELECT prolance_quote_id, update_at FROM leads WHERE id = ? LIMIT 1`, [leadId]);
+    const pq = (lr as { prolance_quote_id?: unknown }[])[0]?.prolance_quote_id;
+    if (pq != null && Number(pq) > 0 && !list.some((x) => x.quoteId === Number(pq))) {
+      const u = (lr as { update_at?: unknown }[])[0]?.update_at;
+      list.push({ quoteId: Number(pq), createdAt: toIso(u) });
+      list.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    }
+    return list;
+  }
+
+  // Public: quotation revisions for the same lead (customers can open older quote links). No login.
+  app.get(`${TEST_PREFIX}/public/quote-revisions/:quoteId`, async (req: Request, res: Response): Promise<void> => {
+    const seed = Number(String(req.params.quoteId || "").trim());
+    if (!Number.isFinite(seed) || seed < 1) {
+      res.status(400).json({ message: "Invalid quoteId" });
+      return;
+    }
+    try {
+      let leadId: number | null = null;
+      const [v1] = await pool.query(
+        `SELECT lead_id AS lid FROM lead_prolance_quote_versions WHERE quote_id = ? LIMIT 1`,
+        [seed],
+      );
+      const lid1 = (v1 as { lid?: unknown }[])[0]?.lid;
+      leadId = lid1 != null && Number.isFinite(Number(lid1)) ? Number(lid1) : null;
+      if (leadId == null || leadId < 1) {
+        const [s1] = await pool.query(`SELECT lead_id AS lid FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`, [
+          seed,
+        ]);
+        const lid2 = (s1 as { lid?: unknown }[])[0]?.lid;
+        leadId = lid2 != null && Number.isFinite(Number(lid2)) ? Number(lid2) : null;
+      }
+      if (leadId == null || leadId < 1) {
+        const [l1] = await pool.query(`SELECT id AS lid FROM leads WHERE prolance_quote_id = ? LIMIT 1`, [seed]);
+        const lid3 = (l1 as { lid?: unknown }[])[0]?.lid;
+        leadId = lid3 != null && Number.isFinite(Number(lid3)) ? Number(lid3) : null;
+      }
+      if (leadId == null || leadId < 1) {
+        res.json({ versions: [{ quoteId: seed, createdAt: new Date().toISOString() }] });
+        return;
+      }
+      const versions = await loadQuoteVersionsForLeadPublic(leadId);
+      if (versions.length === 0) {
+        res.json({ versions: [{ quoteId: seed, createdAt: new Date().toISOString() }] });
+        return;
+      }
+      res.json({ versions });
+    } catch (err) {
+      console.error("public quote-revisions error", err);
+      res.status(500).json({ message: asErrorMessage(err) });
+    }
+  });
+
   // Public share: quote by ID (no app-session auth). Must be registered BEFORE `/quotes/:projectId`
   // or Express will treat "share" as a project id.
   const handlePublicQuoteView = async (req: Request, res: Response): Promise<void> => {
@@ -355,6 +546,28 @@ export function registerProlanceRoutes(
         res.status(400).json({ message: "quoteId is required" });
         return;
       }
+
+      const snapshotQid = Number(quoteId);
+      if (Number.isFinite(snapshotQid) && snapshotQid > 0) {
+        try {
+          const [rows] = await pool.query(
+            "SELECT payload_json FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1",
+            [snapshotQid],
+          );
+          const row = (rows as { payload_json?: unknown }[])[0];
+          const raw = row?.payload_json != null ? String(row.payload_json) : "";
+          if (raw.length > 0) {
+            const parsed = JSON.parse(raw) as unknown;
+            if (parsed && typeof parsed === "object") {
+              send(res, 200, parsed);
+              return;
+            }
+          }
+        } catch (snapErr) {
+          console.error("quote snapshot read error", snapErr);
+        }
+      }
+
       const apiKey = readApiKey(req);
       if (!apiKey) {
         res.status(500).json({ message: "Origin API key is not configured" });
@@ -544,6 +757,9 @@ export function registerProlanceRoutes(
           includeOriginApiHeaders: true,
           apiKey,
         });
+      }
+      if (upstream && upstream.status >= 200 && upstream.status < 300 && upstream.data) {
+        upstream = { status: upstream.status, data: preferLatestProlanceQuotesEnvelope(upstream.data) };
       }
       if (!upstream || upstream.status < 200 || upstream.status >= 300) {
         if (upstream?.status === 401) {

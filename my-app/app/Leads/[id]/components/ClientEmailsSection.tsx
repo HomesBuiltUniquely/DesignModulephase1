@@ -13,6 +13,8 @@ type Props = {
     /** Designers may view but not edit */
     readOnly: boolean;
     onUpdate: (patch: Pick<LeadshipTypes, 'clientEmail' | 'alternateClientEmail'>) => void;
+    /** `settings`: no page margins — use inside lead settings modal */
+    variant?: 'default' | 'settings';
 };
 
 function shortEmail(value: string | undefined | null, emptyLabel: string): string {
@@ -23,7 +25,14 @@ function shortEmail(value: string | undefined | null, emptyLabel: string): strin
 /**
  * Compact client email row; edits open in a small modal (non-designers only).
  */
-export default function ClientEmailsSection({ leadId, project, sessionId, readOnly, onUpdate }: Props) {
+export default function ClientEmailsSection({
+    leadId,
+    project,
+    sessionId,
+    readOnly,
+    onUpdate,
+    variant = 'default',
+}: Props) {
     const [modalOpen, setModalOpen] = useState(false);
     const [primary, setPrimary] = useState('');
     const [alternate, setAlternate] = useState('');
@@ -94,9 +103,14 @@ export default function ClientEmailsSection({ leadId, project, sessionId, readOn
     const primaryShown = shortEmail(project.clientEmail, '—');
     const altShown = shortEmail(project.alternateClientEmail, '');
 
+    const wrapClass =
+        variant === 'settings'
+            ? 'flex flex-col gap-1 rounded-lg border border-slate-600/80 bg-slate-800/40 px-3 py-2'
+            : 'mx-4 xl:mx-6 mb-2 flex flex-col gap-1 rounded-lg border border-slate-600/80 bg-slate-800/40 px-3 py-2';
+
     return (
         <>
-            <div className="mx-4 xl:mx-6 mb-2 flex flex-col gap-1 rounded-lg border border-slate-600/80 bg-slate-800/40 px-3 py-2">
+            <div className={wrapClass}>
                 <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="min-w-0 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs sm:text-sm">
                         <span className="text-slate-500 font-medium shrink-0">Client email</span>

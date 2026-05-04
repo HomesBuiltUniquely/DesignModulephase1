@@ -655,6 +655,61 @@ async function initDb() {
       // ignore
     }
 
+    try {
+      const [ppc] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'leads' AND COLUMN_NAME = 'prolance_project_id'",
+      );
+      if ((ppc as any[]).length === 0) {
+        await conn.query("ALTER TABLE leads ADD COLUMN prolance_project_id INT NULL");
+      }
+    } catch {
+      // ignore
+    }
+
+    try {
+      const [pqc] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'leads' AND COLUMN_NAME = 'prolance_quote_id'",
+      );
+      if ((pqc as any[]).length === 0) {
+        await conn.query("ALTER TABLE leads ADD COLUMN prolance_quote_id INT NULL");
+      }
+    } catch {
+      // ignore
+    }
+
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS lead_prolance_quote_versions (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        lead_id INT NOT NULL,
+        quote_id INT NOT NULL,
+        created_at DATETIME NOT NULL,
+        UNIQUE KEY uniq_lead_quote (lead_id, quote_id),
+        KEY idx_lpqv_quote (quote_id),
+        KEY idx_lpqv_lead (lead_id)
+      );
+    `);
+    try {
+      await conn.query(`
+        INSERT IGNORE INTO lead_prolance_quote_versions (lead_id, quote_id, created_at)
+        SELECT id, prolance_quote_id, COALESCE(update_at, create_at, NOW()) FROM leads
+        WHERE prolance_quote_id IS NOT NULL AND prolance_quote_id > 0
+      `);
+    } catch {
+      // ignore
+    }
+
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS lead_prolance_quote_snapshots (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        lead_id INT NOT NULL,
+        quote_id INT NOT NULL,
+        payload_json MEDIUMTEXT NOT NULL,
+        created_at DATETIME NOT NULL,
+        UNIQUE KEY uniq_quote_snapshot (quote_id),
+        KEY idx_lpqs_lead (lead_id)
+      );
+    `);
+
     await conn.query(`
       CREATE TABLE IF NOT EXISTS checklists (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -870,6 +925,102 @@ async function getUserFromSession(req: Request) {
 }
 
 type SessionUser = Awaited<ReturnType<typeof getUserFromSession>>;
+
+type LeadAccessRow = {
+  id: number;
+  assigned_designer_id: number | null;
+  assigned_project_manager_id: number | null;
+};
+
+/** Same visibility as GET /api/leads/:id for Prolance / quote metadata routes. */
+async function getLeadAccessRowForUser(
+  res: Response,
+  user: SessionUser | null,
+  leadId: number,
+): Promise<{ ok: true; row: LeadAccessRow } | { ok: false }> {
+  if (!user) {
+    res.status(401).json({ message: "Unauthorized" });
+    return { ok: false };
+  }
+  const [rows] = await pool.query(
+    `SELECT l.id, l.assigned_designer_id, l.assigned_project_manager_id
+     FROM leads l WHERE l.id = ?`,
+    [leadId],
+  );
+  const row = (rows as LeadAccessRow[])[0];
+  if (!row) {
+    res.status(404).json({ message: "Lead not found" });
+    return { ok: false };
+  }
+  const role = (user.role ?? "").toLowerCase();
+
+  if (role === "mmt_executive") {
+    const [assignRows] = await pool.query(
+      "SELECT 1 FROM lead_d1_assignments WHERE lead_id = ? AND assigned_to_user_id = ?",
+      [leadId, user.id],
+    );
+    if ((assignRows as any[]).length === 0) {
+      res.status(404).json({ message: "Lead not found" });
+      return { ok: false };
+    }
+  }
+
+  if (role === "designer") {
+    if (!row.assigned_designer_id || row.assigned_designer_id !== user.id) {
+      res.status(404).json({ message: "Lead not found" });
+      return { ok: false };
+    }
+  }
+
+  if (role === "design_manager") {
+    const [dmCheck] = await pool.query(
+      `SELECT 1 FROM users d WHERE d.id = ? AND d.design_manager_id = ?`,
+      [row.assigned_designer_id, user.id],
+    );
+    if ((dmCheck as any[]).length === 0) {
+      res.status(404).json({ message: "Lead not found" });
+      return { ok: false };
+    }
+  }
+
+  if (role === "project_manager") {
+    if (!row.assigned_project_manager_id || row.assigned_project_manager_id !== user.id) {
+      res.status(404).json({ message: "Lead not found" });
+      return { ok: false };
+    }
+  }
+
+  return { ok: true, row };
+}
+
+async function loadProlanceQuoteVersionsForLead(leadId: number): Promise<
+  Array<{ quoteId: number; createdAt: string }>
+> {
+  const [rows] = await pool.query(
+    `SELECT quote_id AS quoteId, created_at AS createdAt
+     FROM lead_prolance_quote_versions
+     WHERE lead_id = ?
+     ORDER BY created_at ASC, id ASC`,
+    [leadId],
+  );
+  const toIso = (d: unknown) =>
+    d instanceof Date ? d.toISOString() : typeof d === "string" ? d : new Date().toISOString();
+  const list = (rows as any[]).map((r) => ({
+    quoteId: Number(r.quoteId),
+    createdAt: toIso(r.createdAt),
+  }));
+  const [lr] = await pool.query(`SELECT prolance_quote_id, update_at FROM leads WHERE id = ? LIMIT 1`, [leadId]);
+  const pq = (lr as any[])[0]?.prolance_quote_id;
+  if (pq != null && Number(pq) > 0 && !list.some((x) => x.quoteId === Number(pq))) {
+    const u = (lr as any[])[0]?.update_at;
+    list.push({
+      quoteId: Number(pq),
+      createdAt: toIso(u),
+    });
+    list.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  }
+  return list;
+}
 
 type GoogleCalendarConnectionRow = {
   id: number;
@@ -6817,16 +6968,18 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
     if (role === "mmt_executive" && user) {
       const userId = user.id;
       if (!userId) return res.json([]);
-      const [rows] = await pool.query(
-        `SELECT l.id, l.pid, l.project_name as projectName, l.project_stage as projectStage,
-                l.contact_no as contactNo, l.client_email as clientEmail,
-                l.is_on_hold as isOnHold, l.resume_at as resumeAt,
-                l.create_at as createAt, l.update_at as updateAt
-         FROM leads l
-         INNER JOIN lead_d1_assignments a ON a.lead_id = l.id AND a.assigned_to_user_id = ?
-         ORDER BY l.id ASC`,
-        [userId],
-      );
+        const [rows] = await pool.query(
+          `SELECT l.id, l.pid, l.project_name as projectName, l.project_stage as projectStage,
+                  l.contact_no as contactNo, l.client_email as clientEmail,
+                  l.is_on_hold as isOnHold, l.resume_at as resumeAt,
+                  l.create_at as createAt, l.update_at as updateAt,
+                  l.prolance_project_id as prolanceProjectId,
+                  l.prolance_quote_id as prolanceQuoteId
+           FROM leads l
+           INNER JOIN lead_d1_assignments a ON a.lead_id = l.id AND a.assigned_to_user_id = ?
+           ORDER BY l.id ASC`,
+          [userId],
+        );
       const list = (rows as any[]).map((r) => ({ ...r, isOnHold: !!r.isOnHold }));
       return res.json(list);
     }
@@ -6836,6 +6989,8 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
               l.contact_no as contactNo, l.client_email as clientEmail,
               l.is_on_hold as isOnHold, l.resume_at as resumeAt,
               l.create_at as createAt, l.update_at as updateAt,
+              l.prolance_project_id as prolanceProjectId,
+              l.prolance_quote_id as prolanceQuoteId,
               l.assigned_designer_id,
               l.assigned_project_manager_id,
               u.name as designerName,
@@ -7334,6 +7489,8 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
               l.create_at as createAt, l.update_at as updateAt, l.payload,
               l.assigned_designer_id,
               l.assigned_project_manager_id,
+              l.prolance_project_id as prolanceProjectId,
+              l.prolance_quote_id as prolanceQuoteId,
               pm.name as projectManagerName,
               d.email as designerEmail,
               CASE WHEN d.role = 'design_manager' THEN d.email ELSE dm.email END as designManagerEmail,
@@ -7416,10 +7573,222 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
       revision: revision || "v1.0 (Latest)",
       alternateClientEmail: row.alternateClientEmail ?? null,
       projectManagerName: row.projectManagerName ?? null,
+      prolanceProjectId: row.prolanceProjectId != null ? Number(row.prolanceProjectId) : null,
+      prolanceQuoteId: row.prolanceQuoteId != null ? Number(row.prolanceQuoteId) : null,
     });
   } catch (err) {
     console.error("lead detail error", err);
     return res.status(500).json({ message: "Failed to load lead" });
+  }
+});
+
+// Persist Prolance project / quote IDs on the lead (same visibility as GET /api/leads/:id).
+app.patch("/api/leads/:id/prolance-ids", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+
+  const user = await getUserFromSession(req);
+  if (!user) return res.status(401).json({ message: "Unauthorized" });
+
+  const body = (req.body || {}) as Record<string, unknown>;
+  const hasProj = Object.prototype.hasOwnProperty.call(body, "prolanceProjectId");
+  const hasQuote = Object.prototype.hasOwnProperty.call(body, "prolanceQuoteId");
+  if (!hasProj && !hasQuote) {
+    return res.status(400).json({ message: "prolanceProjectId and/or prolanceQuoteId is required" });
+  }
+
+  let prolanceProjectId: number | null | undefined;
+  if (hasProj) {
+    const v = body.prolanceProjectId;
+    if (v === null || v === "") prolanceProjectId = null;
+    else {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 1) return res.status(400).json({ message: "Invalid prolanceProjectId" });
+      prolanceProjectId = n;
+    }
+  }
+
+  let prolanceQuoteId: number | null | undefined;
+  if (hasQuote) {
+    const v = body.prolanceQuoteId;
+    if (v === null || v === "") prolanceQuoteId = null;
+    else {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 1) return res.status(400).json({ message: "Invalid prolanceQuoteId" });
+      prolanceQuoteId = n;
+    }
+  }
+
+  try {
+    const [rows] = await pool.query(
+      `SELECT l.id, l.assigned_designer_id, l.assigned_project_manager_id
+       FROM leads l WHERE l.id = ?`,
+      [id],
+    );
+    const row = (rows as any[])[0];
+    if (!row) return res.status(404).json({ message: "Lead not found" });
+
+    const role = (user.role ?? "").toLowerCase();
+
+    if (role === "mmt_executive") {
+      const [assignRows] = await pool.query(
+        "SELECT 1 FROM lead_d1_assignments WHERE lead_id = ? AND assigned_to_user_id = ?",
+        [id, user.id],
+      );
+      if ((assignRows as any[]).length === 0) {
+        return res.status(404).json({ message: "Lead not found" });
+      }
+    }
+
+    if (role === "designer") {
+      if (!row.assigned_designer_id || row.assigned_designer_id !== user.id) {
+        return res.status(404).json({ message: "Lead not found" });
+      }
+    }
+
+    if (role === "design_manager") {
+      const [dmCheck] = await pool.query(
+        `SELECT 1 FROM users d WHERE d.id = ? AND d.design_manager_id = ?`,
+        [row.assigned_designer_id, user.id],
+      );
+      if ((dmCheck as any[]).length === 0) {
+        return res.status(404).json({ message: "Lead not found" });
+      }
+    }
+
+    if (role === "project_manager") {
+      if (!row.assigned_project_manager_id || row.assigned_project_manager_id !== user.id) {
+        return res.status(404).json({ message: "Lead not found" });
+      }
+    }
+
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    if (prolanceProjectId !== undefined) {
+      sets.push("prolance_project_id = ?");
+      params.push(prolanceProjectId);
+    }
+    if (prolanceQuoteId !== undefined) {
+      sets.push("prolance_quote_id = ?");
+      params.push(prolanceQuoteId);
+    }
+    sets.push("update_at = ?");
+    params.push(new Date());
+    params.push(id);
+
+    await pool.query(`UPDATE leads SET ${sets.join(", ")} WHERE id = ?`, params);
+
+    if (
+      prolanceQuoteId !== undefined &&
+      prolanceQuoteId != null &&
+      Number.isFinite(Number(prolanceQuoteId)) &&
+      Number(prolanceQuoteId) > 0
+    ) {
+      try {
+        await pool.query(
+          `INSERT IGNORE INTO lead_prolance_quote_versions (lead_id, quote_id, created_at) VALUES (?, ?, ?)`,
+          [id, prolanceQuoteId, new Date()],
+        );
+      } catch (verErr) {
+        console.error("lead_prolance_quote_versions insert", verErr);
+      }
+    }
+
+    return res.json({
+      ok: true,
+      prolanceProjectId: prolanceProjectId !== undefined ? prolanceProjectId : undefined,
+      prolanceQuoteId: prolanceQuoteId !== undefined ? prolanceQuoteId : undefined,
+    });
+  } catch (err) {
+    console.error("prolance-ids patch error", err);
+    return res.status(500).json({ message: "Failed to update Prolance IDs" });
+  }
+});
+
+// All Prolance quote revisions saved for this lead (auth + same visibility as lead detail).
+app.get("/api/leads/:id/prolance-quote-versions", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+
+  const user = await getUserFromSession(req);
+  const access = await getLeadAccessRowForUser(res, user, id);
+  if (!access.ok) return;
+
+  try {
+    const versions = await loadProlanceQuoteVersionsForLead(id);
+    return res.json({ leadId: id, versions });
+  } catch (err) {
+    console.error("prolance-quote-versions error", err);
+    return res.status(500).json({ message: "Failed to load quote versions" });
+  }
+});
+
+// Resolve lead from a quote id, then return full revision list (for quote page when leadId not in URL).
+app.get("/api/leads/prolance-quote-versions/by-quote/:quoteId", async (req: Request, res: Response) => {
+  const quoteIdNum = Number(req.params.quoteId);
+  if (!Number.isFinite(quoteIdNum) || quoteIdNum < 1) {
+    return res.status(400).json({ message: "Invalid quoteId" });
+  }
+
+  const user = await getUserFromSession(req);
+  if (!user) return res.status(401).json({ message: "Unauthorized" });
+
+  try {
+    const [vRows] = await pool.query(
+      `SELECT lead_id AS leadId FROM lead_prolance_quote_versions WHERE quote_id = ? LIMIT 1`,
+      [quoteIdNum],
+    );
+    let leadId: number | null = (vRows as any[])[0]?.leadId ?? null;
+    if (leadId == null) {
+      const [lRows] = await pool.query(`SELECT id AS id FROM leads WHERE prolance_quote_id = ? LIMIT 1`, [
+        quoteIdNum,
+      ]);
+      leadId = (lRows as any[])[0]?.id ?? null;
+    }
+    if (leadId == null) {
+      return res.json({ leadId: null, versions: [] });
+    }
+
+    const access = await getLeadAccessRowForUser(res, user, leadId);
+    if (!access.ok) return;
+
+    const versions = await loadProlanceQuoteVersionsForLead(leadId);
+    return res.json({ leadId, versions });
+  } catch (err) {
+    console.error("prolance-quote-versions by-quote error", err);
+    return res.status(500).json({ message: "Failed to load quote versions" });
+  }
+});
+
+// Freeze quote JSON at generation time so older /quote/:id links stay correct after Prolance revisions.
+app.post("/api/leads/:id/prolance-quote-snapshots", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+
+  const user = await getUserFromSession(req);
+  const access = await getLeadAccessRowForUser(res, user, id);
+  if (!access.ok) return;
+
+  const quoteId = Number((req.body || {}).quoteId);
+  const payload = (req.body || {}).payload;
+  if (!Number.isFinite(quoteId) || quoteId < 1) {
+    return res.status(400).json({ message: "quoteId is required" });
+  }
+  if (payload == null || typeof payload !== "object") {
+    return res.status(400).json({ message: "payload must be a JSON object" });
+  }
+
+  try {
+    const json = JSON.stringify(payload);
+    const [result] = await pool.query(
+      `INSERT IGNORE INTO lead_prolance_quote_snapshots (lead_id, quote_id, payload_json, created_at) VALUES (?, ?, ?, ?)`,
+      [id, quoteId, json, new Date()],
+    );
+    const ins = result as mysql.ResultSetHeader;
+    return res.json({ ok: true, quoteId, inserted: ins.affectedRows === 1 });
+  } catch (err) {
+    console.error("prolance-quote-snapshots post error", err);
+    return res.status(500).json({ message: "Failed to save quote snapshot" });
   }
 });
 
@@ -7695,7 +8064,7 @@ app.post("/api/leads/:id/cancel", async (req: Request, res: Response) => {
   }
 });
 
-registerProlanceRoutes(app, getUserFromSession);
+registerProlanceRoutes(app, getUserFromSession, pool);
 
 // Ensure CORS headers are present on error responses (multer, etc.) so the browser doesn't only show a generic CORS error
 app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {

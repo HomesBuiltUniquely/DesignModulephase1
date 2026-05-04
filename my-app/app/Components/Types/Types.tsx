@@ -21,6 +21,10 @@ export type LeadshipTypes = {
     currentMilestoneProgress?: number | null;
     assigned_designer_id?: number | null;
     assigned_project_manager_id?: number | null;
+    /** Prolance Origin project ID after designer creates project from this lead */
+    prolanceProjectId?: number | null;
+    /** Last Prolance quotation ID from Get Quote (optional, for reference) */
+    prolanceQuoteId?: number | null;
     projectManagerName?: string | null;
     /** Sales closure experience center / branch (from lead payload) */
     experienceCenter?: string | null;

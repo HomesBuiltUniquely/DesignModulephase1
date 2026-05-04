@@ -26,6 +26,9 @@ type Props = {
     onGetQuoteClick?: () => void;
     getQuoteBusy?: boolean;
     canGetQuote?: boolean;
+    /** Lead workspace: Prolance project ID, client emails, etc. */
+    showLeadSettings?: boolean;
+    onLeadSettingsClick?: () => void;
 };
 
 const TOTAL_STAGES = MileStonesArray.MilestonesName.length;
@@ -56,6 +59,8 @@ export default function LeadDetailHeader({
     onGetQuoteClick,
     getQuoteBusy,
     canGetQuote,
+    showLeadSettings,
+    onLeadSettingsClick,
     showCancelButton,
     onCancelClick,
 }: Props) {
@@ -81,8 +86,9 @@ export default function LeadDetailHeader({
                         <span className="text-gray-400">Project Name:</span> {project.projectName}
                     </p>
                 </div>
-                {!hideProlanceHoldResume && (
                 <div className="flex flex-wrap items-center gap-4 xl:gap-6">
+                {!hideProlanceHoldResume && (
+                    <>
                     <button
                         type="button"
                         onClick={onProlanceClick}
@@ -159,8 +165,18 @@ export default function LeadDetailHeader({
                             </button>
                         )}
                     </div>
-                </div>
+                    </>
                 )}
+                    {showLeadSettings && onLeadSettingsClick && (
+                        <button
+                            type="button"
+                            onClick={onLeadSettingsClick}
+                            className="border border-slate-400 rounded-md px-4 py-2 font-bold text-purple-100 hover:text-green-900 hover:bg-purple-50 transition-colors cursor-pointer"
+                        >
+                            Settings
+                        </button>
+                    )}
+                </div>
             </div>
 
             {/* Centered stepper progress bar – hidden for MMT */}

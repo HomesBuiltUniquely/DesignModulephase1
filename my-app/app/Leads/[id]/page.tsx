@@ -33,8 +33,30 @@ import {
 } from './components';
 import { checklistDefinitions, getChecklistKeyForTask } from './components/Checklists/checklistRegistry';
 import { buildAuthHeaders, getApiBase } from '@/app/lib/apiBase';
+import { createProlanceProjectViaApi } from '@/app/lib/prolanceApiCreateProject';
+import { extractQuoteIdFromBody, runProlanceGetQuoteApiFlow } from '@/app/lib/prolanceApiGetQuote';
+import {
+    clearPostGetQuotePreview,
+    openInternalQuoteInNewTab,
+    readPostGetQuotePreviewRaw,
+} from '@/app/lib/prolanceGetQuotePersistSnapshot';
+import { openProlanceBrowserForProjectId } from '@/app/lib/prolanceLinks';
 
 const API = getApiBase();
+
+/** Category discount % / bases (Rs) — same model as `/quote/[quoteId]` internal discount editor */
+type QuoteModalCategoryPct = { woodwork: number; accessories: number; constructionHw: number };
+const QUOTE_MODAL_ZERO_PCT: QuoteModalCategoryPct = { woodwork: 0, accessories: 0, constructionHw: 0 };
+function quoteModalClampPct(p: number): number {
+    return Math.min(100, Math.max(0, Math.round(Number.isFinite(p) ? p : 0)));
+}
+function quoteModalDiscountRsFromPct(pct: QuoteModalCategoryPct, bases: QuoteModalCategoryPct): number {
+    return (
+        (bases.woodwork * quoteModalClampPct(pct.woodwork)) / 100 +
+        (bases.accessories * quoteModalClampPct(pct.accessories)) / 100 +
+        (bases.constructionHw * quoteModalClampPct(pct.constructionHw)) / 100
+    );
+}
 
 export default function ProjectDetailPage() {
     const params = useParams();
@@ -157,9 +179,14 @@ export default function ProjectDetailPage() {
     const [getQuoteLastBody, setGetQuoteLastBody] = useState<unknown>(null);
     const [latestQuoteResponse, setLatestQuoteResponse] = useState<unknown>(null);
     const [showQuotePreviewModal, setShowQuotePreviewModal] = useState(false);
+    const [quoteModalDiscountPct, setQuoteModalDiscountPct] = useState<QuoteModalCategoryPct>(QUOTE_MODAL_ZERO_PCT);
+    const [quoteModalDiscountDraft, setQuoteModalDiscountDraft] = useState<QuoteModalCategoryPct>(QUOTE_MODAL_ZERO_PCT);
+    const [quoteModalDiscountOpen, setQuoteModalDiscountOpen] = useState(true);
     const [quoteSummaryTab, setQuoteSummaryTab] = useState<'overall' | 'roomwise'>('overall');
     const [expandedQuoteRooms, setExpandedQuoteRooms] = useState<Record<string, boolean>>({});
     const [quoteLinkCopied, setQuoteLinkCopied] = useState(false);
+    const [prolanceProjectIdSaveBusy, setProlanceProjectIdSaveBusy] = useState(false);
+    const [leadSettingsOpen, setLeadSettingsOpen] = useState(false);
     const [holdDate, setHoldDate] = useState<string>('');
     const [selectedHistoryEvent, setSelectedHistoryEvent] = useState<HistoryEvent | null>(null);
     const [uploadsVersion, setUploadsVersion] = useState(0);
@@ -173,6 +200,39 @@ export default function ProjectDetailPage() {
         { id: 5, pid: "P005", projectName: "Downtown", projectStage: "10-20%", createAt: "2024-03-10T14:00:00.000Z", updateAt: "2024-04-05T11:20:00.000Z" },
     ];
     const [project, setProject] = useState<LeadshipTypes | null>(null);
+
+    useEffect(() => {
+        if (!showQuotePreviewModal) return;
+        setQuoteModalDiscountPct(QUOTE_MODAL_ZERO_PCT);
+        setQuoteModalDiscountDraft(QUOTE_MODAL_ZERO_PCT);
+        setQuoteModalDiscountOpen(true);
+    }, [showQuotePreviewModal, latestQuoteResponse]);
+
+    // Legacy: ?postGetQuote=1 — open full /quote/preview tab (sessionStorage); preview page clears storage.
+    useEffect(() => {
+        if (searchParams.get("postGetQuote") !== "1" || projectId == null) return;
+        const raw = readPostGetQuotePreviewRaw();
+        if (!raw) {
+            router.replace(`/Leads/${projectId}`, { scroll: false });
+            return;
+        }
+        try {
+            const parsed = JSON.parse(raw) as { leadId?: unknown };
+            if (Number(parsed.leadId) !== projectId) {
+                clearPostGetQuotePreview();
+                router.replace(`/Leads/${projectId}`, { scroll: false });
+                return;
+            }
+            const origin = typeof window !== "undefined" ? window.location.origin : "";
+            const qs = new URLSearchParams({ internal: "1", leadId: String(projectId) });
+            window.open(`${origin}/quote/preview?${qs.toString()}`, "_blank", "noopener,noreferrer");
+            router.replace(`/Leads/${projectId}`, { scroll: false });
+        } catch {
+            clearPostGetQuotePreview();
+            router.replace(`/Leads/${projectId}`, { scroll: false });
+        }
+    }, [searchParams, projectId, router]);
+
     const [projectLoaded, setProjectLoaded] = useState(false);
 
     const extractString = (v: unknown): string | null =>
@@ -197,54 +257,6 @@ export default function ProjectDetailPage() {
         } catch {
             return String(v ?? '');
         }
-    };
-
-    const extractProjectId = (v: unknown): number | null => {
-        if (!v || typeof v !== 'object') return null;
-        const root = v as Record<string, unknown>;
-        const direct = root.projectID ?? root.projectId;
-        if (typeof direct === 'number' && Number.isFinite(direct)) return direct;
-        if (typeof direct === 'string' && direct.trim() && Number.isFinite(Number(direct))) return Number(direct);
-        const arr = root.data;
-        if (Array.isArray(arr) && arr[0] && typeof arr[0] === 'object') {
-            const first = arr[0] as Record<string, unknown>;
-            const nested = first.projectID ?? first.projectId;
-            if (typeof nested === 'number' && Number.isFinite(nested)) return nested;
-            if (typeof nested === 'string' && nested.trim() && Number.isFinite(Number(nested))) return Number(nested);
-        }
-        return null;
-    };
-
-    const extractQuoteId = (v: unknown): number | null => {
-        if (!v || typeof v !== 'object') return null;
-        const root = v as Record<string, unknown>;
-        const direct = root.quoteID ?? root.quoteId ?? root.quotationId ?? root.quotationID;
-        if (typeof direct === 'number' && Number.isFinite(direct)) return direct;
-        if (typeof direct === 'string' && direct.trim() && Number.isFinite(Number(direct))) return Number(direct);
-        const arr = root.data;
-        if (Array.isArray(arr) && arr[0] && typeof arr[0] === 'object') {
-            const first = arr[0] as Record<string, unknown>;
-            const nested = first.quoteID ?? first.quoteId ?? first.quotationId ?? first.quotationID;
-            if (typeof nested === 'number' && Number.isFinite(nested)) return nested;
-            if (typeof nested === 'string' && nested.trim() && Number.isFinite(Number(nested))) return Number(nested);
-        }
-        return null;
-    };
-
-    const hasQuotePricingDetails = (v: unknown): boolean => {
-        if (!v || typeof v !== 'object') return false;
-        const root = v as Record<string, unknown>;
-        const first =
-            Array.isArray(root.data) && root.data[0] && typeof root.data[0] === 'object'
-                ? (root.data[0] as Record<string, unknown>)
-                : null;
-        const obj = first || root;
-        const options = obj.quoteOptionsData || root.quoteOptionsData;
-        if (Array.isArray(options) && options.length > 0) return true;
-        const hasTotals =
-            extractNumber(obj.totalPayableAmount ?? root.totalPayableAmount ?? obj.finalTotalPrice ?? root.finalTotalPrice) != null ||
-            extractNumber(obj.interiorProjectAmount ?? root.interiorProjectAmount ?? obj.totalPrice ?? root.totalPrice) != null;
-        return hasTotals;
     };
 
     const parseLeadPayload = (raw: unknown): Record<string, unknown> | null => {
@@ -739,146 +751,96 @@ export default function ProjectDetailPage() {
         );
     };
 
-    const triggerProlanceCreate = async () => {
+    const persistLeadProlanceIds = useCallback(
+        async (patch: { prolanceProjectId?: number | null; prolanceQuoteId?: number | null }): Promise<boolean> => {
+            if (projectId == null || !sessionId) return false;
+            const body: Record<string, number | null> = {};
+            if (Object.prototype.hasOwnProperty.call(patch, 'prolanceProjectId')) {
+                body.prolanceProjectId = patch.prolanceProjectId ?? null;
+            }
+            if (Object.prototype.hasOwnProperty.call(patch, 'prolanceQuoteId')) {
+                body.prolanceQuoteId = patch.prolanceQuoteId ?? null;
+            }
+            if (Object.keys(body).length === 0) return false;
+            try {
+                const res = await fetch(`${API}/api/leads/${projectId}/prolance-ids`, {
+                    method: 'PATCH',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${sessionId}`,
+                    },
+                    body: JSON.stringify(body),
+                });
+                if (!res.ok) return false;
+                setProject((prev) => {
+                    if (!prev) return prev;
+                    const next = { ...prev };
+                    if (Object.prototype.hasOwnProperty.call(patch, 'prolanceProjectId')) {
+                        next.prolanceProjectId = patch.prolanceProjectId ?? null;
+                    }
+                    if (Object.prototype.hasOwnProperty.call(patch, 'prolanceQuoteId')) {
+                        next.prolanceQuoteId = patch.prolanceQuoteId ?? null;
+                    }
+                    return next;
+                });
+                return true;
+            } catch {
+                return false;
+            }
+        },
+        [projectId, sessionId],
+    );
+
+    const triggerProlanceCreate = useCallback(async () => {
         if (!sessionId || !project) {
             setBlockedTaskMessage('Please sign in and load project details first.');
             setTimeout(() => setBlockedTaskMessage(null), 3000);
             return;
         }
-        const payloadObj = parseLeadPayload((project as unknown as Record<string, unknown>)?.payload);
-        const formData = (payloadObj?.formData && typeof payloadObj.formData === 'object'
-            ? (payloadObj.formData as Record<string, unknown>)
-            : null);
-
-        const payload = {
-            partnerID:
-                Number(
-                    (project as unknown as Record<string, unknown>)?.partnerID ||
-                        formData?.partnerID ||
-                        payloadObj?.partnerID ||
-                        23226,
-                ) || 23226,
-            pName: extractString(project.projectName) || 'Untitled Project',
-            customer:
-                extractString((project as unknown as Record<string, unknown>)?.customer) ||
-                extractString(formData?.customer_name) ||
-                extractString(formData?.sales_lead_name) ||
-                extractString(project.projectName) ||
-                'Customer',
-            city:
-                extractString((project as unknown as Record<string, unknown>)?.city) ||
-                extractString(formData?.city) ||
-                'Bengaluru',
-            state:
-                extractString((project as unknown as Record<string, unknown>)?.state) ||
-                extractString(formData?.state) ||
-                'Karnataka',
-            projectType:
-                extractString((project as unknown as Record<string, unknown>)?.projectType) ||
-                extractString(formData?.projectType) ||
-                'CYO',
-        };
-
+        setProlanceBusy(true);
         try {
-            setProlanceBusy(true);
-            const appHeaders: Record<string, string> = {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${sessionId}`,
-            };
-
-            // 1) Generate Prolance API token (uses backend env creds if body is empty)
-            const tokenRes = await fetch(`${API}/api/prolance-test/token`, {
-                method: 'POST',
-                headers: appHeaders,
-                body: JSON.stringify({}),
-            });
-            const tokenText = await tokenRes.text();
-            let tokenBody: any = null;
-            try { tokenBody = tokenText ? JSON.parse(tokenText) : null; } catch { tokenBody = tokenText; }
-            const prolanceToken =
-                (tokenBody && typeof tokenBody === 'object' && (tokenBody.access_token || tokenBody.accessToken || tokenBody.token)) || '';
-            if (!tokenRes.ok || !String(prolanceToken).trim()) {
-                const msg =
-                    (tokenBody && typeof tokenBody === 'object' && (tokenBody.message || tokenBody.error)) ||
-                    'Failed to generate Prolance token.';
-                setBlockedTaskMessage(String(msg));
+            const result = await createProlanceProjectViaApi({ appApiBase: API, sessionId, project });
+            if (!result.ok) {
+                setBlockedTaskMessage(result.message);
                 setTimeout(() => setBlockedTaskMessage(null), 5000);
                 return;
             }
-
-            // 2) Partner login to get OriginSessionID / PartnerID
-            const partnerHeaders: Record<string, string> = {
-                ...appHeaders,
-                'X-Prolance-Token': String(prolanceToken).trim(),
-            };
-            const partnerRes = await fetch(`${API}/api/prolance-test/partners/login`, {
-                method: 'POST',
-                headers: partnerHeaders,
-                body: JSON.stringify({}),
-            });
-            const partnerText = await partnerRes.text();
-            let partnerBody: any = null;
-            try { partnerBody = partnerText ? JSON.parse(partnerText) : null; } catch { partnerBody = partnerText; }
-            const partnerData0 =
-                partnerBody && typeof partnerBody === 'object' && Array.isArray(partnerBody.data) ? partnerBody.data[0] : null;
-            const originSessionID =
-                (partnerData0 && typeof partnerData0 === 'object' && (partnerData0.sessionID || partnerData0.sessionId)) || '';
-            const partnerIDFromLogin =
-                (partnerData0 && typeof partnerData0 === 'object' && (partnerData0.partnerID || partnerData0.partnerId)) || null;
-            if (partnerIDFromLogin != null && Number.isFinite(Number(partnerIDFromLogin))) {
-                setProlancePartnerId(Number(partnerIDFromLogin));
+            const createdProjectId = result.createdProjectId;
+            if (createdProjectId != null) {
+                setProlanceProjectId(createdProjectId);
+                setManualQuoteProjectId(String(createdProjectId));
+                void persistLeadProlanceIds({ prolanceProjectId: createdProjectId });
             }
-            if (!partnerRes.ok || !String(originSessionID).trim()) {
-                const msg =
-                    (partnerBody && typeof partnerBody === 'object' && (partnerBody.message || partnerBody.error)) ||
-                    'Failed to login partner / fetch origin session.';
-                setBlockedTaskMessage(String(msg));
-                setTimeout(() => setBlockedTaskMessage(null), 5000);
-                return;
-            }
-
-            // Prefer partnerID returned by login when available.
-            if (partnerIDFromLogin != null && Number(partnerIDFromLogin)) {
-                payload.partnerID = Number(partnerIDFromLogin);
-            }
-
-            // 3) Create project
-            const createHeaders: Record<string, string> = {
-                ...appHeaders,
-                'X-Prolance-Token': String(prolanceToken).trim(),
-                'X-Prolance-Origin-Session': String(originSessionID).trim(),
-            };
-            const res = await fetch(`${API}/api/prolance-test/projects/create`, {
-                method: 'PUT',
-                headers: createHeaders,
-                body: JSON.stringify(payload),
-            });
-            const txt = await res.text();
-            let body: any = null;
-            try { body = txt ? JSON.parse(txt) : null; } catch { body = txt; }
-            if (res.ok) {
-                const createdProjectId = extractProjectId(body);
-                if (createdProjectId != null) setProlanceProjectId(createdProjectId);
-                setBlockedTaskMessage(
-                    createdProjectId != null
-                        ? `Prolance create project triggered (Project ID: ${createdProjectId}).`
-                        : 'Prolance create project triggered successfully.',
-                );
-                setTimeout(() => setBlockedTaskMessage(null), 3500);
-            } else {
-                const msg =
-                    (body && typeof body === 'object' && (body.message || body.error)) ||
-                    `Create project failed (HTTP ${res.status}).`;
-                setBlockedTaskMessage(String(msg));
-                setTimeout(() => setBlockedTaskMessage(null), 5000);
-            }
+            setBlockedTaskMessage(
+                createdProjectId != null
+                    ? `Prolance project created (Project ID: ${createdProjectId}).`
+                    : 'Prolance create project completed.',
+            );
+            setTimeout(() => setBlockedTaskMessage(null), 3500);
         } catch {
             setBlockedTaskMessage('Failed to trigger Prolance create project.');
             setTimeout(() => setBlockedTaskMessage(null), 4000);
         } finally {
             setProlanceBusy(false);
         }
-    };
+    }, [sessionId, project, persistLeadProlanceIds]);
+
+    const handleProlancePrimaryClick = useCallback(async () => {
+        const fromLead =
+            project?.prolanceProjectId != null && Number.isFinite(Number(project.prolanceProjectId))
+                ? Number(project.prolanceProjectId)
+                : NaN;
+        const typed = Number((manualQuoteProjectId || '').trim());
+        const resolved =
+            (Number.isFinite(typed) && typed > 0 ? typed : null) ??
+            (prolanceProjectId != null && prolanceProjectId > 0 ? prolanceProjectId : null) ??
+            (Number.isFinite(fromLead) && fromLead > 0 ? fromLead : null);
+        if (resolved != null) {
+            openProlanceBrowserForProjectId(resolved);
+            return;
+        }
+        await triggerProlanceCreate();
+    }, [project?.prolanceProjectId, manualQuoteProjectId, prolanceProjectId, triggerProlanceCreate]);
 
     const triggerProlanceGetQuote = async (explicitProjectId?: number | null) => {
         if (!sessionId) {
@@ -888,203 +850,70 @@ export default function ProjectDetailPage() {
         }
         const quoteProjectId = explicitProjectId || Number((manualQuoteProjectId || '').trim()) || prolanceProjectId;
         if (!quoteProjectId) {
-            setBlockedTaskMessage('Project ID missing. Click Prolance first to create a project.');
-            setTimeout(() => setBlockedTaskMessage(null), 4000);
+            setBlockedTaskMessage(
+                'Prolance project ID missing. Enter it under “Prolance project ID”, click Save to lead, or use Prolance to create a project.',
+            );
+            setTimeout(() => setBlockedTaskMessage(null), 5000);
             return;
         }
 
         try {
             setGetQuoteBusy(true);
-            const appHeaders: Record<string, string> = {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${sessionId}`,
-            };
-
-            const tokenRes = await fetch(`${API}/api/prolance-test/token`, {
-                method: 'POST',
-                headers: appHeaders,
-                body: JSON.stringify({}),
+            const apiResult = await runProlanceGetQuoteApiFlow({
+                appApiBase: API,
+                sessionId,
+                quoteProjectId: Number(quoteProjectId),
             });
-            const tokenText = await tokenRes.text();
-            let tokenBody: any = null;
-            try { tokenBody = tokenText ? JSON.parse(tokenText) : null; } catch { tokenBody = tokenText; }
-            const prolanceToken =
-                (tokenBody && typeof tokenBody === 'object' && (tokenBody.access_token || tokenBody.accessToken || tokenBody.token)) || '';
-            if (!tokenRes.ok || !String(prolanceToken).trim()) {
-                const msg =
-                    (tokenBody && typeof tokenBody === 'object' && (tokenBody.message || tokenBody.error)) ||
-                    'Failed to generate Prolance token.';
-                setBlockedTaskMessage(String(msg));
+            if (!apiResult.ok) {
+                setBlockedTaskMessage(apiResult.message);
                 setTimeout(() => setBlockedTaskMessage(null), 5000);
                 return;
             }
-
-            const partnerRes = await fetch(`${API}/api/prolance-test/partners/login`, {
-                method: 'POST',
-                headers: {
-                    ...appHeaders,
-                    'X-Prolance-Token': String(prolanceToken).trim(),
-                },
-                body: JSON.stringify({}),
-            });
-            const partnerText = await partnerRes.text();
-            let partnerBody: any = null;
-            try { partnerBody = partnerText ? JSON.parse(partnerText) : null; } catch { partnerBody = partnerText; }
-            const partnerData0 =
-                partnerBody && typeof partnerBody === 'object' && Array.isArray(partnerBody.data) ? partnerBody.data[0] : null;
-            const originSessionID =
-                (partnerData0 && typeof partnerData0 === 'object' && (partnerData0.sessionID || partnerData0.sessionId)) || '';
-            const partnerIDFromLogin =
-                (partnerData0 && typeof partnerData0 === 'object' && (partnerData0.partnerID || partnerData0.partnerId)) || null;
-            if (partnerIDFromLogin != null && Number.isFinite(Number(partnerIDFromLogin))) {
-                setProlancePartnerId(Number(partnerIDFromLogin));
+            if (apiResult.partnerIdFromLogin != null) {
+                setProlancePartnerId(apiResult.partnerIdFromLogin);
             }
-            if (!partnerRes.ok || !String(originSessionID).trim()) {
-                const msg =
-                    (partnerBody && typeof partnerBody === 'object' && (partnerBody.message || partnerBody.error)) ||
-                    'Failed to login partner / fetch origin session.';
-                setBlockedTaskMessage(String(msg));
-                setTimeout(() => setBlockedTaskMessage(null), 5000);
-                return;
-            }
-
-            const quoteRes = await fetch(
-                `${API}/api/prolance-test/quotes/${encodeURIComponent(String(quoteProjectId))}`,
-                {
-                    method: 'GET',
-                    headers: {
-                        ...appHeaders,
-                        'X-Prolance-Token': String(prolanceToken).trim(),
-                        'X-Prolance-Origin-Session': String(originSessionID).trim(),
-                    },
-                },
-            );
-            const quoteText = await quoteRes.text();
-            let quoteBody: any = null;
-            try { quoteBody = quoteText ? JSON.parse(quoteText) : null; } catch { quoteBody = quoteText; }
-            let effectiveStatus = quoteRes.status;
-            const quoteIdFromGetQuote = extractQuoteId(quoteBody);
+            const { effectiveStatus, quoteBody, redirectQuoteId, quoteProjectId: resolvedPid } = apiResult;
+            const quoteIdFromGetQuote = extractQuoteIdFromBody(quoteBody);
             if (quoteIdFromGetQuote != null) {
                 setProlanceQuoteId(quoteIdFromGetQuote);
             }
-
-            // Always call FullDetails endpoint after base quote call.
-            // Use quote_id generated by Get Quote API for the FullDetails call.
-            if (quoteIdFromGetQuote != null) {
-                const fullRes = await fetch(
-                    `${API}/api/prolance-test/quotes/full-details/${encodeURIComponent(String(quoteIdFromGetQuote))}`,
-                    {
-                        method: 'GET',
-                        headers: {
-                            ...appHeaders,
-                            'X-Prolance-Token': String(prolanceToken).trim(),
-                            'X-Prolance-Origin-Session': String(originSessionID).trim(),
-                        },
-                    },
-                );
-                const fullText = await fullRes.text();
-                let fullBody: any = null;
-                try { fullBody = fullText ? JSON.parse(fullText) : null; } catch { fullBody = fullText; }
-                if (fullRes.ok && fullBody) {
-                    // Keep room totals from /quotes payload (matches Prolance summary),
-                    // but hydrate with FullDetails for units/material breakdown.
-                    const baseQuoteData =
-                        quoteBody && typeof quoteBody === 'object' && Array.isArray(quoteBody.data) ? quoteBody.data[0] : null;
-                    const baseQuoteOptionsData =
-                        baseQuoteData && typeof baseQuoteData === 'object' && Array.isArray(baseQuoteData.quoteOptionsData)
-                            ? baseQuoteData.quoteOptionsData
-                            : null;
-                    if (
-                        fullBody &&
-                        typeof fullBody === 'object' &&
-                        fullBody.data &&
-                        typeof fullBody.data === 'object' &&
-                        Array.isArray(baseQuoteOptionsData) &&
-                        baseQuoteOptionsData.length > 0
-                    ) {
-                        const baseByOptionKey = new Map<string, any>();
-                        baseQuoteOptionsData.forEach((item: any, idx: number) => {
-                            const optionKey =
-                                (item && (item.optionID ?? item.optionId ?? item.roomID ?? item.roomId)) != null
-                                    ? String(item.optionID ?? item.optionId ?? item.roomID ?? item.roomId)
-                                    : `idx-${idx}`;
-                            baseByOptionKey.set(optionKey, item);
-                        });
-                        const fullOptionsData = Array.isArray((fullBody.data as any).quoteOptionsData)
-                            ? (fullBody.data as any).quoteOptionsData
-                            : Array.isArray((fullBody.data as any).optionDetails)
-                                ? (fullBody.data as any).optionDetails
-                                : [];
-                        const mergedOptionsData = fullOptionsData.map((item: any, idx: number) => {
-                            const optionKey =
-                                (item && (item.optionID ?? item.optionId ?? item.roomID ?? item.roomId)) != null
-                                    ? String(item.optionID ?? item.optionId ?? item.roomID ?? item.roomId)
-                                    : `idx-${idx}`;
-                            const baseItem = baseByOptionKey.get(optionKey);
-                            if (!baseItem || typeof baseItem !== 'object') return item;
-                            return {
-                                ...item,
-                                // Keep detailed FullDetails fields (units/matlInfo/etc),
-                                // but use summary pricing from /quotes endpoint to match Prolance cards.
-                                totalPrice: baseItem.totalPrice ?? item.totalPrice,
-                                totalPriceOld: baseItem.totalPriceOld ?? item.totalPriceOld,
-                                unitsPrice: baseItem.unitsPrice ?? item.unitsPrice,
-                                loftsPrice: baseItem.loftsPrice ?? item.loftsPrice,
-                                servicesPrice: baseItem.servicesPrice ?? item.servicesPrice,
-                                appliancesPrice: baseItem.appliancesPrice ?? item.appliancesPrice,
-                                skirtingsPrice: baseItem.skirtingsPrice ?? item.skirtingsPrice,
-                                worktopsPrice: baseItem.worktopsPrice ?? item.worktopsPrice,
-                                additionalHWPrice: baseItem.additionalHWPrice ?? item.additionalHWPrice,
-                            };
-                        });
-                        if (mergedOptionsData.length > 0) {
-                            quoteBody = {
-                                ...fullBody,
-                                data: {
-                                    ...(fullBody.data as Record<string, unknown>),
-                                    quoteOptionsData: mergedOptionsData,
-                                },
-                            };
-                        } else {
-                            quoteBody = fullBody;
-                        }
-                    } else {
-                        quoteBody = fullBody;
-                    }
-                    effectiveStatus = fullRes.status;
-                } else if (!quoteRes.ok && fullRes.ok && fullBody) {
-                    quoteBody = fullBody;
-                    effectiveStatus = fullRes.status;
-                } else if (!hasQuotePricingDetails(quoteBody) && fullBody) {
-                    // Preserve full-details error/debug body when base response has no pricing data.
-                    quoteBody = fullBody;
-                    effectiveStatus = fullRes.status;
-                }
-            }
-
             setGetQuoteLastStatus(effectiveStatus);
             setGetQuoteLastBody(quoteBody);
-            const quoteSucceeded = effectiveStatus >= 200 && effectiveStatus < 300;
-            if (quoteSucceeded) {
-                setLatestQuoteResponse(quoteBody);
-                setQuoteSummaryTab('overall');
-                setExpandedQuoteRooms({});
-                setShowQuotePreviewModal(false);
-                const redirectQuoteId = extractQuoteId(quoteBody) ?? quoteIdFromGetQuote;
-                if (redirectQuoteId != null) {
-                    window.open(`/quote/${encodeURIComponent(String(redirectQuoteId))}?internal=1`, '_blank');
-                } else {
-                    setShowQuotePreviewModal(true);
+            setLatestQuoteResponse(quoteBody);
+            setQuoteSummaryTab('overall');
+            setExpandedQuoteRooms({});
+            setShowQuotePreviewModal(false);
+            if (redirectQuoteId != null) {
+                await persistLeadProlanceIds({ prolanceQuoteId: redirectQuoteId });
+                if (
+                    projectId != null &&
+                    Number.isFinite(projectId) &&
+                    projectId > 0 &&
+                    sessionId &&
+                    quoteBody &&
+                    typeof quoteBody === "object"
+                ) {
+                    try {
+                        await fetch(`${API}/api/leads/${projectId}/prolance-quote-snapshots`, {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json",
+                                Authorization: `Bearer ${sessionId}`,
+                            },
+                            body: JSON.stringify({ quoteId: redirectQuoteId, payload: quoteBody }),
+                        });
+                    } catch {
+                        /* best-effort; internal quote view may use Prolance fallback */
+                    }
                 }
-                setBlockedTaskMessage(`Get quote triggered successfully for Project ID ${quoteProjectId}.`);
-                setTimeout(() => setBlockedTaskMessage(null), 3500);
+                if (projectId != null && Number.isFinite(projectId) && projectId > 0) {
+                    openInternalQuoteInNewTab(redirectQuoteId, projectId);
+                }
             } else {
-                const msg =
-                    (quoteBody && typeof quoteBody === 'object' && (quoteBody.message || quoteBody.error)) ||
-                    `Get quote failed (HTTP ${effectiveStatus}).`;
-                setBlockedTaskMessage(String(msg));
-                setTimeout(() => setBlockedTaskMessage(null), 5000);
+                setShowQuotePreviewModal(true);
             }
+            setBlockedTaskMessage(`Get quote triggered successfully for Project ID ${resolvedPid}.`);
+            setTimeout(() => setBlockedTaskMessage(null), 3500);
         } catch {
             setBlockedTaskMessage('Failed to trigger Prolance get quote.');
             setTimeout(() => setBlockedTaskMessage(null), 4000);
@@ -1118,6 +947,20 @@ export default function ProjectDetailPage() {
             })
             .finally(() => setProjectLoaded(true));
     }, [projectId, sessionId]);
+
+    useEffect(() => {
+        if (!project) return;
+        const pp = project.prolanceProjectId;
+        if (pp != null && Number.isFinite(Number(pp)) && Number(pp) > 0) {
+            const n = Number(pp);
+            setProlanceProjectId(n);
+            setManualQuoteProjectId(String(n));
+        }
+        const pq = project.prolanceQuoteId;
+        if (pq != null && Number.isFinite(Number(pq)) && Number(pq) > 0) {
+            setProlanceQuoteId(Number(pq));
+        }
+    }, [project?.id, project?.prolanceProjectId, project?.prolanceQuoteId]);
 
     // When Group Description popup opens, auto-fetch latest profile (designer phone) and lead (client contactNo)
     useEffect(() => {
@@ -1951,11 +1794,23 @@ export default function ProjectDetailPage() {
                     hideNavTabs={isMmtUser}
                     hideStepper={isMmtUser}
                     hideProlanceHoldResume={isMmtUser}
-                    onProlanceClick={triggerProlanceCreate}
+                    onProlanceClick={() => void handleProlancePrimaryClick()}
                     prolanceBusy={prolanceBusy}
-                    onGetQuoteClick={() => {
-                        if (!manualQuoteProjectId && prolanceProjectId) {
-                            setManualQuoteProjectId(String(prolanceProjectId));
+                    onGetQuoteClick={async () => {
+                        const fromLead =
+                            project?.prolanceProjectId != null && Number.isFinite(Number(project.prolanceProjectId))
+                                ? Number(project.prolanceProjectId)
+                                : NaN;
+                        const typed = Number((manualQuoteProjectId || '').trim());
+                        const resolved =
+                            (Number.isFinite(typed) && typed > 0 ? typed : null) ??
+                            (prolanceProjectId != null && prolanceProjectId > 0 ? prolanceProjectId : null) ??
+                            (Number.isFinite(fromLead) && fromLead > 0 ? fromLead : null);
+                        if (resolved != null) {
+                            setGetQuoteLastStatus(null);
+                            setGetQuoteLastBody(null);
+                            await triggerProlanceGetQuote(resolved);
+                            return;
                         }
                         setGetQuoteLastStatus(null);
                         setGetQuoteLastBody(null);
@@ -1963,17 +1818,147 @@ export default function ProjectDetailPage() {
                     }}
                     getQuoteBusy={getQuoteBusy}
                     canGetQuote
+                    showLeadSettings={Boolean(project && sessionId)}
+                    onLeadSettingsClick={() => setLeadSettingsOpen(true)}
                 />
             )}
 
-            {project && !activeCard && (
-                <ClientEmailsSection
-                    leadId={projectId}
-                    project={project}
-                    sessionId={sessionId}
-                    readOnly={(authUser?.role || '').toLowerCase() === 'designer'}
-                    onUpdate={(patch) => setProject((prev) => (prev ? { ...prev, ...patch } : prev))}
-                />
+            {!activeCard && leadSettingsOpen && project && sessionId && (
+                <div
+                    className="fixed inset-0 z-[92] flex items-center justify-center bg-black/60 p-4"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="lead-settings-title"
+                    onClick={() => setLeadSettingsOpen(false)}
+                >
+                    <div
+                        className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-600 bg-slate-900 shadow-xl"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-slate-600 bg-slate-900 px-5 py-4">
+                            <h2 id="lead-settings-title" className="text-lg font-bold text-slate-100">
+                                Lead settings
+                            </h2>
+                            <button
+                                type="button"
+                                onClick={() => setLeadSettingsOpen(false)}
+                                className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+                                aria-label="Close settings"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                                </svg>
+                            </button>
+                        </div>
+                        <div className="space-y-6 px-5 py-5">
+                            {!isMmtUser && (
+                                <section className="space-y-3">
+                                    <h3 className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                                        Prolance project ID
+                                    </h3>
+                                    <p className="text-xs text-slate-500">
+                                        For older leads, paste the Prolance project ID and save. Get Quote will run automatically on the next click.
+                                    </p>
+                                    <input
+                                        id="prolance-project-id-lead"
+                                        value={manualQuoteProjectId}
+                                        onChange={(e) => setManualQuoteProjectId(e.target.value)}
+                                        placeholder="e.g. 50726"
+                                        className="w-full rounded-md border border-slate-500 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 outline-none focus:border-purple-400"
+                                        disabled={prolanceProjectIdSaveBusy}
+                                    />
+                                    <div className="flex flex-wrap gap-2">
+                                        <button
+                                            type="button"
+                                            disabled={prolanceProjectIdSaveBusy || !manualQuoteProjectId.trim()}
+                                            onClick={async () => {
+                                                const parsed = Number(manualQuoteProjectId.trim());
+                                                if (!Number.isFinite(parsed) || parsed <= 0) {
+                                                    setBlockedTaskMessage('Enter a valid Prolance project ID (positive number).');
+                                                    setTimeout(() => setBlockedTaskMessage(null), 4000);
+                                                    return;
+                                                }
+                                                setProlanceProjectIdSaveBusy(true);
+                                                try {
+                                                    const ok = await persistLeadProlanceIds({ prolanceProjectId: parsed });
+                                                    if (ok) {
+                                                        setProlanceProjectId(parsed);
+                                                        setManualQuoteProjectId(String(parsed));
+                                                        setBlockedTaskMessage(`Prolance project ID ${parsed} saved on this lead.`);
+                                                        setTimeout(() => setBlockedTaskMessage(null), 3500);
+                                                    } else {
+                                                        setBlockedTaskMessage(
+                                                            'Could not save Prolance project ID. Check permissions and try again.',
+                                                        );
+                                                        setTimeout(() => setBlockedTaskMessage(null), 5000);
+                                                    }
+                                                } finally {
+                                                    setProlanceProjectIdSaveBusy(false);
+                                                }
+                                            }}
+                                            className="rounded-md border border-emerald-500/70 bg-emerald-600/20 px-4 py-2 text-sm font-semibold text-emerald-100 hover:bg-emerald-600/30 disabled:cursor-not-allowed disabled:opacity-40"
+                                        >
+                                            {prolanceProjectIdSaveBusy ? 'Saving…' : 'Save to lead'}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            disabled={
+                                                prolanceProjectIdSaveBusy ||
+                                                (!manualQuoteProjectId.trim() &&
+                                                    project.prolanceProjectId == null &&
+                                                    (prolanceProjectId == null || prolanceProjectId <= 0))
+                                            }
+                                            onClick={async () => {
+                                                const hadSavedInDb =
+                                                    project.prolanceProjectId != null &&
+                                                    Number.isFinite(Number(project.prolanceProjectId)) &&
+                                                    Number(project.prolanceProjectId) > 0;
+                                                setProlanceProjectIdSaveBusy(true);
+                                                try {
+                                                    if (hadSavedInDb) {
+                                                        const ok = await persistLeadProlanceIds({ prolanceProjectId: null });
+                                                        if (!ok) {
+                                                            setBlockedTaskMessage('Could not clear saved ID on the server.');
+                                                            setTimeout(() => setBlockedTaskMessage(null), 4000);
+                                                            return;
+                                                        }
+                                                    }
+                                                    setProlanceProjectId(null);
+                                                    setManualQuoteProjectId('');
+                                                    setBlockedTaskMessage(
+                                                        hadSavedInDb
+                                                            ? 'Saved Prolance project ID cleared for this lead.'
+                                                            : 'Draft cleared.',
+                                                    );
+                                                    setTimeout(() => setBlockedTaskMessage(null), 3000);
+                                                } finally {
+                                                    setProlanceProjectIdSaveBusy(false);
+                                                }
+                                            }}
+                                            className="rounded-md border border-slate-500 px-4 py-2 text-sm font-semibold text-slate-300 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+                                        >
+                                            Clear
+                                        </button>
+                                    </div>
+                                </section>
+                            )}
+
+                            <section>
+                                <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                                    Client emails
+                                </h3>
+                                <ClientEmailsSection
+                                    leadId={projectId}
+                                    project={project}
+                                    sessionId={sessionId}
+                                    readOnly={(authUser?.role || '').toLowerCase() === 'designer'}
+                                    onUpdate={(patch) => setProject((prev) => (prev ? { ...prev, ...patch } : prev))}
+                                    variant="settings"
+                                />
+                            </section>
+                        </div>
+                    </div>
+                </div>
             )}
 
             {blockedTaskMessage && (
@@ -1986,7 +1971,9 @@ export default function ProjectDetailPage() {
                 <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/60">
                     <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md space-y-4">
                         <h2 className="text-lg font-semibold text-gray-900">Get Quote</h2>
-                        <p className="text-sm text-gray-600">Enter existing Prolance Project ID to trigger quote API.</p>
+                        <p className="text-sm text-gray-600">
+                            Enter the Prolance project ID. It will be saved on this lead so the next Get Quote runs automatically.
+                        </p>
                         <input
                             value={manualQuoteProjectId}
                             onChange={(e) => setManualQuoteProjectId(e.target.value)}
@@ -2012,6 +1999,13 @@ export default function ProjectDetailPage() {
                                         setTimeout(() => setBlockedTaskMessage(null), 3000);
                                         return;
                                     }
+                                    const saved = await persistLeadProlanceIds({ prolanceProjectId: parsed });
+                                    if (!saved) {
+                                        setBlockedTaskMessage('Could not save project ID on this lead. Check permissions.');
+                                        setTimeout(() => setBlockedTaskMessage(null), 5000);
+                                        return;
+                                    }
+                                    setProlanceProjectId(parsed);
                                     await triggerProlanceGetQuote(parsed);
                                 }}
                                 className="px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40"
@@ -2035,19 +2029,28 @@ export default function ProjectDetailPage() {
 
             {showQuotePreviewModal && (
                 <div className="fixed inset-0 z-[96] flex items-center justify-center bg-black/70 p-4">
-                    <div className="w-full max-w-6xl max-h-[94vh] overflow-y-auto rounded-2xl bg-[#f3f3f3] shadow-2xl">
-                        <div className="sticky top-0 z-10 flex items-center justify-between bg-[#303135] px-6 py-4 text-white">
+                    <div className="flex h-[94vh] w-full max-w-[90rem] flex-col overflow-hidden rounded-2xl bg-[#f3f3f3] shadow-2xl">
+                        <div className="z-10 flex shrink-0 flex-wrap items-center justify-between gap-2 bg-[#303135] px-6 py-4 text-white">
                             <div>
                                 <h2 className="text-lg font-bold tracking-wide">HUBINTERIOR</h2>
                                 <p className="text-[11px] text-gray-200">Quotation View</p>
                             </div>
-                            <button
-                                type="button"
-                                onClick={() => setShowQuotePreviewModal(false)}
-                                className="rounded-md bg-rose-500 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-600"
-                            >
-                                Close
-                            </button>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setQuoteModalDiscountOpen((o) => !o)}
+                                    className="rounded-md border border-white/25 bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/20"
+                                >
+                                    {quoteModalDiscountOpen ? 'Hide discount' : 'Discount'}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setShowQuotePreviewModal(false)}
+                                    className="rounded-md bg-rose-500 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-600"
+                                >
+                                    Close
+                                </button>
+                            </div>
                         </div>
 
                         {(() => {
@@ -2107,11 +2110,71 @@ export default function ProjectDetailPage() {
                                 extractNumber(view.totals.designAndManagementFees) != null ||
                                 extractNumber(view.totals.discount) != null ||
                                 extractNumber(view.totals.totalPayableAmount) != null;
+                            const categoryBasesModal = view.quoteOptionsData.reduce(
+                                (acc, opt) => ({
+                                    woodwork:
+                                        acc.woodwork +
+                                        (extractNumber(opt.unitsPrice) || 0) +
+                                        (extractNumber(opt.loftsPrice) || 0),
+                                    accessories:
+                                        acc.accessories +
+                                        (extractNumber(opt.appliancesPrice) || 0) +
+                                        (extractNumber(opt.skirtingsPrice) || 0) +
+                                        (extractNumber(opt.worktopsPrice) || 0) +
+                                        (extractNumber(opt.servicesPrice) || 0),
+                                    constructionHw:
+                                        acc.constructionHw + (extractNumber(opt.additionalHWPrice) || 0),
+                                }),
+                                { woodwork: 0, accessories: 0, constructionHw: 0 },
+                            );
+                            const baseTotalModal =
+                                extractNumber(view.totals.totalPayableAmount) ??
+                                (view.quoteOptionsData.length
+                                    ? view.quoteOptionsData.reduce((s, o) => s + (extractNumber(o.totalPrice) || 0), 0)
+                                    : null);
+                            const discountCapModal = baseTotalModal ?? 0;
+                            const normalizedDiscountModal = Math.min(
+                                quoteModalDiscountRsFromPct(quoteModalDiscountPct, categoryBasesModal),
+                                discountCapModal,
+                            );
+                            const discountedTotalModal =
+                                baseTotalModal != null
+                                    ? Math.max(baseTotalModal - normalizedDiscountModal, 0)
+                                    : null;
+                            const sidebarDiscountPreviewModal = Math.min(
+                                quoteModalDiscountRsFromPct(quoteModalDiscountDraft, categoryBasesModal),
+                                discountCapModal,
+                            );
+                            const sidebarTotalPreviewModal =
+                                baseTotalModal != null
+                                    ? Math.max(baseTotalModal - sidebarDiscountPreviewModal, 0)
+                                    : null;
+                            const displayPayableModal =
+                                discountedTotalModal ?? extractNumber(view.totals.totalPayableAmount);
+                            const fullEditorQuoteId =
+                                shareQuoteIdRaw != null && shareQuoteIdRaw >= 1
+                                    ? Math.trunc(Number(shareQuoteIdRaw))
+                                    : prolanceQuoteId != null && prolanceQuoteId >= 1
+                                      ? prolanceQuoteId
+                                      : null;
                             return (
-                                <div className="mx-auto max-w-5xl space-y-5 px-6 py-6">
+                                <div className="flex min-h-0 min-w-0 flex-1 flex-col lg:flex-row lg:overflow-hidden">
+                                    <div className="mx-auto min-h-0 w-full max-w-5xl space-y-5 overflow-y-auto px-6 py-6 lg:mx-0">
                                     <div className="rounded-2xl bg-white p-6 shadow-sm">
                                         <div className="flex flex-wrap items-center justify-between gap-2">
                                             <p className="text-xs font-semibold tracking-wide text-gray-500">QUOTATION ID : {view.quotationId}</p>
+                                            <div className="flex flex-wrap items-center gap-2">
+                                            {fullEditorQuoteId != null && projectId != null ? (
+                                                <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                        openInternalQuoteInNewTab(fullEditorQuoteId, projectId)
+                                                    }
+                                                    className="rounded-md border border-teal-300 bg-teal-50 px-3 py-1 text-xs font-semibold text-teal-800 hover:bg-teal-100"
+                                                >
+                                                    Open full quote (discount + versions)
+                                                </button>
+                                            ) : null}
                                             {shareQuoteLink ? (
                                                 <button
                                                     type="button"
@@ -2130,6 +2193,7 @@ export default function ProjectDetailPage() {
                                                     {quoteLinkCopied ? 'Link Copied' : 'Copy Share Link'}
                                                 </button>
                                             ) : null}
+                                            </div>
                                         </div>
                                         <h3 className="mt-2 text-3xl font-bold text-gray-800">
                                             Hey {view.customerName !== '-' ? view.customerName : 'Customer'}, your quotation is ready!
@@ -2178,7 +2242,8 @@ export default function ProjectDetailPage() {
                                             <>
                                                 <div className="mt-5 rounded-xl bg-[#efeff2] py-10 text-center">
                                                     <p className="text-lg font-semibold text-gray-700">
-                                                        Total <span className="text-2xl text-gray-900">{formatCurrency(view.totals.totalPayableAmount)}</span>
+                                                        Total{' '}
+                                                        <span className="text-2xl text-gray-900">{formatCurrency(displayPayableModal)}</span>
                                                     </p>
                                                 </div>
 
@@ -2229,15 +2294,23 @@ export default function ProjectDetailPage() {
                                                                 <span className="font-semibold text-gray-900">{formatCurrency(view.totals.designAndManagementFees)}</span>
                                                             </div>
                                                             <div className="flex justify-between border-t border-gray-100 pt-3">
-                                                                <span className="text-sm text-gray-600">Discount</span>
-                                                                <span className="font-semibold text-gray-900">{formatCurrency(view.totals.discount)}</span>
+                                                                <span className="text-sm text-gray-600">Discount (category editor)</span>
+                                                                <span className="font-semibold text-gray-900">
+                                                                    {formatCurrency(
+                                                                        baseTotalModal != null
+                                                                            ? normalizedDiscountModal
+                                                                            : view.totals.discount,
+                                                                    )}
+                                                                </span>
                                                             </div>
                                                             <div className="flex justify-between border-t border-gray-200 pt-3">
                                                                 <div>
                                                                     <p className="text-xl font-bold text-gray-900">Total Payable Amount</p>
                                                                     <p className="text-xs text-gray-500">Inclusive of all taxes & discount</p>
                                                                 </div>
-                                                                <span className="text-2xl font-bold text-gray-900">{formatCurrency(view.totals.totalPayableAmount)}</span>
+                                                                <span className="text-2xl font-bold text-gray-900">
+                                                                    {formatCurrency(displayPayableModal)}
+                                                                </span>
                                                             </div>
                                                         </>
                                                     ) : (
@@ -2404,6 +2477,116 @@ export default function ProjectDetailPage() {
                                         )}
                                     </div>
 
+                                    </div>
+
+                                    {quoteModalDiscountOpen ? (
+                                        <aside className="flex max-h-[min(100vh-8rem,56rem)] w-full shrink-0 flex-col overflow-hidden border-t border-gray-200 bg-white shadow-sm lg:max-w-[min(100%,24rem)] lg:border-l lg:border-t-0">
+                                            <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
+                                                <span className="text-lg font-semibold text-gray-900">Discount</span>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setQuoteModalDiscountOpen(false)}
+                                                    className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100"
+                                                    aria-label="Close discount panel"
+                                                >
+                                                    ✕
+                                                </button>
+                                            </div>
+                                            <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4 text-gray-800">
+                                                <div className="flex items-center justify-between text-sm">
+                                                    <span className="text-gray-600">Subtotal</span>
+                                                    <span className="font-semibold tabular-nums text-gray-900">
+                                                        {formatCurrency(baseTotalModal)}
+                                                    </span>
+                                                </div>
+                                                <div>
+                                                    <p className="text-sm font-semibold text-gray-900">Granular discount</p>
+                                                    <p className="mt-0.5 text-xs text-gray-500">
+                                                        By category (whole quotation). Same as full quote page.
+                                                    </p>
+                                                </div>
+                                                {(
+                                                    [
+                                                        ['Woodwork', 'woodwork', categoryBasesModal.woodwork],
+                                                        ['Accessories', 'accessories', categoryBasesModal.accessories],
+                                                        [
+                                                            'Construction Hardware',
+                                                            'constructionHw',
+                                                            categoryBasesModal.constructionHw,
+                                                        ],
+                                                    ] as const
+                                                ).map(([label, key, baseAmt]) => (
+                                                    <div
+                                                        key={key}
+                                                        className="flex items-center justify-between gap-2 rounded-lg border border-gray-100 bg-gray-50/90 px-3 py-2.5"
+                                                    >
+                                                        <div className="min-w-0 flex-1">
+                                                            <p className="text-sm font-medium text-gray-900">{label}</p>
+                                                            <p className="text-xs tabular-nums text-gray-600">{formatCurrency(baseAmt)}</p>
+                                                        </div>
+                                                        <div className="relative shrink-0">
+                                                            <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-xs font-medium text-gray-400">
+                                                                %
+                                                            </span>
+                                                            <input
+                                                                type="number"
+                                                                min={0}
+                                                                max={100}
+                                                                step={1}
+                                                                value={quoteModalDiscountDraft[key]}
+                                                                onChange={(e) => {
+                                                                    const v = Number(e.target.value);
+                                                                    if (!Number.isFinite(v)) {
+                                                                        setQuoteModalDiscountDraft((prev) => ({
+                                                                            ...prev,
+                                                                            [key]: 0,
+                                                                        }));
+                                                                        return;
+                                                                    }
+                                                                    setQuoteModalDiscountDraft((prev) => ({
+                                                                        ...prev,
+                                                                        [key]: Math.min(100, Math.max(0, Math.round(v))),
+                                                                    }));
+                                                                }}
+                                                                className="w-[4.5rem] rounded-md border border-teal-200 bg-white py-1.5 pl-7 pr-2 text-right text-sm font-semibold tabular-nums text-gray-900 outline-none focus:ring-2 focus:ring-teal-500/40"
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                                <div className="flex items-center justify-between border-t border-dashed pt-3 text-sm">
+                                                    <span className="text-gray-600">Discount</span>
+                                                    <span className="font-semibold tabular-nums text-rose-600">
+                                                        {formatCurrency(sidebarDiscountPreviewModal)}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                            <div className="space-y-4 border-t border-gray-100 bg-white px-4 py-4">
+                                                <div className="flex items-center justify-between">
+                                                    <span className="text-base font-bold text-gray-900">Total cost</span>
+                                                    <span className="text-base font-bold tabular-nums text-gray-900">
+                                                        {formatCurrency(sidebarTotalPreviewModal)}
+                                                    </span>
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        const next: QuoteModalCategoryPct = {
+                                                            woodwork: quoteModalClampPct(quoteModalDiscountDraft.woodwork),
+                                                            accessories: quoteModalClampPct(quoteModalDiscountDraft.accessories),
+                                                            constructionHw: quoteModalClampPct(
+                                                                quoteModalDiscountDraft.constructionHw,
+                                                            ),
+                                                        };
+                                                        setQuoteModalDiscountPct(next);
+                                                        setQuoteModalDiscountDraft(next);
+                                                    }}
+                                                    className="w-full rounded-lg bg-teal-700 py-3 text-sm font-semibold text-white shadow-sm hover:bg-teal-800"
+                                                >
+                                                    Save changes
+                                                </button>
+                                            </div>
+                                        </aside>
+                                    ) : null}
                                 </div>
                             );
                         })()}

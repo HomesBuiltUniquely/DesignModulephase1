@@ -7,6 +7,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../auth/AuthContext";
 import { getApiBase } from "@/app/lib/apiBase";
 import { BRANCH_OPTIONS } from "../constants/branches";
+import { getPhaseBucket } from "@/app/lib/leadPhaseBucket";
+import { createProlanceProjectViaApi } from "@/app/lib/prolanceApiCreateProject";
+import { runProlanceGetQuoteApiFlow } from "@/app/lib/prolanceApiGetQuote";
+import {
+    openInternalQuoteInNewTab,
+    persistProlanceQuoteIdsAndSnapshot,
+    storePostGetQuotePreview,
+} from "@/app/lib/prolanceGetQuotePersistSnapshot";
+import { openProlanceBrowserForProjectId } from "@/app/lib/prolanceLinks";
 
 // Stage column: Active / Inactive (sales) / Cancelled (TDM admin DGM)
 function getStatusDisplay(stage: string): "Active" | "Inactive" | "Cancelled" {
@@ -27,56 +36,6 @@ function passesWorkspaceStatusFilter(p: LeadshipTypes, statusTab: string): boole
         return !p.isOnHold && getStatusDisplay(p.projectStage) === "Cancelled";
     }
     return true;
-}
-
-// Phase bucket from project_stage (fallback when milestone not available)
-function getStageBucket(stage: string): string {
-    if (!stage) return "Pre 10%";
-    const s = stage.trim();
-    if (/^cancelled$/i.test(s)) return "Pre 10%";
-    if (s === "Inactive") return "Pre 10%";
-    if (s === "Active") return "10-20%";
-    if (s === "10-20%") return "10-20%";
-    if (s === "20-60%" || s === "20" || s === "20-60") return "20-60%";
-    if (["SUBMITTED", "PAYMENT_PENDING", "D1_ACTIVATED", "CONDITIONAL_D1", "Pre 10%"].includes(s)) return "Pre 10%";
-    if (s.startsWith("10") && s.includes("20")) return "10-20%";
-    if (s.startsWith("20") || s.includes("60")) return "20-60%";
-    return "Pre 10%";
-}
-
-// Phase bucket from current milestone: 20-60% when 40% payment is done (milestone 5 complete or in PUSH TO PRODUCTION)
-function getPhaseFromMilestone(
-    milestoneIndex: number | undefined,
-    milestoneProgress: number | null | undefined,
-): string | null {
-    if (milestoneIndex === undefined || milestoneIndex < 0) return null;
-    if (milestoneIndex === 0) return "Pre 10%";
-    if (milestoneIndex === 6) return "20-60%";
-    if (milestoneIndex === 5 && (milestoneProgress ?? 0) >= 100) return "20-60%";
-    if (milestoneIndex >= 1 && milestoneIndex <= 5) return "10-20%";
-    return null;
-}
-
-// Single source for phase bucket: prefer milestone-derived phase, else stage
-function getPhaseBucket(p: LeadshipTypes): string {
-    const fromMilestone = getPhaseFromMilestone(p.currentMilestoneIndex, p.currentMilestoneProgress);
-    const fromStage = getStageBucket(p.projectStage);
-
-    // Production data can have project_stage already promoted to 20-60%
-    // while milestone task completion trails behind. In that case, trust stage
-    // so the lead appears in the 20-60 bucket selected by users.
-    if (fromStage === "20-60%") {
-        return "20-60%";
-    }
-
-    // If milestone says "Pre 10%" but sales closure stage is already 10–20% or 20–60%,
-    // trust the stage so new FULL_10% leads appear in the 10–20% bucket.
-    if (fromMilestone === "Pre 10%" && fromStage !== "Pre 10%") {
-        return fromStage;
-    }
-
-    if (fromMilestone !== null) return fromMilestone;
-    return fromStage;
 }
 
 // Helper to format backend date strings (ISO) to "dd/MM/yyyy h:mm A"
@@ -389,6 +348,10 @@ export default function Dashboard() {
     const [bulkAssignMessage, setBulkAssignMessage] = useState<string | null>(null);
     const [singleAssignByLead, setSingleAssignByLead] = useState<Record<number, number | "">>({});
     const [singleAssignLoadingLeadId, setSingleAssignLoadingLeadId] = useState<number | null>(null);
+    /** Pre 10% “Prolance” row: API create in flight for this lead id */
+    const [prolanceCreateLeadId, setProlanceCreateLeadId] = useState<number | null>(null);
+    /** Pre 10% / mixed Pre 10 row: Get quote API in flight for this lead id */
+    const [getQuoteLeadId, setGetQuoteLeadId] = useState<number | null>(null);
 
     const phaseFilteredProjects =
         isSelected === "All Projects (10-60%)"
@@ -492,13 +455,102 @@ export default function Dashboard() {
         return () => document.removeEventListener("mousedown", handleClickOutside);
     }, []);
 
-    const handleRouter = (projectId: number, dqcStage?: "dqc1" | "dqc2") => {
+    const handleRouter = (rowOrId: LeadshipTypes | number, dqcStage?: "dqc1" | "dqc2") => {
+        const id = typeof rowOrId === "number" ? rowOrId : rowOrId.id;
+        const leadRow =
+            typeof rowOrId === "number" ? projects.find((p) => p.id === rowOrId) ?? null : rowOrId;
+        if (leadRow && getPhaseBucket(leadRow) === "Pre 10%") {
+            return;
+        }
         if (isDqcUser && dqcStage) {
-            router.push(`/Leads/${projectId}?view=dqc&stage=${dqcStage}`);
+            router.push(`/Leads/${id}?view=dqc&stage=${dqcStage}`);
         } else if (isDqcUser) {
-            router.push(`/Leads/${projectId}?view=dqc`);
+            router.push(`/Leads/${id}?view=dqc`);
         } else {
-            router.push(`/Leads/${projectId}`);
+            router.push(`/Leads/${id}`);
+        }
+    };
+
+    const runGetQuoteForDashboardLead = async (row: LeadshipTypes) => {
+        /** Always call Prolance for Get quote. A saved `prolanceQuoteId` can be an older revision (e.g. draft 67556) while the project has a newer quotation (e.g. ₹43,557). */
+        const pid = row.prolanceProjectId != null ? Number(row.prolanceProjectId) : NaN;
+        if (!Number.isFinite(pid) || pid < 1) {
+            window.alert(
+                "Add a Prolance project ID on this lead (use Prolance on this row or lead settings), then run Get quote again.",
+            );
+            return;
+        }
+        if (!sessionId) {
+            window.alert("Please sign in to run Get quote.");
+            return;
+        }
+        setGetQuoteLeadId(row.id);
+        setBulkAssignMessage(null);
+        try {
+            const result = await runProlanceGetQuoteApiFlow({
+                appApiBase: API,
+                sessionId,
+                quoteProjectId: pid,
+            });
+            if (!result.ok) {
+                setBulkAssignMessage(result.message);
+                return;
+            }
+            const { quoteBody, redirectQuoteId, quoteProjectId: resolvedPid, partnerIdFromLogin } = result;
+            if (redirectQuoteId != null) {
+                const patchOk = await persistProlanceQuoteIdsAndSnapshot({
+                    appApiBase: API,
+                    sessionId,
+                    leadId: row.id,
+                    prolanceQuoteId: redirectQuoteId,
+                    quoteBody,
+                });
+                if (!patchOk) {
+                    setBulkAssignMessage(
+                        `Get quote succeeded (quote ${redirectQuoteId}) but saving on the lead failed. Open the quote from the link if needed.`,
+                    );
+                } else {
+                    setBulkAssignMessage(`Get quote saved for PJ-${row.pid ?? row.id} (quote ${redirectQuoteId}).`);
+                }
+                openInternalQuoteInNewTab(redirectQuoteId, row.id);
+            } else {
+                if (quoteBody == null) {
+                    setBulkAssignMessage(
+                        "Get quote finished but returned no quotation JSON. Check the Prolance project and try again.",
+                    );
+                    await refreshQueue();
+                    return;
+                }
+                const stored = storePostGetQuotePreview({
+                    leadId: row.id,
+                    quoteBody,
+                    effectiveStatus: result.effectiveStatus,
+                    resolvedPid: resolvedPid,
+                    partnerIdFromLogin: partnerIdFromLogin ?? null,
+                });
+                if (stored) {
+                    const origin = typeof window !== "undefined" ? window.location.origin : "";
+                    const qs = new URLSearchParams({
+                        internal: "1",
+                        leadId: String(row.id),
+                    });
+                    window.open(
+                        `${origin}/quote/preview?${qs.toString()}`,
+                        "_blank",
+                        "noopener,noreferrer",
+                    );
+                    setBulkAssignMessage("Opening full quotation in a new tab (customer link, versions, discount).");
+                } else {
+                    setBulkAssignMessage(
+                        "Get quote returned a large response; open this lead from the dashboard after it moves past Pre 10%, or run Get Quote again from the lead workspace.",
+                    );
+                }
+            }
+            await refreshQueue();
+        } catch (err) {
+            setBulkAssignMessage(err instanceof Error ? err.message : "Get quote failed");
+        } finally {
+            setGetQuoteLeadId(null);
         }
     };
 
@@ -523,6 +575,56 @@ export default function Dashboard() {
         const res = await fetch(`${API}/api/leads/queue`, { headers });
         const data = await res.json().catch(() => null);
         if (res.ok && Array.isArray(data)) setProjects(data);
+    };
+
+    const openProlanceForLead = async (row: LeadshipTypes) => {
+        const pid = row.prolanceProjectId != null ? Number(row.prolanceProjectId) : NaN;
+        if (Number.isFinite(pid) && pid >= 1) {
+            openProlanceBrowserForProjectId(pid);
+            return;
+        }
+        if (!sessionId) {
+            window.alert("Please sign in to create a Prolance project.");
+            return;
+        }
+        setProlanceCreateLeadId(row.id);
+        setBulkAssignMessage(null);
+        try {
+            const result = await createProlanceProjectViaApi({ appApiBase: API, sessionId, project: row });
+            if (!result.ok) {
+                setBulkAssignMessage(result.message);
+                return;
+            }
+            const createdProjectId = result.createdProjectId;
+            if (createdProjectId != null) {
+                const res = await fetch(`${API}/api/leads/${row.id}/prolance-ids`, {
+                    method: "PATCH",
+                    headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${sessionId}`,
+                    },
+                    body: JSON.stringify({ prolanceProjectId: createdProjectId }),
+                });
+                if (!res.ok) {
+                    setBulkAssignMessage(
+                        `Prolance project created (ID ${createdProjectId}) but saving on the lead failed. Save the ID in lead settings if needed.`,
+                    );
+                } else {
+                    setBulkAssignMessage(
+                        `Prolance project created (ID ${createdProjectId}) and saved on PJ-${row.pid ?? row.id}.`,
+                    );
+                }
+            } else {
+                setBulkAssignMessage(
+                    "Prolance create returned OK; if no ID was parsed, open Prolance and link the project ID on the lead.",
+                );
+            }
+            await refreshQueue();
+        } catch (err) {
+            setBulkAssignMessage(err instanceof Error ? err.message : "Prolance create failed");
+        } finally {
+            setProlanceCreateLeadId(null);
+        }
     };
 
     const assignSingleLead = async (leadId: number) => {
@@ -745,7 +847,7 @@ export default function Dashboard() {
                         <div
                             key={arr1.id}
                             className={`xl:grid xl:grid-cols-4 xl:gap-4 xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:border-gray-300 xl:rounded-lg xl:shadow-md hover:xl:bg-green-100 xl:text-gray-900 xl:cursor-pointer xl:items-center ${(arr1.id % 2 === 0) ? "bg-gray-50" : "bg-gray-100"}`}
-                            onClick={() => handleRouter(arr1.id)}
+                            onClick={() => handleRouter(arr1)}
                         >
                             <div className="xl:text-lg xl:font-semibold xl:text-center">{arr1.id}</div>
                             <div className="xl:text-lg xl:font-semibold xl:text-left">{arr1.projectName}</div>
@@ -766,6 +868,7 @@ export default function Dashboard() {
         }
         // Design Phase Projects layout: stats cards + table + pagination (all from dynamic filtered list)
         const deduped = paginatedProjects.filter((p, i, arr) => arr.findIndex((x) => x.id === p.id) === i);
+        const pre10TabActive = isSelected === SideDashboard.Pre_10;
         return (
             <div className="space-y-6">
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
@@ -798,138 +901,313 @@ export default function Dashboard() {
 
                 <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden min-w-0">
                     <div className="overflow-x-auto">
-                        <table className="w-full min-w-[920px]">
-                            <thead>
-                                <tr className="bg-gray-900 text-white text-left text-sm font-semibold">
-                                    {canImportLeads && (
-                                        <th className="py-3 px-3">
-                                            <input
-                                                type="checkbox"
-                                                checked={
-                                                    deduped.length > 0 &&
-                                                    deduped.every((row) => selectedLeadIds.includes(row.id))
-                                                }
-                                                onChange={() => toggleSelectAllVisible(deduped.map((d) => d.id))}
-                                            />
-                                        </th>
-                                    )}
-                                    <th className="py-3 px-5">ID / Project Name</th>
-                                    <th className="py-3 px-5">Designer</th>
-                                    <th className="py-3 px-5">Milestone</th>
-                                    <th className="py-3 px-5">Progress %</th>
-                                    <th className="py-3 px-5">Last Update</th>
-                                    <th className="py-3 px-5">Next Action</th>
-                                    <th className="py-3 px-5">Status</th>
-                                    <th className="py-3 px-5">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {deduped.map((row) => {
-                                    const bucket = getPhaseBucket(row);
-                                    const progress =
-                                        row.currentMilestoneProgress != null
-                                            ? row.currentMilestoneProgress
-                                            : getProgressPercent(bucket);
-                                    const statusInfo =
-                                        row.currentMilestoneIndex != null || row.currentMilestoneName
-                                            ? getStatusFromMilestone(row.currentMilestoneIndex, row.currentMilestoneName ?? undefined)
-                                            : getStatusFromBucket(bucket);
-                                    const designerName = row.designerName ?? "—";
-                                    return (
-                                        <tr
-                                            key={row.id}
-                                            className="border-b border-gray-100 hover:bg-gray-50 cursor-pointer"
-                                            onClick={() => handleRouter(row.id)}
-                                        >
-                                            {canImportLeads && (
-                                                <td className="py-3 px-3" onClick={(e) => e.stopPropagation()}>
-                                                    <input
-                                                        type="checkbox"
-                                                        checked={selectedLeadIds.includes(row.id)}
-                                                        onChange={() => toggleLeadSelection(row.id)}
-                                                    />
-                                                </td>
-                                            )}
-                                            <td className="py-3 px-5">
-                                                <div className="font-medium text-gray-900">PJ-{row.pid || row.id}</div>
-                                                <div className="text-sm text-gray-600 truncate max-w-[180px]" title={row.projectName}>{row.projectName || "—"}</div>
-                                            </td>
-                                            <td className="py-3 px-5">
-                                                <div className="flex items-center gap-2">
-                                                    <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-800 flex items-center justify-center text-xs font-semibold shrink-0">
-                                                        {getInitials(designerName)}
-                                                    </div>
-                                                    <span className="text-sm text-gray-700 truncate max-w-[100px]" title={designerName}>{designerName}</span>
-                                                </div>
-                                            </td>
-                                            <td className="py-3 px-5 text-sm text-gray-700">{row.currentMilestoneName ?? bucket}</td>
-                                            <td className="py-3 px-5">
-                                                <div className="flex items-center gap-2">
-                                                    <div className="w-20 h-2 bg-gray-200 rounded-full overflow-hidden">
-                                                        <div
-                                                            className="h-full rounded-full bg-blue-500 transition-all"
-                                                            style={{ width: `${progress}%` }}
+                        {pre10TabActive ? (
+                            <table className="w-full min-w-[480px]">
+                                <thead>
+                                    <tr className="bg-gray-900 text-white text-left text-sm font-semibold">
+                                        {canImportLeads && (
+                                            <th className="py-3 px-3">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={
+                                                        deduped.length > 0 &&
+                                                        deduped.every((row) => selectedLeadIds.includes(row.id))
+                                                    }
+                                                    onChange={() => toggleSelectAllVisible(deduped.map((d) => d.id))}
+                                                />
+                                            </th>
+                                        )}
+                                        <th className="py-3 px-5">Prolance</th>
+                                        <th className="py-3 px-5">ID / Project Name</th>
+                                        <th className="py-3 px-5">Assignee</th>
+                                        <th className="py-3 px-5">Get quote</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {deduped.map((row) => {
+                                        const designerNameTrim = row.designerName?.trim() || null;
+                                        const designerLabel = designerNameTrim ?? "Unassigned";
+                                        const pmName = row.projectManagerName?.trim() || null;
+                                        const pid = row.prolanceProjectId != null ? Number(row.prolanceProjectId) : NaN;
+                                        const hasProject = Number.isFinite(pid) && pid >= 1;
+                                        const prolanceRowBusy = prolanceCreateLeadId === row.id;
+                                        const getQuoteRowBusy = getQuoteLeadId === row.id;
+                                        return (
+                                            <tr key={row.id} className="border-b border-gray-100 hover:bg-gray-50">
+                                                {canImportLeads && (
+                                                    <td className="py-3 px-3">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={selectedLeadIds.includes(row.id)}
+                                                            onChange={() => toggleLeadSelection(row.id)}
                                                         />
-                                                    </div>
-                                                    <span className="text-xs font-medium text-gray-600">{progress}%</span>
-                                                </div>
-                                            </td>
-                                            <td className="py-3 px-5 text-sm text-gray-600 whitespace-nowrap">{formatDateTime(row.updateAt)}</td>
-                                            <td className="py-3 px-5 text-sm text-gray-700">
-                                                {row.currentMilestoneIndex != null || row.currentMilestoneName
-                                                    ? getNextActionFromMilestone(row.currentMilestoneIndex, row.currentMilestoneName ?? undefined)
-                                                    : getNextAction(bucket)}
-                                            </td>
-                                            <td className="py-3 px-5">
-                                                <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${statusInfo.className}`}>
-                                                    {statusInfo.label}
-                                                </span>
-                                            </td>
-                                            <td className="py-3 px-5" onClick={(e) => e.stopPropagation()}>
-                                                <div className="flex items-center gap-2 flex-wrap">
+                                                    </td>
+                                                )}
+                                                <td className="py-3 px-5">
                                                     <button
                                                         type="button"
-                                                        onClick={() => handleRouter(row.id)}
-                                                        className="text-sm font-semibold text-blue-600 hover:underline"
+                                                        disabled={!sessionId || prolanceRowBusy}
+                                                        onClick={() => void openProlanceForLead(row)}
+                                                        title={
+                                                            hasProject
+                                                                ? "Open this project in Prolance (browser)"
+                                                                : "Create Prolance project via API (https://api.prolance.design) and save ID on this lead"
+                                                        }
+                                                        className="rounded-lg border border-teal-600 bg-white px-3 py-2 text-xs font-semibold text-teal-800 shadow-sm hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-50"
                                                     >
-                                                        View Project
+                                                        {prolanceRowBusy ? "Creating…" : "Prolance"}
                                                     </button>
-                                                    {canImportLeads && (
-                                                        <>
-                                                            <select
-                                                                value={singleAssignByLead[row.id] ?? row.assigned_designer_id ?? ""}
-                                                                onChange={(e) =>
-                                                                    setSingleAssignByLead((prev) => ({
-                                                                        ...prev,
-                                                                        [row.id]: e.target.value ? Number(e.target.value) : "",
-                                                                    }))
-                                                                }
-                                                                className="text-xs border border-gray-300 rounded px-2 py-1"
+                                                </td>
+                                                <td className="py-3 px-5">
+                                                    <div className="font-medium text-gray-900">PJ-{row.pid || row.id}</div>
+                                                    <div className="text-sm text-gray-600 truncate max-w-[200px]" title={row.projectName}>
+                                                        {row.projectName || "—"}
+                                                    </div>
+                                                </td>
+                                                <td className="py-3 px-5 min-w-[200px]">
+                                                    <div className="flex flex-col gap-2">
+                                                        <div className="flex items-center gap-2">
+                                                            <div className="flex items-center gap-1.5">
+                                                                {designerNameTrim ? (
+                                                                    <div
+                                                                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-semibold text-blue-800 shadow-sm"
+                                                                        title={designerNameTrim}
+                                                                    >
+                                                                        {getInitials(designerNameTrim)}
+                                                                    </div>
+                                                                ) : null}
+                                                                {pmName ? (
+                                                                    <div
+                                                                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-violet-100 text-xs font-semibold text-violet-800 shadow-sm"
+                                                                        title={`PM: ${pmName}`}
+                                                                    >
+                                                                        {getInitials(pmName)}
+                                                                    </div>
+                                                                ) : null}
+                                                            </div>
+                                                            <span
+                                                                className="max-w-[120px] truncate text-xs text-gray-600"
+                                                                title={designerLabel}
                                                             >
-                                                                <option value="">Assign designer</option>
-                                                                {assignableDesigners.map((d) => (
-                                                                    <option key={d.id} value={d.id}>
-                                                                        {d.name}
-                                                                    </option>
-                                                                ))}
-                                                            </select>
+                                                                {designerLabel}
+                                                            </span>
+                                                        </div>
+                                                        {canImportLeads && (
+                                                            <div className="flex flex-wrap items-center gap-1.5">
+                                                                <select
+                                                                    id={`pre10-assign-${row.id}`}
+                                                                    value={singleAssignByLead[row.id] ?? row.assigned_designer_id ?? ""}
+                                                                    onChange={(e) =>
+                                                                        setSingleAssignByLead((prev) => ({
+                                                                            ...prev,
+                                                                            [row.id]: e.target.value ? Number(e.target.value) : "",
+                                                                        }))
+                                                                    }
+                                                                    className="max-w-[140px] rounded border border-gray-300 px-2 py-1 text-xs"
+                                                                >
+                                                                    <option value="">Designer…</option>
+                                                                    {assignableDesigners.map((d) => (
+                                                                        <option key={d.id} value={d.id}>
+                                                                            {d.name}
+                                                                        </option>
+                                                                    ))}
+                                                                </select>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => assignSingleLead(row.id)}
+                                                                    disabled={singleAssignLoadingLeadId === row.id}
+                                                                    className="rounded bg-emerald-600 px-2 py-1 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
+                                                                >
+                                                                    {singleAssignLoadingLeadId === row.id ? "…" : "Assign"}
+                                                                </button>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </td>
+                                                <td className="py-3 px-5">
+                                                    <button
+                                                        type="button"
+                                                        disabled={!sessionId || getQuoteRowBusy}
+                                                        onClick={() => void runGetQuoteForDashboardLead(row)}
+                                                        className="w-full min-w-[7rem] rounded-lg bg-teal-700 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                                                    >
+                                                        {getQuoteRowBusy ? "Working…" : "Get quote"}
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        ) : (
+                            <table className="w-full min-w-[920px]">
+                                <thead>
+                                    <tr className="bg-gray-900 text-left text-sm font-semibold text-white">
+                                        {canImportLeads && (
+                                            <th className="px-3 py-3">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={
+                                                        deduped.length > 0 &&
+                                                        deduped.every((row) => selectedLeadIds.includes(row.id))
+                                                    }
+                                                    onChange={() => toggleSelectAllVisible(deduped.map((d) => d.id))}
+                                                />
+                                            </th>
+                                        )}
+                                        <th className="px-5 py-3">ID / Project Name</th>
+                                        <th className="px-5 py-3">Designer</th>
+                                        <th className="px-5 py-3">Milestone</th>
+                                        <th className="px-5 py-3">Progress %</th>
+                                        <th className="px-5 py-3">Last Update</th>
+                                        <th className="px-5 py-3">Next Action</th>
+                                        <th className="px-5 py-3">Status</th>
+                                        <th className="px-5 py-3">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {deduped.map((row) => {
+                                        const bucket = getPhaseBucket(row);
+                                        const isPre10 = bucket === "Pre 10%";
+                                        const progress = isPre10
+                                            ? 0
+                                            : row.currentMilestoneProgress != null
+                                              ? row.currentMilestoneProgress
+                                              : getProgressPercent(bucket);
+                                        const statusInfo = isPre10
+                                            ? { label: "Pre 10", className: "bg-gray-100 text-gray-700" }
+                                            : row.currentMilestoneIndex != null || row.currentMilestoneName
+                                              ? getStatusFromMilestone(row.currentMilestoneIndex, row.currentMilestoneName ?? undefined)
+                                              : getStatusFromBucket(bucket);
+                                        const designerName = row.designerName ?? "—";
+                                        return (
+                                            <tr
+                                                key={row.id}
+                                                className={`border-b border-gray-100 hover:bg-gray-50 ${isPre10 ? "" : "cursor-pointer"}`}
+                                                onClick={isPre10 ? undefined : () => handleRouter(row)}
+                                            >
+                                                {canImportLeads && (
+                                                    <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={selectedLeadIds.includes(row.id)}
+                                                            onChange={() => toggleLeadSelection(row.id)}
+                                                        />
+                                                    </td>
+                                                )}
+                                                <td className="px-5 py-3">
+                                                    <div className="font-medium text-gray-900">PJ-{row.pid || row.id}</div>
+                                                    <div className="text-sm text-gray-600 truncate max-w-[180px]" title={row.projectName}>
+                                                        {row.projectName || "—"}
+                                                    </div>
+                                                </td>
+                                                <td className="px-5 py-3">
+                                                    <div className="flex items-center gap-2">
+                                                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-semibold text-blue-800">
+                                                            {getInitials(designerName)}
+                                                        </div>
+                                                        <span className="max-w-[100px] truncate text-sm text-gray-700" title={designerName}>
+                                                            {designerName}
+                                                        </span>
+                                                    </div>
+                                                </td>
+                                                <td className="px-5 py-3 text-sm text-gray-700">
+                                                    {isPre10 ? "—" : row.currentMilestoneName ?? bucket}
+                                                </td>
+                                                <td className="px-5 py-3">
+                                                    {isPre10 ? (
+                                                        <span className="text-sm text-gray-400">—</span>
+                                                    ) : (
+                                                        <div className="flex items-center gap-2">
+                                                            <div className="h-2 w-20 overflow-hidden rounded-full bg-gray-200">
+                                                                <div
+                                                                    className="h-full rounded-full bg-blue-500 transition-all"
+                                                                    style={{ width: `${progress}%` }}
+                                                                />
+                                                            </div>
+                                                            <span className="text-xs font-medium text-gray-600">{progress}%</span>
+                                                        </div>
+                                                    )}
+                                                </td>
+                                                <td className="px-5 py-3 whitespace-nowrap text-sm text-gray-600">
+                                                    {formatDateTime(row.updateAt)}
+                                                </td>
+                                                <td className="px-5 py-3 text-sm text-gray-700">
+                                                    {isPre10
+                                                        ? "—"
+                                                        : row.currentMilestoneIndex != null || row.currentMilestoneName
+                                                          ? getNextActionFromMilestone(
+                                                                row.currentMilestoneIndex,
+                                                                row.currentMilestoneName ?? undefined,
+                                                            )
+                                                          : getNextAction(bucket)}
+                                                </td>
+                                                <td className="px-5 py-3">
+                                                    <span
+                                                        className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${statusInfo.className}`}
+                                                    >
+                                                        {statusInfo.label}
+                                                    </span>
+                                                </td>
+                                                <td className="px-5 py-3" onClick={(e) => e.stopPropagation()}>
+                                                    <div className="flex flex-wrap items-center gap-2">
+                                                        {isPre10 ? (
                                                             <button
                                                                 type="button"
-                                                                onClick={() => assignSingleLead(row.id)}
-                                                                disabled={singleAssignLoadingLeadId === row.id}
-                                                                className="text-xs px-2 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
+                                                                disabled={!sessionId || getQuoteLeadId === row.id}
+                                                                onClick={() => void runGetQuoteForDashboardLead(row)}
+                                                                className="rounded-lg bg-teal-700 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-50"
                                                             >
-                                                                {singleAssignLoadingLeadId === row.id ? "..." : "Assign"}
+                                                                {getQuoteLeadId === row.id ? "Working…" : "Get quote"}
                                                             </button>
-                                                        </>
-                                                    )}
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    );
-                                })}
-                            </tbody>
-                        </table>
+                                                        ) : (
+                                                            <>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleRouter(row)}
+                                                                    className="text-sm font-semibold text-blue-600 hover:underline"
+                                                                >
+                                                                    View Project
+                                                                </button>
+                                                                {canImportLeads && (
+                                                                    <>
+                                                                        <select
+                                                                            value={singleAssignByLead[row.id] ?? row.assigned_designer_id ?? ""}
+                                                                            onChange={(e) =>
+                                                                                setSingleAssignByLead((prev) => ({
+                                                                                    ...prev,
+                                                                                    [row.id]: e.target.value ? Number(e.target.value) : "",
+                                                                                }))
+                                                                            }
+                                                                            className="rounded border border-gray-300 px-2 py-1 text-xs"
+                                                                        >
+                                                                            <option value="">Assign designer</option>
+                                                                            {assignableDesigners.map((d) => (
+                                                                                <option key={d.id} value={d.id}>
+                                                                                    {d.name}
+                                                                                </option>
+                                                                            ))}
+                                                                        </select>
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => assignSingleLead(row.id)}
+                                                                            disabled={singleAssignLoadingLeadId === row.id}
+                                                                            className="rounded bg-emerald-600 px-2 py-1 text-xs text-white hover:bg-emerald-700 disabled:opacity-60"
+                                                                        >
+                                                                            {singleAssignLoadingLeadId === row.id ? "..." : "Assign"}
+                                                                        </button>
+                                                                    </>
+                                                                )}
+                                                            </>
+                                                        )}
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        )}
                     </div>
                     {totalItems === 0 && (
                         <div className="py-12 text-center text-gray-500 text-sm">No projects match the current filter or search.</div>
