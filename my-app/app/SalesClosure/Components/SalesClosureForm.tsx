@@ -67,6 +67,16 @@ export default function SalesClosureForm() {
   const [salesManagers, setSalesManagers] = useState<SalesPerson[]>([]);
   const [salesAdmins, setSalesAdmins] = useState<SalesPerson[]>([]);
 
+  // Edit mode: activated when salesperson fetches an existing lead by ID
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [fetchedLeadId, setFetchedLeadId] = useState<number | null>(null);
+  const [leadIdInput, setLeadIdInput] = useState("");
+  const [fetchingLead, setFetchingLead] = useState(false);
+  const [fetchLeadError, setFetchLeadError] = useState<string | null>(null);
+  // Track sales lead & SPOC emails for rejection email CC (stored separately in payload)
+  const [salesLeadEmail, setSalesLeadEmail] = useState("");
+  const [salesSpocEmail, setSalesSpocEmail] = useState("");
+
   useEffect(() => {
     fetch(`${getApiBase()}/api/designers`)
       .then((res) => res.json())
@@ -168,27 +178,109 @@ export default function SalesClosureForm() {
     }
   }
 
+  // Fetch an existing lead by internal Lead ID (for re-submission after finance rejection)
+  async function handleFetchLead() {
+    const leadId = leadIdInput.trim();
+    if (!leadId) {
+      setFetchLeadError("Please enter a Lead ID.");
+      return;
+    }
+    setFetchingLead(true);
+    setFetchLeadError(null);
+    try {
+      const res = await fetch(`${getApiBase()}/api/leads/${encodeURIComponent(leadId)}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.message || "Lead not found.");
+
+      // data.payload is the parsed JSON from the DB
+      const payload = data.payload && typeof data.payload === "object" ? data.payload : {};
+
+      // Populate the form from the stored payload
+      setForm((prev) => ({
+        ...prev,
+        sales_lead_name: payload.sales_lead_name || "",
+        sales_spoc: payload.sales_spoc || "",
+        sales_email: payload.sales_email || "",
+        customer_name: payload.customer_name || data.projectName || "",
+        co_no: payload.co_no || data.contactNo || "",
+        email: payload.email || data.clientEmail || "",
+        property_name: payload.property_name || "",
+        possession: payload.possession || "",
+        lead_source: payload.lead_source || "",
+        property_configuration: payload.property_configuration || "",
+        experience_center: payload.experience_center || "",
+        site_address: payload.site_address || "",
+        booking_date: payload.booking_date || getTodayDateValue(),
+        booking_type: payload.booking_type || "",
+        spot_booking: payload.spot_booking || false,
+        designer_name: payload.designer_name || "",
+        designer_lead: payload.designer_lead || "",
+        order_value: payload.order_value || 0,
+        dis_on_woodwork: payload.dis_on_woodwork || 0,
+        dis_on_service: payload.dis_on_service || 0,
+        dis_on_accessories: payload.dis_on_accessories || 0,
+        hub_coins: payload.hub_coins || 0,
+        complimentary_offer: payload.complimentary_offer || 0,
+        // Payment fields left blank so salesperson re-enters them
+        payment_received: payload.payment_received || "",
+        mode_of_payment: payload.mode_of_payment || "",
+        payment_screenshot: "",
+        status_of_project: payload.status_of_project || PROJECT_STATUS,
+        special_offer: payload.special_offer || "",
+        custom_commitments: payload.custom_commitments || "",
+        timeline_promise_by_sales: payload.timeline_promise_by_sales || "",
+        scope_frozen: payload.scope_frozen || "",
+        approval_proof: "",
+      }));
+      setPercentInputs({
+        dis_on_woodwork: String(payload.dis_on_woodwork || 0),
+        dis_on_service: String(payload.dis_on_service || 0),
+        dis_on_accessories: String(payload.dis_on_accessories || 0),
+      });
+      setSalesLeadEmail(String(payload.sales_lead_email || ""));
+      setSalesSpocEmail(String(payload.sales_spoc_email || ""));
+
+      setFetchedLeadId(data.id);  // store the DB lead id for the PUT request
+      setIsEditMode(true);
+    } catch (err) {
+      setFetchLeadError(err instanceof Error ? err.message : "Failed to fetch lead.");
+    } finally {
+      setFetchingLead(false);
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (form.special_offer.trim() !== "" && !form.approval_proof) {
+    if (form.special_offer.trim() !== "" && !form.approval_proof && !isEditMode) {
       alert("Approval proof is mandatory when special commitment is provided.");
       return;
     }
 
-    const finalPayload = form;
-    const result = salesClosureSchema.safeParse(finalPayload);
+    // Build payload; always include sales lead & SPOC emails for rejection CC
+    const finalPayload = {
+      ...form,
+      sales_lead_email: salesLeadEmail || undefined,
+      sales_spoc_email: salesSpocEmail || undefined,
+    };
 
-    if (!result.success) {
-      // validation handled live in updateFields; show a summary alert for submit
-      alert("Form validation failed: " + result.error.message);
-      return;
+    if (!isEditMode) {
+      const result = salesClosureSchema.safeParse(form);
+      if (!result.success) {
+        alert("Form validation failed: " + result.error.message);
+        return;
+      }
     }
 
-    console.log("Sending payload:", finalPayload);
+    console.log(isEditMode ? "Updating payload:" : "Sending payload:", finalPayload);
 
     try {
-      const res = await fetch(`${getApiBase()}/api/sales-closure`, {
-        method: "POST",
+      const url = isEditMode
+        ? `${getApiBase()}/api/sales-closure/${fetchedLeadId}`
+        : `${getApiBase()}/api/sales-closure`;
+      const method = isEditMode ? "PUT" : "POST";
+
+      const res = await fetch(url, {
+        method,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(finalPayload),
       });
@@ -217,7 +309,7 @@ export default function SalesClosureForm() {
         JSON.stringify(responseData),
       );
 
-      // navigate only after success; lead is now in the queue (Dashboard)
+      // navigate only after success
       router.push("/SalesClosure/Review");
     } catch (err) {
       console.error("Network error:", err);
@@ -242,13 +334,55 @@ export default function SalesClosureForm() {
 
   return (
     <main className="min-h-screen bg-purple-50 p-6">
+      {/* CRM Lead ID search bar — above the form, for re-submission after rejection */}
+      <div className="mx-auto max-w-6xl mb-4">
+        <div className="bg-white rounded-2xl border border-dashed border-green-950 px-5 py-4 flex flex-col sm:flex-row sm:items-center gap-3">
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-green-950 mb-0.5">
+              Re-submitting after payment rejection?
+            </p>
+            <p className="text-xs text-gray-500">Enter your Lead ID to auto-fill the form. Only payment fields will be editable.</p>
+          </div>
+          <div className="flex gap-2 items-center flex-shrink-0">
+            <input
+              className="border rounded-lg px-3 py-2 text-green-950 text-sm w-40 focus:outline-none focus:ring-2 focus:ring-green-950"
+              type="text"
+              placeholder="Lead ID"
+              value={leadIdInput}
+              onChange={(e) => {
+                setLeadIdInput(e.target.value);
+                setFetchLeadError(null);
+                if (!e.target.value) {
+                  setIsEditMode(false);
+                  setFetchedLeadId(null);
+                }
+              }}
+              disabled={fetchingLead}
+            />
+            <button
+              type="button"
+              onClick={handleFetchLead}
+              disabled={fetchingLead || !leadIdInput}
+              className="px-4 py-2 rounded-lg bg-green-950 text-white text-sm font-semibold hover:bg-green-800 disabled:opacity-60"
+            >
+              {fetchingLead ? 'Fetching…' : 'Fetch Lead'}
+            </button>
+          </div>
+          {fetchLeadError && <p className="text-red-500 text-xs sm:text-sm sm:ml-2">{fetchLeadError}</p>}
+          {isEditMode && (
+            <p className="text-green-700 text-xs font-medium sm:ml-2">
+              ✓ Lead loaded — only payment fields are editable.
+            </p>
+          )}
+        </div>
+      </div>
       <div className="mx-auto max-w-6xl bg-slate-900 rounded-2xl shadow-md overflow-hidden border border-3 border-gray-400">
         {/* 2 Column Layout */}
         <div className="grid grid-cols-12">
           {/* LEFT (Static / Sticky) */}
           <aside className="col-span-12 lg:col-span-5 border-r p-6 lg:sticky lg:top-0 lg:h-screen overflow-y-auto">
             {/* Sales Detail */}
-            <div className="p-4 rounded-2xl border border-2 border-gray-300 mb-4 bg-purple-50">
+            <div className="p-4 rounded-2xl border border-2 border-gray-300 mb-4 bg-purple-50" style={isEditMode ? {opacity:0.6, pointerEvents:'none'} : {}}>
               <h2 className="text-lg font-semibold mb-3 text-green-950">
                 Sales Details
               </h2>
@@ -287,110 +421,119 @@ export default function SalesClosureForm() {
               <h2 className="text-lg font-semibold mb-3 text-green-950">
                 Customer Details
               </h2>
-              <div className=" mb-2">
-                <label className="block text-sm font-medium mb-1 text-green-950">
-                  CustomerName
-                </label>
-                <input
-                  className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                  type="text"
-                  value={form.customer_name}
-                  onChange={(e) =>
-                    updateFields("customer_name", e.target.value)
-                  }
-                />
-                {errors.customer_name && (
-                  <p className="text-red-500 text-sm">{errors.customer_name}</p>
-                )}
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-2">
-                <div>
-                  <label className="block text-sm text-green-950 font-medium mb-1">
-                    ContactNo.
+
+              <div style={isEditMode ? {opacity:0.6, pointerEvents:'none'} : {}}>
+                <div className=" mb-2">
+                  <label className="block text-sm font-medium mb-1 text-green-950">
+                    CustomerName
                   </label>
                   <input
-                    className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                    type="tel"
-                    inputMode="numeric"
-                    value={form.co_no}
-                    maxLength={10}
+                    className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                    type="text"
+                    value={form.customer_name}
+                    disabled={isEditMode}
                     onChange={(e) =>
-                      updateFields(
-                        "co_no",
-                        e.target.value.replace(/\D/g, "").slice(0, 10),
-                      )
+                      updateFields("customer_name", e.target.value)
                     }
                   />
-                  {errors.co_no && (
-                    <p className="text-red-500 text-sm">{errors.co_no}</p>
+                  {errors.customer_name && (
+                    <p className="text-red-500 text-sm">{errors.customer_name}</p>
                   )}
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-2">
+                  <div>
+                    <label className="block text-sm text-green-950 font-medium mb-1">
+                      ContactNo.
+                    </label>
+                    <input
+                      className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                      type="tel"
+                      inputMode="numeric"
+                      value={form.co_no}
+                      maxLength={10}
+                      disabled={isEditMode}
+                      onChange={(e) =>
+                        updateFields(
+                          "co_no",
+                          e.target.value.replace(/\D/g, "").slice(0, 10),
+                        )
+                      }
+                    />
+                    {errors.co_no && (
+                      <p className="text-red-500 text-sm">{errors.co_no}</p>
+                    )}
+                  </div>
+                  <div>
+                    <label className="block text-sm text-green-950 font-medium mb-1">
+                      Email
+                    </label>
+                    <input
+                      className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                      type="email"
+                      value={form.email}
+                      disabled={isEditMode}
+                      onChange={(e) => updateFields("email", e.target.value)}
+                    />
+                    {errors.email && (
+                      <p className="text-red-500 text-sm">{errors.email}</p>
+                    )}
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-2">
+                  <div>
+                    <label className="block text-sm text-green-950 font-medium mb-1">
+                      Property Name
+                    </label>
+                    <input
+                      className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                      type="text"
+                      value={form.property_name}
+                      disabled={isEditMode}
+                      onChange={(e) =>
+                        updateFields("property_name", e.target.value)
+                      }
+                    />
+                    {errors.property_name && (
+                      <p className="text-red-500 text-sm">
+                        {errors.property_name}
+                      </p>
+                    )}
+                  </div>
+                  <div>
+                    <label className="block text-sm text-green-950 font-medium mb-1">
+                      Possession
+                    </label>
+                    <input
+                      className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                      type="text"
+                      value={form.possession}
+                      disabled={isEditMode}
+                      onChange={(e) => updateFields("possession", e.target.value)}
+                    />
+                    {errors.possession && (
+                      <p className="text-red-500 text-sm">{errors.possession}</p>
+                    )}
+                  </div>
                 </div>
                 <div>
                   <label className="block text-sm text-green-950 font-medium mb-1">
-                    Email
+                    Lead Source
                   </label>
                   <input
-                    className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                    type="email"
-                    value={form.email}
-                    onChange={(e) => updateFields("email", e.target.value)}
-                  />
-                  {errors.email && (
-                    <p className="text-red-500 text-sm">{errors.email}</p>
-                  )}
-                </div>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-2">
-                <div>
-                  <label className="block text-sm text-green-950 font-medium mb-1">
-                    Property Name
-                  </label>
-                  <input
-                    className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
+                    className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950 disabled:bg-gray-100 disabled:cursor-not-allowed"
                     type="text"
-                    value={form.property_name}
-                    onChange={(e) =>
-                      updateFields("property_name", e.target.value)
-                    }
+                    value={form.lead_source}
+                    disabled={isEditMode}
+                    onChange={(e) => updateFields("lead_source", e.target.value)}
                   />
-                  {errors.property_name && (
-                    <p className="text-red-500 text-sm">
-                      {errors.property_name}
-                    </p>
-                  )}
                 </div>
-                <div>
-                  <label className="block text-sm text-green-950 font-medium mb-1">
-                    Possession
-                  </label>
-                  <input
-                    className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                    type="text"
-                    value={form.possession}
-                    onChange={(e) => updateFields("possession", e.target.value)}
-                  />
-                  {errors.possession && (
-                    <p className="text-red-500 text-sm">{errors.possession}</p>
-                  )}
-                </div>
-              </div>
-              <div>
-                <label className="block text-sm text-green-950 font-medium mb-1">
-                  Lead Source
-                </label>
-                <input
-                  className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                  type="text"
-                  value={form.lead_source}
-                  onChange={(e) => updateFields("lead_source", e.target.value)}
-                />
               </div>
             </div>
           </aside>
           <section className="col-span-12 lg:col-span-7 p-6 lg:h-screen lg:overflow-y-auto">
             <form className="space-y-5">
               {/* Customer Info */}
-              <div className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-purple-50">
+              <div className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-purple-50" style={isEditMode ? {opacity:0.6, pointerEvents:'none'} : {}}>
                 <h2 className="text-lg text-green-950 font-semibold mb-3">
                   Customer Info
                 </h2>
@@ -470,7 +613,7 @@ export default function SalesClosureForm() {
                 </div>
               </div>
               {/* Booking Details */}
-              <div className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-purple-50">
+              <div className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-purple-50" style={isEditMode ? {opacity:0.6, pointerEvents:'none'} : {}}>
                 <h2 className="text-lg text-green-950 font-semibold mb-3">
                   Booking Details
                 </h2>
@@ -537,7 +680,7 @@ export default function SalesClosureForm() {
                 </div>
               </div>
               {/* TEAM ASSIGNMENT */}
-              <div className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-purple-50">
+              <div className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-purple-50" style={isEditMode ? {opacity:0.6, pointerEvents:'none'} : {}}>
                 <h2 className="text-lg text-green-950 font-semibold mb-3">
                   Team Assignment
                 </h2>
@@ -607,11 +750,18 @@ export default function SalesClosureForm() {
                       Sales Lead Name
                     </label>
                     <select
-                      className="w-full border p-2.5 rounded-lg text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
+                      className="w-full border p-2.5 rounded-lg text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950 disabled:bg-gray-100 disabled:cursor-not-allowed"
                       value={form.sales_lead_name}
-                      onChange={(e) =>
-                        updateFields("sales_lead_name", e.target.value)
-                      }
+                      disabled={isEditMode}
+                      onChange={(e) => {
+                        const selectedName = e.target.value;
+                        updateFields("sales_lead_name", selectedName);
+                        // Capture email for rejection CC
+                        const match = salesManagers.find(
+                          (m) => (m.fullName || m.username) === selectedName
+                        );
+                        setSalesLeadEmail(match?.email || "");
+                      }}
                     >
                       <option value="">Select Sales Lead</option>
                       {salesManagers.map((m) => (
@@ -631,11 +781,18 @@ export default function SalesClosureForm() {
                       Sales SPOC
                     </label>
                     <select
-                      className="w-full border p-2.5 rounded-lg text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
+                      className="w-full border p-2.5 rounded-lg text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950 disabled:bg-gray-100 disabled:cursor-not-allowed"
                       value={form.sales_spoc}
-                      onChange={(e) =>
-                        updateFields("sales_spoc", e.target.value)
-                      }
+                      disabled={isEditMode}
+                      onChange={(e) => {
+                        const selectedName = e.target.value;
+                        updateFields("sales_spoc", selectedName);
+                        // Capture email for rejection CC
+                        const match = salesAdmins.find(
+                          (a) => (a.fullName || a.username) === selectedName
+                        );
+                        setSalesSpocEmail(match?.email || "");
+                      }}
                     >
                       <option value="">Select Sales SPOC</option>
                       {salesAdmins.map((a) => (
@@ -654,7 +811,7 @@ export default function SalesClosureForm() {
               </div>
 
               {/* COMMERCIAL DETAILS */}
-              <div className="p-4 rounded-2xl border border-2 border-gray-300 mb-4 space-y-4 bg-purple-50">
+              <div className="p-4 rounded-2xl border border-2 border-gray-300 mb-4 space-y-4 bg-purple-50" style={isEditMode ? {opacity:0.6, pointerEvents:'none'} : {}}>
                 <h2 className="text-lg text-green-950 font-semibold mb-3">
                   Commercial Details
                 </h2>
@@ -907,7 +1064,7 @@ export default function SalesClosureForm() {
                 </div>
               </div>
               {/* PROJECT STATUS CONTROL */}
-              <div className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-purple-50">
+              <div className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-purple-50" style={isEditMode ? {opacity:0.6, pointerEvents:'none'} : {}}>
                 <h2 className="text-lg text-green-950 font-semibold mb-3">
                   Project status control
                 </h2>
@@ -929,7 +1086,7 @@ export default function SalesClosureForm() {
                 </div>
               </div>
               {/* Special Declaration(VERY IMPORTANT) */}
-              <div className="border border-2 border-gray-300 rounded-2xl p-4 space-y-4 bg-purple-50">
+              <div className="border border-2 border-gray-300 rounded-2xl p-4 space-y-4 bg-purple-50" style={isEditMode ? {opacity:0.6, pointerEvents:'none'} : {}}>
                 {/* Section Title */}
                 <h2 className="text-lg font-semibold text-green-950">
                   Special Declaration
@@ -1095,7 +1252,7 @@ export default function SalesClosureForm() {
             type="submit"
             className="px-5 py-2 rounded-lg bg-purple-50 text-green-950 hover:bg-slate-900 hover:border hover:border-purple-50 hover:text-purple-50 transition font-bold"
           >
-            Submit
+            {isEditMode ? 'Update' : 'Submit'}
           </button>
         </div>
       </div>

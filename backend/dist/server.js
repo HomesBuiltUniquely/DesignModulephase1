@@ -115,7 +115,7 @@ app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Credentials", "true");
     res.setHeader("Access-Control-Allow-Methods", "GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Prolance-Token, X-Prolance-Origin-Session, X-Prolance-Api-Key");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Prolance-Token, X-Prolance-Origin-Session, X-Prolance-Api-Key, X-External-Api-Key");
     res.setHeader("Access-Control-Max-Age", "86400");
     res.setHeader("Vary", "Origin");
     return res.status(204).end();
@@ -140,6 +140,7 @@ app.use((0, cors_1.default)({
         "X-Prolance-Token",
         "X-Prolance-Origin-Session",
         "X-Prolance-Api-Key",
+        "X-External-Api-Key",
     ],
     optionsSuccessStatus: 204,
 }));
@@ -183,6 +184,64 @@ if (!node_fs_1.default.existsSync(PROFILE_IMAGES_DIR))
     node_fs_1.default.mkdirSync(PROFILE_IMAGES_DIR, { recursive: true });
 const API_BASE = process.env.API_BASE_URL || "http://localhost:3001";
 const FRONTEND_BASE = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
+const ERP_BASE_URL = process.env.ERP_BASE_URL || "https://hows.hubinterior.com";
+const ERP_USERNAME = process.env.ERP_USERNAME || "admin@hubinterior.com";
+const ERP_PASSWORD = process.env.ERP_PASSWORD || "admin123";
+let cachedErpToken = null;
+async function getErpToken(forceRefresh = false) {
+    if (cachedErpToken && !forceRefresh)
+        return cachedErpToken;
+    try {
+        let res = await fetch(`${ERP_BASE_URL}/api/auth/signin`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username: ERP_USERNAME, password: ERP_PASSWORD })
+        });
+        if (!res.ok) {
+            res = await fetch(`${ERP_BASE_URL}/api/auth/login`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ username: ERP_USERNAME, password: ERP_PASSWORD })
+            });
+        }
+        if (res.ok) {
+            const data = await res.json();
+            cachedErpToken = data.accessToken || data.token || data.jwt || null;
+            return cachedErpToken;
+        }
+        console.error("Failed to login to ERP:", await res.text());
+        return null;
+    }
+    catch (err) {
+        console.error("Error logging into ERP:", err);
+        return null;
+    }
+}
+async function fetchFromErpWithRetry(endpoint) {
+    let token = await getErpToken();
+    if (!token)
+        throw new Error("Could not get ERP auth token");
+    let res = await fetch(`${ERP_BASE_URL}${endpoint}`, {
+        headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+        },
+    });
+    if (res.status === 401) {
+        token = await getErpToken(true);
+        if (!token)
+            throw new Error("Could not refresh ERP auth token");
+        res = await fetch(`${ERP_BASE_URL}${endpoint}`, {
+            headers: {
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json",
+            },
+        });
+    }
+    if (!res.ok)
+        throw new Error(`ERP API error: ${res.status}`);
+    return res.json();
+}
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CALENDAR_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CALENDAR_CLIENT_SECRET || "";
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_CALENDAR_REDIRECT_URI || `${API_BASE}/api/google-calendar/oauth/callback`;
@@ -282,16 +341,24 @@ async function streamS3ObjectToDisk(key, destPath) {
         throw new Error("S3 object has no body");
     await (0, promises_1.pipeline)(body, node_fs_1.default.createWriteStream(destPath));
 }
-function buildMailChainSubject(projectPid, projectName, customerName) {
-    if (projectPid || projectName) {
-        return `Project ${projectPid || ""} ${projectName || ""} - Design discussion`.replace(/\s+/g, " ").trim();
-    }
-    return `Project ${customerName || "Customer"} - Design discussion`;
+function buildMailChainSubject(idOrPid, projectName, customerName) {
+    const name = customerName || projectName || "CUSTOMER";
+    // The user requested the format: HUB [Client Name] DESIGN JOURNEY
+    return `HUB ${name.toUpperCase()} DESIGN JOURNEY`.replace(/\s+/g, " ").trim();
 }
 async function getMailLoopCcEmails(extraEmails = []) {
-    const [teamRows] = await pool.query("SELECT email FROM users WHERE role IN ('admin','territorial_design_manager','design_manager') AND email IS NOT NULL");
-    const teamEmails = teamRows.map((r) => r.email || null);
-    return distinctEmails([...extraEmails, ...teamEmails]);
+    const validExtras = extraEmails.filter(Boolean);
+    const [teamRows] = await pool.query("SELECT email FROM users WHERE role IN ('admin','territorial_design_manager') AND email IS NOT NULL");
+    let teamEmails = teamRows.map((r) => r.email || null);
+    if (validExtras.length > 0) {
+        const [dmRows] = await pool.query(`SELECT dm.email 
+       FROM users u 
+       JOIN users dm ON dm.id = u.design_manager_id 
+       WHERE u.email IN (?) AND dm.email IS NOT NULL`, [validExtras]);
+        const dmEmails = dmRows.map((r) => r.email || null);
+        teamEmails = [...teamEmails, ...dmEmails];
+    }
+    return distinctEmails([...validExtras, ...teamEmails]);
 }
 async function triggerMailRouteWithLog(args) {
     const toRaw = args.payload.to;
@@ -400,6 +467,7 @@ async function triggerCustomerEmailForLead(leadId, emailRoutePath, opts) {
                 subject: mailChainSubject,
                 customerName,
                 designerName,
+                leadPayload: payload,
             },
         });
     }
@@ -1874,6 +1942,9 @@ app.all("/api/auth/register", async (req, res) => {
 app.post("/api/sales-closure", async (req, res) => {
     const payload = req.body;
     console.log("Received sales-closure:", payload);
+    if (payload) {
+        payload.sales_closure_finance_approved = false;
+    }
     const lead = toLeadRow(payload);
     const pid = ""; // keep empty or generate PID if required
     try {
@@ -1891,7 +1962,7 @@ app.post("/api/sales-closure", async (req, res) => {
         catch {
             // ignore mapping errors; assignedDesignerId stays null
         }
-        await pool.query(`INSERT INTO leads
+        const [result] = await pool.query(`INSERT INTO leads
        (pid, project_name, project_stage, contact_no, client_email,
         is_on_hold, resume_at, create_at, update_at, payload, assigned_designer_id)
        VALUES (?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)`, [
@@ -1905,6 +1976,7 @@ app.post("/api/sales-closure", async (req, res) => {
             JSON.stringify(payload),
             assignedDesignerId,
         ]);
+        const insertId = result.insertId;
         // Fire-and-forget: trigger D1 Site Measurement welcome email via frontend mail service
         try {
             const customerEmail = lead.clientEmail || payload.email || payload?.form?.email || null;
@@ -1917,6 +1989,7 @@ app.post("/api/sales-closure", async (req, res) => {
                 const mailChainCc = await getMailLoopCcEmails();
                 const mailChainSubject = buildMailChainSubject(pid, lead.projectName, customerName);
                 // Do not block main response if email fails; just log.
+                const propertyType = payload.property_configuration || payload?.formData?.property_configuration || payload?.form?.property_configuration || "Apartment";
                 fetch(`${frontendBase}/api/email/send-d1-site-measurement`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
@@ -1925,6 +1998,8 @@ app.post("/api/sales-closure", async (req, res) => {
                         cc: mailChainCc,
                         subject: mailChainSubject,
                         customerName,
+                        projectId: `PJ-${insertId}`,
+                        propertyType,
                     }),
                 }).catch((err) => {
                     console.error("Failed to trigger D1 email from backend", err);
@@ -2608,9 +2683,11 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                 case 5: {
                     if (t === "Design sign off") {
                         // Sl no 14 – design sign‑off meeting request (after DQC2 approval)
-                        return "/api/email/send-design-signoff-meeting-scheduled";
+                        // Email invite is triggered directly from /api/leads/:id/schedule-meeting-invite (Send Invite button).
+                        // Do not fire an additional email on task completion.
+                        // return "/api/email/send-design-signoff-meeting-scheduled";
                     }
-                    if (t === "40% collection" || t === "meeting completed & 40% payment request") {
+                    if (t === "meeting completed" || t === "40% collection" || t === "meeting completed & 40% payment request") {
                         // Sl no 15 – 40% collection (CX payment request; legacy combined task name still triggers)
                         return "/api/email/send-design-signoff-40pc-payment-request";
                     }
@@ -2623,7 +2700,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                         // Sl no 16 – CX approval for production
                         return "/api/email/send-production-approval-request";
                     }
-                    if (t === "POC mail & Timeline submission" || t === "POC mail & Timeline submission ") {
+                    if (t === "POC mail" || t === "POC mail " || t === "POC mail & Timeline submission" || t === "POC mail & Timeline submission ") {
                         // Sl no 16 (second task) – POC mail & timeline submission
                         return "/api/email/send-production-poc-timeline";
                     }
@@ -2688,7 +2765,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                 designerName = uRow.name || designerName;
                             }
                         }
-                        const projectId = leadRow.pid || "";
+                        const projectId = leadRow.pid || `PJ-${id}`;
                         const propertyType = formData.property_configuration || "";
                         const rawOrderValue = formData.order_value ?? payload.order_value ?? null;
                         let amountDue;
@@ -2770,6 +2847,22 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                         projectId,
                                         propertyType,
                                         amountDue,
+                                        attachments: await (async () => {
+                                            try {
+                                                const [ups] = await pool.query(`SELECT original_name as originalName, s3_url as s3Url, stored_path as storedPath
+                           FROM lead_uploads
+                           WHERE lead_id = ? AND upload_type = 'first_cut_design' AND status = 'approved'
+                           ORDER BY id DESC`, [id]);
+                                                return (ups || []).map((u) => ({
+                                                    filename: (u.originalName || "Attachment").toString(),
+                                                    path: (u.s3Url || u.storedPath || "").toString(),
+                                                })).filter(a => a.path);
+                                            }
+                                            catch (e) {
+                                                console.error("10% fetch attachments error", e);
+                                                return [];
+                                            }
+                                        })(),
                                     }),
                                 });
                                 const text = await r.text();
@@ -3034,7 +3127,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                 row.designerEmail,
                                 pmEmail,
                             ]);
-                            const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
+                            const mailChainSubject = buildMailChainSubject(id, row.projectName, customerName);
                             void triggerMailRouteWithLog({
                                 leadId: id,
                                 milestoneIndex: 3,
@@ -3066,11 +3159,8 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                     const [leadRows] = await pool.query(`SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload,
                     u.id as designerId, u.email as designerEmail, u.name as designerName
              FROM leads l
-             LEFT JOIN lead_d1_assignments a ON a.lead_id = l.id
-             LEFT JOIN users u ON u.id = a.assigned_to_user_id
-             WHERE l.id = ?
-             ORDER BY a.created_at DESC
-             LIMIT 1`, [id]);
+             LEFT JOIN users u ON u.id = l.assigned_designer_id
+             WHERE l.id = ?`, [id]);
                     const leadRow = leadRows[0];
                     if (leadRow) {
                         let payload = {};
@@ -3140,7 +3230,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                 ...ccBase,
                                 ...dqcUsers.slice(1).map((u) => String(u.email || "")),
                             ]);
-                            const subject = buildMailChainSubject(null, leadRow.projectName, customerName);
+                            const subject = buildMailChainSubject(id, leadRow.projectName, customerName);
                             void triggerMailRouteWithLog({
                                 leadId: id,
                                 milestoneIndex: 4,
@@ -3179,7 +3269,11 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
             }
             else if (emailRoutePath === "/api/email/send-dqc1-first-cut-design-scheduled") {
                 try {
-                    const [rows] = await pool.query("SELECT project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?", [id]);
+                    const [rows] = await pool.query(`SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload,
+                    u.name as designerName, u.role as designerRole, u.profileImage as designerAvatarUrl
+             FROM leads l
+             LEFT JOIN users u ON l.assigned_designer_id = u.id
+             WHERE l.id = ?`, [id]);
                     const row = rows[0];
                     if (row) {
                         let payload = {};
@@ -3194,32 +3288,30 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                             payload?.form?.customer_name ||
                             row.projectName ||
                             "Customer";
-                        // Collect latest first-cut design uploads (if any) to attach when S3 URLs are available.
+                        // Collect latest first-cut design uploads (if any) to attach.
                         let attachments;
-                        if (process.env.AWS_ACCESS_KEY_ID) {
-                            try {
-                                const [uploadRows] = await pool.query(`SELECT original_name as originalName, s3_url as s3Url
-                   FROM lead_uploads
-                   WHERE lead_id = ? AND upload_type = 'first_cut_design' AND status = 'approved' AND s3_url IS NOT NULL
-                   ORDER BY id DESC`, [id]);
-                                const list = uploadRows || [];
-                                attachments = list
-                                    .map((r) => {
-                                    const name = (r.originalName || "").toString();
-                                    const url = (r.s3Url || "").toString();
-                                    return name && url ? { filename: name, path: url } : null;
-                                })
-                                    .filter((v) => !!v);
-                                if (attachments.length === 0) {
-                                    attachments = undefined;
-                                }
+                        try {
+                            const [uploadRows] = await pool.query(`SELECT original_name as originalName, s3_url as s3Url, stored_path as storedPath
+                 FROM lead_uploads
+                 WHERE lead_id = ? AND upload_type = 'first_cut_design' AND status = 'approved'
+                 ORDER BY id DESC`, [id]);
+                            const list = uploadRows || [];
+                            attachments = list
+                                .map((r) => {
+                                const name = (r.originalName || "").toString();
+                                const url = (r.s3Url || r.storedPath || "").toString();
+                                return name && url ? { filename: name, path: url } : null;
+                            })
+                                .filter((v) => !!v);
+                            if (attachments.length === 0) {
+                                attachments = undefined;
                             }
-                            catch (attachErr) {
-                                console.error("Failed to load first-cut design attachments (non-fatal)", {
-                                    leadId: id,
-                                    error: attachErr,
-                                });
-                            }
+                        }
+                        catch (attachErr) {
+                            console.error("Failed to load first-cut design attachments (non-fatal)", {
+                                leadId: id,
+                                error: attachErr,
+                            });
                         }
                         if (customerEmail) {
                             const meetingDate = meta?.meetingDate || null;
@@ -3252,10 +3344,15 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                 payload: {
                                     to: customerEmail,
                                     cc: await getMailLoopCcEmails([actingUser.email]),
-                                    subject: buildMailChainSubject(null, row.projectName, customerName),
+                                    subject: buildMailChainSubject(id, row.projectName, customerName),
                                     customerName,
                                     meetingDate,
                                     meetingTime,
+                                    meetingMode: meta?.meetingMode || null,
+                                    meetingLink: meta?.meetingLink || null,
+                                    designerName: row.designerName || actingUser.name,
+                                    designerTitle: row.designerRole === 'designer' ? 'Lead Designer, HUB Interior' : (row.designerRole || 'Lead Designer, HUB Interior'),
+                                    designerAvatarUrl: row.designerAvatarUrl || null,
                                     ...(attachments ? { attachments } : {}),
                                 },
                             });
@@ -3425,7 +3522,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                 payload: {
                                     to: designerEmail,
                                     cc: await getMailLoopCcEmails([actingUser.email]),
-                                    subject: buildMailChainSubject(null, row.projectName, customerName),
+                                    subject: buildMailChainSubject(id, row.projectName, customerName),
                                     designerName,
                                     customerName,
                                 },
@@ -3439,69 +3536,63 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                         error: err,
                     });
                 }
-            }
-            else if (emailRoutePath === "/api/email/send-mom-color-laminate-selection-confirmation") {
-                // Material selection meeting completed: MOM Color & Laminate Selection Confirmation
+                // ── Also fire: "Assign Project Manager" internal notification ──
                 try {
-                    const [rows] = await pool.query(`SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
+                    const [pmRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
                     u.name as designerName
              FROM leads l
              LEFT JOIN users u ON u.id = l.assigned_designer_id
              WHERE l.id = ?`, [id]);
-                    const row = rows[0];
-                    if (row) {
-                        let payload = {};
+                    const pmRow = pmRows[0];
+                    if (pmRow) {
+                        let pmPayload = {};
                         try {
-                            payload = row.payload ? JSON.parse(row.payload) : {};
+                            pmPayload = pmRow.payload ? JSON.parse(pmRow.payload) : {};
                         }
                         catch {
-                            payload = {};
+                            pmPayload = {};
                         }
-                        const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
-                        const customerEmail = row.clientEmail ||
-                            formData.email ||
-                            formData.sales_email ||
-                            payload?.email ||
-                            payload?.form?.email ||
-                            null;
-                        const customerName = formData.customer_name ||
-                            formData.sales_lead_name ||
-                            payload?.customer_name ||
-                            payload?.form?.customer_name ||
-                            row.projectName ||
+                        const pmFormData = pmPayload?.formData || pmPayload?.form_data || pmPayload?.form || pmPayload || {};
+                        const pmCustomerName = pmFormData.customer_name ||
+                            pmFormData.sales_lead_name ||
+                            pmPayload?.customer_name ||
+                            pmPayload?.form?.customer_name ||
+                            pmRow.projectName ||
                             "Customer";
-                        const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
-                        const laminateSelections = meta?.laminateSelections ?? null;
-                        if (customerEmail) {
-                            const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
-                            const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
-                            void triggerMailRouteWithLog({
-                                leadId: id,
-                                milestoneIndex: 4,
-                                taskName: "Material selection meeting completed",
-                                route: emailRoutePath,
-                                visibility: "external",
-                                payload: {
-                                    to: customerEmail,
-                                    cc: mailChainCc,
-                                    subject: mailChainSubject,
-                                    customerName,
-                                    designerName,
-                                    laminateSelections,
-                                },
-                            });
-                        }
+                        const pmDesignerName = pmRow.designerName || pmFormData.designer_name || pmFormData.designerName || "Design Team";
+                        const pmBranch = pmFormData.sales_closure_ec || pmFormData.branch || pmFormData.experience_center || pmPayload?.branch || null;
+                        const pmProjectId = pmRow.pid || `PJ-${id}`;
+                        // Send to admin + CC the mail loop
+                        const adminCc = await getMailLoopCcEmails([actingUser.email]);
+                        const adminTo = "admin@hubinterior.com";
+                        void triggerMailRouteWithLog({
+                            leadId: id,
+                            milestoneIndex: 4,
+                            taskName: "DQC 2 approval – Assign PM",
+                            route: "/api/email/send-dqc2-assign-pm-internal",
+                            visibility: "internal",
+                            payload: {
+                                to: adminTo,
+                                cc: adminCc,
+                                subject: `Action Required – Assign Project Manager for ${pmCustomerName}`,
+                                customerName: pmCustomerName,
+                                projectName: pmRow.projectName || undefined,
+                                projectId: pmProjectId,
+                                designerName: pmDesignerName,
+                                branchLocation: pmBranch || undefined,
+                            },
+                        });
                     }
                 }
                 catch (err) {
-                    console.error("MOM color laminate selection email prepare error (non-fatal)", {
+                    console.error("DQC2 assign-PM internal email prepare error (non-fatal)", {
                         leadId: id,
                         error: err,
                     });
                 }
             }
-            else if (emailRoutePath === "/api/email/send-design-signoff-meeting-scheduled") {
-                // Design sign off (40% milestone): CX only, pass meeting date/time, designer name
+            else if (emailRoutePath === "/api/email/send-mom-color-laminate-selection-confirmation") {
+                // Material selection meeting completed: MOM Color & Laminate Selection Confirmation
                 try {
                     const [rows] = await pool.query(`SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
                     u.name as designerName, u.email as designerEmail
@@ -3531,8 +3622,105 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                             row.projectName ||
                             "Customer";
                         const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
+                        const laminateSelections = meta?.laminateSelections ?? null;
+                        console.log("[mom-color-laminate-email] customerEmail:", customerEmail || "MISSING", "| leadId:", id);
+                        if (customerEmail) {
+                            // Fetch MOM reference files – prioritization: meta.attachments > (last 10 mins uploads) > Database query
+                            let attachments = meta?.attachments || undefined;
+                            if (!attachments) {
+                                try {
+                                    const [uploadRows] = await pool.query(`SELECT original_name as originalName, s3_url as s3Url, stored_path as storedPath
+                     FROM lead_uploads
+                     WHERE lead_id = ? AND upload_type = 'mom_attachment' AND status = 'approved'
+                     ORDER BY id DESC LIMIT 10`, [id]);
+                                    const list = uploadRows || [];
+                                    attachments = list
+                                        .map((r) => {
+                                        const name = (r.originalName || "").toString();
+                                        const url = (r.s3Url || r.storedPath || "").toString();
+                                        return name && url ? { filename: name, path: url } : null;
+                                    })
+                                        .filter((v) => !!v);
+                                    if (attachments.length === 0)
+                                        attachments = undefined;
+                                }
+                                catch (attachErr) {
+                                    console.error("Failed to load MOM attachments (non-fatal)", { leadId: id, error: attachErr });
+                                }
+                            }
+                            const mailChainCc = await getMailLoopCcEmails([actingUser.email, row.designerEmail || null]);
+                            const mailChainSubject = buildMailChainSubject(id, row.projectName, customerName);
+                            void triggerMailRouteWithLog({
+                                leadId: id,
+                                milestoneIndex: 4,
+                                taskName: "Material selection meeting completed",
+                                route: emailRoutePath,
+                                visibility: "external",
+                                payload: {
+                                    to: customerEmail,
+                                    cc: mailChainCc,
+                                    subject: mailChainSubject,
+                                    customerName,
+                                    designerName,
+                                    laminateSelections,
+                                    ...(attachments ? { attachments } : {}),
+                                },
+                            });
+                        }
+                        else {
+                            console.warn("[mom-color-laminate-email] Skipped – no customerEmail found for leadId:", id);
+                        }
+                    }
+                }
+                catch (err) {
+                    console.error("MOM color laminate selection email prepare error (non-fatal)", {
+                        leadId: id,
+                        error: err,
+                    });
+                }
+            }
+            else if (emailRoutePath === "/api/email/send-design-signoff-meeting-scheduled") {
+                // Design sign off (40% milestone): CX only, pass meeting date/time, designer name
+                try {
+                    const [rows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
+                    u.name as designerName, u.email as designerEmail
+             FROM leads l
+             LEFT JOIN users u ON u.id = l.assigned_designer_id
+             WHERE l.id = ?`, [id]);
+                    const row = rows[0];
+                    if (row) {
+                        let payload = {};
+                        try {
+                            payload = row.payload ? JSON.parse(row.payload) : {};
+                        }
+                        catch {
+                            payload = {};
+                        }
+                        const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
+                        const customerEmail = row.clientEmail ||
+                            formData.email ||
+                            formData.sales_email ||
+                            payload?.email ||
+                            payload?.form?.email ||
+                            null;
+                        const customerName = formData.customer_name ||
+                            formData.sales_lead_name ||
+                            payload?.customer_name ||
+                            payload?.form?.customer_name ||
+                            row.projectName ||
+                            "Customer";
+                        const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
+                        const projectId = row.pid || `PJ-${id}`;
                         const meetingDate = meta?.meetingDate ?? meta?.signoffDate ?? null;
                         const meetingTime = meta?.meetingTime ?? meta?.signoffTime ?? null;
+                        const meetingMode = meta?.meetingMode ?? null;
+                        const meetingLink = meta?.meetingLink ?? null;
+                        const attachments = meta?.attachments || undefined;
+                        const resolvedEcLocation = meta?.ecLocation ||
+                            formData.experience_center ||
+                            payload?.experience_center ||
+                            payload?.form?.experience_center ||
+                            "Experience Center";
                         if (meetingDate && meetingTime) {
                             const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
                             if (googleStart) {
@@ -3540,42 +3728,41 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                     await createGoogleCalendarEventForFirstAvailableUser({
                                         userIds: [row.assigned_designer_id, actingUser.id],
                                         summary: `Design Sign-Off - ${customerName}`,
-                                        description: `Design sign-off meeting scheduled for ${customerName}.`,
+                                        description: `Design sign-off meeting at ${resolvedEcLocation}.`,
                                         startDateTimeIso: googleStart,
                                         endDateTimeIso: addHoursToIso(googleStart, 1),
                                         attendees: distinctEmails([customerEmail, row.designerEmail, actingUser.email]),
                                     });
                                 }
                                 catch (calendarErr) {
-                                    console.error("Design signoff Google event create error (non-fatal)", {
-                                        leadId: id,
-                                        error: calendarErr,
-                                    });
+                                    console.error("Design signoff Google event create error (non-fatal)", { leadId: id, error: calendarErr });
                                 }
                             }
-                            if (customerEmail) {
-                                const mailChainCc = await getMailLoopCcEmails([
-                                    actingUser.email,
-                                    row.designerEmail,
-                                ]);
-                                const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
-                                void triggerMailRouteWithLog({
-                                    leadId: id,
-                                    milestoneIndex: 5,
-                                    taskName: "Design sign off",
-                                    route: emailRoutePath,
-                                    visibility: "external",
-                                    payload: {
-                                        to: customerEmail,
-                                        cc: mailChainCc,
-                                        subject: mailChainSubject,
-                                        customerName,
-                                        designerName,
-                                        meetingDate: meetingDate || undefined,
-                                        meetingTime: meetingTime || undefined,
-                                    },
-                                });
-                            }
+                        }
+                        if (customerEmail) {
+                            const mailChainCc = await getMailLoopCcEmails([actingUser.email, row.designerEmail]);
+                            const mailChainSubject = buildMailChainSubject(projectId, row.projectName, customerName);
+                            void triggerMailRouteWithLog({
+                                leadId: id,
+                                milestoneIndex: 5,
+                                taskName: "Design sign off",
+                                route: emailRoutePath,
+                                visibility: "external",
+                                payload: {
+                                    to: customerEmail,
+                                    cc: mailChainCc,
+                                    subject: mailChainSubject,
+                                    customerName,
+                                    projectId,
+                                    designerName,
+                                    meetingDate: meetingDate || undefined,
+                                    meetingTime: meetingTime || undefined,
+                                    meetingMode: meetingMode || undefined,
+                                    meetingLink: meetingLink || undefined,
+                                    ecLocation: resolvedEcLocation,
+                                    ...(attachments && attachments.length ? { attachments } : {}),
+                                },
+                            });
                         }
                     }
                 }
@@ -3623,7 +3810,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                         const ifscCode = meta?.ifscCode ?? "ICIC0007483";
                         if (customerEmail) {
                             const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
-                            const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
+                            const mailChainSubject = buildMailChainSubject(id, row.projectName, customerName);
                             void triggerMailRouteWithLog({
                                 leadId: id,
                                 milestoneIndex: 5,
@@ -3689,6 +3876,8 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                         const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
                         const meetingDate = meta?.meetingDate ?? null;
                         const meetingTime = meta?.meetingTime ?? null;
+                        const meetingMode = meta?.meetingMode ?? null;
+                        const meetingLink = meta?.meetingLink ?? null;
                         const ecLocation = meta?.ecLocation ?? meta?.ecAddress ?? ecName;
                         if (meetingDate && meetingTime) {
                             const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
@@ -3715,7 +3904,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                     actingUser.email,
                                     row.designerEmail,
                                 ]);
-                                const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
+                                const mailChainSubject = buildMailChainSubject(id, row.projectName, customerName);
                                 void triggerMailRouteWithLog({
                                     leadId: id,
                                     milestoneIndex: 4,
@@ -3730,6 +3919,8 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                         designerName,
                                         meetingDate,
                                         meetingTime,
+                                        meetingMode,
+                                        meetingLink,
                                         ecLocation,
                                     },
                                 });
@@ -3748,12 +3939,14 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                 // POC mail & Timeline submission: CX only, pass POC details and designer
                 try {
                     const [rows] = await pool.query(`SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
-                    u.name as designerName
+                    u.name as designerName,
+                    pm.name as pmName, pm.email as pmEmail
              FROM leads l
              LEFT JOIN users u ON u.id = l.assigned_designer_id
+             LEFT JOIN users pm ON pm.id = l.assigned_project_manager_id
              WHERE l.id = ?`, [id]);
                     const row = rows[0];
-                    if (row?.clientEmail) {
+                    if (row) {
                         let payload = {};
                         try {
                             payload = row.payload ? JSON.parse(row.payload) : {};
@@ -3762,39 +3955,52 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                             payload = {};
                         }
                         const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
-                        const customerName = formData.customer_name ||
-                            formData.sales_lead_name ||
-                            payload?.customer_name ||
-                            payload?.form?.customer_name ||
-                            row.projectName ||
-                            "Customer";
-                        const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
-                        const productionPoc = meta?.productionPoc ?? "Prajwal - prajwal@hubinterior.com";
-                        const executionPoc = meta?.executionPoc ?? "Project Manager - PM automatically";
-                        const spmPoc = meta?.spmPoc ?? "SPM automatically";
-                        const operationManager = meta?.operationManager ?? "Balaji - balaji@hubinterior.com";
-                        const operationHead = meta?.operationHead ?? "Alex - alex@hubinterior.com";
-                        const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
-                        const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
-                        void triggerMailRouteWithLog({
-                            leadId: id,
-                            milestoneIndex: 6,
-                            taskName: "POC mail & Timeline submission",
-                            route: emailRoutePath,
-                            visibility: "external",
-                            payload: {
-                                to: row.clientEmail,
-                                cc: mailChainCc,
-                                subject: mailChainSubject,
-                                customerName,
-                                designerName,
-                                productionPoc,
-                                executionPoc,
-                                spmPoc,
-                                operationManager,
-                                operationHead,
-                            },
-                        });
+                        const customerEmail = row.clientEmail ||
+                            formData.client_email ||
+                            formData.email ||
+                            formData.customer_email ||
+                            payload?.email ||
+                            payload?.customer_email ||
+                            payload?.form?.email ||
+                            null;
+                        if (customerEmail) {
+                            const customerName = formData.customer_name ||
+                                formData.sales_lead_name ||
+                                payload?.customer_name ||
+                                payload?.form?.customer_name ||
+                                row.projectName ||
+                                "Customer";
+                            const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
+                            const productionPoc = meta?.productionPoc ?? "Prajwal - prajwal@hubinterior.com";
+                            const executionPoc = row.pmName && row.pmEmail ? `${row.pmName} - ${row.pmEmail}` : (meta?.executionPoc ?? "Project Manager - PM automatically");
+                            const spmPoc = meta?.spmPoc ?? "Dummy SPM - dummy.spm@hubinterior.com";
+                            const operationManager = meta?.operationManager ?? "Balaji - balaji@hubinterior.com";
+                            const operationHead = meta?.operationHead ?? "Alex - alex@hubinterior.com";
+                            const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
+                            const mailChainSubject = buildMailChainSubject(id, row.projectName, customerName);
+                            void triggerMailRouteWithLog({
+                                leadId: id,
+                                milestoneIndex: 6,
+                                taskName: "POC mail & Timeline submission",
+                                route: emailRoutePath,
+                                visibility: "external",
+                                payload: {
+                                    to: customerEmail,
+                                    cc: mailChainCc,
+                                    subject: mailChainSubject,
+                                    customerName,
+                                    designerName,
+                                    productionPoc,
+                                    executionPoc,
+                                    spmPoc,
+                                    operationManager,
+                                    operationHead,
+                                },
+                            });
+                        }
+                        else {
+                            console.warn("[complete-task] No customer email found for POC timeline email", { leadId: id });
+                        }
                     }
                 }
                 catch (err) {
@@ -3813,7 +4019,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
              LEFT JOIN users u ON u.id = l.assigned_designer_id
              WHERE l.id = ?`, [id]);
                     const row = rows[0];
-                    if (row?.clientEmail) {
+                    if (row) {
                         let payload = {};
                         try {
                             payload = row.payload ? JSON.parse(row.payload) : {};
@@ -3822,29 +4028,42 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                             payload = {};
                         }
                         const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
-                        const customerName = formData.customer_name ||
-                            formData.sales_lead_name ||
-                            payload?.customer_name ||
-                            payload?.form?.customer_name ||
-                            row.projectName ||
-                            "Customer";
-                        const designerName = row.designerName || formData.designer_name || formData.designerName || "Team HUB Interiors";
-                        const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
-                        const mailChainSubject = buildMailChainSubject(null, row.projectName, customerName);
-                        void triggerMailRouteWithLog({
-                            leadId: id,
-                            milestoneIndex: 6,
-                            taskName: "Cx approval for production",
-                            route: emailRoutePath,
-                            visibility: "external",
-                            payload: {
-                                to: row.clientEmail,
-                                cc: mailChainCc,
-                                subject: mailChainSubject,
-                                customerName,
-                                designerName,
-                            },
-                        });
+                        const customerEmail = row.clientEmail ||
+                            formData.client_email ||
+                            formData.email ||
+                            formData.customer_email ||
+                            payload?.email ||
+                            payload?.customer_email ||
+                            payload?.form?.email ||
+                            null;
+                        if (customerEmail) {
+                            const customerName = formData.customer_name ||
+                                formData.sales_lead_name ||
+                                payload?.customer_name ||
+                                payload?.form?.customer_name ||
+                                row.projectName ||
+                                "Customer";
+                            const designerName = row.designerName || formData.designer_name || formData.designerName || "Team HUB Interiors";
+                            const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
+                            const mailChainSubject = buildMailChainSubject(id, row.projectName, customerName);
+                            void triggerMailRouteWithLog({
+                                leadId: id,
+                                milestoneIndex: 6,
+                                taskName: "Cx approval for production",
+                                route: emailRoutePath,
+                                visibility: "external",
+                                payload: {
+                                    to: customerEmail,
+                                    cc: mailChainCc,
+                                    subject: mailChainSubject,
+                                    customerName,
+                                    designerName,
+                                },
+                            });
+                        }
+                        else {
+                            console.warn("[complete-task] No customer email found for Production approval email", { leadId: id });
+                        }
                     }
                 }
                 catch (err) {
@@ -3905,6 +4124,235 @@ app.get("/api/leads/:id/completions", async (req, res) => {
     catch (err) {
         console.error("lead completions error", err);
         return res.status(500).json({ message: "Failed to load completions" });
+    }
+});
+// Search a lead by its CRM Lead ID stored inside the payload JSON (used by Sales Closure form re-submission)
+app.get("/api/leads/by-crm-id/:crmLeadId", async (req, res) => {
+    const crmLeadId = req.params.crmLeadId?.trim();
+    if (!crmLeadId)
+        return res.status(400).json({ message: "CRM Lead ID is required" });
+    try {
+        const [rows] = await pool.query(`SELECT id, project_name as projectName, contact_no as contactNo, client_email as clientEmail, payload
+       FROM leads
+       WHERE JSON_UNQUOTE(
+         JSON_EXTRACT(
+           CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END,
+           '$.crm_lead_id'
+         )
+       ) = ?
+       LIMIT 1`, [crmLeadId]);
+        const row = rows[0];
+        if (!row)
+            return res.status(404).json({ message: "No lead found with that CRM Lead ID" });
+        // Parse payload before returning
+        let payloadObj = {};
+        try {
+            payloadObj = row.payload ? JSON.parse(row.payload) : {};
+        }
+        catch { /* ignore */ }
+        return res.json({ ...row, payload: payloadObj });
+    }
+    catch (err) {
+        console.error("by-crm-id error", err);
+        return res.status(500).json({ message: "Failed to search by CRM Lead ID" });
+    }
+});
+// ----- Finance Sales Closure Approval -----
+app.get("/api/leads/finance-sales-closure-queue", async (req, res) => {
+    try {
+        const user = await getUserFromSession(req);
+        if (!user)
+            return res.status(401).json({ message: "Unauthorized" });
+        const role = (user?.role ?? "").toLowerCase();
+        if (role !== "finance" && role !== "admin") {
+            return res.status(403).json({ message: "Only finance or admin can access this queue" });
+        }
+        const [rows] = await pool.query(`
+      SELECT 
+        id, 
+        project_name as projectName, 
+        project_stage as projectStage,
+        JSON_UNQUOTE(JSON_EXTRACT(CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, '$.payment_received')) as paymentReceived,
+        JSON_UNQUOTE(JSON_EXTRACT(CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, '$.mode_of_payment')) as paymentMode,
+        JSON_UNQUOTE(JSON_EXTRACT(CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, '$.payment_screenshot')) as paymentScreenshot
+      FROM leads
+      WHERE JSON_UNQUOTE(JSON_EXTRACT(CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, '$.sales_closure_finance_approved')) = 'false'
+        AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, '$.sales_closure_finance_rejected')), 'false') != 'true'
+      ORDER BY id ASC
+    `);
+        const list = rows.map((r) => ({
+            id: r.id,
+            projectName: r.projectName || "—",
+            status: "Pending approval",
+            paymentReceived: r.paymentReceived || "—",
+            paymentMode: r.paymentMode || "—",
+            paymentScreenshot: r.paymentScreenshot || null,
+            canApprove: true,
+        }));
+        return res.json(list);
+    }
+    catch (err) {
+        console.error("finance-sales-closure-queue error", err);
+        return res.status(500).json({ message: "Failed to load queue" });
+    }
+});
+app.post("/api/leads/:id/approve-sales-closure", async (req, res) => {
+    try {
+        const user = await getUserFromSession(req);
+        if (!user)
+            return res.status(401).json({ message: "Unauthorized" });
+        const role = (user?.role ?? "").toLowerCase();
+        if (role !== "finance" && role !== "admin") {
+            return res.status(403).json({ message: "Only finance or admin can approve" });
+        }
+        const leadId = Number(req.params.id);
+        if (!leadId)
+            return res.status(400).json({ message: "Invalid lead ID" });
+        await pool.query(`
+      UPDATE leads 
+      SET payload = JSON_SET(
+        CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, 
+        '$.sales_closure_finance_approved', 
+        true
+      )
+      WHERE id = ?
+    `, [leadId]);
+        // Optional event tracking for lead history
+        await addLeadHistoryEvent(leadId, {
+            id: `approve-sales-closure-${Date.now()}`,
+            type: "note",
+            taskName: "Sales Closure Payment Approval",
+            milestoneName: "Pre 10%",
+            timestamp: new Date().toISOString(),
+            description: "Finance approved sales closure payment",
+            user: { name: user.name || "Finance" },
+            details: { kind: "note", noteText: "Sales Closure payment screenshot approved." },
+        });
+        return res.json({ success: true, message: "Sales closure approved successfully" });
+    }
+    catch (err) {
+        console.error("approve-sales-closure error", err);
+        return res.status(500).json({ message: "Failed to approve sales closure" });
+    }
+});
+// Finance: Reject sales closure payment screenshot and notify sales person via email
+app.post("/api/leads/:id/reject-sales-closure", async (req, res) => {
+    try {
+        const user = await getUserFromSession(req);
+        if (!user)
+            return res.status(401).json({ message: "Unauthorized" });
+        const role = (user?.role ?? "").toLowerCase();
+        if (role !== "finance" && role !== "admin") {
+            return res.status(403).json({ message: "Only finance or admin can reject" });
+        }
+        const leadId = Number(req.params.id);
+        if (!leadId)
+            return res.status(400).json({ message: "Invalid lead ID" });
+        // Mark as rejected in payload (keep finance_approved: false, add finance_rejected: true)
+        await pool.query(`
+      UPDATE leads
+      SET payload = JSON_SET(
+        CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END,
+        '$.sales_closure_finance_approved', false,
+        '$.sales_closure_finance_rejected', true
+      )
+      WHERE id = ?
+    `, [leadId]);
+        // Fetch payload to get emails for notification
+        const [rows] = await pool.query(`SELECT project_name as projectName, payload FROM leads WHERE id = ?`, [leadId]);
+        const row = rows[0];
+        const payloadObj = (() => {
+            try {
+                return row?.payload ? JSON.parse(row.payload) : {};
+            }
+            catch {
+                return {};
+            }
+        })();
+        const salesEmail = payloadObj.sales_email || null;
+        const salesLeadEmail = payloadObj.sales_lead_email || null;
+        const salesSpocEmail = payloadObj.sales_spoc_email || null;
+        const customerName = payloadObj.customer_name || row?.projectName || "Customer";
+        // Send rejection email to sales person, CC sales lead and SPOC if available
+        if (salesEmail) {
+            const ccList = [];
+            if (salesLeadEmail)
+                ccList.push(salesLeadEmail);
+            if (salesSpocEmail)
+                ccList.push(salesSpocEmail);
+            void triggerMailRouteWithLog({
+                leadId,
+                taskName: "Sales Closure Payment Rejection",
+                route: "/api/email/send-sales-closure-payment-rejected",
+                visibility: "internal",
+                payload: {
+                    to: salesEmail,
+                    ...(ccList.length > 0 ? { cc: ccList } : {}),
+                    subject: `Action Required: Sales Closure Payment Rejected – Lead #${leadId}`,
+                    salesPersonName: payloadObj.sales_email || undefined,
+                    customerName,
+                    leadId,
+                },
+            });
+        }
+        else {
+            console.warn(`[reject-sales-closure] No sales_email in payload for lead ${leadId} – skipping email`);
+        }
+        // Log rejection event in lead history
+        await addLeadHistoryEvent(leadId, {
+            id: `reject-sales-closure-${Date.now()}`,
+            type: "note",
+            taskName: "Sales Closure Payment Rejection",
+            milestoneName: "Pre 10%",
+            timestamp: new Date().toISOString(),
+            description: "Finance rejected sales closure payment screenshot",
+            user: { name: user.name || "Finance" },
+            details: { kind: "note", noteText: "Sales Closure payment screenshot rejected. Notification sent to sales." },
+        });
+        return res.json({ success: true, message: "Sales closure rejected and sales person notified" });
+    }
+    catch (err) {
+        console.error("reject-sales-closure error", err);
+        return res.status(500).json({ message: "Failed to reject sales closure" });
+    }
+});
+// Sales: Update an existing sales closure lead (payment details only) after rejection
+// Resets finance_rejected and sales_closure_finance_approved so it goes back to Finance queue
+app.put("/api/sales-closure/:id", async (req, res) => {
+    const leadId = Number(req.params.id);
+    if (!leadId || Number.isNaN(leadId))
+        return res.status(400).json({ message: "Invalid lead ID" });
+    try {
+        // Fetch existing payload
+        const [rows] = await pool.query(`SELECT payload FROM leads WHERE id = ?`, [leadId]);
+        const row = rows[0];
+        if (!row)
+            return res.status(404).json({ message: "Lead not found" });
+        const existingPayload = (() => {
+            try {
+                return row.payload ? JSON.parse(row.payload) : {};
+            }
+            catch {
+                return {};
+            }
+        })();
+        const incoming = req.body;
+        // Only allow updating payment-related fields; all other fields are retained from existing payload
+        const updatedPayload = {
+            ...existingPayload,
+            payment_received: incoming.payment_received ?? existingPayload.payment_received,
+            mode_of_payment: incoming.mode_of_payment ?? existingPayload.mode_of_payment,
+            payment_screenshot: incoming.payment_screenshot ?? existingPayload.payment_screenshot,
+            // Reset approval flags so it goes back to Finance queue
+            sales_closure_finance_approved: false,
+            sales_closure_finance_rejected: false,
+        };
+        await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [JSON.stringify(updatedPayload), new Date(), leadId]);
+        return res.json({ success: true, message: "Sales closure updated and sent back for finance approval" });
+    }
+    catch (err) {
+        console.error("put-sales-closure error", err);
+        return res.status(500).json({ message: "Failed to update sales closure" });
     }
 });
 // ----- Finance 10% payment: queue (limited fields), upload screenshots, approve -----
@@ -4087,7 +4535,7 @@ app.post("/api/leads/:id/approve-10p-payment", async (req, res) => {
                     payload?.form?.customer_name ||
                     row.projectName ||
                     "Customer";
-                const projectId = row.pid || "";
+                const projectId = row.pid || `PJ-${leadId}`;
                 const rawOrderValue = formData.order_value ?? payload.order_value ?? null;
                 let amountPaid;
                 if (typeof rawOrderValue === "number") {
@@ -4369,7 +4817,7 @@ app.post("/api/leads/:id/approve-40p-payment", async (req, res) => {
                     payload: {
                         to: row.clientEmail,
                         cc: await getMailLoopCcEmails([user.email || null]),
-                        subject: buildMailChainSubject(null, row.projectName, customerName),
+                        subject: buildMailChainSubject(leadId, row.projectName, customerName),
                         customerName,
                         projectName,
                         amountReceived: formData.forty_percent_amount ?? payload?.forty_percent_amount ?? undefined,
@@ -4455,11 +4903,11 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req, res) => {
         if (!allowed.includes(role)) {
             return res.status(403).json({ message: "Not allowed to send meeting invites" });
         }
-        const { meetingType, meetingDate, meetingTime, meetingLink, meetingMode, ecLocation, } = req.body || {};
+        const { meetingType, meetingDate, meetingTime, meetingLink, meetingMode, ecLocation, attachments, } = req.body || {};
         if (!meetingType || !meetingDate || !meetingTime) {
             return res.status(400).json({ message: "meetingType, meetingDate and meetingTime are required" });
         }
-        const [rows] = await pool.query(`SELECT l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
+        const [rows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
               u.name as designerName, u.email as designerEmail
        FROM leads l
        LEFT JOIN users u ON u.id = l.assigned_designer_id
@@ -4488,6 +4936,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req, res) => {
             row.projectName ||
             "Customer";
         const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
+        const projectId = row.pid || `PJ-${leadId}`;
         const eventStart = formatGoogleDateTime(meetingDate, meetingTime);
         if (!eventStart) {
             return res.status(400).json({ message: "Invalid meeting date/time" });
@@ -4496,12 +4945,12 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req, res) => {
         let description = "";
         let emailRoutePath = "";
         let emailBody = {};
+        const resolvedEcLocation = ecLocation ||
+            formData.experience_center ||
+            payload?.experience_center ||
+            payload?.form?.experience_center ||
+            "Experience Center";
         if (meetingType === "dqc2_material_selection") {
-            const resolvedEcLocation = ecLocation ||
-                formData.experience_center ||
-                payload?.experience_center ||
-                payload?.form?.experience_center ||
-                "Experience Center";
             summary = `Material Selection - ${customerName}`;
             description = [
                 `Material selection meeting at ${resolvedEcLocation}.`,
@@ -4512,18 +4961,22 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req, res) => {
             emailBody = {
                 to: customerEmail,
                 cc: await getMailLoopCcEmails([actingUser.email, row.designerEmail]),
-                subject: buildMailChainSubject(null, row.projectName, customerName),
+                subject: buildMailChainSubject(projectId, row.projectName, customerName),
                 customerName,
+                projectId,
                 designerName,
                 meetingDate,
                 meetingTime,
+                meetingMode,
+                meetingLink,
                 ecLocation: resolvedEcLocation,
+                ...(Array.isArray(attachments) && attachments.length ? { attachments } : {}),
             };
         }
         else if (meetingType === "design_signoff") {
             summary = `Design Sign-Off - ${customerName}`;
             description = [
-                `Design sign-off meeting scheduled for ${customerName}.`,
+                `Design sign-off meeting at ${resolvedEcLocation}.`,
                 meetingMode ? `Mode: ${meetingMode}` : null,
                 meetingLink ? `Meeting link: ${meetingLink}` : null,
             ].filter(Boolean).join("\n");
@@ -4531,11 +4984,16 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req, res) => {
             emailBody = {
                 to: customerEmail,
                 cc: await getMailLoopCcEmails([actingUser.email, row.designerEmail]),
-                subject: buildMailChainSubject(null, row.projectName, customerName),
+                subject: buildMailChainSubject(projectId, row.projectName, customerName),
                 customerName,
+                projectId,
                 designerName,
                 meetingDate,
                 meetingTime,
+                meetingMode,
+                meetingLink,
+                ecLocation: resolvedEcLocation,
+                ...(Array.isArray(attachments) && attachments.length ? { attachments } : {}),
             };
         }
         else {
@@ -4572,6 +5030,46 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req, res) => {
     catch (err) {
         console.error("schedule-meeting-invite error", err);
         return res.status(500).json({ message: "Failed to schedule meeting invite" });
+    }
+});
+// Material selection file upload – stores files and returns paths (NO email side-effect)
+app.post("/api/leads/:id/material-selection-upload", upload.array("files"), async (req, res) => {
+    const leadId = Number(req.params.id);
+    if (Number.isNaN(leadId))
+        return res.status(400).json({ message: "Invalid id" });
+    try {
+        const user = await getUserFromSession(req);
+        if (!user)
+            return res.status(401).json({ message: "Unauthorized" });
+        const role = (user?.role ?? "").toLowerCase();
+        const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
+        if (!allowed.includes(role)) {
+            return res.status(403).json({ message: "Not allowed to upload material selection files" });
+        }
+        const files = req.files;
+        if (!files || files.length === 0) {
+            return res.status(400).json({ message: "At least one file is required" });
+        }
+        const now = new Date();
+        const attachments = [];
+        for (const file of files) {
+            let s3Url = null;
+            if (process.env.AWS_ACCESS_KEY_ID) {
+                s3Url = await uploadLeadFileToS3(leadId, file.path, file.originalname, file.mimetype);
+            }
+            await pool.query(`INSERT INTO lead_uploads
+           (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'material_selection', ?)`, [leadId, user.id, file.originalname, file.filename, file.path, file.mimetype, file.size, now, s3Url]);
+            const filePath = s3Url || file.path;
+            if (filePath) {
+                attachments.push({ filename: file.originalname, path: filePath });
+            }
+        }
+        return res.status(201).json({ ok: true, attachments });
+    }
+    catch (err) {
+        console.error("material-selection-upload error", err);
+        return res.status(500).json({ message: "Failed to upload material selection files" });
     }
 });
 // List uploads for a lead (designers see only approved; MMT manager/executive and Finance see all with status)
@@ -4904,7 +5402,7 @@ async function persistDqc1SubmissionFromMeta(leadId, user, drawingFiles, quotati
                     ...baseCc,
                     ...dqcUsers.slice(1).map((u) => String(u.email || "")),
                 ]);
-                const subject = buildMailChainSubject(null, leadRow.projectName, customerName);
+                const subject = buildMailChainSubject(leadId, leadRow.projectName, customerName);
                 void triggerMailRouteWithLog({
                     leadId,
                     milestoneIndex: 1,
@@ -5340,6 +5838,7 @@ app.post("/api/leads/:id/mom-upload", upload.array("files"), async (req, res) =>
             return res.status(400).json({ message: "Minutes or at least one file is required" });
         }
         const now = new Date();
+        const attachments = [];
         // Save reference files
         if (files && files.length > 0) {
             for (const file of files) {
@@ -5349,20 +5848,14 @@ app.post("/api/leads/:id/mom-upload", upload.array("files"), async (req, res) =>
                 }
                 await pool.query(`INSERT INTO lead_uploads
              (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'mom_attachment', ?)`, [
-                    leadId,
-                    user.id,
-                    file.originalname,
-                    file.filename,
-                    file.path,
-                    file.mimetype,
-                    file.size,
-                    now,
-                    s3Url,
-                ]);
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'mom_attachment', ?)`, [leadId, user.id, file.originalname, file.filename, file.path, file.mimetype, file.size, now, s3Url]);
+                attachments.push({
+                    filename: file.originalname,
+                    path: s3Url || file.path,
+                });
             }
         }
-        // Save MOM minutes as a text file entry so it also appears under Files
+        // Save MOM minutes as a text file entry
         if (minutes) {
             const baseName = `MOM-${now.toISOString().slice(0, 10)}-${Date.now()}.txt`;
             const storedName = baseName;
@@ -5375,17 +5868,8 @@ app.post("/api/leads/:id/mom-upload", upload.array("files"), async (req, res) =>
             }
             await pool.query(`INSERT INTO lead_uploads
            (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'mom_minutes', ?)`, [
-                leadId,
-                user.id,
-                baseName,
-                storedName,
-                storedPath,
-                "text/plain",
-                sizeBytes,
-                now,
-                s3UrlText,
-            ]);
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'mom_minutes', ?)`, [leadId, user.id, baseName, storedName, storedPath, "text/plain", sizeBytes, now, s3UrlText]);
+            // No longer adding minutes file to attachments array as per user request
         }
         const attachmentNames = files && files.length > 0 ? files.map((f) => f.originalname) : [];
         const ev = {
@@ -5401,11 +5885,11 @@ app.post("/api/leads/:id/mom-upload", upload.array("files"), async (req, res) =>
             details: {
                 kind: "mom",
                 hasMinutes: !!minutes,
-                attachments: attachmentNames.map((name) => ({ name })),
+                attachments: attachments.map((a) => ({ name: a.filename })),
             },
         };
         await addLeadHistoryEvent(leadId, ev);
-        return res.status(201).json({ ok: true });
+        return res.status(201).json({ ok: true, attachments });
     }
     catch (err) {
         console.error("mom-upload error", err);
@@ -5433,8 +5917,12 @@ app.post("/api/leads/:id/first-cut-design-upload", upload.array("files"), async 
         const now = new Date();
         const meetingDateRaw = req.body?.meetingDate;
         const meetingTimeRaw = req.body?.meetingTime;
+        const meetingModeRaw = req.body?.meetingMode;
+        const meetingLinkRaw = req.body?.meetingLink;
         const meetingDate = typeof meetingDateRaw === "string" && meetingDateRaw.trim() ? meetingDateRaw.trim() : null;
         const meetingTime = typeof meetingTimeRaw === "string" && meetingTimeRaw.trim() ? meetingTimeRaw.trim() : null;
+        const meetingMode = typeof meetingModeRaw === "string" && meetingModeRaw.trim() ? meetingModeRaw.trim() : null;
+        const meetingLink = typeof meetingLinkRaw === "string" && meetingLinkRaw.trim() ? meetingLinkRaw.trim() : null;
         const attachments = [];
         for (const file of files) {
             let s3Url = null;
@@ -5460,6 +5948,12 @@ app.post("/api/leads/:id/first-cut-design-upload", upload.array("files"), async 
                     path: s3Url,
                 });
             }
+            else if (file.path) {
+                attachments.push({
+                    filename: file.originalname,
+                    path: file.path,
+                });
+            }
         }
         const names = files.map((f) => f.originalname).join(", ");
         const ev = {
@@ -5473,69 +5967,7 @@ app.post("/api/leads/:id/first-cut-design-upload", upload.array("files"), async 
             details: { kind: "first_cut_design", files: files.map((f) => ({ name: f.originalname })) },
         };
         await addLeadHistoryEvent(leadId, ev);
-        // Fire-and-forget: send first-cut design invite email immediately when designer clicks "Send Invite"
-        try {
-            const [rows] = await pool.query("SELECT project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ?", [leadId]);
-            const row = rows[0];
-            if (row) {
-                let payload = {};
-                try {
-                    payload = row.payload ? JSON.parse(row.payload) : {};
-                }
-                catch {
-                    payload = {};
-                }
-                const customerEmail = row.clientEmail || payload.email || payload?.form?.email || null;
-                const customerName = payload.customer_name ||
-                    payload?.form?.customer_name ||
-                    row.projectName ||
-                    "Customer";
-                if (customerEmail) {
-                    const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
-                    if (googleStart) {
-                        try {
-                            await createGoogleCalendarEventForUser({
-                                userId: user.id,
-                                summary: `First Cut Design Discussion - ${customerName}`,
-                                description: `First cut design and quotation discussion for ${customerName}.`,
-                                startDateTimeIso: googleStart,
-                                endDateTimeIso: addHoursToIso(googleStart, 1),
-                                attendees: distinctEmails([customerEmail, user.email]),
-                            });
-                        }
-                        catch (calendarErr) {
-                            console.error("DQC1 first-cut invite Google event create error (non-fatal)", {
-                                leadId,
-                                error: calendarErr,
-                            });
-                        }
-                    }
-                    void triggerMailRouteWithLog({
-                        leadId,
-                        milestoneIndex: 1,
-                        taskName: "First cut design + quotation discussion meeting request",
-                        route: "/api/email/send-dqc1-first-cut-design-scheduled",
-                        visibility: "external",
-                        payload: {
-                            to: customerEmail,
-                            cc: await getMailLoopCcEmails([user.email || null]),
-                            subject: buildMailChainSubject(null, row.projectName, customerName),
-                            customerName,
-                            meetingDate,
-                            meetingTime,
-                            ...(attachments.length ? { attachments } : {}),
-                        },
-                    });
-                }
-            }
-        }
-        catch (emailErr) {
-            console.error("DQC1 first-cut invite email prepare error (non-fatal)", {
-                leadId,
-                error: emailErr,
-            });
-        }
-        return res.status(201).json({ ok: true });
+        return res.status(201).json({ ok: true, attachments });
     }
     catch (err) {
         console.error("first-cut-design-upload error", err);
@@ -5918,6 +6350,15 @@ app.get("/api/leads/queue", async (req, res) => {
               l.assigned_project_manager_id,
               u.name as designerName,
               pm.name as projectManagerName,
+              JSON_UNQUOTE(
+                JSON_EXTRACT(
+                  CASE
+                    WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}'
+                    ELSE l.payload
+                  END,
+                  '$.sales_closure_finance_approved'
+                )
+              ) AS financeApprovedRaw,
               NULLIF(TRIM(COALESCE(
                 JSON_UNQUOTE(
                   JSON_EXTRACT(
@@ -5942,7 +6383,9 @@ app.get("/api/leads/queue", async (req, res) => {
        LEFT JOIN users u ON u.id = l.assigned_designer_id
        LEFT JOIN users pm ON pm.id = l.assigned_project_manager_id
        ORDER BY l.id ASC`);
-        const baseList = rows.map((r) => ({
+        const baseList = rows
+            .filter((r) => r.financeApprovedRaw !== "false")
+            .map((r) => ({
             ...r,
             isOnHold: !!r.isOnHold,
             designerName: r.designerName ?? null,
@@ -6005,9 +6448,12 @@ app.get("/api/leads/dqc-queue", async (req, res) => {
         if (role !== "dqc_manager" && role !== "dqe") {
             return res.status(403).json({ message: "Only DQC Manager or DQE can access DQC queue" });
         }
-        const [leadRows] = await pool.query(`SELECT id, project_name as projectName, project_stage as projectStage
+        const [leadRows] = await pool.query(`SELECT id, project_name as projectName, project_stage as projectStage,
+              JSON_UNQUOTE(JSON_EXTRACT(CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, '$.sales_closure_finance_approved')) AS financeApprovedRaw
        FROM leads ORDER BY id ASC`);
-        const leads = leadRows;
+        const leads = leadRows
+            .filter((l) => l.financeApprovedRaw !== "false")
+            .map((l) => ({ id: l.id, projectName: l.projectName, projectStage: l.projectStage }));
         const [reviewRows] = await pool.query(`SELECT lead_id as leadId, verdict FROM lead_dqc_reviews ORDER BY id DESC`);
         const latestVerdictByLead = {};
         for (const row of reviewRows) {
@@ -6041,6 +6487,28 @@ app.get("/api/leads/dqc-queue", async (req, res) => {
     catch (err) {
         console.error("dqc-queue error", err);
         return res.status(500).json({ message: "Failed to load DQC queue" });
+    }
+});
+// Sales Managers for Sales Closure form (proxy to Project-ERP)
+app.get("/api/sales-managers", async (req, res) => {
+    try {
+        const data = await fetchFromErpWithRetry("/api/auth/users/SALES_MANAGER");
+        res.json(data);
+    }
+    catch (err) {
+        console.error("sales-managers proxy error", err);
+        res.status(500).json({ message: "Failed to load sales managers" });
+    }
+});
+// Sales Admins for Sales Closure form (proxy to Project-ERP)
+app.get("/api/sales-admins", async (req, res) => {
+    try {
+        const data = await fetchFromErpWithRetry("/api/auth/users/SALES_ADMIN");
+        res.json(data);
+    }
+    catch (err) {
+        console.error("sales-admins proxy error", err);
+        res.status(500).json({ message: "Failed to load sales admins" });
     }
 });
 // Designers for Sales Closure form (from users with role designer or design_manager)
@@ -6247,6 +6715,58 @@ app.patch("/api/leads/:id/assign-project-manager", async (req, res) => {
             return res.status(400).json({ message: "Invalid project manager" });
         }
         await pool.query("UPDATE leads SET assigned_project_manager_id = ?, update_at = ? WHERE id = ?", [pmId, new Date(), id]);
+        // ── Fire internal email to the newly assigned Project Manager ──
+        try {
+            const [leadRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.payload, l.assigned_designer_id,
+                u.name as designerName,
+                pm.name as pmName, pm.email as pmEmail
+         FROM leads l
+         LEFT JOIN users u ON u.id = l.assigned_designer_id
+         LEFT JOIN users pm ON pm.id = ?
+         WHERE l.id = ?`, [pmId, id]);
+            const leadRow = leadRows[0];
+            if (leadRow && leadRow.pmEmail) {
+                let lpayload = {};
+                try {
+                    lpayload = leadRow.payload ? JSON.parse(leadRow.payload) : {};
+                }
+                catch {
+                    lpayload = {};
+                }
+                const fd = lpayload?.formData || lpayload?.form_data || lpayload?.form || lpayload || {};
+                const customerName = fd.customer_name ||
+                    fd.sales_lead_name ||
+                    lpayload?.customer_name ||
+                    lpayload?.form?.customer_name ||
+                    leadRow.projectName ||
+                    "Customer";
+                const designerName = leadRow.designerName || fd.designer_name || fd.designerName || "Design Team";
+                const branch = fd.sales_closure_ec || fd.branch || fd.experience_center || lpayload?.branch || null;
+                const projectId = leadRow.pid || `PJ-${id}`;
+                const ccList = await getMailLoopCcEmails([user.email || null]);
+                void triggerMailRouteWithLog({
+                    leadId: id,
+                    milestoneIndex: 4,
+                    taskName: "Assign project manager",
+                    route: "/api/email/send-pm-assignment-notification",
+                    visibility: "internal",
+                    payload: {
+                        to: leadRow.pmEmail,
+                        cc: ccList,
+                        subject: `You've Been Assigned – ${customerName} Project`,
+                        pmName: leadRow.pmName || "Project Manager",
+                        customerName,
+                        projectName: leadRow.projectName || undefined,
+                        projectId,
+                        designerName,
+                        branchLocation: branch || undefined,
+                    },
+                });
+            }
+        }
+        catch (mailErr) {
+            console.error("PM assignment notification email error (non-fatal)", { leadId: id, error: mailErr });
+        }
         return res.json({ ok: true });
     }
     catch (err) {

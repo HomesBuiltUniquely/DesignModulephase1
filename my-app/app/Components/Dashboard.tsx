@@ -232,6 +232,12 @@ export default function Dashboard() {
                     </p>
                     <div className="flex flex-wrap items-center justify-center gap-3">
                         <a
+                            href="/finance/sales-closure"
+                            className="inline-flex items-center gap-2 px-5 py-3 rounded-lg border border-gray-300 text-gray-700 font-semibold hover:bg-gray-50"
+                        >
+                            Sales Closure
+                        </a>
+                        <a
                             href="/finance"
                             className="inline-flex items-center gap-2 px-5 py-3 rounded-lg bg-green-600 text-white font-semibold hover:bg-green-700"
                         >
@@ -259,8 +265,8 @@ export default function Dashboard() {
             .then((res) => res.text().then((t) => { try { return t ? JSON.parse(t) : null; } catch { return null; } }))
             .then((data) => {
                 if (cancelled) return;
-                if (isDqcUser && Array.isArray(data)) setDqcProjects(data);
-                else if (!isDqcUser && Array.isArray(data)) setProjects(data);
+                if (isDqcUser && Array.isArray(data)) setDqcProjects([...data].sort((a, b) => b.id - a.id));
+                else if (!isDqcUser && Array.isArray(data)) setProjects([...data].sort((a, b) => b.id - a.id));
             })
             .catch(() => {
                 if (!cancelled) {
@@ -574,7 +580,7 @@ export default function Dashboard() {
         if (sessionId) headers.Authorization = `Bearer ${sessionId}`;
         const res = await fetch(`${API}/api/leads/queue`, { headers });
         const data = await res.json().catch(() => null);
-        if (res.ok && Array.isArray(data)) setProjects(data);
+        if (res.ok && Array.isArray(data)) setProjects([...data].sort((a, b) => b.id - a.id));
     };
 
     const openProlanceForLead = async (row: LeadshipTypes) => {
@@ -779,7 +785,7 @@ export default function Dashboard() {
             if (sessionId) headers["Authorization"] = `Bearer ${sessionId}`;
             const qRes = await fetch(`${API}/api/leads/queue`, { headers });
             const qData = await qRes.json().catch(() => null);
-            if (qRes.ok && Array.isArray(qData)) setProjects(qData);
+            if (qRes.ok && Array.isArray(qData)) setProjects([...qData].sort((a, b) => b.id - a.id));
         } catch (err: unknown) {
             setImportMessage(err instanceof Error ? err.message : "Import failed");
         } finally {
