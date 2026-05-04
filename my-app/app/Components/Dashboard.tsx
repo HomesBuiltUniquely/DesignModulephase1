@@ -273,6 +273,12 @@ export default function Dashboard() {
                     </p>
                     <div className="flex flex-wrap items-center justify-center gap-3">
                         <a
+                            href="/finance/sales-closure"
+                            className="inline-flex items-center gap-2 px-5 py-3 rounded-lg border border-gray-300 text-gray-700 font-semibold hover:bg-gray-50"
+                        >
+                            Sales Closure
+                        </a>
+                        <a
                             href="/finance"
                             className="inline-flex items-center gap-2 px-5 py-3 rounded-lg bg-green-600 text-white font-semibold hover:bg-green-700"
                         >
