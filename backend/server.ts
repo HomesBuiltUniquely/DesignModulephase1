@@ -287,7 +287,7 @@ async function uploadProfileImage(userId: number, dataUrl: string): Promise<stri
 
   // No AWS credentials: save locally and return URL for our API to serve
   const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
-  const filePath = path.join(PROFILE_IMAGES_DIR, safeName); 
+  const filePath = path.join(PROFILE_IMAGES_DIR, safeName);
   fs.writeFileSync(filePath, buffer);
   return `${API_BASE}/api/profile-images/${safeName}`;
 }
@@ -4928,11 +4928,13 @@ app.post("/api/leads/:id/approve-sales-closure", async (req: Request, res: Respo
 
     await pool.query(`
       UPDATE leads 
-      SET payload = JSON_SET(
-        CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, 
-        '$.sales_closure_finance_approved', 
-        true
-      )
+      SET 
+        project_stage = '10-20%',
+        payload = JSON_SET(
+          CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, 
+          '$.sales_closure_finance_approved', 
+          true
+        )
       WHERE id = ?
     `, [leadId]);
 
@@ -7337,8 +7339,8 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
     if (role === "mmt_executive" && user) {
       const userId = user.id;
       if (!userId) return res.json([]);
-        const [rows] = await pool.query(
-          `SELECT l.id, l.pid, l.project_name as projectName, l.project_stage as projectStage,
+      const [rows] = await pool.query(
+        `SELECT l.id, l.pid, l.project_name as projectName, l.project_stage as projectStage,
                   l.contact_no as contactNo, l.client_email as clientEmail,
                   l.is_on_hold as isOnHold, l.resume_at as resumeAt,
                   l.create_at as createAt, l.update_at as updateAt,
@@ -7347,8 +7349,8 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
            FROM leads l
            INNER JOIN lead_d1_assignments a ON a.lead_id = l.id AND a.assigned_to_user_id = ?
            ORDER BY l.id ASC`,
-          [userId],
-        );
+        [userId],
+      );
       const list = (rows as any[]).map((r) => ({ ...r, isOnHold: !!r.isOnHold }));
       return res.json(list);
     }
@@ -8170,7 +8172,49 @@ app.post("/api/leads/:id/prolance-quote-snapshots", async (req: Request, res: Re
       [id, quoteId, json, new Date()],
     );
     const ins = result as mysql.ResultSetHeader;
+<<<<<<< HEAD
     return res.json({ ok: true, quoteId, inserted: ins.affectedRows === 1, updated: ins.affectedRows > 1 });
+=======
+    const inserted = ins.affectedRows === 1;
+
+    if (inserted) {
+      try {
+        const [rows] = await pool.query(
+          `SELECT project_name as projectName, payload FROM leads WHERE id = ?`,
+          [id]
+        );
+        const row = (rows as any[])[0];
+        if (row) {
+          const payloadObj = (() => {
+            try { return row.payload ? JSON.parse(row.payload) : {}; } catch { return {}; }
+          })();
+          const salesEmail = payloadObj.sales_email || payloadObj.salesExecutiveEmail || null;
+          const salesPersonName = payloadObj.sales_person || payloadObj.salesExecutive || "Sales Team";
+          const customerName = payloadObj.customer_name || row.projectName || "Customer";
+
+          if (salesEmail) {
+            void triggerMailRouteWithLog({
+              leadId: id,
+              taskName: "New Quote Generated",
+              route: "/api/email/send-new-quote-generated",
+              visibility: "internal",
+              payload: {
+                to: salesEmail,
+                salesPersonName,
+                customerName,
+                leadId: id,
+                quoteId,
+              },
+            });
+          }
+        }
+      } catch (emailErr) {
+        console.error("Failed to trigger new quote email", emailErr);
+      }
+    }
+
+    return res.json({ ok: true, quoteId, inserted });
+>>>>>>> b1cb94df848086ffe54ede3bdbb7a2df46b9e21c
   } catch (err) {
     console.error("prolance-quote-snapshots post error", err);
     return res.status(500).json({ message: "Failed to save quote snapshot" });
