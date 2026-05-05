@@ -155,7 +155,7 @@ app.get("/api/health", (_req, res) => {
 const pool = promise_1.default.createPool({
     host: process.env.DB_HOST || "localhost",
     user: process.env.DB_USER || "root",
-    password: process.env.DB_PASSWORD || "Root@123",
+    password: process.env.DB_PASSWORD || "root@root",
     database: process.env.DB_NAME || "DesignMod",
     port: Number(process.env.DB_PORT || 3306),
     connectionLimit: 10,
@@ -593,6 +593,56 @@ async function initDb() {
         catch {
             // ignore
         }
+        try {
+            const [ppc] = await conn.query("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'leads' AND COLUMN_NAME = 'prolance_project_id'");
+            if (ppc.length === 0) {
+                await conn.query("ALTER TABLE leads ADD COLUMN prolance_project_id INT NULL");
+            }
+        }
+        catch {
+            // ignore
+        }
+        try {
+            const [pqc] = await conn.query("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'leads' AND COLUMN_NAME = 'prolance_quote_id'");
+            if (pqc.length === 0) {
+                await conn.query("ALTER TABLE leads ADD COLUMN prolance_quote_id INT NULL");
+            }
+        }
+        catch {
+            // ignore
+        }
+        await conn.query(`
+      CREATE TABLE IF NOT EXISTS lead_prolance_quote_versions (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        lead_id INT NOT NULL,
+        quote_id INT NOT NULL,
+        created_at DATETIME NOT NULL,
+        UNIQUE KEY uniq_lead_quote (lead_id, quote_id),
+        KEY idx_lpqv_quote (quote_id),
+        KEY idx_lpqv_lead (lead_id)
+      );
+    `);
+        try {
+            await conn.query(`
+        INSERT IGNORE INTO lead_prolance_quote_versions (lead_id, quote_id, created_at)
+        SELECT id, prolance_quote_id, COALESCE(update_at, create_at, NOW()) FROM leads
+        WHERE prolance_quote_id IS NOT NULL AND prolance_quote_id > 0
+      `);
+        }
+        catch {
+            // ignore
+        }
+        await conn.query(`
+      CREATE TABLE IF NOT EXISTS lead_prolance_quote_snapshots (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        lead_id INT NOT NULL,
+        quote_id INT NOT NULL,
+        payload_json MEDIUMTEXT NOT NULL,
+        created_at DATETIME NOT NULL,
+        UNIQUE KEY uniq_quote_snapshot (quote_id),
+        KEY idx_lpqs_lead (lead_id)
+      );
+    `);
         await conn.query(`
       CREATE TABLE IF NOT EXISTS checklists (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -779,6 +829,70 @@ async function getUserFromSession(req) {
         profileImage: user.profileImage || null,
         phone: user.phone || "",
     };
+}
+/** Same visibility as GET /api/leads/:id for Prolance / quote metadata routes. */
+async function getLeadAccessRowForUser(res, user, leadId) {
+    if (!user) {
+        res.status(401).json({ message: "Unauthorized" });
+        return { ok: false };
+    }
+    const [rows] = await pool.query(`SELECT l.id, l.assigned_designer_id, l.assigned_project_manager_id
+     FROM leads l WHERE l.id = ?`, [leadId]);
+    const row = rows[0];
+    if (!row) {
+        res.status(404).json({ message: "Lead not found" });
+        return { ok: false };
+    }
+    const role = (user.role ?? "").toLowerCase();
+    if (role === "mmt_executive") {
+        const [assignRows] = await pool.query("SELECT 1 FROM lead_d1_assignments WHERE lead_id = ? AND assigned_to_user_id = ?", [leadId, user.id]);
+        if (assignRows.length === 0) {
+            res.status(404).json({ message: "Lead not found" });
+            return { ok: false };
+        }
+    }
+    if (role === "designer") {
+        if (!row.assigned_designer_id || row.assigned_designer_id !== user.id) {
+            res.status(404).json({ message: "Lead not found" });
+            return { ok: false };
+        }
+    }
+    if (role === "design_manager") {
+        const [dmCheck] = await pool.query(`SELECT 1 FROM users d WHERE d.id = ? AND d.design_manager_id = ?`, [row.assigned_designer_id, user.id]);
+        if (dmCheck.length === 0) {
+            res.status(404).json({ message: "Lead not found" });
+            return { ok: false };
+        }
+    }
+    if (role === "project_manager") {
+        if (!row.assigned_project_manager_id || row.assigned_project_manager_id !== user.id) {
+            res.status(404).json({ message: "Lead not found" });
+            return { ok: false };
+        }
+    }
+    return { ok: true, row };
+}
+async function loadProlanceQuoteVersionsForLead(leadId) {
+    const [rows] = await pool.query(`SELECT quote_id AS quoteId, created_at AS createdAt
+     FROM lead_prolance_quote_versions
+     WHERE lead_id = ?
+     ORDER BY created_at ASC, id ASC`, [leadId]);
+    const toIso = (d) => d instanceof Date ? d.toISOString() : typeof d === "string" ? d : new Date().toISOString();
+    const list = rows.map((r) => ({
+        quoteId: Number(r.quoteId),
+        createdAt: toIso(r.createdAt),
+    }));
+    const [lr] = await pool.query(`SELECT prolance_quote_id, update_at FROM leads WHERE id = ? LIMIT 1`, [leadId]);
+    const pq = lr[0]?.prolance_quote_id;
+    if (pq != null && Number(pq) > 0 && !list.some((x) => x.quoteId === Number(pq))) {
+        const u = lr[0]?.update_at;
+        list.push({
+            quoteId: Number(pq),
+            createdAt: toIso(u),
+        });
+        list.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    }
+    return list;
 }
 function normalizeEmail(value) {
     return (value || "").trim().toLowerCase();
@@ -2062,25 +2176,125 @@ app.post("/api/leads/external-intake", async (req, res) => {
         "").trim() || null;
     const pid = String(payload.pid || payload.externalLeadId || payload.referenceId || "").trim();
     const sourceProject = String(payload.sourceProject || payload.source || "").trim() || null;
+    const appointmentDateRaw = payload.appointmentDate ??
+        payload.appointment_date ??
+        payload.visitDate ??
+        payload.visit_date ??
+        payload.scheduledDate ??
+        payload.scheduled_date ??
+        payload.meetingDate ??
+        payload.meeting_date ??
+        formData.appointmentDate ??
+        formData.appointment_date ??
+        fetched.appointmentDate;
+    const appointmentDate = appointmentDateRaw != null && String(appointmentDateRaw).trim()
+        ? String(appointmentDateRaw).trim()
+        : null;
+    const slotCandidate = payload.appointmentSlot ??
+        payload.appointment_slot ??
+        payload.slot ??
+        payload.timeSlot ??
+        payload.time_slot ??
+        payload.slotDetails ??
+        payload.slot_details ??
+        formData.appointmentSlot ??
+        formData.slot ??
+        fetched.appointmentSlot ??
+        fetched.slot;
+    let appointmentSlot = null;
+    let slotDetails = null;
+    if (slotCandidate != null && typeof slotCandidate === "object") {
+        slotDetails = slotCandidate;
+        try {
+            appointmentSlot = JSON.stringify(slotCandidate);
+        }
+        catch {
+            appointmentSlot = String(slotCandidate);
+        }
+    }
+    else if (slotCandidate != null && String(slotCandidate).trim()) {
+        appointmentSlot = String(slotCandidate).trim();
+    }
+    const scheduleTimezoneRaw = payload.scheduleTimezone ??
+        payload.schedule_timezone ??
+        payload.timeZone ??
+        payload.timezone ??
+        formData.scheduleTimezone;
+    const scheduleTimezone = scheduleTimezoneRaw != null && String(scheduleTimezoneRaw).trim()
+        ? String(scheduleTimezoneRaw).trim()
+        : null;
+    const designerNameRaw = payload.designerName ??
+        payload.designer_name ??
+        payload.assignedDesignerName ??
+        payload.assigned_designer_name ??
+        formData.designerName ??
+        formData.designer_name ??
+        fetched.designerName ??
+        fetched.designer_name;
+    const designerName = designerNameRaw != null && String(designerNameRaw).trim()
+        ? String(designerNameRaw).trim()
+        : null;
+    const salesExecutiveRaw = payload.salesExecutive ??
+        payload.sales_executive ??
+        payload.salesExecutiveName ??
+        payload.sales_executive_name ??
+        formData.salesExecutive ??
+        formData.sales_executive ??
+        fetched.salesExecutive ??
+        fetched.sales_executive;
+    const salesExecutive = salesExecutiveRaw != null && String(salesExecutiveRaw).trim()
+        ? String(salesExecutiveRaw).trim()
+        : null;
+    const salesExecutiveEmailRaw = payload.salesExecutiveEmail ??
+        payload.sales_executive_email ??
+        payload.salesExecutiveMail ??
+        payload.sales_executive_mail ??
+        formData.salesExecutiveEmail ??
+        formData.sales_executive_email ??
+        fetched.salesExecutiveEmail ??
+        fetched.sales_executive_email;
+    const salesExecutiveEmail = salesExecutiveEmailRaw != null && String(salesExecutiveEmailRaw).trim()
+        ? String(salesExecutiveEmailRaw).trim()
+        : null;
     const now = new Date();
     try {
+        let assignedDesignerId = null;
+        if (designerName) {
+            const [designerRows] = await pool.query("SELECT id FROM users WHERE role = 'designer' AND LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1", [designerName]);
+            assignedDesignerId = designerRows[0]?.id != null
+                ? Number(designerRows[0].id)
+                : null;
+        }
+        const crmSchedule = {
+            date: appointmentDate,
+            slot: appointmentSlot,
+            timezone: scheduleTimezone,
+            slotDetails,
+        };
         const payloadToPersist = {
             source: "external_intake_api",
             sourceProject,
             externalReferenceId: pid || null,
             receivedAt: now.toISOString(),
+            crmSchedule,
             formData: {
                 customer_name: projectName,
                 co_no: contactNo || "",
                 email: clientEmail || "",
                 status_of_project: "Pre 10%",
+                designer_name: designerName || "",
+                sales_executive: salesExecutive || "",
+                sales_executive_email: salesExecutiveEmail || "",
+                appointment_date: appointmentDate || "",
+                appointment_slot: appointmentSlot || "",
+                schedule_timezone: scheduleTimezone || "",
             },
             rawPayload: payload,
         };
         const [result] = await pool.query(`INSERT INTO leads
        (pid, project_name, project_stage, contact_no, client_email,
         is_on_hold, resume_at, create_at, update_at, payload, assigned_designer_id)
-       VALUES (?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, NULL)`, [
+       VALUES (?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)`, [
             pid,
             projectName,
             "Pre 10%",
@@ -2089,12 +2303,23 @@ app.post("/api/leads/external-intake", async (req, res) => {
             now,
             now,
             JSON.stringify(payloadToPersist),
+            assignedDesignerId,
         ]);
         return res.status(201).json({
             ok: true,
             leadId: result?.insertId ?? null,
             projectName,
             projectStage: "Pre 10%",
+            designerName,
+            assignedDesignerId,
+            salesExecutive,
+            salesExecutiveEmail,
+            crmSchedule: {
+                date: appointmentDate,
+                slot: appointmentSlot,
+                timezone: scheduleTimezone,
+                ...(slotDetails != null ? { slotDetails } : {}),
+            },
             message: "Lead received via external intake",
         });
     }
@@ -6333,12 +6558,14 @@ app.get("/api/leads/queue", async (req, res) => {
             if (!userId)
                 return res.json([]);
             const [rows] = await pool.query(`SELECT l.id, l.pid, l.project_name as projectName, l.project_stage as projectStage,
-                l.contact_no as contactNo, l.client_email as clientEmail,
-                l.is_on_hold as isOnHold, l.resume_at as resumeAt,
-                l.create_at as createAt, l.update_at as updateAt
-         FROM leads l
-         INNER JOIN lead_d1_assignments a ON a.lead_id = l.id AND a.assigned_to_user_id = ?
-         ORDER BY l.id ASC`, [userId]);
+                  l.contact_no as contactNo, l.client_email as clientEmail,
+                  l.is_on_hold as isOnHold, l.resume_at as resumeAt,
+                  l.create_at as createAt, l.update_at as updateAt,
+                  l.prolance_project_id as prolanceProjectId,
+                  l.prolance_quote_id as prolanceQuoteId
+           FROM leads l
+           INNER JOIN lead_d1_assignments a ON a.lead_id = l.id AND a.assigned_to_user_id = ?
+           ORDER BY l.id ASC`, [userId]);
             const list = rows.map((r) => ({ ...r, isOnHold: !!r.isOnHold }));
             return res.json(list);
         }
@@ -6346,6 +6573,8 @@ app.get("/api/leads/queue", async (req, res) => {
               l.contact_no as contactNo, l.client_email as clientEmail,
               l.is_on_hold as isOnHold, l.resume_at as resumeAt,
               l.create_at as createAt, l.update_at as updateAt,
+              l.prolance_project_id as prolanceProjectId,
+              l.prolance_quote_id as prolanceQuoteId,
               l.assigned_designer_id,
               l.assigned_project_manager_id,
               u.name as designerName,
@@ -6789,6 +7018,8 @@ app.get("/api/leads/:id", async (req, res) => {
               l.create_at as createAt, l.update_at as updateAt, l.payload,
               l.assigned_designer_id,
               l.assigned_project_manager_id,
+              l.prolance_project_id as prolanceProjectId,
+              l.prolance_quote_id as prolanceQuoteId,
               pm.name as projectManagerName,
               d.email as designerEmail,
               CASE WHEN d.role = 'design_manager' THEN d.email ELSE dm.email END as designManagerEmail,
@@ -6856,11 +7087,232 @@ app.get("/api/leads/:id", async (req, res) => {
             revision: revision || "v1.0 (Latest)",
             alternateClientEmail: row.alternateClientEmail ?? null,
             projectManagerName: row.projectManagerName ?? null,
+            prolanceProjectId: row.prolanceProjectId != null ? Number(row.prolanceProjectId) : null,
+            prolanceQuoteId: row.prolanceQuoteId != null ? Number(row.prolanceQuoteId) : null,
         });
     }
     catch (err) {
         console.error("lead detail error", err);
         return res.status(500).json({ message: "Failed to load lead" });
+    }
+});
+// Persist Prolance project / quote IDs on the lead (same visibility as GET /api/leads/:id).
+app.patch("/api/leads/:id/prolance-ids", async (req, res) => {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id))
+        return res.status(400).json({ message: "Invalid id" });
+    const user = await getUserFromSession(req);
+    if (!user)
+        return res.status(401).json({ message: "Unauthorized" });
+    const body = (req.body || {});
+    const hasProj = Object.prototype.hasOwnProperty.call(body, "prolanceProjectId");
+    const hasQuote = Object.prototype.hasOwnProperty.call(body, "prolanceQuoteId");
+    if (!hasProj && !hasQuote) {
+        return res.status(400).json({ message: "prolanceProjectId and/or prolanceQuoteId is required" });
+    }
+    let prolanceProjectId;
+    if (hasProj) {
+        const v = body.prolanceProjectId;
+        if (v === null || v === "")
+            prolanceProjectId = null;
+        else {
+            const n = Number(v);
+            if (!Number.isFinite(n) || n < 1)
+                return res.status(400).json({ message: "Invalid prolanceProjectId" });
+            prolanceProjectId = n;
+        }
+    }
+    let prolanceQuoteId;
+    if (hasQuote) {
+        const v = body.prolanceQuoteId;
+        if (v === null || v === "")
+            prolanceQuoteId = null;
+        else {
+            const n = Number(v);
+            if (!Number.isFinite(n) || n < 1)
+                return res.status(400).json({ message: "Invalid prolanceQuoteId" });
+            prolanceQuoteId = n;
+        }
+    }
+    try {
+        const [rows] = await pool.query(`SELECT l.id, l.assigned_designer_id, l.assigned_project_manager_id
+       FROM leads l WHERE l.id = ?`, [id]);
+        const row = rows[0];
+        if (!row)
+            return res.status(404).json({ message: "Lead not found" });
+        const role = (user.role ?? "").toLowerCase();
+        if (role === "mmt_executive") {
+            const [assignRows] = await pool.query("SELECT 1 FROM lead_d1_assignments WHERE lead_id = ? AND assigned_to_user_id = ?", [id, user.id]);
+            if (assignRows.length === 0) {
+                return res.status(404).json({ message: "Lead not found" });
+            }
+        }
+        if (role === "designer") {
+            if (!row.assigned_designer_id || row.assigned_designer_id !== user.id) {
+                return res.status(404).json({ message: "Lead not found" });
+            }
+        }
+        if (role === "design_manager") {
+            const [dmCheck] = await pool.query(`SELECT 1 FROM users d WHERE d.id = ? AND d.design_manager_id = ?`, [row.assigned_designer_id, user.id]);
+            if (dmCheck.length === 0) {
+                return res.status(404).json({ message: "Lead not found" });
+            }
+        }
+        if (role === "project_manager") {
+            if (!row.assigned_project_manager_id || row.assigned_project_manager_id !== user.id) {
+                return res.status(404).json({ message: "Lead not found" });
+            }
+        }
+        const sets = [];
+        const params = [];
+        if (prolanceProjectId !== undefined) {
+            sets.push("prolance_project_id = ?");
+            params.push(prolanceProjectId);
+        }
+        if (prolanceQuoteId !== undefined) {
+            sets.push("prolance_quote_id = ?");
+            params.push(prolanceQuoteId);
+        }
+        sets.push("update_at = ?");
+        params.push(new Date());
+        params.push(id);
+        await pool.query(`UPDATE leads SET ${sets.join(", ")} WHERE id = ?`, params);
+        if (prolanceQuoteId !== undefined &&
+            prolanceQuoteId != null &&
+            Number.isFinite(Number(prolanceQuoteId)) &&
+            Number(prolanceQuoteId) > 0) {
+            try {
+                await pool.query(`INSERT IGNORE INTO lead_prolance_quote_versions (lead_id, quote_id, created_at) VALUES (?, ?, ?)`, [id, prolanceQuoteId, new Date()]);
+            }
+            catch (verErr) {
+                console.error("lead_prolance_quote_versions insert", verErr);
+            }
+        }
+        return res.json({
+            ok: true,
+            prolanceProjectId: prolanceProjectId !== undefined ? prolanceProjectId : undefined,
+            prolanceQuoteId: prolanceQuoteId !== undefined ? prolanceQuoteId : undefined,
+        });
+    }
+    catch (err) {
+        console.error("prolance-ids patch error", err);
+        return res.status(500).json({ message: "Failed to update Prolance IDs" });
+    }
+});
+// All Prolance quote revisions saved for this lead (auth + same visibility as lead detail).
+app.get("/api/leads/:id/prolance-quote-versions", async (req, res) => {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id))
+        return res.status(400).json({ message: "Invalid id" });
+    const user = await getUserFromSession(req);
+    const access = await getLeadAccessRowForUser(res, user, id);
+    if (!access.ok)
+        return;
+    try {
+        const versions = await loadProlanceQuoteVersionsForLead(id);
+        return res.json({ leadId: id, versions });
+    }
+    catch (err) {
+        console.error("prolance-quote-versions error", err);
+        return res.status(500).json({ message: "Failed to load quote versions" });
+    }
+});
+// Resolve lead from a quote id, then return full revision list (for quote page when leadId not in URL).
+app.get("/api/leads/prolance-quote-versions/by-quote/:quoteId", async (req, res) => {
+    const quoteIdNum = Number(req.params.quoteId);
+    if (!Number.isFinite(quoteIdNum) || quoteIdNum < 1) {
+        return res.status(400).json({ message: "Invalid quoteId" });
+    }
+    const user = await getUserFromSession(req);
+    if (!user)
+        return res.status(401).json({ message: "Unauthorized" });
+    try {
+        const [vRows] = await pool.query(`SELECT lead_id AS leadId FROM lead_prolance_quote_versions WHERE quote_id = ? LIMIT 1`, [quoteIdNum]);
+        let leadId = vRows[0]?.leadId ?? null;
+        if (leadId == null) {
+            const [lRows] = await pool.query(`SELECT id AS id FROM leads WHERE prolance_quote_id = ? LIMIT 1`, [
+                quoteIdNum,
+            ]);
+            leadId = lRows[0]?.id ?? null;
+        }
+        if (leadId == null) {
+            return res.json({ leadId: null, versions: [] });
+        }
+        const access = await getLeadAccessRowForUser(res, user, leadId);
+        if (!access.ok)
+            return;
+        const versions = await loadProlanceQuoteVersionsForLead(leadId);
+        return res.json({ leadId, versions });
+    }
+    catch (err) {
+        console.error("prolance-quote-versions by-quote error", err);
+        return res.status(500).json({ message: "Failed to load quote versions" });
+    }
+});
+// Freeze quote JSON at generation time so older /quote/:id links stay correct after Prolance revisions.
+app.post("/api/leads/:id/prolance-quote-snapshots", async (req, res) => {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id))
+        return res.status(400).json({ message: "Invalid id" });
+    const user = await getUserFromSession(req);
+    const access = await getLeadAccessRowForUser(res, user, id);
+    if (!access.ok)
+        return;
+    const quoteId = Number((req.body || {}).quoteId);
+    const payload = (req.body || {}).payload;
+    if (!Number.isFinite(quoteId) || quoteId < 1) {
+        return res.status(400).json({ message: "quoteId is required" });
+    }
+    if (payload == null || typeof payload !== "object") {
+        return res.status(400).json({ message: "payload must be a JSON object" });
+    }
+    try {
+        const json = JSON.stringify(payload);
+        const [result] = await pool.query(`INSERT IGNORE INTO lead_prolance_quote_snapshots (lead_id, quote_id, payload_json, created_at) VALUES (?, ?, ?, ?)`, [id, quoteId, json, new Date()]);
+        const ins = result;
+        const inserted = ins.affectedRows === 1;
+        if (inserted) {
+            try {
+                const [rows] = await pool.query(`SELECT project_name as projectName, payload FROM leads WHERE id = ?`, [id]);
+                const row = rows[0];
+                if (row) {
+                    const payloadObj = (() => {
+                        try {
+                            return row.payload ? JSON.parse(row.payload) : {};
+                        }
+                        catch {
+                            return {};
+                        }
+                    })();
+                    const salesEmail = payloadObj.sales_email || payloadObj.salesExecutiveEmail || null;
+                    const salesPersonName = payloadObj.sales_person || payloadObj.salesExecutive || "Sales Team";
+                    const customerName = payloadObj.customer_name || row.projectName || "Customer";
+                    if (salesEmail) {
+                        void triggerMailRouteWithLog({
+                            leadId: id,
+                            taskName: "New Quote Generated",
+                            route: "/api/email/send-new-quote-generated",
+                            visibility: "internal",
+                            payload: {
+                                to: salesEmail,
+                                salesPersonName,
+                                customerName,
+                                leadId: id,
+                                quoteId,
+                            },
+                        });
+                    }
+                }
+            }
+            catch (emailErr) {
+                console.error("Failed to trigger new quote email", emailErr);
+            }
+        }
+        return res.json({ ok: true, quoteId, inserted });
+    }
+    catch (err) {
+        console.error("prolance-quote-snapshots post error", err);
+        return res.status(500).json({ message: "Failed to save quote snapshot" });
     }
 });
 // Update primary / alternate client email (everyone except designers).
@@ -7067,7 +7519,7 @@ app.post("/api/leads/:id/cancel", async (req, res) => {
         res.status(500).json({ message: "Failed to cancel project" });
     }
 });
-(0, prolanceApi_1.registerProlanceRoutes)(app, getUserFromSession);
+(0, prolanceApi_1.registerProlanceRoutes)(app, getUserFromSession, pool);
 // Ensure CORS headers are present on error responses (multer, etc.) so the browser doesn't only show a generic CORS error
 app.use((err, req, res, _next) => {
     reflectCorsHeaders(req, res);
