@@ -8172,9 +8172,6 @@ app.post("/api/leads/:id/prolance-quote-snapshots", async (req: Request, res: Re
       [id, quoteId, json, new Date()],
     );
     const ins = result as mysql.ResultSetHeader;
-<<<<<<< HEAD
-    return res.json({ ok: true, quoteId, inserted: ins.affectedRows === 1, updated: ins.affectedRows > 1 });
-=======
     const inserted = ins.affectedRows === 1;
 
     if (inserted) {
@@ -8213,8 +8210,7 @@ app.post("/api/leads/:id/prolance-quote-snapshots", async (req: Request, res: Re
       }
     }
 
-    return res.json({ ok: true, quoteId, inserted });
->>>>>>> b1cb94df848086ffe54ede3bdbb7a2df46b9e21c
+    return res.json({ ok: true, quoteId, inserted, updated: ins.affectedRows > 1 });
   } catch (err) {
     console.error("prolance-quote-snapshots post error", err);
     return res.status(500).json({ message: "Failed to save quote snapshot" });
