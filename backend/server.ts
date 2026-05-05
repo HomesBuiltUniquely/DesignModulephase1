@@ -125,7 +125,7 @@ app.get("/api/health", (_req, res) => {
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "Root@123",
+  password: process.env.DB_PASSWORD || "root@root",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -2483,19 +2483,111 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
 
   const pid = String(payload.pid || payload.externalLeadId || payload.referenceId || "").trim();
   const sourceProject = String(payload.sourceProject || payload.source || "").trim() || null;
+
+  const appointmentDateRaw =
+    payload.appointmentDate ??
+    payload.appointment_date ??
+    payload.visitDate ??
+    payload.visit_date ??
+    payload.scheduledDate ??
+    payload.scheduled_date ??
+    payload.meetingDate ??
+    payload.meeting_date ??
+    formData.appointmentDate ??
+    formData.appointment_date ??
+    fetched.appointmentDate;
+  const appointmentDate =
+    appointmentDateRaw != null && String(appointmentDateRaw).trim()
+      ? String(appointmentDateRaw).trim()
+      : null;
+
+  const slotCandidate =
+    payload.appointmentSlot ??
+    payload.appointment_slot ??
+    payload.slot ??
+    payload.timeSlot ??
+    payload.time_slot ??
+    payload.slotDetails ??
+    payload.slot_details ??
+    formData.appointmentSlot ??
+    formData.slot ??
+    fetched.appointmentSlot ??
+    fetched.slot;
+
+  let appointmentSlot: string | null = null;
+  let slotDetails: unknown = null;
+  if (slotCandidate != null && typeof slotCandidate === "object") {
+    slotDetails = slotCandidate;
+    try {
+      appointmentSlot = JSON.stringify(slotCandidate);
+    } catch {
+      appointmentSlot = String(slotCandidate);
+    }
+  } else if (slotCandidate != null && String(slotCandidate).trim()) {
+    appointmentSlot = String(slotCandidate).trim();
+  }
+
+  const scheduleTimezoneRaw =
+    payload.scheduleTimezone ??
+    payload.schedule_timezone ??
+    payload.timeZone ??
+    payload.timezone ??
+    formData.scheduleTimezone;
+  const scheduleTimezone =
+    scheduleTimezoneRaw != null && String(scheduleTimezoneRaw).trim()
+      ? String(scheduleTimezoneRaw).trim()
+      : null;
+
+  const designerNameRaw =
+    payload.designerName ??
+    payload.designer_name ??
+    payload.assignedDesignerName ??
+    payload.assigned_designer_name ??
+    formData.designerName ??
+    formData.designer_name ??
+    fetched.designerName ??
+    fetched.designer_name;
+  const designerName =
+    designerNameRaw != null && String(designerNameRaw).trim()
+      ? String(designerNameRaw).trim()
+      : null;
+
   const now = new Date();
 
   try {
+    let assignedDesignerId: number | null = null;
+    if (designerName) {
+      const [designerRows] = await pool.query(
+        "SELECT id FROM users WHERE role = 'designer' AND LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1",
+        [designerName],
+      );
+      assignedDesignerId = (designerRows as { id?: unknown }[])[0]?.id != null
+        ? Number((designerRows as { id?: unknown }[])[0].id)
+        : null;
+    }
+
+    const crmSchedule = {
+      date: appointmentDate,
+      slot: appointmentSlot,
+      timezone: scheduleTimezone,
+      slotDetails,
+    };
+
     const payloadToPersist = {
       source: "external_intake_api",
       sourceProject,
       externalReferenceId: pid || null,
       receivedAt: now.toISOString(),
+      crmSchedule,
       formData: {
         customer_name: projectName,
         co_no: contactNo || "",
         email: clientEmail || "",
         status_of_project: "Pre 10%",
+        designer_name: designerName || "",
+        appointment_date: appointmentDate || "",
+        appointment_slot: appointmentSlot || "",
+        schedule_timezone: scheduleTimezone || "",
       },
       rawPayload: payload,
     };
@@ -2504,7 +2596,7 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
       `INSERT INTO leads
        (pid, project_name, project_stage, contact_no, client_email,
         is_on_hold, resume_at, create_at, update_at, payload, assigned_designer_id)
-       VALUES (?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, NULL)`,
+       VALUES (?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)`,
       [
         pid,
         projectName,
@@ -2514,6 +2606,7 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
         now,
         now,
         JSON.stringify(payloadToPersist),
+        assignedDesignerId,
       ],
     );
 
@@ -2522,6 +2615,14 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
       leadId: (result as any)?.insertId ?? null,
       projectName,
       projectStage: "Pre 10%",
+      designerName,
+      assignedDesignerId,
+      crmSchedule: {
+        date: appointmentDate,
+        slot: appointmentSlot,
+        timezone: scheduleTimezone,
+        ...(slotDetails != null ? { slotDetails } : {}),
+      },
       message: "Lead received via external intake",
     });
   } catch (err) {
