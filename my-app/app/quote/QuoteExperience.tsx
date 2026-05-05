@@ -306,7 +306,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
   const [payload, setPayload] = useState<Record<string, unknown> | null>(() => inlinePayload);
   const [summaryTab, setSummaryTab] = useState<'overall' | 'roomwise'>('overall');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const [linkCopiedState, setLinkCopiedState] = useState<'customer' | null>(null);
+  const [linkCopiedState, setLinkCopiedState] = useState<'customer' | 'internal' | null>(null);
   const [themeMode, setThemeMode] = useState<'light' | 'dark'>('light');
   const [metaDraft, setMetaDraft] = useState<Record<string, string>>({});
   const [quoteVersions, setQuoteVersions] = useState<QuoteVersionRow[]>([]);
@@ -444,6 +444,14 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     typeof window !== 'undefined' && customerLinkSlug && customerLinkSlug !== 'draft'
       ? `${window.location.origin}/quote/${encodeURIComponent(customerLinkSlug)}`
       : '';
+  const internalShareLink = useMemo(() => {
+    if (typeof window === 'undefined' || !customerLinkSlug || customerLinkSlug === 'draft') return '';
+    const q = new URLSearchParams();
+    q.set('internal', '1');
+    const lid = searchParams.get('leadId');
+    if (lid) q.set('leadId', lid);
+    return `${window.location.origin}/quote/${encodeURIComponent(customerLinkSlug)}?${q.toString()}`;
+  }, [customerLinkSlug, searchParams]);
 
   const internalVersionSuffix = useMemo(() => {
     if (!isInternalMode) return '';
@@ -552,6 +560,18 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                   className="rounded-md border border-emerald-400/60 bg-emerald-500/15 px-3 py-1.5 text-xs font-semibold text-emerald-100 hover:bg-emerald-500/25"
                 >
                   {linkCopiedState === 'customer' ? 'Customer Link Copied' : 'Copy Customer Link'}
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!internalShareLink) return;
+                    await navigator.clipboard.writeText(internalShareLink);
+                    setLinkCopiedState('internal');
+                    setTimeout(() => setLinkCopiedState(null), 1600);
+                  }}
+                  className="rounded-md border border-cyan-400/60 bg-cyan-500/15 px-3 py-1.5 text-xs font-semibold text-cyan-100 hover:bg-cyan-500/25"
+                >
+                  {linkCopiedState === 'internal' ? 'Internal Link Copied' : 'Copy Internal Link'}
                 </button>
                 <button
                   type="button"

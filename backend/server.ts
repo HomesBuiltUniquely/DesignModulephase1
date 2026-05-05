@@ -287,7 +287,7 @@ async function uploadProfileImage(userId: number, dataUrl: string): Promise<stri
 
   // No AWS credentials: save locally and return URL for our API to serve
   const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
-  const filePath = path.join(PROFILE_IMAGES_DIR, safeName);
+  const filePath = path.join(PROFILE_IMAGES_DIR, safeName); 
   fs.writeFileSync(filePath, buffer);
   return `${API_BASE}/api/profile-images/${safeName}`;
 }
@@ -2552,6 +2552,34 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
       ? String(designerNameRaw).trim()
       : null;
 
+  const salesExecutiveRaw =
+    payload.salesExecutive ??
+    payload.sales_executive ??
+    payload.salesExecutiveName ??
+    payload.sales_executive_name ??
+    formData.salesExecutive ??
+    formData.sales_executive ??
+    fetched.salesExecutive ??
+    fetched.sales_executive;
+  const salesExecutive =
+    salesExecutiveRaw != null && String(salesExecutiveRaw).trim()
+      ? String(salesExecutiveRaw).trim()
+      : null;
+
+  const salesExecutiveEmailRaw =
+    payload.salesExecutiveEmail ??
+    payload.sales_executive_email ??
+    payload.salesExecutiveMail ??
+    payload.sales_executive_mail ??
+    formData.salesExecutiveEmail ??
+    formData.sales_executive_email ??
+    fetched.salesExecutiveEmail ??
+    fetched.sales_executive_email;
+  const salesExecutiveEmail =
+    salesExecutiveEmailRaw != null && String(salesExecutiveEmailRaw).trim()
+      ? String(salesExecutiveEmailRaw).trim()
+      : null;
+
   const now = new Date();
 
   try {
@@ -2585,6 +2613,8 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
         email: clientEmail || "",
         status_of_project: "Pre 10%",
         designer_name: designerName || "",
+        sales_executive: salesExecutive || "",
+        sales_executive_email: salesExecutiveEmail || "",
         appointment_date: appointmentDate || "",
         appointment_slot: appointmentSlot || "",
         schedule_timezone: scheduleTimezone || "",
@@ -2617,6 +2647,8 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
       projectStage: "Pre 10%",
       designerName,
       assignedDesignerId,
+      salesExecutive,
+      salesExecutiveEmail,
       crmSchedule: {
         date: appointmentDate,
         slot: appointmentSlot,
