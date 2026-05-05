@@ -8164,11 +8164,13 @@ app.post("/api/leads/:id/prolance-quote-snapshots", async (req: Request, res: Re
   try {
     const json = JSON.stringify(payload);
     const [result] = await pool.query(
-      `INSERT IGNORE INTO lead_prolance_quote_snapshots (lead_id, quote_id, payload_json, created_at) VALUES (?, ?, ?, ?)`,
+      `INSERT INTO lead_prolance_quote_snapshots (lead_id, quote_id, payload_json, created_at)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE payload_json = VALUES(payload_json), created_at = VALUES(created_at)`,
       [id, quoteId, json, new Date()],
     );
     const ins = result as mysql.ResultSetHeader;
-    return res.json({ ok: true, quoteId, inserted: ins.affectedRows === 1 });
+    return res.json({ ok: true, quoteId, inserted: ins.affectedRows === 1, updated: ins.affectedRows > 1 });
   } catch (err) {
     console.error("prolance-quote-snapshots post error", err);
     return res.status(500).json({ message: "Failed to save quote snapshot" });

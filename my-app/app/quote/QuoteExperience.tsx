@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { getApiBase } from '@/app/lib/apiBase';
+import { buildAuthHeaders, getApiBase } from '@/app/lib/apiBase';
 import { useSearchParams } from 'next/navigation';
 import { extractQuoteIdFromBody } from '@/app/lib/prolanceApiGetQuote';
+import { useAuth } from '@/app/auth/AuthContext';
 
 const API = getApiBase();
 
@@ -269,9 +270,10 @@ type CategoryDiscountPct = {
 };
 
 const ZERO_CATEGORY_PCT: CategoryDiscountPct = { woodwork: 0, accessories: 0, constructionHw: 0 };
+const MAX_DISCOUNT_PCT = 30;
 
 function clampPct(p: number): number {
-  return Math.min(100, Math.max(0, Math.round(Number.isFinite(p) ? p : 0)));
+  return Math.min(MAX_DISCOUNT_PCT, Math.max(0, Math.round(Number.isFinite(p) ? p : 0)));
 }
 
 function discountRsFromCategoryPct(pct: CategoryDiscountPct, bases: CategoryDiscountPct): number {
@@ -280,6 +282,57 @@ function discountRsFromCategoryPct(pct: CategoryDiscountPct, bases: CategoryDisc
     (bases.accessories * clampPct(pct.accessories)) / 100 +
     (bases.constructionHw * clampPct(pct.constructionHw)) / 100
   );
+}
+
+function readSavedCategoryDiscountPct(v: unknown): CategoryDiscountPct | null {
+  if (!v || typeof v !== 'object') return null;
+  const root = v as Record<string, unknown>;
+  const direct = root.hubCategoryDiscountPct;
+  const data = root.data ?? root.Data;
+  const nested =
+    data && typeof data === 'object' && !Array.isArray(data)
+      ? (data as Record<string, unknown>).hubCategoryDiscountPct
+      : null;
+  const from = direct ?? nested;
+  if (!from || typeof from !== 'object') return null;
+  const o = from as Record<string, unknown>;
+  const pickNum = (n: unknown) => (typeof n === 'number' && Number.isFinite(n) ? n : Number(n ?? 0));
+  return {
+    woodwork: clampPct(pickNum(o.woodwork)),
+    accessories: clampPct(pickNum(o.accessories)),
+    constructionHw: clampPct(pickNum(o.constructionHw)),
+  };
+}
+
+function applyDiscountToPayload(
+  source: Record<string, unknown>,
+  pct: CategoryDiscountPct,
+  discountAmount: number,
+  totalAfterDiscount: number | null,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = {
+    ...source,
+    hubCategoryDiscountPct: pct,
+    hubCategoryDiscountAmount: discountAmount,
+  };
+  const data = source.data ?? source.Data;
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const d: Record<string, unknown> = {
+      ...(data as Record<string, unknown>),
+      hubCategoryDiscountPct: pct,
+      hubCategoryDiscountAmount: discountAmount,
+    };
+    next.data = d;
+  } else if (Array.isArray(data) && data[0] && typeof data[0] === 'object') {
+    const first = data[0] as Record<string, unknown>;
+    const firstNext: Record<string, unknown> = {
+      ...first,
+      hubCategoryDiscountPct: pct,
+      hubCategoryDiscountAmount: discountAmount,
+    }
+    next.data = [firstNext, ...data.slice(1)];
+  }
+  return next;
 }
 
 export type QuoteExperienceProps = {
@@ -295,6 +348,7 @@ export type QuoteExperienceProps = {
 export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: QuoteExperienceProps) {
   const searchParams = useSearchParams();
   const isInternalMode = searchParams.get('internal') === '1';
+  const { sessionId } = useAuth();
 
   const inlinePayload =
     preloadedPayload != null && typeof preloadedPayload === 'object' ? preloadedPayload : null;
@@ -314,6 +368,8 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
   const [quoteVersionsError, setQuoteVersionsError] = useState<string | null>(null);
   const [versionCopyId, setVersionCopyId] = useState<number | null>(null);
   const [discountSidebarOpen, setDiscountSidebarOpen] = useState(true);
+  const [discountSaveState, setDiscountSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [discountSaveError, setDiscountSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     if (preloadedPayload !== undefined) return;
@@ -463,11 +519,24 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
   }, [isInternalMode, searchParams]);
   const [discountPct, setDiscountPct] = useState<CategoryDiscountPct>(ZERO_CATEGORY_PCT);
   const [discountPctDraft, setDiscountPctDraft] = useState<CategoryDiscountPct>(ZERO_CATEGORY_PCT);
+  const leadId = useMemo(() => {
+    const lid = searchParams.get('leadId');
+    const n = lid != null ? Number(lid) : NaN;
+    return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null;
+  }, [searchParams]);
+  const quoteIdForSnapshot = useMemo(() => {
+    const q = Number(versionFetchId);
+    return Number.isFinite(q) && q > 0 ? Math.trunc(q) : null;
+  }, [versionFetchId]);
 
   useEffect(() => {
-    setDiscountPct(ZERO_CATEGORY_PCT);
-    setDiscountPctDraft(ZERO_CATEGORY_PCT);
-  }, [quote.quotationId]);
+    const saved = payload ? readSavedCategoryDiscountPct(payload) : null;
+    const next = saved ?? ZERO_CATEGORY_PCT;
+    setDiscountPct(next);
+    setDiscountPctDraft(next);
+    setDiscountSaveState('idle');
+    setDiscountSaveError(null);
+  }, [quote.quotationId, payload]);
 
   useEffect(() => {
     if (!payload) return;
@@ -484,7 +553,13 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
   }, [payload, fallbackNormId, quote]);
 
   const baseTotal = useMemo(() => {
-    return quote.totalPayableAmount ?? (quote.rooms.length ? quote.rooms.reduce((sum, r) => sum + (r.totalPrice || 0), 0) : null);
+    const roomSum = quote.rooms.length
+      ? quote.rooms.reduce((sum, r) => sum + (r.totalPrice || 0), 0)
+      : 0;
+    // Always discount against the undiscouted quote base (room sum when present),
+    // not a previously discounted total from saved snapshots.
+    if (roomSum > 0) return roomSum;
+    return quote.totalPayableAmount;
   }, [quote.totalPayableAmount, quote.rooms]);
   const discountCap = baseTotal ?? 0;
   const categoryBases = useMemo((): CategoryDiscountPct => {
@@ -561,18 +636,20 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                 >
                   {linkCopiedState === 'customer' ? 'Customer Link Copied' : 'Copy Customer Link'}
                 </button>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    if (!internalShareLink) return;
-                    await navigator.clipboard.writeText(internalShareLink);
-                    setLinkCopiedState('internal');
-                    setTimeout(() => setLinkCopiedState(null), 1600);
-                  }}
-                  className="rounded-md border border-cyan-400/60 bg-cyan-500/15 px-3 py-1.5 text-xs font-semibold text-cyan-100 hover:bg-cyan-500/25"
-                >
-                  {linkCopiedState === 'internal' ? 'Internal Link Copied' : 'Copy Internal Link'}
-                </button>
+                {isInternalMode ? (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!internalShareLink) return;
+                      await navigator.clipboard.writeText(internalShareLink);
+                      setLinkCopiedState('internal');
+                      setTimeout(() => setLinkCopiedState(null), 1600);
+                    }}
+                    className="rounded-md border border-cyan-400/60 bg-cyan-500/15 px-3 py-1.5 text-xs font-semibold text-cyan-100 hover:bg-cyan-500/25"
+                  >
+                    {linkCopiedState === 'internal' ? 'Internal Link Copied' : 'Copy Internal Link'}
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => setThemeMode((prev) => (prev === 'light' ? 'dark' : 'light'))}
@@ -1023,7 +1100,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                       <input
                         type="number"
                         min={0}
-                        max={100}
+                        max={MAX_DISCOUNT_PCT}
                         step={1}
                         value={discountPctDraft[key]}
                         onChange={(e) => {
@@ -1034,7 +1111,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                           }
                           setDiscountPctDraft((prev) => ({
                             ...prev,
-                            [key]: Math.min(100, Math.max(0, Math.round(v))),
+                            [key]: Math.min(MAX_DISCOUNT_PCT, Math.max(0, Math.round(v))),
                           }));
                         }}
                         className={`w-[4.5rem] rounded-md border py-1.5 pl-7 pr-2 text-right text-sm font-semibold tabular-nums outline-none focus:ring-2 focus:ring-teal-500/40 ${
@@ -1066,7 +1143,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                 </div>
                 <button
                   type="button"
-                  onClick={() => {
+                  onClick={async () => {
                     const next: CategoryDiscountPct = {
                       woodwork: clampPct(discountPctDraft.woodwork),
                       accessories: clampPct(discountPctDraft.accessories),
@@ -1074,11 +1151,57 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                     };
                     setDiscountPct(next);
                     setDiscountPctDraft(next);
+                    if (!payload || !isInternalMode || leadId == null || quoteIdForSnapshot == null) return;
+                    if (!sessionId) {
+                      setDiscountSaveState('error');
+                      setDiscountSaveError('Session expired. Please sign in again and retry.');
+                      return;
+                    }
+                    const nextDiscount = Math.min(discountRsFromCategoryPct(next, categoryBases), discountCap);
+                    const nextTotal = baseTotal == null ? null : Math.max(baseTotal - nextDiscount, 0);
+                    const nextPayload = applyDiscountToPayload(payload, next, nextDiscount, nextTotal);
+                    setPayload(nextPayload);
+                    setDiscountSaveState('saving');
+                    setDiscountSaveError(null);
+                    try {
+                      const res = await fetch(`${API}/api/leads/${leadId}/prolance-quote-snapshots`, {
+                        method: 'POST',
+                        headers: buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' }),
+                        body: JSON.stringify({ quoteId: quoteIdForSnapshot, payload: nextPayload }),
+                      });
+                      if (!res.ok) {
+                        const t = await res.text();
+                        let msg = `Save failed (HTTP ${res.status}).`;
+                        try {
+                          const b = t ? (JSON.parse(t) as { message?: unknown }) : null;
+                          if (b && b.message != null) msg = String(b.message);
+                        } catch {
+                          // ignore parse error
+                        }
+                        throw new Error(msg);
+                      }
+                      setDiscountSaveState('saved');
+                      setTimeout(() => setDiscountSaveState('idle'), 1800);
+                    } catch (e) {
+                      setDiscountSaveState('error');
+                      setDiscountSaveError(e instanceof Error ? e.message : 'Could not persist discount. Please try again.');
+                    }
                   }}
                   className="w-full rounded-lg bg-teal-700 py-3 text-sm font-semibold text-white shadow-sm hover:bg-teal-800"
                 >
-                  Save changes
+                  {discountSaveState === 'saving'
+                    ? 'Saving...'
+                    : discountSaveState === 'saved'
+                      ? 'Saved'
+                      : discountSaveState === 'error'
+                        ? 'Retry Save'
+                        : 'Save changes'}
                 </button>
+                {discountSaveState === 'error' ? (
+                  <p className={`text-xs ${isDark ? 'text-rose-300' : 'text-rose-600'}`}>
+                    {discountSaveError || 'Could not persist discount. Please try again.'}
+                  </p>
+                ) : null}
               </div>
             </aside>
           ) : null}
