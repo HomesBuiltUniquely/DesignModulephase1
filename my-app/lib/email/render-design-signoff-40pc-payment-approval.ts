@@ -71,7 +71,7 @@ export function renderDesignSignoff40pcPaymentApprovalEmail(params: {
           Thank you for your prompt support.
         </p>
         <p style="margin:0 0 4px 0;font-size:17px;font-weight:700;color:#1f1f1f;">Warm regards,</p>
-        <p style="margin:0;font-size:15px;color:#333;">Finance Team<br/>HUB Interiors</p>
+        <p style="margin:0;font-size:15px;color:#333;">Finance Team<br/>HUB Interior</p>
       </div>
       <div style="background-color:#f0ebe3;border-radius:0 0 24px 24px;padding:24px 32px;text-align:center;">
         <p style="margin:0;font-size:11px;color:#9ca3af;">You're receiving this as confirmation of your 40% milestone payment with HUB Interior.</p>

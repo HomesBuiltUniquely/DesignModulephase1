@@ -95,7 +95,7 @@ export function renderPmAssignmentNotificationEmail(params: {
           <tr>
             <td style="padding:0 28px 20px 28px;">
               <p style="margin:0 0 4px 0;font-size:13px;color:#4b5563;">Regards,</p>
-              <p style="margin:0 0 2px 0;font-size:14px;font-weight:600;color:#111827;">Team HUB Interiors</p>
+              <p style="margin:0 0 2px 0;font-size:14px;font-weight:600;color:#111827;">Team HUB Interior</p>
             </td>
           </tr>
           <tr>
