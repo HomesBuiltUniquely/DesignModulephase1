@@ -127,9 +127,8 @@ export default function PopupMailLoopChain({
 
   const toList = toEmails();
   const ccList = ccEmails();
-  const subject = projectPid || projectName
-    ? `Project ${projectPid || ''} ${projectName || ''} – Design discussion`.trim()
-    : 'Design discussion – Mail chain';
+  const name = projectName || 'CUSTOMER';
+  const subject = `HUB ${name.toUpperCase()} DESIGN JOURNEY`.replace(/\s+/g, ' ').trim();
   const gmailInboxUrl = `https://mail.google.com/mail/u/0/#search/${encodeURIComponent(subject)}`;
 
   const triggerMailChain = async (openGmailInbox = false) => {

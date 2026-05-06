@@ -35,7 +35,7 @@ function renderMailLoopChainInitiateEmail(params: {
 <head>
   <meta charSet="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Welcome to HUB Interiors</title>
+  <title>Welcome to HUB Interior</title>
   <style>
     *{box-sizing:border-box;margin:0;padding:0;}
     .lx{max-width:640px;margin:1.5rem auto;font-family:Georgia,serif;color:#1a1a1a;line-height:1.8;font-size:14px;}
@@ -97,13 +97,13 @@ function renderMailLoopChainInitiateEmail(params: {
   </style>
 </head>
 <body style="margin:0;padding:24px;background:#f8fafc;">
-  <h2 style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);">HUB Interiors luxury welcome email template — red, black and grey, with full sales call record.</h2>
+  <h2 style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);">HUB Interior luxury welcome email template — red, black and grey, with full sales call record.</h2>
 
   <div class="lx">
     <div class="lx-header">
       <div class="lx-header-top">
         <div class="lx-logo">
-          <div class="lx-logo-name">HUB <span>Interiors</span></div>
+          <div class="lx-logo-name">HUB <span>Interior</span></div>
           <div class="lx-logo-tag">Homes Uniquely Built</div>
         </div>
         <div class="lx-ref">
@@ -120,7 +120,7 @@ function renderMailLoopChainInitiateEmail(params: {
 
     <div class="lx-body">
       <p class="lx-intro">Dear <strong>${clientName}</strong>,<br><br>
-      We are honoured to welcome you to the HUB Interiors family. This letter is a complete written record of all that was discussed during your sales consultation on <strong>${dateOfCall}</strong> — a commitment to full transparency between us, from the very first day.</p>
+      We are honoured to welcome you to the HUB Interior family. This letter is a complete written record of all that was discussed during your sales consultation on <strong>${dateOfCall}</strong> — a commitment to full transparency between us, from the very first day.</p>
 
       <div class="sec-label">Project overview</div>
       <div class="info-grid">
@@ -221,7 +221,7 @@ function renderMailLoopChainInitiateEmail(params: {
         <div class="sig-av">${rm}</div>
         <div>
           <div class="sig-name">${rmName}</div>
-          <div class="sig-role">Client Relationship Manager · HUB Interiors</div>
+          <div class="sig-role">Client Relationship Manager · HUB Interior</div>
           <div class="sig-role">${rmPhone} &nbsp;·&nbsp; ${rmEmail}</div>
         </div>
       </div>
@@ -256,7 +256,7 @@ export async function POST(request: Request) {
     const info = await sendMail({
       to,
       ...(cc ? { cc } : {}),
-      subject: subject || 'Welcome to HUB Interiors',
+      subject: subject || 'Welcome to HUB Interior',
       html,
     });
 

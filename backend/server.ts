@@ -125,7 +125,7 @@ app.get("/api/health", (_req, res) => {
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "root@root",
+  password: process.env.DB_PASSWORD || "Root@123",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -3249,7 +3249,8 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         case 0:
           if (t === "Mail loop chain 2 initiate") {
             // Sl no 2 – initiate customer mail loop chain from backend SMTP
-            return "/api/email/send-mail-loop-chain-initiate";
+            // Email is triggered directly via /api/leads/:id/mail-loop-chain-initiate endpoint.
+            // Do not fire an additional email on task completion to prevent duplicates.
           }
           if (t === "D1 for MMT request") {
             // Sl no 3 – D1 for MMT request (measurement visit scheduling)
@@ -3261,8 +3262,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         case 1:
           if (t === "First cut design + quotation discussion meeting request") {
             // Sl no 5 – first cut design + quotation discussion (meeting request)
-            // Email invite is triggered directly from /api/leads/:id/first-cut-design-upload (Send Invite button).
-            // Do not fire an additional email on task completion.
+            return "/api/email/send-dqc1-first-cut-design-scheduled";
           }
           if (t === "meeting completed") {
             // After DQC1 first‑cut meeting completed → project design timeline mail
@@ -4137,11 +4137,9 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                 visibility: "external",
                 payload: {
                   to: customerEmail,
-                  cc: distinctEmails([actingUser.email, designerEmail, executiveEmail, managerEmail]),
+                  cc: await getMailLoopCcEmails([actingUser.email, designerEmail, executiveEmail, managerEmail]),
                   customerName,
-                  subject: row.projectPid
-                    ? `Project ${row.projectPid} ${row.projectName || ""} - Design discussion`
-                    : `Project ${row.projectName || customerName} - Design discussion`,
+                  subject: buildMailChainSubject(id, row.projectName, customerName),
                   visitDate,
                   visitTime,
                   executiveName,
@@ -4511,7 +4509,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               payload?.form?.customer_name ||
               row.projectName ||
               "Customer";
-            const designerName = row.designerName || formData.designer_name || formData.designerName || "Team HUB Interiors";
+            const designerName = row.designerName || formData.designer_name || formData.designerName || "Team HUB Interior";
             const amount = meta?.amount ?? meta?.amountDue ?? meta?.payableAmount ?? formData.forty_percent_amount ?? payload?.forty_percent_amount ?? null;
             const accountName = meta?.accountName ?? "Brightspace Creation Private Limited";
             const accountNumber = meta?.accountNumber ?? "748305000519";
@@ -4761,7 +4759,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                 payload?.form?.customer_name ||
                 row.projectName ||
                 "Customer";
-              const designerName = row.designerName || formData.designer_name || formData.designerName || "Team HUB Interiors";
+              const designerName = row.designerName || formData.designer_name || formData.designerName || "Team HUB Interior";
               const mailChainCc = await getMailLoopCcEmails([actingUser.email]);
               const mailChainSubject = buildMailChainSubject(id, row.projectName, customerName);
               void triggerMailRouteWithLog({
