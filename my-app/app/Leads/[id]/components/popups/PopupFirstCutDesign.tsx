@@ -28,6 +28,7 @@ type Props = {
     meetingMode?: "online" | "offline";
     meetingLink?: string;
     ecLocation?: string | null;
+    completionPercent?: number;
   }) => void;
   /** Called when designer marks 100% complete; parent should record task complete and close. */
   onCompleteAndProceed?: (meta?: {
@@ -36,6 +37,7 @@ type Props = {
     meetingMode?: "online" | "offline";
     meetingLink?: string;
     ecLocation?: string | null;
+    completionPercent?: number;
   }) => void;
 };
 
@@ -332,6 +334,7 @@ export default function PopupFirstCutDesign({
                 meetingMode,
                 meetingLink: meetingLink.trim(),
                 ecLocation,
+                completionPercent,
               })
             }
             disabled={isMeetingScheduleIncomplete}
@@ -362,6 +365,7 @@ export default function PopupFirstCutDesign({
                 meetingMode,
                 meetingLink: meetingLink.trim(),
                 ecLocation,
+                completionPercent,
               })
             }
             disabled={completionPercent < 100 || isMeetingScheduleIncomplete}

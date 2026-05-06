@@ -2907,6 +2907,14 @@ export default function ProjectDetailPage() {
                                             attachments: uploadedAttachments,
                                         }),
                                     });
+                                    addHistoryEvent({
+                                        type: 'note',
+                                        milestoneIndex: 1,
+                                        taskName: 'First cut design + quotation discussion meeting request',
+                                        description: `Meeting invite sent. Design completion: ${meta?.completionPercent ?? 0}%`,
+                                        user: { name: authUser?.name ?? 'Designer', avatar: authUser?.profileImage },
+                                        meta: { ...meta },
+                                    });
                                     setDesignUploadFiles([]);
                                 } catch (err) {
                                     console.error('first-cut-design submission failed', err);
@@ -2941,6 +2949,10 @@ export default function ProjectDetailPage() {
                             onMomDrop={onMomDrop}
                             removeMomFile={removeMomFile}
                             onClose={closePopup}
+                            initialCompletionPercent={(() => {
+                                const ev = historyEvents.find(e => e.taskName === 'First cut design + quotation discussion meeting request' && (e.meta as any)?.completionPercent !== undefined);
+                                return ev ? (ev.meta as any).completionPercent : undefined;
+                            })()}
                             onShareMom={async () => {
                                 if (!projectId) return;
                                 try {
@@ -3183,6 +3195,14 @@ export default function ProjectDetailPage() {
                                             ...(attachments.length ? { attachments } : {}),
                                         }),
                                     });
+                                    addHistoryEvent({
+                                        type: 'note',
+                                        milestoneIndex: 4,
+                                        taskName: 'Material selection meeting + quotation discussion',
+                                        description: `Meeting invite sent. Design completion: ${meta?.completionPercent ?? 0}%`,
+                                        user: { name: authUser?.name ?? 'Designer', avatar: authUser?.profileImage },
+                                        meta: { ...meta },
+                                    });
                                     setDesignUploadFiles([]);
                                 } catch (err) {
                                     console.error('material-selection schedule failed', err);
@@ -3217,6 +3237,10 @@ export default function ProjectDetailPage() {
                             onMomDrop={onMomDrop}
                             removeMomFile={removeMomFile}
                             onClose={closePopup}
+                            initialCompletionPercent={(() => {
+                                const ev = historyEvents.find(e => e.taskName === 'Material selection meeting + quotation discussion' && (e.meta as any)?.completionPercent !== undefined);
+                                return ev ? (ev.meta as any).completionPercent : undefined;
+                            })()}
                             onShareMom={async () => {
                                 if (!projectId) return;
                                 try {
@@ -3465,6 +3489,14 @@ export default function ProjectDetailPage() {
                                             attachments: uploadedAttachments,
                                         }),
                                     });
+                                    addHistoryEvent({
+                                        type: 'note',
+                                        milestoneIndex: 5,
+                                        taskName: 'Design sign off',
+                                        description: `Meeting invite sent. Design completion: ${meta?.completionPercent ?? 0}%`,
+                                        user: { name: authUser?.name ?? 'Designer', avatar: authUser?.profileImage },
+                                        meta: { ...meta },
+                                    });
                                     setDesignUploadFiles([]);
                                 } catch (err) {
                                     console.error('Submit failed', err);
@@ -3510,6 +3542,10 @@ export default function ProjectDetailPage() {
                             removeMomFile={removeMomFile}
                             onClose={closePopup}
                             show40pUpload={false}
+                            initialCompletionPercent={(() => {
+                                const ev = historyEvents.find(e => e.taskName === 'Design sign off' && (e.meta as any)?.completionPercent !== undefined);
+                                return ev ? (ev.meta as any).completionPercent : undefined;
+                            })()}
                             onShareMom={async () => {
                                 if (!projectId) return;
                                 try {

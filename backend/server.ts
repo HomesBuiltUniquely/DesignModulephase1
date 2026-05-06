@@ -3512,8 +3512,8 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         // Milestone 1: DQC1
         case 1:
           if (t === "First cut design + quotation discussion meeting request") {
-            // Sl no 5 – first cut design + quotation discussion (meeting request)
-            return "/api/email/send-dqc1-first-cut-design-scheduled";
+            // Email is already triggered via /api/leads/:id/schedule-meeting-invite (Send Invite button)
+            return null;
           }
           if (t === "meeting completed") {
             // After DQC1 first‑cut meeting completed → project design timeline mail
@@ -3545,8 +3545,8 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         // Milestone 4: DQC2
         case 4:
           if (t === "Material selection meeting + quotation discussion") {
-            // Sl no 11 – DQC2 material selection meeting scheduled
-            return "/api/email/send-dqc2-material-selection-scheduled";
+            // Email is already triggered via /api/leads/:id/schedule-meeting-invite (Send Invite button)
+            return null;
           }
           if (t === "Material selection meeting completed") {
             // Sl no 11b – MOM Color & Laminate Selection Confirmation
@@ -3571,8 +3571,9 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             // Do not fire an additional email on task completion.
             // return "/api/email/send-design-signoff-meeting-scheduled";
           }
-          if (t === "meeting completed" || t === "40% collection" || t === "meeting completed & 40% payment request") {
-            // Sl no 15 – 40% collection (CX payment request; legacy combined task name still triggers)
+          if (t === "meeting completed" || t === "meeting completed & 40% payment request") {
+            // Sl no 15 – Design Sign-Off Completed & 40% payment request
+            // We trigger this only on MOM completion, not on screenshot upload (40% collection).
             return "/api/email/send-design-signoff-40pc-payment-request";
           }
           // 40% payment approval email is triggered in /api/leads/:id/approve-40p-payment
@@ -6050,6 +6051,28 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
         meetingLink ? `Meeting link: ${meetingLink}` : null,
       ].filter(Boolean).join("\n");
       emailRoutePath = "/api/email/send-design-signoff-meeting-scheduled";
+      emailBody = {
+        to: customerEmail,
+        cc: await getMailLoopCcEmails([actingUser.email, row.designerEmail]),
+        subject: buildMailChainSubject(projectId, row.projectName, customerName),
+        customerName,
+        projectId,
+        designerName,
+        meetingDate,
+        meetingTime,
+        meetingMode,
+        meetingLink,
+        ecLocation: resolvedEcLocation,
+        ...(Array.isArray(attachments) && attachments.length ? { attachments } : {}),
+      };
+    } else if (meetingType === "dqc1_first_cut") {
+      summary = `First Cut Design Discussion - ${customerName}`;
+      description = [
+        `First cut design and quotation discussion meeting at ${resolvedEcLocation}.`,
+        meetingMode ? `Mode: ${meetingMode}` : null,
+        meetingLink ? `Meeting link: ${meetingLink}` : null,
+      ].filter(Boolean).join("\n");
+      emailRoutePath = "/api/email/send-dqc1-first-cut-design-scheduled";
       emailBody = {
         to: customerEmail,
         cc: await getMailLoopCcEmails([actingUser.email, row.designerEmail]),
