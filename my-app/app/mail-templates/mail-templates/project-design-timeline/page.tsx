@@ -45,7 +45,7 @@ export default function ProjectDesignTimelineMailPage() {
         <p>
           Warm regards,<br />
           [Designer Name]<br />
-          HUB Interiors
+          HUB Interior
         </p>
       </div>
     </div>
