@@ -2663,6 +2663,257 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
   }
 });
 
+function requireExternalApiKey(req: Request, res: Response, featureName: string): boolean {
+  const expectedKey = (process.env.EXTERNAL_LEAD_INGEST_API_KEY || "").trim();
+  if (!expectedKey) {
+    res.status(503).json({ message: `${featureName} is disabled (missing EXTERNAL_LEAD_INGEST_API_KEY)` });
+    return false;
+  }
+  const apiKeyHeader = String(req.headers["x-external-api-key"] || "").trim();
+  const bearer = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "").trim();
+  const providedKey = apiKeyHeader || bearer;
+  if (!providedKey || providedKey !== expectedKey) {
+    res.status(401).json({ message: "Unauthorized" });
+    return false;
+  }
+  return true;
+}
+
+function frontendBase(): string {
+  return (process.env.FRONTEND_BASE_URL || "http://localhost:3000").replace(/\/$/, "");
+}
+
+function parseFiniteNumber(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() && Number.isFinite(Number(v))) return Number(v);
+  return null;
+}
+
+function readDiscountMetaFromSnapshot(snapshotPayload: Record<string, unknown>): {
+  categoryPct: unknown;
+  amount: number | null;
+} {
+  const root = snapshotPayload;
+  const data = root.data ?? root.Data;
+  const d0 =
+    data && typeof data === "object" && !Array.isArray(data)
+      ? (data as Record<string, unknown>)
+      : Array.isArray(data) && data[0] && typeof data[0] === "object"
+        ? (data[0] as Record<string, unknown>)
+        : null;
+  const categoryPct =
+    root.hubCategoryDiscountPct ??
+    (d0 ? (d0 as Record<string, unknown>).hubCategoryDiscountPct : null) ??
+    null;
+  const amount =
+    parseFiniteNumber(root.hubCategoryDiscountAmount) ??
+    (d0 ? parseFiniteNumber((d0 as Record<string, unknown>).hubCategoryDiscountAmount) : null) ??
+    null;
+  return { categoryPct, amount };
+}
+
+// CRM: resolve lead by externalLeadId and return internal quote link for the latest/active quote.
+app.get("/api/crm/quotes/internal-link/:externalLeadId", async (req: Request, res: Response) => {
+  if (!requireExternalApiKey(req, res, "CRM internal quote link")) return;
+  const externalLeadId = String(req.params.externalLeadId || "").trim();
+  if (!externalLeadId) return res.status(400).json({ message: "externalLeadId is required" });
+
+  try {
+    const [leadRows] = await pool.query(
+      `SELECT id, prolance_quote_id AS prolanceQuoteId, payload
+       FROM leads
+       WHERE pid = ?
+          OR JSON_UNQUOTE(JSON_EXTRACT(payload, '$.externalReferenceId')) = ?
+       ORDER BY id DESC
+       LIMIT 1`,
+      [externalLeadId, externalLeadId],
+    );
+    const lead = (leadRows as any[])[0];
+    if (!lead) return res.status(404).json({ message: "Lead not found for externalLeadId" });
+
+    const leadId = Number(lead.id);
+    let quoteId =
+      lead.prolanceQuoteId != null && Number.isFinite(Number(lead.prolanceQuoteId))
+        ? Number(lead.prolanceQuoteId)
+        : null;
+
+    if (quoteId == null || quoteId < 1) {
+      const [snapRows] = await pool.query(
+        `SELECT quote_id AS quoteId
+         FROM lead_prolance_quote_snapshots
+         WHERE lead_id = ?
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1`,
+        [leadId],
+      );
+      const snap = (snapRows as any[])[0];
+      quoteId = snap?.quoteId != null && Number.isFinite(Number(snap.quoteId)) ? Number(snap.quoteId) : null;
+    }
+
+    if (quoteId == null || quoteId < 1) {
+      return res.status(404).json({ message: "No quote found for this lead yet" });
+    }
+
+    return res.json({
+      ok: true,
+      externalLeadId,
+      leadId,
+      quoteId,
+      internalQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}?internal=1&leadId=${encodeURIComponent(String(leadId))}`,
+      customerQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}`,
+    });
+  } catch (err) {
+    console.error("crm internal quote link error", err);
+    return res.status(500).json({ message: "Failed to resolve internal quote link" });
+  }
+});
+
+// CRM: fetch internal/customer quote links + current discount (for CRM UI to open quote and edit discount there).
+app.get("/api/crm/leads/:leadId/quotes/:quoteId", async (req: Request, res: Response) => {
+  if (!requireExternalApiKey(req, res, "CRM quote access")) return;
+  const leadId = Number(req.params.leadId);
+  const quoteId = Number(req.params.quoteId);
+  if (!Number.isFinite(leadId) || leadId < 1) return res.status(400).json({ message: "Invalid leadId" });
+  if (!Number.isFinite(quoteId) || quoteId < 1) return res.status(400).json({ message: "Invalid quoteId" });
+
+  try {
+    const [snapRows] = await pool.query(
+      `SELECT lead_id AS leadId, quote_id AS quoteId, payload_json AS payloadJson, created_at AS createdAt
+       FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
+      [quoteId],
+    );
+    const snap = (snapRows as any[])[0];
+    if (!snap || Number(snap.leadId) !== leadId) {
+      return res.status(404).json({ message: "Quote snapshot not found" });
+    }
+
+    const snapshotPayload: Record<string, unknown> = (() => {
+      try {
+        return snap.payloadJson ? (JSON.parse(String(snap.payloadJson)) as Record<string, unknown>) : {};
+      } catch {
+        return {};
+      }
+    })();
+
+    const links = {
+      customerQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}`,
+      internalQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}?internal=1&leadId=${encodeURIComponent(String(leadId))}`,
+    };
+    const discount = readDiscountMetaFromSnapshot(snapshotPayload);
+
+    return res.json({
+      ok: true,
+      leadId,
+      quoteId,
+      createdAt: snap.createdAt,
+      links,
+      discount,
+      rawSnapshot: snapshotPayload,
+    });
+  } catch (err) {
+    console.error("crm quote get error", err);
+    return res.status(500).json({ message: "Failed to load quote snapshot" });
+  }
+});
+
+// CRM: update discount on a quote snapshot (CRM edits, then customer link reflects it).
+app.patch("/api/crm/leads/:leadId/quotes/:quoteId/discount", async (req: Request, res: Response) => {
+  if (!requireExternalApiKey(req, res, "CRM discount update")) return;
+  const leadId = Number(req.params.leadId);
+  const quoteId = Number(req.params.quoteId);
+  if (!Number.isFinite(leadId) || leadId < 1) return res.status(400).json({ message: "Invalid leadId" });
+  if (!Number.isFinite(quoteId) || quoteId < 1) return res.status(400).json({ message: "Invalid quoteId" });
+
+  const body = (req.body || {}) as Record<string, unknown>;
+  const categoryPct = (body.categoryPct ?? body.hubCategoryDiscountPct) as unknown;
+  const amount = parseFiniteNumber(body.amount ?? body.hubCategoryDiscountAmount);
+  if (!categoryPct || typeof categoryPct !== "object") {
+    return res.status(400).json({ message: "categoryPct (object) is required" });
+  }
+  if (amount == null || amount < 0) {
+    return res.status(400).json({ message: "amount (number) is required" });
+  }
+
+  // Enforce 30% cap per category at the API boundary too (CRM UI should also enforce it).
+  const clampPct = (v: unknown): number => {
+    const n = parseFiniteNumber(v) ?? 0;
+    return Math.max(0, Math.min(30, Math.round(n)));
+  };
+  const pctObj = categoryPct as Record<string, unknown>;
+  const normalizedPct = {
+    woodwork: clampPct(pctObj.woodwork),
+    accessories: clampPct(pctObj.accessories),
+    constructionHw: clampPct(pctObj.constructionHw),
+  };
+
+  try {
+    const [snapRows] = await pool.query(
+      `SELECT lead_id AS leadId, payload_json AS payloadJson
+       FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
+      [quoteId],
+    );
+    const snap = (snapRows as any[])[0];
+    if (!snap || Number(snap.leadId) !== leadId) {
+      return res.status(404).json({ message: "Quote snapshot not found" });
+    }
+
+    const snapshotPayload: Record<string, unknown> = (() => {
+      try {
+        return snap.payloadJson ? (JSON.parse(String(snap.payloadJson)) as Record<string, unknown>) : {};
+      } catch {
+        return {};
+      }
+    })();
+
+    // Persist discount metadata without overriding Prolance totals.
+    const nextPayload: Record<string, unknown> = {
+      ...snapshotPayload,
+      hubCategoryDiscountPct: normalizedPct,
+      hubCategoryDiscountAmount: amount,
+    };
+    const data = snapshotPayload.data ?? snapshotPayload.Data;
+    if (data && typeof data === "object" && !Array.isArray(data)) {
+      nextPayload.data = {
+        ...(data as Record<string, unknown>),
+        hubCategoryDiscountPct: normalizedPct,
+        hubCategoryDiscountAmount: amount,
+      };
+    } else if (Array.isArray(data) && data[0] && typeof data[0] === "object") {
+      nextPayload.data = [
+        {
+          ...(data[0] as Record<string, unknown>),
+          hubCategoryDiscountPct: normalizedPct,
+          hubCategoryDiscountAmount: amount,
+        },
+        ...data.slice(1),
+      ];
+    }
+
+    const json = JSON.stringify(nextPayload);
+    const [result] = await pool.query(
+      `INSERT INTO lead_prolance_quote_snapshots (lead_id, quote_id, payload_json, created_at)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE payload_json = VALUES(payload_json), created_at = VALUES(created_at)`,
+      [leadId, quoteId, json, new Date()],
+    );
+    const ins = result as mysql.ResultSetHeader;
+    return res.json({
+      ok: true,
+      leadId,
+      quoteId,
+      updated: ins.affectedRows > 0,
+      discount: { categoryPct: normalizedPct, amount },
+      links: {
+        customerQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}`,
+        internalQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}?internal=1&leadId=${encodeURIComponent(String(leadId))}`,
+      },
+    });
+  } catch (err) {
+    console.error("crm quote discount update error", err);
+    return res.status(500).json({ message: "Failed to update quote discount" });
+  }
+});
+
 // Upload Excel and preview headers/rows for lead import.
 app.post("/api/leads/import-excel/preview", upload.single("file"), async (req: Request, res: Response) => {
   try {
@@ -8173,6 +8424,7 @@ app.post("/api/leads/:id/prolance-quote-snapshots", async (req: Request, res: Re
     );
     const ins = result as mysql.ResultSetHeader;
     const inserted = ins.affectedRows === 1;
+    const updated = ins.affectedRows > 1;
 
     if (inserted) {
       try {
@@ -8210,7 +8462,7 @@ app.post("/api/leads/:id/prolance-quote-snapshots", async (req: Request, res: Re
       }
     }
 
-    return res.json({ ok: true, quoteId, inserted, updated: ins.affectedRows > 1 });
+    return res.json({ ok: true, quoteId, inserted, updated });
   } catch (err) {
     console.error("prolance-quote-snapshots post error", err);
     return res.status(500).json({ message: "Failed to save quote snapshot" });
