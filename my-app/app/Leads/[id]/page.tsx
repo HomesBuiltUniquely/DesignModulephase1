@@ -3605,6 +3605,10 @@ export default function ProjectDetailPage() {
                             onMomDrop={onMomDrop}
                             removeMomFile={removeMomFile}
                             onClose={closePopup}
+                            initialCompletionPercent={(() => {
+                                const ev = historyEvents.find(e => e.taskName === 'Cx approval for production' && (e.meta as any)?.completionPercent !== undefined);
+                                return ev ? (ev.meta as any).completionPercent : undefined;
+                            })()}
                             onShareMom={async () => {
                                 if (!projectId) return;
                                 try {
@@ -3639,7 +3643,7 @@ export default function ProjectDetailPage() {
                             }}
                         />
                     )}
-                    {popupContext.milestoneIndex === 6 && (popupContext.taskName === 'POC mail' || popupContext.taskName === 'POC mail & Timeline submission' || popupContext.taskName === 'POC mail & Timeline submission ') && (
+                    {popupContext.milestoneIndex === 6 && (popupContext.taskName === 'POC mail' || popupContext.taskName === 'POC mail & Timeline submission') && (
                         <PopupPlaceholder
                             message={popupContext.taskName}
                             onMarkComplete={() => {
@@ -3648,7 +3652,7 @@ export default function ProjectDetailPage() {
                             }}
                         />
                     )}
-                    {popupContext.milestoneIndex === 6 && popupContext.taskName !== 'Cx approval for production' && popupContext.taskName !== 'POC mail' && popupContext.taskName !== 'POC mail & Timeline submission' && popupContext.taskName !== 'POC mail & Timeline submission ' && (
+                    {popupContext.milestoneIndex === 6 && popupContext.taskName !== 'Cx approval for production' && popupContext.taskName !== 'POC mail' && popupContext.taskName !== 'POC mail & Timeline submission' && (
                         <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(6, popupContext.taskName); closePopup(); }} />
                     )}
                 </TaskModal>

@@ -103,6 +103,7 @@ export type HistoryEvent = {
     type: HistoryEventType;
     taskName?: string;
     milestoneName?: string;
+    milestoneIndex?: number;
     timestamp: string; // ISO
     description: string;
     user: HistoryEventUser;
