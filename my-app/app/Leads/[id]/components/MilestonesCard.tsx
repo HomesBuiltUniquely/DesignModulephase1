@@ -1,7 +1,7 @@
 "use client";
 
 import type { RefObject } from "react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import MileStonesArray from "@/app/Components/Types/MileStoneArray";
 import { hasChecklistForTask } from "./Checklists/checklistRegistry";
 import { getTaskTimeline } from "./taskTimelines";
@@ -48,6 +48,21 @@ export default function MilestonesCard({
   const [openMenuFor, setOpenMenuFor] = useState<
     { milestoneIndex: number; taskIndex: number } | undefined
   >(undefined);
+
+  // When maximized, scroll so the current milestone is in view.
+  useEffect(() => {
+    if (!isMaximized || !scrollRef.current) return;
+    // Small delay to let the DOM render all milestone columns first.
+    const timer = setTimeout(() => {
+      const container = scrollRef.current;
+      if (!container) return;
+      const currentCard = container.querySelector<HTMLElement>('[data-current-milestone="true"]');
+      if (currentCard) {
+        currentCard.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'start' });
+      }
+    }, 80);
+    return () => clearTimeout(timer);
+  }, [isMaximized, currentMilestoneIndex, scrollRef]);
 
   const milestones = isMaximized
     ? MileStonesArray.MilestonesName
@@ -249,6 +264,7 @@ export default function MilestonesCard({
               return (
                 <div
                   key={milestone.id}
+                  data-current-milestone={isCurrent ? "true" : undefined}
                   className={`flex min-h-0 w-[380px] min-w-0 flex-col xl:w-[550px] ${isMaximized ? "flex-shrink-0 snap-start" : "min-h-0 flex-1"}`}
                 >
                   <div className="mb-4 flex flex-shrink-0 justify-between">

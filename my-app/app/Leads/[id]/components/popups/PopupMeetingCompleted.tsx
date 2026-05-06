@@ -13,6 +13,8 @@ type Props = {
     removeMomFile: (index: number) => void;
     onClose: () => void;
     onShareMom?: () => void;
+    /** Progress % saved from the meeting popup — shown read-only so MOM and meeting are in sync */
+    initialCompletionPercent?: number;
     /** When true, show 40% payment screenshot upload section (for the "40% collection" task). */
     show40pUpload?: boolean;
     payment40pFiles?: File[];
@@ -38,6 +40,7 @@ export default function PopupMeetingCompleted({
     removeMomFile,
     onClose,
     onShareMom,
+    initialCompletionPercent,
     show40pUpload,
     payment40pFiles = [],
     payment40pInputRef,
@@ -64,6 +67,26 @@ export default function PopupMeetingCompleted({
                     STAGE EXIT LOCK
                 </span>
             </div>
+            {/* Synced progress bar from meeting popup */}
+            {initialCompletionPercent !== undefined && (
+                <div className="mb-4 px-1">
+                    <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Design completion at meeting</span>
+                        <span className={`text-sm font-bold ${initialCompletionPercent === 100 ? 'text-green-600' : 'text-blue-600'}`}>{initialCompletionPercent}%</span>
+                    </div>
+                    <div className="w-full h-2.5 rounded-full bg-gray-200 overflow-hidden">
+                        <div
+                            className={`h-2.5 rounded-full transition-all ${initialCompletionPercent === 100 ? 'bg-green-500' : 'bg-blue-500'}`}
+                            style={{ width: `${initialCompletionPercent}%` }}
+                        />
+                    </div>
+                    <p className="text-xs text-gray-400 mt-1">
+                        {initialCompletionPercent === 100
+                            ? '✅ Design marked 100% complete at meeting. MOM is in sync.'
+                            : `Design was ${initialCompletionPercent}% at the time of meeting — update if this has changed.`}
+                    </p>
+                </div>
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
                 <div>
                     <label className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-1.5">Meeting Participants</label>
