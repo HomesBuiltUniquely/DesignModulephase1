@@ -2712,11 +2712,13 @@ function readDiscountMetaFromSnapshot(snapshotPayload: Record<string, unknown>):
   return { categoryPct, amount };
 }
 
-// CRM: resolve lead by externalLeadId and return internal quote link for the latest/active quote.
-app.get("/api/crm/quotes/internal-link/:externalLeadId", async (req: Request, res: Response) => {
+async function handleCrmInternalLinkByExternalLeadId(req: Request, res: Response): Promise<void> {
   if (!requireExternalApiKey(req, res, "CRM internal quote link")) return;
   const externalLeadId = String(req.params.externalLeadId || "").trim();
-  if (!externalLeadId) return res.status(400).json({ message: "externalLeadId is required" });
+  if (!externalLeadId) {
+    res.status(400).json({ message: "externalLeadId is required" });
+    return;
+  }
 
   try {
     const [leadRows] = await pool.query(
@@ -2729,7 +2731,10 @@ app.get("/api/crm/quotes/internal-link/:externalLeadId", async (req: Request, re
       [externalLeadId, externalLeadId],
     );
     const lead = (leadRows as any[])[0];
-    if (!lead) return res.status(404).json({ message: "Lead not found for externalLeadId" });
+    if (!lead) {
+      res.status(404).json({ message: "Lead not found for externalLeadId" });
+      return;
+    }
 
     const leadId = Number(lead.id);
     let quoteId =
@@ -2751,10 +2756,11 @@ app.get("/api/crm/quotes/internal-link/:externalLeadId", async (req: Request, re
     }
 
     if (quoteId == null || quoteId < 1) {
-      return res.status(404).json({ message: "No quote found for this lead yet" });
+      res.status(404).json({ message: "No quote found for this lead yet" });
+      return;
     }
 
-    return res.json({
+    res.json({
       ok: true,
       externalLeadId,
       leadId,
@@ -2764,9 +2770,14 @@ app.get("/api/crm/quotes/internal-link/:externalLeadId", async (req: Request, re
     });
   } catch (err) {
     console.error("crm internal quote link error", err);
-    return res.status(500).json({ message: "Failed to resolve internal quote link" });
+    res.status(500).json({ message: "Failed to resolve internal quote link" });
   }
-});
+}
+
+// Canonical route
+app.get("/api/crm/quotes/internal-link/:externalLeadId", handleCrmInternalLinkByExternalLeadId);
+// CRM compatibility alias (requested path pattern)
+app.get("/api/new-crm/quotes/internal-link/by-lead/:externalLeadId", handleCrmInternalLinkByExternalLeadId);
 
 // CRM: fetch internal/customer quote links + current discount (for CRM UI to open quote and edit discount there).
 app.get("/api/crm/leads/:leadId/quotes/:quoteId", async (req: Request, res: Response) => {
