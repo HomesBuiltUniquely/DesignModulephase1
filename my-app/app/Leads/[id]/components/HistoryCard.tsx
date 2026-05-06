@@ -32,13 +32,14 @@ function formatRelativeTime(iso: string): string {
 }
 
 function eventTypeBadge(type: HistoryEventType): { label: string; className: string } {
+    if (!type) return { label: 'EVENT', className: 'bg-gray-100 text-gray-700' };
     switch (type) {
         case 'completed': return { label: 'COMPLETED', className: 'bg-green-100 text-green-800' };
         case 'delayed': return { label: 'DELAYED', className: 'bg-red-100 text-red-800' };
         case 'note': return { label: 'NOTE ADDED', className: 'bg-blue-100 text-blue-800' };
         case 'owner_change': return { label: 'OWNER CHANGED', className: 'bg-gray-200 text-gray-800' };
         case 'file_upload': return { label: 'FILE UPLOADED', className: 'bg-purple-100 text-purple-800' };
-        default: return { label: (type as string).toUpperCase(), className: 'bg-gray-100 text-gray-700' };
+        default: return { label: String(type).toUpperCase(), className: 'bg-gray-100 text-gray-700' };
     }
 }
 
@@ -119,7 +120,7 @@ export default function HistoryCard({
                                                 {badge.label}
                                             </span>
                                             <p className="text-gray-700 text-xs mt-1 line-clamp-2">{ev.description}</p>
-                                            <p className="text-gray-400 text-[10px] mt-0.5">{relativeTime(ev.timestamp)} · {ev.user.name}</p>
+                                            <p className="text-gray-400 text-[10px] mt-0.5">{relativeTime(ev.timestamp)} · {ev.user?.name ?? 'System'}</p>
                                         </div>
                                     </div>
                                 );
@@ -184,14 +185,14 @@ export default function HistoryCard({
                                         )}
                                     </div>
                                     <div className="flex-shrink-0 flex flex-col items-end">
-                                        {ev.user.avatar ? (
+                                        {ev.user?.avatar ? (
                                             <img src={ev.user.avatar} alt="" className="w-8 h-8 rounded-full object-cover" title={ev.user.name} />
                                         ) : (
-                                            <div className="w-8 h-8 rounded-full bg-gray-300 flex items-center justify-center text-gray-600 text-xs" title={ev.user.name}>
+                                            <div className="w-8 h-8 rounded-full bg-gray-300 flex items-center justify-center text-gray-600 text-xs" title={ev.user?.name}>
                                                 ⇄
                                             </div>
                                         )}
-                                        <span className="text-xs text-gray-500 mt-1 max-w-[80px] truncate">{ev.user.name}</span>
+                                        <span className="text-xs text-gray-500 mt-1 max-w-[80px] truncate">{ev.user?.name ?? 'System'}</span>
                                     </div>
                                 </div>
                             );
