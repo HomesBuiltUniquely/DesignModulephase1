@@ -1371,9 +1371,9 @@ export default function Dashboard() {
                                             }`}
                                         >
                                             {type}
-                                        </div>
+                    </div>
                                     ))}
-                                </div>
+                    </div>
                             )}
                             <button
                                 type="button"
@@ -1456,8 +1456,8 @@ export default function Dashboard() {
                                                     {BRANCH_OPTIONS.map((b) => (
                                                         <option key={b} value={b}>
                                                             {b}
-                                                        </option>
-                                                    ))}
+                        </option>
+                    ))}   
                                                 </select>
                                                 <select
                                                     value={designerFilter}
@@ -1507,7 +1507,7 @@ export default function Dashboard() {
                                                             {opt.label}
                                                         </button>
                                                     ))}
-                                                </div>
+                    </div>
                                             )}
                                         </div>
                                         <button type="button" className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700">

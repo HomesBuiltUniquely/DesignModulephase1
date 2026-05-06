@@ -1674,7 +1674,7 @@ export default function ProjectDetailPage() {
     // DQC Manager / DQE: only show DQC1 approval UI (no Prolance, HOLD, RESUME, History, ChatBox, full tracker)
     if (viewDqc && isDqcUser) {
         if (authLoading) {
-            return (
+        return (
                 <div className="min-h-screen bg-gray-100 flex flex-col items-center justify-center p-8">
                     <p className="text-gray-600">Loading…</p>
                     <p className="text-sm text-gray-500 mt-2">Preparing DQC submission file…</p>
@@ -1839,7 +1839,7 @@ export default function ProjectDetailPage() {
                             <h2 id="lead-settings-title" className="text-lg font-bold text-slate-100">
                                 Lead settings
                             </h2>
-                            <button
+                <button 
                                 type="button"
                                 onClick={() => setLeadSettingsOpen(false)}
                                 className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
@@ -1848,8 +1848,8 @@ export default function ProjectDetailPage() {
                                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
                                     <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
                                 </svg>
-                            </button>
-                        </div>
+                </button>
+            </div>
                         <div className="space-y-6 px-5 py-5">
                             {!isMmtUser && (
                                 <section className="space-y-3">
@@ -2157,7 +2157,7 @@ export default function ProjectDetailPage() {
                                     : prolanceQuoteId != null && prolanceQuoteId >= 1
                                       ? prolanceQuoteId
                                       : null;
-                            return (
+    return (
                                 <div className="flex min-h-0 min-w-0 flex-1 flex-col lg:flex-row lg:overflow-hidden">
                                     <div className="mx-auto min-h-0 w-full max-w-5xl space-y-5 overflow-y-auto px-6 py-6 lg:mx-0">
                                     <div className="rounded-2xl bg-white p-6 shadow-sm">
@@ -2193,8 +2193,8 @@ export default function ProjectDetailPage() {
                                                     {quoteLinkCopied ? 'Link Copied' : 'Copy Share Link'}
                                                 </button>
                                             ) : null}
-                                            </div>
-                                        </div>
+                   </div>
+                </div>
                                         <h3 className="mt-2 text-3xl font-bold text-gray-800">
                                             Hey {view.customerName !== '-' ? view.customerName : 'Customer'}, your quotation is ready!
                                         </h3>
@@ -2727,7 +2727,7 @@ export default function ProjectDetailPage() {
                             >
                                 Mark as cancelled
                             </button>
-                        </div>
+        </div>
                     </div>
                 </div>
             )}
