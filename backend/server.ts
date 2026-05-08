@@ -2224,6 +2224,45 @@ app.get("/api/auth/project-managers", async (req: Request, res: Response) => {
   }
 });
 
+// List design managers (for assigning designer under a manager)
+app.get("/api/auth/design-managers", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+
+    const role = (user.role || "").toLowerCase();
+    if (
+      role !== "territorial_design_manager" &&
+      role !== "deputy_general_manager" &&
+      role !== "admin"
+    ) {
+      return res.status(403).json({ message: "Not allowed to list design managers" });
+    }
+
+    if (role === "territorial_design_manager") {
+      const [rows] = await pool.query(
+        `SELECT id, name, email, role
+         FROM users
+         WHERE role = 'design_manager' AND territorial_design_manager_id = ?
+         ORDER BY name ASC`,
+        [user.id],
+      );
+      return res.json(rows);
+    }
+
+    const [rows] = await pool.query(
+      `SELECT id, name, email, role
+       FROM users
+       WHERE role = 'design_manager'
+       ORDER BY name ASC`,
+    );
+    return res.json(rows);
+  } catch (err) {
+    console.error("design-managers list error", err);
+    return res.status(500).json({ message: "Failed to load design managers" });
+  }
+});
+
 // Admin: create Finance
 app.all("/api/auth/create-finance", async (req: Request, res: Response) => {
   if (req.method !== "POST") return res.status(405).json({ message: "Use POST" });

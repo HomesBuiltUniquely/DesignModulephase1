@@ -37,14 +37,20 @@ export default function TdmRegisterPage() {
   useEffect(() => {
     if (!sessionId) return;
     const headers: Record<string, string> = { Authorization: `Bearer ${sessionId}` };
-    fetch(`${API}/api/designers`, { headers })
+    fetch(`${API}/api/auth/design-managers`, { headers })
       .then((res) => res.json())
       .then((data: DesignManager[]) => {
         if (Array.isArray(data)) {
-          setDesignManagers(data.filter((d) => d.role === 'design_manager'));
+          setDesignManagers(data);
+        } else {
+          setDesignManagers([]);
+          setMessage({ type: 'error', text: 'Unable to load Design Managers.' });
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        setDesignManagers([]);
+        setMessage({ type: 'error', text: 'Unable to load Design Managers.' });
+      });
   }, [sessionId]);
 
   async function handleSubmit(e: React.FormEvent) {
