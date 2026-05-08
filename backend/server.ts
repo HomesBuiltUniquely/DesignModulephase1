@@ -2243,7 +2243,8 @@ app.get("/api/auth/design-managers", async (req: Request, res: Response) => {
       const [rows] = await pool.query(
         `SELECT id, name, email, role
          FROM users
-         WHERE role = 'design_manager' AND territorial_design_manager_id = ?
+         WHERE role = 'design_manager'
+           AND (territorial_design_manager_id = ? OR territorial_design_manager_id IS NULL)
          ORDER BY name ASC`,
         [user.id],
       );
@@ -2348,8 +2349,20 @@ app.all("/api/auth/register", async (req: Request, res: Response) => {
           return res.status(400).json({ message: "Invalid design manager selected" });
         }
         const manager = (mgrRows as any[])[0];
-        if (isTdm && Number(manager.territorial_design_manager_id) !== Number(current.id)) {
-          return res.status(403).json({ message: "You can assign designers only under your own design managers" });
+        if (isTdm) {
+          const managerTdmId =
+            manager.territorial_design_manager_id != null
+              ? Number(manager.territorial_design_manager_id)
+              : null;
+          if (managerTdmId == null) {
+            // Backfill legacy/unlinked design managers when selected by a TDM.
+            await pool.query(
+              "UPDATE users SET territorial_design_manager_id = ? WHERE id = ? AND role = 'design_manager' AND territorial_design_manager_id IS NULL",
+              [current.id, idNum],
+            );
+          } else if (managerTdmId !== Number(current.id)) {
+            return res.status(403).json({ message: "You can assign designers only under your own design managers" });
+          }
         }
         designManagerId = idNum;
       }
