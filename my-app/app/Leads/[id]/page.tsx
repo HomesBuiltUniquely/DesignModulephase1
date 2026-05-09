@@ -1281,10 +1281,10 @@ export default function ProjectDetailPage() {
 
         // If this task has a checklist, force the checklist to be completed before showing the popup.
         const tTrim = taskName.trim();
-        if (milestoneIndex === 4 && tTrim === 'Assign project manager') {
-            const dqc2Approved = completedTaskKeys.includes(taskKey(4, 'DQC 2 approval '));
-            if (!dqc2Approved) {
-                setBlockedTaskMessage('Complete DQC 2 approval before assigning a project manager.');
+        if (milestoneIndex === 3 && tTrim === 'Assign project manager') {
+            const paymentApproved = completedTaskKeys.includes(taskKey(2, '10% payment approval'));
+            if (!paymentApproved) {
+                setBlockedTaskMessage('Complete 10% payment approval before assigning a project manager.');
                 setTimeout(() => setBlockedTaskMessage(null), 4000);
                 return;
             }
@@ -1301,7 +1301,7 @@ export default function ProjectDetailPage() {
             }
         }
         if (milestoneIndex === 4 && tTrim === 'Project manager approval') {
-            const assignDone = completedTaskKeys.includes(taskKey(4, 'Assign project manager'));
+            const assignDone = completedTaskKeys.includes(taskKey(3, 'Assign project manager'));
             if (!assignDone) {
                 setBlockedTaskMessage('Assign a project manager first.');
                 setTimeout(() => setBlockedTaskMessage(null), 4000);
@@ -3127,7 +3127,10 @@ export default function ProjectDetailPage() {
                             onSubmit={() => { recordTaskComplete(3, 'D2 - masking request raise'); closePopup(); }}
                         />
                     )}
-                    {popupContext.milestoneIndex === 3 && popupContext.taskName !== 'D2 - masking request raise' && (
+                    {popupContext.milestoneIndex === 3 &&
+                        popupContext.taskName !== 'D2 - masking request raise' &&
+                        popupContext.taskName !== 'Assign project manager' &&
+                        popupContext.taskName !== 'D2 - files upload' && (
                         <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(3, popupContext.taskName); closePopup(); }} />
                     )}
                     {popupContext.milestoneIndex === 4 && popupContext.taskName === 'Material selection meeting + quotation discussion' && (
@@ -3371,7 +3374,7 @@ export default function ProjectDetailPage() {
                             />
                         )
                     )}
-                    {popupContext.milestoneIndex === 4 && popupContext.taskName === 'Assign project manager' && projectId != null && project && (
+                    {popupContext.milestoneIndex === 3 && popupContext.taskName === 'Assign project manager' && projectId != null && project && (
                         <PopupAssignProjectManager
                             leadId={projectId}
                             apiBase={API}
@@ -3380,7 +3383,7 @@ export default function ProjectDetailPage() {
                             currentPmName={project.projectManagerName}
                             onClose={closePopup}
                             onAssigned={() => {
-                                recordTaskComplete(4, 'Assign project manager');
+                                recordTaskComplete(3, 'Assign project manager');
                                 if (sessionId) {
                                     fetch(`${API}/api/leads/${projectId}`, {
                                         headers: { Authorization: `Bearer ${sessionId}` },
@@ -3421,7 +3424,8 @@ export default function ProjectDetailPage() {
                         popupContext.taskName !== 'Assign project manager' &&
                         popupContext.taskName !== 'Project manager approval' &&
                         popupContext.taskName !== 'Material selection meeting + quotation discussion' &&
-                        popupContext.taskName !== 'Material selection meeting completed' && (
+                        popupContext.taskName !== 'Material selection meeting completed' &&
+                        popupContext.taskName !== 'D2 - files upload' && (
                         <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(4, popupContext.taskName); closePopup(); }} />
                     )}
                     {popupContext.milestoneIndex === 5 && popupContext.taskName === 'Design sign off' && (
@@ -3503,7 +3507,48 @@ export default function ProjectDetailPage() {
                                     alert('Failed to send invite. Please try again.');
                                 }
                             }}
-                            onCompleteAndProceed={(meta) => {
+                            onCompleteAndProceed={async (meta) => {
+                                if (!projectId) return;
+                                try {
+                                    let uploadedAttachments: any[] = [];
+                                    if (designUploadFiles.length > 0 && sessionId) {
+                                        const fd = new FormData();
+                                        designUploadFiles.forEach((f) => fd.append('files', f));
+                                        const uploadRes = await fetch(
+                                            `${API}/api/leads/${projectId}/first-cut-design-upload`,
+                                            {
+                                                method: 'POST',
+                                                headers: { Authorization: `Bearer ${sessionId}` },
+                                                body: fd,
+                                            },
+                                        );
+                                        if (uploadRes.ok) {
+                                            const uploadData = await uploadRes.json();
+                                            if (uploadData.attachments) {
+                                                uploadedAttachments = uploadData.attachments;
+                                            }
+                                        }
+                                    }
+                                    // Trigger design sign-off email invite (same as "Send Invite" button)
+                                    await fetch(`${API}/api/leads/${projectId}/schedule-meeting-invite`, {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/json',
+                                            Authorization: `Bearer ${sessionId}`,
+                                        },
+                                        body: JSON.stringify({
+                                            meetingType: 'design_signoff',
+                                            meetingDate: meta?.meetingDate,
+                                            meetingTime: meta?.meetingTime,
+                                            meetingMode: meta?.meetingMode,
+                                            meetingLink: meta?.meetingLink,
+                                            ecLocation: meta?.ecLocation || project?.experienceCenter || (project as any)?.experience_center,
+                                            attachments: uploadedAttachments,
+                                        }),
+                                    });
+                                } catch (err) {
+                                    console.error('Design sign-off invite failed (non-fatal)', err);
+                                }
                                 recordTaskComplete(
                                     5,
                                     'Design sign off',
@@ -3524,10 +3569,10 @@ export default function ProjectDetailPage() {
                         <PopupPlaceholder message="40% payment approval is done by the finance team from their queue. Once they approve, this milestone will advance automatically—no action needed here." />
                     )}
                     {popupContext.milestoneIndex === 5 &&
-                        popupContext.taskName !== 'meeting completed' &&
-                        popupContext.taskName !== '40% collection' &&
                         popupContext.taskName !== 'Design sign off' &&
-                        popupContext.taskName !== '40% payment approval' && (
+                        popupContext.taskName !== '40% payment approval' &&
+                        popupContext.taskName !== '40% payment collection' &&
+                        popupContext.taskName !== 'meeting completed' && (
                         <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(5, popupContext.taskName); closePopup(); }} />
                     )}
                     {popupContext.milestoneIndex === 5 && popupContext.taskName === 'meeting completed' && (
