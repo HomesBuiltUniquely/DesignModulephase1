@@ -48,7 +48,7 @@ export function renderDqc2AssignPmInternalEmail(params: {
                 Dear <span style="font-weight:600;">Team</span>,
               </p>
               <p style="margin:0 0 14px 0;font-size:14px;line-height:1.6;color:#4b5563;">
-                DQC 2 has been approved for <strong>${customerName}</strong>. The project is now ready to move to the next phase.
+                The <strong>10% Payment</strong> has been approved for <strong>${customerName}</strong>. The project is now ready to move to the next phase.
               </p>
               <p style="margin:0 0 14px 0;font-size:14px;line-height:1.6;color:#b91c1c;font-weight:600;">
                 ⚠️ Please assign a Project Manager for this project immediately.
@@ -102,7 +102,7 @@ export function renderDqc2AssignPmInternalEmail(params: {
           </tr>
           <tr>
             <td style="padding:12px 20px 16px 20px;background-color:#f9fafb;text-align:center;">
-              <p style="margin:0;font-size:11px;color:#9ca3af;line-height:1.6;">Internal – DQC 2 approved. Project Manager assignment required.</p>
+              <p style="margin:0;font-size:11px;color:#9ca3af;line-height:1.6;">Internal – 10% Payment approved. Project Manager assignment required.</p>
             </td>
           </tr>
         </table>

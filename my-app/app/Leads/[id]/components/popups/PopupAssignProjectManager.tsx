@@ -122,17 +122,14 @@ export default function PopupAssignProjectManager({
                     </select>
                 </label>
             )}
-            <div className="mt-6 flex flex-wrap gap-3">
+            <div className="mt-6 flex justify-end">
                 <button
                     type="button"
                     onClick={onSave}
                     disabled={saving || !sessionId || !selectedId}
-                    className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                    className="px-6 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
                 >
-                    {saving ? 'Saving…' : 'Save assignment'}
-                </button>
-                <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-700 border rounded-lg hover:bg-gray-50">
-                    Cancel
+                    {saving ? 'Saving…' : 'Save & Mark Done'}
                 </button>
             </div>
         </div>
