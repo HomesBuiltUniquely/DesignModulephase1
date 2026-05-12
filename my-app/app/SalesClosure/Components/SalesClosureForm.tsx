@@ -1,6 +1,7 @@
 "use client";
 import { useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
 import { getApiBase } from "@/app/lib/apiBase";
 import { z } from "zod";
 import { SalesClosureFormType } from "./Type";
@@ -122,7 +123,52 @@ export default function SalesClosureForm() {
     Partial<Record<keyof SalesClosureFormType, string>>
   >({});
 
+  const searchParams = useSearchParams();
   const [form, setForm] = useState<SalesClosureFormType>(buildInitialFormState);
+
+  // Pre-fill form from CRM URL query parameters on first load
+  useEffect(() => {
+    const get = (key: string) => searchParams.get(key)?.trim() ?? "";
+
+    // Try the JSON prefill blob first, then fall back to individual params
+    const prefillRaw = get("prefill") || get("salesClosurePrefill");
+    let blob: Record<string, string> = {};
+    if (prefillRaw) {
+      try { blob = JSON.parse(prefillRaw) as Record<string, string>; } catch { /* ignore */ }
+    }
+    const p = (key: string) => blob[key]?.trim() || get(key);
+
+    const customer_name         = p("customer_name");
+    const co_no                 = p("co_no");
+    const email                 = p("email");
+    const property_name         = p("property_name");
+    const possession            = p("possession");
+    const lead_source           = p("lead_source");
+    const property_configuration = p("property_configuration");
+    const sales_email           = p("sales_email");
+    const experience_center     = p("experience_center");
+    const sales_lead_name       = p("sales_lead_name");
+    const designer_name         = p("designer_name");
+
+    // Only update state if the CRM actually sent data
+    if (customer_name || co_no || email || sales_email || property_name) {
+      setForm((prev) => ({
+        ...prev,
+        ...(customer_name         && { customer_name }),
+        ...(co_no                 && { co_no }),
+        ...(email                 && { email }),
+        ...(property_name         && { property_name }),
+        ...(possession            && { possession }),
+        ...(lead_source           && { lead_source }),
+        ...(property_configuration && { property_configuration: property_configuration as PropertyConfig }),
+        ...(sales_email           && { sales_email }),
+        ...(experience_center     && { experience_center }),
+        ...(sales_lead_name       && { sales_lead_name }),
+        ...(designer_name         && { designer_name }),
+      }));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [percentInputs, setPercentInputs] = useState<
     Record<PercentField, string>
   >({
