@@ -634,6 +634,19 @@ async function initDb() {
       );
     `);
 
+    // Ensure project IDs start from 2000
+    try {
+      const [aiRows] = await conn.query(
+        "SELECT AUTO_INCREMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'leads'",
+      );
+      const currentAI = (aiRows as any[])[0]?.AUTO_INCREMENT ?? 1;
+      if (currentAI < 2000) {
+        await conn.query("ALTER TABLE leads AUTO_INCREMENT = 2000");
+      }
+    } catch {
+      // ignore
+    }
+
     // Existing deployments may still have TEXT; upgrade to MEDIUMTEXT so base64 image payloads fit.
     await conn.query(`
       ALTER TABLE leads
@@ -2481,7 +2494,7 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
               cc: [],
               subject: `Welcome to HUB Interior – ${customerName}`,
               customerName,
-              projectId: `PJ-${insertId}`,
+              projectId: `HUB-${insertId}`,
               propertyType,
             }),
           }).catch((err) => {
@@ -3748,7 +3761,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               }
             }
 
-            const projectId = leadRow.pid || `PJ-${id}`;
+            const projectId = leadRow.pid || `HUB-${id}`;
             const propertyType = formData.property_configuration || "";
             const rawOrderValue = formData.order_value ?? payload.order_value ?? null;
             let amountDue: string | undefined;
@@ -4053,7 +4066,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             } catch {
               payload = {};
             }
-            const projectId = row.pid || `PJ-${id}`;
+            const projectId = row.pid || `HUB-${id}`;
             const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
             const customerEmail =
               row.clientEmail ||
@@ -4299,7 +4312,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             } catch {
               payload = {};
             }
-            const projectId = row.pid || `PJ-${id}`;
+            const projectId = row.pid || `HUB-${id}`;
             const customerEmail =
               row.clientEmail || payload.email || payload?.form?.email || null;
             const customerName =
@@ -4422,7 +4435,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             } catch {
               payload = {};
             }
-            const projectId = row.pid || row.projectPid || `PJ-${id}`;
+            const projectId = row.pid || row.projectPid || `HUB-${id}`;
             const customerEmail =
               row.clientEmail || payload.email || payload?.form?.email || null;
             const customerName =
@@ -4518,7 +4531,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             } catch {
               payload = {};
             }
-            const projectId = row.pid || `PJ-${id}`;
+            const projectId = row.pid || `HUB-${id}`;
             const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
             const customerName =
               formData.customer_name ||
@@ -4589,7 +4602,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               payload = {};
             }
             const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
-            const projectId = row.pid || `PJ-${id}`;
+            const projectId = row.pid || `HUB-${id}`;
             const customerEmail =
               row.clientEmail ||
               formData.email ||
@@ -4699,7 +4712,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               row.projectName ||
               "Customer";
             const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
-            const projectId = row.pid || `PJ-${id}`;
+            const projectId = row.pid || `HUB-${id}`;
 
             const meetingDate = meta?.meetingDate ?? meta?.signoffDate ?? null;
             const meetingTime = meta?.meetingTime ?? meta?.signoffTime ?? null;
@@ -4803,7 +4816,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const accountName = meta?.accountName ?? "Brightspace Creation Private Limited";
             const accountNumber = meta?.accountNumber ?? "748305000519";
             const ifscCode = meta?.ifscCode ?? "ICIC0007483";
-            const projectId = row.pid || `PJ-${id}`;
+            const projectId = row.pid || `HUB-${id}`;
 
             if (customerEmail) {
               const mailChainCc = await getMailLoopCcEmails([actingUser.email], id);
@@ -4872,7 +4885,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               payload = {};
             }
             const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
-            const projectId = row.pid || `PJ-${id}`;
+            const projectId = row.pid || `HUB-${id}`;
             const customerEmail =
               row.clientEmail ||
               formData.email ||
@@ -4975,7 +4988,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               payload = {};
             }
             const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
-              const projectId = row.pid || `PJ-${id}`;
+              const projectId = row.pid || `HUB-${id}`;
             const customerEmail =
               row.clientEmail ||
               formData.client_email ||
@@ -5050,7 +5063,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             } catch {
               payload = {};
             }
-              const projectId = row.pid || `PJ-${id}`;
+              const projectId = row.pid || `HUB-${id}`;
             const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
             const customerEmail =
               row.clientEmail ||
@@ -5609,7 +5622,7 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
           payload?.form?.customer_name ||
           row.projectName ||
           "Customer";
-        const projectId = row.pid || `PJ-${leadId}`;
+        const projectId = row.pid || `HUB-${leadId}`;
         const rawOrderValue = formData.order_value ?? payload.order_value ?? null;
         let amountPaid: string | undefined;
         if (typeof rawOrderValue === "number") {
@@ -5711,7 +5724,7 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
           "Customer";
         const pmDesignerName = pmRow.designerName || pmFormData.designer_name || pmFormData.designerName || "Design Team";
         const pmBranch = pmFormData.sales_closure_ec || pmFormData.branch || pmFormData.experience_center || pmPayload?.branch || null;
-        const pmProjectId = pmRow.pid || `PJ-${leadId}`;
+        const pmProjectId = pmRow.pid || `HUB-${leadId}`;
 
         // Send to admin + CC the mail loop (including designer)
         const adminCc = await getMailLoopCcEmails([user.email, pmRow.designerEmail], leadId);
@@ -5948,7 +5961,7 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
           payload?.form?.customer_name ||
           row.projectName ||
           "Customer";
-        const projectId = row.pid || `PJ-${leadId}`;
+        const projectId = row.pid || `HUB-${leadId}`;
         const projectName = row.projectName || customerName || "Project";
         const dateStr = now.toLocaleDateString("en-IN", {
           day: "numeric",
@@ -6159,7 +6172,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       row.projectName ||
       "Customer";
     const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
-    const projectId = row.pid || `PJ-${leadId}`;
+    const projectId = row.pid || `HUB-${leadId}`;
     const eventStart = formatGoogleDateTime(meetingDate, meetingTime);
     if (!eventStart) {
       return res.status(400).json({ message: "Invalid meeting date/time" });
@@ -8251,7 +8264,7 @@ app.patch("/api/leads/:id/assign-project-manager", async (req: Request, res: Res
           "Customer";
         const designerName = leadRow.designerName || fd.designer_name || fd.designerName || "Design Team";
         const branch = fd.sales_closure_ec || fd.branch || fd.experience_center || lpayload?.branch || null;
-        const projectId = leadRow.pid || `PJ-${id}`;
+        const projectId = leadRow.pid || `HUB-${id}`;
 
         const ccList = await getMailLoopCcEmails([user.email || null, leadRow.designerEmail || null], id);
         void triggerMailRouteWithLog({

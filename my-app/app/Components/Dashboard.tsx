@@ -516,7 +516,7 @@ export default function Dashboard() {
                         `Get quote succeeded (quote ${redirectQuoteId}) but saving on the lead failed. Open the quote from the link if needed.`,
                     );
                 } else {
-                    setBulkAssignMessage(`Get quote saved for PJ-${row.pid ?? row.id} (quote ${redirectQuoteId}).`);
+                    setBulkAssignMessage(`Get quote saved for HUB-${row.pid ?? row.id} (quote ${redirectQuoteId}).`);
                 }
                 openInternalQuoteInNewTab(redirectQuoteId, row.id);
             } else {
@@ -617,7 +617,7 @@ export default function Dashboard() {
                     );
                 } else {
                     setBulkAssignMessage(
-                        `Prolance project created (ID ${createdProjectId}) and saved on PJ-${row.pid ?? row.id}.`,
+                        `Prolance project created (ID ${createdProjectId}) and saved on HUB-${row.pid ?? row.id}.`,
                     );
                 }
             } else {
@@ -965,7 +965,7 @@ export default function Dashboard() {
                                                     </button>
                                                 </td>
                                                 <td className="py-3 px-5">
-                                                    <div className="font-medium text-gray-900">PJ-{row.pid || row.id}</div>
+                                                    <div className="font-medium text-gray-900">HUB-{row.pid || row.id}</div>
                                                     <div className="text-sm text-gray-600 truncate max-w-[200px]" title={row.projectName}>
                                                         {row.projectName || "—"}
                                                     </div>
@@ -1102,7 +1102,7 @@ export default function Dashboard() {
                                                     </td>
                                                 )}
                                                 <td className="px-5 py-3">
-                                                    <div className="font-medium text-gray-900">PJ-{row.pid || row.id}</div>
+                                                    <div className="font-medium text-gray-900">HUB-{row.pid || row.id}</div>
                                                     <div className="text-sm text-gray-600 truncate max-w-[180px]" title={row.projectName}>
                                                         {row.projectName || "—"}
                                                     </div>
