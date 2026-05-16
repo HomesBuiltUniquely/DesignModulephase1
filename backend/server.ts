@@ -125,7 +125,7 @@ app.get("/api/health", (_req, res) => {
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "root@root",
+  password: process.env.DB_PASSWORD || "Root@123",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -2486,18 +2486,18 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
         // Do not block main response if email fails; just log.
         const propertyType = payload.property_configuration || payload?.formData?.property_configuration || payload?.form?.property_configuration || "Apartment";
 
-          fetch(`${frontendBase}/api/email/send-d1-site-measurement`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              to: customerEmail,
-              cc: [],
-              subject: `Welcome to HUB Interior – ${customerName}`,
-              customerName,
-              projectId: `HUB-${insertId}`,
-              propertyType,
-            }),
-          }).catch((err) => {
+        fetch(`${frontendBase}/api/email/send-d1-site-measurement`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            to: customerEmail,
+            cc: [],
+            subject: `Welcome to HUB Interior – ${customerName}`,
+            customerName,
+            projectId: `HUB-${insertId}`,
+            propertyType,
+          }),
+        }).catch((err) => {
           console.error("Failed to trigger D1 email from backend", err);
         });
       }
@@ -4988,7 +4988,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               payload = {};
             }
             const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
-              const projectId = row.pid || `HUB-${id}`;
+            const projectId = row.pid || `HUB-${id}`;
             const customerEmail =
               row.clientEmail ||
               formData.client_email ||
@@ -5063,7 +5063,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             } catch {
               payload = {};
             }
-              const projectId = row.pid || `HUB-${id}`;
+            const projectId = row.pid || `HUB-${id}`;
             const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
             const customerEmail =
               row.clientEmail ||
@@ -7804,7 +7804,20 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
               l.prolance_quote_id as prolanceQuoteId,
               l.assigned_designer_id,
               l.assigned_project_manager_id,
-              u.name as designerName,
+              COALESCE(u.name, 
+                NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(
+                  CASE WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}' ELSE l.payload END,
+                  '$.formData.designer_name'
+                ))), ''),
+                NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(
+                  CASE WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}' ELSE l.payload END,
+                  '$.designer_name'
+                ))), ''),
+                NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(
+                  CASE WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}' ELSE l.payload END,
+                  '$.designerName'
+                ))), '')
+              ) as designerName,
               pm.name as projectManagerName,
               JSON_UNQUOTE(
                 JSON_EXTRACT(
