@@ -383,14 +383,39 @@ export default function Dashboard() {
         !isDesigner && !isDqcUser && !isMmtUser && !isFinanceUser;
 
     const designerFilterOptions = useMemo(() => {
-        const map = new Map<number, string>();
+        const idMap = new Map<number, string>(); // id -> name
+        const nameMap = new Map<string, string>(); // lowercaseName -> originalName
+
         for (const p of projects) {
             const id = p.assigned_designer_id;
-            if (id == null) continue;
-            const label = (p.designerName || "").trim() || `Designer #${id}`;
-            if (!map.has(id)) map.set(id, label);
+            const name = (p.designerName || "").trim();
+            if (!name) continue;
+
+            if (id != null) {
+                if (!idMap.has(id)) idMap.set(id, name);
+            } else {
+                const lower = name.toLowerCase();
+                if (!nameMap.has(lower)) nameMap.set(lower, name);
+            }
         }
-        return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+
+        const options: Array<[string, string]> = [];
+        const seenNames = new Set<string>();
+
+        // Prefer real user IDs for designers in the system
+        for (const [id, name] of idMap.entries()) {
+            options.push([String(id), name]);
+            seenNames.add(name.toLowerCase());
+        }
+
+        // Add designers found by name (from CRM intake) who aren't yet matched to a system user
+        for (const [lower, name] of nameMap.entries()) {
+            if (!seenNames.has(lower)) {
+                options.push([`name:${name}`, name]);
+            }
+        }
+
+        return options.sort((a, b) => a[1].localeCompare(b[1]));
     }, [projects]);
 
     const hasUnassignedInQueue = useMemo(
@@ -409,9 +434,16 @@ export default function Dashboard() {
         if (designerFilter === "__unassigned__") {
             queueFilterFiltered = queueFilterFiltered.filter((p) => p.assigned_designer_id == null);
         } else if (designerFilter) {
-            const id = Number(designerFilter);
-            if (!Number.isNaN(id)) {
-                queueFilterFiltered = queueFilterFiltered.filter((p) => p.assigned_designer_id === id);
+            if (designerFilter.startsWith("name:")) {
+                const nameToMatch = designerFilter.replace("name:", "").toLowerCase();
+                queueFilterFiltered = queueFilterFiltered.filter(
+                    (p) => (p.designerName || "").trim().toLowerCase() === nameToMatch,
+                );
+            } else {
+                const id = Number(designerFilter);
+                if (!Number.isNaN(id)) {
+                    queueFilterFiltered = queueFilterFiltered.filter((p) => p.assigned_designer_id === id);
+                }
             }
         }
     }
