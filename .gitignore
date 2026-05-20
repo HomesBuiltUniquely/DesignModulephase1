@@ -4,3 +4,5 @@
 backend/uploads/
 
 
+my-app/node_modules/
+my-app/package-lock.json
