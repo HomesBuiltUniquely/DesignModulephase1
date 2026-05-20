@@ -12,6 +12,7 @@ import { pipeline } from "node:stream/promises";
 import AdmZip from "adm-zip";
 import * as XLSX from "xlsx";
 import { registerCustomerNumberRoutes } from "./routes/customerNumberApi";
+import { registerMsg91InboundRoutes } from "./routes/msg91InboundApi";
 import { registerProlanceRoutes } from "./routes/prolanceApi";
 
 function loadEnvFile() {
@@ -133,6 +134,8 @@ const pool = mysql.createPool({
 
 // Standalone route: /api/customer/:customerNumber (see routes/customerNumberApi.ts)
 registerCustomerNumberRoutes(app, pool);
+// MSG91 inbound webhook + phone lookup (see routes/msg91InboundApi.ts)
+registerMsg91InboundRoutes(app, pool);
 
 // ----- S3 setup for profile images -----
 const S3_REGION = process.env.AWS_REGION || "ap-south-1";
@@ -885,6 +888,21 @@ async function initDb() {
         payload JSON NOT NULL,
         created_at DATETIME NOT NULL,
         INDEX idx_customer_api_records_number (customer_number)
+      );
+    `);
+
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS msg91_inbound_records (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        phone_number VARCHAR(32) NOT NULL,
+        customer_number VARCHAR(32) NULL,
+        integrated_number VARCHAR(32) NULL,
+        direction VARCHAR(32) NULL,
+        event_type VARCHAR(64) NULL,
+        payload JSON NOT NULL,
+        created_at DATETIME NOT NULL,
+        INDEX idx_msg91_inbound_phone (phone_number),
+        INDEX idx_msg91_inbound_created (created_at)
       );
     `);
 
