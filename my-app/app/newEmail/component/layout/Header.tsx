@@ -6,109 +6,47 @@ interface HeaderProps {
   projectId: string;
 }
 
+const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_BACKEND_BASE_URL || '';
+
 export const Header = ({ projectId }: HeaderProps) => {
   return (
-    <Section style={headerStyle}>
-      <Row>
+    <Section className="bg-brand-primary px-8 py-3  rounded-t-xl w-full">
+      <Row className='m-2'>
         {/* Left Side: Logo and Title */}
         <Column align="left">
           <table cellPadding={0} cellSpacing={0} border={0}>
             <tr>
-              <td style={logoContainerStyle}>
+              <td className="align-middle text-center">
                 <Img
-                  // Note: In Next.js/React Email, images should typically be served from a public URL or the static folder.
-                  // You might need to move "Pasted image.png" to your public directory or provide an absolute URL when sending the email.
-                  src="/images/Pasted image.png"
-                  width="44"
-                  height="44"
+                  src={`${baseUrl}/static/logo.png`}
+                  width="100"
+                  height="auto"
                   alt="HUB Logo"
-                  style={logoImgStyle}
+                  className="block mx-auto"
                 />
               </td>
-              <td style={titleContainerStyle}>
-                <Text style={titleStyle}>HUB INTERIORS</Text>
-                <Text style={taglineStyle}>Homes Build Uniquely</Text>
+              <td className="pl-3 align-middle">
+                <Text className="m-0 text-white font-serif text-[20px] font-bold tracking-wide leading-none">
+                  HUB INTERIORS
+                </Text>
+                <Text className="m-0 mt-0.5 text-white font-sans text-[11px] tracking-widest uppercase opacity-90 leading-none">
+                  Homes Build Uniquely
+                </Text>
               </td>
             </tr>
           </table>
         </Column>
         
         {/* Right Side: Project ID */}
-        <Column align="right" style={rightColumnStyle}>
-          <Text style={projectIdLabelStyle}>PROJECT ID</Text>
-          <Text style={projectIdValueStyle}>{projectId}</Text>
+        <Column align="right" className="align-middle text-right">
+          <Text className="m-0 text-white font-sans text-[12px] tracking-wide uppercase opacity-90 leading-none">
+            PROJECT ID
+          </Text>
+          <Text className="m-0 mt-1 text-white font-sans text-[18px] font-bold leading-none">
+            {projectId}
+          </Text>
         </Column>
       </Row>
     </Section>
   );
-};
-
-const headerStyle = {
-  backgroundColor: theme.colors.brand.primary,
-  padding: '24px',
-  borderTopLeftRadius: '12px',
-  borderTopRightRadius: '12px',
-  width: '100%',
-};
-
-const logoContainerStyle = {
-  backgroundColor: theme.colors.neutral.white,
-  borderRadius: '8px',
-  padding: '6px',
-  width: '56px',
-  height: '56px',
-  verticalAlign: 'middle',
-  textAlign: 'center' as const,
-};
-
-const logoImgStyle = {
-  display: 'block',
-  margin: '0 auto',
-};
-
-const titleContainerStyle = {
-  paddingLeft: '16px',
-  verticalAlign: 'middle',
-};
-
-const titleStyle = {
-  margin: '0',
-  color: theme.colors.neutral.white,
-  fontFamily: theme.fonts.heading,
-  fontSize: '20px',
-  fontWeight: 'bold',
-  letterSpacing: '0.5px',
-};
-
-const taglineStyle = {
-  margin: '4px 0 0 0',
-  color: theme.colors.neutral.white,
-  fontFamily: theme.fonts.body,
-  fontSize: '11px',
-  letterSpacing: '1px',
-  textTransform: 'uppercase' as const,
-  opacity: 0.9,
-};
-
-const rightColumnStyle = {
-  verticalAlign: 'middle',
-  textAlign: 'right' as const,
-};
-
-const projectIdLabelStyle = {
-  margin: '0',
-  color: theme.colors.neutral.white,
-  fontFamily: theme.fonts.body,
-  fontSize: '10px',
-  letterSpacing: '0.5px',
-  textTransform: 'uppercase' as const,
-  opacity: 0.9,
-};
-
-const projectIdValueStyle = {
-  margin: '2px 0 0 0',
-  color: theme.colors.neutral.white,
-  fontFamily: theme.fonts.body,
-  fontSize: '18px',
-  fontWeight: 'bold',
 };

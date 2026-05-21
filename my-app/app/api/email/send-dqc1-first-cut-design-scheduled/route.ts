@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import { renderDqc1FirstCutDesignScheduledEmail } from '@/lib/email/render-dqc1-first-cut-design-scheduled';
+import { render } from '@react-email/components';
+import DQC1FirstCutDesignEmail from '@/app/newEmail/templates/DQC1FirstCutDesign';
 
 export async function POST(request: Request) {
   try {
@@ -16,6 +17,8 @@ export async function POST(request: Request) {
     const designerName = body.designerName as string | undefined;
     const designerTitle = body.designerTitle as string | undefined;
     const designerAvatarUrl = body.designerAvatarUrl as string | undefined;
+    const projectId = body.projectId as string | undefined;
+    const branchName = body.branchName as string | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -26,16 +29,18 @@ export async function POST(request: Request) {
 
     const attachments = body.attachments as { filename: string; path: string }[] | undefined;
 
-    const html = renderDqc1FirstCutDesignScheduledEmail({
-      customerName,
-      meetingDate,
-      meetingTime,
-      meetingMode,
-      meetingLink,
-      designerName,
-      designerTitle,
-      designerAvatarUrl,
-    });
+    const html = await render(
+      DQC1FirstCutDesignEmail({
+        customerName,
+        projectId,
+        meetingDate,
+        meetingTime,
+        meetingMode,
+        meetingLink,
+        branchName,
+        designerName,
+      })
+    );
 
     let info;
     try {

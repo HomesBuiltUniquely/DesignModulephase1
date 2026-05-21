@@ -14,22 +14,26 @@ export interface DetailsListProps {
 
 export const DetailsList = ({ title = 'MEETING DETAILS', items }: DetailsListProps) => {
   return (
-    <Section style={containerStyle}>
-      {title && <Text style={titleStyle}>{title}</Text>}
-      <Section style={boxStyle}>
+    <Section className="w-full mb-6">
+      {title && <Text className="m-0 mb-3 text-brand-primary font-sans text-[12px] font-bold tracking-widest uppercase">{title}</Text>}
+      <Section className="w-full bg-neutral-white border border-neutral-lightGrey border-l-4 border-l-brand-primary rounded">
         {items.map((item, index) => {
           const isLast = index === items.length - 1;
-          const colBorderStyle = isLast 
-            ? {} 
-            : { borderBottom: `1px solid ${theme.colors.neutral.lightGrey}` };
+          const colClass = isLast 
+            ? "px-4 py-3 align-middle" 
+            : "px-4 py-3 align-middle border-b border-neutral-lightGrey";
 
           return (
-            <Row key={index} style={rowStyle}>
-              <Column align="left" style={{ ...leftColumnStyle, ...colBorderStyle }}>
-                <Text style={labelStyle}>{item.label}</Text>
+            <Row key={index} className="w-full">
+              <Column align="left" className={`${colClass} w-[40%]`}>
+                <Text className="m-0 text-neutral-mediumGrey font-sans text-[14px]">{item.label}</Text>
               </Column>
-              <Column align="right" style={{ ...rightColumnStyle, ...colBorderStyle }}>
-                <Text style={valueStyle}>{item.value}</Text>
+              <Column align="right" className={`${colClass} w-[60%] text-right`}>
+                {typeof item.value === 'string' ? (
+                  <Text className="m-0 text-neutral-nearBlack font-sans text-[14px] font-medium">{item.value}</Text>
+                ) : (
+                  item.value
+                )}
               </Column>
             </Row>
           );
@@ -37,59 +41,4 @@ export const DetailsList = ({ title = 'MEETING DETAILS', items }: DetailsListPro
       </Section>
     </Section>
   );
-};
-
-const containerStyle = {
-  width: '100%',
-  padding: '24px',
-};
-
-const titleStyle = {
-  margin: '0 0 12px 0',
-  color: theme.colors.brand.primary,
-  fontFamily: theme.fonts.body,
-  fontSize: '12px',
-  fontWeight: 'bold',
-  letterSpacing: '1px',
-  textTransform: 'uppercase' as const,
-};
-
-const boxStyle = {
-  width: '100%',
-  backgroundColor: theme.colors.neutral.white,
-  border: `1px solid ${theme.colors.neutral.lightGrey}`,
-  borderLeft: `3px solid ${theme.colors.brand.primary}`,
-  borderRadius: '4px',
-};
-
-const rowStyle = {
-  width: '100%',
-};
-
-const leftColumnStyle = {
-  padding: '12px 16px',
-  width: '40%',
-  verticalAlign: 'middle',
-};
-
-const rightColumnStyle = {
-  padding: '12px 16px',
-  textAlign: 'right' as const,
-  width: '60%',
-  verticalAlign: 'middle',
-};
-
-const labelStyle = {
-  margin: '0',
-  color: theme.colors.neutral.mediumGrey,
-  fontFamily: theme.fonts.body,
-  fontSize: '14px',
-};
-
-const valueStyle = {
-  margin: '0',
-  color: theme.colors.neutral.nearBlack,
-  fontFamily: theme.fonts.body,
-  fontSize: '14px',
-  fontWeight: '500',
 };

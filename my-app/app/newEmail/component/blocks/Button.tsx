@@ -9,31 +9,13 @@ export interface ButtonProps {
 
 export const Button = ({ text, href }: ButtonProps) => {
   return (
-    <Section style={containerStyle}>
-      <ReactEmailButton href={href} style={buttonStyle}>
+    <Section className="w-full text-center py-4">
+      <ReactEmailButton 
+        href={href} 
+        className="bg-brand-primary text-neutral-white font-sans text-[12px] font-bold tracking-widest px-8 py-4 rounded uppercase text-center w-auto inline-block"
+      >
         {text}
       </ReactEmailButton>
     </Section>
   );
-};
-
-const containerStyle = {
-  width: '100%',
-  textAlign: 'left' as const, // Aligning left based on typical email flow, but can be centered if needed
-  padding: '16px 24px',
-};
-
-const buttonStyle = {
-  backgroundColor: theme.colors.neutral.white,
-  border: `1px solid ${theme.colors.neutral.mediumGrey}`, // Using medium grey for visibility, can use lightGrey if preferred
-  borderRadius: '8px',
-  color: theme.colors.neutral.nearBlack,
-  fontFamily: theme.fonts.body,
-  fontSize: '14px',
-  fontWeight: 'bold',
-  letterSpacing: '1px',
-  textTransform: 'uppercase' as const,
-  padding: '12px 24px',
-  textDecoration: 'none',
-  display: 'inline-block',
 };

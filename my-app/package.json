@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "email:dev": "npx react-email dev --dir newEmail/layout"
+    "email:dev": "npx react-email dev --dir app/newEmail/templates"
   },
   "dependencies": {
     "@types/nodemailer": "^7.0.11",
@@ -24,6 +24,7 @@
   },
   "devDependencies": {
     "@react-email/components": "^1.0.12",
+    "@react-email/ui": "^6.1.5",
     "@tailwindcss/postcss": "^4",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",

@@ -9,45 +9,19 @@ interface StageBarProps {
 
 export const StageBar = ({ stageName, status }: StageBarProps) => {
   return (
-    <Section style={stageBarStyle}>
+    <Section className="bg-brand-lightBg px-8 py-3 w-full">
       <Row>
         <Column align="left">
-          <Text style={stageNameStyle}>{stageName}</Text>
+          <Text className="m-0 text-brand-dark font-sans text-[12px] font-bold tracking-widest uppercase">
+            {stageName}
+          </Text>
         </Column>
-        <Column align="right" style={rightColumnStyle}>
-          <Text style={statusStyle}>{status}</Text>
+        <Column align="right">
+          <Text className="m-0 text-brand-primary font-sans text-[12px] font-bold tracking-widest uppercase">
+            {status}
+          </Text>
         </Column>
       </Row>
     </Section>
   );
-};
-
-const stageBarStyle = {
-  backgroundColor: theme.colors.brand.lightBg,
-  padding: '12px 24px',
-  width: '100%',
-};
-
-const rightColumnStyle = {
-  textAlign: 'right' as const,
-};
-
-const stageNameStyle = {
-  margin: '0',
-  color: theme.colors.brand.primary,
-  fontFamily: theme.fonts.body,
-  fontSize: '12px',
-  fontWeight: 'bold',
-  letterSpacing: '0.5px',
-  textTransform: 'uppercase' as const,
-};
-
-const statusStyle = {
-  margin: '0',
-  color: theme.colors.brand.dark,
-  fontFamily: theme.fonts.body,
-  fontSize: '12px',
-  fontWeight: 'bold',
-  letterSpacing: '0.5px',
-  textTransform: 'uppercase' as const,
 };

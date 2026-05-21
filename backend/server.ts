@@ -4542,6 +4542,13 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               payload?.form?.customer_name ||
               row.projectName ||
               "Customer";
+            
+            const branchName =
+              (meta as any)?.ecLocation ||
+              payload.experience_center ||
+              payload?.form?.experience_center ||
+              payload?.formData?.experience_center ||
+              "HUB Experience Center";
 
             // Collect latest first-cut design uploads (if any) to attach.
             let attachments: { filename: string; path: string }[] | undefined;
@@ -4609,6 +4616,8 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   meetingTime,
                   meetingMode: meta?.meetingMode || null,
                   meetingLink: meta?.meetingLink || null,
+                  branchName,
+                  projectId,
                   designerName: row.designerName || actingUser.name,
                   designerTitle: row.designerRole === 'designer' ? 'Lead Designer, HUB Interior' : (row.designerRole || 'Lead Designer, HUB Interior'),
                   designerAvatarUrl: row.designerAvatarUrl || null,
@@ -4635,6 +4644,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                     u.email as executiveEmail,
                     u.mmt_manager_id as executiveManagerId,
                     u.phone as executivePhone,
+                    d.name as designerName,
                     d.email as designerEmail,
                     l.client_email as clientEmail,
                     l.pid as projectPid,
@@ -4675,7 +4685,9 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               const executiveName = row.executiveName || null;
               const executiveEmail = row.executiveEmail || null;
               const executivePhone = row.executivePhone || null;
-              const designerEmail = row.designerEmail || null;
+              const designerName = row.designerName || "Your Design Consultant";
+              const designerEmail = row.designerEmail || "consultant@hubinteriors.com";
+              const siteAddress = payload.site_address || payload?.form?.site_address || payload?.formData?.site_address || "Your Site Address";
               const googleStart = formatGoogleDateTime(visitDate, visitTime);
 
               let managerEmail: string | null = null;
@@ -4723,6 +4735,10 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   visitTime,
                   executiveName,
                   executivePhone,
+                  projectId,
+                  siteAddress,
+                  designerName,
+                  designerEmail,
                 },
               });
             }
