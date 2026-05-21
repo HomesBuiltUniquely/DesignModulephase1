@@ -3,6 +3,7 @@
 # uploaded files
 backend/uploads/
 
-/
+package-lock.json
+
 
 
