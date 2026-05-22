@@ -28,4 +28,8 @@ export type LeadshipTypes = {
     projectManagerName?: string | null;
     /** Sales closure experience center / branch (from lead payload) */
     experienceCenter?: string | null;
+    /** CRM / intake appointment date (from payload) */
+    appointmentDate?: string | null;
+    /** CRM / intake appointment slot (from payload) */
+    appointmentSlot?: string | null;
 };

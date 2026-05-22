@@ -16,6 +16,7 @@ import {
     storePostGetQuotePreview,
 } from "@/app/lib/prolanceGetQuotePersistSnapshot";
 import { openProlanceBrowserForProjectId } from "@/app/lib/prolanceLinks";
+import { Pre10LeadViewModal } from "./Pre10LeadViewModal";
 
 // Stage column: Active / Inactive (sales) / Cancelled (TDM admin DGM)
 function getStatusDisplay(stage: string): "Active" | "Inactive" | "Cancelled" {
@@ -39,6 +40,26 @@ function passesWorkspaceStatusFilter(p: LeadshipTypes, statusTab: string): boole
 }
 
 // Helper to format backend date strings (ISO) to "dd/MM/yyyy h:mm A"
+function formatLeadTimeSlot(row: LeadshipTypes): string {
+    const date = row.appointmentDate?.trim() || "";
+    let slot = row.appointmentSlot?.trim() || "";
+    if (slot.startsWith("{") || slot.startsWith("[")) {
+        try {
+            const parsed = JSON.parse(slot) as Record<string, unknown>;
+            slot =
+                String(parsed.label ?? parsed.name ?? parsed.slot ?? parsed.time ?? parsed.start ?? "").trim() ||
+                slot;
+        } catch {
+            // keep raw slot string
+        }
+    }
+    // Prefer appointment_slot text (e.g. "5:00 PM - 7:00 PM"); append date when present.
+    if (slot && date) return `${slot} (${date})`;
+    if (slot) return slot;
+    if (date) return date;
+    return "—";
+}
+
 function formatDateTime(value: string): string {
     if (!value) return "";
     const date = new Date(value);
@@ -358,6 +379,8 @@ export default function Dashboard() {
     const [prolanceCreateLeadId, setProlanceCreateLeadId] = useState<number | null>(null);
     /** Pre 10% / mixed Pre 10 row: Get quote API in flight for this lead id */
     const [getQuoteLeadId, setGetQuoteLeadId] = useState<number | null>(null);
+    /** Pre 10% row: lead shown in View popup */
+    const [pre10ViewLead, setPre10ViewLead] = useState<LeadshipTypes | null>(null);
 
     const phaseFilteredProjects =
         isSelected === "All Projects (10-60%)"
@@ -940,7 +963,7 @@ export default function Dashboard() {
                 <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden min-w-0">
                     <div className="overflow-x-auto">
                         {pre10TabActive ? (
-                            <table className="w-full min-w-[480px]">
+                            <table className="w-full min-w-[640px]">
                                 <thead>
                                     <tr className="bg-gray-900 text-white text-left text-sm font-semibold">
                                         {canImportLeads && (
@@ -955,21 +978,20 @@ export default function Dashboard() {
                                                 />
                                             </th>
                                         )}
-                                        <th className="py-3 px-5">Prolance</th>
                                         <th className="py-3 px-5">ID / Project Name</th>
-                                        <th className="py-3 px-5">Assignee</th>
+                                        <th className="py-3 px-5">Time slot</th>
+                                        <th className="py-3 px-5">View</th>
+                                        <th className="py-3 px-5">Create project</th>
                                         <th className="py-3 px-5">Get quote</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     {deduped.map((row) => {
-                                        const designerNameTrim = row.designerName?.trim() || null;
-                                        const designerLabel = designerNameTrim ?? "Unassigned";
-                                        const pmName = row.projectManagerName?.trim() || null;
                                         const pid = row.prolanceProjectId != null ? Number(row.prolanceProjectId) : NaN;
                                         const hasProject = Number.isFinite(pid) && pid >= 1;
                                         const prolanceRowBusy = prolanceCreateLeadId === row.id;
                                         const getQuoteRowBusy = getQuoteLeadId === row.id;
+                                        const timeSlotLabel = formatLeadTimeSlot(row);
                                         return (
                                             <tr key={row.id} className="border-b border-gray-100 hover:bg-gray-50">
                                                 {canImportLeads && (
@@ -982,6 +1004,24 @@ export default function Dashboard() {
                                                     </td>
                                                 )}
                                                 <td className="py-3 px-5">
+                                                    <div className="font-medium text-gray-900">HUB-{row.pid || row.id}</div>
+                                                    <div className="text-sm text-gray-600 truncate max-w-[200px]" title={row.projectName}>
+                                                        {row.projectName || "—"}
+                                                    </div>
+                                                </td>
+                                                <td className="py-3 px-5 text-sm text-gray-700 whitespace-nowrap" title={timeSlotLabel}>
+                                                    {timeSlotLabel}
+                                                </td>
+                                                <td className="py-3 px-5">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setPre10ViewLead(row)}
+                                                        className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700 shadow-sm hover:bg-gray-50"
+                                                    >
+                                                        View
+                                                    </button>
+                                                </td>
+                                                <td className="py-3 px-5">
                                                     <button
                                                         type="button"
                                                         disabled={!sessionId || prolanceRowBusy}
@@ -989,78 +1029,12 @@ export default function Dashboard() {
                                                         title={
                                                             hasProject
                                                                 ? "Open this project in Prolance (browser)"
-                                                                : "Create Prolance project via API (https://api.prolance.design) and save ID on this lead"
+                                                                : "Create Prolance project via API and save ID on this lead"
                                                         }
                                                         className="rounded-lg border border-teal-600 bg-white px-3 py-2 text-xs font-semibold text-teal-800 shadow-sm hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-50"
                                                     >
-                                                        {prolanceRowBusy ? "Creating…" : "Prolance"}
+                                                        {prolanceRowBusy ? "Creating…" : "Create project"}
                                                     </button>
-                                                </td>
-                                                <td className="py-3 px-5">
-                                                    <div className="font-medium text-gray-900">HUB-{row.pid || row.id}</div>
-                                                    <div className="text-sm text-gray-600 truncate max-w-[200px]" title={row.projectName}>
-                                                        {row.projectName || "—"}
-                                                    </div>
-                                                </td>
-                                                <td className="py-3 px-5 min-w-[200px]">
-                                                    <div className="flex flex-col gap-2">
-                                                        <div className="flex items-center gap-2">
-                                                            <div className="flex items-center gap-1.5">
-                                                                {designerNameTrim ? (
-                                                                    <div
-                                                                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-semibold text-blue-800 shadow-sm"
-                                                                        title={designerNameTrim}
-                                                                    >
-                                                                        {getInitials(designerNameTrim)}
-                                                                    </div>
-                                                                ) : null}
-                                                                {pmName ? (
-                                                                    <div
-                                                                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-violet-100 text-xs font-semibold text-violet-800 shadow-sm"
-                                                                        title={`PM: ${pmName}`}
-                                                                    >
-                                                                        {getInitials(pmName)}
-                                                                    </div>
-                                                                ) : null}
-                                                            </div>
-                                                            <span
-                                                                className="max-w-[120px] truncate text-xs text-gray-600"
-                                                                title={designerLabel}
-                                                            >
-                                                                {designerLabel}
-                                                            </span>
-                                                        </div>
-                                                        {canImportLeads && (
-                                                            <div className="flex flex-wrap items-center gap-1.5">
-                                                                <select
-                                                                    id={`pre10-assign-${row.id}`}
-                                                                    value={singleAssignByLead[row.id] ?? row.assigned_designer_id ?? ""}
-                                                                    onChange={(e) =>
-                                                                        setSingleAssignByLead((prev) => ({
-                                                                            ...prev,
-                                                                            [row.id]: e.target.value ? Number(e.target.value) : "",
-                                                                        }))
-                                                                    }
-                                                                    className="max-w-[140px] rounded border border-gray-300 px-2 py-1 text-xs"
-                                                                >
-                                                                    <option value="">Designer…</option>
-                                                                    {assignableDesigners.map((d) => (
-                                                                        <option key={d.id} value={d.id}>
-                                                                            {d.name}
-                                                                        </option>
-                                                                    ))}
-                                                                </select>
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => assignSingleLead(row.id)}
-                                                                    disabled={singleAssignLoadingLeadId === row.id}
-                                                                    className="rounded bg-emerald-600 px-2 py-1 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
-                                                                >
-                                                                    {singleAssignLoadingLeadId === row.id ? "…" : "Assign"}
-                                                                </button>
-                                                            </div>
-                                                        )}
-                                                    </div>
                                                 </td>
                                                 <td className="py-3 px-5">
                                                     <button
@@ -1690,6 +1664,13 @@ export default function Dashboard() {
                     </div>
                 </div>
             </main>
+            {pre10ViewLead ? (
+                <Pre10LeadViewModal
+                    lead={pre10ViewLead}
+                    timeSlotLabel={formatLeadTimeSlot(pre10ViewLead)}
+                    onClose={() => setPre10ViewLead(null)}
+                />
+            ) : null}
         </div>
     );
     }

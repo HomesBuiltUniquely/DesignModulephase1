@@ -126,7 +126,7 @@ app.get("/api/health", (_req, res) => {
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "Root@123",
+  password: process.env.DB_PASSWORD || "root@root",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -955,6 +955,97 @@ function toLeadRow(payload: any) {
     createAt: now,
     updateAt: now,
   };
+}
+
+function pickTrimmedString(...candidates: unknown[]): string | null {
+  for (const c of candidates) {
+    if (c == null) continue;
+    if (typeof c === "string" && c.trim()) return c.trim();
+    if (typeof c === "number" && Number.isFinite(c)) return String(c);
+  }
+  return null;
+}
+
+function slotTextFromValue(v: unknown): string | null {
+  if (v == null) return null;
+  if (typeof v === "string" && v.trim()) return v.trim();
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  if (typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    return pickTrimmedString(o.label, o.name, o.slot, o.time, o.start, o.display, o.value, o.text);
+  }
+  return null;
+}
+
+/** Read appointment date/slot from lead payload JSON (root, formData, crmSchedule, rawPayload, nested CRM fields). */
+function extractLeadScheduleFromPayload(payloadInput: unknown): {
+  appointmentDate: string | null;
+  appointmentSlot: string | null;
+} {
+  let root: Record<string, unknown> = {};
+  if (typeof payloadInput === "string") {
+    try {
+      root = JSON.parse(payloadInput) as Record<string, unknown>;
+    } catch {
+      return { appointmentDate: null, appointmentSlot: null };
+    }
+  } else if (payloadInput && typeof payloadInput === "object") {
+    root = payloadInput as Record<string, unknown>;
+  } else {
+    return { appointmentDate: null, appointmentSlot: null };
+  }
+
+  const formData = (root.formData || root.form_data || root.form || {}) as Record<string, unknown>;
+  const rawPayload = (root.rawPayload || root.raw_payload || {}) as Record<string, unknown>;
+  const crmSchedule = (root.crmSchedule || root.crm_schedule || {}) as Record<string, unknown>;
+  const fetched = (root.fetchedData || root.fetched_data || {}) as Record<string, unknown>;
+  const nestedExtra = (rawPayload.allOtherFieldsFromOtherProject ||
+    rawPayload.all_other_fields_from_other_project ||
+    rawPayload.extraFields ||
+    rawPayload.extra ||
+    {}) as Record<string, unknown>;
+
+  const appointmentDate = pickTrimmedString(
+    root.appointment_date,
+    root.appointmentDate,
+    root.visit_date,
+    root.visitDate,
+    root.scheduled_date,
+    root.scheduledDate,
+    crmSchedule.date,
+    formData.appointment_date,
+    formData.appointmentDate,
+    rawPayload.appointment_date,
+    rawPayload.appointmentDate,
+    nestedExtra.appointment_date,
+    nestedExtra.appointmentDate,
+    fetched.appointment_date,
+    fetched.appointmentDate,
+  );
+
+  const appointmentSlot =
+    slotTextFromValue(root.appointment_slot) ||
+    slotTextFromValue(root.appointmentSlot) ||
+    slotTextFromValue(root.time_slot) ||
+    slotTextFromValue(root.timeSlot) ||
+    slotTextFromValue(root.slot) ||
+    slotTextFromValue(crmSchedule.slot) ||
+    slotTextFromValue(formData.appointment_slot) ||
+    slotTextFromValue(formData.appointmentSlot) ||
+    slotTextFromValue(formData.time_slot) ||
+    slotTextFromValue(formData.slot) ||
+    slotTextFromValue(rawPayload.appointment_slot) ||
+    slotTextFromValue(rawPayload.appointmentSlot) ||
+    slotTextFromValue(rawPayload.time_slot) ||
+    slotTextFromValue(rawPayload.timeSlot) ||
+    slotTextFromValue(rawPayload.slot) ||
+    slotTextFromValue(nestedExtra.appointment_slot) ||
+    slotTextFromValue(nestedExtra.appointmentSlot) ||
+    slotTextFromValue(fetched.appointment_slot) ||
+    slotTextFromValue(fetched.slot) ||
+    null;
+
+  return { appointmentDate, appointmentSlot };
 }
 
 async function getUserFromSession(req: Request) {
@@ -2609,6 +2700,12 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
       ? String(appointmentDateRaw).trim()
       : null;
 
+  const nestedExtra =
+    (payload.allOtherFieldsFromOtherProject ||
+      payload.all_other_fields_from_other_project ||
+      formData.allOtherFieldsFromOtherProject ||
+      {}) as Record<string, unknown>;
+
   const slotCandidate =
     payload.appointmentSlot ??
     payload.appointment_slot ??
@@ -2618,8 +2715,13 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
     payload.slotDetails ??
     payload.slot_details ??
     formData.appointmentSlot ??
+    formData.appointment_slot ??
     formData.slot ??
+    nestedExtra.appointmentSlot ??
+    nestedExtra.appointment_slot ??
+    nestedExtra.slot ??
     fetched.appointmentSlot ??
+    fetched.appointment_slot ??
     fetched.slot;
 
   let appointmentSlot: string | null = null;
@@ -3162,16 +3264,23 @@ app.post("/api/leads/import-excel/commit", async (req: Request, res: Response) =
         designerName = defaultDesignerName;
       }
 
+      const appointmentDate = pickValue(row, "appointmentDate") || pickValue(row, "appointment_date") || "";
+      const appointmentSlot = pickValue(row, "appointmentSlot") || pickValue(row, "appointment_slot") || pickValue(row, "timeSlot") || pickValue(row, "time_slot") || "";
+
       const payload = {
         source: "excel_import",
         importedBy: { id: user.id, name: user.name, role: user.role },
         importedAt: now.toISOString(),
+        ...(appointmentDate ? { appointment_date: appointmentDate } : {}),
+        ...(appointmentSlot ? { appointment_slot: appointmentSlot } : {}),
         formData: {
           customer_name: customerName || projectName,
           designer_name: designerName || "",
           co_no: contactNo || "",
           email: clientEmail || "",
           status_of_project: projectStage,
+          ...(appointmentDate ? { appointment_date: appointmentDate } : {}),
+          ...(appointmentSlot ? { appointment_slot: appointmentSlot } : {}),
         },
         rawRow: row,
       };
@@ -7865,7 +7974,8 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
                     '$.form.experience_center'
                   )
                 )
-              )), '') AS experienceCenter
+              )), '') AS experienceCenter,
+              l.payload AS leadPayloadRaw
        FROM leads l
        LEFT JOIN users u ON u.id = l.assigned_designer_id
        LEFT JOIN users pm ON pm.id = l.assigned_project_manager_id
@@ -7873,13 +7983,19 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
     );
     const baseList = (rows as any[])
       .filter((r) => r.financeApprovedRaw !== "false")
-      .map((r) => ({
-        ...r,
-        isOnHold: !!r.isOnHold,
-        designerName: r.designerName ?? null,
-        projectManagerName: r.projectManagerName ?? null,
-        experienceCenter: r.experienceCenter ?? null,
-      }));
+      .map((r) => {
+        const schedule = extractLeadScheduleFromPayload(r.leadPayloadRaw);
+        const { leadPayloadRaw: _omitPayload, ...rest } = r;
+        return {
+          ...rest,
+          isOnHold: !!r.isOnHold,
+          designerName: r.designerName ?? null,
+          projectManagerName: r.projectManagerName ?? null,
+          experienceCenter: r.experienceCenter ?? null,
+          appointmentDate: schedule.appointmentDate,
+          appointmentSlot: schedule.appointmentSlot,
+        };
+      });
 
     // Enrich with current milestone (from task completions) for Design Phase dashboard
     const [completionRows] = await pool.query(
