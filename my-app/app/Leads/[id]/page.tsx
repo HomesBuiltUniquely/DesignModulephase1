@@ -2644,6 +2644,7 @@ export default function ProjectDetailPage() {
                                     canUpload={false}
                                     userRole={authUser?.role}
                                     canDelete={false}
+                                    uploadType={currentMilestoneIndex === 3 ? 'd2_masking' : undefined}
                                 />
                                 <ChatCard
                                     cardClass={getCardClass('chat', 'xl:rounded-3xl xl:bg-purple-50 xl:row-span-1 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative')}
@@ -2663,6 +2664,7 @@ export default function ProjectDetailPage() {
                                     canUpload={isMmtUser}
                                     userRole={authUser?.role}
                                     canDelete={isMmtUser}
+                                    uploadType={currentMilestoneIndex === 3 ? 'd2_masking' : undefined}
                                 />
                                 {!isMmtUser && (
                                     <ChatCard
