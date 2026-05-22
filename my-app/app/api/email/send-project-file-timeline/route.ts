@@ -20,6 +20,10 @@ export async function POST(request: Request) {
       attendees,
       discussionSummary,
       attachments,
+      stageName,
+      statusName,
+      title,
+      introText,
     } = body;
 
     // We can support customerEmail as an alias for to, if invoked directly via old format
@@ -38,6 +42,10 @@ export async function POST(request: Request) {
       attendees,
       discussionSummary,
       attachments,
+      stageName,
+      statusName,
+      title,
+      introText,
     });
 
     const html = await render(emailComponent);

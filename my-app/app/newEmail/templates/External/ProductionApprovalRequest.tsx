@@ -3,17 +3,20 @@ import { Text, Section } from '@react-email/components';
 import { BaseLayout } from '../../component/layout/BaseLayout';
 import { StageBar } from '../../component/blocks/StageBar';
 import { Button } from '../../component/blocks/Button';
+import { FileList, FileItem } from '../../component/blocks/FileList';
 
 export interface ProductionApprovalRequestEmailProps {
   customerName?: string;
   projectId?: string;
   designerName?: string;
+  attachments?: FileItem[];
 }
 
 export default function ProductionApprovalRequestEmail({
   customerName = 'Customer',
   projectId = 'HI-2025-0000',
   designerName = 'Your Design Consultant',
+  attachments = [],
 }: ProductionApprovalRequestEmailProps) {
   return (
     <BaseLayout projectId={projectId}>
@@ -45,6 +48,18 @@ export default function ProductionApprovalRequestEmail({
         <Text className="m-0 text-[15px] leading-relaxed text-neutral-nearBlack pb-4">
           Please review the details in ERP and confirm your approval to commence manufacturing.
         </Text>
+
+        {/* Attachments Section */}
+        {attachments && attachments.length > 0 && (
+          <FileList
+            title="PROJECT DOCUMENTS"
+            files={attachments.map((a) => ({
+              name: (a as any).filename || (a as any).name || 'Document',
+              meta: 'Uploaded Document',
+              url: (a as any).path || (a as any).url,
+            }))}
+          />
+        )}
 
         <div className="text-center mt-6 mb-6">
           <Button text="APPROVE FOR PRODUCTION" href="#" />

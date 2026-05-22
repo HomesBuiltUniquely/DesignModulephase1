@@ -14,6 +14,10 @@ export async function POST(request: Request) {
     const customerName = body.customerName as string | undefined;
     const designerName = body.designerName as string | undefined;
     const laminateSelections = body.laminateSelections as LaminateSelections | undefined;
+    const meetingDate = body.meetingDate as string | undefined;
+    const meetingTime = body.meetingTime as string | undefined;
+    const attendees = body.attendees as string | undefined;
+    const discussionSummary = body.discussionSummary as string | undefined;
     const attachments = body.attachments as { filename: string; path: string }[] | undefined;
     const projectId = body.projectId as string | undefined;
 
@@ -28,6 +32,10 @@ export async function POST(request: Request) {
       projectId,
       customerName,
       designerName,
+      meetingDate,
+      meetingTime,
+      attendees,
+      discussionSummary,
       laminateSelections: laminateSelections ?? undefined,
       attachments,
     });
@@ -39,7 +47,6 @@ export async function POST(request: Request) {
       ...(cc ? { cc } : {}),
       subject: subjectOverride || 'MOM – Color & Laminate Selection Confirmation',
       html,
-      ...(attachments && attachments.length ? { attachments } : {}),
     });
 
     return NextResponse.json({ success: true, messageId: info.messageId });

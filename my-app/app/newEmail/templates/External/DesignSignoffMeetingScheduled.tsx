@@ -4,6 +4,7 @@ import { BaseLayout } from '../../component/layout/BaseLayout';
 import { StageBar } from '../../component/blocks/StageBar';
 import { DetailsList, DetailItem } from '../../component/blocks/DetailsList';
 import { Button } from '../../component/blocks/Button';
+import { FileList } from '../../component/blocks/FileList';
 
 export interface DesignSignoffMeetingScheduledEmailProps {
   customerName?: string;
@@ -14,6 +15,7 @@ export interface DesignSignoffMeetingScheduledEmailProps {
   meetingLink?: string;
   branchName?: string;
   designerName?: string;
+  attachments?: { filename?: string; name?: string; path?: string; url?: string }[];
 }
 
 export default function DesignSignoffMeetingScheduledEmail({
@@ -25,6 +27,7 @@ export default function DesignSignoffMeetingScheduledEmail({
   meetingLink = '#',
   branchName = 'HUB Experience Center',
   designerName = 'Your Design Consultant',
+  attachments = [],
 }: DesignSignoffMeetingScheduledEmailProps) {
   const meetingDetails: DetailItem[] = [
     { label: 'Date', value: meetingDate },
@@ -59,6 +62,18 @@ export default function DesignSignoffMeetingScheduledEmail({
 
         {/* Meeting Details List */}
         <DetailsList title="MEETING DETAILS" items={meetingDetails} />
+
+        {/* Attachments Section */}
+        {attachments && attachments.length > 0 && (
+          <FileList
+            title="MEETING DOCUMENTS"
+            files={attachments.map((a) => ({
+              name: a.filename || a.name || 'Document',
+              meta: 'Uploaded Document',
+              url: a.path || a.url,
+            }))}
+          />
+        )}
 
         {/* CTA Button / Location Note */}
         {meetingMode === 'online' ? (

@@ -4,6 +4,7 @@ import { BaseLayout } from '../../component/layout/BaseLayout';
 import { StageBar } from '../../component/blocks/StageBar';
 import { DetailsList, DetailItem } from '../../component/blocks/DetailsList';
 import { Button } from '../../component/blocks/Button';
+import { FileList } from '../../component/blocks/FileList';
 
 export interface DQC2MaterialSelectionScheduledEmailProps {
   customerName?: string;
@@ -14,6 +15,7 @@ export interface DQC2MaterialSelectionScheduledEmailProps {
   meetingLink?: string;
   branchName?: string;
   designerName?: string;
+  attachments?: { filename?: string; name?: string; path?: string; url?: string }[];
 }
 
 export default function DQC2MaterialSelectionScheduledEmail({
@@ -25,14 +27,17 @@ export default function DQC2MaterialSelectionScheduledEmail({
   meetingLink = '#',
   branchName = 'HUB Experience Center',
   designerName = 'Your Design Consultant',
+  attachments = [],
 }: DQC2MaterialSelectionScheduledEmailProps) {
   const meetingDetails: DetailItem[] = [
     { label: 'Date', value: meetingDate },
     { label: 'Time', value: meetingTime },
   ];
 
-  if (meetingMode === 'offline') {
-    meetingDetails.push({ label: 'Location', value: `${branchName} Branch` });
+  const isOffline = meetingMode ? meetingMode.toLowerCase().includes('offline') : false;
+
+  if (isOffline) {
+    meetingDetails.push({ label: 'Location', value: `${branchName}` });
   } else {
     meetingDetails.push({ label: 'Mode', value: 'Online Meeting' });
   }
@@ -61,16 +66,28 @@ export default function DQC2MaterialSelectionScheduledEmail({
         <DetailsList title="MEETING DETAILS" items={meetingDetails} />
 
         {/* CTA Button / Location Note */}
-        {meetingMode === 'online' ? (
+        {!isOffline ? (
           <div className="text-center mt-6 mb-6">
             <Button text="JOIN MEETING" href={meetingLink || '#'} />
           </div>
         ) : (
           <Section className="bg-neutral-nearWhite border border-neutral-lightGrey rounded p-4 my-6 text-center">
             <Text className="m-0 text-[14px] text-neutral-nearBlack">
-              We look forward to hosting you at our <span className="font-bold">{branchName} Branch</span> for the presentation.
+              We look forward to hosting you at our <span className="font-bold">{branchName}</span> for the presentation.
             </Text>
           </Section>
+        )}
+
+        {/* Attachments Section */}
+        {attachments && attachments.length > 0 && (
+          <FileList
+            title="MEETING DOCUMENTS"
+            files={attachments.map((a) => ({
+              name: a.filename || a.name || 'Document',
+              meta: 'Uploaded Document',
+              url: a.path || a.url,
+            }))}
+          />
         )}
 
         <Text className="m-0 text-[15px] leading-relaxed text-neutral-nearBlack pb-2">

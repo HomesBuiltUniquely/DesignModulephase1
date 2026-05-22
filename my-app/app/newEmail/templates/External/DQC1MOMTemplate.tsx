@@ -17,6 +17,10 @@ export interface ProjectFileTimelineEmailProps {
   attendees?: string;
   discussionSummary?: string;
   attachments?: FileItem[];
+  stageName?: string;
+  statusName?: string;
+  title?: string;
+  introText?: string;
 }
 
 export default function ProjectFileTimelineEmail({
@@ -29,24 +33,28 @@ export default function ProjectFileTimelineEmail({
   attendees,
   discussionSummary,
   attachments = [],
+  stageName = 'PROJECT',
+  statusName = 'MEETING SUMMARY',
+  title = 'First Cut Design Meeting Summary',
+  introText = 'Please find below the official minutes of our First Cut Design meeting.',
 }: ProjectFileTimelineEmailProps) {
   
 
   return (
     <BaseLayout projectId={projectId}>
-      <StageBar stageName="PROJECT" status="MEETING SUMMARY" />
+      <StageBar stageName={stageName} status={statusName} />
 
       <Section className="bg-neutral-white px-8 pt-6 pb-8">
         
         {/* Greeting & Title */}
         <Text className="m-0 text-[16px] text-neutral-mediumGrey mb-1">Dear {customerName},</Text>
         <Text className="m-0 text-[24px] font-bold text-neutral-nearBlack leading-tight mb-2 font-serif">
-          First Cut Design Meeting Summary
+          {title}
         </Text>
         
         {/* Intro Paragraph */}
         <Text className="m-0 text-[15px] leading-relaxed text-neutral-nearBlack pb-2">
-          Please find below the official minutes of our First Cut Design meeting.
+          {introText}
         </Text>
         <Text className="m-0 text-[15px] leading-relaxed text-neutral-nearBlack pb-2">
           Here is a summary of our discussion, including key decisions made and any reference files uploaded for your records.

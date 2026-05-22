@@ -34,7 +34,7 @@ export default function DQC2ApprovalInternalEmail({
         
         {/* Intro Paragraph */}
         <Text className="m-0 text-[15px] leading-relaxed text-neutral-nearBlack pb-2">
-          DQC 2 has been approved for <strong>{customerName}</strong>.
+          DQC 2 has been approved and the Project Manager has approved the project for <strong>{customerName}</strong>.
         </Text>
         <Text className="m-0 text-[15px] leading-relaxed text-neutral-nearBlack pb-4">
           Please initiate the Design Sign-Off discussion immediately and ensure full documentation before proceeding to the 40% milestone.

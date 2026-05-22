@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
 import { render } from '@react-email/components';
-import ProductionApprovalRequestEmail from '@/app/newEmail/templates/External/ProductionApprovalRequest';
+import Dqc2PmReviewRequestInternalEmail from '@/app/newEmail/templates/Internal/Dqc2PmReviewRequestInternal';
 import React from 'react';
 
 export async function POST(request: Request) {
@@ -9,24 +9,26 @@ export async function POST(request: Request) {
     const body = await request.json();
     const to = body.to as string | undefined;
     const cc = body.cc as string[] | string | undefined;
-    const subject = body.subject as string | undefined;
+    const subjectOverride = body.subject as string | undefined;
+    const pmName = body.pmName as string | undefined;
     const customerName = body.customerName as string | undefined;
     const designerName = body.designerName as string | undefined;
+    const ecName = body.ecName as string | undefined;
     const projectId = body.projectId as string | undefined;
-    const attachments = body.attachments as any[] | undefined;
 
-    if (!to || !customerName) {
+    if (!to || !pmName || !customerName) {
       return NextResponse.json(
-        { error: 'Missing required fields: to, customerName' },
-        { status: 400 }
+        { error: 'Missing required fields: to, pmName, customerName' },
+        { status: 400 },
       );
     }
 
-    const emailComponent = React.createElement(ProductionApprovalRequestEmail, {
-      customerName,
+    const emailComponent = React.createElement(Dqc2PmReviewRequestInternalEmail, {
       projectId,
+      pmName,
+      customerName,
       designerName,
-      attachments,
+      ecName,
     });
 
     const html = await render(emailComponent);
@@ -34,18 +36,17 @@ export async function POST(request: Request) {
     const info = await sendMail({
       to,
       ...(cc ? { cc } : {}),
-      subject: subject || 'Final Approval Required – Production Initiation',
+      subject: subjectOverride || 'Action Required: DQC 2 Approved – Project PM Review Needed',
       html,
     });
 
     return NextResponse.json({ success: true, messageId: info.messageId });
   } catch (error) {
     // eslint-disable-next-line no-console
-    console.error('Production approval request email error', error);
+    console.error('DQC2 PM review request internal email error', error);
     return NextResponse.json(
-      { error: 'Failed to send production approval request email' },
-      { status: 500 }
+      { error: 'Failed to send DQC2 PM review request internal email' },
+      { status: 500 },
     );
   }
 }
-

@@ -61,7 +61,7 @@ export default function TenPercentPaymentApprovalEmail({
   const displayReceiptNumber = transactionRef || `HI-REC-2026-${projectId.replace(/[^0-9]/g, '') || '0387'}`;
   const displayPaymentDate = paymentDate || new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
 
-  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'https://hubinteriors.in';
+  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || (process.env.NODE_ENV === 'development' ? 'http://localhost:3000' : 'https://hubinterior.com');
   
   // Clean values for query parameters
   const queryParams = [
@@ -193,7 +193,7 @@ export default function TenPercentPaymentApprovalEmail({
           <Text className="m-0 text-[14px] text-neutral-mediumGrey mb-1">Warm regards,</Text>
           <Text className="m-0 text-[16px] font-bold text-neutral-nearBlack mb-1">Hub Interiors Finance Team</Text>
           <Text className="m-0 text-[13px] text-neutral-mediumGrey">
-            finance@hubinteriors.in · +91 80 1234 5678
+            finance@hubinterior.com · +91 80 1234 5678
           </Text>
         </Section>
 

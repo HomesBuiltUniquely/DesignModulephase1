@@ -36,33 +36,17 @@ export async function POST(request: Request) {
       meetingMode,
       meetingLink,
       branchName: ecLocation,
+      attachments,
     });
 
     const html = await render(emailComponent);
 
-    let info;
-    try {
-      info = await sendMail({
-        to,
-        ...(cc ? { cc } : {}),
-        subject: subjectOverride || 'Design Sign-Off Meeting Scheduled',
-        html,
-        ...(attachments && attachments.length ? { attachments } : {}),
-      });
-    } catch (sendErr) {
-      // eslint-disable-next-line no-console
-      console.warn('Failed to send with attachments, retrying without attachments...', sendErr);
-      if (attachments && attachments.length) {
-        info = await sendMail({
-          to,
-          ...(cc ? { cc } : {}),
-          subject: subjectOverride || 'Design Sign-Off Meeting Scheduled',
-          html,
-        });
-      } else {
-        throw sendErr;
-      }
-    }
+    const info = await sendMail({
+      to,
+      ...(cc ? { cc } : {}),
+      subject: subjectOverride || 'Design Sign-Off Meeting Scheduled',
+      html,
+    });
 
     return NextResponse.json({ success: true, messageId: info.messageId });
   } catch (error) {

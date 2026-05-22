@@ -4,12 +4,17 @@ import { BaseLayout } from '../../component/layout/BaseLayout';
 import { StageBar } from '../../component/blocks/StageBar';
 import { DetailsList, DetailItem } from '../../component/blocks/DetailsList';
 import { FileList } from '../../component/blocks/FileList';
+import { MeetingNotesList } from '../../component/blocks/MeetingNotesList';
 import { type LaminateSelections } from '@/lib/email/render-mom-color-laminate-selection-confirmation';
 
 export interface MomColorLaminateSelectionConfirmationEmailProps {
   customerName?: string;
   projectId?: string;
   designerName?: string;
+  meetingDate?: string;
+  meetingTime?: string;
+  attendees?: string;
+  discussionSummary?: string;
   laminateSelections?: LaminateSelections | null;
   attachments?: any[];
 }
@@ -18,6 +23,10 @@ export default function MomColorLaminateSelectionConfirmationEmail({
   customerName = 'Customer',
   projectId = 'HI-2025-0000',
   designerName = 'Your Design Consultant',
+  meetingDate,
+  meetingTime,
+  attendees,
+  discussionSummary,
   laminateSelections = {},
   attachments = [],
 }: MomColorLaminateSelectionConfirmationEmailProps) {
@@ -79,6 +88,14 @@ export default function MomColorLaminateSelectionConfirmationEmail({
           Thank you for visiting the Experience Center for the color and material selection discussion. Please find below the summary of the finalised laminate selections for your project:
         </Text>
 
+        {(meetingDate || attendees || discussionSummary) && (
+          <MeetingNotesList 
+            dateAndTime={meetingDate && meetingTime ? `${meetingDate} • ${meetingTime}` : (meetingDate || 'N/A')}
+            attendees={attendees || 'Customer, Designer'}
+            discussionSummary={discussionSummary}
+          />
+        )}
+
         {hasSelections ? (
           <>
             {Object.keys(k).length > 0 && <DetailsList title="KITCHEN SELECTIONS" items={kitchenDetails} />}
@@ -88,13 +105,13 @@ export default function MomColorLaminateSelectionConfirmationEmail({
           </>
         ) : (
           <Text className="m-0 text-[15px] leading-relaxed text-neutral-mediumGrey italic pb-4">
-            No specific material options selected. Please see attached MOM details.
+            No specific material options selected. Please see MOM details.
           </Text>
         )}
 
         {attachments && attachments.length > 0 && (
           <FileList 
-            title="ATTACHED MOM DOCUMENTS" 
+            title="MOM DOCUMENTS" 
             files={attachments.map(a => ({
               name: a.filename || a.name || 'MOM Attachment',
               meta: 'MOM Document',
