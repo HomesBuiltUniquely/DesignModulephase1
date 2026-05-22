@@ -1,6 +1,5 @@
 import * as React from 'react';
 import { Section, Row, Column, Text, Img } from '@react-email/components';
-import { theme } from '../../theme';
 
 export interface FileItem {
   name: string;
@@ -15,37 +14,32 @@ export interface FileListProps {
 
 export const FileList = ({ title = 'FILES UPLOADED', files }: FileListProps) => {
   return (
-    <Section style={containerStyle}>
-      <Section style={boxStyle}>
-        {title && (
-          <Row>
-            <Column style={titleColumnStyle}>
-              <Text style={titleStyle}>{title}</Text>
-            </Column>
-          </Row>
-        )}
-        
+    <Section className="w-full mb-2">
+      {title && (
+        <Text className="m-0 mb-3 text-brand-primary font-sans text-[10px] font-bold tracking-widest uppercase">
+          {title}
+        </Text>
+      )}
+      <Section className="w-full bg-neutral-white border border-neutral-lightGrey border-l-4 border-l-brand-primary rounded">
         {files.map((file, index) => {
           const isLast = index === files.length - 1;
-          const rowBorderStyle = isLast
-            ? {}
-            : { borderBottom: `1px solid ${theme.colors.neutral.lightGrey}` };
+          const borderClass = isLast ? '' : 'border-b border-neutral-lightGrey';
 
           return (
-            <Row key={index} style={rowStyle}>
-              <Column style={{ ...iconColumnStyle, ...rowBorderStyle }}>
-                <div style={iconContainerStyle}>
+            <Row key={index} className="w-full">
+              <Column align="center" className={`px-2 py-2 align-middle w-[60px] ${borderClass}`}>
+                <div className="bg-brand-mid rounded-md w-8 h-8 inline-block text-center leading-8">
                   {file.iconUrl ? (
-                    <Img src={file.iconUrl} width="16" height="16" alt="File" style={iconImgStyle} />
+                    <Img src={file.iconUrl} width="14" height="14" alt="File" className="inline-block align-middle" />
                   ) : (
                     // Fallback visual if no icon URL is provided
-                    <Text style={fallbackIconStyle}>≡</Text> 
+                    <Text className="m-0 text-[14px] text-brand-primary font-bold leading-8">≡</Text> 
                   )}
                 </div>
               </Column>
-              <Column style={{ ...textColumnStyle, ...rowBorderStyle }}>
-                <Text style={fileNameStyle}>{file.name}</Text>
-                <Text style={fileMetaStyle}>{file.meta}</Text>
+              <Column align="left" className={`px-0 py-3 align-middle ${borderClass}`}>
+                <Text className="m-0 mb-1 text-neutral-nearBlack font-sans text-[14px] font-medium">{file.name}</Text>
+                <Text className="m-0 text-neutral-mediumGrey font-sans text-[12px]">{file.meta}</Text>
               </Column>
             </Row>
           );
@@ -53,84 +47,4 @@ export const FileList = ({ title = 'FILES UPLOADED', files }: FileListProps) => 
       </Section>
     </Section>
   );
-};
-
-const containerStyle = {
-  width: '100%',
-  padding: '24px',
-};
-
-const boxStyle = {
-  width: '100%',
-  backgroundColor: theme.colors.neutral.white,
-  border: `1px solid ${theme.colors.neutral.lightGrey}`,
-  borderLeft: `3px solid ${theme.colors.brand.primary}`,
-  borderRadius: '4px',
-};
-
-const titleColumnStyle = {
-  padding: '16px 16px 8px 16px',
-};
-
-const titleStyle = {
-  margin: '0',
-  color: theme.colors.brand.primary,
-  fontFamily: theme.fonts.body,
-  fontSize: '12px',
-  fontWeight: 'bold',
-  letterSpacing: '1px',
-  textTransform: 'uppercase' as const,
-};
-
-const rowStyle = {
-  width: '100%',
-};
-
-const iconColumnStyle = {
-  width: '48px',
-  padding: '12px 0 12px 16px',
-  verticalAlign: 'top',
-};
-
-const iconContainerStyle = {
-  backgroundColor: theme.colors.brand.mid, // Light red background as per theme
-  borderRadius: '6px',
-  width: '32px',
-  height: '32px',
-  display: 'inline-block',
-  textAlign: 'center' as const,
-  lineHeight: '32px',
-};
-
-const iconImgStyle = {
-  display: 'inline-block',
-  verticalAlign: 'middle',
-};
-
-const fallbackIconStyle = {
-  margin: '0',
-  fontSize: '16px',
-  lineHeight: '32px',
-  color: theme.colors.brand.primary,
-  fontWeight: 'bold',
-};
-
-const textColumnStyle = {
-  padding: '12px 16px',
-  verticalAlign: 'top',
-};
-
-const fileNameStyle = {
-  margin: '0 0 4px 0',
-  color: theme.colors.neutral.nearBlack,
-  fontFamily: theme.fonts.body,
-  fontSize: '14px',
-  fontWeight: '500',
-};
-
-const fileMetaStyle = {
-  margin: '0',
-  color: theme.colors.neutral.mediumGrey,
-  fontFamily: theme.fonts.body,
-  fontSize: '12px',
 };

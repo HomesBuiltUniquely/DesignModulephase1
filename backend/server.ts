@@ -4534,21 +4534,26 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             } catch {
               payload = {};
             }
+            const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
             const projectId = row.pid || `HUB-${id}`;
+
             const customerEmail =
-              row.clientEmail || payload.email || payload?.form?.email || null;
+              row.clientEmail || formData.email || formData.sales_email || payload?.email || null;
             const customerName =
-              payload.customer_name ||
-              payload?.form?.customer_name ||
+              formData.customer_name ||
+              formData.sales_lead_name ||
+              payload?.customer_name ||
               row.projectName ||
               "Customer";
             
             const branchName =
               (meta as any)?.ecLocation ||
-              payload.experience_center ||
-              payload?.form?.experience_center ||
-              payload?.formData?.experience_center ||
+              formData.experience_center ||
+              payload?.experience_center ||
               "HUB Experience Center";
+              
+            console.log("[checklist-dqc1] branchName:", branchName, "meta.ecLocation:", (meta as any)?.ecLocation, "formData.experience_center:", formData.experience_center);
+
 
             // Collect latest first-cut design uploads (if any) to attach.
             let attachments: { filename: string; path: string }[] | undefined;
@@ -6445,6 +6450,8 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       payload?.experience_center ||
       payload?.form?.experience_center ||
       "Experience Center";
+
+    console.log("[schedule-meeting] resolvedEcLocation:", resolvedEcLocation, "ecLocation:", ecLocation, "formData.experience_center:", formData.experience_center);
 
     if (meetingType === "dqc2_material_selection") {
       summary = `Material Selection - ${customerName}`;

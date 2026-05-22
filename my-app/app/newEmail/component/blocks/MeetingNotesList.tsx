@@ -1,6 +1,5 @@
 import * as React from 'react';
 import { Section, Row, Column, Text } from '@react-email/components';
-import { theme } from '../../theme';
 
 export interface MeetingNotesProps {
   dateAndTime: string;
@@ -18,48 +17,50 @@ export const MeetingNotesList = ({
   nextSteps
 }: MeetingNotesProps) => {
   return (
-    <Section style={containerStyle}>
-      <Text style={titleStyle}>MEETING NOTES</Text>
-      <Section style={boxStyle}>
+    <Section className="w-full mb-6">
+      <Text className="m-0 mb-3 text-brand-primary font-sans text-[12px] font-bold tracking-widest uppercase">
+        MEETING NOTES
+      </Text>
+      <Section className="w-full bg-neutral-white border border-neutral-lightGrey border-l-4 border-l-brand-primary rounded">
         
         {/* First two fields in one row */}
-        <Row style={rowStyle}>
-          <Column align="left" style={{ ...columnStyle, ...borderBottomStyle, width: '50%', borderRight: `1px solid ${theme.colors.neutral.lightGrey}` }}>
-            <Text style={labelStyle}>DATE & TIME</Text>
-            <Text style={valueStyle}>{dateAndTime}</Text>
+        <Row className="w-full">
+          <Column align="left" className="px-4 py-3 align-top border-b border-r border-neutral-lightGrey w-[50%]">
+            <Text className="m-0 mb-1 text-neutral-mediumGrey font-sans text-[11px] font-bold tracking-wider uppercase">DATE & TIME</Text>
+            <Text className="m-0 text-neutral-nearBlack font-sans text-[14px] leading-relaxed">{dateAndTime}</Text>
           </Column>
-          <Column align="left" style={{ ...columnStyle, ...borderBottomStyle, width: '50%' }}>
-            <Text style={labelStyle}>ATTENDEES</Text>
-            <Text style={valueStyle}>{attendees}</Text>
+          <Column align="left" className="px-4 py-3 align-top border-b border-neutral-lightGrey w-[50%]">
+            <Text className="m-0 mb-1 text-neutral-mediumGrey font-sans text-[11px] font-bold tracking-wider uppercase">ATTENDEES</Text>
+            <Text className="m-0 text-neutral-nearBlack font-sans text-[14px] leading-relaxed">{attendees}</Text>
           </Column>
         </Row>
 
         {/* Discussion Summary in a separate section/row */}
         {discussionSummary && (
-          <Row style={rowStyle}>
-            <Column align="left" style={{ ...columnStyle, ...(keyDecisions || nextSteps ? borderBottomStyle : {}) }}>
-              <Text style={labelStyle}>DISCUSSION SUMMARY</Text>
-              <Text style={valueStyle}>{discussionSummary}</Text>
+          <Row className="w-full">
+            <Column align="left" className={`px-4 py-3 align-top ${(keyDecisions || nextSteps) ? 'border-b border-neutral-lightGrey' : ''}`}>
+              <Text className="m-0 mb-1 text-neutral-mediumGrey font-sans text-[11px] font-bold tracking-wider uppercase">DISCUSSION SUMMARY</Text>
+              <Text className="m-0 text-neutral-nearBlack font-sans text-[14px] leading-relaxed">{discussionSummary}</Text>
             </Column>
           </Row>
         )}
 
         {/* Key Decisions */}
         {keyDecisions && (
-          <Row style={rowStyle}>
-            <Column align="left" style={{ ...columnStyle, ...(nextSteps ? borderBottomStyle : {}) }}>
-              <Text style={labelStyle}>KEY DECISIONS</Text>
-              <Text style={valueStyle}>{keyDecisions}</Text>
+          <Row className="w-full">
+            <Column align="left" className={`px-4 py-3 align-top ${nextSteps ? 'border-b border-neutral-lightGrey' : ''}`}>
+              <Text className="m-0 mb-1 text-neutral-mediumGrey font-sans text-[11px] font-bold tracking-wider uppercase">KEY DECISIONS</Text>
+              <Text className="m-0 text-neutral-nearBlack font-sans text-[14px] leading-relaxed">{keyDecisions}</Text>
             </Column>
           </Row>
         )}
 
         {/* Next Steps */}
         {nextSteps && (
-          <Row style={rowStyle}>
-            <Column align="left" style={columnStyle}>
-              <Text style={labelStyle}>NEXT STEPS</Text>
-              <Text style={valueStyle}>{nextSteps}</Text>
+          <Row className="w-full">
+            <Column align="left" className="px-4 py-3 align-top">
+              <Text className="m-0 mb-1 text-neutral-mediumGrey font-sans text-[11px] font-bold tracking-wider uppercase">NEXT STEPS</Text>
+              <Text className="m-0 text-neutral-nearBlack font-sans text-[14px] leading-relaxed">{nextSteps}</Text>
             </Column>
           </Row>
         )}
@@ -67,58 +68,4 @@ export const MeetingNotesList = ({
       </Section>
     </Section>
   );
-};
-
-const containerStyle = {
-  width: '100%',
-  padding: '24px',
-};
-
-const titleStyle = {
-  margin: '0 0 12px 0',
-  color: theme.colors.brand.primary,
-  fontFamily: theme.fonts.body,
-  fontSize: '12px',
-  fontWeight: 'bold',
-  letterSpacing: '1px',
-  textTransform: 'uppercase' as const,
-};
-
-const boxStyle = {
-  width: '100%',
-  backgroundColor: theme.colors.neutral.white,
-  border: `1px solid ${theme.colors.neutral.lightGrey}`,
-  borderLeft: `3px solid ${theme.colors.brand.primary}`,
-  borderRadius: '4px',
-};
-
-const rowStyle = {
-  width: '100%',
-};
-
-const borderBottomStyle = {
-  borderBottom: `1px solid ${theme.colors.neutral.lightGrey}`,
-};
-
-const columnStyle = {
-  padding: '16px',
-  verticalAlign: 'top',
-};
-
-const labelStyle = {
-  margin: '0 0 4px 0',
-  color: theme.colors.neutral.mediumGrey,
-  fontFamily: theme.fonts.body,
-  fontSize: '11px',
-  fontWeight: 'bold',
-  letterSpacing: '0.5px',
-  textTransform: 'uppercase' as const,
-};
-
-const valueStyle = {
-  margin: '0',
-  color: theme.colors.neutral.nearBlack,
-  fontFamily: theme.fonts.body,
-  fontSize: '14px',
-  lineHeight: '1.5',
 };

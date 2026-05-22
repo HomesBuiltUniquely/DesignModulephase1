@@ -1,11 +1,13 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
 import { render } from '@react-email/components';
-import DQC1FirstCutDesignEmail from '@/app/newEmail/templates/DQC1FirstCutDesign';
+import DQC1FirstCutDesignEmail from '@/app/newEmail/templates/External/DQC1FirstCutDesign';
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
+    console.log("[send-dqc1 API] Received body:", JSON.stringify(body, null, 2));
+    
     const to = body.to as string | undefined;
     const cc = body.cc as string[] | string | undefined;
     const subject = body.subject as string | undefined;
@@ -18,7 +20,7 @@ export async function POST(request: Request) {
     const designerTitle = body.designerTitle as string | undefined;
     const designerAvatarUrl = body.designerAvatarUrl as string | undefined;
     const projectId = body.projectId as string | undefined;
-    const branchName = body.branchName as string | undefined;
+    const branchName = (body.branchName || body.ecLocation) as string | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -52,7 +54,6 @@ export async function POST(request: Request) {
         ...(attachments && attachments.length ? { attachments } : {}),
       });
     } catch (sendErr) {
-      // eslint-disable-next-line no-console
       console.warn('Failed to send DQC1 First Cut Design with attachments, retrying without...', sendErr);
       if (attachments && attachments.length) {
         info = await sendMail({
@@ -68,7 +69,6 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ success: true, messageId: info.messageId });
   } catch (error) {
-    // eslint-disable-next-line no-console
     console.error('DQC1 first cut design scheduled email error', error);
     return NextResponse.json(
       { error: 'Failed to send DQC1 first cut design scheduled email' },

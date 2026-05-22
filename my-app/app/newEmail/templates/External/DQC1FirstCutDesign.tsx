@@ -1,9 +1,9 @@
 import * as React from 'react';
 import { Text, Link, Section } from '@react-email/components';
-import { BaseLayout } from '../component/layout/BaseLayout';
-import { StageBar } from '../component/blocks/StageBar';
-import { DetailsList, DetailItem } from '../component/blocks/DetailsList';
-import { Button } from '../component/blocks/Button';
+import { BaseLayout } from '../../component/layout/BaseLayout';
+import { StageBar } from '../../component/blocks/StageBar';
+import { DetailsList, DetailItem } from '../../component/blocks/DetailsList';
+import { Button } from '../../component/blocks/Button';
 
 export interface DQC1FirstCutDesignEmailProps {
   customerName?: string;
@@ -32,7 +32,7 @@ export default function DQC1FirstCutDesignEmail({
   ];
 
   if (meetingMode === 'offline') {
-    meetingDetails.push({ label: 'Location', value: branchName });
+    meetingDetails.push({ label: 'Location', value: `${branchName} Branch` });
   } else {
     meetingDetails.push({ label: 'Mode', value: 'Online Meeting' });
   }
@@ -68,7 +68,7 @@ export default function DQC1FirstCutDesignEmail({
         ) : (
           <Section className="bg-neutral-nearWhite border border-neutral-lightGrey rounded p-4 my-6 text-center">
             <Text className="m-0 text-[14px] text-neutral-nearBlack">
-              We look forward to hosting you at our <span className="font-bold">{branchName}</span> for the presentation.
+              We look forward to hosting you at our <span className="font-bold">{branchName} Branch</span> for the presentation.
             </Text>
           </Section>
         )}
