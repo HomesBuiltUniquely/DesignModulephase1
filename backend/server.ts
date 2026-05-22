@@ -1048,6 +1048,76 @@ function extractLeadScheduleFromPayload(payloadInput: unknown): {
   return { appointmentDate, appointmentSlot };
 }
 
+/** Fields for dashboard View popup (external intake, sales closure, CRM payload). */
+function extractLeadIntakeViewFromPayload(payloadInput: unknown): {
+  appointmentDate: string | null;
+  appointmentSlot: string | null;
+  intakeCustomerName: string | null;
+  intakeConfiguration: string | null;
+  intakeNotes: string | null;
+} {
+  const schedule = extractLeadScheduleFromPayload(payloadInput);
+  let root: Record<string, unknown> = {};
+  if (typeof payloadInput === "string") {
+    try {
+      root = JSON.parse(payloadInput) as Record<string, unknown>;
+    } catch {
+      return { ...schedule, intakeCustomerName: null, intakeConfiguration: null, intakeNotes: null };
+    }
+  } else if (payloadInput && typeof payloadInput === "object") {
+    root = payloadInput as Record<string, unknown>;
+  } else {
+    return { ...schedule, intakeCustomerName: null, intakeConfiguration: null, intakeNotes: null };
+  }
+
+  const formData = (root.formData || root.form_data || root.form || root || {}) as Record<string, unknown>;
+  const rawPayload = (root.rawPayload || root.raw_payload || {}) as Record<string, unknown>;
+  const fetched = (root.fetchedData || root.fetched_data || {}) as Record<string, unknown>;
+
+  const intakeCustomerName = pickTrimmedString(
+    formData.customer_name,
+    formData.customerName,
+    fetched.customer_name,
+    fetched.customerName,
+    rawPayload.customer_name,
+    rawPayload.customerName,
+    root.customer_name,
+    root.customerName,
+  );
+
+  const intakeNotes = pickTrimmedString(
+    formData.custom_commitments,
+    formData.special_offer,
+    formData.property_notes,
+    formData.propertyNotes,
+    formData.notes,
+    rawPayload.propertyNotes,
+    rawPayload.property_notes,
+    rawPayload.notes,
+    root.custom_commitments,
+    root.special_offer,
+    root.propertyNotes,
+    root.notes,
+  );
+
+  const intakeConfiguration = pickTrimmedString(
+    formData.property_configuration,
+    formData.configuration,
+    fetched.property_configuration,
+    rawPayload.configuration,
+    rawPayload.property_configuration,
+    root.property_configuration,
+    root.configuration,
+  );
+
+  return {
+    ...schedule,
+    intakeCustomerName,
+    intakeConfiguration,
+    intakeNotes,
+  };
+}
+
 async function getUserFromSession(req: Request) {
   const auth = req.headers.authorization;
   const token = auth?.replace(/^Bearer\s+/i, "");
@@ -2811,6 +2881,29 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
       slotDetails,
     };
 
+    const intakeCustomerName =
+      pickTrimmedString(
+        formData.customer_name,
+        formData.customerName,
+        payload.customer_name,
+        payload.customerName,
+        projectName,
+      ) || projectName;
+    const intakeConfiguration = pickTrimmedString(
+      payload.configuration,
+      formData.configuration,
+      payload.property_configuration,
+      formData.property_configuration,
+    );
+    const intakeNotes = pickTrimmedString(
+      payload.propertyNotes,
+      payload.property_notes,
+      payload.notes,
+      formData.propertyNotes,
+      formData.property_notes,
+      formData.notes,
+    );
+
     const payloadToPersist = {
       source: "external_intake_api",
       sourceProject,
@@ -2818,7 +2911,7 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
       receivedAt: now.toISOString(),
       crmSchedule,
       formData: {
-        customer_name: projectName,
+        customer_name: intakeCustomerName,
         co_no: contactNo || "",
         email: clientEmail || "",
         status_of_project: "Pre 10%",
@@ -2828,6 +2921,8 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
         appointment_date: appointmentDate || "",
         appointment_slot: appointmentSlot || "",
         schedule_timezone: scheduleTimezone || "",
+        ...(intakeConfiguration ? { configuration: intakeConfiguration } : {}),
+        ...(intakeNotes ? { property_notes: intakeNotes, propertyNotes: intakeNotes } : {}),
       },
       rawPayload: payload,
     };
@@ -8117,7 +8212,7 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
     const baseList = (rows as any[])
       .filter((r) => r.financeApprovedRaw !== "false")
       .map((r) => {
-        const schedule = extractLeadScheduleFromPayload(r.leadPayloadRaw);
+        const intake = extractLeadIntakeViewFromPayload(r.leadPayloadRaw);
         const { leadPayloadRaw: _omitPayload, ...rest } = r;
         return {
           ...rest,
@@ -8125,8 +8220,11 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
           designerName: r.designerName ?? null,
           projectManagerName: r.projectManagerName ?? null,
           experienceCenter: r.experienceCenter ?? null,
-          appointmentDate: schedule.appointmentDate,
-          appointmentSlot: schedule.appointmentSlot,
+          appointmentDate: intake.appointmentDate,
+          appointmentSlot: intake.appointmentSlot,
+          intakeCustomerName: intake.intakeCustomerName,
+          intakeConfiguration: intake.intakeConfiguration,
+          intakeNotes: intake.intakeNotes,
         };
       });
 

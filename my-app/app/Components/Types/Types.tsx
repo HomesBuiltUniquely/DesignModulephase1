@@ -32,4 +32,10 @@ export type LeadshipTypes = {
     appointmentDate?: string | null;
     /** CRM / intake appointment slot (from payload) */
     appointmentSlot?: string | null;
+    /** External intake customer name (formData.customer_name) */
+    intakeCustomerName?: string | null;
+    /** External intake configuration (e.g. rawPayload.configuration) */
+    intakeConfiguration?: string | null;
+    /** External intake notes (e.g. rawPayload.propertyNotes) */
+    intakeNotes?: string | null;
 };

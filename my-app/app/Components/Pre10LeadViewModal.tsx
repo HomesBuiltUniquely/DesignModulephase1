@@ -9,8 +9,17 @@ type Props = {
     onClose: () => void;
 };
 
+function displayValue(value: string | null | undefined): string {
+    const v = value?.trim();
+    return v || '—';
+}
+
 export function Pre10LeadViewModal({ lead, timeSlotLabel, onClose }: Props) {
     const projectLabel = `HUB-${lead.pid || lead.id}`;
+    const customerName =
+        lead.intakeCustomerName?.trim() ||
+        lead.projectName?.trim() ||
+        null;
 
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
@@ -52,25 +61,29 @@ export function Pre10LeadViewModal({ lead, timeSlotLabel, onClose }: Props) {
                 </div>
 
                 <div className="px-6 py-5">
-                    {/* Placeholder — content will be defined when requirements are provided */}
-                    <p className="text-sm text-gray-500">
-                        Lead details for Pre 10% will appear here. Share what fields to show and we will add them.
-                    </p>
-                    <dl className="mt-4 space-y-3 text-sm">
-                        <div className="flex gap-3">
-                            <dt className="w-28 shrink-0 font-medium text-gray-500">Time slot</dt>
-                            <dd className="text-gray-900">{timeSlotLabel}</dd>
+                    <dl className="space-y-4 text-sm">
+                        <div>
+                            <dt className="font-medium text-gray-500">Customer name</dt>
+                            <dd className="mt-1 text-gray-900">{displayValue(customerName)}</dd>
                         </div>
-                        {lead.contactNo ? (
-                            <div className="flex gap-3">
-                                <dt className="w-28 shrink-0 font-medium text-gray-500">Contact</dt>
-                                <dd className="text-gray-900">{lead.contactNo}</dd>
+                        <div>
+                            <dt className="font-medium text-gray-500">Configuration</dt>
+                            <dd className="mt-1 text-gray-900">{displayValue(lead.intakeConfiguration)}</dd>
+                        </div>
+                        <div>
+                            <dt className="font-medium text-gray-500">Notes</dt>
+                            <dd className="mt-1 whitespace-pre-wrap text-gray-900">{displayValue(lead.intakeNotes)}</dd>
+                        </div>
+                        {timeSlotLabel !== '—' ? (
+                            <div>
+                                <dt className="font-medium text-gray-500">Time slot</dt>
+                                <dd className="mt-1 text-gray-900">{timeSlotLabel}</dd>
                             </div>
                         ) : null}
-                        {lead.clientEmail ? (
-                            <div className="flex gap-3">
-                                <dt className="w-28 shrink-0 font-medium text-gray-500">Email</dt>
-                                <dd className="text-gray-900 break-all">{lead.clientEmail}</dd>
+                        {lead.designerName?.trim() ? (
+                            <div>
+                                <dt className="font-medium text-gray-500">Designer</dt>
+                                <dd className="mt-1 text-gray-900">{lead.designerName}</dd>
                             </div>
                         ) : null}
                     </dl>
