@@ -16,6 +16,8 @@ type Props = {
     userRole?: string;
     /** When true (MMT), show Delete button so they can remove and re-upload. */
     canDelete?: boolean;
+    /** Upload type tag sent to backend: 'd2_masking' for D2 SITE MASKING milestone, empty/undefined for D1. */
+    uploadType?: string;
 };
 
 type ZipEntry = { path: string; size: number };
@@ -25,7 +27,7 @@ type UploadRow = { id: number; originalName: string; uploadedAt: string; status?
 /**
  * Files Uploaded card. Designers see only approved uploads. MMT Executive/Manager see all; Manager can approve.
  */
-export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, leadId, sessionId, canUpload, userRole, canDelete }: Props) {
+export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, leadId, sessionId, canUpload, userRole, canDelete, uploadType }: Props) {
     const [uploads, setUploads] = useState<UploadRow[]>([]);
     const [loading, setLoading] = useState(false);
     const [uploading, setUploading] = useState(false);
@@ -104,6 +106,7 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
         try {
             const fd = new FormData();
             fd.append('zip', file);
+            if (uploadType) fd.append('uploadType', uploadType);
             const res = await fetch(`${API}/api/leads/${leadId}/uploads`, { method: 'POST', headers: { ...authHeaders }, body: fd });
             const text = await res.text();
             const data = (() => { try { return text ? JSON.parse(text) : null; } catch { return null; } })();

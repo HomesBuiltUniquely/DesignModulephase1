@@ -6088,10 +6088,17 @@ app.post(
       if (process.env.AWS_ACCESS_KEY_ID) {
         s3Url = await uploadLeadFileToS3(leadId, file.path, file.originalname, file.mimetype);
       }
-      await pool.query(
+      const uploadType = (req.body?.uploadType as string) || "";
+      const isD2 = uploadType === "d2_masking";
+      console.log("[mmt-upload] received uploadType:", JSON.stringify(uploadType), "| isD2:", isD2, "| role:", role);
+      // milestoneIndex: 0 = D1 SITE MEASUREMENT, 3 = D2 SITE MASKING
+      const uploadMilestoneIndex = isD2 ? 3 : 0;
+      const uploadTaskName = isD2 ? "D2 - files upload" : "D1 files upload";
+
+      const [insertResult] = await pool.query(
         `INSERT INTO lead_uploads
-         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, s3_url)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           leadId,
           uploaderId,
@@ -6102,21 +6109,32 @@ app.post(
           file.size,
           now,
           status,
+          uploadType || null,
           s3Url,
         ],
       );
+      const newUploadId = (insertResult as any).insertId;
 
-      const uploadType = (req.body?.uploadType as string) || "";
-      const isD2 = uploadType === "d2_masking";
+      // If the uploader is an MMT manager the upload is immediately approved →
+      // auto-complete the corresponding task in lead_task_completions.
+      if (role === "mmt_manager") {
+        await pool.query(
+          `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+           VALUES (?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
+          [leadId, uploadMilestoneIndex, uploadTaskName, now],
+        );
+      }
+
       const ev = {
         id: `upload-${Date.now()}`,
         type: "file_upload",
-        taskName: isD2 ? "D2 - files upload" : "MMT upload",
+        taskName: uploadTaskName,
         milestoneName: isD2 ? "D2 SITE MASKING" : "D1 SITE MEASUREMENT",
-        timestamp: new Date().toISOString(),
+        timestamp: now.toISOString(),
         description: isD2 ? `D2 files uploaded: ${file.originalname}` : `MMT uploaded files: ${file.originalname}`,
         user: { name: user?.name ?? "MMT" },
-        details: { kind: "file_upload", fileName: file.originalname, size: `${file.size}` },
+        details: { kind: "file_upload", fileName: file.originalname, size: `${file.size}`, uploadId: newUploadId },
       };
       await addLeadHistoryEvent(leadId, ev);
 
@@ -6408,16 +6426,131 @@ app.post("/api/leads/:leadId/uploads/:uploadId/approve", async (req: Request, re
     if (!user) return res.status(401).json({ message: "Unauthorized" });
     if ((user.role || "").toLowerCase() !== "mmt_manager")
       return res.status(403).json({ message: "Only MMT Manager can approve uploads" });
+
+    // Fetch upload_type before approving so we can mark the correct task complete
+    const [uploadRows] = await pool.query(
+      "SELECT upload_type as uploadType, original_name as originalName FROM lead_uploads WHERE id = ? AND lead_id = ?",
+      [uploadId, leadId],
+    );
+    const uploadRow = (uploadRows as any[])[0];
+    console.log("[approve-upload] uploadRow from DB:", uploadRow);
+    if (!uploadRow) return res.status(404).json({ message: "Upload not found" });
+
     const [result] = await pool.query(
       "UPDATE lead_uploads SET status = 'approved' WHERE id = ? AND lead_id = ?",
       [uploadId, leadId],
     );
     if ((result as any).affectedRows === 0)
       return res.status(404).json({ message: "Upload not found" });
+
+    // Mark the corresponding file-upload task complete in lead_task_completions
+    const isD2Upload = (uploadRow.uploadType || "") === "d2_masking";
+    const approvalMilestoneIndex = isD2Upload ? 3 : 0;
+    const approvalTaskName = isD2Upload ? "D2 - files upload" : "D1 files upload";
+    const now = new Date();
+    console.log("[approve-upload] inserting task completion:", { leadId, approvalMilestoneIndex, approvalTaskName, isD2Upload, uploadType: uploadRow.uploadType });
+    await pool.query(
+      `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
+      [leadId, approvalMilestoneIndex, approvalTaskName, now],
+    );
+
+    // Log the approval in lead history
+    const approvalEv = {
+      id: `upload-approve-${Date.now()}`,
+      type: "note",
+      taskName: approvalTaskName,
+      milestoneName: isD2Upload ? "D2 SITE MASKING" : "D1 SITE MEASUREMENT",
+      timestamp: now.toISOString(),
+      description: isD2Upload
+        ? "D2 masking files approved by MMT Manager."
+        : "MMT D1 files approved by MMT Manager.",
+      user: { name: user.name ?? "MMT Manager" },
+      details: { kind: "note", noteText: `Upload #${uploadId} approved.` },
+    };
+    await addLeadHistoryEvent(leadId, approvalEv);
+
     return res.json({ ok: true });
   } catch (err) {
     console.error("approve upload error", err);
     return res.status(500).json({ message: "Failed to approve" });
+  }
+});
+
+// Admin/mmt_manager fix: repair upload_type=NULL for leads with D2 assignments,
+// and mark 'D2 - files upload' task complete if an approved upload exists.
+// Also marks 'D1 files upload' complete if an approved upload with no upload_type exists for leads with D1 assignment.
+app.post("/api/leads/:leadId/fix-upload-task", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.leadId);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user.role || "").toLowerCase();
+    if (role !== "mmt_manager" && role !== "admin") {
+      return res.status(403).json({ message: "Only MMT Manager or Admin can run this fix" });
+    }
+
+    // Check if this lead has a D2 masking assignment
+    const [d2Rows] = await pool.query(
+      "SELECT 1 FROM lead_d2_assignments WHERE lead_id = ?",
+      [leadId],
+    );
+    const hasD2 = (d2Rows as any[]).length > 0;
+
+    const now = new Date();
+    const fixed: string[] = [];
+
+    if (hasD2) {
+      // Fix NULL upload_type → 'd2_masking' for uploads on this lead
+      const [fixResult] = await pool.query(
+        "UPDATE lead_uploads SET upload_type = 'd2_masking' WHERE lead_id = ? AND (upload_type IS NULL OR upload_type = '')",
+        [leadId],
+      );
+      const affected = (fixResult as any).affectedRows;
+      if (affected > 0) fixed.push(`Fixed upload_type for ${affected} uploads to 'd2_masking'`);
+
+      // If there is at least one approved upload, mark D2 - files upload task complete
+      const [approvedRows] = await pool.query(
+        "SELECT id FROM lead_uploads WHERE lead_id = ? AND status = 'approved' AND upload_type = 'd2_masking' LIMIT 1",
+        [leadId],
+      );
+      if ((approvedRows as any[]).length > 0) {
+        await pool.query(
+          `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+           VALUES (?, 3, 'D2 - files upload', ?)
+           ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
+          [leadId, now],
+        );
+        fixed.push("Marked 'D2 - files upload' (milestone 3) as complete");
+      } else {
+        fixed.push("No approved D2 upload found yet — task not marked complete");
+      }
+    } else {
+      // D1 fix: if there is an approved upload with NULL upload_type, mark D1 files upload complete
+      const [approvedD1Rows] = await pool.query(
+        "SELECT id FROM lead_uploads WHERE lead_id = ? AND status = 'approved' AND (upload_type IS NULL OR upload_type = '' OR upload_type = 'd1') LIMIT 1",
+        [leadId],
+      );
+      if ((approvedD1Rows as any[]).length > 0) {
+        await pool.query(
+          `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+           VALUES (?, 0, 'D1 files upload', ?)
+           ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
+          [leadId, now],
+        );
+        fixed.push("Marked 'D1 files upload' (milestone 0) as complete");
+      } else {
+        fixed.push("No approved D1 upload found");
+      }
+    }
+
+    console.log("[fix-upload-task]", { leadId, hasD2, fixed });
+    return res.json({ ok: true, fixed });
+  } catch (err) {
+    console.error("fix-upload-task error", err);
+    return res.status(500).json({ message: "Failed to run fix" });
   }
 });
 
