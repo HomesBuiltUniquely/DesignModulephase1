@@ -2977,6 +2977,13 @@ export default function ProjectDetailPage() {
                                             minutes: momMinutes,
                                             referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
                                         },
+                                        meta: {
+                                            details: {
+                                                kind: 'mom',
+                                                minutes: momMinutes,
+                                                referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                            }
+                                        }
                                     });
                                     setMomMinutes('');
                                     setMomReferenceFiles([]);
@@ -3270,6 +3277,11 @@ export default function ProjectDetailPage() {
                                         description: 'Material selection meeting completed. Minutes of meeting shared.',
                                         meta: {
                                             attachments: uploadedAttachments,
+                                            details: {
+                                                kind: 'mom',
+                                                minutes: momMinutes,
+                                                referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                            }
                                         },
                                         details: {
                                             kind: 'mom',

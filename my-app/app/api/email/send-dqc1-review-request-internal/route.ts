@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import { renderDqc1ReviewRequestInternalEmail } from '@/lib/email/render-dqc1-review-request-internal';
+import { render } from '@react-email/components';
+import DQC1ReviewRequestInternalEmail from '@/app/newEmail/templates/Internal/DQC1ReviewRequestInternal';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
@@ -17,6 +19,7 @@ export async function POST(request: Request) {
     const dqcRepName = body.dqcRepName as string | undefined;
     const drawingFileName = body.drawingFileName as string | undefined;
     const quotationFileName = body.quotationFileName as string | undefined;
+    const projectId = body.projectId as string | undefined;
 
     if (!to || !customerName || !ecName || !designerName || !dqcRepName) {
       return NextResponse.json(
@@ -25,7 +28,8 @@ export async function POST(request: Request) {
       );
     }
 
-    const { subject, html } = renderDqc1ReviewRequestInternalEmail({
+    const emailComponent = React.createElement(DQC1ReviewRequestInternalEmail, {
+      projectId,
       dqcRepName,
       customerName,
       ecName,
@@ -35,10 +39,12 @@ export async function POST(request: Request) {
       quotationFileName,
     });
 
+    const html = await render(emailComponent);
+
     const info = await sendMail({
       to,
       cc,
-      subject: subjectOverride || subject,
+      subject: subjectOverride || `DQC 1 Review Request – ${customerName} – ${ecName}`,
       html,
       ...(attachments && attachments.length ? { attachments } : {}),
     });

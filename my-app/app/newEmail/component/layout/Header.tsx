@@ -3,12 +3,12 @@ import { Section, Row, Column, Img, Text } from '@react-email/components';
 import { theme } from '../../theme';
 
 interface HeaderProps {
-  projectId: string;
-}
+  projectId?: string;
+} 
 
 const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_BACKEND_BASE_URL || '';
 
-export const Header = ({ projectId }: HeaderProps) => {
+export const Header = ({ projectId = '' }: HeaderProps) => {
   return (
     <Section className="bg-brand-primary px-8 py-3  rounded-t-xl w-full">
       <Row className='m-2'>

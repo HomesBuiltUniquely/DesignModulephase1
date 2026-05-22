@@ -5,16 +5,12 @@ export interface MeetingNotesProps {
   dateAndTime: string;
   attendees: string;
   discussionSummary?: string;
-  keyDecisions?: string;
-  nextSteps?: string;
 }
 
 export const MeetingNotesList = ({ 
   dateAndTime, 
   attendees, 
   discussionSummary,
-  keyDecisions,
-  nextSteps
 }: MeetingNotesProps) => {
   return (
     <Section className="w-full mb-6">
@@ -38,29 +34,9 @@ export const MeetingNotesList = ({
         {/* Discussion Summary in a separate section/row */}
         {discussionSummary && (
           <Row className="w-full">
-            <Column align="left" className={`px-4 py-3 align-top ${(keyDecisions || nextSteps) ? 'border-b border-neutral-lightGrey' : ''}`}>
+            <Column align="left" className={`px-4 py-3 align-top 'border-b border-neutral-lightGrey' : ''}`}>
               <Text className="m-0 mb-1 text-neutral-mediumGrey font-sans text-[11px] font-bold tracking-wider uppercase">DISCUSSION SUMMARY</Text>
               <Text className="m-0 text-neutral-nearBlack font-sans text-[14px] leading-relaxed">{discussionSummary}</Text>
-            </Column>
-          </Row>
-        )}
-
-        {/* Key Decisions */}
-        {keyDecisions && (
-          <Row className="w-full">
-            <Column align="left" className={`px-4 py-3 align-top ${nextSteps ? 'border-b border-neutral-lightGrey' : ''}`}>
-              <Text className="m-0 mb-1 text-neutral-mediumGrey font-sans text-[11px] font-bold tracking-wider uppercase">KEY DECISIONS</Text>
-              <Text className="m-0 text-neutral-nearBlack font-sans text-[14px] leading-relaxed">{keyDecisions}</Text>
-            </Column>
-          </Row>
-        )}
-
-        {/* Next Steps */}
-        {nextSteps && (
-          <Row className="w-full">
-            <Column align="left" className="px-4 py-3 align-top">
-              <Text className="m-0 mb-1 text-neutral-mediumGrey font-sans text-[11px] font-bold tracking-wider uppercase">NEXT STEPS</Text>
-              <Text className="m-0 text-neutral-nearBlack font-sans text-[14px] leading-relaxed">{nextSteps}</Text>
             </Column>
           </Row>
         )}

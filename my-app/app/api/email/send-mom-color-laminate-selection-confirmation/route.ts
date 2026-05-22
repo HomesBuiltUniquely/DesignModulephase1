@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import {
-  renderMomColorLaminateSelectionConfirmationEmail,
-  type LaminateSelections,
-} from '@/lib/email/render-mom-color-laminate-selection-confirmation';
+import { render } from '@react-email/components';
+import MomColorLaminateSelectionConfirmationEmail from '@/app/newEmail/templates/External/MomColorLaminateSelectionConfirmation';
+import { type LaminateSelections } from '@/lib/email/render-mom-color-laminate-selection-confirmation';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
@@ -15,6 +15,7 @@ export async function POST(request: Request) {
     const designerName = body.designerName as string | undefined;
     const laminateSelections = body.laminateSelections as LaminateSelections | undefined;
     const attachments = body.attachments as { filename: string; path: string }[] | undefined;
+    const projectId = body.projectId as string | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -23,16 +24,20 @@ export async function POST(request: Request) {
       );
     }
 
-    const { subject, html } = renderMomColorLaminateSelectionConfirmationEmail({
+    const emailComponent = React.createElement(MomColorLaminateSelectionConfirmationEmail, {
+      projectId,
       customerName,
       designerName,
       laminateSelections: laminateSelections ?? undefined,
+      attachments,
     });
+
+    const html = await render(emailComponent);
 
     const info = await sendMail({
       to,
       ...(cc ? { cc } : {}),
-      subject: subjectOverride || subject,
+      subject: subjectOverride || 'MOM – Color & Laminate Selection Confirmation',
       html,
       ...(attachments && attachments.length ? { attachments } : {}),
     });

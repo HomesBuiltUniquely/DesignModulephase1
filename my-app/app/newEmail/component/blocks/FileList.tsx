@@ -1,9 +1,10 @@
 import * as React from 'react';
-import { Section, Row, Column, Text, Img } from '@react-email/components';
+import { Section, Row, Column, Text, Img, Link } from '@react-email/components';
 
 export interface FileItem {
   name: string;
   meta: string;
+  url?: string; // Clickable link URL
   iconUrl?: string; // Optional URL for the file icon
 }
 
@@ -38,7 +39,13 @@ export const FileList = ({ title = 'FILES UPLOADED', files }: FileListProps) => 
                 </div>
               </Column>
               <Column align="left" className={`px-0 py-3 align-middle ${borderClass}`}>
-                <Text className="m-0 mb-1 text-neutral-nearBlack font-sans text-[14px] font-medium">{file.name}</Text>
+                {file.url ? (
+                  <Link href={file.url} target="_blank" className="m-0 mb-1 text-brand-primary font-sans text-[14px] font-medium underline block">
+                    {file.name}
+                  </Link>
+                ) : (
+                  <Text className="m-0 mb-1 text-neutral-nearBlack font-sans text-[14px] font-medium">{file.name}</Text>
+                )}
                 <Text className="m-0 text-neutral-mediumGrey font-sans text-[12px]">{file.meta}</Text>
               </Column>
             </Row>

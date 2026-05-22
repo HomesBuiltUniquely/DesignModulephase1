@@ -1,70 +1,57 @@
-import { NextResponse } from "next/server";
-import { sendMail } from "@/lib/email/mailer";
-import {
-  renderProjectFileTimelineEmail,
-  type ProjectFileTimelineEmailParams,
-} from "@/lib/email/render-project-file-timeline";
-
-const estimateDaysMap: Record<string, number> = {
-  "Below 3 lakh- 12L - 45 Days": 45,
-  "Above 12 to 18 lakh - 60Days": 60,
-  "Project with Membrane shutters-75 days": 75,
-  "Above 18to 25 lakh - 75Days": 75,
-  "Above 25lakh - 90 Days": 90,
-};
+import { NextResponse } from 'next/server';
+import { sendMail } from '@/lib/email/mailer';
+import { render } from '@react-email/components';
+import DQC1MOMTemplate from '@/app/newEmail/templates/External/DQC1MOMTemplate';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
-    const body = (await request.json()) as Partial<ProjectFileTimelineEmailParams>;
+    const body = await request.json();
 
-    const required = [
-      "projectId",
-      "customerEmail",
-      "customerName",
-      "designLeadName",
-      "designerName",
-      "pmName",
-      "spmName",
-      "estimateValue",
-      "projectConfiguration",
-      "designApprovalDate",
-    ] as const;
+    const {
+      to,
+      cc,
+      subject,
+      customerName,
+      projectId,
+      designerName,
+      meetingDate,
+      meetingTime,
+      attendees,
+      discussionSummary,
+      attachments,
+    } = body;
 
-    for (const field of required) {
-      if (!body[field] || String(body[field]).trim() === "") {
-        return NextResponse.json({ error: `Missing required field: ${field}` }, { status: 400 });
-      }
+    // We can support customerEmail as an alias for to, if invoked directly via old format
+    const targetEmail = to || body.customerEmail;
+
+    if (!targetEmail) {
+      return NextResponse.json({ error: 'Missing required field: to (or customerEmail)' }, { status: 400 });
     }
 
-    const estimateValue = String(body.estimateValue);
-    const estimateDays = estimateDaysMap[estimateValue];
-    if (!estimateDays) {
-      return NextResponse.json({ error: "Invalid estimate value selected" }, { status: 400 });
-    }
-
-    const html = renderProjectFileTimelineEmail({
-      projectId: String(body.projectId),
-      customerEmail: String(body.customerEmail),
-      customerName: String(body.customerName),
-      designLeadName: String(body.designLeadName),
-      designerName: String(body.designerName),
-      pmName: String(body.pmName),
-      spmName: String(body.spmName),
-      estimateValue,
-      projectConfiguration: String(body.projectConfiguration),
-      designApprovalDate: String(body.designApprovalDate),
-      estimateDays,
+    const emailComponent = React.createElement(DQC1MOMTemplate, {
+      customerName: customerName || 'Customer',
+      projectId: projectId || 'HI-2025-0000',
+      designerName: designerName || 'Your Design Consultant',
+      meetingDate,
+      meetingTime,
+      attendees,
+      discussionSummary,
+      attachments,
     });
 
+    const html = await render(emailComponent);
+
     const info = await sendMail({
-      to: String(body.customerEmail),
-      subject: `Timeline Update - HUB ${String(body.projectId)}`,
+      to: String(targetEmail),
+      ...(cc ? { cc } : {}),
+      subject: subject || `Timeline Update - HUB ${projectId || ''}`,
       html,
     });
 
     return NextResponse.json({ success: true, messageId: info.messageId });
   } catch (error) {
-    console.error("Project file timeline email error", error);
-    return NextResponse.json({ error: "Failed to send project timeline email" }, { status: 500 });
+    console.error('Project file timeline email send error', error);
+    return NextResponse.json({ error: 'Failed to send project timeline email' }, { status: 500 });
   }
 }

@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import { renderDesignSignoffMeetingScheduledEmail } from '@/lib/email/render-design-signoff-meeting-scheduled';
+import { render } from '@react-email/components';
+import DesignSignoffMeetingScheduledEmail from '@/app/newEmail/templates/External/DesignSignoffMeetingScheduled';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
@@ -25,7 +27,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const { subject, html } = renderDesignSignoffMeetingScheduledEmail({
+    const emailComponent = React.createElement(DesignSignoffMeetingScheduledEmail, {
       customerName,
       projectId,
       meetingDate,
@@ -33,15 +35,17 @@ export async function POST(request: Request) {
       designerName,
       meetingMode,
       meetingLink,
-      ecLocation,
+      branchName: ecLocation,
     });
+
+    const html = await render(emailComponent);
 
     let info;
     try {
       info = await sendMail({
         to,
         ...(cc ? { cc } : {}),
-        subject: subjectOverride || subject,
+        subject: subjectOverride || 'Design Sign-Off Meeting Scheduled',
         html,
         ...(attachments && attachments.length ? { attachments } : {}),
       });
@@ -52,7 +56,7 @@ export async function POST(request: Request) {
         info = await sendMail({
           to,
           ...(cc ? { cc } : {}),
-          subject: subjectOverride || subject,
+          subject: subjectOverride || 'Design Sign-Off Meeting Scheduled',
           html,
         });
       } else {

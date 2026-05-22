@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
 import { render } from '@react-email/components';
-import DQC1DesignFreezeMeetingSummaryEmail from '@/app/newEmail/templates/External/DQC1DesignFreezeMeetingSummary';
+import PaymentUploadedInternalEmail from '@/app/newEmail/templates/Internal/PaymentUploadedInternal';
 import React from 'react';
 
 export async function POST(request: Request) {
@@ -12,42 +12,41 @@ export async function POST(request: Request) {
     const subject = body.subject as string | undefined;
     const customerName = body.customerName as string | undefined;
     const designerName = body.designerName as string | undefined;
-    const meetingDate = body.meetingDate as string | undefined;
     const projectId = body.projectId as string | undefined;
-    const propertyType = body.propertyType as string | undefined;
+    const milestoneName = body.milestoneName as string | undefined;
+    const fileNames = body.fileNames as string[] | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
         { error: 'Missing required fields: to, customerName' },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
-    const emailComponent = React.createElement(DQC1DesignFreezeMeetingSummaryEmail, {
-      customerName,
+    const emailComponent = React.createElement(PaymentUploadedInternalEmail, {
       projectId,
+      customerName,
       designerName,
-      meetingDate,
-      propertyType,
+      milestoneName,
+      fileNames,
     });
 
     const html = await render(emailComponent);
 
     const info = await sendMail({
       to,
-      ...(cc ? { cc } : {}),
-      subject: subject || 'DQC1 – Design Freeze Meeting Summary',
+      subject: subject || `Payment Uploaded for Verification - Project ${projectId || ''}`,
       html,
+      ...(cc ? { cc } : {}),
     });
 
     return NextResponse.json({ success: true, messageId: info.messageId });
   } catch (error) {
     // eslint-disable-next-line no-console
-    console.error('DQC1 design freeze meeting summary email error', error);
+    console.error('Payment uploaded internal email error', error);
     return NextResponse.json(
-      { error: 'Failed to send DQC1 design freeze meeting summary email' },
-      { status: 500 }
+      { error: 'Failed to send payment uploaded internal email' },
+      { status: 500 },
     );
   }
 }
-

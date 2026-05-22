@@ -8,72 +8,61 @@ import { Button } from '../../component/blocks/Button';
 export interface D1MMTVisitScheduledEmailProps {
   customerName?: string;
   projectId?: string;
-  meetingDate?: string;
-  meetingTime?: string;
-  meetingMode?: 'online' | 'offline' | string;
-  meetingLink?: string;
-  branchName?: string;
+  visitDate?: string;
+  visitTime?: string;
+  executiveName?: string;
+  executivePhone?: string;
   designerName?: string;
 }
 
 export default function D1MMTVisitScheduledEmail({
   customerName = 'Customer',
   projectId = 'HI-2025-0000',
-  meetingDate = 'October 24, 2025',
-  meetingTime = '10:00 AM – 12:00 PM',
-  meetingMode = 'online',
-  meetingLink = '#',
-  branchName = 'HUB Experience Center',
+  visitDate = 'October 24, 2025',
+  visitTime = '10:00 AM',
+  executiveName = '[Executive Name]',
+  executivePhone = '[Executive Phone]',
   designerName = 'Your Design Consultant',
 }: D1MMTVisitScheduledEmailProps) {
-  const meetingDetails: DetailItem[] = [
-    { label: 'Date', value: meetingDate },
-    { label: 'Time', value: meetingTime },
+  const visitDetails: DetailItem[] = [
+    { label: 'Date', value: visitDate },
+    { label: 'Time', value: visitTime },
+    { label: 'Measurement Executive', value: `${executiveName} (${executivePhone})` },
   ];
-
-  if (meetingMode === 'offline') {
-    meetingDetails.push({ label: 'Location', value: `${branchName} Branch` });
-  } else {
-    meetingDetails.push({ label: 'Mode', value: 'Online Meeting' });
-  }
 
   return (
     <BaseLayout projectId={projectId}>
-      <StageBar stageName="D1 · MMT VISIT" status="SCHEDULED" />
+      <StageBar stageName="D1 · SITE AUDIT" status="VISIT SCHEDULED" />
 
       <Section className="bg-neutral-white px-8 pt-6 pb-8">
         
         {/* Greeting & Title */}
         <Text className="m-0 text-[16px] text-neutral-mediumGrey mb-1">Dear {customerName},</Text>
         <Text className="m-0 text-[24px] font-bold text-neutral-nearBlack leading-tight mb-2 font-serif">
-          MMT Visit Scheduled
+          Site Measurement Visit Scheduled
         </Text>
         
         {/* Intro Paragraph */}
-        <Text className="m-0 text-[15px] leading-relaxed text-neutral-nearBlack pb-2">
-          We have scheduled a site visit with our Measurement & Marking Team (MMT) to take detailed dimensions of your space.
-        </Text>
-        <Text className="m-0 text-[15px] leading-relaxed text-neutral-nearBlack pb-2">
-          This helps us ensure our designs are perfectly tailored to your home.
+        <Text className="m-0 text-[15px] leading-relaxed text-neutral-nearBlack pb-4">
+          Hi {customerName}, your upcoming site audit for the interior project has been confirmed. Please find the visit details below.
         </Text>
 
-        {/* Meeting Details List */}
-        <DetailsList title="MEETING DETAILS" items={meetingDetails} />
+        {/* Details Card */}
+        <DetailsList title="VISIT DETAILS" items={visitDetails} />
 
-        {/* CTA Button / Location Note */}
-        {meetingMode === 'online' ? (
-          <div className="text-center mt-6 mb-6">
-            <Button text="JOIN MEETING" href={meetingLink || '#'} />
-          </div>
-        ) : (
-          <Section className="bg-neutral-nearWhite border border-neutral-lightGrey rounded p-4 my-6 text-center">
-            <Text className="m-0 text-[14px] text-neutral-nearBlack">
-              We look forward to hosting you at our <span className="font-bold">{branchName} Branch</span> for the presentation.
-            </Text>
-          </Section>
-        )}
+        <Text className="m-0 text-[15px] leading-relaxed text-neutral-nearBlack pb-2 mt-6 font-bold">
+          Please Note:
+        </Text>
+        <ul className="m-0 ml-4 p-0 text-[14px] leading-relaxed text-neutral-nearBlack pb-4">
+          <li className="mb-1">Ensure site access and keys are ready at the scheduled time.</li>
+          <li className="mb-1">Electricity availability is required for high‑precision laser measurements.</li>
+          <li className="mb-1">Arrange society gate permissions or visitor passes prior to the visit.</li>
+        </ul>
 
-        
+        {/* Reschedule Button */}
+        <div className="text-center mt-6 mb-6">
+          <Button text="SHARE ACCESS INSTRUCTIONS" href="#" />
+        </div>
 
         {/* Closing text */}
         <Text className="m-0 text-[15px] leading-relaxed text-neutral-nearBlack pb-8">

@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
 import { render } from '@react-email/components';
-import D1SiteMeasurementEmail from '@/app/newEmail/templates/D1SiteMeasurement';
+import D1MMTVisitScheduledEmail from '@/app/newEmail/templates/External/D1MMTVisitScheduled';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
@@ -26,19 +27,17 @@ export async function POST(request: Request) {
       );
     }
 
-    const html = await render(
-      D1SiteMeasurementEmail({
-        customerName,
-        projectId,
-        siteAddress,
-        visitDate,
-        visitTime,
-        executiveName,
-        executivePhone,
-        designerName,
-        designerEmail,
-      })
-    );
+    const emailComponent = React.createElement(D1MMTVisitScheduledEmail, {
+      customerName,
+      projectId,
+      visitDate,
+      visitTime,
+      executiveName,
+      executivePhone,
+      designerName,
+    });
+
+    const html = await render(emailComponent);
 
     const info = await sendMail({
       to,
