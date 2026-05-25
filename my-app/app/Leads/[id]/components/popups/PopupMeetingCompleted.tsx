@@ -25,6 +25,8 @@ type Props = {
     onPayment40pDrop?: (e: React.DragEvent) => void;
     onPayment40pDragOver?: (e: React.DragEvent) => void;
     removePayment40pFile?: (index: number) => void;
+    defaultAttendees?: string;
+    defaultMeetingDate?: string;
 };
 
 /**
@@ -50,9 +52,11 @@ export default function PopupMeetingCompleted({
     onPayment40pDrop,
     onPayment40pDragOver,
     removePayment40pFile,
+    defaultAttendees,
+    defaultMeetingDate,
 }: Props) {
-    const [attendees, setAttendees] = React.useState('Customer, Designer');
-    const [meetingDate, setMeetingDate] = React.useState('');
+    const [attendees, setAttendees] = React.useState(defaultAttendees || 'Customer, Designer');
+    const [meetingDate, setMeetingDate] = React.useState(defaultMeetingDate || '');
 
     return (
         <div className="px-6 pb-6 max-w-[640px] mt-6">

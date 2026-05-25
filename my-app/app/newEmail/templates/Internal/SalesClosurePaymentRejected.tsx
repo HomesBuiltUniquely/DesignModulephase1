@@ -57,7 +57,7 @@ export default function SalesClosurePaymentRejectedEmail({
         <Section className="border-t border-neutral-lightGrey pt-6">
           <Text className="m-0 text-[14px] text-neutral-mediumGrey mb-2">Warm regards,</Text>
           <Text className="m-0 text-[16px] font-bold text-neutral-nearBlack mb-1">Finance Team, HUB Interior</Text>
-          <Text className="m-0 text-[14px] text-neutral-mediumGrey">HUB Interiors - Internal System</Text>
+          <Text className="m-0 text-[14px] text-neutral-mediumGrey">HUB Interior - Internal System</Text>
         </Section>
 
       </Section>

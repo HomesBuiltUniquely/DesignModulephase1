@@ -53,7 +53,7 @@ export default function TenPercentPaymentInternalEmail({
 
         {/* Sign off */}
         <Section className="border-t border-neutral-lightGrey pt-6">
-          <Text className="m-0 text-[14px] text-neutral-mediumGrey">HUB Interiors - Internal System</Text>
+          <Text className="m-0 text-[14px] text-neutral-mediumGrey">HUB Interior - Internal System</Text>
         </Section>
 
       </Section>

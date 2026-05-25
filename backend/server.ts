@@ -345,8 +345,9 @@ function buildMailChainSubject(
   customerName?: string | null,
 ): string {
   const name = customerName || projectName || "CUSTOMER";
-  // The user requested the format: HUB [Client Name] DESIGN JOURNEY
-  return `HUB ${name.toUpperCase()} DESIGN JOURNEY`.replace(/\s+/g, " ").trim();
+  const pidText = idOrPid ? `HUB-${idOrPid}` : "";
+  // The user requested the format: HUB [Project ID] , [Client Name] DESIGN JOURNEY
+  return `${pidText ? pidText + " , " : "HUB "}${name.toUpperCase()} DESIGN JOURNEY`.replace(/\s+/g, " ").trim();
 }
 
 function buildPaymentMailChainSubject(
@@ -355,8 +356,9 @@ function buildPaymentMailChainSubject(
   customerName?: string | null,
 ): string {
   const name = customerName || projectName || "CUSTOMER";
+  const pidText = idOrPid ? `HUB-${idOrPid}` : "";
   // Separate loop for payments as requested
-  return `HUB ${name.toUpperCase()} PAYMENT LOOP`.replace(/\s+/g, " ").trim();
+  return `${pidText ? pidText + " , " : "HUB "}${name.toUpperCase()} PAYMENT JOURNEY`.replace(/\s+/g, " ").trim();
 }
 
 async function getMailLoopCcEmails(extraEmails: Array<string | null | undefined> = [], leadId?: number): Promise<string[]> {
@@ -4553,13 +4555,13 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               payload?.customer_name ||
               row.projectName ||
               "Customer";
-            
+
             const branchName =
               (meta as any)?.ecLocation ||
               formData.experience_center ||
               payload?.experience_center ||
               "HUB Experience Center";
-              
+
             console.log("[checklist-dqc1] branchName:", branchName, "meta.ecLocation:", (meta as any)?.ecLocation, "formData.experience_center:", formData.experience_center);
 
 
@@ -4923,7 +4925,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               const meetingTime = meta?.meetingTime || null;
               const attendees = meta?.attendees || null;
               const discussionSummary = meta?.details?.minutes || meta?.discussionSummary || null;
-              
+
               let attachments: { filename: string; path: string }[] | undefined = (meta?.attachments as any[]) || undefined;
 
               if (!attachments) {
@@ -5256,7 +5258,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                 payload: {
                   to: "finance@hubinterior.com",
                   cc: internalCc,
-                  subject: `Internal: 40% Payment Collection Initiated - ${customerName}`,
+                  subject: buildPaymentMailChainSubject(projectId, row.projectName, customerName),
                   customerName,
                   designerName,
                   projectId,
@@ -5269,7 +5271,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               const meetingTime = meta?.meetingTime || null;
               const attendees = meta?.attendees || null;
               const discussionSummary = meta?.details?.minutes || meta?.discussionSummary || null;
-              
+
               let attachments: { filename: string; path: string }[] | undefined = (meta?.attachments as any[]) || undefined;
 
               if (!attachments) {
@@ -5554,7 +5556,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                 row.projectName ||
                 "Customer";
               const designerName = row.designerName || formData.designer_name || formData.designerName || "Team HUB Interior";
-              
+
               // Fetch attachments from meta or database
               let attachments: { filename: string; path: string }[] | undefined = (meta?.attachments as any[]) || undefined;
 
@@ -5806,7 +5808,7 @@ app.post("/api/leads/:id/reject-sales-closure", async (req: Request, res: Respon
 
     // Fetch payload to get emails for notification
     const [rows] = await pool.query(
-      `SELECT project_name as projectName, payload FROM leads WHERE id = ?`,
+      `SELECT pid, project_name as projectName, payload FROM leads WHERE id = ?`,
       [leadId]
     );
     const row = (rows as any[])[0];
@@ -5833,7 +5835,7 @@ app.post("/api/leads/:id/reject-sales-closure", async (req: Request, res: Respon
         payload: {
           to: salesEmail,
           ...(ccList.length > 0 ? { cc: ccList } : {}),
-          subject: `Action Required: Sales Closure Payment Rejected – Lead #${leadId}`,
+          subject: buildPaymentMailChainSubject(row?.pid || leadId, row?.projectName, customerName),
           salesPersonName: payloadObj.sales_email || undefined,
           customerName,
           leadId,
@@ -6025,7 +6027,7 @@ app.post(
             payload: {
               to: financeEmails,
               cc: ccEmails,
-              subject: `Payment Uploaded for Verification - Project ${projectId}`,
+              subject: buildPaymentMailChainSubject(projectId, "", customerName),
               customerName,
               projectId,
               designerName: user.name || "Designer",
@@ -6382,7 +6384,7 @@ app.post(
             payload: {
               to: financeEmails,
               cc: ccEmails,
-              subject: `Payment Uploaded for Verification - Project ${projectId}`,
+              subject: buildPaymentMailChainSubject(projectId, "", customerName),
               customerName,
               projectId,
               designerName: user.name || "Designer",
@@ -6636,7 +6638,7 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
           payload: {
             to: "finance@hubinterior.com",
             cc: internalCc,
-            subject: `Internal: 40% Payment Approved – ${customerName}`,
+            subject: buildPaymentMailChainSubject(projectId, row.projectName, customerName),
             customerName,
             designerName: row.designerName || "Team",
             projectId,
@@ -8671,7 +8673,6 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
        ORDER BY l.id ASC`,
     );
     const baseList = (rows as any[])
-      .filter((r) => r.financeApprovedRaw !== "false")
       .map((r) => {
         const intake = extractLeadIntakeViewFromPayload(r.leadPayloadRaw);
         const { leadPayloadRaw: _omitPayload, ...rest } = r;
@@ -9111,7 +9112,7 @@ app.patch("/api/leads/:id/assign-project-manager", async (req: Request, res: Res
         const projectId = leadRow.pid || `HUB-${id}`;
 
         const ccList = await getMailLoopCcEmails([user.email || null, leadRow.designerEmail || null], id);
-        
+
         // 1. Send PM assignment notification email
         void triggerMailRouteWithLog({
           leadId: id,

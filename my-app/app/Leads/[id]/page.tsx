@@ -1338,6 +1338,14 @@ export default function ProjectDetailPage() {
             setDqc1Verdict(null);
     };
 
+    const getMeetingDefaults = (meetingTaskName: string) => {
+        const ev = historyEvents.find(e => e.taskName === meetingTaskName && (e.meta as any)?.meetingDate);
+        if (!ev) return { date: '', attendees: 'Customer, Designer' };
+        const meta = ev.meta as any;
+        const dateStr = meta.meetingDate ? `${meta.meetingDate} ${meta.meetingTime ? '| ' + meta.meetingTime : ''}` : '';
+        const attendeesStr = meta.attendees || `${project?.projectName || 'Customer'}, ${authUser?.name || project?.designerName || 'Designer'}`;
+        return { date: dateStr, attendees: attendeesStr };
+    };
 
     const closePopup = () => {
         setPopupContext(null);
@@ -2942,6 +2950,8 @@ export default function ProjectDetailPage() {
                     )}
                     {popupContext.milestoneIndex === 1 && popupContext.taskName === 'meeting completed' && (
                         <PopupMeetingCompleted
+                            defaultMeetingDate={getMeetingDefaults('First cut design + quotation discussion meeting request').date}
+                            defaultAttendees={getMeetingDefaults('First cut design + quotation discussion meeting request').attendees}
                             momMinutes={momMinutes}
                             setMomMinutes={setMomMinutes}
                             momReferenceFiles={momReferenceFiles}
@@ -3164,7 +3174,7 @@ export default function ProjectDetailPage() {
                             })()}
                             initialMode={(() => {
                                 const ev = historyEvents.find(e => e.taskName === 'Material selection meeting + quotation discussion' && (e.meta as any)?.meetingMode);
-                                return (ev?.meta as any)?.meetingMode || 'online';
+                                return (ev?.meta as any)?.meetingMode || 'offline';
                             })()}
                             initialLink={(() => {
                                 const ev = historyEvents.find(e => e.taskName === 'Material selection meeting + quotation discussion' && (e.meta as any)?.meetingLink);
@@ -3242,6 +3252,8 @@ export default function ProjectDetailPage() {
                     )}
                     {popupContext.milestoneIndex === 4 && popupContext.taskName === 'Material selection meeting completed' && (
                         <PopupMeetingCompleted
+                            defaultMeetingDate={getMeetingDefaults('Material selection meeting + quotation discussion').date}
+                            defaultAttendees={getMeetingDefaults('Material selection meeting + quotation discussion').attendees}
                             momMinutes={momMinutes}
                             setMomMinutes={setMomMinutes}
                             momReferenceFiles={momReferenceFiles}
@@ -3578,6 +3590,8 @@ export default function ProjectDetailPage() {
                     )}
                     {popupContext.milestoneIndex === 5 && popupContext.taskName === 'meeting completed' && (
                         <PopupMeetingCompleted
+                            defaultMeetingDate={getMeetingDefaults('Design sign off').date}
+                            defaultAttendees={getMeetingDefaults('Design sign off').attendees}
                             momMinutes={momMinutes}
                             setMomMinutes={setMomMinutes}
                             momReferenceFiles={momReferenceFiles}
@@ -3651,6 +3665,8 @@ export default function ProjectDetailPage() {
                     )}
                     {popupContext.milestoneIndex === 6 && popupContext.taskName === 'Cx approval for production' && (
                         <PopupMeetingCompleted
+                            defaultMeetingDate={getMeetingDefaults('Cx approval for production').date}
+                            defaultAttendees={getMeetingDefaults('Cx approval for production').attendees}
                             momMinutes={momMinutes}
                             setMomMinutes={setMomMinutes}
                             momReferenceFiles={momReferenceFiles}

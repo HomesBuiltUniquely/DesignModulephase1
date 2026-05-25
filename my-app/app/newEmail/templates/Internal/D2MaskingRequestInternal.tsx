@@ -65,7 +65,7 @@ export default function D2MaskingRequestInternalEmail({
 
         {/* Sign off */}
         <Section className="border-t border-neutral-lightGrey pt-6">
-          <Text className="m-0 text-[14px] text-neutral-mediumGrey">HUB Interiors - ERP Notification</Text>
+          <Text className="m-0 text-[14px] text-neutral-mediumGrey">HUB Interior - ERP Notification</Text>
         </Section>
 
       </Section>

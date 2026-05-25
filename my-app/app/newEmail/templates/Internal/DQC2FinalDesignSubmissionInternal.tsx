@@ -72,7 +72,7 @@ export default function DQC2FinalDesignSubmissionInternalEmail({
         <Section className="border-t border-neutral-lightGrey pt-6">
           <Text className="m-0 text-[14px] text-neutral-mediumGrey mb-2">Warm regards,</Text>
           <Text className="m-0 text-[16px] font-bold text-neutral-nearBlack mb-1">{designerName}</Text>
-          <Text className="m-0 text-[14px] text-neutral-mediumGrey">HUB Interiors</Text>
+          <Text className="m-0 text-[14px] text-neutral-mediumGrey">HUB Interior</Text>
         </Section>
 
       </Section>

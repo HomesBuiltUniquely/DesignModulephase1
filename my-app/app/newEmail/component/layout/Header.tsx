@@ -18,7 +18,7 @@ export const Header = ({ projectId = '' }: HeaderProps) => {
             <tr>
               <td className="align-middle text-center">
                 <Img
-                  src={`${baseUrl}/static/logo.png`}
+                  src={"https://hubinterior-quote-2026.s3.ap-south-2.amazonaws.com/logo/logo_transparent.png"}
                   width="100"
                   height="auto"
                   alt="HUB Logo"
@@ -27,10 +27,10 @@ export const Header = ({ projectId = '' }: HeaderProps) => {
               </td>
               <td className="pl-3 align-middle">
                 <Text className="m-0 text-white font-serif text-[20px] font-bold tracking-wide leading-none">
-                  HUB INTERIORS
+                  HUB INTERIOR
                 </Text>
                 <Text className="m-0 mt-0.5 text-white font-sans text-[11px] tracking-widest uppercase opacity-90 leading-none">
-                  Homes Build Uniquely
+                  HOMES UNIQUELY BUILT
                 </Text>
               </td>
             </tr>
