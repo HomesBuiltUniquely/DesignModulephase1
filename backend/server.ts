@@ -126,7 +126,7 @@ app.get("/api/health", (_req, res) => {
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "root@root",
+  password: process.env.DB_PASSWORD || "Root@123",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -345,7 +345,8 @@ function buildMailChainSubject(
   customerName?: string | null,
 ): string {
   const name = customerName || projectName || "CUSTOMER";
-  const pidText = idOrPid ? `HUB-${idOrPid}` : "";
+  const cleanId = idOrPid ? String(idOrPid).replace(/^HUB-/i, "") : "";
+  const pidText = cleanId ? `HUB-${cleanId}` : "";
   // The user requested the format: HUB [Project ID] , [Client Name] DESIGN JOURNEY
   return `${pidText ? pidText + " , " : "HUB "}${name.toUpperCase()} DESIGN JOURNEY`.replace(/\s+/g, " ").trim();
 }
@@ -356,7 +357,8 @@ function buildPaymentMailChainSubject(
   customerName?: string | null,
 ): string {
   const name = customerName || projectName || "CUSTOMER";
-  const pidText = idOrPid ? `HUB-${idOrPid}` : "";
+  const cleanId = idOrPid ? String(idOrPid).replace(/^HUB-/i, "") : "";
+  const pidText = cleanId ? `HUB-${cleanId}` : "";
   // Separate loop for payments as requested
   return `${pidText ? pidText + " , " : "HUB "}${name.toUpperCase()} PAYMENT JOURNEY`.replace(/\s+/g, " ").trim();
 }
@@ -1284,6 +1286,20 @@ function parseGoogleState(state?: string | null) {
   const raw = (state || "").trim();
   const userId = Number(raw.split(":")[0]);
   return Number.isFinite(userId) ? userId : null;
+}
+
+function formatTime12Hour(timeStr?: string | null): string | null {
+  if (!timeStr) return null;
+  if (!timeStr.includes(':')) return timeStr;
+  const parts = timeStr.split(':');
+  if (parts.length < 2) return timeStr;
+  let h = parseInt(parts[0], 10);
+  if (isNaN(h)) return timeStr;
+  const m = parts[1].substring(0, 2);
+  const suffix = h >= 12 ? 'PM' : 'AM';
+  h = h % 12;
+  if (h === 0) h = 12;
+  return `${h}:${m} ${suffix}`;
 }
 
 function formatGoogleDateTime(meetingDate?: string | null, meetingTime?: string | null) {
@@ -2662,7 +2678,7 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
         const frontendBase =
           process.env.FRONTEND_BASE_URL || "http://localhost:3000";
         const mailChainCc = await getMailLoopCcEmails([], insertId);
-        const mailChainSubject = buildMailChainSubject(pid, lead.projectName, customerName);
+        const mailChainSubject = buildMailChainSubject(pid || insertId, lead.projectName, customerName);
 
         // Do not block main response if email fails; just log.
         const propertyType = payload.property_configuration || payload?.formData?.property_configuration || payload?.form?.property_configuration || "Apartment";
@@ -2677,6 +2693,7 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
             customerName,
             projectId: `HUB-${insertId}`,
             propertyType,
+            designerName: (payload && (payload.designer_name || payload.designerName)) || "Team HUB Interior",
           }),
         }).catch((err) => {
           console.error("Failed to trigger D1 email from backend", err);
@@ -4211,7 +4228,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             }
             if (designerEmail && customerName && designerName && ecName) {
               const internalCc = await getMailLoopCcEmails([actingUser.email, designerEmail], id);
-              const internalSubject = buildPaymentMailChainSubject(projectId, leadRow.projectName, customerName);
+              const internalSubject = buildMailChainSubject(projectId, leadRow.projectName, customerName);
               void triggerMailRouteWithLog({
                 leadId: id,
                 milestoneIndex: 2,
@@ -4231,7 +4248,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
 
             if (customerEmail) {
               const mailChainCc = await getMailLoopCcEmails([actingUser.email, designerEmail], id);
-              const mailChainSubject = buildPaymentMailChainSubject(projectId, leadRow.projectName, customerName);
+              const mailChainSubject = buildMailChainSubject(projectId, leadRow.projectName, customerName);
               void triggerMailRouteWithLog({
                 leadId: id,
                 milestoneIndex: 2,
@@ -4628,7 +4645,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   subject: buildMailChainSubject(projectId, row.projectName, customerName),
                   customerName,
                   meetingDate,
-                  meetingTime,
+                  meetingTime: formatTime12Hour(meetingTime) || undefined,
                   meetingMode: meta?.meetingMode || null,
                   meetingLink: meta?.meetingLink || null,
                   branchName,
@@ -4747,7 +4764,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   customerName,
                   subject: buildMailChainSubject(projectId, row.projectName, customerName),
                   visitDate,
-                  visitTime,
+                  visitTime: formatTime12Hour(visitTime) || undefined,
                   executiveName,
                   executivePhone,
                   projectId,
@@ -4970,7 +4987,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   projectId,
                   designerName,
                   meetingDate,
-                  meetingTime,
+                  meetingTime: formatTime12Hour(meetingTime) || undefined,
                   attendees,
                   discussionSummary,
                   ...(attachments && attachments.length ? { attachments } : {}),
@@ -5069,7 +5086,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   designerName,
                   laminateSelections,
                   meetingDate,
-                  meetingTime,
+                  meetingTime: formatTime12Hour(meetingTime) || undefined,
                   attendees,
                   discussionSummary,
                   attachments,
@@ -5170,7 +5187,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   projectId,
                   designerName,
                   meetingDate: meetingDate || undefined,
-                  meetingTime: meetingTime || undefined,
+                  meetingTime: formatTime12Hour(meetingTime) || undefined,
                   meetingMode: meetingMode || undefined,
                   meetingLink: meetingLink || undefined,
                   ecLocation: resolvedEcLocation,
@@ -5228,7 +5245,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
 
             if (customerEmail) {
               const mailChainCc = await getMailLoopCcEmails([actingUser.email], id);
-              const mailChainSubject = buildPaymentMailChainSubject(projectId, row.projectName, customerName);
+              const mailChainSubject = buildMailChainSubject(projectId, row.projectName, customerName);
               void triggerMailRouteWithLog({
                 leadId: id,
                 milestoneIndex: 5,
@@ -5258,7 +5275,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                 payload: {
                   to: "finance@hubinterior.com",
                   cc: internalCc,
-                  subject: buildPaymentMailChainSubject(projectId, row.projectName, customerName),
+                  subject: buildMailChainSubject(projectId, row.projectName, customerName),
                   customerName,
                   designerName,
                   projectId,
@@ -5316,7 +5333,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   projectId,
                   designerName,
                   meetingDate,
-                  meetingTime,
+                  meetingTime: formatTime12Hour(meetingTime) || undefined,
                   attendees,
                   discussionSummary,
                   attachments,
@@ -5423,7 +5440,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                     customerName,
                     designerName,
                     meetingDate,
-                    meetingTime,
+                    meetingTime: formatTime12Hour(meetingTime) || undefined,
                     meetingMode,
                     meetingLink,
                     ecLocation,
@@ -6027,7 +6044,7 @@ app.post(
             payload: {
               to: financeEmails,
               cc: ccEmails,
-              subject: buildPaymentMailChainSubject(projectId, "", customerName),
+              subject: buildMailChainSubject(projectId, "", customerName),
               customerName,
               projectId,
               designerName: user.name || "Designer",
@@ -6223,7 +6240,7 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
 
         if (customerEmail) {
           const mailChainCc = await getMailLoopCcEmails([user.email || null, row.designerEmail || null], leadId);
-          const mailChainSubject = buildPaymentMailChainSubject(projectId, row.projectName, customerName);
+          const mailChainSubject = buildMailChainSubject(projectId, row.projectName, customerName);
           void triggerMailRouteWithLog({
             leadId,
             milestoneIndex: 2,
@@ -6384,7 +6401,7 @@ app.post(
             payload: {
               to: financeEmails,
               cc: ccEmails,
-              subject: buildPaymentMailChainSubject(projectId, "", customerName),
+              subject: buildMailChainSubject(projectId, "", customerName),
               customerName,
               projectId,
               designerName: user.name || "Designer",
@@ -6614,7 +6631,7 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
             payload: {
               to: customerEmail,
               cc: await getMailLoopCcEmails([user.email || null, row.designerEmail || null], leadId),
-              subject: buildPaymentMailChainSubject(projectId, row.projectName, customerName),
+              subject: buildMailChainSubject(projectId, row.projectName, customerName),
               customerName,
               projectName,
               amountReceived,
@@ -6638,7 +6655,7 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
           payload: {
             to: "finance@hubinterior.com",
             cc: internalCc,
-            subject: buildPaymentMailChainSubject(projectId, row.projectName, customerName),
+            subject: buildMailChainSubject(projectId, row.projectName, customerName),
             customerName,
             designerName: row.designerName || "Team",
             projectId,
@@ -6835,7 +6852,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
         projectId,
         designerName,
         meetingDate,
-        meetingTime,
+        meetingTime: formatTime12Hour(meetingTime) || undefined,
         meetingMode,
         meetingLink,
         ecLocation: resolvedEcLocation,
@@ -6857,7 +6874,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
         projectId,
         designerName,
         meetingDate,
-        meetingTime,
+        meetingTime: formatTime12Hour(meetingTime) || undefined,
         meetingMode,
         meetingLink,
         ecLocation: resolvedEcLocation,
@@ -6879,7 +6896,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
         projectId,
         designerName,
         meetingDate,
-        meetingTime,
+        meetingTime: formatTime12Hour(meetingTime) || undefined,
         meetingMode,
         meetingLink,
         ecLocation: resolvedEcLocation,

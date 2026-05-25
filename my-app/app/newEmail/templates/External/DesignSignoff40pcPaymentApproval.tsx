@@ -191,9 +191,9 @@ export default function DesignSignoff40pcPaymentApprovalEmail({
         {/* Sign off */}
         <Section className="border-t border-neutral-lightGrey pt-6">
           <Text className="m-0 text-[14px] text-neutral-mediumGrey mb-1">Warm regards,</Text>
-          <Text className="m-0 text-[16px] font-bold text-neutral-nearBlack mb-1">Hub Interiors Finance Team</Text>
+          <Text className="m-0 text-[16px] font-bold text-neutral-nearBlack mb-1">Hub Interior Finance Team</Text>
           <Text className="m-0 text-[13px] text-neutral-mediumGrey">
-            finance@hubinterior.com · +91 80 1234 5678
+            finance@hubinterior.com 
           </Text>
         </Section>
 

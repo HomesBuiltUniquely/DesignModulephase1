@@ -4,6 +4,7 @@ import { BaseLayout } from '../../component/layout/BaseLayout';
 import { StageBar } from '../../component/blocks/StageBar';
 import { DetailsList, DetailItem } from '../../component/blocks/DetailsList';
 import { Button } from '../../component/blocks/Button';
+import { FileList } from '../../component/blocks/FileList';
 
 export interface DQC1FirstCutDesignEmailProps {
   customerName?: string;
@@ -14,6 +15,7 @@ export interface DQC1FirstCutDesignEmailProps {
   meetingLink?: string;
   branchName?: string;
   designerName?: string;
+  attachments?: { filename: string; path: string }[];
 }
 
 export default function DQC1FirstCutDesignEmail({
@@ -25,6 +27,7 @@ export default function DQC1FirstCutDesignEmail({
   meetingLink = '#',
   branchName = 'HUB Experience Center',
   designerName = 'Your Design Consultant',
+  attachments = [],
 }: DQC1FirstCutDesignEmailProps) {
   const meetingDetails: DetailItem[] = [
     { label: 'Date', value: meetingDate },
@@ -70,6 +73,16 @@ export default function DQC1FirstCutDesignEmail({
             <Text className="m-0 text-[14px] text-neutral-nearBlack">
               We look forward to hosting you at our <span className="font-bold">{branchName} Branch</span> for the presentation.
             </Text>
+          </Section>
+        )}
+
+        {/* Attachments */}
+        {attachments && attachments.length > 0 && (
+          <Section className="mb-6">
+            <Text className="m-0 text-[15px] font-bold text-neutral-nearBlack pb-2">
+              Reference Files
+            </Text>
+            <FileList files={attachments.map(a => ({ name: a.filename, meta: 'Document', url: a.path }))} />
           </Section>
         )}
 

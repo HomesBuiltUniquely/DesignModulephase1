@@ -18,6 +18,8 @@ export async function POST(request: Request) {
     const pmName = body.pmName as string | undefined;
     const projectId = body.projectId as string | undefined;
 
+    const subjectOverride = body.subject as string | undefined;
+
     if (!to || !customerName || !designerName || !ecName) {
       return NextResponse.json(
         { error: 'Missing required fields: to, customerName, designerName, ecName' },
@@ -38,7 +40,7 @@ export async function POST(request: Request) {
 
     const info = await sendMail({
       to,
-      subject: `D2 Site Masking Request – ${customerName} – ${ecName}`,
+      subject: subjectOverride || `D2 Site Masking Request – ${customerName} – ${ecName}`,
       html,
       ...(cc && cc.length ? { cc } : {}),
     } as any);

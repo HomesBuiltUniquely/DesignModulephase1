@@ -40,7 +40,7 @@ export async function POST(request: Request) {
 
     const info = await sendMail({
       to,
-      subject: subjectOverride || `DQC 2 Review Request – ${customerName} – ${ecName}`,
+      subject: subjectOverride || `HUB-${projectId ? projectId + ' , ' : ''}${customerName || 'CUSTOMER'} DESIGN JOURNEY`.replace(/\s+/g, ' ').trim(),
       html,
       ...(cc && cc.length ? { cc } : {}),
       ...(attachments && attachments.length ? { attachments } : {}),

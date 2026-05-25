@@ -1482,6 +1482,7 @@ export default function ProjectDetailPage() {
             description: options?.description ?? `${taskName} completed.`,
             user: { name: authUser?.name ?? 'Current User', avatar: authUser?.profileImage },
             details: options?.details,
+            meta: options?.meta,
         });
         // persist completion for this lead so refresh keeps it completed
         if (projectId != null) {
@@ -2872,6 +2873,10 @@ export default function ProjectDetailPage() {
                                 const ev = historyEvents.find(e => e.taskName === 'First cut design + quotation discussion meeting request' && (e.meta as any)?.meetingLink);
                                 return (ev?.meta as any)?.meetingLink || '';
                             })()}
+                            initialCompletionPercent={(() => {
+                                const ev = historyEvents.find(e => e.taskName === 'First cut design + quotation discussion meeting request' && (e.meta as any)?.completionPercent !== undefined);
+                                return ev ? (ev.meta as any).completionPercent : 0;
+                            })()}
                             onSubmit={async (meta) => {
                                 if (!projectId) return;
                                 try {
@@ -3180,6 +3185,10 @@ export default function ProjectDetailPage() {
                                 const ev = historyEvents.find(e => e.taskName === 'Material selection meeting + quotation discussion' && (e.meta as any)?.meetingLink);
                                 return (ev?.meta as any)?.meetingLink || '';
                             })()}
+                            initialCompletionPercent={(() => {
+                                const ev = historyEvents.find(e => e.taskName === 'Material selection meeting + quotation discussion' && (e.meta as any)?.completionPercent !== undefined);
+                                return ev ? (ev.meta as any).completionPercent : 0;
+                            })()}
                             onSubmit={async (meta) => {
                                 if (!projectId) return;
                                 try {
@@ -3483,6 +3492,10 @@ export default function ProjectDetailPage() {
                             initialLink={(() => {
                                 const ev = historyEvents.find(e => e.taskName === 'Design sign off' && (e.meta as any)?.meetingLink);
                                 return (ev?.meta as any)?.meetingLink || '';
+                            })()}
+                            initialCompletionPercent={(() => {
+                                const ev = historyEvents.find(e => e.taskName === 'Design sign off' && (e.meta as any)?.completionPercent !== undefined);
+                                return ev ? (ev.meta as any).completionPercent : 0;
                             })()}
                             onSubmit={async (meta) => {
                                 if (!projectId) return;
