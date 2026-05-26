@@ -75,7 +75,13 @@ function ReceiptContent() {
 
         {/* Brand Bar */}
         <div className="px-8 pt-8 pb-4 flex justify-between items-center">
-          <span className="text-xl font-extrabold text-[#111827] tracking-tight">HUB INTERIORS</span>
+          <img
+            src="https://hubinterior-quote-2026.s3.ap-south-2.amazonaws.com/logo/logo_transparent.png"
+            width={100}
+            height={100}
+            alt="HUB Logo"
+            className="block h-auto w-[100px]"
+          />
           <span className="text-xs text-gray-400 font-mono uppercase">E-RECEIPT</span>
         </div>
 
@@ -147,9 +153,9 @@ function ReceiptContent() {
           {/* Sign Off */}
           <div className="border-t border-gray-200 pt-6">
             <p className="text-gray-400 text-xs mb-1">Warm regards,</p>
-            <p className="font-bold text-gray-900 text-sm">Hub Interiors Finance Team</p>
+            <p className="font-bold text-gray-900 text-sm">Hub Interior Finance Team</p>
             <p className="text-gray-400 text-xs mt-1">
-              finance@hubinteriors.in · +91 80 1234 5678
+              finance@hubinterior.com
             </p>
           </div>
 
