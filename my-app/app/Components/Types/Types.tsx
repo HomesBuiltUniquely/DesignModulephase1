@@ -38,4 +38,5 @@ export type LeadshipTypes = {
     intakeConfiguration?: string | null;
     /** External intake notes (e.g. rawPayload.propertyNotes) */
     intakeNotes?: string | null;
+    financeApprovedRaw?: string;
 };

@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import { renderTenPercentPaymentInternalEmail } from '@/lib/email/render-ten-percent-payment-internal';
+import { render } from '@react-email/components';
+import TenPercentPaymentInternalEmail from '@/app/newEmail/templates/Internal/TenPercentPaymentInternal';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
@@ -11,6 +13,7 @@ export async function POST(request: Request) {
     const customerName = body.customerName as string | undefined;
     const designerName = body.designerName as string | undefined;
     const ecName = body.ecName as string | undefined;
+    const projectId = body.projectId as string | undefined;
 
     if (!to || !customerName || !designerName || !ecName) {
       return NextResponse.json(
@@ -19,15 +22,18 @@ export async function POST(request: Request) {
       );
     }
 
-    const { subject, html } = renderTenPercentPaymentInternalEmail({
+    const emailComponent = React.createElement(TenPercentPaymentInternalEmail, {
+      projectId,
       customerName,
       designerName,
       ecName,
     });
 
+    const html = await render(emailComponent);
+
     const info = await sendMail({
       to,
-      subject: subjectOverride || subject,
+      subject: subjectOverride || 'DQC 1 Approved – Proceed with 10% Collection & Masking',
       html,
       ...(cc && cc.length ? { cc } : {}),
     });

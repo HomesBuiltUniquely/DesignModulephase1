@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { sendMailForPayment } from '@/lib/email/mailer';
-import { renderDesignSignoff40pcPaymentRequestEmail } from '@/lib/email/render-design-signoff-40pc-payment-request';
+import { render } from '@react-email/components';
+import DesignSignoff40pcPaymentRequestEmail from '@/app/newEmail/templates/External/DesignSignoff40pcPaymentRequest';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
@@ -14,6 +16,7 @@ export async function POST(request: Request) {
     const accountNumber = body.accountNumber as string | undefined;
     const ifscCode = body.ifscCode as string | undefined;
     const designerName = body.designerName as string | undefined;
+    const projectId = body.projectId as string | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -22,14 +25,17 @@ export async function POST(request: Request) {
       );
     }
 
-    const html = renderDesignSignoff40pcPaymentRequestEmail({
+    const emailComponent = React.createElement(DesignSignoff40pcPaymentRequestEmail, {
       customerName,
+      projectId,
       amount,
       accountName,
       accountNumber,
       ifscCode,
       designerName,
     });
+
+    const html = await render(emailComponent);
 
     const info = await sendMailForPayment({
       to,

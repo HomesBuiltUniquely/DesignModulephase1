@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import { renderProductionPocTimelineEmail } from '@/lib/email/render-production-poc-timeline';
+import { render } from '@react-email/components';
+import ProductionPocTimelineEmail from '@/app/newEmail/templates/External/ProductionPocTimeline';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
@@ -15,6 +17,7 @@ export async function POST(request: Request) {
     const operationManager = body.operationManager as string | undefined;
     const operationHead = body.operationHead as string | undefined;
     const designerName = body.designerName as string | undefined;
+    const projectId = body.projectId as string | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -23,15 +26,18 @@ export async function POST(request: Request) {
       );
     }
 
-    const html = renderProductionPocTimelineEmail({
+    const emailComponent = React.createElement(ProductionPocTimelineEmail, {
       customerName,
+      projectId,
+      designerName,
       productionPoc,
       executionPoc,
       spmPoc,
       operationManager,
       operationHead,
-      designerName,
     });
+
+    const html = await render(emailComponent);
 
     const info = await sendMail({
       to,

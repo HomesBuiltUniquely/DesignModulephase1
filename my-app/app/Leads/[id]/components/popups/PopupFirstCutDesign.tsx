@@ -22,6 +22,7 @@ type Props = {
   initialTime?: string;
   initialMode?: "online" | "offline";
   initialLink?: string;
+  initialCompletionPercent?: number;
   onSubmit?: (meta?: {
     meetingDate?: string;
     meetingTime?: string;
@@ -57,6 +58,7 @@ export default function PopupFirstCutDesign({
   initialTime,
   initialMode,
   initialLink,
+  initialCompletionPercent,
   onSubmit,
   onCompleteAndProceed,
 }: Props) {
@@ -64,7 +66,7 @@ export default function PopupFirstCutDesign({
   const [meetingTime, setMeetingTime] = useState(initialTime || "");
   const [meetingMode, setMeetingMode] = useState<"online" | "offline">(initialMode || "online");
   const [meetingLink, setMeetingLink] = useState(initialLink || "");
-  const [completionPercent, setCompletionPercent] = useState(0);
+  const [completionPercent, setCompletionPercent] = useState(initialCompletionPercent || 0);
 
   const isMeetingLinkEmpty = meetingLink.trim().length === 0;
   // If offline, meeting link is not mandatory

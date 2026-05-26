@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { sendMailForPayment } from '@/lib/email/mailer';
-import { renderSalesClosurePaymentRejectedEmail } from '@/lib/email/render-sales-closure-payment-rejected';
+import { render } from '@react-email/components';
+import SalesClosurePaymentRejectedEmail from '@/app/newEmail/templates/Internal/SalesClosurePaymentRejected';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
@@ -11,6 +13,7 @@ export async function POST(request: Request) {
     const salesPersonName = body.salesPersonName as string | undefined;
     const customerName = body.customerName as string | undefined;
     const leadId = body.leadId as string | number | undefined;
+    const projectId = body.projectId as string | undefined;
 
     if (!to || !customerName || !leadId) {
       return NextResponse.json(
@@ -19,11 +22,14 @@ export async function POST(request: Request) {
       );
     }
 
-    const html = renderSalesClosurePaymentRejectedEmail({
+    const emailComponent = React.createElement(SalesClosurePaymentRejectedEmail, {
+      projectId,
       salesPersonName,
       customerName: String(customerName),
       leadId,
     });
+
+    const html = await render(emailComponent);
 
     const info = await sendMailForPayment({
       to,

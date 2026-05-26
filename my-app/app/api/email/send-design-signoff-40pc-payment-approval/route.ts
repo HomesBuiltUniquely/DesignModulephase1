@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { sendMailForPayment } from '@/lib/email/mailer';
-import { renderDesignSignoff40pcPaymentApprovalEmail } from '@/lib/email/render-design-signoff-40pc-payment-approval';
+import { render } from '@react-email/components';
+import DesignSignoff40pcPaymentApprovalEmail from '@/app/newEmail/templates/External/DesignSignoff40pcPaymentApproval';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
@@ -13,6 +15,10 @@ export async function POST(request: Request) {
     const amountReceived = body.amountReceived as string | undefined;
     const dateOfReceipt = body.dateOfReceipt as string | undefined;
     const modeOfPayment = body.modeOfPayment as string | undefined;
+    const projectId = body.projectId as string | undefined;
+    const designerName = body.designerName as string | undefined;
+    const totalProjectValue = body.totalProjectValue as string | number | undefined;
+    const transactionRef = body.transactionRef as string | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -23,13 +29,18 @@ export async function POST(request: Request) {
 
     const attachments = body.attachments as { filename: string; path: string }[] | undefined;
 
-    const html = renderDesignSignoff40pcPaymentApprovalEmail({
+    const emailComponent = React.createElement(DesignSignoff40pcPaymentApprovalEmail, {
       customerName,
+      projectId,
       projectName,
       amountReceived,
       dateOfReceipt,
       modeOfPayment,
+      totalProjectValue,
+      transactionRef,
     });
+
+    const html = await render(emailComponent);
 
     const info = await sendMailForPayment({
       to,

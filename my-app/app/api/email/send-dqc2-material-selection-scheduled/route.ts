@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import { renderDqc2MaterialSelectionScheduledEmail } from '@/lib/email/render-dqc2-material-selection-scheduled';
+import { render } from '@react-email/components';
+import DQC2MaterialSelectionScheduledEmail from '@/app/newEmail/templates/External/DQC2MaterialSelectionScheduled';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
@@ -16,6 +18,7 @@ export async function POST(request: Request) {
     const meetingMode = body.meetingMode as string | null | undefined;
     const meetingLink = body.meetingLink as string | null | undefined;
     const attachments = body.attachments as { filename: string; path: string }[] | undefined;
+    const projectId = body.projectId as string | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -24,39 +27,26 @@ export async function POST(request: Request) {
       );
     }
 
-    const { subject, html } = renderDqc2MaterialSelectionScheduledEmail({
+    const emailComponent = React.createElement(DQC2MaterialSelectionScheduledEmail, {
       customerName,
       designerName,
-      meetingDate,
-      meetingTime,
-      meetingMode,
-      meetingLink,
-      ecLocation,
+      meetingDate: meetingDate || undefined,
+      meetingTime: meetingTime || undefined,
+      meetingMode: meetingMode || undefined,
+      meetingLink: meetingLink || undefined,
+      branchName: ecLocation || undefined,
+      projectId,
+      attachments,
     });
 
-    let info;
-    try {
-      info = await sendMail({
-        to,
-        ...(cc ? { cc } : {}),
-        subject: subjectOverride || subject,
-        html,
-        ...(attachments && attachments.length ? { attachments } : {}),
-      });
-    } catch (sendErr) {
-      // eslint-disable-next-line no-console
-      console.warn('Failed to send DQC2 material selection with attachments, retrying without...', sendErr);
-      if (attachments && attachments.length) {
-        info = await sendMail({
-          to,
-          ...(cc ? { cc } : {}),
-          subject: subjectOverride || subject,
-          html,
-        });
-      } else {
-        throw sendErr;
-      }
-    }
+    const html = await render(emailComponent);
+
+    const info = await sendMail({
+      to,
+      ...(cc ? { cc } : {}),
+      subject: subjectOverride || 'Color & Material Selection Meeting – Scheduled',
+      html,
+    });
 
     return NextResponse.json({ success: true, messageId: info.messageId });
   } catch (error) {

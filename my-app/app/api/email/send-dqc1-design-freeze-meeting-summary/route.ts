@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import { renderDqc1DesignFreezeMeetingSummaryEmail } from '@/lib/email/render-dqc1-design-freeze-meeting-summary';
+import { render } from '@react-email/components';
+import DQC1DesignFreezeMeetingSummaryEmail from '@/app/newEmail/templates/External/DQC1DesignFreezeMeetingSummary';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
@@ -21,13 +23,15 @@ export async function POST(request: Request) {
       );
     }
 
-    const html = renderDqc1DesignFreezeMeetingSummaryEmail({
+    const emailComponent = React.createElement(DQC1DesignFreezeMeetingSummaryEmail, {
       customerName,
+      projectId,
       designerName,
       meetingDate,
-      projectId,
       propertyType,
     });
+
+    const html = await render(emailComponent);
 
     const info = await sendMail({
       to,

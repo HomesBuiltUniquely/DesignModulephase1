@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import { renderDqc2FinalDesignSubmissionInternalEmail } from '@/lib/email/render-dqc2-final-design-submission-internal';
+import { render } from '@react-email/components';
+import DQC2FinalDesignSubmissionInternalEmail from '@/app/newEmail/templates/Internal/DQC2FinalDesignSubmissionInternal';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
@@ -13,6 +15,7 @@ export async function POST(request: Request) {
     const designerName = body.designerName as string | undefined;
     const dqcRepName = body.dqcRepName as string | undefined;
     const projectValue = body.projectValue as string | number | undefined;
+    const projectId = body.projectId as string | undefined;
 
     if (!to || !customerName || !ecName || !designerName || !dqcRepName) {
       return NextResponse.json(
@@ -23,17 +26,21 @@ export async function POST(request: Request) {
 
     const attachments = body.attachments as { filename: string; path: string }[] | undefined;
 
-    const { subject, html } = renderDqc2FinalDesignSubmissionInternalEmail({
+    const emailComponent = React.createElement(DQC2FinalDesignSubmissionInternalEmail, {
+      projectId,
       dqcRepName,
       customerName,
       ecName,
       designerName,
       projectValue: projectValue != null ? String(projectValue) : undefined,
+      attachments,
     });
+
+    const html = await render(emailComponent);
 
     const info = await sendMail({
       to,
-      subject: subjectOverride || subject,
+      subject: subjectOverride || `HUB-${projectId ? projectId + ' , ' : ''}${customerName || 'CUSTOMER'} DESIGN JOURNEY`.replace(/\s+/g, ' ').trim(),
       html,
       ...(cc && cc.length ? { cc } : {}),
       ...(attachments && attachments.length ? { attachments } : {}),

@@ -21,12 +21,12 @@ const checklistRoutes: ChecklistRoute[] = [
   },
   {
     milestoneIndex: 4,
-    taskName: "Material selection meeting completed",
+    taskName: "Material selection meeting + quotation discussion",
     key: "color_selection",
   },
   {
     milestoneIndex: 5,
-    taskName: "meeting completed",
+    taskName: "Design sign off",
     key: "design_signoff",
   },
 ];

@@ -1,5 +1,6 @@
 'use client';
 
+import * as React from 'react';
 import type { RefObject } from 'react';
 
 type Props = {
@@ -12,7 +13,7 @@ type Props = {
     onMomDrop: (e: React.DragEvent) => void;
     removeMomFile: (index: number) => void;
     onClose: () => void;
-    onShareMom?: () => void;
+    onShareMom?: (extra?: { attendees: string; meetingDate: string; completionPercent?: number }) => void;
     /** Progress % saved from the meeting popup — shown read-only so MOM and meeting are in sync */
     initialCompletionPercent?: number;
     /** When true, show 40% payment screenshot upload section (for the "40% collection" task). */
@@ -24,6 +25,8 @@ type Props = {
     onPayment40pDrop?: (e: React.DragEvent) => void;
     onPayment40pDragOver?: (e: React.DragEvent) => void;
     removePayment40pFile?: (index: number) => void;
+    defaultAttendees?: string;
+    defaultMeetingDate?: string;
 };
 
 /**
@@ -49,7 +52,12 @@ export default function PopupMeetingCompleted({
     onPayment40pDrop,
     onPayment40pDragOver,
     removePayment40pFile,
+    defaultAttendees,
+    defaultMeetingDate,
 }: Props) {
+    const [attendees, setAttendees] = React.useState(defaultAttendees || 'Customer, Designer');
+    const [meetingDate, setMeetingDate] = React.useState(defaultMeetingDate || '');
+
     return (
         <div className="px-6 pb-6 max-w-[640px] mt-6">
             <div className="flex items-start justify-between gap-4 mb-6">
@@ -63,35 +71,43 @@ export default function PopupMeetingCompleted({
                     <p className="text-sm text-gray-500">Submit official meeting summary to unlock next project stage.</p>
                 </div>
                 <span className="flex items-center gap-1.5 px-3 py-1.5 border-2 border-orange-400 text-orange-600 text-xs font-bold rounded whitespace-nowrap">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z" /></svg>
+                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z" /></svg>
                     STAGE EXIT LOCK
                 </span>
             </div>
             {/* Synced progress bar from meeting popup */}
-            {initialCompletionPercent !== undefined && (
-                <div className="mb-4 px-1">
-                    <div className="flex items-center justify-between mb-1">
-                        <span className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Design completion at meeting</span>
-                        <span className={`text-sm font-bold ${initialCompletionPercent === 100 ? 'text-green-600' : 'text-blue-600'}`}>{initialCompletionPercent}%</span>
-                    </div>
-                    <div className="w-full h-2.5 rounded-full bg-gray-200 overflow-hidden">
-                        <div
-                            className={`h-2.5 rounded-full transition-all ${initialCompletionPercent === 100 ? 'bg-green-500' : 'bg-blue-500'}`}
-                            style={{ width: `${initialCompletionPercent}%` }}
-                        />
-                    </div>
-                    <p className="text-xs text-gray-400 mt-1">
-                        {initialCompletionPercent === 100
-                            ? '✅ Design marked 100% complete at meeting. MOM is in sync.'
-                            : `Design was ${initialCompletionPercent}% at the time of meeting — update if this has changed.`}
-                    </p>
+            <div className="mb-6 px-1">
+                <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">Design Completion (From Scheduled Meeting)</span>
+                    <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+                        (initialCompletionPercent ?? 100) === 100 
+                            ? 'bg-green-100 text-green-700' 
+                            : 'bg-blue-100 text-blue-700'
+                    }`}>
+                        {initialCompletionPercent ?? 100}%
+                    </span>
                 </div>
-            )}
+                <div className="w-full h-2.5 rounded-full bg-gray-200 overflow-hidden">
+                    <div
+                        className={`h-2.5 rounded-full transition-all duration-500 ${
+                            (initialCompletionPercent ?? 100) === 100 ? 'bg-green-500' : 'bg-blue-500'
+                        }`}
+                        style={{ width: `${initialCompletionPercent ?? 100}%` }}
+                    />
+                </div>
+                <p className="text-xs text-gray-400 mt-1.5">
+                    {(initialCompletionPercent ?? 100) === 100
+                        ? '✅ Design marked 100% complete at meeting. MOM is in sync.'
+                        : `Design was ${initialCompletionPercent}% complete at the time of meeting.`}
+                </p>
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
                 <div>
                     <label className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-1.5">Meeting Participants</label>
                     <input
                         type="text"
+                        value={attendees}
+                        onChange={(e) => setAttendees(e.target.value)}
                         className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-gray-700 bg-white text-sm"
                         placeholder="Enter participants (e.g. John Doe – Client, Sarah Miller – Lead)"
                     />
@@ -100,6 +116,8 @@ export default function PopupMeetingCompleted({
                     <label className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-1.5">Date / Time</label>
                     <input
                         type="text"
+                        value={meetingDate}
+                        onChange={(e) => setMeetingDate(e.target.value)}
                         className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-gray-700 bg-white text-sm"
                         placeholder="Enter date & time (e.g. Oct 24, 2023 | 10:30 AM – 11:45 AM)"
                     />
@@ -193,7 +211,7 @@ export default function PopupMeetingCompleted({
 
             <div className="flex justify-end gap-3">
                 <button type="button" onClick={onClose} className="px-4 py-2 text-gray-700 font-medium hover:bg-gray-100 rounded-lg">Cancel</button>
-                <button type="button" onClick={onShareMom} className="px-5 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 flex items-center gap-1">
+                <button type="button" onClick={() => onShareMom?.({ attendees, meetingDate, completionPercent: initialCompletionPercent ?? 100 })} className="px-5 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 flex items-center gap-1">
                     {show40pUpload ? 'Share MOM & send to finance' : 'Share the MOM'} <span className="pl-2"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="size-6 fill-white"><path strokeLinecap="round" strokeLinejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" /></svg></span>
                 </button>
             </div>

@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { sendMailForPayment } from '@/lib/email/mailer';
-import { renderTenPercentPaymentRequestEmail } from '@/lib/email/render-ten-percent-payment-request';
+import { render } from '@react-email/components';
+import TenPercentPaymentRequestEmail from '@/app/newEmail/templates/External/TenPercentPaymentRequest';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
@@ -15,6 +17,8 @@ export async function POST(request: Request) {
     const dueDate = body.dueDate as string | undefined;
     const attachments = body.attachments as { filename: string; path: string }[] | undefined;
 
+    const designerName = body.designerName as string | undefined;
+
     if (!to || !customerName) {
       return NextResponse.json(
         { error: 'Missing required fields: to, customerName' },
@@ -22,20 +26,22 @@ export async function POST(request: Request) {
       );
     }
 
-    const html = renderTenPercentPaymentRequestEmail({
+    const emailComponent = React.createElement(TenPercentPaymentRequestEmail, {
       customerName,
       projectId,
       propertyType,
       amountDue,
       dueDate,
+      designerName: designerName || 'Your Design Consultant',
     });
+
+    const html = await render(emailComponent);
 
     const info = await sendMailForPayment({
       to,
       ...(cc ? { cc } : {}),
       subject: subject || 'Design Approved – Ready for Site Masking',
       html,
-      ...(attachments && attachments.length ? { attachments } : {}),
     });
 
     return NextResponse.json({ success: true, messageId: info.messageId });
