@@ -8,6 +8,8 @@ import {
 import { z } from "zod";
 
 export const salesClosureSchema = z.object({
+  externalReferenceId: z.string().optional(),
+
   sales_lead_name: z.string().min(1, "Sales lead name is required"),
 
   sales_spoc: z.string().min(1, "Sales SPOC is required"),

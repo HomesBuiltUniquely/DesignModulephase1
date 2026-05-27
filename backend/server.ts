@@ -160,11 +160,58 @@ const PROFILE_IMAGES_DIR = path.join(UPLOADS_DIR, "profile-images");
 if (!fs.existsSync(PROFILE_IMAGES_DIR)) fs.mkdirSync(PROFILE_IMAGES_DIR, { recursive: true });
 const API_BASE = process.env.API_BASE_URL || "http://localhost:3001";
 const FRONTEND_BASE = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
+const CRM_CALLBACK_BASE =
+  process.env.CRM_CALLBACK_BASE_URL ||
+  process.env.CRM_API_BASE_URL ||
+  process.env.CRM_BASE_URL ||
+  "";
 const ERP_BASE_URL = process.env.ERP_BASE_URL || "https://hows.hubinterior.com";
 const ERP_USERNAME = process.env.ERP_USERNAME || "admin@hubinterior.com";
 const ERP_PASSWORD = process.env.ERP_PASSWORD || "admin123";
 
 let cachedErpToken: string | null = null;
+
+function normalizePaymentReceivedForCrm(input: unknown): string | null {
+  const raw = String(input ?? "").trim().toUpperCase();
+  if (!raw) return null;
+  if (raw === "FULL_10%" || raw === "PARTIAL" || raw === "TOKEN") return raw;
+  return null;
+}
+
+async function notifyCrmSalesClosureStatus(payload: Record<string, unknown>): Promise<void> {
+  const base = String(CRM_CALLBACK_BASE || "").trim().replace(/\/+$/, "");
+  if (!base) {
+    console.warn("[sales-closure-callback] CRM callback base URL is not configured");
+    return;
+  }
+
+  const externalReferenceId =
+    String(
+      payload.externalReferenceId ?? payload.external_reference_id ?? payload.leadId ?? "",
+    ).trim();
+  if (!externalReferenceId) {
+    console.warn("[sales-closure-callback] Missing externalReferenceId in payload; skipping callback");
+    return;
+  }
+
+  const paymentReceived = normalizePaymentReceivedForCrm(
+    payload.payment_received ?? payload.paymentReceived,
+  );
+
+  const params = new URLSearchParams();
+  params.set("externalReferenceId", externalReferenceId);
+  params.set("salesclouserfill", "true");
+  if (paymentReceived) {
+    params.set("paymentReceived", paymentReceived);
+  }
+
+  const callbackUrl = `${base}/api/sales-closure-status?${params.toString()}`;
+  const response = await fetch(callbackUrl, { method: "GET" });
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`CRM callback failed (${response.status}) ${body}`.trim());
+  }
+}
 
 async function getErpToken(forceRefresh = false): Promise<string | null> {
   if (cachedErpToken && !forceRefresh) return cachedErpToken;
@@ -2663,6 +2710,12 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
       ],
     );
     const insertId = (result as any).insertId;
+
+    try {
+      await notifyCrmSalesClosureStatus(payload || {});
+    } catch (callbackErr) {
+      console.error("[sales-closure-callback] create callback failed", callbackErr);
+    }
 
     // Fire-and-forget: trigger D1 Site Measurement welcome email via frontend mail service
     try {
@@ -5917,6 +5970,12 @@ app.put("/api/sales-closure/:id", async (req: Request, res: Response) => {
       `UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`,
       [JSON.stringify(updatedPayload), new Date(), leadId]
     );
+
+    try {
+      await notifyCrmSalesClosureStatus(updatedPayload);
+    } catch (callbackErr) {
+      console.error("[sales-closure-callback] update callback failed", callbackErr);
+    }
 
     return res.json({ success: true, message: "Sales closure updated and sent back for finance approval" });
   } catch (err) {

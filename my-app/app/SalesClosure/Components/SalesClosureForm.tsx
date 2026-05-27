@@ -21,6 +21,7 @@ function getTodayDateValue() {
 
 function buildInitialFormState(): SalesClosureFormType {
   return {
+    externalReferenceId: "",
     sales_lead_name: "",
     sales_spoc: "",
     sales_email: "",
@@ -149,11 +150,13 @@ export default function SalesClosureForm() {
     const experience_center     = p("experience_center");
     const sales_lead_name       = p("sales_lead_name");
     const designer_name         = p("designer_name");
+    const externalReferenceId   = p("externalReferenceId");
 
     // Only update state if the CRM actually sent data
-    if (customer_name || co_no || email || sales_email || property_name) {
+    if (customer_name || co_no || email || sales_email || property_name || externalReferenceId) {
       setForm((prev) => ({
         ...prev,
+        ...(externalReferenceId   && { externalReferenceId }),
         ...(customer_name         && { customer_name }),
         ...(co_no                 && { co_no }),
         ...(email                 && { email }),
@@ -277,6 +280,7 @@ export default function SalesClosureForm() {
         timeline_promise_by_sales: payload.timeline_promise_by_sales || "",
         scope_frozen: payload.scope_frozen || "",
         approval_proof: "",
+        externalReferenceId: payload.externalReferenceId || payload.external_reference_id || "",
       }));
       setPercentInputs({
         dis_on_woodwork: String(payload.dis_on_woodwork || 0),
