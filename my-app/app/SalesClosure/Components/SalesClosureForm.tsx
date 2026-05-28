@@ -255,6 +255,7 @@ export default function SalesClosureForm() {
         return data as {
           totalPayableAmount?: number;
           tenPercentAmount?: number;
+          totalPaidToward10Percent?: number;
           quoteId?: number | null;
           quoteNum?: string | null;
         };
