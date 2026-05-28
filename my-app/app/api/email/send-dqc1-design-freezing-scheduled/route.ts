@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import { renderDqc1DesignFreezingScheduledEmail } from '@/lib/email/render-dqc1-design-freezing-scheduled';
+import { render } from '@react-email/components';
+import DQC1DesignFreezingScheduledEmail from '@/app/newEmail/templates/External/DQC1DesignFreezingScheduled';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
@@ -11,6 +13,11 @@ export async function POST(request: Request) {
     const customerName = body.customerName as string | undefined;
     const meetingDate = body.meetingDate as string | undefined;
     const meetingTime = body.meetingTime as string | undefined;
+    const meetingMode = body.meetingMode as string | undefined;
+    const meetingLink = body.meetingLink as string | undefined;
+    const branchName = body.ecLocation as string | undefined;
+    const designerName = body.designerName as string | undefined;
+    const projectId = body.projectId as string | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -19,11 +26,18 @@ export async function POST(request: Request) {
       );
     }
 
-    const html = renderDqc1DesignFreezingScheduledEmail({
+    const emailComponent = React.createElement(DQC1DesignFreezingScheduledEmail, {
       customerName,
+      projectId,
       meetingDate,
       meetingTime,
+      meetingMode,
+      meetingLink,
+      branchName,
+      designerName,
     });
+
+    const html = await render(emailComponent);
 
     const info = await sendMail({
       to,

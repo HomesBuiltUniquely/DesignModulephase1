@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { sendMailForPayment } from '@/lib/email/mailer';
-import { renderNewQuoteGeneratedEmail } from '@/lib/email/render-new-quote-generated';
+import { render } from '@react-email/components';
+import NewQuoteGeneratedEmail from '@/app/newEmail/templates/Internal/NewQuoteGenerated';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
@@ -12,6 +14,7 @@ export async function POST(request: Request) {
     const customerName = body.customerName as string | undefined;
     const leadId = body.leadId as string | number | undefined;
     const quoteId = body.quoteId as string | number | undefined;
+    const projectId = body.projectId as string | undefined;
 
     if (!to || !customerName || !leadId || !quoteId) {
       return NextResponse.json(
@@ -20,12 +23,15 @@ export async function POST(request: Request) {
       );
     }
 
-    const html = renderNewQuoteGeneratedEmail({
+    const emailComponent = React.createElement(NewQuoteGeneratedEmail, {
+      projectId,
       salesPersonName,
       customerName: String(customerName),
       leadId,
       quoteId,
     });
+
+    const html = await render(emailComponent);
 
     const info = await sendMailForPayment({
       to,

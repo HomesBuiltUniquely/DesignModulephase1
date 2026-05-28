@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import { renderD1SiteMeasurementEmail } from '@/lib/email/render-d1-site-measurement';
+import { render } from '@react-email/components';
+import D1SiteMeasurementEmail from '@/app/newEmail/templates/External/D1SiteMeasurement';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
@@ -11,6 +13,7 @@ export async function POST(request: Request) {
     const customerName = body.customerName as string | undefined;
     const projectId = body.projectId;
     const propertyType = body.propertyType;
+    const designerName = body.designerName as string | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -19,7 +22,14 @@ export async function POST(request: Request) {
       );
     }
 
-    const html = renderD1SiteMeasurementEmail({ customerName, projectId, propertyType });
+    const emailComponent = React.createElement(D1SiteMeasurementEmail, {
+      customerName,
+      projectId: projectId ? String(projectId) : undefined,
+      propertyType,
+      designerName,
+    });
+
+    const html = await render(emailComponent);
 
     const info = await sendMail({
       to,

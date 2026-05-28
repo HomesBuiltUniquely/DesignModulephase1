@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import { renderDqc2ApprovalInternalEmail } from '@/lib/email/render-dqc2-approval-internal';
+import { render } from '@react-email/components';
+import DQC2ApprovalInternalEmail from '@/app/newEmail/templates/Internal/DQC2ApprovalInternal';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
@@ -10,6 +12,7 @@ export async function POST(request: Request) {
     const subjectOverride = body.subject as string | undefined;
     const designerName = body.designerName as string | undefined;
     const customerName = body.customerName as string | undefined;
+    const projectId = body.projectId as string | undefined;
 
     if (!to || !designerName || !customerName) {
       return NextResponse.json(
@@ -18,15 +21,18 @@ export async function POST(request: Request) {
       );
     }
 
-    const { subject, html } = renderDqc2ApprovalInternalEmail({
+    const emailComponent = React.createElement(DQC2ApprovalInternalEmail, {
+      projectId,
       designerName,
       customerName,
     });
 
+    const html = await render(emailComponent);
+
     const info = await sendMail({
       to,
       ...(cc ? { cc } : {}),
-      subject: subjectOverride || subject,
+      subject: subjectOverride || 'Action Required – DQC 2 Cleared',
       html,
     });
 

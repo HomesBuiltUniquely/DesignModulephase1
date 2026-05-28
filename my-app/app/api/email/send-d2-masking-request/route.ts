@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import { renderD2MaskingRequestEmail } from '@/lib/email/render-d2-masking-request';
+import { render } from '@react-email/components';
+import D2MaskingRequestEmail from '@/app/newEmail/templates/External/D2MaskingRequest';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
@@ -12,6 +14,7 @@ export async function POST(request: Request) {
     const designerName = body.designerName as string | undefined;
     const maskingDate = body.maskingDate as string | null | undefined;
     const maskingTime = body.maskingTime as string | null | undefined;
+    const projectId = body.projectId as string | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -20,17 +23,20 @@ export async function POST(request: Request) {
       );
     }
 
-    const { subject, html } = renderD2MaskingRequestEmail({
+    const emailComponent = React.createElement(D2MaskingRequestEmail, {
+      projectId,
       customerName,
       designerName,
       maskingDate,
       maskingTime,
     });
 
+    const html = await render(emailComponent);
+
     const info = await sendMail({
       to,
       ...(cc ? { cc } : {}),
-      subject: subjectOverride || subject,
+      subject: subjectOverride || 'Site Masking Scheduled – Detailed Development Stage',
       html,
     });
 

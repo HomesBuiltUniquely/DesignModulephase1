@@ -1,0 +1,6 @@
+{
+  "devDependencies": {
+    "@react-email/components": "^1.0.12",
+    "react-email": "^6.1.5"
+  }
+}

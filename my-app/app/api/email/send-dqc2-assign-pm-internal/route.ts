@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import { renderDqc2AssignPmInternalEmail } from '@/lib/email/render-dqc2-assign-pm-internal';
+import { render } from '@react-email/components';
+import DQC2AssignPmInternalEmail from '@/app/newEmail/templates/Internal/DQC2AssignPmInternal';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
@@ -12,8 +14,6 @@ export async function POST(request: Request) {
     const projectName = body.projectName as string | undefined;
     const projectId = body.projectId as string | undefined;
     const designerName = body.designerName as string | undefined;
-    const clientEmail = body.clientEmail as string | undefined;
-    const clientPhone = body.clientPhone as string | undefined;
     const branchLocation = body.branchLocation as string | undefined;
 
     if (!to || !customerName) {
@@ -23,18 +23,20 @@ export async function POST(request: Request) {
       );
     }
 
-    const { subject, html } = renderDqc2AssignPmInternalEmail({
+    const emailComponent = React.createElement(DQC2AssignPmInternalEmail, {
+      projectId,
       customerName,
       projectName,
-      projectId,
       designerName,
       branchLocation,
     });
 
+    const html = await render(emailComponent);
+
     const info = await sendMail({
       to,
       ...(cc ? { cc } : {}),
-      subject: subjectOverride || subject,
+      subject: subjectOverride || `Action Required – Assign Project Manager for ${customerName}`,
       html,
     });
 

@@ -1338,6 +1338,14 @@ export default function ProjectDetailPage() {
             setDqc1Verdict(null);
     };
 
+    const getMeetingDefaults = (meetingTaskName: string) => {
+        const ev = historyEvents.find(e => e.taskName === meetingTaskName && (e.meta as any)?.meetingDate);
+        if (!ev) return { date: '', attendees: 'Customer, Designer' };
+        const meta = ev.meta as any;
+        const dateStr = meta.meetingDate ? `${meta.meetingDate} ${meta.meetingTime ? '| ' + meta.meetingTime : ''}` : '';
+        const attendeesStr = meta.attendees || `${project?.projectName || 'Customer'}, ${authUser?.name || project?.designerName || 'Designer'}`;
+        return { date: dateStr, attendees: attendeesStr };
+    };
 
     const closePopup = () => {
         setPopupContext(null);
@@ -1474,6 +1482,7 @@ export default function ProjectDetailPage() {
             description: options?.description ?? `${taskName} completed.`,
             user: { name: authUser?.name ?? 'Current User', avatar: authUser?.profileImage },
             details: options?.details,
+            meta: options?.meta,
         });
         // persist completion for this lead so refresh keeps it completed
         if (projectId != null) {
@@ -2864,6 +2873,10 @@ export default function ProjectDetailPage() {
                                 const ev = historyEvents.find(e => e.taskName === 'First cut design + quotation discussion meeting request' && (e.meta as any)?.meetingLink);
                                 return (ev?.meta as any)?.meetingLink || '';
                             })()}
+                            initialCompletionPercent={(() => {
+                                const ev = historyEvents.find(e => e.taskName === 'First cut design + quotation discussion meeting request' && (e.meta as any)?.completionPercent !== undefined);
+                                return ev ? (ev.meta as any).completionPercent : 0;
+                            })()}
                             onSubmit={async (meta) => {
                                 if (!projectId) return;
                                 try {
@@ -2942,6 +2955,8 @@ export default function ProjectDetailPage() {
                     )}
                     {popupContext.milestoneIndex === 1 && popupContext.taskName === 'meeting completed' && (
                         <PopupMeetingCompleted
+                            defaultMeetingDate={getMeetingDefaults('First cut design + quotation discussion meeting request').date}
+                            defaultAttendees={getMeetingDefaults('First cut design + quotation discussion meeting request').attendees}
                             momMinutes={momMinutes}
                             setMomMinutes={setMomMinutes}
                             momReferenceFiles={momReferenceFiles}
@@ -2955,7 +2970,7 @@ export default function ProjectDetailPage() {
                                 const ev = historyEvents.find(e => e.taskName === 'First cut design + quotation discussion meeting request' && (e.meta as any)?.completionPercent !== undefined);
                                 return ev ? (ev.meta as any).completionPercent : undefined;
                             })()}
-                            onShareMom={async () => {
+                            onShareMom={async (extra) => {
                                 if (!projectId) return;
                                 try {
                                     if (sessionId) {
@@ -2977,6 +2992,15 @@ export default function ProjectDetailPage() {
                                             minutes: momMinutes,
                                             referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
                                         },
+                                        meta: {
+                                            attendees: extra?.attendees,
+                                            meetingDate: extra?.meetingDate,
+                                            details: {
+                                                kind: 'mom',
+                                                minutes: momMinutes,
+                                                referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                            }
+                                        }
                                     });
                                     setMomMinutes('');
                                     setMomReferenceFiles([]);
@@ -3155,11 +3179,15 @@ export default function ProjectDetailPage() {
                             })()}
                             initialMode={(() => {
                                 const ev = historyEvents.find(e => e.taskName === 'Material selection meeting + quotation discussion' && (e.meta as any)?.meetingMode);
-                                return (ev?.meta as any)?.meetingMode || 'online';
+                                return (ev?.meta as any)?.meetingMode || 'offline';
                             })()}
                             initialLink={(() => {
                                 const ev = historyEvents.find(e => e.taskName === 'Material selection meeting + quotation discussion' && (e.meta as any)?.meetingLink);
                                 return (ev?.meta as any)?.meetingLink || '';
+                            })()}
+                            initialCompletionPercent={(() => {
+                                const ev = historyEvents.find(e => e.taskName === 'Material selection meeting + quotation discussion' && (e.meta as any)?.completionPercent !== undefined);
+                                return ev ? (ev.meta as any).completionPercent : 0;
                             })()}
                             onSubmit={async (meta) => {
                                 if (!projectId) return;
@@ -3233,6 +3261,8 @@ export default function ProjectDetailPage() {
                     )}
                     {popupContext.milestoneIndex === 4 && popupContext.taskName === 'Material selection meeting completed' && (
                         <PopupMeetingCompleted
+                            defaultMeetingDate={getMeetingDefaults('Material selection meeting + quotation discussion').date}
+                            defaultAttendees={getMeetingDefaults('Material selection meeting + quotation discussion').attendees}
                             momMinutes={momMinutes}
                             setMomMinutes={setMomMinutes}
                             momReferenceFiles={momReferenceFiles}
@@ -3246,7 +3276,7 @@ export default function ProjectDetailPage() {
                                 const ev = historyEvents.find(e => e.taskName === 'Material selection meeting + quotation discussion' && (e.meta as any)?.completionPercent !== undefined);
                                 return ev ? (ev.meta as any).completionPercent : undefined;
                             })()}
-                            onShareMom={async () => {
+                            onShareMom={async (extra) => {
                                 if (!projectId) return;
                                 try {
                                     let uploadedAttachments: { filename: string; path: string }[] = [];
@@ -3270,6 +3300,13 @@ export default function ProjectDetailPage() {
                                         description: 'Material selection meeting completed. Minutes of meeting shared.',
                                         meta: {
                                             attachments: uploadedAttachments,
+                                            attendees: extra?.attendees,
+                                            meetingDate: extra?.meetingDate,
+                                            details: {
+                                                kind: 'mom',
+                                                minutes: momMinutes,
+                                                referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                            }
                                         },
                                         details: {
                                             kind: 'mom',
@@ -3456,6 +3493,10 @@ export default function ProjectDetailPage() {
                                 const ev = historyEvents.find(e => e.taskName === 'Design sign off' && (e.meta as any)?.meetingLink);
                                 return (ev?.meta as any)?.meetingLink || '';
                             })()}
+                            initialCompletionPercent={(() => {
+                                const ev = historyEvents.find(e => e.taskName === 'Design sign off' && (e.meta as any)?.completionPercent !== undefined);
+                                return ev ? (ev.meta as any).completionPercent : 0;
+                            })()}
                             onSubmit={async (meta) => {
                                 if (!projectId) return;
                                 try {
@@ -3531,25 +3572,8 @@ export default function ProjectDetailPage() {
                                             }
                                         }
                                     }
-                                    // Trigger design sign-off email invite (same as "Send Invite" button)
-                                    await fetch(`${API}/api/leads/${projectId}/schedule-meeting-invite`, {
-                                        method: 'POST',
-                                        headers: {
-                                            'Content-Type': 'application/json',
-                                            Authorization: `Bearer ${sessionId}`,
-                                        },
-                                        body: JSON.stringify({
-                                            meetingType: 'design_signoff',
-                                            meetingDate: meta?.meetingDate,
-                                            meetingTime: meta?.meetingTime,
-                                            meetingMode: meta?.meetingMode,
-                                            meetingLink: meta?.meetingLink,
-                                            ecLocation: meta?.ecLocation || project?.experienceCenter || (project as any)?.experience_center,
-                                            attachments: uploadedAttachments,
-                                        }),
-                                    });
                                 } catch (err) {
-                                    console.error('Design sign-off invite failed (non-fatal)', err);
+                                    console.error('Design upload failed (non-fatal)', err);
                                 }
                                 recordTaskComplete(
                                     5,
@@ -3579,6 +3603,8 @@ export default function ProjectDetailPage() {
                     )}
                     {popupContext.milestoneIndex === 5 && popupContext.taskName === 'meeting completed' && (
                         <PopupMeetingCompleted
+                            defaultMeetingDate={getMeetingDefaults('Design sign off').date}
+                            defaultAttendees={getMeetingDefaults('Design sign off').attendees}
                             momMinutes={momMinutes}
                             setMomMinutes={setMomMinutes}
                             momReferenceFiles={momReferenceFiles}
@@ -3593,7 +3619,7 @@ export default function ProjectDetailPage() {
                                 const ev = historyEvents.find(e => e.taskName === 'Design sign off' && (e.meta as any)?.completionPercent !== undefined);
                                 return ev ? (ev.meta as any).completionPercent : undefined;
                             })()}
-                            onShareMom={async () => {
+                            onShareMom={async (extra) => {
                                 if (!projectId) return;
                                 try {
                                     if (sessionId) {
@@ -3612,6 +3638,15 @@ export default function ProjectDetailPage() {
                                             kind: 'mom',
                                             minutes: momMinutes,
                                             referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                        },
+                                        meta: {
+                                            attendees: extra?.attendees,
+                                            meetingDate: extra?.meetingDate,
+                                            details: {
+                                                kind: 'mom',
+                                                minutes: momMinutes,
+                                                referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                            }
                                         },
                                     });
                                     setMomMinutes('');
@@ -3643,6 +3678,8 @@ export default function ProjectDetailPage() {
                     )}
                     {popupContext.milestoneIndex === 6 && popupContext.taskName === 'Cx approval for production' && (
                         <PopupMeetingCompleted
+                            defaultMeetingDate={getMeetingDefaults('Cx approval for production').date}
+                            defaultAttendees={getMeetingDefaults('Cx approval for production').attendees}
                             momMinutes={momMinutes}
                             setMomMinutes={setMomMinutes}
                             momReferenceFiles={momReferenceFiles}
@@ -3656,7 +3693,7 @@ export default function ProjectDetailPage() {
                                 const ev = historyEvents.find(e => e.taskName === 'Cx approval for production' && (e.meta as any)?.completionPercent !== undefined);
                                 return ev ? (ev.meta as any).completionPercent : undefined;
                             })()}
-                            onShareMom={async () => {
+                            onShareMom={async (extra) => {
                                 if (!projectId) return;
                                 try {
                                     if (sessionId) {
@@ -3677,6 +3714,15 @@ export default function ProjectDetailPage() {
                                             kind: 'mom',
                                             minutes: momMinutes,
                                             referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                        },
+                                        meta: {
+                                            attendees: extra?.attendees,
+                                            meetingDate: extra?.meetingDate,
+                                            details: {
+                                                kind: 'mom',
+                                                minutes: momMinutes,
+                                                referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                            }
                                         },
                                     });
                                     setMomMinutes('');

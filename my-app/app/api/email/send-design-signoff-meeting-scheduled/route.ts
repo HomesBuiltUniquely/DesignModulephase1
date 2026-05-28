@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import { renderDesignSignoffMeetingScheduledEmail } from '@/lib/email/render-design-signoff-meeting-scheduled';
+import { render } from '@react-email/components';
+import DesignSignoffMeetingScheduledEmail from '@/app/newEmail/templates/External/DesignSignoffMeetingScheduled';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
@@ -25,7 +27,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const { subject, html } = renderDesignSignoffMeetingScheduledEmail({
+    const emailComponent = React.createElement(DesignSignoffMeetingScheduledEmail, {
       customerName,
       projectId,
       meetingDate,
@@ -33,32 +35,18 @@ export async function POST(request: Request) {
       designerName,
       meetingMode,
       meetingLink,
-      ecLocation,
+      branchName: ecLocation,
+      attachments,
     });
 
-    let info;
-    try {
-      info = await sendMail({
-        to,
-        ...(cc ? { cc } : {}),
-        subject: subjectOverride || subject,
-        html,
-        ...(attachments && attachments.length ? { attachments } : {}),
-      });
-    } catch (sendErr) {
-      // eslint-disable-next-line no-console
-      console.warn('Failed to send with attachments, retrying without attachments...', sendErr);
-      if (attachments && attachments.length) {
-        info = await sendMail({
-          to,
-          ...(cc ? { cc } : {}),
-          subject: subjectOverride || subject,
-          html,
-        });
-      } else {
-        throw sendErr;
-      }
-    }
+    const html = await render(emailComponent);
+
+    const info = await sendMail({
+      to,
+      ...(cc ? { cc } : {}),
+      subject: subjectOverride || 'Design Sign-Off Meeting Scheduled',
+      html,
+    });
 
     return NextResponse.json({ success: true, messageId: info.messageId });
   } catch (error) {

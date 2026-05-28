@@ -382,6 +382,7 @@ export default function Dashboard() {
     const [getQuoteLeadId, setGetQuoteLeadId] = useState<number | null>(null);
     /** Lead shown in View popup (Pre 10%, 10–20%, 20–60%) */
     const [viewLead, setViewLead] = useState<LeadshipTypes | null>(null);
+    const [showFinancePopup, setShowFinancePopup] = useState(false);
 
     const phaseFilteredProjects =
         isSelected === "All Projects (10-60%)"
@@ -522,6 +523,10 @@ export default function Dashboard() {
         const leadRow =
             typeof rowOrId === "number" ? projects.find((p) => p.id === rowOrId) ?? null : rowOrId;
         if (leadRow && getPhaseBucket(leadRow) === "Pre 10%") {
+            return;
+        }
+        if (leadRow && (leadRow as any).financeApprovedRaw === "false") {
+            setShowFinancePopup(true);
             return;
         }
         if (isDqcUser && dqcStage) {
@@ -1009,7 +1014,14 @@ export default function Dashboard() {
                                                     </td>
                                                 )}
                                                 <td className="py-3 px-5">
-                                                    <div className="font-medium text-gray-900">HUB-{row.pid || row.id}</div>
+                                                    <div className="flex items-center gap-2">
+                                                        <div className="font-medium text-gray-900">HUB-{row.pid || row.id}</div>
+                                                        {row.financeApprovedRaw === "false" && (
+                                                            <span className="inline-flex items-center rounded-md bg-red-50 px-2 py-1 text-[10px] font-medium text-red-700 ring-1 ring-inset ring-red-600/10 whitespace-nowrap">
+                                                                Not Approved
+                                                            </span>
+                                                        )}
+                                                    </div>
                                                     <div className="text-sm text-gray-600 truncate max-w-[200px]" title={row.projectName}>
                                                         {row.projectName || "—"}
                                                     </div>
@@ -1173,7 +1185,14 @@ export default function Dashboard() {
                                                     </td>
                                                 )}
                                                 <td className="px-5 py-3">
-                                                    <div className="font-medium text-gray-900">HUB-{row.pid || row.id}</div>
+                                                    <div className="flex items-center gap-2">
+                                                        <div className="font-medium text-gray-900">HUB-{row.pid || row.id}</div>
+                                                        {row.financeApprovedRaw === "false" && (
+                                                            <span className="inline-flex items-center rounded-md bg-red-50 px-2 py-1 text-[10px] font-medium text-red-700 ring-1 ring-inset ring-red-600/10 whitespace-nowrap">
+                                                                Not Approved
+                                                            </span>
+                                                        )}
+                                                    </div>
                                                     <div className="text-sm text-gray-600 truncate max-w-[180px]" title={row.projectName}>
                                                         {row.projectName || "—"}
                                                     </div>
@@ -1733,6 +1752,24 @@ export default function Dashboard() {
                             className="hidden"
                             onChange={onFileSelected}
                         />
+                        {showFinancePopup && (
+                            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                                <div className="bg-white rounded-xl shadow-xl max-w-sm w-full p-6 relative">
+                                    <h3 className="text-xl font-bold text-gray-900 mb-2">Finance Approval Pending</h3>
+                                    <p className="text-gray-600 mb-6">
+                                        The finance team has not approved the payment for this lead yet. You cannot open it until it is approved.
+                                    </p>
+                                    <div className="flex justify-end">
+                                        <button
+                                            onClick={() => setShowFinancePopup(false)}
+                                            className="px-4 py-2 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-colors"
+                                        >
+                                            Okay
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
                     </div>
                 </div>
             </main>

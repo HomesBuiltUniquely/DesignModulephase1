@@ -48,6 +48,7 @@ export default function PopupMailLoopChain({
   const [teamEmailsLoaded, setTeamEmailsLoaded] = useState(true);
   const [copyStatus, setCopyStatus] = useState<string>('');
   const [isSendingChain, setIsSendingChain] = useState(false);
+  const [showToast, setShowToast] = useState(false);
 
   useEffect(() => {
     if (!sessionId) {
@@ -149,10 +150,14 @@ export default function PopupMailLoopChain({
         throw new Error(txt || `HTTP ${resp.status}`);
       }
       setCopyStatus('Mail chain sent via communication@hubinterior.com');
+      setShowToast(true);
       if (openGmailInbox) {
         window.open(gmailInboxUrl, '_blank', 'noopener,noreferrer');
       }
-      setTimeout(() => setCopyStatus(''), 2500);
+      setTimeout(() => {
+        setCopyStatus('');
+        setShowToast(false);
+      }, 5000);
     } catch {
       setCopyStatus('Mail send failed. Please retry.');
       setTimeout(() => setCopyStatus(''), 3000);
@@ -288,6 +293,12 @@ export default function PopupMailLoopChain({
         </div>
         {!!copyStatus && <p className="text-xs text-gray-600 mt-2">{copyStatus}</p>}
       </div>
+      
+      {showToast && (
+        <div className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-gray-800 text-white text-base font-medium px-8 py-4 rounded-lg shadow-2xl z-[9999] text-center">
+          Loop chain is created for {projectName || 'customer'} design journey
+        </div>
+      )}
     </div>
   );
 }

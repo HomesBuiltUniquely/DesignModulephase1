@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import { renderPmAssignmentNotificationEmail } from '@/lib/email/render-pm-assignment-notification';
+import { render } from '@react-email/components';
+import PmAssignmentNotificationEmail from '@/app/newEmail/templates/Internal/PmAssignmentNotification';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
@@ -22,19 +24,21 @@ export async function POST(request: Request) {
       );
     }
 
-    const { subject, html } = renderPmAssignmentNotificationEmail({
+    const emailComponent = React.createElement(PmAssignmentNotificationEmail, {
+      projectId,
       pmName,
       customerName,
       projectName,
-      projectId,
       designerName,
       branchLocation,
     });
 
+    const html = await render(emailComponent);
+
     const info = await sendMail({
       to,
       ...(cc ? { cc } : {}),
-      subject: subjectOverride || subject,
+      subject: subjectOverride || `You've Been Assigned – ${customerName} Project`,
       html,
     });
 

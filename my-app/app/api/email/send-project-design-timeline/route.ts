@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import { renderProjectDesignTimelineEmail } from '@/lib/email/render-project-design-timeline';
+import { render } from '@react-email/components';
+import ProjectDesignTimelineEmail from '@/app/newEmail/templates/External/ProjectDesignTimeline';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
@@ -10,6 +12,7 @@ export async function POST(request: Request) {
     const subject = body.subject as string | undefined;
     const customerName = body.customerName as string | undefined;
     const designerName = body.designerName as string | undefined;
+    const projectId = body.projectId as string | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -18,7 +21,13 @@ export async function POST(request: Request) {
       );
     }
 
-    const html = renderProjectDesignTimelineEmail({ customerName, designerName });
+    const emailComponent = React.createElement(ProjectDesignTimelineEmail, {
+      customerName,
+      designerName,
+      projectId,
+    });
+
+    const html = await render(emailComponent);
 
     const info = await sendMail({
       to,

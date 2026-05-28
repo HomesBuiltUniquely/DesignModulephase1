@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { sendMail } from '@/lib/email/mailer';
-import { renderD2MaskingRequestInternalEmail } from '@/lib/email/render-d2-masking-request-internal';
+import { render } from '@react-email/components';
+import D2MaskingRequestInternalEmail from '@/app/newEmail/templates/Internal/D2MaskingRequestInternal';
+import React from 'react';
 
 export async function POST(request: Request) {
   try {
@@ -14,6 +16,9 @@ export async function POST(request: Request) {
     const maskingTime = body.maskingTime as string | null | undefined;
     const mmtName = body.mmtName as string | undefined;
     const pmName = body.pmName as string | undefined;
+    const projectId = body.projectId as string | undefined;
+
+    const subjectOverride = body.subject as string | undefined;
 
     if (!to || !customerName || !designerName || !ecName) {
       return NextResponse.json(
@@ -22,19 +27,20 @@ export async function POST(request: Request) {
       );
     }
 
-    const { subject, html } = renderD2MaskingRequestInternalEmail({
+    const emailComponent = React.createElement(D2MaskingRequestInternalEmail, {
+      projectId,
       customerName,
       designerName,
       ecName,
       mmtName,
       pmName,
-      maskingDate,
-      maskingTime,
     });
+
+    const html = await render(emailComponent);
 
     const info = await sendMail({
       to,
-      subject,
+      subject: subjectOverride || `D2 Site Masking Request – ${customerName} – ${ecName}`,
       html,
       ...(cc && cc.length ? { cc } : {}),
     } as any);
