@@ -19,6 +19,45 @@ function getTodayDateValue() {
   return new Date().toISOString().split("T")[0];
 }
 
+function formatInr(amount: number): string {
+  return new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 0,
+  }).format(amount);
+}
+
+function formatPercent(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  return `${value.toFixed(2).replace(/\.?0+$/, "")}%`;
+}
+
+function parseAmountInput(raw: string): number | null {
+  const cleaned = raw.replace(/,/g, "").trim();
+  if (!cleaned) return null;
+  const n = Number(cleaned);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+function paymentReceivedFromAmount(
+  totalPaidCumulative: number,
+  summary: QuotePaymentSummary | null,
+): PaymentReceived | "" {
+  if (!summary || totalPaidCumulative <= 0) return "";
+  return totalPaidCumulative >= summary.tenPercentAmount
+    ? PaymentReceived.FULL_10
+    : PaymentReceived.TOKEN;
+}
+
+type QuotePaymentSummary = {
+  quoteId: number | null;
+  quoteNum: string | null;
+  totalPayableAmount: number;
+  tenPercentAmount: number;
+  /** Sum of all payments recorded on this lead toward 10%. */
+  totalPaidToward10PercentPreviously: number;
+};
+
 function buildInitialFormState(): SalesClosureFormType {
   return {
     sales_lead_name: "",
@@ -45,6 +84,7 @@ function buildInitialFormState(): SalesClosureFormType {
     hub_coins: 0,
     complimentary_offer: 0,
     payment_received: "",
+    amount_paid: 0,
     mode_of_payment: "",
     payment_screenshot: "",
     status_of_project: PROJECT_STATUS,
@@ -74,6 +114,10 @@ export default function SalesClosureForm() {
   const [leadIdInput, setLeadIdInput] = useState("");
   const [fetchingLead, setFetchingLead] = useState(false);
   const [fetchLeadError, setFetchLeadError] = useState<string | null>(null);
+  const [quotePaymentSummary, setQuotePaymentSummary] = useState<QuotePaymentSummary | null>(null);
+  const [quotePaymentLoading, setQuotePaymentLoading] = useState(false);
+  const [quotePaymentError, setQuotePaymentError] = useState<string | null>(null);
+  const [amountPaidInput, setAmountPaidInput] = useState("0");
   // Track sales lead & SPOC emails for rejection email CC (stored separately in payload)
   const [salesLeadEmail, setSalesLeadEmail] = useState("");
   const [salesSpocEmail, setSalesSpocEmail] = useState("");
@@ -149,6 +193,9 @@ export default function SalesClosureForm() {
     const experience_center     = p("experience_center");
     const sales_lead_name       = p("sales_lead_name");
     const designer_name         = p("designer_name");
+    const lead_id               = p("lead_id") || p("leadId");
+
+    if (lead_id) setLeadIdInput(lead_id);
 
     // Only update state if the CRM actually sent data
     if (customer_name || co_no || email || sales_email || property_name) {
@@ -169,6 +216,119 @@ export default function SalesClosureForm() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const leadIdForQuote =
+    fetchedLeadId ??
+    (() => {
+      const raw =
+        searchParams.get("lead_id")?.trim() ||
+        searchParams.get("leadId")?.trim() ||
+        "";
+      const n = raw ? Number(raw) : NaN;
+      return Number.isFinite(n) && n >= 1 ? n : null;
+    })();
+
+  useEffect(() => {
+    if (!leadIdForQuote) {
+      setQuotePaymentSummary(null);
+      setQuotePaymentError(null);
+      setQuotePaymentLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setQuotePaymentLoading(true);
+    setQuotePaymentError(null);
+
+    fetch(
+      `${getApiBase()}/api/sales-closure/lead/${encodeURIComponent(String(leadIdForQuote))}/quote-payment-summary`,
+    )
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(
+            (data && typeof data === "object" && "message" in data && typeof data.message === "string"
+              ? data.message
+              : null) || "Could not load quotation amount",
+          );
+        }
+        return data as {
+          totalPayableAmount?: number;
+          tenPercentAmount?: number;
+          quoteId?: number | null;
+          quoteNum?: string | null;
+        };
+      })
+      .then((data) => {
+        if (cancelled) return;
+        const total = Number(data.totalPayableAmount);
+        const ten = Number(data.tenPercentAmount);
+        if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(ten)) {
+          throw new Error("Invalid quotation total from server");
+        }
+        const prevPaid = Number(data.totalPaidToward10Percent);
+        setQuotePaymentSummary({
+          totalPayableAmount: total,
+          tenPercentAmount: ten,
+          quoteId:
+            data.quoteId != null && Number.isFinite(Number(data.quoteId))
+              ? Number(data.quoteId)
+              : null,
+          quoteNum: data.quoteNum?.trim() || null,
+          totalPaidToward10PercentPreviously:
+            Number.isFinite(prevPaid) && prevPaid >= 0 ? prevPaid : 0,
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setQuotePaymentSummary(null);
+        setQuotePaymentError(
+          err instanceof Error ? err.message : "Could not load quotation amount",
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setQuotePaymentLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [leadIdForQuote]);
+
+  const thisPayment = form.amount_paid;
+  const previouslyPaid = quotePaymentSummary?.totalPaidToward10PercentPreviously ?? 0;
+  const totalPaidCumulative = previouslyPaid + thisPayment;
+  const paymentStats = quotePaymentSummary
+    ? {
+        percentOfTotal:
+          totalPaidCumulative > 0
+            ? (totalPaidCumulative / quotePaymentSummary.totalPayableAmount) * 100
+            : 0,
+        percentOfTenPercentTarget:
+          totalPaidCumulative > 0
+            ? (totalPaidCumulative / quotePaymentSummary.tenPercentAmount) * 100
+            : 0,
+        remainingForTenPercent: Math.max(
+          0,
+          quotePaymentSummary.tenPercentAmount - totalPaidCumulative,
+        ),
+        tenPercentMet: totalPaidCumulative >= quotePaymentSummary.tenPercentAmount,
+      }
+    : null;
+
+  useEffect(() => {
+    if (!quotePaymentSummary) return;
+    const auto = paymentReceivedFromAmount(totalPaidCumulative, quotePaymentSummary);
+    if (auto === form.payment_received) return;
+    setForm((prev) => ({ ...prev, payment_received: auto }));
+    setErrors((prev) => {
+      if (!prev.payment_received) return prev;
+      const next = { ...prev };
+      delete next.payment_received;
+      return next;
+    });
+  }, [quotePaymentSummary, totalPaidCumulative, form.payment_received]);
+
   const [percentInputs, setPercentInputs] = useState<
     Record<PercentField, string>
   >({
@@ -269,6 +429,7 @@ export default function SalesClosureForm() {
         complimentary_offer: payload.complimentary_offer || 0,
         // Payment fields left blank so salesperson re-enters them
         payment_received: payload.payment_received || "",
+        amount_paid: 0,
         mode_of_payment: payload.mode_of_payment || "",
         payment_screenshot: "",
         status_of_project: payload.status_of_project || PROJECT_STATUS,
@@ -283,6 +444,7 @@ export default function SalesClosureForm() {
         dis_on_service: String(payload.dis_on_service || 0),
         dis_on_accessories: String(payload.dis_on_accessories || 0),
       });
+      setAmountPaidInput("0");
       setSalesLeadEmail(String(payload.sales_lead_email || ""));
       setSalesSpocEmail(String(payload.sales_spoc_email || ""));
 
@@ -302,11 +464,45 @@ export default function SalesClosureForm() {
       return;
     }
 
+    if (
+      form.payment_received &&
+      (!Number.isFinite(thisPayment) || thisPayment <= 0)
+    ) {
+      alert("Please enter the amount for this payment.");
+      return;
+    }
+
+    const targetLeadId = fetchedLeadId ?? leadIdForQuote;
+    const usePut = Boolean(targetLeadId);
+
+    const cumulativePaid = previouslyPaid + thisPayment;
+
     // Build payload; always include sales lead & SPOC emails for rejection CC
     const finalPayload = {
       ...form,
       sales_lead_email: salesLeadEmail || undefined,
       sales_spoc_email: salesSpocEmail || undefined,
+      ...(quotePaymentSummary && thisPayment > 0
+        ? {
+            quotation_total: quotePaymentSummary.totalPayableAmount,
+            ten_percent_target: quotePaymentSummary.tenPercentAmount,
+            amount_paid_this_time: thisPayment,
+            total_paid_toward_10_percent: cumulativePaid,
+            amount_paid: cumulativePaid,
+            payment_percent_of_quotation:
+              (cumulativePaid / quotePaymentSummary.totalPayableAmount) * 100,
+            remaining_for_10_percent: Math.max(
+              0,
+              quotePaymentSummary.tenPercentAmount - cumulativePaid,
+            ),
+            ten_percent_payment_met:
+              cumulativePaid >= quotePaymentSummary.tenPercentAmount,
+          }
+        : {}),
+      ...(!usePut ? { sales_closure_submitted_at: new Date().toISOString() } : {}),
+      ...(usePut && previouslyPaid > 0
+        ? { sales_closure_payment_added_at: new Date().toISOString() }
+        : {}),
     };
 
     if (!isEditMode) {
@@ -320,10 +516,10 @@ export default function SalesClosureForm() {
     console.log(isEditMode ? "Updating payload:" : "Sending payload:", finalPayload);
 
     try {
-      const url = isEditMode
-        ? `${getApiBase()}/api/sales-closure/${fetchedLeadId}`
+      const url = usePut
+        ? `${getApiBase()}/api/sales-closure/${targetLeadId}`
         : `${getApiBase()}/api/sales-closure`;
-      const method = isEditMode ? "PUT" : "POST";
+      const method = usePut ? "PUT" : "POST";
 
       const res = await fetch(url, {
         method,
@@ -375,6 +571,7 @@ export default function SalesClosureForm() {
       dis_on_service: String(resetForm.dis_on_service),
       dis_on_accessories: String(resetForm.dis_on_accessories),
     });
+    setAmountPaidInput(String(resetForm.amount_paid));
     setErrors({});
   }
 
@@ -996,14 +1193,147 @@ export default function SalesClosureForm() {
                 <h2 className="text-lg text-green-950 font-semibold mb-3">
                   Payment Details
                 </h2>
+                <div className="rounded-xl border border-green-900/20 bg-white px-4 py-3 space-y-1">
+                  <p className="text-sm font-medium text-green-950">
+                    10% payment amount (from latest quotation)
+                  </p>
+                  {quotePaymentLoading && (
+                    <p className="text-sm text-gray-500">Loading quotation total…</p>
+                  )}
+                  {!quotePaymentLoading && quotePaymentSummary && paymentStats && (
+                    <>
+                      <p className="text-2xl font-semibold text-green-950">
+                        {formatInr(quotePaymentSummary.tenPercentAmount)}
+                      </p>
+                      <p className="text-xs text-gray-600">
+                        Latest quotation total:{" "}
+                        {formatInr(quotePaymentSummary.totalPayableAmount)}
+                        {quotePaymentSummary.quoteNum
+                          ? ` · Quote ${quotePaymentSummary.quoteNum}`
+                          : quotePaymentSummary.quoteId
+                            ? ` · Quote #${quotePaymentSummary.quoteId}`
+                            : ""}
+                      </p>
+                      <div className="mt-3 pt-3 border-t border-green-900/15 space-y-1.5">
+                        {previouslyPaid > 0 && (
+                          <p className="text-sm text-green-950">
+                            <span className="font-medium">Already paid (recorded):</span>{" "}
+                            {formatInr(previouslyPaid)}
+                          </p>
+                        )}
+                        {thisPayment > 0 && (
+                          <p className="text-sm text-green-950">
+                            <span className="font-medium">This payment:</span>{" "}
+                            {formatInr(thisPayment)}
+                          </p>
+                        )}
+                        {(previouslyPaid > 0 || thisPayment > 0) && (
+                          <p className="text-sm text-green-950">
+                            <span className="font-medium">Total toward 10%:</span>{" "}
+                            {formatInr(totalPaidCumulative)}
+                          </p>
+                        )}
+                        {paymentStats.tenPercentMet ? (
+                          <p className="text-sm font-semibold text-teal-800">
+                            10% complete — no balance remaining
+                          </p>
+                        ) : (
+                          <p className="text-base font-semibold text-amber-800">
+                            Remaining of 10%:{" "}
+                            {formatInr(paymentStats.remainingForTenPercent)}
+                          </p>
+                        )}
+                        {totalPaidCumulative > 0 && (
+                          <p className="text-xs text-gray-600">
+                            {formatPercent(paymentStats.percentOfTenPercentTarget)} of 10%
+                            collected · {formatPercent(paymentStats.percentOfTotal)} of full
+                            quotation
+                          </p>
+                        )}
+                        {previouslyPaid === 0 && thisPayment === 0 && (
+                          <p className="text-xs text-gray-500">
+                            Enter this payment below. Remaining starts at the full 10% amount.
+                          </p>
+                        )}
+                      </div>
+                    </>
+                  )}
+                  {!quotePaymentLoading && !quotePaymentSummary && (
+                    <p className="text-sm text-gray-500">
+                      {leadIdForQuote
+                        ? quotePaymentError ||
+                          "No quotation found for this lead yet. Create a project and get a quote first."
+                        : "Enter a Lead ID above (or open this form with ?lead_id=) after a quote exists to see the 10% amount."}
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1 text-green-950">
+                    This payment (₹)
+                  </label>
+                  {previouslyPaid > 0 && (
+                    <p className="text-xs text-gray-600 mb-1.5">
+                      Customer already paid {formatInr(previouslyPaid)} toward 10%. Enter only the
+                      new amount received now.
+                    </p>
+                  )}
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="Enter amount for this payment"
+                    className="w-full border border-gray-300 rounded-lg p-2.5 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
+                    value={amountPaidInput}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      if (raw !== "" && !/^\d*\.?\d*$/.test(raw.replace(/,/g, ""))) {
+                        return;
+                      }
+                      setAmountPaidInput(raw);
+                      const parsed = parseAmountInput(raw);
+                      if (parsed != null) updateFields("amount_paid", parsed);
+                      else if (raw === "") updateFields("amount_paid", 0);
+                    }}
+                    onBlur={() => {
+                      const parsed = parseAmountInput(amountPaidInput);
+                      if (parsed == null || amountPaidInput.trim() === "") {
+                        setAmountPaidInput("0");
+                        updateFields("amount_paid", 0);
+                        return;
+                      }
+                      setAmountPaidInput(String(parsed));
+                      updateFields("amount_paid", parsed);
+                    }}
+                  />
+                  {errors.amount_paid && (
+                    <p className="text-red-500 text-sm mt-1">{errors.amount_paid}</p>
+                  )}
+                  {paymentStats && thisPayment > 0 && (
+                    <div className="mt-3 rounded-lg border border-teal-200 bg-teal-50/80 px-3 py-2.5 text-sm text-green-950 space-y-1">
+                      <p>
+                        After this payment, total toward 10%:{" "}
+                        <span className="font-semibold">{formatInr(totalPaidCumulative)}</span>
+                      </p>
+                      <p>
+                        <span className="font-medium">Still remaining of 10%:</span>{" "}
+                        {formatInr(paymentStats.remainingForTenPercent)}
+                      </p>
+                    </div>
+                  )}
+                  {!quotePaymentSummary && thisPayment > 0 && (
+                    <p className="text-xs text-gray-500 mt-2">
+                      Load a lead with a quotation to see percentage and remaining 10% amount.
+                    </p>
+                  )}
+                </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-2">
                   <div>
                     <label className="block text-sm font-medium mb-1 text-green-950">
                       Payment Received
                     </label>
                     <select
-                      className="w-full border p-2.5 rounded-lg text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
+                      className="w-full border p-2.5 rounded-lg text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950 disabled:bg-gray-100 disabled:cursor-not-allowed"
                       value={form.payment_received}
+                      disabled={!!quotePaymentSummary}
                       onChange={(e) =>
                         updateFields(
                           "payment_received",
@@ -1018,6 +1348,11 @@ export default function SalesClosureForm() {
                         </option>
                       ))}
                     </select>
+                    {quotePaymentSummary && (
+                      <p className="text-xs text-gray-500 mt-1">
+                        Auto-set: TOKEN if below 10% of quotation, FULL_10% when 10% or more is paid.
+                      </p>
+                    )}
                     {errors.payment_received && (
                       <p className="text-red-500 text-sm">
                         {errors.payment_received}

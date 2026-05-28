@@ -2,8 +2,11 @@ import type { Express, Request, Response } from "express";
 import type { Pool } from "mysql2/promise";
 import http from "node:http";
 import https from "node:https";
+import fs from "node:fs";
+import path from "node:path";
 
 type SessionUser = { id: number; role: string };
+type PartnerCredential = { loginId: string; password: string };
 
 function envTrim(name: string): string {
   return (process.env[name] || "").trim();
@@ -50,6 +53,72 @@ function readOriginSessionId(req: Request): string | null {
 
 function readApiKey(req: Request): string | null {
   return asString(req.headers["x-prolance-api-key"]) || asString(envTrim("PROLANCE_API_KEY"));
+}
+
+function normalizeUserKey(input: string | null | undefined): string {
+  return String(input || "")
+    .trim()
+    .toLowerCase();
+}
+
+function readPartnerCredentialsMap(): Record<string, unknown> {
+  const fromJsonEnv = envTrim("PROLANCE_PARTNER_CREDENTIALS_JSON");
+  if (fromJsonEnv) {
+    try {
+      const parsed = JSON.parse(fromJsonEnv) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch (err) {
+      console.error("Invalid PROLANCE_PARTNER_CREDENTIALS_JSON", err);
+    }
+  }
+
+  const filePathRaw = envTrim("PROLANCE_PARTNER_CREDENTIALS_FILE");
+  if (!filePathRaw) return {};
+
+  try {
+    const absPath = path.isAbsolute(filePathRaw)
+      ? filePathRaw
+      : path.resolve(process.cwd(), filePathRaw);
+    if (!fs.existsSync(absPath)) return {};
+    const raw = fs.readFileSync(absPath, "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch (err) {
+    console.error("Failed to read Prolance partner credentials file", err);
+  }
+  return {};
+}
+
+function extractPartnerCredential(value: unknown, defaultLoginId: string): PartnerCredential | null {
+  if (typeof value === "string" && value.trim()) {
+    return { loginId: defaultLoginId, password: value.trim() };
+  }
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const row = value as Record<string, unknown>;
+    const loginId = asString(row.loginId) || asString(row.LoginID) || defaultLoginId;
+    const password = asString(row.password) || asString(row.Password);
+    if (loginId && password) return { loginId, password };
+  }
+  return null;
+}
+
+async function resolvePartnerCredentialForUser(pool: Pool, userId: number): Promise<PartnerCredential | null> {
+  if (!Number.isFinite(userId) || userId < 1) return null;
+  const [rows] = await pool.query("SELECT id, email FROM users WHERE id = ? LIMIT 1", [userId]);
+  const userRow = (rows as { id?: unknown; email?: unknown }[])[0];
+  const email = normalizeUserKey(asString(userRow?.email));
+  const idKey = String(userId);
+  const credsMap = readPartnerCredentialsMap();
+
+  const fromEmail = extractPartnerCredential(credsMap[email], email);
+  if (fromEmail) return fromEmail;
+  const fromId = extractPartnerCredential(credsMap[idKey], email);
+  if (fromId) return fromId;
+  return null;
 }
 
 async function proxiedFetch(params: {
@@ -303,6 +372,216 @@ function maskValue(value: string | null | undefined, visibleStart = 6, visibleEn
   return `${raw.slice(0, visibleStart)}...${raw.slice(-visibleEnd)}`;
 }
 
+function parseFiniteNum(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() && Number.isFinite(Number(v))) return Number(v);
+  return null;
+}
+
+function normalizeQuotePricingRow(data: unknown): Record<string, unknown> | null {
+  if (!data || typeof data !== "object") return null;
+  let v: unknown = data;
+  if (Array.isArray(v)) {
+    const flat = v.flatMap((x) => (Array.isArray(x) ? x : [x]));
+    const objects = flat.filter((x) => x != null && typeof x === "object" && !Array.isArray(x)) as Record<
+      string,
+      unknown
+    >[];
+    const chosen = objects.length >= 2 ? pickPreferredQuoteObjectFromList(flat) : objects[0] ?? null;
+    if (chosen == null) return null;
+    v = chosen;
+  }
+  if (typeof v !== "object" || v === null) return null;
+  const root = v as Record<string, unknown>;
+  const inner = root.data ?? root.Data;
+  if (inner != null && typeof inner === "object") {
+    if (Array.isArray(inner)) {
+      const flat = inner.flatMap((x) => (Array.isArray(x) ? x : [x]));
+      const objects = flat.filter((x) => x != null && typeof x === "object" && !Array.isArray(x)) as Record<
+        string,
+        unknown
+      >[];
+      const row = objects.length >= 2 ? pickPreferredQuoteObjectFromList(flat) : objects[0] ?? null;
+      if (row && typeof row === "object") return row;
+      return root;
+    }
+    return inner as Record<string, unknown>;
+  }
+  return root;
+}
+
+/** Aligns with quote UI total extraction (totalPayableAmount / room sums). */
+function extractTotalPayableAmount(data: unknown): number | null {
+  const row = normalizeQuotePricingRow(data);
+  if (!row) return null;
+  const pick = (...keys: string[]): number | null => {
+    for (const k of keys) {
+      const n = parseFiniteNum(row[k]);
+      if (n != null) return n;
+    }
+    return null;
+  };
+  const pickedPayable = pick("totalPayableAmount", "finalTotalPrice", "finalPrice");
+  const discount = pick("discount", "discountAmount") ?? 0;
+  const options = row.quoteOptionsData;
+  if (Array.isArray(options) && options.length > 0) {
+    let sumRoomTotals = 0;
+    for (const opt of options) {
+      if (!opt || typeof opt !== "object") continue;
+      const o = opt as Record<string, unknown>;
+      const rooms = Array.isArray(o.rooms) ? o.rooms : [];
+      for (const room of rooms) {
+        if (!room || typeof room !== "object") continue;
+        const r = room as Record<string, unknown>;
+        sumRoomTotals += parseFiniteNum(r.totalPrice) ?? parseFiniteNum(r.totalPriceOld) ?? 0;
+      }
+    }
+    if (sumRoomTotals > 0) {
+      const tolerance = Math.max(500, sumRoomTotals * 0.02);
+      if (
+        pickedPayable != null &&
+        pickedPayable >= sumRoomTotals - discount - tolerance &&
+        (Math.abs(pickedPayable - sumRoomTotals) <= tolerance || pickedPayable >= sumRoomTotals - discount)
+      ) {
+        return pickedPayable;
+      }
+      const fees = pick("designAndManagementFees") ?? 0;
+      return sumRoomTotals + fees - discount;
+    }
+  }
+  return (
+    pickedPayable ?? pick("interiorProjectAmount", "projectAmount", "subTotal", "totalPrice")
+  );
+}
+
+type ProlanceServerSession = { token: string; originSessionId: string; apiKey: string };
+
+async function createProlanceServerSession(): Promise<ProlanceServerSession | { error: string; status: number }> {
+  const apiKey = envTrim("PROLANCE_API_KEY");
+  if (!apiKey) return { error: "Origin API key is not configured", status: 500 };
+
+  const username = asString(envTrim("PROLANCE_USERNAME"));
+  const password = asString(envTrim("PROLANCE_PASSWORD"));
+  if (!username || !password) return { error: "Prolance API credentials are not configured", status: 500 };
+
+  const tokenResp = await proxiedFetch({
+    method: "POST",
+    path: "/token",
+    asForm: true,
+    body: { grant_type: "password", username, password },
+  });
+  if (tokenResp.status < 200 || tokenResp.status >= 300 || !tokenResp.data || typeof tokenResp.data !== "object") {
+    return { error: "Failed to generate Prolance token", status: tokenResp.status || 500 };
+  }
+  const tokenObj = tokenResp.data as Record<string, unknown>;
+  const token =
+    asString(tokenObj.access_token) || asString(tokenObj.accessToken) || asString(tokenObj.token);
+  if (!token) return { error: "Failed to generate Prolance token", status: 500 };
+
+  const loginID = asString(envTrim("PROLANCE_PARTNER_LOGIN_ID"));
+  const partnerPassword = asString(envTrim("PROLANCE_PARTNER_PASSWORD"));
+  if (!loginID || !partnerPassword) {
+    return { error: "Partner login credentials are not configured", status: 500 };
+  }
+
+  const partnerResp = await proxiedFetch({
+    method: "POST",
+    path: "/Origin/Partners/LoginAPI",
+    token,
+    includeOriginApiHeaders: true,
+    apiKey,
+    body: { LoginID: loginID, Password: partnerPassword, LoginFrom: 1 },
+  });
+  if (partnerResp.status < 200 || partnerResp.status >= 300 || !partnerResp.data || typeof partnerResp.data !== "object") {
+    return { error: "Prolance partner login failed", status: partnerResp.status || 500 };
+  }
+  const partnerRoot = partnerResp.data as Record<string, unknown>;
+  const partnerData =
+    Array.isArray(partnerRoot.data) && partnerRoot.data[0] && typeof partnerRoot.data[0] === "object"
+      ? (partnerRoot.data[0] as Record<string, unknown>)
+      : {};
+  const originSessionId =
+    asString(partnerData.sessionID) ||
+    asString(partnerData.sessionId) ||
+    asString(partnerData.originSessionID) ||
+    asString(partnerData.originSessionId);
+  if (!originSessionId) return { error: "Failed to get OriginSessionID from Prolance partner login", status: 500 };
+
+  return { token, originSessionId, apiKey };
+}
+
+async function prolanceFetchWithRetry(params: {
+  method: "GET" | "POST" | "PUT";
+  path: string;
+  session: ProlanceServerSession;
+  body?: unknown;
+}): Promise<{ status: number; data: unknown }> {
+  let upstream = await proxiedFetch({
+    method: params.method,
+    path: params.path,
+    token: params.session.token,
+    originSessionId: params.session.originSessionId,
+    includeOriginApiHeaders: true,
+    apiKey: params.session.apiKey,
+    body: params.body,
+  });
+  if (upstream.status === 401) {
+    upstream = await proxiedFetch({
+      method: params.method,
+      path: params.path,
+      token: null,
+      originSessionId: params.session.originSessionId,
+      includeOriginApiHeaders: true,
+      apiKey: params.session.apiKey,
+      body: params.body,
+    });
+  }
+  return upstream;
+}
+
+async function fetchLatestQuoteBodyForProject(
+  projectId: number,
+  session: ProlanceServerSession,
+): Promise<unknown | null> {
+  let quotesResp = await prolanceFetchWithRetry({
+    method: "GET",
+    path: `/Origin/Quotes/${pathSegment(String(projectId))}`,
+    session,
+  });
+  if (quotesResp.status < 200 || quotesResp.status >= 300 || !quotesResp.data) return null;
+
+  let envelope = preferLatestProlanceQuotesEnvelope(quotesResp.data);
+  if (hasDetailedQuoteData(envelope)) return envelope;
+
+  const quoteId = extractQuoteIdFromResponse(envelope);
+  if (!quoteId) return envelope;
+
+  const fullDetails = await prolanceFetchWithRetry({
+    method: "GET",
+    path: `/Origin/Quotes/FullDetails/${pathSegment(quoteId)}`,
+    session,
+  });
+  if (fullDetails.status >= 200 && fullDetails.status < 300 && fullDetails.data) {
+    return fullDetails.data;
+  }
+  return envelope;
+}
+
+async function fetchQuoteBodyByQuoteId(
+  quoteId: number,
+  session: ProlanceServerSession,
+): Promise<unknown | null> {
+  const fullDetails = await prolanceFetchWithRetry({
+    method: "GET",
+    path: `/Origin/Quotes/FullDetails/${pathSegment(String(quoteId))}`,
+    session,
+  });
+  if (fullDetails.status >= 200 && fullDetails.status < 300 && fullDetails.data) {
+    return fullDetails.data;
+  }
+  return null;
+}
+
 export function registerProlanceRoutes(
   app: Express,
   getUserFromSession: (req: Request) => Promise<SessionUser | null>,
@@ -365,8 +644,21 @@ export function registerProlanceRoutes(
       if (!token) return res.status(400).json({ message: "token is required (X-Prolance-Token or body.token)" });
       if (!apiKey) return res.status(400).json({ message: "Origin API key is required (env PROLANCE_API_KEY)" });
 
-      const loginID = asString(req.body?.loginID) || asString(req.body?.LoginID) || asString(envTrim("PROLANCE_PARTNER_LOGIN_ID"));
-      const password = asString(req.body?.password) || asString(req.body?.Password) || asString(envTrim("PROLANCE_PARTNER_PASSWORD"));
+      let loginID = asString(req.body?.loginID) || asString(req.body?.LoginID);
+      let password = asString(req.body?.password) || asString(req.body?.Password);
+
+      if (!loginID || !password) {
+        const perUserCred = await resolvePartnerCredentialForUser(pool, user.id);
+        if (perUserCred) {
+          loginID = perUserCred.loginId;
+          password = perUserCred.password;
+        }
+      }
+
+      if (!loginID || !password) {
+        loginID = asString(envTrim("PROLANCE_PARTNER_LOGIN_ID"));
+        password = asString(envTrim("PROLANCE_PARTNER_PASSWORD"));
+      }
       if (!loginID || !password) return res.status(400).json({ message: "LoginID/password are required" });
 
       const upstream = await proxiedFetch({
@@ -884,6 +1176,130 @@ export function registerProlanceRoutes(
       return send(res, upstream.status, upstream.data);
     } catch (err) {
       console.error("prolance quote full-details fetch error", err);
+      return res.status(500).json({ message: asErrorMessage(err) });
+    }
+  });
+
+  // Sales closure: latest quotation total + 10% (no CRM session; server-side Prolance credentials).
+  app.get("/api/sales-closure/lead/:leadId/quote-payment-summary", async (req: Request, res: Response) => {
+    const leadId = Number(req.params.leadId);
+    if (!Number.isFinite(leadId) || leadId < 1) {
+      return res.status(400).json({ message: "Invalid leadId" });
+    }
+
+    try {
+      const [leadRows] = await pool.query(
+        `SELECT id, prolance_project_id AS prolanceProjectId, prolance_quote_id AS prolanceQuoteId, payload
+         FROM leads WHERE id = ? LIMIT 1`,
+        [leadId],
+      );
+      const lead = (leadRows as { prolanceProjectId?: unknown; prolanceQuoteId?: unknown; payload?: unknown }[])[0];
+      if (!lead) return res.status(404).json({ message: "Lead not found" });
+
+      let totalPaidToward10Percent = 0;
+      try {
+        const rawPayload = lead.payload != null ? String(lead.payload) : "";
+        if (rawPayload.length > 0) {
+          const parsed = JSON.parse(rawPayload) as Record<string, unknown>;
+          const cumulative = parsed.total_paid_toward_10_percent;
+          if (typeof cumulative === "number" && Number.isFinite(cumulative) && cumulative >= 0) {
+            totalPaidToward10Percent = cumulative;
+          } else {
+            const legacy = parsed.amount_paid;
+            if (typeof legacy === "number" && Number.isFinite(legacy) && legacy >= 0) {
+              totalPaidToward10Percent = legacy;
+            }
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+
+      const prolanceProjectId =
+        lead.prolanceProjectId != null && Number.isFinite(Number(lead.prolanceProjectId))
+          ? Number(lead.prolanceProjectId)
+          : null;
+      let quoteId =
+        lead.prolanceQuoteId != null && Number.isFinite(Number(lead.prolanceQuoteId))
+          ? Number(lead.prolanceQuoteId)
+          : null;
+
+      let quoteBody: unknown | null = null;
+
+      if (quoteId == null || quoteId < 1) {
+        const [snapRows] = await pool.query(
+          `SELECT quote_id AS quoteId, payload_json AS payloadJson
+           FROM lead_prolance_quote_snapshots
+           WHERE lead_id = ?
+           ORDER BY created_at DESC, id DESC
+           LIMIT 1`,
+          [leadId],
+        );
+        const snap = (snapRows as { quoteId?: unknown; payloadJson?: unknown }[])[0];
+        if (snap?.quoteId != null && Number.isFinite(Number(snap.quoteId))) {
+          quoteId = Number(snap.quoteId);
+        }
+        if (snap?.payloadJson != null) {
+          const raw = String(snap.payloadJson);
+          if (raw.length > 0) {
+            try {
+              quoteBody = JSON.parse(raw) as unknown;
+            } catch {
+              /* use live fetch below */
+            }
+          }
+        }
+      }
+
+      if (quoteBody == null && (prolanceProjectId != null || (quoteId != null && quoteId >= 1))) {
+        const session = await createProlanceServerSession();
+        if ("error" in session) {
+          return res.status(session.status).json({ message: session.error });
+        }
+        if (prolanceProjectId != null && prolanceProjectId >= 1) {
+          quoteBody = await fetchLatestQuoteBodyForProject(prolanceProjectId, session);
+          if (quoteId == null || quoteId < 1) {
+            const resolved = extractQuoteIdFromResponse(quoteBody);
+            if (resolved) quoteId = Number(resolved);
+          }
+        } else if (quoteId != null && quoteId >= 1) {
+          quoteBody = await fetchQuoteBodyByQuoteId(quoteId, session);
+        }
+      }
+
+      const totalPayableAmount = extractTotalPayableAmount(quoteBody);
+      if (totalPayableAmount == null || !Number.isFinite(totalPayableAmount) || totalPayableAmount <= 0) {
+        return res.status(404).json({
+          message: prolanceProjectId
+            ? "Could not determine quotation total for this project"
+            : "No Prolance project or quotation found for this lead yet",
+        });
+      }
+
+      const tenPercentAmount = Math.round(totalPayableAmount * 0.1);
+      const row = normalizeQuotePricingRow(quoteBody);
+      const quoteNum =
+        row &&
+        (asString(row.quoteNum) ||
+          asString(row.quoteNo) ||
+          asString(row.quotationNum) ||
+          asString(row.quoteID) ||
+          asString(row.quoteId));
+
+      const remainingFor10Percent = Math.max(0, tenPercentAmount - totalPaidToward10Percent);
+
+      return res.json({
+        ok: true,
+        leadId,
+        quoteId: quoteId != null && quoteId >= 1 ? quoteId : null,
+        quoteNum,
+        totalPayableAmount,
+        tenPercentAmount,
+        totalPaidToward10Percent,
+        remainingFor10Percent,
+      });
+    } catch (err) {
+      console.error("sales-closure quote-payment-summary error", err);
       return res.status(500).json({ message: asErrorMessage(err) });
     }
   });

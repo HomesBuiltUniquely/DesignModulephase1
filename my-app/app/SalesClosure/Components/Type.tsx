@@ -72,6 +72,8 @@ export const salesClosureSchema = z.object({
 
   payment_received: z.union([z.nativeEnum(PaymentReceived), z.literal("")]),
 
+  amount_paid: z.number().min(0, "Amount paid cannot be negative"),
+
   mode_of_payment: z.union([z.nativeEnum(PaymentMode), z.literal("")]),
 
   payment_screenshot: z.string().min(1, "Payment screenshot is required"),
