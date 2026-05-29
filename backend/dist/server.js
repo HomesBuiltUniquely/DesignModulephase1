@@ -435,11 +435,12 @@ async function triggerMailRouteWithLog(args) {
         to,
         cc,
     });
+    const body = Buffer.from(JSON.stringify(args.payload), "utf8");
     try {
         const resp = await fetch(`${FRONTEND_BASE}${args.route}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(args.payload),
+            body,
         });
         if (!resp.ok) {
             const body = await resp.text().catch(() => "");
@@ -468,6 +469,7 @@ async function triggerMailRouteWithLog(args) {
             route: args.route,
             taskName: args.taskName,
             visibility: args.visibility,
+            bodyBytes: body.byteLength,
             error,
         });
     }
@@ -869,6 +871,285 @@ async function initDb() {
 initDb().catch((err) => {
     console.error("Error initialising database", err);
 });
+function parseLeadPayloadObject(raw) {
+    try {
+        if (raw == null)
+            return {};
+        const v = typeof raw === "string" ? JSON.parse(raw) : raw;
+        return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+    }
+    catch {
+        return {};
+    }
+}
+/** Cumulative amount recorded toward the 10% milestone (supports pay-in-installments). */
+function readTotalPaidToward10Percent(payload) {
+    const cumulative = parseFiniteNumber(payload.total_paid_toward_10_percent);
+    if (cumulative != null && cumulative >= 0)
+        return cumulative;
+    const legacy = parseFiniteNumber(payload.amount_paid);
+    return legacy != null && legacy >= 0 ? legacy : 0;
+}
+/** True when customer has paid at least the 10% target from sales closure. */
+function salesClosureTenPercentMet(payload) {
+    if (payload.ten_percent_payment_met === true || payload.ten_percent_payment_met === "true") {
+        return true;
+    }
+    const paid = readTotalPaidToward10Percent(payload);
+    const target = parseFiniteNumber(payload.ten_percent_target);
+    if (paid > 0 && target != null && target > 0 && paid >= target)
+        return true;
+    const remaining = parseFiniteNumber(payload.remaining_for_10_percent);
+    if (remaining != null && remaining <= 0 && paid > 0)
+        return true;
+    return false;
+}
+function normalizeFinanceSubmissionHistory(payload) {
+    let history = [];
+    const raw = payload.finance_submission_history;
+    if (Array.isArray(raw) && raw.length > 0) {
+        history = raw
+            .map((item, i) => {
+            if (!item || typeof item !== "object")
+                return null;
+            const o = item;
+            const amount = parseFiniteNumber(o.amount) ?? 0;
+            const cumulativeTotal = parseFiniteNumber(o.cumulativeTotal) ?? parseFiniteNumber(o.cumulative_total) ?? amount;
+            const submittedAt = typeof o.submittedAt === "string"
+                ? o.submittedAt
+                : typeof o.at === "string"
+                    ? o.at
+                    : new Date().toISOString();
+            return {
+                id: typeof o.id === "string" ? o.id : `fin-sub-${i}`,
+                amount,
+                cumulativeTotal,
+                mode: typeof o.mode === "string" ? o.mode : null,
+                paymentReceived: typeof o.paymentReceived === "string"
+                    ? o.paymentReceived
+                    : typeof o.payment_received === "string"
+                        ? o.payment_received
+                        : null,
+                screenshot: typeof o.screenshot === "string"
+                    ? o.screenshot
+                    : typeof o.payment_screenshot === "string"
+                        ? o.payment_screenshot
+                        : null,
+                submittedAt,
+                remainingFor10Percent: parseFiniteNumber(o.remainingFor10Percent ?? o.remaining_for_10_percent),
+                rejected: o.rejected === true || o.rejected === "true",
+            };
+        })
+            .filter(Boolean);
+    }
+    else {
+        const legacy = payload.payment_history;
+        if (Array.isArray(legacy) && legacy.length > 0) {
+            let running = 0;
+            const target = parseFiniteNumber(payload.ten_percent_target);
+            history = legacy
+                .map((item, i) => {
+                if (!item || typeof item !== "object")
+                    return null;
+                const o = item;
+                const amount = parseFiniteNumber(o.amount) ?? 0;
+                running += amount;
+                return {
+                    id: `legacy-${i}`,
+                    amount,
+                    cumulativeTotal: running,
+                    mode: typeof o.mode === "string" ? o.mode : null,
+                    paymentReceived: null,
+                    screenshot: i === legacy.length - 1 ? payload.payment_screenshot || null : null,
+                    submittedAt: typeof o.at === "string" ? o.at : new Date().toISOString(),
+                    remainingFor10Percent: target != null && target > 0 ? Math.max(0, target - running) : null,
+                };
+            })
+                .filter(Boolean);
+        }
+        else {
+            const single = parseFiniteNumber(payload.amount_paid_this_time) ?? readTotalPaidToward10Percent(payload);
+            if (single > 0 || payload.payment_screenshot) {
+                const target = parseFiniteNumber(payload.ten_percent_target);
+                const cumulative = readTotalPaidToward10Percent(payload);
+                history = [
+                    {
+                        id: "legacy-single",
+                        amount: parseFiniteNumber(payload.amount_paid_this_time) ?? cumulative,
+                        cumulativeTotal: cumulative,
+                        mode: typeof payload.mode_of_payment === "string" ? payload.mode_of_payment : null,
+                        paymentReceived: typeof payload.payment_received === "string" ? payload.payment_received : null,
+                        screenshot: typeof payload.payment_screenshot === "string" ? payload.payment_screenshot : null,
+                        submittedAt: typeof payload.sales_closure_submitted_at === "string"
+                            ? payload.sales_closure_submitted_at
+                            : new Date().toISOString(),
+                        remainingFor10Percent: target != null ? Math.max(0, target - cumulative) : parseFiniteNumber(payload.remaining_for_10_percent),
+                    },
+                ];
+            }
+        }
+    }
+    return reconcileFinanceSubmissionHistory(payload, history);
+}
+/** Ensure installment rows sum to total_paid_toward_10_percent; backfill missing earlier payments. */
+function reconcileFinanceSubmissionHistory(payload, history) {
+    const total = readTotalPaidToward10Percent(payload);
+    const target = parseFiniteNumber(payload.ten_percent_target);
+    if (total <= 0)
+        return history;
+    let rows = [...history];
+    const sumRecorded = rows.reduce((s, h) => s + h.amount, 0);
+    if (rows.length === 0 && total > 0) {
+        rows.push({
+            id: "fin-sub-initial",
+            amount: total,
+            cumulativeTotal: total,
+            mode: typeof payload.mode_of_payment === "string" ? payload.mode_of_payment : null,
+            paymentReceived: typeof payload.payment_received === "string" ? payload.payment_received : null,
+            screenshot: typeof payload.payment_screenshot === "string" ? payload.payment_screenshot : null,
+            submittedAt: typeof payload.sales_closure_submitted_at === "string"
+                ? payload.sales_closure_submitted_at
+                : new Date().toISOString(),
+            remainingFor10Percent: target != null ? Math.max(0, target - total) : null,
+        });
+    }
+    else if (sumRecorded < total - 0.01) {
+        const missing = Math.round(total - sumRecorded);
+        rows = [
+            {
+                id: `fin-sub-prior-${Date.now()}`,
+                amount: missing,
+                cumulativeTotal: missing,
+                mode: typeof payload.mode_of_payment === "string" ? payload.mode_of_payment : null,
+                paymentReceived: typeof payload.payment_received === "string" ? payload.payment_received : null,
+                screenshot: typeof payload.payment_screenshot === "string" ? payload.payment_screenshot : null,
+                submittedAt: typeof payload.sales_closure_submitted_at === "string"
+                    ? payload.sales_closure_submitted_at
+                    : new Date().toISOString(),
+                remainingFor10Percent: target != null ? Math.max(0, target - missing) : null,
+            },
+            ...rows,
+        ];
+    }
+    else {
+        const lastTranche = parseFiniteNumber(payload.amount_paid_this_time);
+        if (rows.length === 1 &&
+            lastTranche != null &&
+            lastTranche > 0 &&
+            Math.abs(rows[0].amount - total) < 0.01 &&
+            lastTranche < total - 0.01) {
+            const prior = Math.round(total - lastTranche);
+            const firstRow = rows[0];
+            rows = [
+                {
+                    ...firstRow,
+                    id: `${firstRow.id}-prior`,
+                    amount: prior,
+                    cumulativeTotal: prior,
+                    screenshot: null,
+                    submittedAt: typeof payload.sales_closure_submitted_at === "string"
+                        ? payload.sales_closure_submitted_at
+                        : firstRow.submittedAt,
+                    remainingFor10Percent: target != null ? Math.max(0, target - prior) : null,
+                },
+                {
+                    ...firstRow,
+                    id: `${firstRow.id}-last`,
+                    amount: lastTranche,
+                    submittedAt: typeof payload.sales_closure_payment_added_at === "string"
+                        ? payload.sales_closure_payment_added_at
+                        : firstRow.submittedAt,
+                },
+            ];
+        }
+    }
+    let running = 0;
+    return rows.map((h, i) => {
+        running += h.amount;
+        return {
+            ...h,
+            id: h.id || `fin-sub-${i}`,
+            cumulativeTotal: running,
+            remainingFor10Percent: target != null ? Math.max(0, target - running) : null,
+        };
+    });
+}
+function appendFinanceSubmission(payload, entry, ctx) {
+    const existing = ctx?.existingPayload ?? payload;
+    const previousCumulative = ctx?.previousCumulative ?? Math.max(0, readTotalPaidToward10Percent(existing) - entry.amount);
+    let history = normalizeFinanceSubmissionHistory(existing);
+    if (history.length === 1 && history[0].id === "legacy-single") {
+        history = [];
+    }
+    if (history.length === 0 && previousCumulative > 0 && entry.amount > 0) {
+        const target = parseFiniteNumber(payload.ten_percent_target) ?? parseFiniteNumber(existing.ten_percent_target);
+        history.push({
+            id: `fin-sub-${Date.now()}-prior`,
+            amount: previousCumulative,
+            cumulativeTotal: previousCumulative,
+            mode: typeof existing.mode_of_payment === "string"
+                ? existing.mode_of_payment
+                : typeof payload.mode_of_payment === "string"
+                    ? payload.mode_of_payment
+                    : null,
+            paymentReceived: typeof existing.payment_received === "string"
+                ? existing.payment_received
+                : typeof payload.payment_received === "string"
+                    ? payload.payment_received
+                    : null,
+            screenshot: typeof existing.payment_screenshot === "string" ? existing.payment_screenshot : null,
+            submittedAt: typeof existing.sales_closure_submitted_at === "string"
+                ? existing.sales_closure_submitted_at
+                : typeof existing.sales_closure_payment_added_at === "string"
+                    ? existing.sales_closure_payment_added_at
+                    : new Date().toISOString(),
+            remainingFor10Percent: target != null ? Math.max(0, target - previousCumulative) : null,
+        });
+    }
+    const id = entry.id || `fin-sub-${Date.now()}-${history.length}`;
+    history.push({ ...entry, id });
+    history = reconcileFinanceSubmissionHistory(payload, history);
+    payload.finance_submission_history = history;
+    payload.payment_history = history.map((h) => ({
+        amount: h.amount,
+        mode: h.mode,
+        at: h.submittedAt,
+    }));
+}
+async function persistRepairedFinanceHistory(leadId, payload) {
+    const repaired = reconcileFinanceSubmissionHistory(payload, normalizeFinanceSubmissionHistory(payload));
+    const current = payload.finance_submission_history;
+    const currentJson = JSON.stringify(current ?? []);
+    const repairedJson = JSON.stringify(repaired);
+    if (currentJson === repairedJson)
+        return;
+    payload.finance_submission_history = repaired;
+    payload.payment_history = repaired.map((h) => ({
+        amount: h.amount,
+        mode: h.mode,
+        at: h.submittedAt,
+    }));
+    await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
+        JSON.stringify(payload),
+        new Date(),
+        leadId,
+    ]);
+}
+function applySalesClosurePaymentTotals(payload, thisPayment, previousCumulative) {
+    const target = parseFiniteNumber(payload.ten_percent_target);
+    const quotationTotal = parseFiniteNumber(payload.quotation_total);
+    const cumulative = Math.max(0, previousCumulative + Math.max(0, thisPayment));
+    payload.amount_paid_this_time = thisPayment;
+    payload.total_paid_toward_10_percent = cumulative;
+    payload.amount_paid = cumulative;
+    if (target != null && target > 0) {
+        payload.remaining_for_10_percent = Math.max(0, target - cumulative);
+        payload.ten_percent_payment_met = cumulative >= target;
+    }
+    if (quotationTotal != null && quotationTotal > 0 && cumulative > 0) {
+        payload.payment_percent_of_quotation = (cumulative / quotationTotal) * 100;
+    }
+}
 // helper to map sales-closure payload to lead fields
 function toLeadRow(payload) {
     const now = new Date();
@@ -879,12 +1160,8 @@ function toLeadRow(payload) {
         formData.sales_lead_name ||
         fetched.sales_lead_name ||
         "Unnamed";
-    const payment = formData.payment_received || payload?.payment_received || "";
-    const stage = payment === "FULL_10%"
-        ? "10-20%"
-        : payment === "PARTIAL" || payment === "TOKEN"
-            ? "Pre 10%"
-            : formData.status_of_project || payload?.status_of_project || "Active";
+    // Stay in Pre 10% until finance approves after full 10% payment (approve-sales-closure → 10-20%).
+    const stage = "Pre 10%";
     return {
         pid: "", // you can generate a PID here if needed
         projectName,
@@ -2306,6 +2583,26 @@ app.post("/api/sales-closure", async (req, res) => {
     console.log("Received sales-closure:", payload);
     if (payload) {
         payload.sales_closure_finance_approved = false;
+        payload.sales_closure_finance_rejected = false;
+        payload.sales_closure_submitted_at =
+            payload.sales_closure_submitted_at || new Date().toISOString();
+        const thisPayment = parseFiniteNumber(payload.amount_paid_this_time) ?? parseFiniteNumber(payload.amount_paid) ?? 0;
+        applySalesClosurePaymentTotals(payload, thisPayment, 0);
+        if (thisPayment > 0 || payload.payment_screenshot) {
+            const cumulative = readTotalPaidToward10Percent(payload);
+            const target = parseFiniteNumber(payload.ten_percent_target);
+            appendFinanceSubmission(payload, {
+                amount: thisPayment,
+                cumulativeTotal: cumulative,
+                mode: typeof payload.mode_of_payment === "string" ? payload.mode_of_payment : null,
+                paymentReceived: typeof payload.payment_received === "string" ? payload.payment_received : null,
+                screenshot: typeof payload.payment_screenshot === "string" ? payload.payment_screenshot : null,
+                submittedAt: typeof payload.sales_closure_submitted_at === "string"
+                    ? payload.sales_closure_submitted_at
+                    : new Date().toISOString(),
+                remainingFor10Percent: target != null ? Math.max(0, target - cumulative) : null,
+            });
+        }
     }
     const lead = toLeadRow(payload);
     const pid = ""; // keep empty or generate PID if required
@@ -2358,18 +2655,19 @@ app.post("/api/sales-closure", async (req, res) => {
                 const mailChainSubject = buildMailChainSubject(pid || insertId, lead.projectName, customerName);
                 // Do not block main response if email fails; just log.
                 const propertyType = payload.property_configuration || payload?.formData?.property_configuration || payload?.form?.property_configuration || "Apartment";
+                const emailPayload = {
+                    to: customerEmail,
+                    cc: [],
+                    subject: `Welcome to HUB Interior – ${customerName}`,
+                    customerName,
+                    projectId: `HUB-${insertId}`,
+                    propertyType,
+                    designerName: (payload && (payload.designer_name || payload.designerName)) || "Team HUB Interior",
+                };
                 fetch(`${frontendBase}/api/email/send-d1-site-measurement`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        to: customerEmail,
-                        cc: [],
-                        subject: `Welcome to HUB Interior – ${customerName}`,
-                        customerName,
-                        projectId: `HUB-${insertId}`,
-                        propertyType,
-                        designerName: (payload && (payload.designer_name || payload.designerName)) || "Team HUB Interior",
-                    }),
+                    body: Buffer.from(JSON.stringify(emailPayload), "utf8"),
                 }).catch((err) => {
                     console.error("Failed to trigger D1 email from backend", err);
                 });
@@ -3539,17 +3837,18 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                             const mailChainCc = await getMailLoopCcEmails([actingUser.email, designerEmail], id);
                             const mailChainSubject = buildMailChainSubject(projectId, leadRow.projectName, customerName);
                             try {
+                                const emailPayload = {
+                                    to: designerEmail,
+                                    cc: mailChainCc,
+                                    subject: mailChainSubject,
+                                    customerName,
+                                    designerName,
+                                    ecName,
+                                };
                                 const r = await fetch(url, {
                                     method: "POST",
                                     headers: { "Content-Type": "application/json" },
-                                    body: JSON.stringify({
-                                        to: designerEmail,
-                                        cc: mailChainCc,
-                                        subject: mailChainSubject,
-                                        customerName,
-                                        designerName,
-                                        ecName,
-                                    }),
+                                    body: Buffer.from(JSON.stringify(emailPayload), "utf8"),
                                 });
                                 const text = await r.text();
                                 if (!r.ok) {
@@ -3573,35 +3872,36 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                             const mailChainCc = await getMailLoopCcEmails([actingUser.email, designerEmail], id);
                             const mailChainSubject = buildMailChainSubject(projectId, leadRow.projectName, customerName);
                             try {
+                                const emailPayload = {
+                                    to: customerEmail,
+                                    cc: mailChainCc,
+                                    subject: mailChainSubject,
+                                    customerName,
+                                    projectId,
+                                    propertyType,
+                                    amountDue,
+                                    designerName: actingUser.name,
+                                    attachments: await (async () => {
+                                        try {
+                                            const [ups] = await pool.query(`SELECT original_name as originalName, s3_url as s3Url, stored_path as storedPath
+                         FROM lead_uploads
+                         WHERE lead_id = ? AND upload_type = 'first_cut_design' AND status = 'approved'
+                         ORDER BY id DESC`, [id]);
+                                            return (ups || []).map((u) => ({
+                                                filename: (u.originalName || "Attachment").toString(),
+                                                path: (u.s3Url || u.storedPath || "").toString(),
+                                            })).filter(a => a.path);
+                                        }
+                                        catch (e) {
+                                            console.error("10% fetch attachments error", e);
+                                            return [];
+                                        }
+                                    })(),
+                                };
                                 const r = await fetch(url, {
                                     method: "POST",
                                     headers: { "Content-Type": "application/json" },
-                                    body: JSON.stringify({
-                                        to: customerEmail,
-                                        cc: mailChainCc,
-                                        subject: mailChainSubject,
-                                        customerName,
-                                        projectId,
-                                        propertyType,
-                                        amountDue,
-                                        designerName: actingUser.name,
-                                        attachments: await (async () => {
-                                            try {
-                                                const [ups] = await pool.query(`SELECT original_name as originalName, s3_url as s3Url, stored_path as storedPath
-                           FROM lead_uploads
-                           WHERE lead_id = ? AND upload_type = 'first_cut_design' AND status = 'approved'
-                           ORDER BY id DESC`, [id]);
-                                                return (ups || []).map((u) => ({
-                                                    filename: (u.originalName || "Attachment").toString(),
-                                                    path: (u.s3Url || u.storedPath || "").toString(),
-                                                })).filter(a => a.path);
-                                            }
-                                            catch (e) {
-                                                console.error("10% fetch attachments error", e);
-                                                return [];
-                                            }
-                                        })(),
-                                    }),
+                                    body: Buffer.from(JSON.stringify(emailPayload), "utf8"),
                                 });
                                 const text = await r.text();
                                 if (!r.ok) {
@@ -5129,6 +5429,68 @@ app.get("/api/leads/by-crm-id/:crmLeadId", async (req, res) => {
     }
 });
 // ----- Finance Sales Closure Approval -----
+function mapFinanceSalesClosureQueueRow(r, options) {
+    const payloadObj = parseLeadPayloadObject(r.payload);
+    const amountPaid = readTotalPaidToward10Percent(payloadObj) ||
+        parseFiniteNumber(r.amountPaid) ||
+        parseFiniteNumber(payloadObj.amount_paid);
+    const tenPercentTarget = parseFiniteNumber(r.tenPercentTarget) ?? parseFiniteNumber(payloadObj.ten_percent_target);
+    let remaining = parseFiniteNumber(r.remainingFor10Percent) ??
+        parseFiniteNumber(payloadObj.remaining_for_10_percent);
+    if (remaining == null && amountPaid != null && tenPercentTarget != null) {
+        remaining = Math.max(0, tenPercentTarget - amountPaid);
+    }
+    const tenPercentMet = salesClosureTenPercentMet(payloadObj);
+    const financeApproved = payloadObj.sales_closure_finance_approved === true ||
+        payloadObj.sales_closure_finance_approved === "true";
+    const percentOfQuotation = parseFiniteNumber(r.paymentPercentOfQuotation) ??
+        parseFiniteNumber(payloadObj.payment_percent_of_quotation);
+    const submissions = normalizeFinanceSubmissionHistory(payloadObj);
+    const submissionsForList = submissions.map((s) => ({
+        id: s.id,
+        amount: s.amount,
+        cumulativeTotal: s.cumulativeTotal,
+        mode: s.mode,
+        paymentReceived: s.paymentReceived,
+        submittedAt: s.submittedAt,
+        remainingFor10Percent: s.remainingFor10Percent,
+        rejected: s.rejected === true,
+        hasScreenshot: Boolean(s.screenshot),
+    }));
+    const approvedAt = (typeof r.financeApprovedAt === "string" && r.financeApprovedAt.trim()) ||
+        (typeof payloadObj.sales_closure_finance_approved_at === "string"
+            ? payloadObj.sales_closure_finance_approved_at
+            : null);
+    return {
+        id: r.id,
+        projectName: r.projectName || "—",
+        customerName: (typeof r.customerName === "string" && String(r.customerName).trim()) ||
+            payloadObj.customer_name ||
+            r.projectName ||
+            "—",
+        projectStage: r.projectStage || (options.approved ? "10-20%" : "Pre 10%"),
+        financeApproved,
+        status: options.approved
+            ? "Approved — moved to 10–20%"
+            : tenPercentMet
+                ? "Ready for approval (10% paid)"
+                : "Awaiting 10% payment",
+        paymentReceived: r.paymentReceived || payloadObj.payment_received || "—",
+        paymentMode: r.paymentMode || payloadObj.mode_of_payment || "—",
+        paymentScreenshot: r.paymentScreenshot || payloadObj.payment_screenshot || null,
+        amountPaid: amountPaid ?? null,
+        tenPercentTarget: tenPercentTarget ?? null,
+        remainingFor10Percent: options.approved ? 0 : remaining ?? null,
+        paymentPercentOfQuotation: percentOfQuotation ?? null,
+        tenPercentMet: options.approved ? true : tenPercentMet,
+        canApprove: !options.approved && tenPercentMet,
+        submittedAt: r.salesClosureSubmittedAt || r.submittedAt || null,
+        approvedAt,
+        bookingDate: r.bookingDate || payloadObj.booking_date || null,
+        submissionCount: submissions.length,
+        paymentSubmissions: submissionsForList,
+    };
+}
 app.get("/api/leads/finance-sales-closure-queue", async (req, res) => {
     try {
         const user = await getUserFromSession(req);
@@ -5138,33 +5500,161 @@ app.get("/api/leads/finance-sales-closure-queue", async (req, res) => {
         if (role !== "finance" && role !== "admin") {
             return res.status(403).json({ message: "Only finance or admin can access this queue" });
         }
+        const payloadJson = "CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END";
+        const status = String(req.query.status || "pending").toLowerCase();
+        const approved = status === "approved";
+        const customerName = String(req.query.customerName || req.query.customer || "").trim();
+        const month = String(req.query.month || "").trim();
+        const dateFrom = String(req.query.dateFrom || "").trim();
+        const dateTo = String(req.query.dateTo || "").trim();
+        const hasPaymentEvidence = `(JSON_EXTRACT(${payloadJson}, '$.payment_screenshot') IS NOT NULL
+        OR COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.total_paid_toward_10_percent')) AS DECIMAL(18,2)), 0) > 0
+        OR COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.amount_paid')) AS DECIMAL(18,2)), 0) > 0)`;
+        const conditions = approved
+            ? [
+                `JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.sales_closure_finance_approved')) = 'true'`,
+                hasPaymentEvidence,
+            ]
+            : [
+                `JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.sales_closure_finance_approved')) = 'false'`,
+                `COALESCE(JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.sales_closure_finance_rejected')), 'false') != 'true'`,
+                hasPaymentEvidence,
+            ];
+        const params = [];
+        const approvedAtExpr = `COALESCE(
+      NULLIF(JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.sales_closure_finance_approved_at')), ''),
+      update_at
+    )`;
+        if (customerName) {
+            const like = `%${customerName.toLowerCase()}%`;
+            conditions.push(`(LOWER(project_name) LIKE ? OR LOWER(JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.customer_name'))) LIKE ?)`);
+            params.push(like, like);
+        }
+        if (/^\d{4}-\d{2}$/.test(month)) {
+            conditions.push(approved
+                ? `DATE_FORMAT(${approvedAtExpr}, '%Y-%m') = ?`
+                : `DATE_FORMAT(create_at, '%Y-%m') = ?`);
+            params.push(month);
+        }
+        if (/^\d{4}-\d{2}-\d{2}$/.test(dateFrom)) {
+            conditions.push(approved ? `DATE(${approvedAtExpr}) >= ?` : `DATE(create_at) >= ?`);
+            params.push(dateFrom);
+        }
+        if (/^\d{4}-\d{2}-\d{2}$/.test(dateTo)) {
+            conditions.push(approved ? `DATE(${approvedAtExpr}) <= ?` : `DATE(create_at) <= ?`);
+            params.push(dateTo);
+        }
+        const orderBy = approved
+            ? `${approvedAtExpr} DESC, id DESC`
+            : `create_at DESC, id DESC`;
         const [rows] = await pool.query(`
       SELECT 
         id, 
         project_name as projectName, 
         project_stage as projectStage,
-        JSON_UNQUOTE(JSON_EXTRACT(CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, '$.payment_received')) as paymentReceived,
-        JSON_UNQUOTE(JSON_EXTRACT(CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, '$.mode_of_payment')) as paymentMode,
-        JSON_UNQUOTE(JSON_EXTRACT(CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, '$.payment_screenshot')) as paymentScreenshot
+        create_at as submittedAt,
+        update_at as updateAt,
+        JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.customer_name')) as customerName,
+        JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.payment_received')) as paymentReceived,
+        JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.mode_of_payment')) as paymentMode,
+        JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.payment_screenshot')) as paymentScreenshot,
+        JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.booking_date')) as bookingDate,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.amount_paid')) AS DECIMAL(18,2)) as amountPaid,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.ten_percent_target')) AS DECIMAL(18,2)) as tenPercentTarget,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.remaining_for_10_percent')) AS DECIMAL(18,2)) as remainingFor10Percent,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.payment_percent_of_quotation')) AS DECIMAL(10,2)) as paymentPercentOfQuotation,
+        JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.sales_closure_submitted_at')) as salesClosureSubmittedAt,
+        JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.sales_closure_finance_approved_at')) as financeApprovedAt,
+        payload
       FROM leads
-      WHERE JSON_UNQUOTE(JSON_EXTRACT(CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, '$.sales_closure_finance_approved')) = 'false'
-        AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, '$.sales_closure_finance_rejected')), 'false') != 'true'
-      ORDER BY id ASC
-    `);
-        const list = rows.map((r) => ({
-            id: r.id,
-            projectName: r.projectName || "—",
-            status: "Pending approval",
-            paymentReceived: r.paymentReceived || "—",
-            paymentMode: r.paymentMode || "—",
-            paymentScreenshot: r.paymentScreenshot || null,
-            canApprove: true,
-        }));
+      WHERE ${conditions.join(" AND ")}
+      ORDER BY ${orderBy}
+    `, params);
+        const list = rows.map((r) => mapFinanceSalesClosureQueueRow(r, { approved }));
         return res.json(list);
     }
     catch (err) {
         console.error("finance-sales-closure-queue error", err);
         return res.status(500).json({ message: "Failed to load queue" });
+    }
+});
+function buildFinanceSalesClosureLeadDetail(row) {
+    const payloadObj = parseLeadPayloadObject(row.payload);
+    const submissions = normalizeFinanceSubmissionHistory(payloadObj);
+    if (submissions.length === 0 &&
+        !payloadObj.payment_screenshot &&
+        readTotalPaidToward10Percent(payloadObj) <= 0) {
+        return null;
+    }
+    const amountPaid = readTotalPaidToward10Percent(payloadObj);
+    const tenPercentTarget = parseFiniteNumber(payloadObj.ten_percent_target);
+    const remaining = parseFiniteNumber(payloadObj.remaining_for_10_percent) ??
+        (tenPercentTarget != null ? Math.max(0, tenPercentTarget - amountPaid) : null);
+    const tenPercentMet = salesClosureTenPercentMet(payloadObj);
+    const financeApproved = payloadObj.sales_closure_finance_approved === true ||
+        payloadObj.sales_closure_finance_approved === "true";
+    return {
+        id: row.id,
+        projectName: row.projectName || payloadObj.customer_name || "—",
+        customerName: payloadObj.customer_name || row.projectName || "—",
+        projectStage: row.projectStage || "Pre 10%",
+        financeApproved,
+        tenPercentMet,
+        amountPaid,
+        tenPercentTarget: tenPercentTarget ?? null,
+        remainingFor10Percent: remaining,
+        quotationTotal: parseFiniteNumber(payloadObj.quotation_total),
+        status: financeApproved
+            ? "Approved — moved to 10–20%"
+            : tenPercentMet
+                ? "Ready for approval (10% paid)"
+                : "Awaiting 10% payment",
+        paymentSubmissions: submissions.map((s) => ({
+            id: s.id,
+            amount: s.amount,
+            cumulativeTotal: s.cumulativeTotal,
+            mode: s.mode,
+            paymentReceived: s.paymentReceived,
+            submittedAt: s.submittedAt,
+            remainingFor10Percent: s.remainingFor10Percent,
+            rejected: s.rejected === true,
+            screenshot: s.screenshot,
+        })),
+        submissionCount: submissions.length,
+        approvedAt: typeof payloadObj.sales_closure_finance_approved_at === "string"
+            ? payloadObj.sales_closure_finance_approved_at
+            : null,
+    };
+}
+app.get("/api/leads/finance-sales-closure/:leadId", async (req, res) => {
+    try {
+        const user = await getUserFromSession(req);
+        if (!user)
+            return res.status(401).json({ message: "Unauthorized" });
+        const role = (user?.role ?? "").toLowerCase();
+        if (role !== "finance" && role !== "admin") {
+            return res.status(403).json({ message: "Only finance or admin can access this" });
+        }
+        const leadId = Number(req.params.leadId);
+        if (!Number.isFinite(leadId) || leadId < 1) {
+            return res.status(400).json({ message: "Invalid leadId" });
+        }
+        const [rows] = await pool.query(`SELECT id, project_name as projectName, project_stage as projectStage, payload, create_at
+       FROM leads WHERE id = ? LIMIT 1`, [leadId]);
+        const row = rows[0];
+        if (!row)
+            return res.status(404).json({ message: "Lead not found" });
+        const payloadObj = parseLeadPayloadObject(row.payload);
+        await persistRepairedFinanceHistory(leadId, payloadObj);
+        const detail = buildFinanceSalesClosureLeadDetail({ ...row, payload: payloadObj });
+        if (!detail) {
+            return res.status(404).json({ message: "No sales closure payment submissions for this lead" });
+        }
+        return res.json(detail);
+    }
+    catch (err) {
+        console.error("finance-sales-closure detail error", err);
+        return res.status(500).json({ message: "Failed to load lead payment history" });
     }
 });
 app.post("/api/leads/:id/approve-sales-closure", async (req, res) => {
@@ -5179,6 +5669,16 @@ app.post("/api/leads/:id/approve-sales-closure", async (req, res) => {
         const leadId = Number(req.params.id);
         if (!leadId)
             return res.status(400).json({ message: "Invalid lead ID" });
+        const [leadRows] = await pool.query(`SELECT payload FROM leads WHERE id = ? LIMIT 1`, [leadId]);
+        const leadRow = leadRows[0];
+        if (!leadRow)
+            return res.status(404).json({ message: "Lead not found" });
+        const payloadObj = parseLeadPayloadObject(leadRow.payload);
+        if (!salesClosureTenPercentMet(payloadObj)) {
+            return res.status(400).json({
+                message: "Cannot approve until the customer has paid at least 10% of the quotation. Ask sales to update the paid amount.",
+            });
+        }
         await pool.query(`
       UPDATE leads 
       SET 
@@ -5186,10 +5686,13 @@ app.post("/api/leads/:id/approve-sales-closure", async (req, res) => {
         payload = JSON_SET(
           CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, 
           '$.sales_closure_finance_approved', 
-          true
-        )
+          true,
+          '$.sales_closure_finance_approved_at',
+          ?
+        ),
+        update_at = ?
       WHERE id = ?
-    `, [leadId]);
+    `, [new Date().toISOString(), new Date(), leadId]);
         // Optional event tracking for lead history
         await addLeadHistoryEvent(leadId, {
             id: `approve-sales-closure-${Date.now()}`,
@@ -5221,31 +5724,28 @@ app.post("/api/leads/:id/reject-sales-closure", async (req, res) => {
         const leadId = Number(req.params.id);
         if (!leadId)
             return res.status(400).json({ message: "Invalid lead ID" });
-        // Mark as rejected in payload (keep finance_approved: false, add finance_rejected: true)
-        await pool.query(`
-      UPDATE leads
-      SET payload = JSON_SET(
-        CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END,
-        '$.sales_closure_finance_approved', false,
-        '$.sales_closure_finance_rejected', true
-      )
-      WHERE id = ?
-    `, [leadId]);
-        // Fetch payload to get emails for notification
         const [rows] = await pool.query(`SELECT pid, project_name as projectName, payload FROM leads WHERE id = ?`, [leadId]);
         const row = rows[0];
-        const payloadObj = (() => {
-            try {
-                return row?.payload ? JSON.parse(row.payload) : {};
-            }
-            catch {
-                return {};
-            }
-        })();
-        const salesEmail = payloadObj.sales_email || null;
-        const salesLeadEmail = payloadObj.sales_lead_email || null;
-        const salesSpocEmail = payloadObj.sales_spoc_email || null;
-        const customerName = payloadObj.customer_name || row?.projectName || "Customer";
+        const payloadObj = parseLeadPayloadObject(row?.payload);
+        const submissions = normalizeFinanceSubmissionHistory(payloadObj);
+        if (submissions.length > 0) {
+            submissions[submissions.length - 1].rejected = true;
+        }
+        payloadObj.finance_submission_history = submissions;
+        payloadObj.sales_closure_finance_approved = false;
+        payloadObj.sales_closure_finance_rejected = true;
+        payloadObj.sales_closure_finance_rejected_at = new Date().toISOString();
+        await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
+            JSON.stringify(payloadObj),
+            new Date(),
+            leadId,
+        ]);
+        const salesEmail = typeof payloadObj.sales_email === "string" ? payloadObj.sales_email : null;
+        const salesLeadEmail = typeof payloadObj.sales_lead_email === "string" ? payloadObj.sales_lead_email : null;
+        const salesSpocEmail = typeof payloadObj.sales_spoc_email === "string" ? payloadObj.sales_spoc_email : null;
+        const customerName = (typeof payloadObj.customer_name === "string" && payloadObj.customer_name) ||
+            row?.projectName ||
+            "Customer";
         // Send rejection email to sales person, CC sales lead and SPOC if available
         if (salesEmail) {
             const ccList = [];
@@ -5310,17 +5810,44 @@ app.put("/api/sales-closure/:id", async (req, res) => {
             }
         })();
         const incoming = req.body;
-        // Only allow updating payment-related fields; all other fields are retained from existing payload
         const updatedPayload = {
             ...existingPayload,
-            payment_received: incoming.payment_received ?? existingPayload.payment_received,
-            mode_of_payment: incoming.mode_of_payment ?? existingPayload.mode_of_payment,
-            payment_screenshot: incoming.payment_screenshot ?? existingPayload.payment_screenshot,
-            // Reset approval flags so it goes back to Finance queue
+            ...incoming,
             sales_closure_finance_approved: false,
             sales_closure_finance_rejected: false,
+            sales_closure_resubmitted_at: new Date().toISOString(),
         };
-        await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [JSON.stringify(updatedPayload), new Date(), leadId]);
+        const previousCumulative = readTotalPaidToward10Percent(existingPayload);
+        const thisPayment = parseFiniteNumber(incoming.amount_paid_this_time) ??
+            parseFiniteNumber(incoming.amount_paid) ??
+            0;
+        applySalesClosurePaymentTotals(updatedPayload, thisPayment, previousCumulative);
+        const screenshot = typeof incoming.payment_screenshot === "string" && incoming.payment_screenshot
+            ? incoming.payment_screenshot
+            : null;
+        if (thisPayment > 0 || screenshot) {
+            const cumulative = readTotalPaidToward10Percent(updatedPayload);
+            const target = parseFiniteNumber(updatedPayload.ten_percent_target);
+            appendFinanceSubmission(updatedPayload, {
+                amount: thisPayment,
+                cumulativeTotal: cumulative,
+                mode: typeof incoming.mode_of_payment === "string"
+                    ? incoming.mode_of_payment
+                    : typeof existingPayload.mode_of_payment === "string"
+                        ? existingPayload.mode_of_payment
+                        : null,
+                paymentReceived: typeof incoming.payment_received === "string"
+                    ? incoming.payment_received
+                    : typeof existingPayload.payment_received === "string"
+                        ? existingPayload.payment_received
+                        : null,
+                screenshot,
+                submittedAt: new Date().toISOString(),
+                remainingFor10Percent: target != null ? Math.max(0, target - cumulative) : null,
+            }, { previousCumulative, existingPayload });
+        }
+        await pool.query(`UPDATE leads SET payload = ?, project_stage = 'Pre 10%', update_at = ? WHERE id = ?`, [JSON.stringify(updatedPayload), new Date(), leadId]);
+        await persistRepairedFinanceHistory(leadId, updatedPayload);
         try {
             await notifyCrmSalesClosureStatus(updatedPayload);
         }

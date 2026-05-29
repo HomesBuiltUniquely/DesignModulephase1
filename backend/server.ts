@@ -126,7 +126,7 @@ app.get("/api/health", (_req, res) => {
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "root@root",
+  password: process.env.DB_PASSWORD || "Root@123",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -473,11 +473,13 @@ async function triggerMailRouteWithLog(args: {
     cc,
   });
 
+  const body = Buffer.from(JSON.stringify(args.payload), "utf8");
+
   try {
     const resp = await fetch(`${FRONTEND_BASE}${args.route}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(args.payload),
+      body,
     });
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
@@ -505,6 +507,7 @@ async function triggerMailRouteWithLog(args: {
       route: args.route,
       taskName: args.taskName,
       visibility: args.visibility,
+      bodyBytes: body.byteLength,
       error,
     });
   }
@@ -3087,19 +3090,20 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
 
         // Do not block main response if email fails; just log.
         const propertyType = payload.property_configuration || payload?.formData?.property_configuration || payload?.form?.property_configuration || "Apartment";
+        const emailPayload = {
+          to: customerEmail,
+          cc: [],
+          subject: `Welcome to HUB Interior – ${customerName}`,
+          customerName,
+          projectId: `HUB-${insertId}`,
+          propertyType,
+          designerName: (payload && (payload.designer_name || payload.designerName)) || "Team HUB Interior",
+        };
 
         fetch(`${frontendBase}/api/email/send-d1-site-measurement`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            to: customerEmail,
-            cc: [],
-            subject: `Welcome to HUB Interior – ${customerName}`,
-            customerName,
-            projectId: `HUB-${insertId}`,
-            propertyType,
-            designerName: (payload && (payload.designer_name || payload.designerName)) || "Team HUB Interior",
-          }),
+          body: Buffer.from(JSON.stringify(emailPayload), "utf8"),
         }).catch((err) => {
           console.error("Failed to trigger D1 email from backend", err);
         });
@@ -4450,17 +4454,18 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               const mailChainCc = await getMailLoopCcEmails([actingUser.email, designerEmail], id);
               const mailChainSubject = buildMailChainSubject(projectId, leadRow.projectName, customerName);
               try {
+                const emailPayload = {
+                  to: designerEmail,
+                  cc: mailChainCc,
+                  subject: mailChainSubject,
+                  customerName,
+                  designerName,
+                  ecName,
+                };
                 const r = await fetch(url, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    to: designerEmail,
-                    cc: mailChainCc,
-                    subject: mailChainSubject,
-                    customerName,
-                    designerName,
-                    ecName,
-                  }),
+                  body: Buffer.from(JSON.stringify(emailPayload), "utf8"),
                 });
                 const text = await r.text();
                 if (!r.ok) {
@@ -4483,37 +4488,38 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               const mailChainCc = await getMailLoopCcEmails([actingUser.email, designerEmail], id);
               const mailChainSubject = buildMailChainSubject(projectId, leadRow.projectName, customerName);
               try {
+                const emailPayload = {
+                  to: customerEmail,
+                  cc: mailChainCc,
+                  subject: mailChainSubject,
+                  customerName,
+                  projectId,
+                  propertyType,
+                  amountDue,
+                  designerName: actingUser.name,
+                  attachments: await (async () => {
+                    try {
+                      const [ups] = await pool.query(
+                        `SELECT original_name as originalName, s3_url as s3Url, stored_path as storedPath
+                         FROM lead_uploads
+                         WHERE lead_id = ? AND upload_type = 'first_cut_design' AND status = 'approved'
+                         ORDER BY id DESC`,
+                        [id],
+                      );
+                      return ((ups as any[]) || []).map((u) => ({
+                        filename: (u.originalName || "Attachment").toString(),
+                        path: (u.s3Url || u.storedPath || "").toString(),
+                      })).filter(a => a.path);
+                    } catch (e) {
+                      console.error("10% fetch attachments error", e);
+                      return [];
+                    }
+                  })(),
+                };
                 const r = await fetch(url, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    to: customerEmail,
-                    cc: mailChainCc,
-                    subject: mailChainSubject,
-                    customerName,
-                    projectId,
-                    propertyType,
-                    amountDue,
-                    designerName: actingUser.name,
-                    attachments: await (async () => {
-                      try {
-                        const [ups] = await pool.query(
-                          `SELECT original_name as originalName, s3_url as s3Url, stored_path as storedPath
-                           FROM lead_uploads
-                           WHERE lead_id = ? AND upload_type = 'first_cut_design' AND status = 'approved'
-                           ORDER BY id DESC`,
-                          [id],
-                        );
-                        return ((ups as any[]) || []).map((u) => ({
-                          filename: (u.originalName || "Attachment").toString(),
-                          path: (u.s3Url || u.storedPath || "").toString(),
-                        })).filter(a => a.path);
-                      } catch (e) {
-                        console.error("10% fetch attachments error", e);
-                        return [];
-                      }
-                    })(),
-                  }),
+                  body: Buffer.from(JSON.stringify(emailPayload), "utf8"),
                 });
                 const text = await r.text();
                 if (!r.ok) {
