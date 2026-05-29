@@ -159,7 +159,7 @@ if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 const PROFILE_IMAGES_DIR = path.join(UPLOADS_DIR, "profile-images");
 if (!fs.existsSync(PROFILE_IMAGES_DIR)) fs.mkdirSync(PROFILE_IMAGES_DIR, { recursive: true });
 const API_BASE = process.env.API_BASE_URL || "http://localhost:3001";
-const FRONTEND_BASE = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
+const FRONTEND_BASE = (process.env.FRONTEND_BASE_URL || "http://localhost:3000").replace(/\/$/, "");
 const CRM_CALLBACK_BASE =
   process.env.CRM_CALLBACK_BASE_URL ||
   process.env.CRM_API_BASE_URL ||
@@ -450,6 +450,33 @@ async function getMailLoopCcEmails(extraEmails: Array<string | null | undefined>
 
 type MailVisibility = "internal" | "external" | "internal+external";
 
+/** Drop base64 blobs / history arrays — mail templates only need form fields; large payloads break undici fetch. */
+function sanitizeLeadPayloadForEmail(payload: Record<string, unknown>): Record<string, unknown> {
+  const stripHeavy = (obj: Record<string, unknown>) => {
+    const out = { ...obj };
+    for (const k of [
+      "payment_screenshot",
+      "approval_proof",
+      "finance_submission_history",
+      "payment_submissions",
+    ]) {
+      if (k in out) delete out[k];
+    }
+    return out;
+  };
+  const copy = stripHeavy(payload);
+  if (copy.formData && typeof copy.formData === "object" && !Array.isArray(copy.formData)) {
+    copy.formData = stripHeavy(copy.formData as Record<string, unknown>);
+  }
+  if (copy.fetchedData && typeof copy.fetchedData === "object" && !Array.isArray(copy.fetchedData)) {
+    copy.fetchedData = stripHeavy(copy.fetchedData as Record<string, unknown>);
+  }
+  if (copy.form && typeof copy.form === "object" && !Array.isArray(copy.form)) {
+    copy.form = stripHeavy(copy.form as Record<string, unknown>);
+  }
+  return copy;
+}
+
 async function triggerMailRouteWithLog(args: {
   leadId: number;
   milestoneIndex?: number;
@@ -473,13 +500,13 @@ async function triggerMailRouteWithLog(args: {
     cc,
   });
 
-  const body = Buffer.from(JSON.stringify(args.payload), "utf8");
+  const bodyStr = JSON.stringify(args.payload);
 
   try {
     const resp = await fetch(`${FRONTEND_BASE}${args.route}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body,
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+      body: bodyStr,
     });
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
@@ -507,7 +534,7 @@ async function triggerMailRouteWithLog(args: {
       route: args.route,
       taskName: args.taskName,
       visibility: args.visibility,
-      bodyBytes: body.byteLength,
+      bodyBytes: Buffer.byteLength(bodyStr, "utf8"),
       error,
     });
   }
@@ -584,7 +611,11 @@ async function triggerCustomerEmailForLead(
         subject: mailChainSubject,
         customerName,
         designerName,
-        leadPayload: payload,
+        leadPayload: sanitizeLeadPayloadForEmail(
+          payload && typeof payload === "object" && !Array.isArray(payload)
+            ? (payload as Record<string, unknown>)
+            : {},
+        ),
       },
     });
   } catch (err) {
