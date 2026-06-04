@@ -28,6 +28,10 @@ function getStatusDisplay(stage: string): "Active" | "Inactive" | "Cancelled" {
     return "Active";
 }
 
+function isCancelledLead(p: LeadshipTypes): boolean {
+    return getStatusDisplay(p.projectStage) === "Cancelled";
+}
+
 function passesWorkspaceStatusFilter(p: LeadshipTypes, statusTab: string): boolean {
     if (statusTab === SideDashboardStatus.All_Statuses) return true;
     if (statusTab === SideDashboardStatus.On_Hold) return !!p.isOnHold;
@@ -35,7 +39,7 @@ function passesWorkspaceStatusFilter(p: LeadshipTypes, statusTab: string): boole
         return !p.isOnHold && getStatusDisplay(p.projectStage) === "Active";
     }
     if (statusTab === SideDashboardStatus.Cancelled) {
-        return !p.isOnHold && getStatusDisplay(p.projectStage) === "Cancelled";
+        return isCancelledLead(p);
     }
     return true;
 }
@@ -387,12 +391,15 @@ export default function Dashboard() {
     const [showAddProjectModal, setShowAddProjectModal] = useState(false);
 
     const phaseFilteredProjects =
-        isSelected === "All Projects (10-60%)"
-            ? projects.filter((p) => {
-                  const phase = getPhaseBucket(p);
-                  return phase === "10-20%" || phase === "20-60%";
-              })
-            : projects.filter((p) => getPhaseBucket(p) === isSelected);
+        statusSelected === SideDashboardStatus.Cancelled
+            ? projects.filter(isCancelledLead)
+            : isSelected === "All Projects (10-60%)"
+              ? projects.filter((p) => {
+                    if (isCancelledLead(p)) return false;
+                    const phase = getPhaseBucket(p);
+                    return phase === "10-20%" || phase === "20-60%";
+                })
+              : projects.filter((p) => !isCancelledLead(p) && getPhaseBucket(p) === isSelected);
 
     const filteredProjects = phaseFilteredProjects.filter((p) =>
         passesWorkspaceStatusFilter(p, statusSelected),
@@ -646,9 +653,10 @@ export default function Dashboard() {
         if (res.ok && Array.isArray(data)) setProjects([...data].sort((a, b) => b.id - a.id));
     };
 
-    const openProlanceForLead = async (row: LeadshipTypes) => {
+    const handlePre10ProlanceRowClick = async (row: LeadshipTypes) => {
         const pid = row.prolanceProjectId != null ? Number(row.prolanceProjectId) : NaN;
-        if (Number.isFinite(pid) && pid >= 1) {
+        const hasProject = Number.isFinite(pid) && pid >= 1;
+        if (hasProject) {
             openProlanceBrowserForProjectId(pid);
             return;
         }
@@ -686,13 +694,10 @@ export default function Dashboard() {
                 }
             } else {
                 setBulkAssignMessage(
-                    `Prolance create returned OK; if no ID was parsed, open Prolance and link the project ID on the lead.${warnSuffix}`,
+                    `Prolance create returned OK; if no ID was parsed, link the project ID on the lead.${warnSuffix}`,
                 );
             }
             await refreshQueue();
-            if (createdProjectId != null) {
-                openProlanceBrowserForProjectId(createdProjectId);
-            }
         } catch (err) {
             setBulkAssignMessage(err instanceof Error ? err.message : "Prolance create failed");
         } finally {
@@ -1122,15 +1127,19 @@ export default function Dashboard() {
                                                     <button
                                                         type="button"
                                                         disabled={!sessionId || prolanceRowBusy}
-                                                        onClick={() => void openProlanceForLead(row)}
+                                                        onClick={() => void handlePre10ProlanceRowClick(row)}
                                                         title={
                                                             hasProject
                                                                 ? "Open this project in Prolance (browser)"
-                                                                : "Create Prolance project via API and save ID on this lead"
+                                                                : "Create Prolance project via Hub API and save ID on this lead"
                                                         }
                                                         className="rounded-lg border border-teal-600 bg-white px-3 py-2 text-xs font-semibold text-teal-800 shadow-sm hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-50"
                                                     >
-                                                        {prolanceRowBusy ? "Creating…" : "Create project"}
+                                                        {prolanceRowBusy
+                                                            ? "Creating…"
+                                                            : hasProject
+                                                              ? "Open Prolance"
+                                                              : "Create project"}
                                                     </button>
                                                 </td>
                                                 <td className="py-3 px-5">

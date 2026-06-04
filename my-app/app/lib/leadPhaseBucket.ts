@@ -4,7 +4,7 @@ import type { LeadshipTypes } from '@/app/Components/Types/Types';
 export function getStageBucket(stage: string): string {
   if (!stage) return 'Pre 10%';
   const s = stage.trim();
-  if (/^cancelled$/i.test(s)) return 'Pre 10%';
+  if (/^cancelled$/i.test(s)) return 'Cancelled';
   if (s === 'Inactive') return 'Pre 10%';
   if (s === 'Active') return '10-20%';
   if (s === '10-20%') return '10-20%';
@@ -29,8 +29,10 @@ export function getPhaseFromMilestone(
 
 /** Single source for phase bucket: prefer milestone-derived phase, else stage */
 export function getPhaseBucket(p: LeadshipTypes): string {
-  const fromMilestone = getPhaseFromMilestone(p.currentMilestoneIndex, p.currentMilestoneProgress);
   const fromStage = getStageBucket(p.projectStage);
+  if (fromStage === 'Cancelled') return 'Cancelled';
+
+  const fromMilestone = getPhaseFromMilestone(p.currentMilestoneIndex, p.currentMilestoneProgress);
 
   if (fromStage === '20-60%') {
     return '20-60%';

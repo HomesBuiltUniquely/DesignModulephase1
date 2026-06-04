@@ -5,8 +5,6 @@ import {
     createProlanceProjectFromForm,
     type ProlanceProjectFormFields,
 } from "@/app/lib/prolanceApiCreateProject";
-import { openProlanceBrowserForProjectId } from "@/app/lib/prolanceLinks";
-
 export type AddProjectFormValues = ProlanceProjectFormFields & {
     contactNo: string;
     clientEmail: string;
@@ -95,7 +93,6 @@ export function AddProjectModal({ open, appApiBase, sessionId, onClose, onSucces
                           }`
                         : String((leadBody && leadBody.message) || "Failed to save lead in CRM."),
                 );
-                if (prolanceId) openProlanceBrowserForProjectId(prolanceId);
                 return;
             }
 
@@ -107,7 +104,6 @@ export function AddProjectModal({ open, appApiBase, sessionId, onClose, onSucces
             onSuccess(msg);
             setForm(INITIAL);
             onClose();
-            if (prolanceId) openProlanceBrowserForProjectId(prolanceId);
         } catch {
             setError("Something went wrong. Please try again.");
         } finally {
