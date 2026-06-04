@@ -12,6 +12,7 @@ export { default as PopupMeetingCompleted } from './popups/PopupMeetingCompleted
 export { default as PopupDqc1Approval } from './popups/PopupDqc1Approval';
 export { default as PopupDqcDesignerView } from './popups/PopupDqcDesignerView';
 export { default as PopupD2MaskingRequest } from './popups/PopupD2MaskingRequest';
+export { default as PopupMmtFilesUploadApproval } from './popups/PopupMmtFilesUploadApproval';
 export { default as PopupDqcSubmission } from './popups/PopupDqcSubmission';
 export { default as DqcDesignerFeedbackCard } from './DqcDesignerFeedbackCard';
 export { default as PopupPlaceholder } from './popups/PopupPlaceholder';

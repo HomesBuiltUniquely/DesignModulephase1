@@ -3,6 +3,8 @@
 type Props = {
     projectName: string;
     projectManagerName?: string | null;
+    /** When true, show Admin acting on behalf of PM workflow. */
+    isAdminApprover?: boolean;
     onApprove: () => void;
     onClose: () => void;
 };
@@ -10,6 +12,7 @@ type Props = {
 export default function PopupProjectManagerApproval({
     projectName,
     projectManagerName,
+    isAdminApprover,
     onApprove,
     onClose,
 }: Props) {
@@ -22,8 +25,15 @@ export default function PopupProjectManagerApproval({
                 Review DQC 2 files and lead uploads as needed. When everything is in order, approve to release this
                 milestone and allow the team to proceed to the 40% payment stage.
             </p>
-            {projectManagerName && (
-                <p className="text-xs text-gray-500 mb-4">Signed in as assigned PM: {projectManagerName}</p>
+            {isAdminApprover ? (
+                <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
+                    You are approving as Admin
+                    {projectManagerName ? ` (assigned PM: ${projectManagerName})` : ''}.
+                </p>
+            ) : (
+                projectManagerName && (
+                    <p className="text-xs text-gray-500 mb-4">Signed in as assigned PM: {projectManagerName}</p>
+                )
             )}
             <div className="flex flex-wrap gap-3">
                 <button

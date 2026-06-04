@@ -48,9 +48,6 @@ export function buildProlanceCreateProjectBody(project: LeadshipTypes): Record<s
         payloadObj?.formData && typeof payloadObj.formData === "object"
             ? (payloadObj.formData as Record<string, unknown>)
             : null;
-    const explicitPartnerId = Number(
-        rawProj?.partnerID || formData?.partnerID || payloadObj?.partnerID,
-    );
     const body: Record<string, unknown> = {
         pName: extractString(project.projectName) || "Untitled Project",
         customer:
@@ -64,9 +61,6 @@ export function buildProlanceCreateProjectBody(project: LeadshipTypes): Record<s
         state:
             extractString(rawProj?.state) || extractString(formData?.state) || "Karnataka",
     };
-    if (Number.isFinite(explicitPartnerId) && explicitPartnerId > 0) {
-        body.partnerID = explicitPartnerId;
-    }
     return body;
 }
 

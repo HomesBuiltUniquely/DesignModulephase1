@@ -10,6 +10,9 @@ type MmtExecutive = { id: number; name: string; email: string };
 type Props = {
     leadId: number | null;
     sessionId: string | null;
+    userRole?: string;
+    /** Admin / MMT Manager: mark masking request step complete without re-submitting */
+    onAdminApprove?: () => void;
     onSubmit?: () => void;
 };
 
@@ -17,7 +20,14 @@ type Props = {
  * D2 - masking request raise: same as D1 MMT – masking date/time, assign Masking Executive (MMT), submit.
  * Creates a D2 assignment so the assigned MMT executive sees this lead in the D2 uploads queue.
  */
-export default function PopupD2MaskingRequest({ leadId, sessionId, onSubmit }: Props) {
+function canApproveMmtWorkflow(role: string | undefined): boolean {
+    const r = (role || '').toLowerCase();
+    return r === 'admin' || r === 'mmt_manager';
+}
+
+export default function PopupD2MaskingRequest({ leadId, sessionId, userRole, onAdminApprove, onSubmit }: Props) {
+    const canAdminApprove = canApproveMmtWorkflow(userRole);
+    const isAdmin = (userRole || '').toLowerCase() === 'admin';
     const [executives, setExecutives] = useState<MmtExecutive[]>([]);
     const [selectedId, setSelectedId] = useState<string>('');
     const [maskingDate, setMaskingDate] = useState<string>('');
@@ -140,6 +150,22 @@ export default function PopupD2MaskingRequest({ leadId, sessionId, onSubmit }: P
                     <div className="text-[12px] text-gray-500 italic p-2 pl-4">The customer will be notified automatically via SMS and Email once the D2 masking request is submitted</div>
                 </div>
                 {submitError && <p className="text-sm text-red-600 px-6 mt-2">{submitError}</p>}
+                {canAdminApprove && onAdminApprove && (
+                    <div className="mx-6 mt-4 p-3 rounded-lg border border-amber-200 bg-amber-50">
+                        <p className="text-xs text-amber-900 mb-2">
+                            {isAdmin
+                                ? 'Admin: approve this step if the D2 masking request was already raised (e.g. by designer or MMT).'
+                                : 'MMT Manager: confirm the masking request is ready to proceed.'}
+                        </p>
+                        <button
+                            type="button"
+                            onClick={onAdminApprove}
+                            className="px-4 py-2 bg-amber-700 text-white text-sm font-semibold rounded-lg hover:bg-amber-800"
+                        >
+                            Approve masking request
+                        </button>
+                    </div>
+                )}
                 <div className="bg-gray-100 w-full h-[80px] rounded-b-2xl">
                     <div className="h-[1px] bg-gray-200 w-full mt-10" />
                     <button type="button" onClick={handleSubmit} disabled={submitting || !selectedId} className="mt-5 ml-98 bg-blue-500 rounded-md w-[150px] py-1.5 h-[36px] text-white text-sm font-bold text-center items-end disabled:opacity-60">

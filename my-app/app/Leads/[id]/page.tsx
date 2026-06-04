@@ -21,6 +21,7 @@ import {
     PopupDqc1Approval,
     PopupDqcDesignerView,
     PopupD2MaskingRequest,
+    PopupMmtFilesUploadApproval,
     PopupDqcSubmission,
     PopupPlaceholder,
     Popup10pPaymentCollection,
@@ -65,6 +66,7 @@ export default function ProjectDetailPage() {
     const { user: authUser, sessionId, refreshUser, loading: authLoading } = useAuth();
     const projectId = params?.id ? Number(params.id) : null;
     const isMmtUser = ['mmt', 'mmt_manager', 'mmt_executive'].includes((authUser?.role || '').toLowerCase());
+    const canApproveMmtWorkflow = ['admin', 'mmt_manager'].includes((authUser?.role || '').toLowerCase());
     const viewDqc = searchParams.get('view') === 'dqc';
     const dqcStage = viewDqc ? (searchParams.get('stage') === 'dqc2' ? 'dqc2' as const : 'dqc1' as const) : null;
     const isDqcUser = ['dqc_manager', 'dqe'].includes((authUser?.role || '').toLowerCase());
@@ -1313,8 +1315,13 @@ export default function ProjectDetailPage() {
             }
             const role = (authUser?.role || '').toLowerCase();
             const pmId = project?.assigned_project_manager_id;
-            if (role !== 'project_manager' || !pmId || !authUser?.id || pmId !== authUser.id) {
-                setBlockedTaskMessage('Only the assigned project manager can open this approval step.');
+            const canPmApprove =
+                role === 'admin' ||
+                (role === 'project_manager' && pmId && authUser?.id && pmId === authUser.id);
+            if (!canPmApprove) {
+                setBlockedTaskMessage(
+                    'Only the assigned project manager or Admin can open this approval step.',
+                );
                 setTimeout(() => setBlockedTaskMessage(null), 4000);
                 return;
             }
@@ -2679,7 +2686,7 @@ export default function ProjectDetailPage() {
                                     canDelete={isMmtUser}
                                     uploadType={currentMilestoneIndex === 3 ? 'd2_masking' : undefined}
                                 />
-                                {!isMmtUser && (
+                                {!isMmtUser && !isDesigner && (
                                     <ChatCard
                                         cardClass={getCardClass('chat', 'xl:rounded-3xl xl:bg-purple-50 xl:row-span-1 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative')}
                                         onToggleMaximize={() => toggleMaximize('chat')}
@@ -3154,7 +3161,47 @@ export default function ProjectDetailPage() {
                         <PopupD2MaskingRequest
                             leadId={projectId}
                             sessionId={sessionId}
-                            onSubmit={() => { recordTaskComplete(3, 'D2 - masking request raise'); closePopup(); }}
+                            userRole={authUser?.role}
+                            onAdminApprove={
+                                canApproveMmtWorkflow
+                                    ? () => {
+                                          recordTaskComplete(3, 'D2 - masking request raise');
+                                          closePopup();
+                                      }
+                                    : undefined
+                            }
+                            onSubmit={() => {
+                                recordTaskComplete(3, 'D2 - masking request raise');
+                                closePopup();
+                            }}
+                        />
+                    )}
+                    {popupContext.milestoneIndex === 3 && popupContext.taskName === 'D2 - files upload' && (
+                        <PopupMmtFilesUploadApproval
+                            leadId={projectId}
+                            sessionId={sessionId}
+                            userRole={authUser?.role}
+                            uploadType="d2_masking"
+                            taskLabel="D2 - files upload"
+                            onApproved={() => {
+                                recordTaskComplete(3, 'D2 - files upload');
+                                setUploadsVersion((v) => v + 1);
+                            }}
+                            onClose={closePopup}
+                        />
+                    )}
+                    {popupContext.milestoneIndex === 0 && popupContext.taskName === 'D1 files upload' && canApproveMmtWorkflow && (
+                        <PopupMmtFilesUploadApproval
+                            leadId={projectId}
+                            sessionId={sessionId}
+                            userRole={authUser?.role}
+                            uploadType="d1"
+                            taskLabel="D1 files upload"
+                            onApproved={() => {
+                                recordTaskComplete(0, 'D1 files upload');
+                                setUploadsVersion((v) => v + 1);
+                            }}
+                            onClose={closePopup}
                         />
                     )}
                     {popupContext.milestoneIndex === 3 &&
@@ -3452,7 +3499,8 @@ export default function ProjectDetailPage() {
                     {popupContext.milestoneIndex === 4 && popupContext.taskName === 'Project manager approval' && project && (
                         <PopupProjectManagerApproval
                             projectName={project.projectName}
-                            projectManagerName={authUser?.name ?? project.projectManagerName ?? null}
+                            projectManagerName={project.projectManagerName ?? null}
+                            isAdminApprover={(authUser?.role || '').toLowerCase() === 'admin'}
                             onClose={closePopup}
                             onApprove={() => {
                                 recordTaskComplete(4, 'Project manager approval');

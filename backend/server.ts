@@ -2097,6 +2097,25 @@ function canAssignProjectManagerRole(role: string | null | undefined): boolean {
   );
 }
 
+/** Who may complete "Project manager approval" (assigned PM or Admin). */
+function canCompleteProjectManagerApproval(
+  role: string | null | undefined,
+  userId: number,
+  assignedPmId: number | null | undefined,
+): boolean {
+  const r = (role || "").toLowerCase();
+  if (r === "admin") return true;
+  if (r !== "project_manager") return false;
+  const pmId = assignedPmId != null ? Number(assignedPmId) : NaN;
+  return Number.isFinite(pmId) && pmId > 0 && pmId === userId;
+}
+
+/** Who may approve MMT D1/D2 masking uploads (pending → approved). */
+function canApproveMmtUploads(role: string | null | undefined): boolean {
+  const r = (role || "").toLowerCase();
+  return r === "mmt_manager" || r === "admin";
+}
+
 type ImportedPreview = {
   createdAt: number;
   rows: Record<string, unknown>[];
@@ -4231,17 +4250,15 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
     if (milestoneIndex === 4 && tNorm === "Project manager approval") {
       const user = await getUserFromSession(req);
       if (!user) return res.status(401).json({ message: "Unauthorized" });
-      const role = (user.role || "").toLowerCase();
-      if (role !== "project_manager") {
-        return res.status(403).json({ message: "Only the assigned Project Manager can complete this task" });
-      }
       const [lr] = await pool.query(
         "SELECT assigned_project_manager_id as pmId FROM leads WHERE id = ?",
         [id],
       );
       const pmId = (lr as any[])[0]?.pmId;
-      if (!pmId || Number(pmId) !== user.id) {
-        return res.status(403).json({ message: "You are not the assigned Project Manager for this lead" });
+      if (!canCompleteProjectManagerApproval(user.role, user.id, pmId)) {
+        return res.status(403).json({
+          message: "Only the assigned Project Manager or Admin can complete this task",
+        });
       }
     }
     if (milestoneIndex === 3 && tNorm === "Assign project manager") {
@@ -7432,7 +7449,7 @@ app.post(
       const user = await getUserFromSession(req);
       const uploaderId = user?.id ?? null;
       const role = (user?.role ?? "").toLowerCase();
-      const status = role === "mmt_manager" ? "approved" : "pending";
+      const status = role === "mmt_manager" || role === "admin" ? "approved" : "pending";
       const now = new Date();
       let s3Url: string | null = null;
       if (process.env.AWS_ACCESS_KEY_ID) {
@@ -7467,7 +7484,7 @@ app.post(
 
       // If the uploader is an MMT manager the upload is immediately approved →
       // auto-complete the corresponding task in lead_task_completions.
-      if (role === "mmt_manager") {
+      if (role === "mmt_manager" || role === "admin") {
         await pool.query(
           `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
            VALUES (?, ?, ?, ?)
@@ -7770,7 +7787,7 @@ app.get("/api/leads/:id/uploads", async (req: Request, res: Response) => {
   }
 });
 
-// MMT Manager only: approve an upload so it becomes visible to designers
+// MMT Manager or Admin: approve an upload so it becomes visible to designers
 app.post("/api/leads/:leadId/uploads/:uploadId/approve", async (req: Request, res: Response) => {
   const leadId = Number(req.params.leadId);
   const uploadId = Number(req.params.uploadId);
@@ -7779,8 +7796,9 @@ app.post("/api/leads/:leadId/uploads/:uploadId/approve", async (req: Request, re
   try {
     const user = await getUserFromSession(req);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
-    if ((user.role || "").toLowerCase() !== "mmt_manager")
-      return res.status(403).json({ message: "Only MMT Manager can approve uploads" });
+    if (!canApproveMmtUploads(user.role)) {
+      return res.status(403).json({ message: "Only MMT Manager or Admin can approve uploads" });
+    }
 
     // Fetch upload_type before approving so we can mark the correct task complete
     const [uploadRows] = await pool.query(
@@ -7812,6 +7830,8 @@ app.post("/api/leads/:leadId/uploads/:uploadId/approve", async (req: Request, re
     );
 
     // Log the approval in lead history
+    const approverLabel =
+      (user.role || "").toLowerCase() === "admin" ? "Admin" : "MMT Manager";
     const approvalEv = {
       id: `upload-approve-${Date.now()}`,
       type: "note",
@@ -7819,9 +7839,9 @@ app.post("/api/leads/:leadId/uploads/:uploadId/approve", async (req: Request, re
       milestoneName: isD2Upload ? "D2 SITE MASKING" : "D1 SITE MEASUREMENT",
       timestamp: now.toISOString(),
       description: isD2Upload
-        ? "D2 masking files approved by MMT Manager."
-        : "MMT D1 files approved by MMT Manager.",
-      user: { name: user.name ?? "MMT Manager" },
+        ? `D2 masking files approved by ${approverLabel}.`
+        : `MMT D1 files approved by ${approverLabel}.`,
+      user: { name: user.name ?? approverLabel },
       details: { kind: "note", noteText: `Upload #${uploadId} approved.` },
     };
     await addLeadHistoryEvent(leadId, approvalEv);
@@ -9225,6 +9245,10 @@ app.post("/api/leads/:id/d2-masking-request", async (req: Request, res: Response
   try {
     const user = await getUserFromSession(req);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user.role || "").toLowerCase();
+    if (role === "mmt_executive") {
+      return res.status(403).json({ message: "MMT executives cannot raise masking requests" });
+    }
     const { maskingExecutiveId, maskingDate, maskingTime } = req.body || {};
     const execId = Number(maskingExecutiveId);
     if (!execId) return res.status(400).json({ message: "maskingExecutiveId is required" });

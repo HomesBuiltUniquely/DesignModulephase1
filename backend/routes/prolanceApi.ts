@@ -171,19 +171,11 @@ async function resolvePartnerCredentialForUser(pool: Pool, userId: number): Prom
 
 type PartnerCredSource = "body" | "per_user" | "env_fallback" | "org_shared";
 
-/** Hub-wide Prolance partner ID (same for all CRM users on create). */
-function readOrgPartnerId(): number | null {
-  const fromEnv = Number(envTrim("PROLANCE_ORG_PARTNER_ID") || envTrim("PROLANCE_PARTNER_ID"));
-  if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
-  return null;
-}
-
 /**
- * Partner login + session for project create: always org account (PROLANCE_PARTNER_LOGIN_ID),
- * always org partnerID (PROLANCE_ORG_PARTNER_ID or ID returned for that login).
- * Designer-specific partner logins are not used for create — they return different IDs and Prolance returns 401.
+ * Partner login for project create — same sequence as Postman:
+ * hubapi token → CRM user's partner LoginAPI → create with that session's partnerID.
  */
-async function resolveOrgPartnerLoginForCreate(
+async function resolvePartnerLoginForCreate(
   pool: Pool,
   userId: number,
 ): Promise<
@@ -198,97 +190,7 @@ async function resolveOrgPartnerLoginForCreate(
     }
   | { ok: false; message: string; status: number; credSource?: PartnerCredSource }
 > {
-  void pool;
-  void userId;
-  const apiKey = envTrim("PROLANCE_API_KEY");
-  if (!apiKey) {
-    return {
-      ok: false,
-      message: "Origin API key is not configured. Set PROLANCE_API_KEY in backend/.env (or env.sh on EC2), then restart the server.",
-      status: 500,
-    };
-  }
-
-  const username = asString(envTrim("PROLANCE_USERNAME"));
-  const password = asString(envTrim("PROLANCE_PASSWORD"));
-  if (!username || !password) {
-    return { ok: false, message: "Prolance API credentials are not configured", status: 500 };
-  }
-
-  const tokenResp = await proxiedFetch({
-    method: "POST",
-    path: "/token",
-    asForm: true,
-    body: { grant_type: "password", username, password },
-  });
-  const tokenObj =
-    tokenResp.data && typeof tokenResp.data === "object" ? (tokenResp.data as Record<string, unknown>) : {};
-  const token =
-    asString(tokenObj.access_token) || asString(tokenObj.accessToken) || asString(tokenObj.token);
-  if (!token || tokenResp.status >= 400) {
-    return { ok: false, message: "Failed to generate Prolance token", status: tokenResp.status || 500 };
-  }
-
-  const loginID = asString(envTrim("PROLANCE_PARTNER_LOGIN_ID"));
-  const partnerPassword = asString(envTrim("PROLANCE_PARTNER_PASSWORD"));
-  const credSource: PartnerCredSource = "org_shared";
-  if (!loginID || !partnerPassword) {
-    return {
-      ok: false,
-      message: "PROLANCE_PARTNER_LOGIN_ID and PROLANCE_PARTNER_PASSWORD are required for project create",
-      status: 500,
-      credSource,
-    };
-  }
-
-  const partnerResp = await proxiedFetch({
-    method: "POST",
-    path: "/Origin/Partners/LoginAPI",
-    token,
-    includeOriginApiHeaders: true,
-    apiKey,
-    body: { LoginID: loginID, Password: partnerPassword, LoginFrom: 1 },
-  });
-
-  if (partnerResp.status >= 400) {
-    console.error("[prolance-org-partner-login]", { userId, status: partnerResp.status });
-    return {
-      ok: false,
-      message: "Prolance org partner login failed",
-      status: partnerResp.status,
-      credSource,
-    };
-  }
-
-  const partnerFields = extractPartnerLoginFields(partnerResp.data);
-  if (!partnerFields) {
-    return {
-      ok: false,
-      message: "Org partner login did not return sessionID/partnerID",
-      status: 502,
-      credSource,
-    };
-  }
-
-  const orgPartnerId = readOrgPartnerId() ?? partnerFields.partnerID;
-
-  console.log("[prolance-org-partner-login]", {
-    userId,
-    credSource,
-    loginId: maskValue(loginID, 4, 8),
-    partnerID: orgPartnerId,
-    sessionFromLogin: partnerFields.partnerID,
-  });
-
-  return {
-    ok: true,
-    token,
-    apiKey,
-    originSessionId: partnerFields.sessionID,
-    partnerID: orgPartnerId,
-    credSource,
-    loginId: loginID,
-  };
+  return resolvePartnerLoginForUser(pool, userId);
 }
 
 async function resolvePartnerLoginForUser(
@@ -421,7 +323,8 @@ async function prolanceCreateProjectUpstream(params: {
   body: Record<string, unknown>;
 }): Promise<{ status: number; data: unknown; path: string; attempt: string }> {
   const path = "/Origin/Projects/Create";
-  let upstream = await proxiedFetch({
+  // Match Postman: bearer + OriginSessionID + OriginAPIKey (no session-only retry).
+  const upstream = await proxiedFetch({
     method: "PUT",
     path,
     token: params.token,
@@ -430,20 +333,7 @@ async function prolanceCreateProjectUpstream(params: {
     apiKey: params.apiKey,
     body: params.body,
   });
-  let attempt = "create+bearer";
-  if (upstream.status >= 400 || isProlanceAuthDenied(upstream)) {
-    upstream = await proxiedFetch({
-      method: "PUT",
-      path,
-      token: null,
-      originSessionId: params.originSessionId,
-      includeOriginApiHeaders: true,
-      apiKey: params.apiKey,
-      body: params.body,
-    });
-    attempt = "create+sessionOnly";
-  }
-  return { ...upstream, path, attempt };
+  return { ...upstream, path, attempt: "create+bearer" };
 }
 
 function extractCreatedProjectId(v: unknown): number | null {
@@ -1105,8 +995,8 @@ export function registerProlanceRoutes(
   });
 
   /**
-   * Create a Prolance project under the org partner account (same partnerID for all CRM users).
-   * Uses PROLANCE_PARTNER_LOGIN_ID + PROLANCE_ORG_PARTNER_ID (default 23226), not per-designer logins.
+   * Create a Prolance project as the logged-in CRM user (per-user partner creds from env/file).
+   * partnerID always comes from the partner LoginAPI response for that user (Postman parity).
    */
   app.post(`${TEST_PREFIX}/projects/create-as-user`, async (req: Request, res: Response) => {
     const user = await requireUser(req, res);
@@ -1117,19 +1007,14 @@ export function registerProlanceRoutes(
         ? (req.body as Record<string, unknown>)
         : {};
     const createBody: Record<string, unknown> = {
-      partnerID: 0,
       pName: asString(body.pName) || "Untitled Project",
       customer: asString(body.customer) || "Customer",
       city: asString(body.city) || "Bengaluru",
       state: asString(body.state) || "Karnataka",
     };
-    const explicitPartner = Number(body.partnerID ?? body.partnerId);
-    if (Number.isFinite(explicitPartner) && explicitPartner > 0) {
-      createBody.partnerID = explicitPartner;
-    }
 
     try {
-      const login = await resolveOrgPartnerLoginForCreate(pool, user.id);
+      const login = await resolvePartnerLoginForCreate(pool, user.id);
       if (!login.ok) {
         return res.status(login.status).json({
           message: login.message,
@@ -1186,7 +1071,6 @@ export function registerProlanceRoutes(
   });
 
   // Collection: PUT {{base_url}}/Origin/Projects/Create
-  // Org partner login + shared partnerID on every request (not per CRM user).
   app.put(`${TEST_PREFIX}/projects/create`, async (req: Request, res: Response) => {
     const user = await requireUser(req, res);
     if (!user) return;
@@ -1203,12 +1087,12 @@ export function registerProlanceRoutes(
         state: asString(raw.state) || "Karnataka",
       };
 
-      const login = await resolveOrgPartnerLoginForCreate(pool, user.id);
+      const login = await resolvePartnerLoginForCreate(pool, user.id);
       if (!login.ok) {
         return res.status(login.status).json({
           message: login.message,
           credSource: login.credSource,
-          hint: "Org partner login failed. Check PROLANCE_PARTNER_LOGIN_ID/PASSWORD and PROLANCE_ORG_PARTNER_ID.",
+          hint: "Partner login failed. Map the CRM user's email in PROLANCE_PARTNER_CREDENTIALS_FILE (same LoginID/password as Postman).",
         });
       }
 

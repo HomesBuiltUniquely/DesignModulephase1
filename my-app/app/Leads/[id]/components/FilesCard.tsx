@@ -12,7 +12,7 @@ type Props = {
     leadId: number | null;
     sessionId: string | null;
     canUpload?: boolean;
-    /** When 'mmt_manager', show Approve button for pending uploads. */
+    /** When mmt_manager or admin, show Approve button for pending uploads. */
     userRole?: string;
     /** When true (MMT), show Delete button so they can remove and re-upload. */
     canDelete?: boolean;
@@ -25,7 +25,7 @@ type ZipEntry = { path: string; size: number };
 type UploadRow = { id: number; originalName: string; uploadedAt: string; status?: string };
 
 /**
- * Files Uploaded card. Designers see only approved uploads. MMT Executive/Manager see all; Manager can approve.
+ * Files Uploaded card. Designers see only approved uploads. MMT Executive/Manager see all; Manager or Admin can approve.
  */
 export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, leadId, sessionId, canUpload, userRole, canDelete, uploadType }: Props) {
     const [uploads, setUploads] = useState<UploadRow[]>([]);
@@ -44,7 +44,8 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
         error?: string;
     } | null>(null);
     const fileRef = useRef<HTMLInputElement | null>(null);
-    const isMmtManager = (userRole || "").toLowerCase() === "mmt_manager";
+    const roleLower = (userRole || "").toLowerCase();
+    const canApproveUploads = roleLower === "mmt_manager" || roleLower === "admin";
 
     const authHeaders = useMemo(() => {
         const headers: Record<string, string> = {};
@@ -245,7 +246,7 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
                                         <div className="text-xs text-gray-600">{new Date(u.uploadedAt).toLocaleString()}</div>
                                     </div>
                                     <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
-                                        {isMmtManager && u.status === 'pending' && (
+                                        {canApproveUploads && u.status === 'pending' && (
                                             <button
                                                 type="button"
                                                 onClick={() => onApprove(u.id)}
