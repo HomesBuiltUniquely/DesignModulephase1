@@ -70,6 +70,60 @@ export function buildProlanceCreateProjectBody(project: LeadshipTypes): Record<s
     return body;
 }
 
+export type ProlanceProjectFormFields = {
+    pName: string;
+    customer: string;
+    city: string;
+    state: string;
+};
+
+export async function createProlanceProjectFromForm(params: {
+    appApiBase: string;
+    sessionId: string;
+    fields: ProlanceProjectFormFields;
+}): Promise<CreateProlanceProjectApiResult> {
+    const API = params.appApiBase.replace(/\/$/, "");
+    const appHeaders: Record<string, string> = {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${params.sessionId}`,
+    };
+    try {
+        const res = await fetch(`${API}/api/prolance-test/projects/create-as-user`, {
+            method: "POST",
+            headers: appHeaders,
+            body: JSON.stringify({
+                pName: params.fields.pName.trim(),
+                customer: params.fields.customer.trim(),
+                city: params.fields.city.trim() || "Bengaluru",
+                state: params.fields.state.trim() || "Karnataka",
+            }),
+        });
+        const txt = await res.text();
+        let body: unknown = null;
+        try {
+            body = txt ? JSON.parse(txt) : null;
+        } catch {
+            body = txt;
+        }
+        const b = body && typeof body === "object" ? (body as Record<string, unknown>) : null;
+        if (!res.ok) {
+            const msg =
+                (b && (b.message || b.error)) ||
+                `Create project failed (HTTP ${res.status}).`;
+            return { ok: false, message: String(msg) };
+        }
+        const createdProjectId =
+            (b?.createdProjectId != null && Number.isFinite(Number(b.createdProjectId))
+                ? Number(b.createdProjectId)
+                : null) ?? extractProjectId(body);
+        const warning =
+            typeof b?.warning === "string" && b.warning.trim() ? b.warning.trim() : null;
+        return { ok: true, createdProjectId, upstream: body, warning };
+    } catch {
+        return { ok: false, message: "Failed to create Prolance project." };
+    }
+}
+
 export async function createProlanceProjectViaApi(params: {
     appApiBase: string;
     sessionId: string;

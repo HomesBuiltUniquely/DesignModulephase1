@@ -17,6 +17,7 @@ import {
 } from "@/app/lib/prolanceGetQuotePersistSnapshot";
 import { openProlanceBrowserForProjectId } from "@/app/lib/prolanceLinks";
 import { Pre10LeadViewModal } from "./Pre10LeadViewModal";
+import { AddProjectModal } from "./AddProjectModal";
 
 // Stage column: Active / Inactive (sales) / Cancelled (TDM admin DGM)
 function getStatusDisplay(stage: string): "Active" | "Inactive" | "Cancelled" {
@@ -383,6 +384,7 @@ export default function Dashboard() {
     /** Lead shown in View popup (Pre 10%, 10–20%, 20–60%) */
     const [viewLead, setViewLead] = useState<LeadshipTypes | null>(null);
     const [showFinancePopup, setShowFinancePopup] = useState(false);
+    const [showAddProjectModal, setShowAddProjectModal] = useState(false);
 
     const phaseFilteredProjects =
         isSelected === "All Projects (10-60%)"
@@ -688,11 +690,28 @@ export default function Dashboard() {
                 );
             }
             await refreshQueue();
+            if (createdProjectId != null) {
+                openProlanceBrowserForProjectId(createdProjectId);
+            }
         } catch (err) {
             setBulkAssignMessage(err instanceof Error ? err.message : "Prolance create failed");
         } finally {
             setProlanceCreateLeadId(null);
         }
+    };
+
+    const handleAddProjectClick = () => {
+        if (!sessionId) {
+            window.alert("Please sign in to create a project.");
+            return;
+        }
+        setShowAddProjectModal(true);
+    };
+
+    const handleAddProjectFormSuccess = async (message: string) => {
+        setIsSelected(SideDashboard.Pre_10);
+        setBulkAssignMessage(message);
+        await refreshQueue();
     };
 
     const assignSingleLead = async (leadId: number) => {
@@ -1608,7 +1627,13 @@ export default function Dashboard() {
                     </div>
                                             )}
                                         </div>
-                                        <button type="button" className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700">
+                                        <button
+                                            type="button"
+                                            disabled={!sessionId}
+                                            onClick={handleAddProjectClick}
+                                            title="Fill a form to create a Prolance project and add it to Pre 10%"
+                                            className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
                                             + Add Project
                                         </button>
                                         {canImportLeads && (
@@ -1727,6 +1752,19 @@ export default function Dashboard() {
                                         )}
                                     </div>
                                 )}
+                                {bulkAssignMessage && !canImportLeads && (
+                                    <p
+                                        className={`rounded-lg border px-4 py-2 text-sm ${
+                                            bulkAssignMessage.toLowerCase().includes("fail") ||
+                                            bulkAssignMessage.toLowerCase().includes("error")
+                                                ? "border-red-200 bg-red-50 text-red-800"
+                                                : "border-teal-200 bg-teal-50 text-teal-900"
+                                        }`}
+                                        role="status"
+                                    >
+                                        {bulkAssignMessage}
+                                    </p>
+                                )}
                                 {renderContent()}
                             </div>
                         ) : (
@@ -1779,6 +1817,15 @@ export default function Dashboard() {
                     lead={viewLead}
                     timeSlotLabel={formatLeadTimeSlot(viewLead)}
                     onClose={() => setViewLead(null)}
+                />
+            ) : null}
+            {showAddProjectModal && sessionId ? (
+                <AddProjectModal
+                    open={showAddProjectModal}
+                    appApiBase={API}
+                    sessionId={sessionId}
+                    onClose={() => setShowAddProjectModal(false)}
+                    onSuccess={handleAddProjectFormSuccess}
                 />
             ) : null}
         </div>

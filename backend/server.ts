@@ -24,7 +24,8 @@ function loadEnvFile() {
     if (!trimmed || trimmed.startsWith("#")) return;
     const idx = trimmed.indexOf("=");
     if (idx === -1) return;
-    const key = trimmed.slice(0, idx).trim();
+    let key = trimmed.slice(0, idx).trim();
+    if (key.startsWith("export ")) key = key.slice(7).trim();
     let value = trimmed.slice(idx + 1).trim();
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
       value = value.slice(1, -1);
@@ -126,7 +127,7 @@ app.get("/api/health", (_req, res) => {
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "Root@123",
+  password: process.env.DB_PASSWORD || "root@root",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -10080,6 +10081,104 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("lead detail error", err);
     return res.status(500).json({ message: "Failed to load lead" });
+  }
+});
+
+// Dashboard form: new Pre 10% lead + optional Prolance project ID (logged-in designer/admin).
+app.post("/api/leads/manual-create", async (req: Request, res: Response) => {
+  const user = await getUserFromSession(req);
+  if (!user) return res.status(401).json({ message: "Unauthorized" });
+
+  const role = (user.role || "").toLowerCase();
+  const allowed = [
+    "admin",
+    "designer",
+    "design_manager",
+    "territorial_design_manager",
+    "deputy_general_manager",
+  ];
+  if (!allowed.includes(role)) {
+    return res.status(403).json({ message: "You do not have permission to create leads" });
+  }
+
+  const body = (req.body || {}) as Record<string, unknown>;
+  const projectName = String(body.projectName || body.pName || "").trim();
+  const customerName = String(body.customerName || body.customer || "").trim();
+  if (!projectName) return res.status(400).json({ message: "projectName is required" });
+  if (!customerName) return res.status(400).json({ message: "customerName is required" });
+
+  const city = String(body.city || "Bengaluru").trim();
+  const state = String(body.state || "Karnataka").trim();
+  const contactNo = String(body.contactNo || body.phone || "").trim() || null;
+  const clientEmail = String(body.clientEmail || body.email || "").trim() || null;
+
+  let prolanceProjectId: number | null = null;
+  if (body.prolanceProjectId != null && body.prolanceProjectId !== "") {
+    const n = Number(body.prolanceProjectId);
+    if (!Number.isFinite(n) || n < 1) {
+      return res.status(400).json({ message: "Invalid prolanceProjectId" });
+    }
+    prolanceProjectId = n;
+  }
+
+  let assignedDesignerId: number | null = null;
+  if (role === "designer") {
+    assignedDesignerId = user.id;
+  } else if (body.assignedDesignerId != null && body.assignedDesignerId !== "") {
+    const n = Number(body.assignedDesignerId);
+    if (Number.isFinite(n) && n >= 1) assignedDesignerId = n;
+  }
+
+  const now = new Date();
+  const payloadToPersist = {
+    source: "manual_create_dashboard",
+    createdByUserId: user.id,
+    createdByEmail: user.email,
+    formData: {
+      customer_name: customerName,
+      city,
+      state,
+      co_no: contactNo || "",
+      email: clientEmail || "",
+      status_of_project: "Pre 10%",
+      designer_name: user.name || "",
+    },
+  };
+
+  try {
+    const [result] = await pool.query(
+      `INSERT INTO leads
+       (pid, project_name, project_stage, contact_no, client_email,
+        is_on_hold, resume_at, create_at, update_at, payload, assigned_designer_id, prolance_project_id)
+       VALUES ('', ?, 'Pre 10%', ?, ?, 0, NULL, ?, ?, ?, ?, ?)`,
+      [
+        projectName,
+        contactNo,
+        clientEmail,
+        now,
+        now,
+        JSON.stringify(payloadToPersist),
+        assignedDesignerId,
+        prolanceProjectId,
+      ],
+    );
+    const leadId = Number((result as { insertId?: number }).insertId);
+    const pid = `HUB-${leadId}`;
+    await pool.query("UPDATE leads SET pid = ? WHERE id = ?", [pid, leadId]);
+
+    return res.status(201).json({
+      ok: true,
+      leadId,
+      pid,
+      projectName,
+      projectStage: "Pre 10%",
+      prolanceProjectId,
+      assignedDesignerId,
+      message: "Lead created",
+    });
+  } catch (err) {
+    console.error("manual-create lead error", err);
+    return res.status(500).json({ message: "Failed to create lead" });
   }
 });
 

@@ -188,7 +188,13 @@ async function resolvePartnerLoginForUser(
   | { ok: false; message: string; status: number; credSource?: PartnerCredSource }
 > {
   const apiKey = envTrim("PROLANCE_API_KEY");
-  if (!apiKey) return { ok: false, message: "Origin API key is not configured", status: 500 };
+  if (!apiKey) {
+    return {
+      ok: false,
+      message: "Origin API key is not configured. Set PROLANCE_API_KEY in backend/.env (or env.sh on EC2), then restart the server.",
+      status: 500,
+    };
+  }
 
   const username = asString(envTrim("PROLANCE_USERNAME"));
   const password = asString(envTrim("PROLANCE_PASSWORD"));
