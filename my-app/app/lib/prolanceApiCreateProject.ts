@@ -2,11 +2,11 @@ import type { LeadshipTypes } from "@/app/Components/Types/Types";
 
 /**
  * Creates a Prolance project through the Hub API, which proxies to
- * PUT https://api.prolance.design/Origin/V2/Projects/Create (see backend `prolanceApi.ts`).
+ * PUT https://api.prolance.design/Origin/Projects/Create (see backend `prolanceApi.ts`).
  */
 
 export type CreateProlanceProjectApiResult =
-    | { ok: true; createdProjectId: number | null; upstream: unknown }
+    | { ok: true; createdProjectId: number | null; upstream: unknown; warning?: string | null }
     | { ok: false; message: string };
 
 function extractString(v: unknown): string | null {
@@ -48,11 +48,10 @@ export function buildProlanceCreateProjectBody(project: LeadshipTypes): Record<s
         payloadObj?.formData && typeof payloadObj.formData === "object"
             ? (payloadObj.formData as Record<string, unknown>)
             : null;
-    const partnerID =
-        Number(rawProj?.partnerID || formData?.partnerID || payloadObj?.partnerID || 23226) || 23226;
-
-    return {
-        partnerID,
+    const explicitPartnerId = Number(
+        rawProj?.partnerID || formData?.partnerID || payloadObj?.partnerID,
+    );
+    const body: Record<string, unknown> = {
         pName: extractString(project.projectName) || "Untitled Project",
         customer:
             extractString(rawProj?.customer) ||
@@ -64,11 +63,11 @@ export function buildProlanceCreateProjectBody(project: LeadshipTypes): Record<s
             extractString(rawProj?.city) || extractString(formData?.city) || "Bengaluru",
         state:
             extractString(rawProj?.state) || extractString(formData?.state) || "Karnataka",
-        projectType:
-            extractString(rawProj?.projectType) ||
-            extractString(formData?.projectType) ||
-            "CYO",
     };
+    if (Number.isFinite(explicitPartnerId) && explicitPartnerId > 0) {
+        body.partnerID = explicitPartnerId;
+    }
+    return body;
 }
 
 export async function createProlanceProjectViaApi(params: {
@@ -83,81 +82,10 @@ export async function createProlanceProjectViaApi(params: {
     };
 
     try {
-        const tokenRes = await fetch(`${API}/api/prolance-test/token`, {
+        const payload = buildProlanceCreateProjectBody(params.project);
+        const res = await fetch(`${API}/api/prolance-test/projects/create-as-user`, {
             method: "POST",
             headers: appHeaders,
-            body: JSON.stringify({}),
-        });
-        const tokenText = await tokenRes.text();
-        let tokenBody: Record<string, unknown> | string | null = null;
-        try {
-            tokenBody = tokenText ? (JSON.parse(tokenText) as Record<string, unknown>) : null;
-        } catch {
-            tokenBody = tokenText;
-        }
-        const prolanceToken =
-            (tokenBody &&
-                typeof tokenBody === "object" &&
-                (tokenBody.access_token || tokenBody.accessToken || tokenBody.token)) ||
-            "";
-        if (!tokenRes.ok || !String(prolanceToken).trim()) {
-            const msg =
-                (tokenBody && typeof tokenBody === "object" && (tokenBody.message || tokenBody.error)) ||
-                "Failed to generate Prolance token.";
-            return { ok: false, message: String(msg) };
-        }
-
-        const partnerRes = await fetch(`${API}/api/prolance-test/partners/login`, {
-            method: "POST",
-            headers: {
-                ...appHeaders,
-                "X-Prolance-Token": String(prolanceToken).trim(),
-            },
-            body: JSON.stringify({}),
-        });
-        const partnerText = await partnerRes.text();
-        let partnerBody: Record<string, unknown> | string | null = null;
-        try {
-            partnerBody = partnerText ? (JSON.parse(partnerText) as Record<string, unknown>) : null;
-        } catch {
-            partnerBody = partnerText;
-        }
-        const partnerData0 =
-            partnerBody && typeof partnerBody === "object" && Array.isArray(partnerBody.data)
-                ? (partnerBody.data as unknown[])[0]
-                : null;
-        const originSessionID =
-            (partnerData0 &&
-                typeof partnerData0 === "object" &&
-                ((partnerData0 as Record<string, unknown>).sessionID ||
-                    (partnerData0 as Record<string, unknown>).sessionId)) ||
-            "";
-        const partnerIDFromLogin =
-            partnerData0 && typeof partnerData0 === "object"
-                ? (partnerData0 as Record<string, unknown>).partnerID ??
-                  (partnerData0 as Record<string, unknown>).partnerId
-                : null;
-
-        if (!partnerRes.ok || !String(originSessionID).trim()) {
-            const msg =
-                (partnerBody && typeof partnerBody === "object" && (partnerBody.message || partnerBody.error)) ||
-                "Failed to login partner / fetch origin session.";
-            return { ok: false, message: String(msg) };
-        }
-
-        const payload = buildProlanceCreateProjectBody(params.project);
-        if (partnerIDFromLogin != null && Number(partnerIDFromLogin)) {
-            payload.partnerID = Number(partnerIDFromLogin);
-        }
-
-        const createHeaders: Record<string, string> = {
-            ...appHeaders,
-            "X-Prolance-Token": String(prolanceToken).trim(),
-            "X-Prolance-Origin-Session": String(originSessionID).trim(),
-        };
-        const res = await fetch(`${API}/api/prolance-test/projects/create`, {
-            method: "PUT",
-            headers: createHeaders,
             body: JSON.stringify(payload),
         });
         const txt = await res.text();
@@ -167,14 +95,25 @@ export async function createProlanceProjectViaApi(params: {
         } catch {
             body = txt;
         }
+        const b = body && typeof body === "object" ? (body as Record<string, unknown>) : null;
         if (!res.ok) {
-            const b = body && typeof body === "object" ? (body as Record<string, unknown>) : null;
+            const missing = b?.missing ? ` (${String(b.missing)} missing)` : "";
+            const credHint =
+                b?.credSource === "env_fallback"
+                    ? " Project may have been created under the admin Prolance account."
+                    : "";
             const msg =
-                (b && (b.message || b.error)) || `Create project failed (HTTP ${res.status}).`;
+                (b && (b.message || b.error)) ||
+                `Create project failed (HTTP ${res.status})${missing}.${credHint}`;
             return { ok: false, message: String(msg) };
         }
-        const createdProjectId = extractProjectId(body);
-        return { ok: true, createdProjectId, upstream: body };
+        const createdProjectId =
+            (b?.createdProjectId != null && Number.isFinite(Number(b.createdProjectId))
+                ? Number(b.createdProjectId)
+                : null) ?? extractProjectId(body);
+        const warning =
+            typeof b?.warning === "string" && b.warning.trim() ? b.warning.trim() : null;
+        return { ok: true, createdProjectId, upstream: body, warning };
     } catch {
         return { ok: false, message: "Failed to trigger Prolance create project." };
     }

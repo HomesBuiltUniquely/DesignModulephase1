@@ -5,11 +5,73 @@
  * GET  /api/customer/:customerNumber — lookup by URL path (unchanged).
  * GET  /api/customer?phone=... — lookup by query (optional).
  *
+ * External project (poll phones → create lead elsewhere):
+ *   GET /api/customer/phones/recent?limit=50&since=2026-06-01T00:00:00.000Z
+ *   GET /api/customer/records/:id
+ *   Header: X-External-Api-Key: <EXTERNAL_LEAD_INGEST_API_KEY>
+ *
  * MSG91 webhook URL: https://api.hubinterior.com/api/customer
  * Body (phone only): { "customer_mobile": "919876543210" }
  */
-import type { Express, Request, Response } from "express";
+import type { Express, Request, Response, NextFunction } from "express";
 import type { Pool } from "mysql2/promise";
+
+function envTrim(name: string): string {
+  return (process.env[name] || "").trim();
+}
+
+function parseExternalApiKey(req: Request): string {
+  const header = String(req.headers["x-external-api-key"] || "").trim();
+  const bearer = String(req.headers.authorization || "")
+    .replace(/^Bearer\s+/i, "")
+    .trim();
+  return header || bearer;
+}
+
+/** Same key as POST /api/leads/external-intake (set in env.sh on EC2). */
+function requireExternalApiKey(req: Request, res: Response, next: NextFunction): void {
+  const expected =
+    envTrim("EXTERNAL_LEAD_INGEST_API_KEY") || envTrim("CUSTOMER_NUMBERS_API_KEY");
+  if (!expected) {
+    res.status(503).json({
+      message:
+        "External customer API is disabled (set EXTERNAL_LEAD_INGEST_API_KEY or CUSTOMER_NUMBERS_API_KEY)",
+    });
+    return;
+  }
+  const provided = parseExternalApiKey(req);
+  if (!provided || provided !== expected) {
+    res.status(401).json({ message: "Unauthorized" });
+    return;
+  }
+  next();
+}
+
+function parsePayloadField(payload: unknown): unknown {
+  if (typeof payload === "string") {
+    try {
+      return JSON.parse(payload);
+    } catch {
+      return payload;
+    }
+  }
+  return payload;
+}
+
+function mapCustomerRecordRow(r: {
+  id: number;
+  customerNumber: string;
+  payload: unknown;
+  createdAt: Date | string;
+}) {
+  return {
+    id: r.id,
+    phone: r.customerNumber,
+    customerNumber: r.customerNumber,
+    payload: parsePayloadField(r.payload),
+    createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
+  };
+}
 
 function parsePathCustomerNumber(req: Request): string | null {
   const raw = req.params.customerNumber;
@@ -95,6 +157,92 @@ async function lookupByCustomerNumber(pool: Pool, customerNumber: string, res: R
 }
 
 export function registerCustomerNumberRoutes(app: Express, pool: Pool): void {
+  /** List phones saved via POST /api/customer (for other projects to poll and create leads). */
+  app.get("/api/customer/phones/recent", requireExternalApiKey, async (req: Request, res: Response) => {
+    const limitRaw = parseInt(String(req.query.limit ?? "50"), 10);
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 50;
+    const since =
+      typeof req.query.since === "string" && req.query.since.trim()
+        ? req.query.since.trim()
+        : null;
+    const sinceIdRaw = parseInt(String(req.query.sinceId ?? ""), 10);
+    const sinceId = Number.isFinite(sinceIdRaw) && sinceIdRaw > 0 ? sinceIdRaw : null;
+    const distinct =
+      String(req.query.distinct ?? "").toLowerCase() === "1" ||
+      String(req.query.distinct ?? "").toLowerCase() === "true";
+
+    try {
+      const where: string[] = [];
+      const params: unknown[] = [];
+      if (since) {
+        where.push("created_at > ?");
+        params.push(since);
+      }
+      if (sinceId != null) {
+        where.push("id > ?");
+        params.push(sinceId);
+      }
+      const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+      if (distinct) {
+        const [rows] = await pool.query(
+          `SELECT r.id, r.customer_number AS customerNumber, r.payload, r.created_at AS createdAt
+           FROM customer_api_records r
+           INNER JOIN (
+             SELECT customer_number, MAX(id) AS max_id
+             FROM customer_api_records
+             ${whereSql}
+             GROUP BY customer_number
+           ) latest ON r.id = latest.max_id
+           ORDER BY r.created_at DESC
+           LIMIT ?`,
+          [...params, limit]
+        );
+        const items = (rows as { id: number; customerNumber: string; payload: unknown; createdAt: Date }[]).map(
+          mapCustomerRecordRow
+        );
+        return res.json({ ok: true, count: items.length, items });
+      }
+
+      const [rows] = await pool.query(
+        `SELECT id, customer_number AS customerNumber, payload, created_at AS createdAt
+         FROM customer_api_records
+         ${whereSql}
+         ORDER BY created_at DESC
+         LIMIT ?`,
+        [...params, limit]
+      );
+      const items = (rows as { id: number; customerNumber: string; payload: unknown; createdAt: Date }[]).map(
+        mapCustomerRecordRow
+      );
+      return res.json({ ok: true, count: items.length, items });
+    } catch (err) {
+      console.error("GET /api/customer/phones/recent error", err);
+      return res.status(500).json({ ok: false, message: "Failed to list customer phones" });
+    }
+  });
+
+  /** Fetch one stored record by id (after polling /phones/recent). */
+  app.get("/api/customer/records/:id", requireExternalApiKey, async (req: Request, res: Response) => {
+    const id = parseInt(String(req.params.id ?? ""), 10);
+    if (!Number.isFinite(id) || id < 1) {
+      return res.status(400).json({ message: "Valid numeric id is required" });
+    }
+    try {
+      const [rows] = await pool.query(
+        `SELECT id, customer_number AS customerNumber, payload, created_at AS createdAt
+         FROM customer_api_records WHERE id = ? LIMIT 1`,
+        [id]
+      );
+      const row = (rows as { id: number; customerNumber: string; payload: unknown; createdAt: Date }[])[0];
+      if (!row) return res.status(404).json({ ok: false, message: "Record not found" });
+      return res.json({ ok: true, record: mapCustomerRecordRow(row) });
+    } catch (err) {
+      console.error("GET /api/customer/records/:id error", err);
+      return res.status(500).json({ ok: false, message: "Lookup failed" });
+    }
+  });
+
   app.post("/api/customer", async (req: Request, res: Response) => {
     const body = req.body;
     if (body === undefined || body === null || typeof body !== "object" || Array.isArray(body)) {

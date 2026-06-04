@@ -662,6 +662,7 @@ export default function Dashboard() {
                 setBulkAssignMessage(result.message);
                 return;
             }
+            const warnSuffix = result.warning ? ` ${result.warning}` : "";
             const createdProjectId = result.createdProjectId;
             if (createdProjectId != null) {
                 const res = await fetch(`${API}/api/leads/${row.id}/prolance-ids`, {
@@ -674,16 +675,16 @@ export default function Dashboard() {
                 });
                 if (!res.ok) {
                     setBulkAssignMessage(
-                        `Prolance project created (ID ${createdProjectId}) but saving on the lead failed. Save the ID in lead settings if needed.`,
+                        `Prolance project created (ID ${createdProjectId}) but saving on the lead failed. Save the ID in lead settings if needed.${warnSuffix}`,
                     );
                 } else {
                     setBulkAssignMessage(
-                        `Prolance project created (ID ${createdProjectId}) and saved on HUB-${row.pid ?? row.id}.`,
+                        `Prolance project created (ID ${createdProjectId}) and saved on HUB-${row.pid ?? row.id}.${warnSuffix}`,
                     );
                 }
             } else {
                 setBulkAssignMessage(
-                    "Prolance create returned OK; if no ID was parsed, open Prolance and link the project ID on the lead.",
+                    `Prolance create returned OK; if no ID was parsed, open Prolance and link the project ID on the lead.${warnSuffix}`,
                 );
             }
             await refreshQueue();

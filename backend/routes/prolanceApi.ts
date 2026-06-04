@@ -106,18 +106,205 @@ function extractPartnerCredential(value: unknown, defaultLoginId: string): Partn
   return null;
 }
 
+function lookupPartnerCredentialInMap(
+  credsMap: Record<string, unknown>,
+  emailRaw: string | null,
+  userId: number,
+): PartnerCredential | null {
+  const emailNorm = normalizeUserKey(emailRaw);
+  const idKey = String(userId);
+
+  if (emailNorm) {
+    const direct = extractPartnerCredential(credsMap[emailNorm], emailRaw || emailNorm);
+    if (direct) return direct;
+    for (const [key, value] of Object.entries(credsMap)) {
+      if (normalizeUserKey(key) === emailNorm) {
+        const cred = extractPartnerCredential(value, emailRaw || key);
+        if (cred) return cred;
+      }
+    }
+  }
+
+  return extractPartnerCredential(credsMap[idKey], emailRaw || emailNorm || idKey);
+}
+
+/** Normalize Prolance partner login payloads (array, object, or PascalCase fields). */
+function extractPartnerLoginFields(data: unknown): { sessionID: string; partnerID: number } | null {
+  if (!data || typeof data !== "object") return null;
+  const root = data as Record<string, unknown>;
+
+  const readRow = (row: unknown): { sessionID: string; partnerID: number } | null => {
+    if (!row || typeof row !== "object") return null;
+    const r = row as Record<string, unknown>;
+    const sessionRaw =
+      r.sessionID ?? r.sessionId ?? r.SessionID ?? r.SessionId ?? r.originSessionID ?? r.originSessionId;
+    const partnerRaw = r.partnerID ?? r.partnerId ?? r.PartnerID ?? r.PartnerId;
+    const sessionID = asString(sessionRaw);
+    const partnerNum =
+      typeof partnerRaw === "number"
+        ? partnerRaw
+        : typeof partnerRaw === "string" && partnerRaw.trim()
+          ? Number(partnerRaw)
+          : NaN;
+    if (!sessionID || !Number.isFinite(partnerNum) || partnerNum < 1) return null;
+    return { sessionID, partnerID: partnerNum };
+  };
+
+  const dataField = root.data ?? root.Data;
+  if (Array.isArray(dataField) && dataField.length > 0) {
+    const fromArr = readRow(dataField[0]);
+    if (fromArr) return fromArr;
+  }
+  const fromRoot = readRow(root);
+  if (fromRoot) return fromRoot;
+  return readRow(dataField);
+}
+
 async function resolvePartnerCredentialForUser(pool: Pool, userId: number): Promise<PartnerCredential | null> {
   if (!Number.isFinite(userId) || userId < 1) return null;
   const [rows] = await pool.query("SELECT id, email FROM users WHERE id = ? LIMIT 1", [userId]);
   const userRow = (rows as { id?: unknown; email?: unknown }[])[0];
-  const email = normalizeUserKey(asString(userRow?.email));
-  const idKey = String(userId);
+  const emailRaw = asString(userRow?.email);
   const credsMap = readPartnerCredentialsMap();
+  return lookupPartnerCredentialInMap(credsMap, emailRaw, userId);
+}
 
-  const fromEmail = extractPartnerCredential(credsMap[email], email);
-  if (fromEmail) return fromEmail;
-  const fromId = extractPartnerCredential(credsMap[idKey], email);
-  if (fromId) return fromId;
+type PartnerCredSource = "body" | "per_user" | "env_fallback";
+
+async function resolvePartnerLoginForUser(
+  pool: Pool,
+  userId: number,
+  bodyLogin?: { loginID?: string | null; password?: string | null },
+): Promise<
+  | {
+      ok: true;
+      token: string;
+      apiKey: string;
+      originSessionId: string;
+      partnerID: number;
+      credSource: PartnerCredSource;
+      loginId: string;
+    }
+  | { ok: false; message: string; status: number; credSource?: PartnerCredSource }
+> {
+  const apiKey = envTrim("PROLANCE_API_KEY");
+  if (!apiKey) return { ok: false, message: "Origin API key is not configured", status: 500 };
+
+  const username = asString(envTrim("PROLANCE_USERNAME"));
+  const password = asString(envTrim("PROLANCE_PASSWORD"));
+  if (!username || !password) {
+    return { ok: false, message: "Prolance API credentials are not configured", status: 500 };
+  }
+
+  const tokenResp = await proxiedFetch({
+    method: "POST",
+    path: "/token",
+    asForm: true,
+    body: { grant_type: "password", username, password },
+  });
+  const tokenObj =
+    tokenResp.data && typeof tokenResp.data === "object" ? (tokenResp.data as Record<string, unknown>) : {};
+  const token =
+    asString(tokenObj.access_token) || asString(tokenObj.accessToken) || asString(tokenObj.token);
+  if (!token || tokenResp.status >= 400) {
+    return { ok: false, message: "Failed to generate Prolance token", status: tokenResp.status || 500 };
+  }
+
+  let loginID = bodyLogin?.loginID ?? null;
+  let partnerPassword = bodyLogin?.password ?? null;
+  let credSource: PartnerCredSource = "body";
+
+  if (!loginID || !partnerPassword) {
+    const perUserCred = await resolvePartnerCredentialForUser(pool, userId);
+    if (perUserCred) {
+      loginID = perUserCred.loginId;
+      partnerPassword = perUserCred.password;
+      credSource = "per_user";
+    }
+  }
+
+  if (!loginID || !partnerPassword) {
+    loginID = asString(envTrim("PROLANCE_PARTNER_LOGIN_ID"));
+    partnerPassword = asString(envTrim("PROLANCE_PARTNER_PASSWORD"));
+    credSource = "env_fallback";
+  }
+  if (!loginID || !partnerPassword) {
+    return { ok: false, message: "LoginID/password are required for partner login", status: 400 };
+  }
+
+  const partnerResp = await proxiedFetch({
+    method: "POST",
+    path: "/Origin/Partners/LoginAPI",
+    token,
+    includeOriginApiHeaders: true,
+    apiKey,
+    body: { LoginID: loginID, Password: partnerPassword, LoginFrom: 1 },
+  });
+
+  if (partnerResp.status >= 400) {
+    console.error("[prolance-partner-login]", { userId, credSource, status: partnerResp.status });
+    return {
+      ok: false,
+      message: "Prolance partner login failed",
+      status: partnerResp.status,
+      credSource,
+    };
+  }
+
+  const partnerFields = extractPartnerLoginFields(partnerResp.data);
+  if (!partnerFields) {
+    return {
+      ok: false,
+      message: "Partner login did not return sessionID/partnerID",
+      status: 502,
+      credSource,
+    };
+  }
+
+  console.log("[prolance-partner-login]", {
+    userId,
+    credSource,
+    loginId: maskValue(loginID, 4, 8),
+    partnerID: partnerFields.partnerID,
+  });
+
+  return {
+    ok: true,
+    token,
+    apiKey,
+    originSessionId: partnerFields.sessionID,
+    partnerID: partnerFields.partnerID,
+    credSource,
+    loginId: loginID,
+  };
+}
+
+function extractCreatedProjectId(v: unknown): number | null {
+  if (!v || typeof v !== "object") return null;
+  const root = v as Record<string, unknown>;
+  const direct = root.projectID ?? root.projectId;
+  if (typeof direct === "number" && Number.isFinite(direct)) return direct;
+  if (typeof direct === "string" && direct.trim() && Number.isFinite(Number(direct))) return Number(direct);
+  const arr = root.data;
+  if (Array.isArray(arr) && arr[0] && typeof arr[0] === "object") {
+    const first = arr[0] as Record<string, unknown>;
+    const nested = first.projectID ?? first.projectId;
+    if (typeof nested === "number" && Number.isFinite(nested)) return nested;
+    if (typeof nested === "string" && nested.trim() && Number.isFinite(Number(nested))) return Number(nested);
+  }
+  return null;
+}
+
+function prolancePartnerWarning(role: string, credSource: PartnerCredSource): string | null {
+  const r = (role || "").toLowerCase();
+  const needsOwnAccount =
+    r === "designer" || r === "design_manager" || r === "territorial_design_manager";
+  if (needsOwnAccount && credSource === "env_fallback") {
+    return (
+      "This project was created under the shared admin Prolance partner account, not your personal login. " +
+      "Add your CRM email and Prolance password to PROLANCE_PARTNER_CREDENTIALS_JSON on the server so projects appear when you sign in to Prolance."
+    );
+  }
   return null;
 }
 
@@ -604,10 +791,22 @@ export function registerProlanceRoutes(
   app.get(`${TEST_PREFIX}/status`, async (req: Request, res: Response) => {
     const user = await requireUser(req, res);
     if (!user) return;
+    const credsMap = readPartnerCredentialsMap();
+    const [userRows] = await pool.query("SELECT email FROM users WHERE id = ? LIMIT 1", [user.id]);
+    const emailRaw = asString((userRows as { email?: unknown }[])[0]?.email);
+    const userEmail = normalizeUserKey(emailRaw);
+    const yourCred = lookupPartnerCredentialInMap(credsMap, emailRaw, user.id);
     return res.json({
       baseUrl: baseUrl(),
-      hasApiKey: Boolean(readApiKey(req)),
-      hasToken: Boolean(readToken(req)),
+      hasApiKey: Boolean(envTrim("PROLANCE_API_KEY")),
+      hasProlanceUsername: Boolean(envTrim("PROLANCE_USERNAME")),
+      hasProlancePassword: Boolean(envTrim("PROLANCE_PASSWORD")),
+      hasPartnerCredentialsJson: Boolean(envTrim("PROLANCE_PARTNER_CREDENTIALS_JSON")),
+      hasPartnerCredentialsFile: Boolean(envTrim("PROLANCE_PARTNER_CREDENTIALS_FILE")),
+      partnerCredentialsKeyCount: Object.keys(credsMap).length,
+      partnerCredentialConfiguredForYou: Boolean(yourCred),
+      yourEmail: emailRaw || null,
+      yourProlanceLoginId: yourCred?.loginId || null,
     });
   });
 
@@ -646,20 +845,29 @@ export function registerProlanceRoutes(
 
       let loginID = asString(req.body?.loginID) || asString(req.body?.LoginID);
       let password = asString(req.body?.password) || asString(req.body?.Password);
+      let credSource: "body" | "per_user" | "env_fallback" = "body";
 
       if (!loginID || !password) {
         const perUserCred = await resolvePartnerCredentialForUser(pool, user.id);
         if (perUserCred) {
           loginID = perUserCred.loginId;
           password = perUserCred.password;
+          credSource = "per_user";
         }
       }
 
       if (!loginID || !password) {
         loginID = asString(envTrim("PROLANCE_PARTNER_LOGIN_ID"));
         password = asString(envTrim("PROLANCE_PARTNER_PASSWORD"));
+        credSource = "env_fallback";
       }
       if (!loginID || !password) return res.status(400).json({ message: "LoginID/password are required" });
+
+      console.log("[prolance-partner-login]", {
+        userId: user.id,
+        credSource,
+        loginId: maskValue(loginID, 4, 8),
+      });
 
       const upstream = await proxiedFetch({
         method: "POST",
@@ -669,7 +877,42 @@ export function registerProlanceRoutes(
         apiKey,
         body: { LoginID: loginID, Password: password, LoginFrom: 1 },
       });
-      return send(res, upstream.status, upstream.data);
+
+      if (upstream.status >= 400) {
+        console.error("[prolance-partner-login] upstream failed", {
+          userId: user.id,
+          credSource,
+          status: upstream.status,
+          upstream: upstream.data,
+        });
+        return send(res, upstream.status, upstream.data);
+      }
+
+      const partnerFields = extractPartnerLoginFields(upstream.data);
+      if (!partnerFields) {
+        console.error("[prolance-partner-login] missing session/partner in response", {
+          userId: user.id,
+          credSource,
+          upstream: upstream.data,
+        });
+        return res.status(502).json({
+          message:
+            "Partner login succeeded but Prolance did not return sessionID/partnerID. Check LoginID/password for this user.",
+          credSource,
+          upstream: upstream.data,
+        });
+      }
+
+      const payload =
+        upstream.data && typeof upstream.data === "object" && !Array.isArray(upstream.data)
+          ? { ...(upstream.data as Record<string, unknown>) }
+          : { data: upstream.data };
+      return res.status(upstream.status).json({
+        ...payload,
+        sessionID: partnerFields.sessionID,
+        partnerID: partnerFields.partnerID,
+        credSource,
+      });
     } catch (err) {
       console.error("prolance partners login error", err);
       return res.status(500).json({ message: asErrorMessage(err) });
@@ -703,59 +946,179 @@ export function registerProlanceRoutes(
     }
   });
 
-  // Collection: PUT {{base_url}}/Origin/V2/Projects/Create
+  /**
+   * Create a Prolance project using the logged-in user's partner credentials (recommended).
+   * Avoids creating under admin partner when designer creds are missing on the server.
+   */
+  app.post(`${TEST_PREFIX}/projects/create-as-user`, async (req: Request, res: Response) => {
+    const user = await requireUser(req, res);
+    if (!user) return;
+
+    const body =
+      req.body && typeof req.body === "object" && !Array.isArray(req.body)
+        ? (req.body as Record<string, unknown>)
+        : {};
+    const createBody: Record<string, unknown> = {
+      partnerID: 0,
+      pName: asString(body.pName) || "Untitled Project",
+      customer: asString(body.customer) || "Customer",
+      city: asString(body.city) || "Bengaluru",
+      state: asString(body.state) || "Karnataka",
+    };
+    const explicitPartner = Number(body.partnerID ?? body.partnerId);
+    if (Number.isFinite(explicitPartner) && explicitPartner > 0) {
+      createBody.partnerID = explicitPartner;
+    }
+
+    try {
+      const login = await resolvePartnerLoginForUser(pool, user.id);
+      if (!login.ok) {
+        return res.status(login.status).json({
+          message: login.message,
+          credSource: login.credSource,
+        });
+      }
+
+      createBody.partnerID = login.partnerID;
+
+      let upstream = await proxiedFetch({
+        method: "PUT",
+        path: "/Origin/Projects/Create",
+        token: login.token,
+        originSessionId: login.originSessionId,
+        includeOriginApiHeaders: true,
+        apiKey: login.apiKey,
+        body: createBody,
+      });
+      if (upstream.status === 401) {
+        upstream = await proxiedFetch({
+          method: "PUT",
+          path: "/Origin/Projects/Create",
+          token: null,
+          originSessionId: login.originSessionId,
+          includeOriginApiHeaders: true,
+          apiKey: login.apiKey,
+          body: createBody,
+        });
+      }
+
+      const warning = prolancePartnerWarning(user.role, login.credSource);
+      if (!upstream.status || upstream.status >= 400) {
+        console.error("[prolance-create-as-user] failed", {
+          userId: user.id,
+          credSource: login.credSource,
+          partnerID: login.partnerID,
+          upstream: upstream.data,
+        });
+        const payload =
+          upstream.data && typeof upstream.data === "object"
+            ? { ...(upstream.data as Record<string, unknown>) }
+            : { message: "Create project failed" };
+        return res.status(upstream.status || 500).json({
+          ...payload,
+          credSource: login.credSource,
+          partnerID: login.partnerID,
+          warning,
+        });
+      }
+
+      const createdProjectId = extractCreatedProjectId(upstream.data);
+      return res.status(upstream.status).json({
+        ...(upstream.data && typeof upstream.data === "object" ? (upstream.data as Record<string, unknown>) : {}),
+        ok: true,
+        createdProjectId,
+        credSource: login.credSource,
+        partnerID: login.partnerID,
+        warning,
+      });
+    } catch (err) {
+      console.error("prolance create-as-user error", err);
+      return res.status(500).json({ message: asErrorMessage(err) });
+    }
+  });
+
+  // Collection: PUT {{base_url}}/Origin/Projects/Create
+  // Always re-runs partner login for the logged-in CRM user so partnerID + OriginSessionID stay in sync.
   app.put(`${TEST_PREFIX}/projects/create`, async (req: Request, res: Response) => {
     const user = await requireUser(req, res);
     if (!user) return;
     try {
-      const token = readToken(req);
-      const originSessionId = readOriginSessionId(req);
-      const apiKey = readApiKey(req);
-      const upstreamPath = "/Origin/V2/Projects/Create";
-      if (!token) return res.status(400).json({ message: "token is required" });
-      if (!originSessionId) return res.status(400).json({ message: "OriginSessionID is required" });
-      if (!apiKey) return res.status(400).json({ message: "Origin API key is required" });
+      const upstreamPath = "/Origin/Projects/Create";
+      const raw =
+        req.body && typeof req.body === "object" && !Array.isArray(req.body)
+          ? (req.body as Record<string, unknown>)
+          : {};
+      const createBody: Record<string, unknown> = {
+        pName: asString(raw.pName) || "Untitled Project",
+        customer: asString(raw.customer) || "Customer",
+        city: asString(raw.city) || "Bengaluru",
+        state: asString(raw.state) || "Karnataka",
+      };
+
+      const login = await resolvePartnerLoginForUser(pool, user.id);
+      if (!login.ok) {
+        return res.status(login.status).json({
+          message: login.message,
+          credSource: login.credSource,
+          hint: "Partner login failed before create. Check PROLANCE_PARTNER_CREDENTIALS_JSON for this user.",
+        });
+      }
+
+      createBody.partnerID = login.partnerID;
 
       let upstream = await proxiedFetch({
         method: "PUT",
         path: upstreamPath,
-        token,
-        originSessionId,
+        token: login.token,
+        originSessionId: login.originSessionId,
         includeOriginApiHeaders: true,
-        apiKey,
-        body: req.body,
+        apiKey: login.apiKey,
+        body: createBody,
       });
       if (upstream.status === 401) {
-        // Some Prolance tenants authorize create by OriginSessionID + OriginAPIKey only.
-        // Retry once without bearer token while preserving other required headers.
         upstream = await proxiedFetch({
           method: "PUT",
           path: upstreamPath,
           token: null,
-          originSessionId,
+          originSessionId: login.originSessionId,
           includeOriginApiHeaders: true,
-          apiKey,
-          body: req.body,
+          apiKey: login.apiKey,
+          body: createBody,
         });
       }
-      if (upstream.status === 401) {
-        const debug = {
-          upstreamUrl: `${baseUrl()}${upstreamPath}`,
-          sentHeaders: {
-            Authorization: token ? `Bearer ${maskValue(token, 8, 6)}` : "(missing)",
-            OriginSessionID: maskValue(originSessionId, 10, 8),
-            OriginAPIKey: maskValue(apiKey, 8, 6),
-            NoEncryption: envTrim("PROLANCE_NO_ENCRYPTION") || "1",
-            "Content-Type": "application/json",
-          },
-          requestBody: req.body,
-        };
-        if (upstream.data && typeof upstream.data === "object") {
-          return res.status(401).json({ ...(upstream.data as Record<string, unknown>), debug });
-        }
-        return res.status(401).json({ message: "Unauthorized access", upstream: upstream.data, debug });
+
+      const warning = prolancePartnerWarning(user.role, login.credSource);
+      if (upstream.status === 400) {
+        console.error("[prolance-create] upstream 400", {
+          userId: user.id,
+          credSource: login.credSource,
+          partnerID: login.partnerID,
+          requestBody: createBody,
+          upstream: upstream.data,
+        });
       }
-      return send(res, upstream.status, upstream.data);
+
+      const basePayload =
+        upstream.data && typeof upstream.data === "object"
+          ? (upstream.data as Record<string, unknown>)
+          : { message: upstream.data ?? "Create project failed" };
+
+      if (upstream.status >= 400) {
+        return res.status(upstream.status).json({
+          ...basePayload,
+          credSource: login.credSource,
+          partnerID: login.partnerID,
+          warning,
+        });
+      }
+
+      return res.status(upstream.status).json({
+        ...basePayload,
+        createdProjectId: extractCreatedProjectId(upstream.data),
+        credSource: login.credSource,
+        partnerID: login.partnerID,
+        warning,
+      });
     } catch (err) {
       console.error("prolance projects create error", err);
       return res.status(500).json({ message: asErrorMessage(err) });

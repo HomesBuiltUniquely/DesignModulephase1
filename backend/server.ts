@@ -9317,10 +9317,14 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
   const now = new Date();
   const queueType = (req.query.type as string) || "d1";
   try {
-    await pool.query(
-      "UPDATE leads SET is_on_hold = 0, resume_at = NULL, update_at = ? WHERE is_on_hold = 1 AND resume_at IS NOT NULL AND resume_at <= ?",
-      [now, now],
-    );
+    try {
+      await pool.query(
+        "UPDATE leads SET is_on_hold = 0, resume_at = NULL, update_at = ? WHERE is_on_hold = 1 AND resume_at IS NOT NULL AND resume_at <= ?",
+        [now, now],
+      );
+    } catch (holdErr) {
+      console.warn("leads/queue hold resume update skipped", holdErr);
+    }
 
     const user = await getUserFromSession(req);
     const role = (user?.role ?? "").toLowerCase();
@@ -9516,7 +9520,31 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
     res.json(enrichedList);
   } catch (err) {
     console.error("leads/queue error", err);
-    res.status(500).json({ message: "Failed to load leads" });
+    const code =
+      err && typeof err === "object" && "code" in err
+        ? String((err as { code?: unknown }).code)
+        : null;
+    const sqlMessage =
+      err && typeof err === "object" && "sqlMessage" in err
+        ? String((err as { sqlMessage?: unknown }).sqlMessage)
+        : null;
+    if (code === "ETIMEDOUT" || code === "ECONNREFUSED" || code === "ENOTFOUND") {
+      return res.status(503).json({
+        message: "Database connection failed. Create env.sh with DB_* and run: source env.sh && pm2 restart backend --update-env",
+        code,
+      });
+    }
+    if (code === "ER_ACCESS_DENIED_ERROR") {
+      return res.status(503).json({
+        message: "Database login failed. Check DB_USER / DB_PASSWORD in env.sh.",
+        code,
+      });
+    }
+    res.status(500).json({
+      message: "Failed to load leads",
+      code: code || undefined,
+      sqlMessage: sqlMessage || undefined,
+    });
   }
 });
 

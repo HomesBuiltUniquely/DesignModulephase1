@@ -805,6 +805,10 @@ export default function ProjectDetailPage() {
                 setTimeout(() => setBlockedTaskMessage(null), 5000);
                 return;
             }
+            if (result.warning) {
+                setBlockedTaskMessage(result.warning);
+                setTimeout(() => setBlockedTaskMessage(null), 12000);
+            }
             const createdProjectId = result.createdProjectId;
             if (createdProjectId != null) {
                 setProlanceProjectId(createdProjectId);
