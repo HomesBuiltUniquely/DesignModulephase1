@@ -162,11 +162,29 @@ function extractPartnerLoginFields(data: unknown): { sessionID: string; partnerI
 
 async function resolvePartnerCredentialForUser(pool: Pool, userId: number): Promise<PartnerCredential | null> {
   if (!Number.isFinite(userId) || userId < 1) return null;
-  const [rows] = await pool.query("SELECT id, email FROM users WHERE id = ? LIMIT 1", [userId]);
-  const userRow = (rows as { id?: unknown; email?: unknown }[])[0];
+  const [rows] = await pool.query(
+    "SELECT id, email, prolance_partner_login, prolance_partner_password FROM users WHERE id = ? LIMIT 1",
+    [userId],
+  );
+  const userRow = (rows as {
+    id?: unknown;
+    email?: unknown;
+    prolance_partner_login?: unknown;
+    prolance_partner_password?: unknown;
+  }[])[0];
   const emailRaw = asString(userRow?.email);
+  const dbLogin = asString(userRow?.prolance_partner_login);
+  const dbPassword = asString(userRow?.prolance_partner_password);
+  if (dbPassword) {
+    return { loginId: dbLogin || emailRaw || String(userId), password: dbPassword };
+  }
   const credsMap = readPartnerCredentialsMap();
   return lookupPartnerCredentialInMap(credsMap, emailRaw, userId);
+}
+
+/** Designers must use their own Prolance partner login so projects appear in their Prolance bucket. */
+function requiresOwnProlancePartner(role: string | null | undefined): boolean {
+  return (role || "").toLowerCase() !== "admin";
 }
 
 type PartnerCredSource = "body" | "per_user" | "env_fallback" | "org_shared";
@@ -178,6 +196,7 @@ type PartnerCredSource = "body" | "per_user" | "env_fallback" | "org_shared";
 async function resolvePartnerLoginForCreate(
   pool: Pool,
   userId: number,
+  userRole: string,
 ): Promise<
   | {
       ok: true;
@@ -188,15 +207,18 @@ async function resolvePartnerLoginForCreate(
       credSource: PartnerCredSource;
       loginId: string;
     }
-  | { ok: false; message: string; status: number; credSource?: PartnerCredSource }
+  | { ok: false; message: string; status: number; credSource?: PartnerCredSource; code?: string }
 > {
-  return resolvePartnerLoginForUser(pool, userId);
+  return resolvePartnerLoginForUser(pool, userId, undefined, {
+    strictPerUser: requiresOwnProlancePartner(userRole),
+  });
 }
 
 async function resolvePartnerLoginForUser(
   pool: Pool,
   userId: number,
   bodyLogin?: { loginID?: string | null; password?: string | null },
+  opts?: { strictPerUser?: boolean },
 ): Promise<
   | {
       ok: true;
@@ -207,7 +229,7 @@ async function resolvePartnerLoginForUser(
       credSource: PartnerCredSource;
       loginId: string;
     }
-  | { ok: false; message: string; status: number; credSource?: PartnerCredSource }
+  | { ok: false; message: string; status: number; credSource?: PartnerCredSource; code?: string }
 > {
   const apiKey = envTrim("PROLANCE_API_KEY");
   if (!apiKey) {
@@ -252,6 +274,18 @@ async function resolvePartnerLoginForUser(
   }
 
   if (!loginID || !partnerPassword) {
+    if (opts?.strictPerUser) {
+      const [userRows] = await pool.query("SELECT email FROM users WHERE id = ? LIMIT 1", [userId]);
+      const emailRaw = asString((userRows as { email?: unknown }[])[0]?.email);
+      return {
+        ok: false,
+        code: "PROLANCE_PARTNER_NOT_CONFIGURED",
+        message: emailRaw
+          ? `Your Prolance partner login is not configured for ${emailRaw}. Ask admin to add your Prolance LoginID and password in PROLANCE_PARTNER_CREDENTIALS_FILE (or on your user profile).`
+          : "Your Prolance partner login is not configured. Ask admin to add your Prolance LoginID and password.",
+        status: 403,
+      };
+    }
     loginID = asString(envTrim("PROLANCE_PARTNER_LOGIN_ID"));
     partnerPassword = asString(envTrim("PROLANCE_PARTNER_PASSWORD"));
     credSource = "env_fallback";
@@ -316,24 +350,48 @@ function isProlanceAuthDenied(upstream: { status: number; data: unknown }): bool
   return msg.includes("authorization") && msg.includes("denied");
 }
 
+/** Prolance V2 create requires projectType (e.g. CYO). V1 /Origin/Projects/Create often returns 401. */
+function buildProlanceCreateUpstreamBody(body: Record<string, unknown>): Record<string, unknown> {
+  const projectType =
+    asString(body.projectType) ||
+    asString(body.ProjectType) ||
+    envTrim("PROLANCE_DEFAULT_PROJECT_TYPE") ||
+    "CYO";
+  return { ...body, projectType };
+}
+
 async function prolanceCreateProjectUpstream(params: {
   token: string;
   originSessionId: string;
   apiKey: string;
   body: Record<string, unknown>;
 }): Promise<{ status: number; data: unknown; path: string; attempt: string }> {
-  const path = "/Origin/Projects/Create";
-  // Match Postman: bearer + OriginSessionID + OriginAPIKey (no session-only retry).
-  const upstream = await proxiedFetch({
+  const path = "/Origin/V2/Projects/Create";
+  const payload = buildProlanceCreateUpstreamBody(params.body);
+
+  let upstream = await proxiedFetch({
     method: "PUT",
     path,
     token: params.token,
     originSessionId: params.originSessionId,
     includeOriginApiHeaders: true,
     apiKey: params.apiKey,
-    body: params.body,
+    body: payload,
   });
-  return { ...upstream, path, attempt: "create+bearer" };
+  let attempt = "v2-create+bearer";
+  if (upstream.status === 401 || isProlanceAuthDenied(upstream)) {
+    upstream = await proxiedFetch({
+      method: "PUT",
+      path,
+      token: null,
+      originSessionId: params.originSessionId,
+      includeOriginApiHeaders: true,
+      apiKey: params.apiKey,
+      body: payload,
+    });
+    attempt = "v2-create+sessionOnly";
+  }
+  return { ...upstream, path, attempt };
 }
 
 function extractCreatedProjectId(v: unknown): number | null {
@@ -352,7 +410,13 @@ function extractCreatedProjectId(v: unknown): number | null {
   return null;
 }
 
-function prolancePartnerWarning(_role: string, _credSource: PartnerCredSource): string | null {
+function prolancePartnerWarning(role: string, credSource: PartnerCredSource): string | null {
+  if (credSource === "env_fallback" && requiresOwnProlancePartner(role)) {
+    return "Project was created under the shared Prolance partner account, not your personal Prolance login.";
+  }
+  if (credSource === "env_fallback") {
+    return "Project was created under the shared Prolance partner account (admin fallback).";
+  }
   return null;
 }
 
@@ -1011,13 +1075,15 @@ export function registerProlanceRoutes(
       customer: asString(body.customer) || "Customer",
       city: asString(body.city) || "Bengaluru",
       state: asString(body.state) || "Karnataka",
+      projectType: asString(body.projectType) || asString(body.ProjectType) || undefined,
     };
 
     try {
-      const login = await resolvePartnerLoginForCreate(pool, user.id);
+      const login = await resolvePartnerLoginForCreate(pool, user.id, user.role);
       if (!login.ok) {
         return res.status(login.status).json({
           message: login.message,
+          code: login.code,
           credSource: login.credSource,
         });
       }
@@ -1035,6 +1101,7 @@ export function registerProlanceRoutes(
       if (!upstream.status || upstream.status >= 400) {
         console.error("[prolance-create-as-user] failed", {
           userId: user.id,
+          loginId: maskValue(login.loginId, 4, 8),
           credSource: login.credSource,
           partnerID: login.partnerID,
           httpStatus: upstream.status,
@@ -1062,6 +1129,7 @@ export function registerProlanceRoutes(
         createdProjectId,
         credSource: login.credSource,
         partnerID: login.partnerID,
+        prolanceLoginId: login.loginId,
         warning,
       });
     } catch (err) {
@@ -1070,12 +1138,11 @@ export function registerProlanceRoutes(
     }
   });
 
-  // Collection: PUT {{base_url}}/Origin/Projects/Create
+  // Collection: PUT {{base_url}}/Origin/V2/Projects/Create (V2 + projectType required by Prolance)
   app.put(`${TEST_PREFIX}/projects/create`, async (req: Request, res: Response) => {
     const user = await requireUser(req, res);
     if (!user) return;
     try {
-      const upstreamPath = "/Origin/Projects/Create";
       const raw =
         req.body && typeof req.body === "object" && !Array.isArray(req.body)
           ? (req.body as Record<string, unknown>)
@@ -1085,12 +1152,14 @@ export function registerProlanceRoutes(
         customer: asString(raw.customer) || "Customer",
         city: asString(raw.city) || "Bengaluru",
         state: asString(raw.state) || "Karnataka",
+        projectType: asString(raw.projectType) || asString(raw.ProjectType) || undefined,
       };
 
-      const login = await resolvePartnerLoginForCreate(pool, user.id);
+      const login = await resolvePartnerLoginForCreate(pool, user.id, user.role);
       if (!login.ok) {
         return res.status(login.status).json({
           message: login.message,
+          code: login.code,
           credSource: login.credSource,
           hint: "Partner login failed. Map the CRM user's email in PROLANCE_PARTNER_CREDENTIALS_FILE (same LoginID/password as Postman).",
         });
@@ -1109,6 +1178,7 @@ export function registerProlanceRoutes(
       if (upstream.status >= 400) {
         console.error("[prolance-create] upstream failed", {
           userId: user.id,
+          loginId: maskValue(login.loginId, 4, 8),
           credSource: login.credSource,
           partnerID: login.partnerID,
           httpStatus: upstream.status,

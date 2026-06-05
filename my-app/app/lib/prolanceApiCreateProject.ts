@@ -2,7 +2,7 @@ import type { LeadshipTypes } from "@/app/Components/Types/Types";
 
 /**
  * Creates a Prolance project through the Hub API, which proxies to
- * PUT https://api.prolance.design/Origin/Projects/Create (see backend `prolanceApi.ts`).
+ * PUT https://api.prolance.design/Origin/V2/Projects/Create (see backend `prolanceApi.ts`).
  */
 
 export type CreateProlanceProjectApiResult =
@@ -23,6 +23,23 @@ function parseLeadPayload(raw: unknown): Record<string, unknown> | null {
     } catch {
         return null;
     }
+}
+
+function formatProlanceCreateError(b: Record<string, unknown> | null, status: number): string {
+    if (b?.code === "PROLANCE_PARTNER_NOT_CONFIGURED") {
+        return String(
+            b.message ||
+                "Your Prolance partner login is not configured. Contact admin to add your Prolance LoginID and password.",
+        );
+    }
+    const missing = b?.missing ? ` (${String(b.missing)} missing)` : "";
+    const credHint =
+        b?.credSource === "env_fallback"
+            ? " Project may have been created under the admin Prolance account."
+            : "";
+    return String(
+        (b && (b.message || b.error)) || `Create project failed (HTTP ${status})${missing}.${credHint}`,
+    );
 }
 
 function extractProjectId(v: unknown): number | null {
@@ -60,6 +77,11 @@ export function buildProlanceCreateProjectBody(project: LeadshipTypes): Record<s
             extractString(rawProj?.city) || extractString(formData?.city) || "Bengaluru",
         state:
             extractString(rawProj?.state) || extractString(formData?.state) || "Karnataka",
+        projectType:
+            extractString(rawProj?.projectType) ||
+            extractString(formData?.projectType) ||
+            extractString(formData?.booking_type) ||
+            "CYO",
     };
     return body;
 }
@@ -90,6 +112,7 @@ export async function createProlanceProjectFromForm(params: {
                 customer: params.fields.customer.trim(),
                 city: params.fields.city.trim() || "Bengaluru",
                 state: params.fields.state.trim() || "Karnataka",
+                projectType: "CYO",
             }),
         });
         const txt = await res.text();
@@ -101,10 +124,8 @@ export async function createProlanceProjectFromForm(params: {
         }
         const b = body && typeof body === "object" ? (body as Record<string, unknown>) : null;
         if (!res.ok) {
-            const msg =
-                (b && (b.message || b.error)) ||
-                `Create project failed (HTTP ${res.status}).`;
-            return { ok: false, message: String(msg) };
+            const msg = formatProlanceCreateError(b, res.status);
+            return { ok: false, message: msg };
         }
         const createdProjectId =
             (b?.createdProjectId != null && Number.isFinite(Number(b.createdProjectId))
@@ -145,15 +166,8 @@ export async function createProlanceProjectViaApi(params: {
         }
         const b = body && typeof body === "object" ? (body as Record<string, unknown>) : null;
         if (!res.ok) {
-            const missing = b?.missing ? ` (${String(b.missing)} missing)` : "";
-            const credHint =
-                b?.credSource === "env_fallback"
-                    ? " Project may have been created under the admin Prolance account."
-                    : "";
-            const msg =
-                (b && (b.message || b.error)) ||
-                `Create project failed (HTTP ${res.status})${missing}.${credHint}`;
-            return { ok: false, message: String(msg) };
+            const msg = formatProlanceCreateError(b, res.status);
+            return { ok: false, message: msg };
         }
         const createdProjectId =
             (b?.createdProjectId != null && Number.isFinite(Number(b.createdProjectId))

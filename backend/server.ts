@@ -680,6 +680,24 @@ async function initDb() {
     } catch {
       // ignore
     }
+    // Per-user Prolance partner login (LoginAPI) — optional alternative to PROLANCE_PARTNER_CREDENTIALS_FILE
+    for (const col of ["prolance_partner_login", "prolance_partner_password"] as const) {
+      try {
+        const [exists] = await conn.query(
+          "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = ?",
+          [col],
+        );
+        if ((exists as any[]).length === 0) {
+          await conn.query(
+            col === "prolance_partner_login"
+              ? "ALTER TABLE users ADD COLUMN prolance_partner_login VARCHAR(255) NULL"
+              : "ALTER TABLE users ADD COLUMN prolance_partner_password VARCHAR(255) NULL",
+          );
+        }
+      } catch {
+        // ignore
+      }
+    }
 
     await conn.query(`
       CREATE TABLE IF NOT EXISTS sessions (
