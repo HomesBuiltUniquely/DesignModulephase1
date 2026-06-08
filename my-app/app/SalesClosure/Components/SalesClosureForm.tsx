@@ -77,13 +77,11 @@ function buildInitialFormState(): SalesClosureFormType {
     customer_name: "",
     co_no: "",
     email: "",
-    property_name: "",
     possession: "",
     lead_source: "",
     property_configuration: "",
     experience_center: "",
     site_address: "",
-    booking_date: getTodayDateValue(),
     booking_type: "",
     spot_booking: false,
     designer_name: "",
@@ -265,7 +263,6 @@ export default function SalesClosureForm() {
     const co_no = p("co_no", "contactNo", "phone", "mobile");
     const email = p("email");
     const sales_spoc = p("sales_spoc", "salesSpoc");
-    const property_name = p("property_name", "propertyName");
     const booking_type = p("booking_type", "bookingType");
     const site_address = p("site_address", "siteAddress");
     const possession = p("possession");
@@ -299,7 +296,6 @@ export default function SalesClosureForm() {
       email ||
       sales_email ||
       sales_spoc ||
-      property_name ||
       booking_type ||
       site_address ||
       possession ||
@@ -321,7 +317,6 @@ export default function SalesClosureForm() {
         ...(co_no && { co_no }),
         ...(email && { email }),
         ...(sales_spoc && { sales_spoc }),
-        ...(property_name && { property_name }),
         ...(booking_type && { booking_type: booking_type as BookingType }),
         ...(site_address && { site_address }),
         ...(possession && { possession }),
@@ -513,7 +508,6 @@ export default function SalesClosureForm() {
         customer_name: payload.customer_name || data.projectName || "",
         co_no: payload.co_no || data.contactNo || "",
         email: payload.email || data.clientEmail || "",
-        property_name: payload.property_name || "",
         possession: payload.possession || "",
         lead_source: payload.lead_source || "",
         property_configuration: normalizePropertyConfiguration(
@@ -521,7 +515,6 @@ export default function SalesClosureForm() {
         ),
         experience_center: payload.experience_center || "",
         site_address: payload.site_address || "",
-        booking_date: payload.booking_date || getTodayDateValue(),
         booking_type: payload.booking_type || "",
         spot_booking: payload.spot_booking || false,
         designer_name: payload.designer_name || "",

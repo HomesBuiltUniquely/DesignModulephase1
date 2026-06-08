@@ -36,8 +36,6 @@ export const salesClosureSchema = z.object({
     .min(1, "Customer email is required")
     .email("Enter a valid customer email"),
 
-  property_name: z.string().min(1, "Property name is required"),
-
   possession: z.string().min(1, "Possession is required"),
 
   lead_source: z.string().min(1, "Lead source is required"),
@@ -47,9 +45,7 @@ export const salesClosureSchema = z.object({
   experience_center: z.string(),
 
   site_address: z.string().min(1, "Site address is required"),
-
-  booking_date: z.string().min(1, "Booking date is required"),
-
+  
   booking_type: z.union([z.nativeEnum(BookingType), z.literal("")]),
 
   spot_booking: z.boolean(),
