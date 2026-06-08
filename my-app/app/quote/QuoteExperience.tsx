@@ -263,74 +263,70 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
 
 type QuoteVersionRow = { quoteId: number; createdAt: string };
 
-type CategoryDiscountPct = {
-  woodwork: number;
-  accessories: number;
-  constructionHw: number;
-};
+const MAX_FLAT_DISCOUNT_PCT = 35;
 
-const ZERO_CATEGORY_PCT: CategoryDiscountPct = { woodwork: 0, accessories: 0, constructionHw: 0 };
-const MAX_DISCOUNT_PCT = 30;
-
-function clampPct(p: number): number {
-  return Math.min(MAX_DISCOUNT_PCT, Math.max(0, Math.round(Number.isFinite(p) ? p : 0)));
+function clampFlatPct(p: number): number {
+  if (!Number.isFinite(p)) return 0;
+  return Math.min(MAX_FLAT_DISCOUNT_PCT, Math.max(0, Math.round(p * 100) / 100));
 }
 
-function discountRsFromCategoryPct(pct: CategoryDiscountPct, bases: CategoryDiscountPct): number {
-  return (
-    (bases.woodwork * clampPct(pct.woodwork)) / 100 +
-    (bases.accessories * clampPct(pct.accessories)) / 100 +
-    (bases.constructionHw * clampPct(pct.constructionHw)) / 100
-  );
+function discountRsFromFlatPct(pct: number, baseTotal: number): number {
+  return (baseTotal * clampFlatPct(pct)) / 100;
 }
 
-function readSavedCategoryDiscountPct(v: unknown): CategoryDiscountPct | null {
-  if (!v || typeof v !== 'object') return null;
+function finalPriceFromFlatPct(pct: number, baseTotal: number): number {
+  return Math.max(baseTotal - discountRsFromFlatPct(pct, baseTotal), 0);
+}
+
+function flatPctFromFinalPrice(finalPrice: number, baseTotal: number): number {
+  if (!baseTotal || baseTotal <= 0) return 0;
+  return clampFlatPct(((baseTotal - finalPrice) / baseTotal) * 100);
+}
+
+function readSavedFlatDiscountPct(v: unknown, baseTotal: number): number {
+  if (!v || typeof v !== 'object') return 0;
   const root = v as Record<string, unknown>;
-  const direct = root.hubCategoryDiscountPct;
   const data = root.data ?? root.Data;
   const nested =
     data && typeof data === 'object' && !Array.isArray(data)
-      ? (data as Record<string, unknown>).hubCategoryDiscountPct
-      : null;
-  const from = direct ?? nested;
-  if (!from || typeof from !== 'object') return null;
-  const o = from as Record<string, unknown>;
-  const pickNum = (n: unknown) => (typeof n === 'number' && Number.isFinite(n) ? n : Number(n ?? 0));
-  return {
-    woodwork: clampPct(pickNum(o.woodwork)),
-    accessories: clampPct(pickNum(o.accessories)),
-    constructionHw: clampPct(pickNum(o.constructionHw)),
+      ? (data as Record<string, unknown>)
+      : Array.isArray(data) && data[0] && typeof data[0] === 'object'
+        ? (data[0] as Record<string, unknown>)
+        : null;
+
+  const pickNum = (n: unknown): number | null => {
+    if (typeof n === 'number' && Number.isFinite(n)) return n;
+    if (typeof n === 'string' && n.trim() && Number.isFinite(Number(n))) return Number(n);
+    return null;
   };
+
+  const flatDirect = pickNum(root.hubFlatDiscountPct) ?? (nested ? pickNum(nested.hubFlatDiscountPct) : null);
+  if (flatDirect != null) return clampFlatPct(flatDirect);
+
+  const amount =
+    pickNum(root.hubFlatDiscountAmount) ??
+    pickNum(root.hubCategoryDiscountAmount) ??
+    (nested ? pickNum(nested.hubFlatDiscountAmount) ?? pickNum(nested.hubCategoryDiscountAmount) : null);
+  if (amount != null && baseTotal > 0) return clampFlatPct((amount / baseTotal) * 100);
+
+  return 0;
 }
 
-function applyDiscountToPayload(
+function applyFlatDiscountToPayload(
   source: Record<string, unknown>,
-  pct: CategoryDiscountPct,
+  pct: number,
   discountAmount: number,
-  totalAfterDiscount: number | null,
 ): Record<string, unknown> {
-  const next: Record<string, unknown> = {
-    ...source,
-    hubCategoryDiscountPct: pct,
-    hubCategoryDiscountAmount: discountAmount,
+  const meta = {
+    hubFlatDiscountPct: pct,
+    hubFlatDiscountAmount: discountAmount,
   };
+  const next: Record<string, unknown> = { ...source, ...meta };
   const data = source.data ?? source.Data;
   if (data && typeof data === 'object' && !Array.isArray(data)) {
-    const d: Record<string, unknown> = {
-      ...(data as Record<string, unknown>),
-      hubCategoryDiscountPct: pct,
-      hubCategoryDiscountAmount: discountAmount,
-    };
-    next.data = d;
+    next.data = { ...(data as Record<string, unknown>), ...meta };
   } else if (Array.isArray(data) && data[0] && typeof data[0] === 'object') {
-    const first = data[0] as Record<string, unknown>;
-    const firstNext: Record<string, unknown> = {
-      ...first,
-      hubCategoryDiscountPct: pct,
-      hubCategoryDiscountAmount: discountAmount,
-    }
-    next.data = [firstNext, ...data.slice(1)];
+    next.data = [{ ...(data[0] as Record<string, unknown>), ...meta }, ...data.slice(1)];
   }
   return next;
 }
@@ -517,8 +513,8 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     if (lid) q.set('leadId', lid);
     return `?${q.toString()}`;
   }, [isInternalMode, searchParams]);
-  const [discountPct, setDiscountPct] = useState<CategoryDiscountPct>(ZERO_CATEGORY_PCT);
-  const [discountPctDraft, setDiscountPctDraft] = useState<CategoryDiscountPct>(ZERO_CATEGORY_PCT);
+  const [flatDiscountPct, setFlatDiscountPct] = useState(0);
+  const [flatDiscountPctDraft, setFlatDiscountPctDraft] = useState(0);
   const leadId = useMemo(() => {
     const lid = searchParams.get('leadId');
     const n = lid != null ? Number(lid) : NaN;
@@ -530,13 +526,16 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
   }, [versionFetchId]);
 
   useEffect(() => {
-    const saved = payload ? readSavedCategoryDiscountPct(payload) : null;
-    const next = saved ?? ZERO_CATEGORY_PCT;
-    setDiscountPct(next);
-    setDiscountPctDraft(next);
+    const base =
+      quote.rooms.length > 0
+        ? quote.rooms.reduce((sum, r) => sum + (r.totalPrice || 0), 0)
+        : (quote.totalPayableAmount ?? 0);
+    const next = payload ? readSavedFlatDiscountPct(payload, base) : 0;
+    setFlatDiscountPct(next);
+    setFlatDiscountPctDraft(next);
     setDiscountSaveState('idle');
     setDiscountSaveError(null);
-  }, [quote.quotationId, payload]);
+  }, [quote.quotationId, payload, quote.rooms, quote.totalPayableAmount]);
 
   useEffect(() => {
     if (!payload) return;
@@ -562,37 +561,24 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     return quote.totalPayableAmount;
   }, [quote.totalPayableAmount, quote.rooms]);
   const discountCap = baseTotal ?? 0;
-  const categoryBases = useMemo((): CategoryDiscountPct => {
-    let woodwork = 0;
-    let accessories = 0;
-    let constructionHw = 0;
-    for (const r of quote.rooms) {
-      woodwork += (r.unitsPrice ?? 0) + (r.loftsPrice ?? 0);
-      accessories +=
-        (r.appliancesPrice ?? 0) +
-        (r.skirtingsPrice ?? 0) +
-        (r.worktopsPrice ?? 0) +
-        (r.servicesPrice ?? 0);
-      constructionHw += (r.additionalHWPrice ?? 0);
-    }
-    return { woodwork, accessories, constructionHw };
-  }, [quote.rooms]);
   const normalizedDiscount = useMemo(() => {
-    const raw = discountRsFromCategoryPct(discountPct, categoryBases);
-    return Math.min(raw, discountCap);
-  }, [discountPct, categoryBases, discountCap]);
+    return Math.min(discountRsFromFlatPct(flatDiscountPct, discountCap), discountCap);
+  }, [flatDiscountPct, discountCap]);
   const discountedTotal = useMemo(() => {
     if (baseTotal == null) return null;
     return Math.max(baseTotal - normalizedDiscount, 0);
   }, [baseTotal, normalizedDiscount]);
   const sidebarDiscountPreview = useMemo(() => {
-    const raw = discountRsFromCategoryPct(discountPctDraft, categoryBases);
-    return Math.min(raw, discountCap);
-  }, [discountPctDraft, categoryBases, discountCap]);
+    return Math.min(discountRsFromFlatPct(flatDiscountPctDraft, discountCap), discountCap);
+  }, [flatDiscountPctDraft, discountCap]);
   const sidebarTotalPreview = useMemo(() => {
     if (baseTotal == null) return null;
     return Math.max(baseTotal - sidebarDiscountPreview, 0);
   }, [baseTotal, sidebarDiscountPreview]);
+  const sidebarFinalPricePreview = useMemo(() => {
+    if (baseTotal == null) return null;
+    return finalPriceFromFlatPct(flatDiscountPctDraft, baseTotal);
+  }, [baseTotal, flatDiscountPctDraft]);
 
   if (loading) {
     return <div className="min-h-screen bg-[#f5f5f8] p-6 text-gray-700">Loading quote...</div>;
@@ -1065,33 +1051,58 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                   </span>
                 </div>
 
-                <div>
-                  <p className={`text-sm font-semibold ${isDark ? 'text-slate-100' : 'text-gray-900'}`}>Granular discount</p>
-                  <p className={`mt-0.5 text-xs ${isDark ? 'text-slate-500' : 'text-gray-500'}`}>
-                    Edit discount by category (whole quotation, not per room).
-                  </p>
+                <div className="flex items-center justify-between text-sm">
+                  <span className={isDark ? 'text-slate-400' : 'text-gray-600'}>Discount</span>
+                  <span className="font-semibold tabular-nums text-rose-600 dark:text-rose-400">
+                    {money(sidebarDiscountPreview)}
+                  </span>
                 </div>
 
-                {(
-                  [
-                    ['Woodwork', 'woodwork', categoryBases.woodwork],
-                    ['Accessories', 'accessories', categoryBases.accessories],
-                    ['Construction Hardware', 'constructionHw', categoryBases.constructionHw],
-                  ] as const
-                ).map(([label, key, baseAmt]) => (
-                  <div
-                    key={key}
-                    className={`flex items-center justify-between gap-2 rounded-lg border px-3 py-2.5 ${
-                      isDark ? 'border-slate-600 bg-slate-900/40' : 'border-gray-100 bg-gray-50/90'
-                    }`}
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className={`text-sm font-medium ${isDark ? 'text-slate-100' : 'text-gray-900'}`}>{label}</p>
-                      <p className={`text-xs tabular-nums ${isDark ? 'text-slate-400' : 'text-gray-600'}`}>{money(baseAmt)}</p>
-                    </div>
-                    <div className="relative shrink-0">
+                <p className={`text-sm font-semibold ${isDark ? 'text-slate-100' : 'text-gray-900'}`}>Flat discount</p>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className={`mb-1 block text-xs font-medium ${isDark ? 'text-slate-400' : 'text-gray-600'}`}>
+                      Final price
+                    </label>
+                    <div className="relative">
                       <span
-                        className={`pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-xs font-medium ${
+                        className={`pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-medium ${
+                          isDark ? 'text-slate-500' : 'text-gray-400'
+                        }`}
+                      >
+                        ₹
+                      </span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={baseTotal ?? undefined}
+                        step={0.01}
+                        value={sidebarFinalPricePreview ?? ''}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          if (!Number.isFinite(v) || baseTotal == null) {
+                            setFlatDiscountPctDraft(0);
+                            return;
+                          }
+                          const cappedFinal = Math.min(Math.max(0, v), baseTotal);
+                          setFlatDiscountPctDraft(flatPctFromFinalPrice(cappedFinal, baseTotal));
+                        }}
+                        className={`w-full rounded-md border py-2 pl-7 pr-2 text-sm font-semibold tabular-nums outline-none focus:ring-2 focus:ring-teal-500/40 ${
+                          isDark
+                            ? 'border-slate-600 bg-slate-900 text-slate-100'
+                            : 'border-teal-200 bg-white text-gray-900'
+                        }`}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className={`mb-1 block text-xs font-medium ${isDark ? 'text-slate-400' : 'text-gray-600'}`}>
+                      Discount
+                    </label>
+                    <div className="relative">
+                      <span
+                        className={`pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-medium ${
                           isDark ? 'text-slate-500' : 'text-gray-400'
                         }`}
                       >
@@ -1100,21 +1111,18 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                       <input
                         type="number"
                         min={0}
-                        max={MAX_DISCOUNT_PCT}
-                        step={1}
-                        value={discountPctDraft[key]}
+                        max={MAX_FLAT_DISCOUNT_PCT}
+                        step={0.01}
+                        value={flatDiscountPctDraft}
                         onChange={(e) => {
                           const v = Number(e.target.value);
                           if (!Number.isFinite(v)) {
-                            setDiscountPctDraft((prev) => ({ ...prev, [key]: 0 }));
+                            setFlatDiscountPctDraft(0);
                             return;
                           }
-                          setDiscountPctDraft((prev) => ({
-                            ...prev,
-                            [key]: Math.min(MAX_DISCOUNT_PCT, Math.max(0, Math.round(v))),
-                          }));
+                          setFlatDiscountPctDraft(clampFlatPct(v));
                         }}
-                        className={`w-[4.5rem] rounded-md border py-1.5 pl-7 pr-2 text-right text-sm font-semibold tabular-nums outline-none focus:ring-2 focus:ring-teal-500/40 ${
+                        className={`w-full rounded-md border py-2 pl-7 pr-2 text-sm font-semibold tabular-nums outline-none focus:ring-2 focus:ring-teal-500/40 ${
                           isDark
                             ? 'border-slate-600 bg-slate-900 text-slate-100'
                             : 'border-teal-200 bg-white text-gray-900'
@@ -1122,13 +1130,6 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                       />
                     </div>
                   </div>
-                ))}
-
-                <div className="flex items-center justify-between border-t border-dashed pt-3 text-sm">
-                  <span className={isDark ? 'text-slate-400' : 'text-gray-600'}>Discount</span>
-                  <span className="font-semibold tabular-nums text-rose-600 dark:text-rose-400">
-                    {money(sidebarDiscountPreview)}
-                  </span>
                 </div>
               </div>
 
@@ -1144,22 +1145,17 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                 <button
                   type="button"
                   onClick={async () => {
-                    const next: CategoryDiscountPct = {
-                      woodwork: clampPct(discountPctDraft.woodwork),
-                      accessories: clampPct(discountPctDraft.accessories),
-                      constructionHw: clampPct(discountPctDraft.constructionHw),
-                    };
-                    setDiscountPct(next);
-                    setDiscountPctDraft(next);
+                    const next = clampFlatPct(flatDiscountPctDraft);
+                    setFlatDiscountPct(next);
+                    setFlatDiscountPctDraft(next);
                     if (!payload || !isInternalMode || leadId == null || quoteIdForSnapshot == null) return;
                     if (!sessionId) {
                       setDiscountSaveState('error');
                       setDiscountSaveError('Session expired. Please sign in again and retry.');
                       return;
                     }
-                    const nextDiscount = Math.min(discountRsFromCategoryPct(next, categoryBases), discountCap);
-                    const nextTotal = baseTotal == null ? null : Math.max(baseTotal - nextDiscount, 0);
-                    const nextPayload = applyDiscountToPayload(payload, next, nextDiscount, nextTotal);
+                    const nextDiscount = Math.min(discountRsFromFlatPct(next, discountCap), discountCap);
+                    const nextPayload = applyFlatDiscountToPayload(payload, next, nextDiscount);
                     setPayload(nextPayload);
                     setDiscountSaveState('saving');
                     setDiscountSaveError(null);

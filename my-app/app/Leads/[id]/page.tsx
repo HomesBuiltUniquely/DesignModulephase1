@@ -45,18 +45,21 @@ import { openProlanceBrowserForProjectId } from '@/app/lib/prolanceLinks';
 
 const API = getApiBase();
 
-/** Category discount % / bases (Rs) — same model as `/quote/[quoteId]` internal discount editor */
-type QuoteModalCategoryPct = { woodwork: number; accessories: number; constructionHw: number };
-const QUOTE_MODAL_ZERO_PCT: QuoteModalCategoryPct = { woodwork: 0, accessories: 0, constructionHw: 0 };
-function quoteModalClampPct(p: number): number {
-    return Math.min(100, Math.max(0, Math.round(Number.isFinite(p) ? p : 0)));
+/** Flat discount % — same model as `/quote/[quoteId]` internal discount editor */
+const QUOTE_MODAL_MAX_FLAT_PCT = 35;
+function quoteModalClampFlatPct(p: number): number {
+    if (!Number.isFinite(p)) return 0;
+    return Math.min(QUOTE_MODAL_MAX_FLAT_PCT, Math.max(0, Math.round(p * 100) / 100));
 }
-function quoteModalDiscountRsFromPct(pct: QuoteModalCategoryPct, bases: QuoteModalCategoryPct): number {
-    return (
-        (bases.woodwork * quoteModalClampPct(pct.woodwork)) / 100 +
-        (bases.accessories * quoteModalClampPct(pct.accessories)) / 100 +
-        (bases.constructionHw * quoteModalClampPct(pct.constructionHw)) / 100
-    );
+function quoteModalDiscountRsFromFlatPct(pct: number, baseTotal: number): number {
+    return (baseTotal * quoteModalClampFlatPct(pct)) / 100;
+}
+function quoteModalFinalPriceFromFlatPct(pct: number, baseTotal: number): number {
+    return Math.max(baseTotal - quoteModalDiscountRsFromFlatPct(pct, baseTotal), 0);
+}
+function quoteModalFlatPctFromFinalPrice(finalPrice: number, baseTotal: number): number {
+    if (!baseTotal || baseTotal <= 0) return 0;
+    return quoteModalClampFlatPct(((baseTotal - finalPrice) / baseTotal) * 100);
 }
 
 export default function ProjectDetailPage() {
@@ -181,8 +184,8 @@ export default function ProjectDetailPage() {
     const [getQuoteLastBody, setGetQuoteLastBody] = useState<unknown>(null);
     const [latestQuoteResponse, setLatestQuoteResponse] = useState<unknown>(null);
     const [showQuotePreviewModal, setShowQuotePreviewModal] = useState(false);
-    const [quoteModalDiscountPct, setQuoteModalDiscountPct] = useState<QuoteModalCategoryPct>(QUOTE_MODAL_ZERO_PCT);
-    const [quoteModalDiscountDraft, setQuoteModalDiscountDraft] = useState<QuoteModalCategoryPct>(QUOTE_MODAL_ZERO_PCT);
+    const [quoteModalFlatDiscountPct, setQuoteModalFlatDiscountPct] = useState(0);
+    const [quoteModalFlatDiscountDraft, setQuoteModalFlatDiscountDraft] = useState(0);
     const [quoteModalDiscountOpen, setQuoteModalDiscountOpen] = useState(true);
     const [quoteSummaryTab, setQuoteSummaryTab] = useState<'overall' | 'roomwise'>('overall');
     const [expandedQuoteRooms, setExpandedQuoteRooms] = useState<Record<string, boolean>>({});
@@ -205,8 +208,8 @@ export default function ProjectDetailPage() {
 
     useEffect(() => {
         if (!showQuotePreviewModal) return;
-        setQuoteModalDiscountPct(QUOTE_MODAL_ZERO_PCT);
-        setQuoteModalDiscountDraft(QUOTE_MODAL_ZERO_PCT);
+        setQuoteModalFlatDiscountPct(0);
+        setQuoteModalFlatDiscountDraft(0);
         setQuoteModalDiscountOpen(true);
     }, [showQuotePreviewModal, latestQuoteResponse]);
 
@@ -2130,23 +2133,6 @@ export default function ProjectDetailPage() {
                                 extractNumber(view.totals.designAndManagementFees) != null ||
                                 extractNumber(view.totals.discount) != null ||
                                 extractNumber(view.totals.totalPayableAmount) != null;
-                            const categoryBasesModal = view.quoteOptionsData.reduce(
-                                (acc, opt) => ({
-                                    woodwork:
-                                        acc.woodwork +
-                                        (extractNumber(opt.unitsPrice) || 0) +
-                                        (extractNumber(opt.loftsPrice) || 0),
-                                    accessories:
-                                        acc.accessories +
-                                        (extractNumber(opt.appliancesPrice) || 0) +
-                                        (extractNumber(opt.skirtingsPrice) || 0) +
-                                        (extractNumber(opt.worktopsPrice) || 0) +
-                                        (extractNumber(opt.servicesPrice) || 0),
-                                    constructionHw:
-                                        acc.constructionHw + (extractNumber(opt.additionalHWPrice) || 0),
-                                }),
-                                { woodwork: 0, accessories: 0, constructionHw: 0 },
-                            );
                             const baseTotalModal =
                                 extractNumber(view.totals.totalPayableAmount) ??
                                 (view.quoteOptionsData.length
@@ -2154,7 +2140,7 @@ export default function ProjectDetailPage() {
                                     : null);
                             const discountCapModal = baseTotalModal ?? 0;
                             const normalizedDiscountModal = Math.min(
-                                quoteModalDiscountRsFromPct(quoteModalDiscountPct, categoryBasesModal),
+                                quoteModalDiscountRsFromFlatPct(quoteModalFlatDiscountPct, discountCapModal),
                                 discountCapModal,
                             );
                             const discountedTotalModal =
@@ -2162,12 +2148,16 @@ export default function ProjectDetailPage() {
                                     ? Math.max(baseTotalModal - normalizedDiscountModal, 0)
                                     : null;
                             const sidebarDiscountPreviewModal = Math.min(
-                                quoteModalDiscountRsFromPct(quoteModalDiscountDraft, categoryBasesModal),
+                                quoteModalDiscountRsFromFlatPct(quoteModalFlatDiscountDraft, discountCapModal),
                                 discountCapModal,
                             );
                             const sidebarTotalPreviewModal =
                                 baseTotalModal != null
                                     ? Math.max(baseTotalModal - sidebarDiscountPreviewModal, 0)
+                                    : null;
+                            const sidebarFinalPricePreviewModal =
+                                baseTotalModal != null
+                                    ? quoteModalFinalPriceFromFlatPct(quoteModalFlatDiscountDraft, baseTotalModal)
                                     : null;
                             const displayPayableModal =
                                 discountedTotalModal ?? extractNumber(view.totals.totalPayableAmount);
@@ -2519,65 +2509,65 @@ export default function ProjectDetailPage() {
                                                         {formatCurrency(baseTotalModal)}
                                                     </span>
                                                 </div>
-                                                <div>
-                                                    <p className="text-sm font-semibold text-gray-900">Granular discount</p>
-                                                    <p className="mt-0.5 text-xs text-gray-500">
-                                                        By category (whole quotation). Same as full quote page.
-                                                    </p>
+                                                <div className="flex items-center justify-between text-sm">
+                                                    <span className="text-gray-600">Discount</span>
+                                                    <span className="font-semibold tabular-nums text-rose-600">
+                                                        {formatCurrency(sidebarDiscountPreviewModal)}
+                                                    </span>
                                                 </div>
-                                                {(
-                                                    [
-                                                        ['Woodwork', 'woodwork', categoryBasesModal.woodwork],
-                                                        ['Accessories', 'accessories', categoryBasesModal.accessories],
-                                                        [
-                                                            'Construction Hardware',
-                                                            'constructionHw',
-                                                            categoryBasesModal.constructionHw,
-                                                        ],
-                                                    ] as const
-                                                ).map(([label, key, baseAmt]) => (
-                                                    <div
-                                                        key={key}
-                                                        className="flex items-center justify-between gap-2 rounded-lg border border-gray-100 bg-gray-50/90 px-3 py-2.5"
-                                                    >
-                                                        <div className="min-w-0 flex-1">
-                                                            <p className="text-sm font-medium text-gray-900">{label}</p>
-                                                            <p className="text-xs tabular-nums text-gray-600">{formatCurrency(baseAmt)}</p>
+                                                <p className="text-sm font-semibold text-gray-900">Flat discount</p>
+                                                <div className="grid grid-cols-2 gap-3">
+                                                    <div>
+                                                        <label className="mb-1 block text-xs font-medium text-gray-600">Final price</label>
+                                                        <div className="relative">
+                                                            <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-medium text-gray-400">
+                                                                ₹
+                                                            </span>
+                                                            <input
+                                                                type="number"
+                                                                min={0}
+                                                                max={baseTotalModal ?? undefined}
+                                                                step={0.01}
+                                                                value={sidebarFinalPricePreviewModal ?? ''}
+                                                                onChange={(e) => {
+                                                                    const v = Number(e.target.value);
+                                                                    if (!Number.isFinite(v) || baseTotalModal == null) {
+                                                                        setQuoteModalFlatDiscountDraft(0);
+                                                                        return;
+                                                                    }
+                                                                    const cappedFinal = Math.min(Math.max(0, v), baseTotalModal);
+                                                                    setQuoteModalFlatDiscountDraft(
+                                                                        quoteModalFlatPctFromFinalPrice(cappedFinal, baseTotalModal),
+                                                                    );
+                                                                }}
+                                                                className="w-full rounded-md border border-teal-200 bg-white py-2 pl-7 pr-2 text-sm font-semibold tabular-nums text-gray-900 outline-none focus:ring-2 focus:ring-teal-500/40"
+                                                            />
                                                         </div>
-                                                        <div className="relative shrink-0">
-                                                            <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-xs font-medium text-gray-400">
+                                                    </div>
+                                                    <div>
+                                                        <label className="mb-1 block text-xs font-medium text-gray-600">Discount</label>
+                                                        <div className="relative">
+                                                            <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-medium text-gray-400">
                                                                 %
                                                             </span>
                                                             <input
                                                                 type="number"
                                                                 min={0}
-                                                                max={100}
-                                                                step={1}
-                                                                value={quoteModalDiscountDraft[key]}
+                                                                max={QUOTE_MODAL_MAX_FLAT_PCT}
+                                                                step={0.01}
+                                                                value={quoteModalFlatDiscountDraft}
                                                                 onChange={(e) => {
                                                                     const v = Number(e.target.value);
                                                                     if (!Number.isFinite(v)) {
-                                                                        setQuoteModalDiscountDraft((prev) => ({
-                                                                            ...prev,
-                                                                            [key]: 0,
-                                                                        }));
+                                                                        setQuoteModalFlatDiscountDraft(0);
                                                                         return;
                                                                     }
-                                                                    setQuoteModalDiscountDraft((prev) => ({
-                                                                        ...prev,
-                                                                        [key]: Math.min(100, Math.max(0, Math.round(v))),
-                                                                    }));
+                                                                    setQuoteModalFlatDiscountDraft(quoteModalClampFlatPct(v));
                                                                 }}
-                                                                className="w-[4.5rem] rounded-md border border-teal-200 bg-white py-1.5 pl-7 pr-2 text-right text-sm font-semibold tabular-nums text-gray-900 outline-none focus:ring-2 focus:ring-teal-500/40"
+                                                                className="w-full rounded-md border border-teal-200 bg-white py-2 pl-7 pr-2 text-sm font-semibold tabular-nums text-gray-900 outline-none focus:ring-2 focus:ring-teal-500/40"
                                                             />
                                                         </div>
                                                     </div>
-                                                ))}
-                                                <div className="flex items-center justify-between border-t border-dashed pt-3 text-sm">
-                                                    <span className="text-gray-600">Discount</span>
-                                                    <span className="font-semibold tabular-nums text-rose-600">
-                                                        {formatCurrency(sidebarDiscountPreviewModal)}
-                                                    </span>
                                                 </div>
                                             </div>
                                             <div className="space-y-4 border-t border-gray-100 bg-white px-4 py-4">
@@ -2590,15 +2580,9 @@ export default function ProjectDetailPage() {
                                                 <button
                                                     type="button"
                                                     onClick={() => {
-                                                        const next: QuoteModalCategoryPct = {
-                                                            woodwork: quoteModalClampPct(quoteModalDiscountDraft.woodwork),
-                                                            accessories: quoteModalClampPct(quoteModalDiscountDraft.accessories),
-                                                            constructionHw: quoteModalClampPct(
-                                                                quoteModalDiscountDraft.constructionHw,
-                                                            ),
-                                                        };
-                                                        setQuoteModalDiscountPct(next);
-                                                        setQuoteModalDiscountDraft(next);
+                                                        const next = quoteModalClampFlatPct(quoteModalFlatDiscountDraft);
+                                                        setQuoteModalFlatDiscountPct(next);
+                                                        setQuoteModalFlatDiscountDraft(next);
                                                     }}
                                                     className="w-full rounded-lg bg-teal-700 py-3 text-sm font-semibold text-white shadow-sm hover:bg-teal-800"
                                                 >

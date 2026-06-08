@@ -141,7 +141,7 @@ registerMsg91InboundRoutes(app, pool);
 // ----- S3 setup for profile images -----
 const S3_REGION = process.env.AWS_REGION || "ap-south-1";
 const S3_BUCKET = process.env.S3_BUCKET_NAME || "your-profile-images-bucket";
-
+                                                                                                                      
 const s3 = new S3Client({
   region: S3_REGION,
   credentials: process.env.AWS_ACCESS_KEY_ID
@@ -3492,6 +3492,7 @@ function parseFiniteNumber(v: unknown): number | null {
 }
 
 function readDiscountMetaFromSnapshot(snapshotPayload: Record<string, unknown>): {
+  flatDiscountPct: number | null;
   categoryPct: unknown;
   amount: number | null;
 } {
@@ -3503,15 +3504,21 @@ function readDiscountMetaFromSnapshot(snapshotPayload: Record<string, unknown>):
       : Array.isArray(data) && data[0] && typeof data[0] === "object"
         ? (data[0] as Record<string, unknown>)
         : null;
+  const flatDiscountPct =
+    parseFiniteNumber(root.hubFlatDiscountPct) ??
+    (d0 ? parseFiniteNumber((d0 as Record<string, unknown>).hubFlatDiscountPct) : null);
   const categoryPct =
     root.hubCategoryDiscountPct ??
     (d0 ? (d0 as Record<string, unknown>).hubCategoryDiscountPct : null) ??
     null;
   const amount =
+    parseFiniteNumber(root.hubFlatDiscountAmount) ??
     parseFiniteNumber(root.hubCategoryDiscountAmount) ??
-    (d0 ? parseFiniteNumber((d0 as Record<string, unknown>).hubCategoryDiscountAmount) : null) ??
-    null;
-  return { categoryPct, amount };
+    (d0
+      ? parseFiniteNumber((d0 as Record<string, unknown>).hubFlatDiscountAmount) ??
+        parseFiniteNumber((d0 as Record<string, unknown>).hubCategoryDiscountAmount)
+      : null);
+  return { flatDiscountPct, categoryPct, amount };
 }
 
 async function handleCrmInternalLinkByExternalLeadId(req: Request, res: Response): Promise<void> {
@@ -3638,26 +3645,41 @@ app.patch("/api/crm/leads/:leadId/quotes/:quoteId/discount", async (req: Request
   if (!Number.isFinite(quoteId) || quoteId < 1) return res.status(400).json({ message: "Invalid quoteId" });
 
   const body = (req.body || {}) as Record<string, unknown>;
+  const flatDiscountPctRaw = parseFiniteNumber(body.flatDiscountPct ?? body.hubFlatDiscountPct);
   const categoryPct = (body.categoryPct ?? body.hubCategoryDiscountPct) as unknown;
-  const amount = parseFiniteNumber(body.amount ?? body.hubCategoryDiscountAmount);
-  if (!categoryPct || typeof categoryPct !== "object") {
-    return res.status(400).json({ message: "categoryPct (object) is required" });
-  }
-  if (amount == null || amount < 0) {
-    return res.status(400).json({ message: "amount (number) is required" });
-  }
+  const amount = parseFiniteNumber(body.amount ?? body.hubFlatDiscountAmount ?? body.hubCategoryDiscountAmount);
+  const clampFlatPct = (v: number): number => Math.max(0, Math.min(35, Math.round(v * 100) / 100));
 
-  // Enforce 30% cap per category at the API boundary too (CRM UI should also enforce it).
-  const clampPct = (v: unknown): number => {
-    const n = parseFiniteNumber(v) ?? 0;
-    return Math.max(0, Math.min(30, Math.round(n)));
-  };
-  const pctObj = categoryPct as Record<string, unknown>;
-  const normalizedPct = {
-    woodwork: clampPct(pctObj.woodwork),
-    accessories: clampPct(pctObj.accessories),
-    constructionHw: clampPct(pctObj.constructionHw),
-  };
+  let discountMeta: Record<string, unknown>;
+  if (flatDiscountPctRaw != null) {
+    const normalizedFlat = clampFlatPct(flatDiscountPctRaw);
+    if (amount == null || amount < 0) {
+      return res.status(400).json({ message: "amount (number) is required with flatDiscountPct" });
+    }
+    discountMeta = {
+      hubFlatDiscountPct: normalizedFlat,
+      hubFlatDiscountAmount: amount,
+    };
+  } else if (categoryPct && typeof categoryPct === "object") {
+    if (amount == null || amount < 0) {
+      return res.status(400).json({ message: "amount (number) is required" });
+    }
+    const clampCategoryPct = (v: unknown): number => {
+      const n = parseFiniteNumber(v) ?? 0;
+      return Math.max(0, Math.min(30, Math.round(n)));
+    };
+    const pctObj = categoryPct as Record<string, unknown>;
+    discountMeta = {
+      hubCategoryDiscountPct: {
+        woodwork: clampCategoryPct(pctObj.woodwork),
+        accessories: clampCategoryPct(pctObj.accessories),
+        constructionHw: clampCategoryPct(pctObj.constructionHw),
+      },
+      hubCategoryDiscountAmount: amount,
+    };
+  } else {
+    return res.status(400).json({ message: "flatDiscountPct (number) or categoryPct (object) is required" });
+  }
 
   try {
     const [snapRows] = await pool.query(
@@ -3681,22 +3703,19 @@ app.patch("/api/crm/leads/:leadId/quotes/:quoteId/discount", async (req: Request
     // Persist discount metadata without overriding Prolance totals.
     const nextPayload: Record<string, unknown> = {
       ...snapshotPayload,
-      hubCategoryDiscountPct: normalizedPct,
-      hubCategoryDiscountAmount: amount,
+      ...discountMeta,
     };
     const data = snapshotPayload.data ?? snapshotPayload.Data;
     if (data && typeof data === "object" && !Array.isArray(data)) {
       nextPayload.data = {
         ...(data as Record<string, unknown>),
-        hubCategoryDiscountPct: normalizedPct,
-        hubCategoryDiscountAmount: amount,
+        ...discountMeta,
       };
     } else if (Array.isArray(data) && data[0] && typeof data[0] === "object") {
       nextPayload.data = [
         {
           ...(data[0] as Record<string, unknown>),
-          hubCategoryDiscountPct: normalizedPct,
-          hubCategoryDiscountAmount: amount,
+          ...discountMeta,
         },
         ...data.slice(1),
       ];
@@ -3715,7 +3734,7 @@ app.patch("/api/crm/leads/:leadId/quotes/:quoteId/discount", async (req: Request
       leadId,
       quoteId,
       updated: ins.affectedRows > 0,
-      discount: { categoryPct: normalizedPct, amount },
+      discount: { ...discountMeta, amount },
       links: {
         customerQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}`,
         internalQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}?internal=1&leadId=${encodeURIComponent(String(leadId))}`,
