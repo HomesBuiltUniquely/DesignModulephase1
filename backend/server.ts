@@ -3122,11 +3122,20 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
         (payload && (payload.designer_name || payload.designerName)) || undefined;
       if (designerName) {
         const [rows] = await pool.query(
-          "SELECT id FROM users WHERE name = ? AND role = 'designer' LIMIT 1",
+          `SELECT u.id, dm.name AS designManagerName
+           FROM users u
+           LEFT JOIN users dm ON u.design_manager_id = dm.id
+           WHERE u.name = ? AND u.role = 'designer' LIMIT 1`,
           [designerName],
         );
-        const row = (rows as { id: number }[])[0];
-        if (row?.id) assignedDesignerId = row.id;
+        const row = (rows as any[])[0];
+        if (row?.id) {
+          assignedDesignerId = row.id;
+          if (row.designManagerName && payload && typeof payload === "object") {
+            payload.designManagerName = row.designManagerName;
+            payload.design_manager_name = row.designManagerName;
+          }
+        }
       }
     } catch {
       // ignore mapping errors; assignedDesignerId stays null
@@ -3378,14 +3387,22 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
 
   try {
     let assignedDesignerId: number | null = null;
+    let designManagerName: string | null = null;
     if (designerName) {
       const [designerRows] = await pool.query(
-        "SELECT id FROM users WHERE role = 'designer' AND LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1",
+        `SELECT u.id, dm.name AS designManagerName
+         FROM users u
+         LEFT JOIN users dm ON u.design_manager_id = dm.id
+         WHERE u.role = 'designer' AND LOWER(TRIM(u.name)) = LOWER(TRIM(?)) LIMIT 1`,
         [designerName],
       );
-      assignedDesignerId = (designerRows as { id?: unknown }[])[0]?.id != null
-        ? Number((designerRows as { id?: unknown }[])[0].id)
-        : null;
+      const row = (designerRows as any[])[0];
+      if (row?.id != null) {
+        assignedDesignerId = Number(row.id);
+        if (row.designManagerName) {
+          designManagerName = row.designManagerName;
+        }
+      }
     }
 
     const crmSchedule = {
@@ -3430,6 +3447,7 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
         email: clientEmail || "",
         status_of_project: "Pre 10%",
         designer_name: designerName || "",
+        ...(designManagerName ? { design_manager_name: designManagerName, designManagerName: designManagerName } : {}),
         sales_executive: salesExecutive || "",
         sales_executive_email: salesExecutiveEmail || "",
         appointment_date: appointmentDate || "",
