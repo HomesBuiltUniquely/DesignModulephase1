@@ -243,6 +243,18 @@ export default function ProjectDetailPage() {
     const extractString = (v: unknown): string | null =>
         typeof v === 'string' && v.trim() ? v.trim() : null;
 
+    const getLeadBranchName = (lead: LeadshipTypes | null | undefined): string => {
+        if (!lead) return 'Experience Center';
+        const raw = lead as Record<string, unknown>;
+        return (
+            extractString(raw.experienceCenter) ||
+            extractString(raw.experience_center) ||
+            extractString(raw.sales_closure_ec) ||
+            extractString(raw.branch) ||
+            'Experience Center'
+        );
+    };
+
     const extractNumber = (v: unknown): number | null => {
         if (typeof v === 'number' && Number.isFinite(v)) return v;
         if (typeof v === 'string' && v.trim() && Number.isFinite(Number(v))) return Number(v);
@@ -2851,7 +2863,7 @@ export default function ProjectDetailPage() {
                             onDesignDrop={onDesignDrop}
                             onDesignDragOver={onDesignDragOver}
                             removeDesignFile={removeDesignFile}
-                            ecLocation={project?.experienceCenter || (project as any)?.experience_center || 'Experience Center'}
+                            ecLocation={getLeadBranchName(project)}
                             initialDate={(() => {
                                 const ev = historyEvents.find(e => e.taskName === 'First cut design + quotation discussion meeting request' && (e.meta as any)?.meetingDate);
                                 return (ev?.meta as any)?.meetingDate || '';
@@ -2913,7 +2925,7 @@ export default function ProjectDetailPage() {
                                             meetingTime: meta?.meetingTime,
                                             meetingMode: meta?.meetingMode,
                                             meetingLink: meta?.meetingLink,
-                                            ecLocation: meta?.ecLocation || project?.experienceCenter || (project as any)?.experience_center,
+                                            ecLocation: meta?.ecLocation || getLeadBranchName(project),
                                             attachments: uploadedAttachments,
                                         }),
                                     });
@@ -2939,7 +2951,7 @@ export default function ProjectDetailPage() {
                                         description: 'First cut design completed (100%) and meeting request submitted.',
                                         meta: {
                                             ...meta,
-                                            ecLocation: meta?.ecLocation || project?.experienceCenter || (project as any)?.experience_center,
+                                            ecLocation: meta?.ecLocation || getLeadBranchName(project),
                                         },
                                     },
                                 );
@@ -3017,9 +3029,7 @@ export default function ProjectDetailPage() {
                                     ? {
                                           customerName: project.projectName,
                                           ecName:
-                                              (project as any).experienceCenter ||
-                                              (project as any).experience_center ||
-                                              'Experience Center',
+                                              getLeadBranchName(project),
                                           designerName: project.designerName ?? authUser?.name ?? 'Designer',
                                           projectValue:
                                               (project as any).orderValue ??
@@ -3203,7 +3213,7 @@ export default function ProjectDetailPage() {
                             onDesignDrop={onDesignDrop}
                             onDesignDragOver={onDesignDragOver}
                             removeDesignFile={removeDesignFile}
-                            ecLocation={project?.experienceCenter || (project as any)?.experience_center || 'Experience Center'}
+                            ecLocation={getLeadBranchName(project)}
                             initialDate={(() => {
                                 const ev = historyEvents.find(e => e.taskName === 'Material selection meeting + quotation discussion' && (e.meta as any)?.meetingDate);
                                 return (ev?.meta as any)?.meetingDate || '';
@@ -3259,7 +3269,7 @@ export default function ProjectDetailPage() {
                                             meetingTime: meta?.meetingTime,
                                             meetingMode: meta?.meetingMode,
                                             meetingLink: meta?.meetingLink,
-                                            ecLocation: meta?.ecLocation || project?.experienceCenter || (project as any)?.experience_center,
+                                            ecLocation: meta?.ecLocation || getLeadBranchName(project),
                                             ...(attachments.length ? { attachments } : {}),
                                         }),
                                     });
@@ -3285,7 +3295,7 @@ export default function ProjectDetailPage() {
                                         description: 'Material selection meeting completed (100%) and meeting request submitted.',
                                         meta: {
                                             ...meta,
-                                            ecLocation: meta?.ecLocation || project?.experienceCenter || (project as any)?.experience_center,
+                                            ecLocation: meta?.ecLocation || getLeadBranchName(project),
                                         },
                                     },
                                 );
@@ -3512,7 +3522,7 @@ export default function ProjectDetailPage() {
                             onDesignDrop={onDesignDrop}
                             onDesignDragOver={onDesignDragOver}
                             removeDesignFile={removeDesignFile}
-                            ecLocation={project?.experienceCenter || (project as any)?.experience_center || 'Experience Center'}
+                            ecLocation={getLeadBranchName(project)}
                             initialDate={(() => {
                                 const ev = historyEvents.find(e => e.taskName === 'Design sign off' && (e.meta as any)?.meetingDate);
                                 return (ev?.meta as any)?.meetingDate || '';
@@ -3568,7 +3578,7 @@ export default function ProjectDetailPage() {
                                             meetingTime: meta?.meetingTime,
                                             meetingMode: meta?.meetingMode,
                                             meetingLink: meta?.meetingLink,
-                                            ecLocation: meta?.ecLocation || project?.experienceCenter || (project as any)?.experience_center,
+                                            ecLocation: meta?.ecLocation || getLeadBranchName(project),
                                             attachments: uploadedAttachments,
                                         }),
                                     });
@@ -3618,7 +3628,7 @@ export default function ProjectDetailPage() {
                                         description: 'Design sign off completed and meeting request submitted.',
                                         meta: {
                                             ...meta,
-                                            ecLocation: meta?.ecLocation || project?.experienceCenter || (project as any)?.experience_center,
+                                            ecLocation: meta?.ecLocation || getLeadBranchName(project),
                                         },
                                     },
                                 );

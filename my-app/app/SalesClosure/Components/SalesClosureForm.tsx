@@ -12,7 +12,6 @@ import {
   PropertyConfig,
   PaymentReceived,
   PaymentMode,
-  LeadSource,
 } from "./Enums";
 
 function getTodayDateValue() {
@@ -39,6 +38,15 @@ function parseAmountInput(raw: string): number | null {
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
+function normalizePropertyConfiguration(value: string): string {
+  const compact = value.trim().replace(/\s+/g, "").toUpperCase();
+  const match = compact.match(/^([1-4])BHK$/);
+  if (match) return `${match[1]}BHK`;
+  if (compact === "VILLA") return PropertyConfig.VILLA;
+  if (compact === "OTHER") return PropertyConfig.OTHER;
+  return value.trim();
+}
+
 function paymentReceivedFromAmount(
   totalPaidCumulative: number,
   summary: QuotePaymentSummary | null,
@@ -61,29 +69,23 @@ type QuotePaymentSummary = {
 function buildInitialFormState(): SalesClosureFormType {
   return {
     externalReferenceId: "",
+    leadType: "",
+    returnUrl: "",
     sales_lead_name: "",
     sales_spoc: "",
     sales_email: "",
     customer_name: "",
     co_no: "",
     email: "",
-    property_name: "",
     possession: "",
     lead_source: "",
     property_configuration: "",
     experience_center: "",
     site_address: "",
-    booking_date: getTodayDateValue(),
     booking_type: "",
     spot_booking: false,
     designer_name: "",
     designer_lead: "",
-    order_value: 0,
-    dis_on_woodwork: 0,
-    dis_on_service: 0,
-    dis_on_accessories: 0,
-    hub_coins: 0,
-    complimentary_offer: 0,
     payment_received: "",
     amount_paid: 0,
     mode_of_payment: "",
@@ -99,12 +101,13 @@ function buildInitialFormState(): SalesClosureFormType {
 
 export default function SalesClosureForm() {
   const router = useRouter();
-  type PercentField =
-    | "dis_on_woodwork"
-    | "dis_on_service"
-    | "dis_on_accessories";
   type Designer = { id: number; name: string; role: string; leadName: string };
-  type SalesPerson = { id: number; fullName: string | null; username: string; email?: string };
+  type SalesPerson = {
+    id: number;
+    fullName: string | null;
+    username: string;
+    email?: string;
+  };
   const [designers, setDesigners] = useState<Designer[]>([]);
   const [salesManagers, setSalesManagers] = useState<SalesPerson[]>([]);
   const [salesAdmins, setSalesAdmins] = useState<SalesPerson[]>([]);
@@ -115,9 +118,12 @@ export default function SalesClosureForm() {
   const [leadIdInput, setLeadIdInput] = useState("");
   const [fetchingLead, setFetchingLead] = useState(false);
   const [fetchLeadError, setFetchLeadError] = useState<string | null>(null);
-  const [quotePaymentSummary, setQuotePaymentSummary] = useState<QuotePaymentSummary | null>(null);
+  const [quotePaymentSummary, setQuotePaymentSummary] =
+    useState<QuotePaymentSummary | null>(null);
   const [quotePaymentLoading, setQuotePaymentLoading] = useState(false);
-  const [quotePaymentError, setQuotePaymentError] = useState<string | null>(null);
+  const [quotePaymentError, setQuotePaymentError] = useState<string | null>(
+    null,
+  );
   const [amountPaidInput, setAmountPaidInput] = useState("0");
   // Track sales lead & SPOC emails for rejection email CC (stored separately in payload)
   const [salesLeadEmail, setSalesLeadEmail] = useState("");
@@ -146,13 +152,6 @@ export default function SalesClosureForm() {
       .catch(() => {});
   }, []);
 
-  const designerName = designers
-    .filter((d) => d.role === "designer")
-    .map((d) => d.name);
-  const designerLeadName = designers
-    .filter((d) => d.role === "design_manager")
-    .map((d) => d.name);
-
   const [currentDateTime, setCurrentDateTime] = useState("");
 
   useEffect(() => {
@@ -171,53 +170,165 @@ export default function SalesClosureForm() {
   const searchParams = useSearchParams();
   const [form, setForm] = useState<SalesClosureFormType>(buildInitialFormState);
 
+  const mergeCurrentOption = (options: string[], current: string) =>
+    current && !options.includes(current) ? [current, ...options] : options;
+
+  const designerName = mergeCurrentOption(
+    designers.filter((d) => d.role === "designer").map((d) => d.name),
+    form.designer_name,
+  );
+  const designerLeadName = mergeCurrentOption(
+    designers.filter((d) => d.role === "design_manager").map((d) => d.name),
+    form.designer_lead || "",
+  );
+  const salesLeadNameOptions = mergeCurrentOption(
+    salesManagers.map((m) => m.fullName || m.username),
+    form.sales_lead_name,
+  );
+  const salesSpocOptions = mergeCurrentOption(
+    salesAdmins.map((a) => a.fullName || a.username),
+    form.sales_spoc,
+  );
+  const propertyConfigurationOptions = mergeCurrentOption(
+    Object.values(PropertyConfig),
+    form.property_configuration,
+  );
+  const experienceCenterOptions = mergeCurrentOption(
+    [...BRANCH_OPTIONS],
+    form.experience_center,
+  );
+
+  useEffect(() => {
+    const crmDesignerName = form.designer_name.trim().toLowerCase();
+    if (!crmDesignerName || designers.length === 0) return;
+    const match = designers.find(
+      (d) =>
+        d.role === "designer" &&
+        d.name.trim().toLowerCase() === crmDesignerName,
+    );
+    if (!match?.leadName || form.designer_lead === match.leadName) return;
+    setForm((prev) => ({ ...prev, designer_lead: match.leadName }));
+    setErrors((prev) => {
+      if (!prev.designer_lead) return prev;
+      const next = { ...prev };
+      delete next.designer_lead;
+      return next;
+    });
+  }, [designers, form.designer_name, form.designer_lead]);
+
   // Pre-fill form from CRM URL query parameters on first load
   useEffect(() => {
     const get = (key: string) => searchParams.get(key)?.trim() ?? "";
 
-    // Try the JSON prefill blob first, then fall back to individual params
+    // Try the JSON prefill blob first, then fall back to individual params.
+    // CRM can send fields at root or nested under formData/form/fetchedData.
     const prefillRaw = get("prefill") || get("salesClosurePrefill");
-    let blob: Record<string, string> = {};
+    let blob: Record<string, unknown> = {};
     if (prefillRaw) {
-      try { blob = JSON.parse(prefillRaw) as Record<string, string>; } catch { /* ignore */ }
+      try {
+        blob = JSON.parse(prefillRaw) as Record<string, unknown>;
+      } catch {
+        /* ignore */
+      }
     }
-    const p = (key: string) => blob[key]?.trim() || get(key);
+    const nestedSources = [
+      blob,
+      blob.formData,
+      blob.form_data,
+      blob.form,
+      blob.fetchedData,
+      blob.rawPayload,
+    ].filter((source): source is Record<string, unknown> =>
+      Boolean(source && typeof source === "object" && !Array.isArray(source)),
+    );
+    const asString = (value: unknown) => {
+      if (typeof value === "string") return value.trim();
+      if (typeof value === "number" && Number.isFinite(value)) return String(value);
+      if (typeof value === "boolean") return value ? "true" : "false";
+      return "";
+    };
+    const p = (...keys: string[]) => {
+      for (const key of keys) {
+        for (const source of nestedSources) {
+          const value = asString(source[key]);
+          if (value) return value;
+        }
+        const fromQuery = get(key);
+        if (fromQuery) return fromQuery;
+      }
+      return "";
+    };
 
-    const customer_name         = p("customer_name");
-    const co_no                 = p("co_no");
-    const email                 = p("email");
-    const property_name         = p("property_name");
-    const possession            = p("possession");
-    const lead_source           = p("lead_source");
-    const property_configuration = p("property_configuration");
-    const sales_email           = p("sales_email");
-    const experience_center     = p("experience_center");
-    const sales_lead_name       = p("sales_lead_name");
-    const designer_name         = p("designer_name");
-    const lead_id               = p("lead_id") || p("leadId");
+    const customer_name = p("customer_name", "customerName");
+    const co_no = p("co_no", "contactNo", "phone", "mobile");
+    const email = p("email");
+    const sales_spoc = p("sales_spoc", "salesSpoc");
+    const booking_type = p("booking_type", "bookingType");
+    const site_address = p("site_address", "siteAddress");
+    const possession = p("possession");
+    const lead_source = p("lead_source", "leadSource");
+    const property_configuration = normalizePropertyConfiguration(
+      p("property_configuration", "propertyConfiguration", "configuration"),
+    );
+    const sales_email = p("sales_email", "salesEmail");
+    const experience_center = p(
+      "experience_center",
+      "experienceCenter",
+      "sales_closure_ec",
+      "branch",
+      "ecName",
+      "ecLocation",
+    );
+    const sales_lead_name = p("sales_lead_name", "salesLeadName");
+    const designer_name = p("designer_name", "designerName");
+    const lead_id = p("lead_id") || p("leadId");
 
     if (lead_id) setLeadIdInput(lead_id);
-    const externalReferenceId   = p("externalReferenceId");
+    const externalReferenceId =
+      p("externalReferenceId", "external_reference_id");
+    const leadType = p("leadType") || p("lead_type");
+    const returnUrl = p("returnUrl") || p("return_url");
 
     // Only update state if the CRM actually sent data
-    if (customer_name || co_no || email || sales_email || property_name || externalReferenceId) {
+    if (
+      customer_name ||
+      co_no ||
+      email ||
+      sales_email ||
+      sales_spoc ||
+      booking_type ||
+      site_address ||
+      possession ||
+      lead_source ||
+      property_configuration ||
+      experience_center ||
+      sales_lead_name ||
+      designer_name ||
+      externalReferenceId ||
+      leadType ||
+      returnUrl
+    ) {
       setForm((prev) => ({
         ...prev,
-        ...(externalReferenceId   && { externalReferenceId }),
-        ...(customer_name         && { customer_name }),
-        ...(co_no                 && { co_no }),
-        ...(email                 && { email }),
-        ...(property_name         && { property_name }),
-        ...(possession            && { possession }),
-        ...(lead_source           && { lead_source }),
-        ...(property_configuration && { property_configuration: property_configuration as PropertyConfig }),
-        ...(sales_email           && { sales_email }),
-        ...(experience_center     && { experience_center }),
-        ...(sales_lead_name       && { sales_lead_name }),
-        ...(designer_name         && { designer_name }),
+        ...(externalReferenceId && { externalReferenceId }),
+        ...(leadType && { leadType }),
+        ...(returnUrl && { returnUrl }),
+        ...(customer_name && { customer_name }),
+        ...(co_no && { co_no }),
+        ...(email && { email }),
+        ...(sales_spoc && { sales_spoc }),
+        ...(booking_type && { booking_type: booking_type as BookingType }),
+        ...(site_address && { site_address }),
+        ...(possession && { possession }),
+        ...(lead_source && { lead_source }),
+        ...(property_configuration && { property_configuration }),
+        ...(sales_email && { sales_email }),
+        ...(experience_center && { experience_center }),
+        ...(sales_lead_name && { sales_lead_name }),
+        ...(designer_name && { designer_name }),
       }));
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const leadIdForQuote =
@@ -250,7 +361,10 @@ export default function SalesClosureForm() {
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           throw new Error(
-            (data && typeof data === "object" && "message" in data && typeof data.message === "string"
+            (data &&
+            typeof data === "object" &&
+            "message" in data &&
+            typeof data.message === "string"
               ? data.message
               : null) || "Could not load quotation amount",
           );
@@ -287,7 +401,9 @@ export default function SalesClosureForm() {
         if (cancelled) return;
         setQuotePaymentSummary(null);
         setQuotePaymentError(
-          err instanceof Error ? err.message : "Could not load quotation amount",
+          err instanceof Error
+            ? err.message
+            : "Could not load quotation amount",
         );
       })
       .finally(() => {
@@ -300,13 +416,15 @@ export default function SalesClosureForm() {
   }, [leadIdForQuote]);
 
   const thisPayment = form.amount_paid;
-  const previouslyPaid = quotePaymentSummary?.totalPaidToward10PercentPreviously ?? 0;
+  const previouslyPaid =
+    quotePaymentSummary?.totalPaidToward10PercentPreviously ?? 0;
   const totalPaidCumulative = previouslyPaid + thisPayment;
   const paymentStats = quotePaymentSummary
     ? {
         percentOfTotal:
           totalPaidCumulative > 0
-            ? (totalPaidCumulative / quotePaymentSummary.totalPayableAmount) * 100
+            ? (totalPaidCumulative / quotePaymentSummary.totalPayableAmount) *
+              100
             : 0,
         percentOfTenPercentTarget:
           totalPaidCumulative > 0
@@ -316,13 +434,17 @@ export default function SalesClosureForm() {
           0,
           quotePaymentSummary.tenPercentAmount - totalPaidCumulative,
         ),
-        tenPercentMet: totalPaidCumulative >= quotePaymentSummary.tenPercentAmount,
+        tenPercentMet:
+          totalPaidCumulative >= quotePaymentSummary.tenPercentAmount,
       }
     : null;
 
   useEffect(() => {
     if (!quotePaymentSummary) return;
-    const auto = paymentReceivedFromAmount(totalPaidCumulative, quotePaymentSummary);
+    const auto = paymentReceivedFromAmount(
+      totalPaidCumulative,
+      quotePaymentSummary,
+    );
     if (auto === form.payment_received) return;
     setForm((prev) => ({ ...prev, payment_received: auto }));
     setErrors((prev) => {
@@ -332,14 +454,6 @@ export default function SalesClosureForm() {
       return next;
     });
   }, [quotePaymentSummary, totalPaidCumulative, form.payment_received]);
-
-  const [percentInputs, setPercentInputs] = useState<
-    Record<PercentField, string>
-  >({
-    dis_on_woodwork: "0",
-    dis_on_service: "0",
-    dis_on_accessories: "0",
-  });
 
   function updateFields<K extends keyof SalesClosureFormType>(
     name: K,
@@ -365,29 +479,6 @@ export default function SalesClosureForm() {
     });
   }
 
-  function handlePercentChange(field: PercentField, value: string) {
-    if (!/^\d*\.?\d*$/.test(value)) return;
-
-    setPercentInputs((prev) => ({ ...prev, [field]: value }));
-    if (value === "" || value === ".") return;
-
-    updateFields(field, Number(value));
-  }
-
-  function handlePercentBlur(field: PercentField) {
-    const raw = percentInputs[field];
-    if (raw === "" || raw === ".") {
-      setPercentInputs((prev) => ({ ...prev, [field]: "0" }));
-      updateFields(field, 0);
-      return;
-    }
-    const parsed = Number(raw);
-    if (Number.isFinite(parsed)) {
-      setPercentInputs((prev) => ({ ...prev, [field]: String(parsed) }));
-      updateFields(field, parsed);
-    }
-  }
-
   // Fetch an existing lead by internal Lead ID (for re-submission after finance rejection)
   async function handleFetchLead() {
     const leadId = leadIdInput.trim();
@@ -398,12 +489,15 @@ export default function SalesClosureForm() {
     setFetchingLead(true);
     setFetchLeadError(null);
     try {
-      const res = await fetch(`${getApiBase()}/api/leads/${encodeURIComponent(leadId)}`);
+      const res = await fetch(
+        `${getApiBase()}/api/leads/${encodeURIComponent(leadId)}`,
+      );
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.message || "Lead not found.");
 
       // data.payload is the parsed JSON from the DB
-      const payload = data.payload && typeof data.payload === "object" ? data.payload : {};
+      const payload =
+        data.payload && typeof data.payload === "object" ? data.payload : {};
 
       // Populate the form from the stored payload
       setForm((prev) => ({
@@ -414,23 +508,17 @@ export default function SalesClosureForm() {
         customer_name: payload.customer_name || data.projectName || "",
         co_no: payload.co_no || data.contactNo || "",
         email: payload.email || data.clientEmail || "",
-        property_name: payload.property_name || "",
         possession: payload.possession || "",
         lead_source: payload.lead_source || "",
-        property_configuration: payload.property_configuration || "",
+        property_configuration: normalizePropertyConfiguration(
+          String(payload.property_configuration || ""),
+        ),
         experience_center: payload.experience_center || "",
         site_address: payload.site_address || "",
-        booking_date: payload.booking_date || getTodayDateValue(),
         booking_type: payload.booking_type || "",
         spot_booking: payload.spot_booking || false,
         designer_name: payload.designer_name || "",
         designer_lead: payload.designer_lead || "",
-        order_value: payload.order_value || 0,
-        dis_on_woodwork: payload.dis_on_woodwork || 0,
-        dis_on_service: payload.dis_on_service || 0,
-        dis_on_accessories: payload.dis_on_accessories || 0,
-        hub_coins: payload.hub_coins || 0,
-        complimentary_offer: payload.complimentary_offer || 0,
         // Payment fields left blank so salesperson re-enters them
         payment_received: payload.payment_received || "",
         amount_paid: 0,
@@ -442,21 +530,21 @@ export default function SalesClosureForm() {
         timeline_promise_by_sales: payload.timeline_promise_by_sales || "",
         scope_frozen: payload.scope_frozen || "",
         approval_proof: "",
-        externalReferenceId: payload.externalReferenceId || payload.external_reference_id || "",
+        externalReferenceId:
+          payload.externalReferenceId || payload.external_reference_id || "",
+        leadType: payload.leadType || payload.lead_type || "",
+        returnUrl: payload.returnUrl || payload.return_url || "",
       }));
-      setPercentInputs({
-        dis_on_woodwork: String(payload.dis_on_woodwork || 0),
-        dis_on_service: String(payload.dis_on_service || 0),
-        dis_on_accessories: String(payload.dis_on_accessories || 0),
-      });
       setAmountPaidInput("0");
       setSalesLeadEmail(String(payload.sales_lead_email || ""));
       setSalesSpocEmail(String(payload.sales_spoc_email || ""));
 
-      setFetchedLeadId(data.id);  // store the DB lead id for the PUT request
+      setFetchedLeadId(data.id); // store the DB lead id for the PUT request
       setIsEditMode(true);
     } catch (err) {
-      setFetchLeadError(err instanceof Error ? err.message : "Failed to fetch lead.");
+      setFetchLeadError(
+        err instanceof Error ? err.message : "Failed to fetch lead.",
+      );
     } finally {
       setFetchingLead(false);
     }
@@ -464,7 +552,11 @@ export default function SalesClosureForm() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (form.special_offer.trim() !== "" && !form.approval_proof && !isEditMode) {
+    if (
+      form.special_offer.trim() !== "" &&
+      !form.approval_proof &&
+      !isEditMode
+    ) {
       alert("Approval proof is mandatory when special commitment is provided.");
       return;
     }
@@ -504,7 +596,9 @@ export default function SalesClosureForm() {
               cumulativePaid >= quotePaymentSummary.tenPercentAmount,
           }
         : {}),
-      ...(!usePut ? { sales_closure_submitted_at: new Date().toISOString() } : {}),
+      ...(!usePut
+        ? { sales_closure_submitted_at: new Date().toISOString() }
+        : {}),
       ...(usePut && previouslyPaid > 0
         ? { sales_closure_payment_added_at: new Date().toISOString() }
         : {}),
@@ -518,7 +612,10 @@ export default function SalesClosureForm() {
       }
     }
 
-    console.log(isEditMode ? "Updating payload:" : "Sending payload:", finalPayload);
+    console.log(
+      isEditMode ? "Updating payload:" : "Sending payload:",
+      finalPayload,
+    );
 
     try {
       const url = usePut
@@ -571,11 +668,6 @@ export default function SalesClosureForm() {
   function handleCancel() {
     const resetForm = buildInitialFormState();
     setForm(resetForm);
-    setPercentInputs({
-      dis_on_woodwork: String(resetForm.dis_on_woodwork),
-      dis_on_service: String(resetForm.dis_on_service),
-      dis_on_accessories: String(resetForm.dis_on_accessories),
-    });
     setAmountPaidInput(String(resetForm.amount_paid));
     setErrors({});
   }
@@ -589,7 +681,10 @@ export default function SalesClosureForm() {
             <p className="text-sm font-semibold text-green-950 mb-0.5">
               Re-submitting after payment rejection?
             </p>
-            <p className="text-xs text-gray-500">Enter your Lead ID to auto-fill the form. Only payment fields will be editable.</p>
+            <p className="text-xs text-gray-500">
+              Enter your Lead ID to auto-fill the form. Only payment fields will
+              be editable.
+            </p>
           </div>
           <div className="flex gap-2 items-center flex-shrink-0">
             <input
@@ -613,10 +708,14 @@ export default function SalesClosureForm() {
               disabled={fetchingLead || !leadIdInput}
               className="px-4 py-2 rounded-lg bg-green-950 text-white text-sm font-semibold hover:bg-green-800 disabled:opacity-60"
             >
-              {fetchingLead ? 'Fetching…' : 'Fetch Lead'}
+              {fetchingLead ? "Fetching…" : "Fetch Lead"}
             </button>
           </div>
-          {fetchLeadError && <p className="text-red-500 text-xs sm:text-sm sm:ml-2">{fetchLeadError}</p>}
+          {fetchLeadError && (
+            <p className="text-red-500 text-xs sm:text-sm sm:ml-2">
+              {fetchLeadError}
+            </p>
+          )}
           {isEditMode && (
             <p className="text-green-700 text-xs font-medium sm:ml-2">
               ✓ Lead loaded — only payment fields are editable.
@@ -630,7 +729,10 @@ export default function SalesClosureForm() {
           {/* LEFT (Static / Sticky) */}
           <aside className="col-span-12 lg:col-span-5 border-r p-6 lg:sticky lg:top-0 lg:h-screen overflow-y-auto">
             {/* Sales Detail */}
-            <div className="p-4 rounded-2xl border border-2 border-gray-300 mb-4 bg-purple-50" style={isEditMode ? {opacity:0.6, pointerEvents:'none'} : {}}>
+            <div
+              className="p-4 rounded-2xl border border-2 border-gray-300 mb-4 bg-purple-50"
+              style={isEditMode ? { opacity: 0.6, pointerEvents: "none" } : {}}
+            >
               <h2 className="text-lg font-semibold mb-3 text-green-950">
                 Sales Details
               </h2>
@@ -670,7 +772,11 @@ export default function SalesClosureForm() {
                 Customer Details
               </h2>
 
-              <div style={isEditMode ? {opacity:0.6, pointerEvents:'none'} : {}}>
+              <div
+                style={
+                  isEditMode ? { opacity: 0.6, pointerEvents: "none" } : {}
+                }
+              >
                 <div className=" mb-2">
                   <label className="block text-sm font-medium mb-1 text-green-950">
                     CustomerName
@@ -685,7 +791,9 @@ export default function SalesClosureForm() {
                     }
                   />
                   {errors.customer_name && (
-                    <p className="text-red-500 text-sm">{errors.customer_name}</p>
+                    <p className="text-red-500 text-sm">
+                      {errors.customer_name}
+                    </p>
                   )}
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-2">
@@ -730,25 +838,6 @@ export default function SalesClosureForm() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-2">
                   <div>
                     <label className="block text-sm text-green-950 font-medium mb-1">
-                      Property Name
-                    </label>
-                    <input
-                      className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950 disabled:bg-gray-100 disabled:cursor-not-allowed"
-                      type="text"
-                      value={form.property_name}
-                      disabled={isEditMode}
-                      onChange={(e) =>
-                        updateFields("property_name", e.target.value)
-                      }
-                    />
-                    {errors.property_name && (
-                      <p className="text-red-500 text-sm">
-                        {errors.property_name}
-                      </p>
-                    )}
-                  </div>
-                  <div>
-                    <label className="block text-sm text-green-950 font-medium mb-1">
                       Possession
                     </label>
                     <input
@@ -756,24 +845,30 @@ export default function SalesClosureForm() {
                       type="text"
                       value={form.possession}
                       disabled={isEditMode}
-                      onChange={(e) => updateFields("possession", e.target.value)}
+                      onChange={(e) =>
+                        updateFields("possession", e.target.value)
+                      }
                     />
                     {errors.possession && (
-                      <p className="text-red-500 text-sm">{errors.possession}</p>
+                      <p className="text-red-500 text-sm">
+                        {errors.possession}
+                      </p>
                     )}
                   </div>
-                </div>
-                <div>
-                  <label className="block text-sm text-green-950 font-medium mb-1">
-                    Lead Source
-                  </label>
-                  <input
-                    className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950 disabled:bg-gray-100 disabled:cursor-not-allowed"
-                    type="text"
-                    value={form.lead_source}
-                    disabled={isEditMode}
-                    onChange={(e) => updateFields("lead_source", e.target.value)}
-                  />
+                  <div>
+                    <label className="block text-sm text-green-950 font-medium mb-1">
+                      Lead Source
+                    </label>
+                    <input
+                      className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                      type="text"
+                      value={form.lead_source}
+                      disabled={isEditMode}
+                      onChange={(e) =>
+                        updateFields("lead_source", e.target.value)
+                      }
+                    />
+                  </div>
                 </div>
               </div>
             </div>
@@ -781,7 +876,12 @@ export default function SalesClosureForm() {
           <section className="col-span-12 lg:col-span-7 p-6 lg:h-screen lg:overflow-y-auto">
             <form className="space-y-5">
               {/* Customer Info */}
-              <div className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-purple-50" style={isEditMode ? {opacity:0.6, pointerEvents:'none'} : {}}>
+              <div
+                className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-purple-50"
+                style={
+                  isEditMode ? { opacity: 0.6, pointerEvents: "none" } : {}
+                }
+              >
                 <h2 className="text-lg text-green-950 font-semibold mb-3">
                   Customer Info
                 </h2>
@@ -790,23 +890,15 @@ export default function SalesClosureForm() {
                     <label className="block text-sm text-green-950 font-medium mb-1">
                       Property Configuration
                     </label>
-                    <select
-                      className="w-full border p-2.5 rounded-lg text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
+                    <input
+                      className="w-full border p-2.5 rounded-lg text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                      type="text"
                       value={form.property_configuration}
+
                       onChange={(e) =>
-                        updateFields(
-                          "property_configuration",
-                          e.target.value as PropertyConfig,
-                        )
+                        updateFields("property_configuration", e.target.value)
                       }
-                    >
-                      <option value="">Select Option</option>
-                      {Object.values(PropertyConfig).map((config) => (
-                        <option key={config} value={config}>
-                          {config}
-                        </option>
-                      ))}
-                    </select>
+                    />
                     {errors.property_configuration && (
                       <p className="text-red-500 text-sm">
                         {errors.property_configuration}
@@ -827,7 +919,7 @@ export default function SalesClosureForm() {
                       required
                     >
                       <option value="">Select Experience Center</option>
-                      {BRANCH_OPTIONS.map((b) => (
+                      {experienceCenterOptions.map((b) => (
                         <option key={b} value={b}>
                           {b}
                         </option>
@@ -861,30 +953,16 @@ export default function SalesClosureForm() {
                 </div>
               </div>
               {/* Booking Details */}
-              <div className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-purple-50" style={isEditMode ? {opacity:0.6, pointerEvents:'none'} : {}}>
+              <div
+                className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-purple-50"
+                style={
+                  isEditMode ? { opacity: 0.6, pointerEvents: "none" } : {}
+                }
+              >
                 <h2 className="text-lg text-green-950 font-semibold mb-3">
                   Booking Details
                 </h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-2">
-                  <div>
-                    <label className="block text-sm text-green-950 font-medium mb-1">
-                      Booking Date
-                    </label>
-                    <input
-                      className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                      type="date"
-                      value={form.booking_date}
-                      onChange={(e) => {
-                        const selectDate = e.target.value;
-                        updateFields("booking_date", selectDate);
-                      }}
-                    />
-                    {errors.booking_date && (
-                      <p className="text-red-500 text-sm">
-                        {errors.booking_date}
-                      </p>
-                    )}
-                  </div>
                   <div>
                     <label className="block text-sm text-green-950 font-medium mb-1">
                       Booking Type
@@ -912,23 +990,30 @@ export default function SalesClosureForm() {
                       </p>
                     )}
                   </div>
-                </div>
-                <div>
-                  <label className="block text-sm text-green-950 font-medium mb-1">
-                    Is this Spot Booking Order?
-                  </label>
-                  <input
-                    className="w-4 h-4 border rounded-lg p-10"
-                    type="checkbox"
-                    checked={form.spot_booking}
-                    onChange={(e) =>
-                      updateFields("spot_booking", e.target.checked)
-                    }
-                  />
+                  <div>
+                    <label className="block text-sm text-green-950 font-medium mb-1">
+                      Is this Spot Booking Order?
+                    </label>
+                    <div className="mt-2">
+                      <input
+                        className="w-5 h-5 border rounded-lg text-green-950 focus:ring-green-950"
+                        type="checkbox"
+                        checked={form.spot_booking}
+                        onChange={(e) =>
+                          updateFields("spot_booking", e.target.checked)
+                        }
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
               {/* TEAM ASSIGNMENT */}
-              <div className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-purple-50" style={isEditMode ? {opacity:0.6, pointerEvents:'none'} : {}}>
+              <div
+                className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-purple-50"
+                style={
+                  isEditMode ? { opacity: 0.6, pointerEvents: "none" } : {}
+                }
+              >
                 <h2 className="text-lg text-green-950 font-semibold mb-3">
                   Team Assignment
                 </h2>
@@ -944,7 +1029,10 @@ export default function SalesClosureForm() {
                         const name = e.target.value;
                         updateFields("designer_name", name);
                         const match = designers.find(
-                          (d) => d.role === "designer" && d.name === name,
+                          (d) =>
+                            d.role === "designer" &&
+                            d.name.trim().toLowerCase() ===
+                              name.trim().toLowerCase(),
                         );
                         if (match && match.leadName) {
                           updateFields("designer_lead", match.leadName);
@@ -1006,15 +1094,15 @@ export default function SalesClosureForm() {
                         updateFields("sales_lead_name", selectedName);
                         // Capture email for rejection CC
                         const match = salesManagers.find(
-                          (m) => (m.fullName || m.username) === selectedName
+                          (m) => (m.fullName || m.username) === selectedName,
                         );
                         setSalesLeadEmail(match?.email || "");
                       }}
                     >
                       <option value="">Select Sales Lead</option>
-                      {salesManagers.map((m) => (
-                        <option key={m.id} value={m.fullName || m.username}>
-                          {m.fullName || m.username}
+                      {salesLeadNameOptions.map((name) => (
+                        <option key={name} value={name}>
+                          {name}
                         </option>
                       ))}
                     </select>
@@ -1037,157 +1125,21 @@ export default function SalesClosureForm() {
                         updateFields("sales_spoc", selectedName);
                         // Capture email for rejection CC
                         const match = salesAdmins.find(
-                          (a) => (a.fullName || a.username) === selectedName
+                          (a) => (a.fullName || a.username) === selectedName,
                         );
                         setSalesSpocEmail(match?.email || "");
                       }}
                     >
                       <option value="">Select Sales SPOC</option>
-                      {salesAdmins.map((a) => (
-                        <option key={a.id} value={a.fullName || a.username}>
-                          {a.fullName || a.username}
+                      {salesSpocOptions.map((name) => (
+                        <option key={name} value={name}>
+                          {name}
                         </option>
                       ))}
                     </select>
                     {errors.sales_spoc && (
                       <p className="text-red-500 text-sm">
                         {errors.sales_spoc}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* COMMERCIAL DETAILS */}
-              <div className="p-4 rounded-2xl border border-2 border-gray-300 mb-4 space-y-4 bg-purple-50" style={isEditMode ? {opacity:0.6, pointerEvents:'none'} : {}}>
-                <h2 className="text-lg text-green-950 font-semibold mb-3">
-                  Commercial Details
-                </h2>
-                <div className="mb-2">
-                  <label className="block text-sm text-green-950 font-medium mb-1">
-                    Order Value (Original)
-                  </label>
-                  <input
-                    type="text"
-                    min="0"
-                    placeholder="Enter amount"
-                    className="w-full border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-green-950"
-                    value={form.order_value}
-                    onChange={(e) =>
-                      updateFields("order_value", Number(e.target.value))
-                    }
-                  />
-                  {errors.order_value && (
-                    <p className="text-red-500 text-sm">{errors.order_value}</p>
-                  )}
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-2">
-                  <div>
-                    <label className="block text-sm text-green-950 font-medium mb-1 text-green-950">
-                      Discount on Woodwork%
-                    </label>
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      placeholder="Enter Discount"
-                      className="w-full border border-gray-300 rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                      value={percentInputs.dis_on_woodwork}
-                      onChange={(e) =>
-                        handlePercentChange("dis_on_woodwork", e.target.value)
-                      }
-                      onBlur={() => handlePercentBlur("dis_on_woodwork")}
-                    />
-                    {errors.dis_on_woodwork && (
-                      <p className="text-red-500 text-sm">
-                        {errors.dis_on_woodwork}
-                      </p>
-                    )}
-                  </div>
-                  <div>
-                    <label className="block text-sm text-green-950 font-medium mb-1">
-                      Discount on Services%
-                    </label>
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      placeholder="Enter Discount"
-                      className="w-full border border-gray-300 rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                      value={percentInputs.dis_on_service}
-                      onChange={(e) =>
-                        handlePercentChange("dis_on_service", e.target.value)
-                      }
-                      onBlur={() => handlePercentBlur("dis_on_service")}
-                    />
-                    {errors.dis_on_service && (
-                      <p className="text-red-500 text-sm">
-                        {errors.dis_on_service}
-                      </p>
-                    )}
-                  </div>
-                  <div>
-                    <label className="block text-sm text-green-950 font-medium mb-1">
-                      Discount on Accessories%
-                    </label>
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      placeholder="Enter Discount"
-                      className="w-full border border-gray-300 rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                      value={percentInputs.dis_on_accessories}
-                      onChange={(e) =>
-                        handlePercentChange(
-                          "dis_on_accessories",
-                          e.target.value,
-                        )
-                      }
-                      onBlur={() => handlePercentBlur("dis_on_accessories")}
-                    />
-                    {errors.dis_on_accessories && (
-                      <p className="text-red-500 text-sm">
-                        {errors.dis_on_accessories}
-                      </p>
-                    )}
-                  </div>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm text-green-950 font-medium mb-1">
-                      HUB Coins If Applied (₹)
-                    </label>
-                    <input
-                      type="text"
-                      min="0"
-                      placeholder="Enter Amount"
-                      className="w-full border border-gray-300 rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                      value={form.hub_coins}
-                      onChange={(e) =>
-                        updateFields("hub_coins", Number(e.target.value))
-                      }
-                    />
-                    {errors.hub_coins && (
-                      <p className="text-red-500 text-sm">{errors.hub_coins}</p>
-                    )}
-                  </div>
-                  <div>
-                    <label className="block text-sm text-green-950 font-medium mb-1">
-                      Complimentary Offered
-                    </label>
-                    <input
-                      type="text"
-                      min="0"
-                      placeholder="Enter Offer"
-                      className="w-full border border-gray-300 rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                      value={form.complimentary_offer}
-                      onChange={(e) =>
-                        updateFields(
-                          "complimentary_offer",
-                          Number(e.target.value),
-                        )
-                      }
-                    />
-                    {errors.complimentary_offer && (
-                      <p className="text-red-500 text-sm">
-                        {errors.complimentary_offer}
                       </p>
                     )}
                   </div>
@@ -1203,66 +1155,78 @@ export default function SalesClosureForm() {
                     10% payment amount (from latest quotation)
                   </p>
                   {quotePaymentLoading && (
-                    <p className="text-sm text-gray-500">Loading quotation total…</p>
+                    <p className="text-sm text-gray-500">
+                      Loading quotation total…
+                    </p>
                   )}
-                  {!quotePaymentLoading && quotePaymentSummary && paymentStats && (
-                    <>
-                      <p className="text-2xl font-semibold text-green-950">
-                        {formatInr(quotePaymentSummary.tenPercentAmount)}
-                      </p>
-                      <p className="text-xs text-gray-600">
-                        Latest quotation total:{" "}
-                        {formatInr(quotePaymentSummary.totalPayableAmount)}
-                        {quotePaymentSummary.quoteNum
-                          ? ` · Quote ${quotePaymentSummary.quoteNum}`
-                          : quotePaymentSummary.quoteId
-                            ? ` · Quote #${quotePaymentSummary.quoteId}`
-                            : ""}
-                      </p>
-                      <div className="mt-3 pt-3 border-t border-green-900/15 space-y-1.5">
-                        {previouslyPaid > 0 && (
-                          <p className="text-sm text-green-950">
-                            <span className="font-medium">Already paid (recorded):</span>{" "}
-                            {formatInr(previouslyPaid)}
-                          </p>
-                        )}
-                        {thisPayment > 0 && (
-                          <p className="text-sm text-green-950">
-                            <span className="font-medium">This payment:</span>{" "}
-                            {formatInr(thisPayment)}
-                          </p>
-                        )}
-                        {(previouslyPaid > 0 || thisPayment > 0) && (
-                          <p className="text-sm text-green-950">
-                            <span className="font-medium">Total toward 10%:</span>{" "}
-                            {formatInr(totalPaidCumulative)}
-                          </p>
-                        )}
-                        {paymentStats.tenPercentMet ? (
-                          <p className="text-sm font-semibold text-teal-800">
-                            10% complete — no balance remaining
-                          </p>
-                        ) : (
-                          <p className="text-base font-semibold text-amber-800">
-                            Remaining of 10%:{" "}
-                            {formatInr(paymentStats.remainingForTenPercent)}
-                          </p>
-                        )}
-                        {totalPaidCumulative > 0 && (
-                          <p className="text-xs text-gray-600">
-                            {formatPercent(paymentStats.percentOfTenPercentTarget)} of 10%
-                            collected · {formatPercent(paymentStats.percentOfTotal)} of full
-                            quotation
-                          </p>
-                        )}
-                        {previouslyPaid === 0 && thisPayment === 0 && (
-                          <p className="text-xs text-gray-500">
-                            Enter this payment below. Remaining starts at the full 10% amount.
-                          </p>
-                        )}
-                      </div>
-                    </>
-                  )}
+                  {!quotePaymentLoading &&
+                    quotePaymentSummary &&
+                    paymentStats && (
+                      <>
+                        <p className="text-2xl font-semibold text-green-950">
+                          {formatInr(quotePaymentSummary.tenPercentAmount)}
+                        </p>
+                        <p className="text-xs text-gray-600">
+                          Latest quotation total:{" "}
+                          {formatInr(quotePaymentSummary.totalPayableAmount)}
+                          {quotePaymentSummary.quoteNum
+                            ? ` · Quote ${quotePaymentSummary.quoteNum}`
+                            : quotePaymentSummary.quoteId
+                              ? ` · Quote #${quotePaymentSummary.quoteId}`
+                              : ""}
+                        </p>
+                        <div className="mt-3 pt-3 border-t border-green-900/15 space-y-1.5">
+                          {previouslyPaid > 0 && (
+                            <p className="text-sm text-green-950">
+                              <span className="font-medium">
+                                Already paid (recorded):
+                              </span>{" "}
+                              {formatInr(previouslyPaid)}
+                            </p>
+                          )}
+                          {thisPayment > 0 && (
+                            <p className="text-sm text-green-950">
+                              <span className="font-medium">This payment:</span>{" "}
+                              {formatInr(thisPayment)}
+                            </p>
+                          )}
+                          {(previouslyPaid > 0 || thisPayment > 0) && (
+                            <p className="text-sm text-green-950">
+                              <span className="font-medium">
+                                Total toward 10%:
+                              </span>{" "}
+                              {formatInr(totalPaidCumulative)}
+                            </p>
+                          )}
+                          {paymentStats.tenPercentMet ? (
+                            <p className="text-sm font-semibold text-teal-800">
+                              10% complete — no balance remaining
+                            </p>
+                          ) : (
+                            <p className="text-base font-semibold text-amber-800">
+                              Remaining of 10%:{" "}
+                              {formatInr(paymentStats.remainingForTenPercent)}
+                            </p>
+                          )}
+                          {totalPaidCumulative > 0 && (
+                            <p className="text-xs text-gray-600">
+                              {formatPercent(
+                                paymentStats.percentOfTenPercentTarget,
+                              )}{" "}
+                              of 10% collected ·{" "}
+                              {formatPercent(paymentStats.percentOfTotal)} of
+                              full quotation
+                            </p>
+                          )}
+                          {previouslyPaid === 0 && thisPayment === 0 && (
+                            <p className="text-xs text-gray-500">
+                              Enter this payment below. Remaining starts at the
+                              full 10% amount.
+                            </p>
+                          )}
+                        </div>
+                      </>
+                    )}
                   {!quotePaymentLoading && !quotePaymentSummary && (
                     <p className="text-sm text-gray-500">
                       {leadIdForQuote
@@ -1278,8 +1242,8 @@ export default function SalesClosureForm() {
                   </label>
                   {previouslyPaid > 0 && (
                     <p className="text-xs text-gray-600 mb-1.5">
-                      Customer already paid {formatInr(previouslyPaid)} toward 10%. Enter only the
-                      new amount received now.
+                      Customer already paid {formatInr(previouslyPaid)} toward
+                      10%. Enter only the new amount received now.
                     </p>
                   )}
                   <input
@@ -1290,7 +1254,10 @@ export default function SalesClosureForm() {
                     value={amountPaidInput}
                     onChange={(e) => {
                       const raw = e.target.value;
-                      if (raw !== "" && !/^\d*\.?\d*$/.test(raw.replace(/,/g, ""))) {
+                      if (
+                        raw !== "" &&
+                        !/^\d*\.?\d*$/.test(raw.replace(/,/g, ""))
+                      ) {
                         return;
                       }
                       setAmountPaidInput(raw);
@@ -1310,23 +1277,30 @@ export default function SalesClosureForm() {
                     }}
                   />
                   {errors.amount_paid && (
-                    <p className="text-red-500 text-sm mt-1">{errors.amount_paid}</p>
+                    <p className="text-red-500 text-sm mt-1">
+                      {errors.amount_paid}
+                    </p>
                   )}
                   {paymentStats && thisPayment > 0 && (
                     <div className="mt-3 rounded-lg border border-teal-200 bg-teal-50/80 px-3 py-2.5 text-sm text-green-950 space-y-1">
                       <p>
                         After this payment, total toward 10%:{" "}
-                        <span className="font-semibold">{formatInr(totalPaidCumulative)}</span>
+                        <span className="font-semibold">
+                          {formatInr(totalPaidCumulative)}
+                        </span>
                       </p>
                       <p>
-                        <span className="font-medium">Still remaining of 10%:</span>{" "}
+                        <span className="font-medium">
+                          Still remaining of 10%:
+                        </span>{" "}
                         {formatInr(paymentStats.remainingForTenPercent)}
                       </p>
                     </div>
                   )}
                   {!quotePaymentSummary && thisPayment > 0 && (
                     <p className="text-xs text-gray-500 mt-2">
-                      Load a lead with a quotation to see percentage and remaining 10% amount.
+                      Load a lead with a quotation to see percentage and
+                      remaining 10% amount.
                     </p>
                   )}
                 </div>
@@ -1355,7 +1329,8 @@ export default function SalesClosureForm() {
                     </select>
                     {quotePaymentSummary && (
                       <p className="text-xs text-gray-500 mt-1">
-                        Auto-set: TOKEN if below 10% of quotation, FULL_10% when 10% or more is paid.
+                        Auto-set: TOKEN if below 10% of quotation, FULL_10% when
+                        10% or more is paid.
                       </p>
                     )}
                     {errors.payment_received && (
@@ -1450,7 +1425,12 @@ export default function SalesClosureForm() {
                 </div>
               </div>
               {/* PROJECT STATUS CONTROL */}
-              <div className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-purple-50" style={isEditMode ? {opacity:0.6, pointerEvents:'none'} : {}}>
+              <div
+                className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-purple-50"
+                style={
+                  isEditMode ? { opacity: 0.6, pointerEvents: "none" } : {}
+                }
+              >
                 <h2 className="text-lg text-green-950 font-semibold mb-3">
                   Project status control
                 </h2>
@@ -1472,7 +1452,12 @@ export default function SalesClosureForm() {
                 </div>
               </div>
               {/* Special Declaration(VERY IMPORTANT) */}
-              <div className="border border-2 border-gray-300 rounded-2xl p-4 space-y-4 bg-purple-50" style={isEditMode ? {opacity:0.6, pointerEvents:'none'} : {}}>
+              <div
+                className="border border-2 border-gray-300 rounded-2xl p-4 space-y-4 bg-purple-50"
+                style={
+                  isEditMode ? { opacity: 0.6, pointerEvents: "none" } : {}
+                }
+              >
                 {/* Section Title */}
                 <h2 className="text-lg font-semibold text-green-950">
                   Special Declaration
@@ -1638,7 +1623,7 @@ export default function SalesClosureForm() {
             type="submit"
             className="px-5 py-2 rounded-lg bg-purple-50 text-green-950 hover:bg-slate-900 hover:border hover:border-purple-50 hover:text-purple-50 transition font-bold"
           >
-            {isEditMode ? 'Update' : 'Submit'}
+            {isEditMode ? "Update" : "Submit"}
           </button>
         </div>
       </div>

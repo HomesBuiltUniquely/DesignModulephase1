@@ -1,5 +1,4 @@
 import {
-  PropertyConfig,
   BookingType,
   PaymentMode,
   PaymentReceived,
@@ -9,6 +8,8 @@ import { z } from "zod";
 
 export const salesClosureSchema = z.object({
   externalReferenceId: z.string().optional(),
+  leadType: z.string().optional(),
+  returnUrl: z.string().optional(),
 
   sales_lead_name: z.string().min(1, "Sales lead name is required"),
 
@@ -35,23 +36,16 @@ export const salesClosureSchema = z.object({
     .min(1, "Customer email is required")
     .email("Enter a valid customer email"),
 
-  property_name: z.string().min(1, "Property name is required"),
-
   possession: z.string().min(1, "Possession is required"),
 
   lead_source: z.string().min(1, "Lead source is required"),
 
-  property_configuration: z.union([
-    z.nativeEnum(PropertyConfig),
-    z.literal(""),
-  ]),
+  property_configuration: z.string(),
 
   experience_center: z.string(),
 
   site_address: z.string().min(1, "Site address is required"),
-
-  booking_date: z.string().min(1, "Booking date is required"),
-
+  
   booking_type: z.union([z.nativeEnum(BookingType), z.literal("")]),
 
   spot_booking: z.boolean(),
@@ -59,18 +53,6 @@ export const salesClosureSchema = z.object({
   designer_name: z.string().min(1, "Designer name is required"),
 
   designer_lead: z.string().optional(),
-
-  order_value: z.number(),
-
-  dis_on_woodwork: z.number(),
-
-  dis_on_service: z.number(),
-
-  dis_on_accessories: z.number(),
-
-  hub_coins: z.number().optional(),
-
-  complimentary_offer: z.number().optional(),
 
   payment_received: z.union([z.nativeEnum(PaymentReceived), z.literal("")]),
 

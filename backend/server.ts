@@ -1398,6 +1398,22 @@ function pickTrimmedString(...candidates: unknown[]): string | null {
   return null;
 }
 
+function resolveLeadBranchName(payload: any, explicit?: unknown): string {
+  const formData = payload?.formData || payload?.form_data || payload?.form || {};
+  return pickTrimmedString(
+    explicit,
+    formData.sales_closure_ec,
+    formData.branch,
+    formData.experience_center,
+    payload?.sales_closure_ec,
+    payload?.branch,
+    payload?.experience_center,
+    payload?.form?.sales_closure_ec,
+    payload?.form?.branch,
+    payload?.form?.experience_center,
+  ) || "Experience Center";
+}
+
 function slotTextFromValue(v: unknown): string | null {
   if (v == null) return null;
   if (typeof v === "string" && v.trim()) return v.trim();
@@ -3106,11 +3122,20 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
         (payload && (payload.designer_name || payload.designerName)) || undefined;
       if (designerName) {
         const [rows] = await pool.query(
-          "SELECT id FROM users WHERE name = ? AND role = 'designer' LIMIT 1",
+          `SELECT u.id, dm.name AS designManagerName
+           FROM users u
+           LEFT JOIN users dm ON u.design_manager_id = dm.id
+           WHERE u.name = ? AND u.role = 'designer' LIMIT 1`,
           [designerName],
         );
-        const row = (rows as { id: number }[])[0];
-        if (row?.id) assignedDesignerId = row.id;
+        const row = (rows as any[])[0];
+        if (row?.id) {
+          assignedDesignerId = row.id;
+          if (row.designManagerName && payload && typeof payload === "object") {
+            payload.designManagerName = row.designManagerName;
+            payload.design_manager_name = row.designManagerName;
+          }
+        }
       }
     } catch {
       // ignore mapping errors; assignedDesignerId stays null
@@ -3167,6 +3192,7 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
           projectId: `HUB-${insertId}`,
           propertyType,
           designerName: (payload && (payload.designer_name || payload.designerName)) || "Team HUB Interior",
+          leadPayload: payload && typeof payload === "object" ? payload : {},
         };
 
         fetch(`${frontendBase}/api/email/send-d1-site-measurement`, {
@@ -3361,14 +3387,22 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
 
   try {
     let assignedDesignerId: number | null = null;
+    let designManagerName: string | null = null;
     if (designerName) {
       const [designerRows] = await pool.query(
-        "SELECT id FROM users WHERE role = 'designer' AND LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1",
+        `SELECT u.id, dm.name AS designManagerName
+         FROM users u
+         LEFT JOIN users dm ON u.design_manager_id = dm.id
+         WHERE u.role = 'designer' AND LOWER(TRIM(u.name)) = LOWER(TRIM(?)) LIMIT 1`,
         [designerName],
       );
-      assignedDesignerId = (designerRows as { id?: unknown }[])[0]?.id != null
-        ? Number((designerRows as { id?: unknown }[])[0].id)
-        : null;
+      const row = (designerRows as any[])[0];
+      if (row?.id != null) {
+        assignedDesignerId = Number(row.id);
+        if (row.designManagerName) {
+          designManagerName = row.designManagerName;
+        }
+      }
     }
 
     const crmSchedule = {
@@ -3413,6 +3447,7 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
         email: clientEmail || "",
         status_of_project: "Pre 10%",
         designer_name: designerName || "",
+        ...(designManagerName ? { design_manager_name: designManagerName, designManagerName: designManagerName } : {}),
         sales_executive: salesExecutive || "",
         sales_executive_email: salesExecutiveEmail || "",
         appointment_date: appointmentDate || "",
@@ -5070,11 +5105,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               row.projectName ||
               "Customer";
 
-            const branchName =
-              (meta as any)?.ecLocation ||
-              formData.experience_center ||
-              payload?.experience_center ||
-              "HUB Experience Center";
+            const branchName = resolveLeadBranchName(payload, (meta as any)?.ecLocation);
 
             console.log("[checklist-dqc1] branchName:", branchName, "meta.ecLocation:", (meta as any)?.ecLocation, "formData.experience_center:", formData.experience_center);
 
@@ -5141,6 +5172,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   cc: await getMailLoopCcEmails([actingUser.email], id),
                   subject: buildMailChainSubject(projectId, row.projectName, customerName),
                   customerName,
+                  leadId: id,
                   meetingDate,
                   meetingTime: formatTime12Hour(meetingTime) || undefined,
                   meetingMode: meta?.meetingMode || null,
@@ -5642,12 +5674,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const meetingLink = meta?.meetingLink ?? null;
             const attachments = (meta?.attachments as any[]) || undefined;
 
-            const resolvedEcLocation =
-              (meta as any)?.ecLocation ||
-              formData.experience_center ||
-              payload?.experience_center ||
-              payload?.form?.experience_center ||
-              "Experience Center";
+            const resolvedEcLocation = resolveLeadBranchName(payload, (meta as any)?.ecLocation);
 
             if (meetingDate && meetingTime) {
               const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
@@ -5681,6 +5708,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   cc: mailChainCc,
                   subject: mailChainSubject,
                   customerName,
+                  leadId: id,
                   projectId,
                   designerName,
                   meetingDate: meetingDate || undefined,
@@ -5883,14 +5911,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               payload?.form?.customer_name ||
               row.projectName ||
               "Customer";
-            const ecName =
-              formData.sales_closure_ec ||
-              formData.branch ||
-              formData.experience_center ||
-              payload?.branch ||
-              payload?.experience_center ||
-              payload?.form?.experience_center ||
-              "Experience Center";
+            const ecName = resolveLeadBranchName(payload);
             const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
             const meetingDate = meta?.meetingDate ?? null;
             const meetingTime = meta?.meetingTime ?? null;
@@ -5935,6 +5956,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                     cc: mailChainCc,
                     subject: mailChainSubject,
                     customerName,
+                    leadId: id,
                     designerName,
                     meetingDate,
                     meetingTime: formatTime12Hour(meetingTime) || undefined,
@@ -7623,15 +7645,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
     let emailRoutePath = "";
     let emailBody: Record<string, unknown> = {};
 
-    const resolvedEcLocation =
-      ecLocation ||
-      formData.sales_closure_ec ||
-      formData.branch ||
-      formData.experience_center ||
-      payload?.branch ||
-      payload?.experience_center ||
-      payload?.form?.experience_center ||
-      "Experience Center";
+    const resolvedEcLocation = resolveLeadBranchName(payload, ecLocation);
 
     console.log("[schedule-meeting] resolvedEcLocation:", resolvedEcLocation, "ecLocation:", ecLocation, "formData.experience_center:", formData.experience_center);
 
@@ -7648,6 +7662,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
         cc: await getMailLoopCcEmails([actingUser.email, row.designerEmail], leadId),
         subject: buildMailChainSubject(projectId, row.projectName, customerName),
         customerName,
+        leadId,
         projectId,
         designerName,
         meetingDate,
@@ -7670,6 +7685,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
         cc: await getMailLoopCcEmails([actingUser.email, row.designerEmail], leadId),
         subject: buildMailChainSubject(projectId, row.projectName, customerName),
         customerName,
+        leadId,
         projectId,
         designerName,
         meetingDate,
@@ -7692,6 +7708,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
         cc: await getMailLoopCcEmails([actingUser.email, row.designerEmail], leadId),
         subject: buildMailChainSubject(projectId, row.projectName, customerName),
         customerName,
+        leadId,
         projectId,
         designerName,
         meetingDate,
@@ -10111,14 +10128,7 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
       const formData = payload.formData || payload.form_data || payload.form || payload || {};
       designerName = formData.designer_name || formData.designerName || undefined;
       revision = formData.revision || (designerName ? "v1.0 (Latest)" : undefined);
-      experienceCenter =
-        formData.sales_closure_ec ||
-        formData.branch ||
-        formData.experience_center ||
-        payload?.branch ||
-        payload?.experience_center ||
-        payload?.form?.experience_center ||
-        undefined;
+      experienceCenter = resolveLeadBranchName(payload);
     } catch {
       // ignore
     }
