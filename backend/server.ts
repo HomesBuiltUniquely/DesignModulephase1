@@ -125,9 +125,9 @@ app.get("/api/health", (_req, res) => {
 // ----- MySQL setup -----
 // Defaults are set from the credentials you provided; you can still override via env vars if needed.
 const pool = mysql.createPool({
-  host: process.env.DB_HOST || "database-1.cl002gu0o5ft.ap-south-2.rds.amazonaws.com",
-  user: process.env.DB_USER || "admin",
-  password: process.env.DB_PASSWORD || "Hubinterior2019",
+  host: process.env.DB_HOST || "localhost",
+  user: process.env.DB_USER || "root",
+  password: process.env.DB_PASSWORD || "Root@123",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -161,11 +161,6 @@ const PROFILE_IMAGES_DIR = path.join(UPLOADS_DIR, "profile-images");
 if (!fs.existsSync(PROFILE_IMAGES_DIR)) fs.mkdirSync(PROFILE_IMAGES_DIR, { recursive: true });
 const API_BASE = process.env.API_BASE_URL || "http://localhost:3001";
 const FRONTEND_BASE = (process.env.FRONTEND_BASE_URL || "http://localhost:3000").replace(/\/$/, "");
-const CRM_CALLBACK_BASE =
-  process.env.CRM_CALLBACK_BASE_URL ||
-  process.env.CRM_API_BASE_URL ||
-  process.env.CRM_BASE_URL ||
-  "";
 const ERP_BASE_URL = process.env.ERP_BASE_URL || "https://hows.hubinterior.com";
 const ERP_USERNAME = process.env.ERP_USERNAME || "admin@hubinterior.com";
 const ERP_PASSWORD = process.env.ERP_PASSWORD || "admin123";
@@ -180,9 +175,9 @@ function normalizePaymentReceivedForCrm(input: unknown): string | null {
 }
 
 async function notifyCrmSalesClosureStatus(payload: Record<string, unknown>): Promise<void> {
-  const base = String(CRM_CALLBACK_BASE || "").trim().replace(/\/+$/, "");
+  const base = String(ERP_BASE_URL || "").trim().replace(/\/+$/, "");
   if (!base) {
-    console.warn("[sales-closure-callback] CRM callback base URL is not configured");
+    console.warn("[sales-closure-callback] ERP base URL is not configured");
     return;
   }
 
@@ -6319,14 +6314,14 @@ app.get("/api/leads/finance-sales-closure-queue", async (req: Request, res: Resp
 
     const conditions: string[] = approved
       ? [
-          `JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.sales_closure_finance_approved')) = 'true'`,
-          hasPaymentEvidence,
-        ]
+        `JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.sales_closure_finance_approved')) = 'true'`,
+        hasPaymentEvidence,
+      ]
       : [
-          `JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.sales_closure_finance_approved')) = 'false'`,
-          `COALESCE(JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.sales_closure_finance_rejected')), 'false') != 'true'`,
-          hasPaymentEvidence,
-        ];
+        `JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.sales_closure_finance_approved')) = 'false'`,
+        `COALESCE(JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.sales_closure_finance_rejected')), 'false') != 'true'`,
+        hasPaymentEvidence,
+      ];
     const params: unknown[] = [];
 
     const approvedAtExpr = `COALESCE(

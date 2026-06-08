@@ -63,7 +63,9 @@ function loadEnvFile() {
         const idx = trimmed.indexOf("=");
         if (idx === -1)
             return;
-        const key = trimmed.slice(0, idx).trim();
+        let key = trimmed.slice(0, idx).trim();
+        if (key.startsWith("export "))
+            key = key.slice(7).trim();
         let value = trimmed.slice(idx + 1).trim();
         if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
             value = value.slice(1, -1);
@@ -154,9 +156,9 @@ app.get("/api/health", (_req, res) => {
 // ----- MySQL setup -----
 // Defaults are set from the credentials you provided; you can still override via env vars if needed.
 const pool = promise_1.default.createPool({
-    host: process.env.DB_HOST || "localhost",
-    user: process.env.DB_USER || "root",
-    password: process.env.DB_PASSWORD || "Root@123",
+    host: process.env.DB_HOST || "database-1.cl002gu0o5ft.ap-south-2.rds.amazonaws.com",
+    user: process.env.DB_USER || "admin",
+    password: process.env.DB_PASSWORD || "Hubinterior2019",
     database: process.env.DB_NAME || "DesignMod",
     port: Number(process.env.DB_PORT || 3306),
     connectionLimit: 10,
@@ -186,11 +188,7 @@ const PROFILE_IMAGES_DIR = node_path_1.default.join(UPLOADS_DIR, "profile-images
 if (!node_fs_1.default.existsSync(PROFILE_IMAGES_DIR))
     node_fs_1.default.mkdirSync(PROFILE_IMAGES_DIR, { recursive: true });
 const API_BASE = process.env.API_BASE_URL || "http://localhost:3001";
-const FRONTEND_BASE = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
-const CRM_CALLBACK_BASE = process.env.CRM_CALLBACK_BASE_URL ||
-    process.env.CRM_API_BASE_URL ||
-    process.env.CRM_BASE_URL ||
-    "";
+const FRONTEND_BASE = (process.env.FRONTEND_BASE_URL || "http://localhost:3000").replace(/\/$/, "");
 const ERP_BASE_URL = process.env.ERP_BASE_URL || "https://hows.hubinterior.com";
 const ERP_USERNAME = process.env.ERP_USERNAME || "admin@hubinterior.com";
 const ERP_PASSWORD = process.env.ERP_PASSWORD || "admin123";
@@ -204,9 +202,9 @@ function normalizePaymentReceivedForCrm(input) {
     return null;
 }
 async function notifyCrmSalesClosureStatus(payload) {
-    const base = String(CRM_CALLBACK_BASE || "").trim().replace(/\/+$/, "");
+    const base = String(ERP_BASE_URL || "").trim().replace(/\/+$/, "");
     if (!base) {
-        console.warn("[sales-closure-callback] CRM callback base URL is not configured");
+        console.warn("[sales-closure-callback] ERP base URL is not configured");
         return;
     }
     const externalReferenceId = String(payload.externalReferenceId ?? payload.external_reference_id ?? payload.leadId ?? "").trim();
@@ -421,6 +419,33 @@ async function getMailLoopCcEmails(extraEmails = [], leadId) {
     }
     return distinctEmails([...validExtras, ...teamEmails]);
 }
+/** Drop base64 blobs / history arrays — mail templates only need form fields; large payloads break undici fetch. */
+function sanitizeLeadPayloadForEmail(payload) {
+    const stripHeavy = (obj) => {
+        const out = { ...obj };
+        for (const k of [
+            "payment_screenshot",
+            "approval_proof",
+            "finance_submission_history",
+            "payment_submissions",
+        ]) {
+            if (k in out)
+                delete out[k];
+        }
+        return out;
+    };
+    const copy = stripHeavy(payload);
+    if (copy.formData && typeof copy.formData === "object" && !Array.isArray(copy.formData)) {
+        copy.formData = stripHeavy(copy.formData);
+    }
+    if (copy.fetchedData && typeof copy.fetchedData === "object" && !Array.isArray(copy.fetchedData)) {
+        copy.fetchedData = stripHeavy(copy.fetchedData);
+    }
+    if (copy.form && typeof copy.form === "object" && !Array.isArray(copy.form)) {
+        copy.form = stripHeavy(copy.form);
+    }
+    return copy;
+}
 async function triggerMailRouteWithLog(args) {
     const toRaw = args.payload.to;
     const ccRaw = args.payload.cc;
@@ -435,12 +460,12 @@ async function triggerMailRouteWithLog(args) {
         to,
         cc,
     });
-    const body = Buffer.from(JSON.stringify(args.payload), "utf8");
+    const bodyStr = JSON.stringify(args.payload);
     try {
         const resp = await fetch(`${FRONTEND_BASE}${args.route}`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body,
+            headers: { "Content-Type": "application/json; charset=utf-8" },
+            body: bodyStr,
         });
         if (!resp.ok) {
             const body = await resp.text().catch(() => "");
@@ -469,7 +494,7 @@ async function triggerMailRouteWithLog(args) {
             route: args.route,
             taskName: args.taskName,
             visibility: args.visibility,
-            bodyBytes: body.byteLength,
+            bodyBytes: Buffer.byteLength(bodyStr, "utf8"),
             error,
         });
     }
@@ -530,7 +555,9 @@ async function triggerCustomerEmailForLead(leadId, emailRoutePath, opts) {
                 subject: mailChainSubject,
                 customerName,
                 designerName,
-                leadPayload: payload,
+                leadPayload: sanitizeLeadPayloadForEmail(payload && typeof payload === "object" && !Array.isArray(payload)
+                    ? payload
+                    : {}),
             },
         });
     }
@@ -583,6 +610,20 @@ async function initDb() {
         }
         catch {
             // ignore
+        }
+        // Per-user Prolance partner login (LoginAPI) — optional alternative to PROLANCE_PARTNER_CREDENTIALS_FILE
+        for (const col of ["prolance_partner_login", "prolance_partner_password"]) {
+            try {
+                const [exists] = await conn.query("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = ?", [col]);
+                if (exists.length === 0) {
+                    await conn.query(col === "prolance_partner_login"
+                        ? "ALTER TABLE users ADD COLUMN prolance_partner_login VARCHAR(255) NULL"
+                        : "ALTER TABLE users ADD COLUMN prolance_partner_password VARCHAR(255) NULL");
+                }
+            }
+            catch {
+                // ignore
+            }
         }
         await conn.query(`
       CREATE TABLE IF NOT EXISTS sessions (
@@ -1183,6 +1224,10 @@ function pickTrimmedString(...candidates) {
     }
     return null;
 }
+function resolveLeadBranchName(payload, explicit) {
+    const formData = payload?.formData || payload?.form_data || payload?.form || {};
+    return pickTrimmedString(explicit, formData.sales_closure_ec, formData.branch, formData.experience_center, payload?.sales_closure_ec, payload?.branch, payload?.experience_center, payload?.form?.sales_closure_ec, payload?.form?.branch, payload?.form?.experience_center) || "Experience Center";
+}
 function slotTextFromValue(v) {
     if (v == null)
         return null;
@@ -1707,6 +1752,21 @@ function canAssignProjectManagerRole(role) {
         r === "territorial_design_manager" ||
         r === "deputy_general_manager" ||
         r === "senior_project_manager");
+}
+/** Who may complete "Project manager approval" (assigned PM or Admin). */
+function canCompleteProjectManagerApproval(role, userId, assignedPmId) {
+    const r = (role || "").toLowerCase();
+    if (r === "admin")
+        return true;
+    if (r !== "project_manager")
+        return false;
+    const pmId = assignedPmId != null ? Number(assignedPmId) : NaN;
+    return Number.isFinite(pmId) && pmId > 0 && pmId === userId;
+}
+/** Who may approve MMT D1/D2 masking uploads (pending → approved). */
+function canApproveMmtUploads(role) {
+    const r = (role || "").toLowerCase();
+    return r === "mmt_manager" || r === "admin";
 }
 const excelImportPreviewStore = new Map();
 const EXCEL_PREVIEW_TTL_MS = 30 * 60 * 1000;
@@ -2612,10 +2672,18 @@ app.post("/api/sales-closure", async (req, res) => {
         try {
             const designerName = (payload && (payload.designer_name || payload.designerName)) || undefined;
             if (designerName) {
-                const [rows] = await pool.query("SELECT id FROM users WHERE name = ? AND role = 'designer' LIMIT 1", [designerName]);
+                const [rows] = await pool.query(`SELECT u.id, dm.name AS designManagerName
+           FROM users u
+           LEFT JOIN users dm ON u.design_manager_id = dm.id
+           WHERE u.name = ? AND u.role = 'designer' LIMIT 1`, [designerName]);
                 const row = rows[0];
-                if (row?.id)
+                if (row?.id) {
                     assignedDesignerId = row.id;
+                    if (row.designManagerName && payload && typeof payload === "object") {
+                        payload.designManagerName = row.designManagerName;
+                        payload.design_manager_name = row.designManagerName;
+                    }
+                }
             }
         }
         catch {
@@ -2663,6 +2731,7 @@ app.post("/api/sales-closure", async (req, res) => {
                     projectId: `HUB-${insertId}`,
                     propertyType,
                     designerName: (payload && (payload.designer_name || payload.designerName)) || "Team HUB Interior",
+                    leadPayload: payload && typeof payload === "object" ? payload : {},
                 };
                 fetch(`${frontendBase}/api/email/send-d1-site-measurement`, {
                     method: "POST",
@@ -2821,11 +2890,19 @@ app.post("/api/leads/external-intake", async (req, res) => {
     const now = new Date();
     try {
         let assignedDesignerId = null;
+        let designManagerName = null;
         if (designerName) {
-            const [designerRows] = await pool.query("SELECT id FROM users WHERE role = 'designer' AND LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1", [designerName]);
-            assignedDesignerId = designerRows[0]?.id != null
-                ? Number(designerRows[0].id)
-                : null;
+            const [designerRows] = await pool.query(`SELECT u.id, dm.name AS designManagerName
+         FROM users u
+         LEFT JOIN users dm ON u.design_manager_id = dm.id
+         WHERE u.role = 'designer' AND LOWER(TRIM(u.name)) = LOWER(TRIM(?)) LIMIT 1`, [designerName]);
+            const row = designerRows[0];
+            if (row?.id != null) {
+                assignedDesignerId = Number(row.id);
+                if (row.designManagerName) {
+                    designManagerName = row.designManagerName;
+                }
+            }
         }
         const crmSchedule = {
             date: appointmentDate,
@@ -2848,6 +2925,7 @@ app.post("/api/leads/external-intake", async (req, res) => {
                 email: clientEmail || "",
                 status_of_project: "Pre 10%",
                 designer_name: designerName || "",
+                ...(designManagerName ? { design_manager_name: designManagerName, designManagerName: designManagerName } : {}),
                 sales_executive: salesExecutive || "",
                 sales_executive_email: salesExecutiveEmail || "",
                 appointment_date: appointmentDate || "",
@@ -3610,14 +3688,12 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
             const user = await getUserFromSession(req);
             if (!user)
                 return res.status(401).json({ message: "Unauthorized" });
-            const role = (user.role || "").toLowerCase();
-            if (role !== "project_manager") {
-                return res.status(403).json({ message: "Only the assigned Project Manager can complete this task" });
-            }
             const [lr] = await pool.query("SELECT assigned_project_manager_id as pmId FROM leads WHERE id = ?", [id]);
             const pmId = lr[0]?.pmId;
-            if (!pmId || Number(pmId) !== user.id) {
-                return res.status(403).json({ message: "You are not the assigned Project Manager for this lead" });
+            if (!canCompleteProjectManagerApproval(user.role, user.id, pmId)) {
+                return res.status(403).json({
+                    message: "Only the assigned Project Manager or Admin can complete this task",
+                });
             }
         }
         if (milestoneIndex === 3 && tNorm === "Assign project manager") {
@@ -4338,10 +4414,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                             payload?.customer_name ||
                             row.projectName ||
                             "Customer";
-                        const branchName = meta?.ecLocation ||
-                            formData.experience_center ||
-                            payload?.experience_center ||
-                            "HUB Experience Center";
+                        const branchName = resolveLeadBranchName(payload, meta?.ecLocation);
                         console.log("[checklist-dqc1] branchName:", branchName, "meta.ecLocation:", meta?.ecLocation, "formData.experience_center:", formData.experience_center);
                         // Collect latest first-cut design uploads (if any) to attach.
                         let attachments;
@@ -4401,6 +4474,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                     cc: await getMailLoopCcEmails([actingUser.email], id),
                                     subject: buildMailChainSubject(projectId, row.projectName, customerName),
                                     customerName,
+                                    leadId: id,
                                     meetingDate,
                                     meetingTime: formatTime12Hour(meetingTime) || undefined,
                                     meetingMode: meta?.meetingMode || null,
@@ -4878,11 +4952,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                         const meetingMode = meta?.meetingMode ?? null;
                         const meetingLink = meta?.meetingLink ?? null;
                         const attachments = meta?.attachments || undefined;
-                        const resolvedEcLocation = meta?.ecLocation ||
-                            formData.experience_center ||
-                            payload?.experience_center ||
-                            payload?.form?.experience_center ||
-                            "Experience Center";
+                        const resolvedEcLocation = resolveLeadBranchName(payload, meta?.ecLocation);
                         if (meetingDate && meetingTime) {
                             const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
                             if (googleStart) {
@@ -4915,6 +4985,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                     cc: mailChainCc,
                                     subject: mailChainSubject,
                                     customerName,
+                                    leadId: id,
                                     projectId,
                                     designerName,
                                     meetingDate: meetingDate || undefined,
@@ -5107,13 +5178,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                             payload?.form?.customer_name ||
                             row.projectName ||
                             "Customer";
-                        const ecName = formData.sales_closure_ec ||
-                            formData.branch ||
-                            formData.experience_center ||
-                            payload?.branch ||
-                            payload?.experience_center ||
-                            payload?.form?.experience_center ||
-                            "Experience Center";
+                        const ecName = resolveLeadBranchName(payload);
                         const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
                         const meetingDate = meta?.meetingDate ?? null;
                         const meetingTime = meta?.meetingTime ?? null;
@@ -5157,6 +5222,7 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                                         cc: mailChainCc,
                                         subject: mailChainSubject,
                                         customerName,
+                                        leadId: id,
                                         designerName,
                                         meetingDate,
                                         meetingTime: formatTime12Hour(meetingTime) || undefined,
@@ -6523,7 +6589,7 @@ app.post("/api/leads/:id/uploads", upload.single("zip"), async (req, res) => {
         const user = await getUserFromSession(req);
         const uploaderId = user?.id ?? null;
         const role = (user?.role ?? "").toLowerCase();
-        const status = role === "mmt_manager" ? "approved" : "pending";
+        const status = role === "mmt_manager" || role === "admin" ? "approved" : "pending";
         const now = new Date();
         let s3Url = null;
         if (process.env.AWS_ACCESS_KEY_ID) {
@@ -6553,7 +6619,7 @@ app.post("/api/leads/:id/uploads", upload.single("zip"), async (req, res) => {
         const newUploadId = insertResult.insertId;
         // If the uploader is an MMT manager the upload is immediately approved →
         // auto-complete the corresponding task in lead_task_completions.
-        if (role === "mmt_manager") {
+        if (role === "mmt_manager" || role === "admin") {
             await pool.query(`INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
            VALUES (?, ?, ?, ?)
            ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`, [leadId, uploadMilestoneIndex, uploadTaskName, now]);
@@ -6631,14 +6697,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req, res) => {
         let description = "";
         let emailRoutePath = "";
         let emailBody = {};
-        const resolvedEcLocation = ecLocation ||
-            formData.sales_closure_ec ||
-            formData.branch ||
-            formData.experience_center ||
-            payload?.branch ||
-            payload?.experience_center ||
-            payload?.form?.experience_center ||
-            "Experience Center";
+        const resolvedEcLocation = resolveLeadBranchName(payload, ecLocation);
         console.log("[schedule-meeting] resolvedEcLocation:", resolvedEcLocation, "ecLocation:", ecLocation, "formData.experience_center:", formData.experience_center);
         if (meetingType === "dqc2_material_selection") {
             summary = `Material Selection - ${customerName}`;
@@ -6653,6 +6712,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req, res) => {
                 cc: await getMailLoopCcEmails([actingUser.email, row.designerEmail], leadId),
                 subject: buildMailChainSubject(projectId, row.projectName, customerName),
                 customerName,
+                leadId,
                 projectId,
                 designerName,
                 meetingDate,
@@ -6676,6 +6736,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req, res) => {
                 cc: await getMailLoopCcEmails([actingUser.email, row.designerEmail], leadId),
                 subject: buildMailChainSubject(projectId, row.projectName, customerName),
                 customerName,
+                leadId,
                 projectId,
                 designerName,
                 meetingDate,
@@ -6699,6 +6760,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req, res) => {
                 cc: await getMailLoopCcEmails([actingUser.email, row.designerEmail], leadId),
                 subject: buildMailChainSubject(projectId, row.projectName, customerName),
                 customerName,
+                leadId,
                 projectId,
                 designerName,
                 meetingDate,
@@ -6815,7 +6877,7 @@ app.get("/api/leads/:id/uploads", async (req, res) => {
         return res.status(500).json({ message: "Failed to load uploads" });
     }
 });
-// MMT Manager only: approve an upload so it becomes visible to designers
+// MMT Manager or Admin: approve an upload so it becomes visible to designers
 app.post("/api/leads/:leadId/uploads/:uploadId/approve", async (req, res) => {
     const leadId = Number(req.params.leadId);
     const uploadId = Number(req.params.uploadId);
@@ -6825,8 +6887,9 @@ app.post("/api/leads/:leadId/uploads/:uploadId/approve", async (req, res) => {
         const user = await getUserFromSession(req);
         if (!user)
             return res.status(401).json({ message: "Unauthorized" });
-        if ((user.role || "").toLowerCase() !== "mmt_manager")
-            return res.status(403).json({ message: "Only MMT Manager can approve uploads" });
+        if (!canApproveMmtUploads(user.role)) {
+            return res.status(403).json({ message: "Only MMT Manager or Admin can approve uploads" });
+        }
         // Fetch upload_type before approving so we can mark the correct task complete
         const [uploadRows] = await pool.query("SELECT upload_type as uploadType, original_name as originalName FROM lead_uploads WHERE id = ? AND lead_id = ?", [uploadId, leadId]);
         const uploadRow = uploadRows[0];
@@ -6846,6 +6909,7 @@ app.post("/api/leads/:leadId/uploads/:uploadId/approve", async (req, res) => {
        VALUES (?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`, [leadId, approvalMilestoneIndex, approvalTaskName, now]);
         // Log the approval in lead history
+        const approverLabel = (user.role || "").toLowerCase() === "admin" ? "Admin" : "MMT Manager";
         const approvalEv = {
             id: `upload-approve-${Date.now()}`,
             type: "note",
@@ -6853,9 +6917,9 @@ app.post("/api/leads/:leadId/uploads/:uploadId/approve", async (req, res) => {
             milestoneName: isD2Upload ? "D2 SITE MASKING" : "D1 SITE MEASUREMENT",
             timestamp: now.toISOString(),
             description: isD2Upload
-                ? "D2 masking files approved by MMT Manager."
-                : "MMT D1 files approved by MMT Manager.",
-            user: { name: user.name ?? "MMT Manager" },
+                ? `D2 masking files approved by ${approverLabel}.`
+                : `MMT D1 files approved by ${approverLabel}.`,
+            user: { name: user.name ?? approverLabel },
             details: { kind: "note", noteText: `Upload #${uploadId} approved.` },
         };
         await addLeadHistoryEvent(leadId, approvalEv);
@@ -8080,6 +8144,10 @@ app.post("/api/leads/:id/d2-masking-request", async (req, res) => {
         const user = await getUserFromSession(req);
         if (!user)
             return res.status(401).json({ message: "Unauthorized" });
+        const role = (user.role || "").toLowerCase();
+        if (role === "mmt_executive") {
+            return res.status(403).json({ message: "MMT executives cannot raise masking requests" });
+        }
         const { maskingExecutiveId, maskingDate, maskingTime } = req.body || {};
         const execId = Number(maskingExecutiveId);
         if (!execId)
@@ -8159,7 +8227,12 @@ app.get("/api/leads/queue", async (req, res) => {
     const now = new Date();
     const queueType = req.query.type || "d1";
     try {
-        await pool.query("UPDATE leads SET is_on_hold = 0, resume_at = NULL, update_at = ? WHERE is_on_hold = 1 AND resume_at IS NOT NULL AND resume_at <= ?", [now, now]);
+        try {
+            await pool.query("UPDATE leads SET is_on_hold = 0, resume_at = NULL, update_at = ? WHERE is_on_hold = 1 AND resume_at IS NOT NULL AND resume_at <= ?", [now, now]);
+        }
+        catch (holdErr) {
+            console.warn("leads/queue hold resume update skipped", holdErr);
+        }
         const user = await getUserFromSession(req);
         const role = (user?.role ?? "").toLowerCase();
         const isMmt = role === "mmt_manager" || role === "mmt_executive";
@@ -8320,7 +8393,29 @@ app.get("/api/leads/queue", async (req, res) => {
     }
     catch (err) {
         console.error("leads/queue error", err);
-        res.status(500).json({ message: "Failed to load leads" });
+        const code = err && typeof err === "object" && "code" in err
+            ? String(err.code)
+            : null;
+        const sqlMessage = err && typeof err === "object" && "sqlMessage" in err
+            ? String(err.sqlMessage)
+            : null;
+        if (code === "ETIMEDOUT" || code === "ECONNREFUSED" || code === "ENOTFOUND") {
+            return res.status(503).json({
+                message: "Database connection failed. Create env.sh with DB_* and run: source env.sh && pm2 restart backend --update-env",
+                code,
+            });
+        }
+        if (code === "ER_ACCESS_DENIED_ERROR") {
+            return res.status(503).json({
+                message: "Database login failed. Check DB_USER / DB_PASSWORD in env.sh.",
+                code,
+            });
+        }
+        res.status(500).json({
+            message: "Failed to load leads",
+            code: code || undefined,
+            sqlMessage: sqlMessage || undefined,
+        });
     }
 });
 // DQC dashboard: list leads with id, name, stage, dqcStatus, dqc1Pending, dqc2Pending for dqc_manager and dqe
@@ -8761,14 +8856,7 @@ app.get("/api/leads/:id", async (req, res) => {
             const formData = payload.formData || payload.form_data || payload.form || payload || {};
             designerName = formData.designer_name || formData.designerName || undefined;
             revision = formData.revision || (designerName ? "v1.0 (Latest)" : undefined);
-            experienceCenter =
-                formData.sales_closure_ec ||
-                    formData.branch ||
-                    formData.experience_center ||
-                    payload?.branch ||
-                    payload?.experience_center ||
-                    payload?.form?.experience_center ||
-                    undefined;
+            experienceCenter = resolveLeadBranchName(payload);
         }
         catch {
             // ignore
@@ -8794,6 +8882,98 @@ app.get("/api/leads/:id", async (req, res) => {
     catch (err) {
         console.error("lead detail error", err);
         return res.status(500).json({ message: "Failed to load lead" });
+    }
+});
+// Dashboard form: new Pre 10% lead + optional Prolance project ID (logged-in designer/admin).
+app.post("/api/leads/manual-create", async (req, res) => {
+    const user = await getUserFromSession(req);
+    if (!user)
+        return res.status(401).json({ message: "Unauthorized" });
+    const role = (user.role || "").toLowerCase();
+    const allowed = [
+        "admin",
+        "designer",
+        "design_manager",
+        "territorial_design_manager",
+        "deputy_general_manager",
+    ];
+    if (!allowed.includes(role)) {
+        return res.status(403).json({ message: "You do not have permission to create leads" });
+    }
+    const body = (req.body || {});
+    const projectName = String(body.projectName || body.pName || "").trim();
+    const customerName = String(body.customerName || body.customer || "").trim();
+    if (!projectName)
+        return res.status(400).json({ message: "projectName is required" });
+    if (!customerName)
+        return res.status(400).json({ message: "customerName is required" });
+    const city = String(body.city || "Bengaluru").trim();
+    const state = String(body.state || "Karnataka").trim();
+    const contactNo = String(body.contactNo || body.phone || "").trim() || null;
+    const clientEmail = String(body.clientEmail || body.email || "").trim() || null;
+    let prolanceProjectId = null;
+    if (body.prolanceProjectId != null && body.prolanceProjectId !== "") {
+        const n = Number(body.prolanceProjectId);
+        if (!Number.isFinite(n) || n < 1) {
+            return res.status(400).json({ message: "Invalid prolanceProjectId" });
+        }
+        prolanceProjectId = n;
+    }
+    let assignedDesignerId = null;
+    if (role === "designer") {
+        assignedDesignerId = user.id;
+    }
+    else if (body.assignedDesignerId != null && body.assignedDesignerId !== "") {
+        const n = Number(body.assignedDesignerId);
+        if (Number.isFinite(n) && n >= 1)
+            assignedDesignerId = n;
+    }
+    const now = new Date();
+    const payloadToPersist = {
+        source: "manual_create_dashboard",
+        createdByUserId: user.id,
+        createdByEmail: user.email,
+        formData: {
+            customer_name: customerName,
+            city,
+            state,
+            co_no: contactNo || "",
+            email: clientEmail || "",
+            status_of_project: "Pre 10%",
+            designer_name: user.name || "",
+        },
+    };
+    try {
+        const [result] = await pool.query(`INSERT INTO leads
+       (pid, project_name, project_stage, contact_no, client_email,
+        is_on_hold, resume_at, create_at, update_at, payload, assigned_designer_id, prolance_project_id)
+       VALUES ('', ?, 'Pre 10%', ?, ?, 0, NULL, ?, ?, ?, ?, ?)`, [
+            projectName,
+            contactNo,
+            clientEmail,
+            now,
+            now,
+            JSON.stringify(payloadToPersist),
+            assignedDesignerId,
+            prolanceProjectId,
+        ]);
+        const leadId = Number(result.insertId);
+        const pid = `HUB-${leadId}`;
+        await pool.query("UPDATE leads SET pid = ? WHERE id = ?", [pid, leadId]);
+        return res.status(201).json({
+            ok: true,
+            leadId,
+            pid,
+            projectName,
+            projectStage: "Pre 10%",
+            prolanceProjectId,
+            assignedDesignerId,
+            message: "Lead created",
+        });
+    }
+    catch (err) {
+        console.error("manual-create lead error", err);
+        return res.status(500).json({ message: "Failed to create lead" });
     }
 });
 // Persist Prolance project / quote IDs on the lead (same visibility as GET /api/leads/:id).
