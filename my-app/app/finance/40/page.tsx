@@ -214,7 +214,11 @@ export default function Finance40pPage() {
               const busyApprove = approvingLeadId === l.id;
               return (
                 <div key={l.id} className="grid grid-cols-12 px-4 py-3 border-t border-gray-200 items-center gap-2">
-                  <div className="col-span-2 text-sm font-semibold text-gray-900">{l.id}</div>
+                  <div className="col-span-2 text-sm font-semibold text-gray-900">
+                    <a href={`/Leads/${l.id}`} className="text-indigo-700 hover:underline">
+                      {l.id}
+                    </a>
+                  </div>
                   <div className="col-span-3 text-sm text-gray-800 truncate" title={l.projectName}>{l.projectName}</div>
                   <div className="col-span-2 text-sm">
                     <span className={l.status === 'Pending approval' ? 'text-amber-700 font-medium' : 'text-gray-600'}>

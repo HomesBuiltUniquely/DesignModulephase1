@@ -31,6 +31,7 @@ import {
     PopupAssignProjectManager,
     PopupProjectManagerApproval,
     Popup40pCollection,
+    PopupFinancePaymentApproval,
 } from './components';
 import { checklistDefinitions, getChecklistKeyForTask } from './components/Checklists/checklistRegistry';
 import { buildAuthHeaders, getApiBase } from '@/app/lib/apiBase';
@@ -3075,7 +3076,20 @@ export default function ProjectDetailPage() {
                         />
                     )}
                     {popupContext.milestoneIndex === 2 && popupContext.taskName === '10% payment approval' && (
-                        <PopupPlaceholder message="10% payment approval is done by the finance team from their queue. Once they approve, this milestone will advance automatically—no action needed here." />
+                        <PopupFinancePaymentApproval
+                            leadId={projectId}
+                            sessionId={sessionId}
+                            userRole={authUser?.role}
+                            kind="10p"
+                            taskLabel="10% payment approval"
+                            onApproved={() => {
+                                setCompletedTaskKeys((prev) =>
+                                    Array.from(new Set([...prev, taskKey(2, '10% payment approval')])),
+                                );
+                                setUploadsVersion((v) => v + 1);
+                            }}
+                            onClose={closePopup}
+                        />
                     )}
                     {popupContext.milestoneIndex === 1 && popupContext.taskName === 'DQC 1 approval' && (
                         isDesigner ? (
@@ -3638,7 +3652,20 @@ export default function ProjectDetailPage() {
                         />
                     )}
                     {popupContext.milestoneIndex === 5 && popupContext.taskName === '40% payment approval' && (
-                        <PopupPlaceholder message="40% payment approval is done by the finance team from their queue. Once they approve, this milestone will advance automatically—no action needed here." />
+                        <PopupFinancePaymentApproval
+                            leadId={projectId}
+                            sessionId={sessionId}
+                            userRole={authUser?.role}
+                            kind="40p"
+                            taskLabel="40% payment approval"
+                            onApproved={() => {
+                                setCompletedTaskKeys((prev) =>
+                                    Array.from(new Set([...prev, taskKey(5, '40% payment approval')])),
+                                );
+                                setUploadsVersion((v) => v + 1);
+                            }}
+                            onClose={closePopup}
+                        />
                     )}
                     {popupContext.milestoneIndex === 5 &&
                         popupContext.taskName !== 'Design sign off' &&

@@ -2150,6 +2150,14 @@ function canApproveMmtUploads(role: string | null | undefined): boolean {
   return r === "mmt_manager" || r === "admin";
 }
 
+/** TEMPORARY: relax finance approval gates (screenshots / 10% paid checks). Set false when going live. */
+const TEMP_FINANCE_RELAXED_APPROVAL = true;
+
+function canFinanceApproveSalesClosure(tenPercentMet: boolean, alreadyApproved: boolean): boolean {
+  if (alreadyApproved) return false;
+  return TEMP_FINANCE_RELAXED_APPROVAL || tenPercentMet;
+}
+
 type ImportedPreview = {
   createdAt: number;
   rows: Record<string, unknown>[];
@@ -6305,7 +6313,7 @@ function mapFinanceSalesClosureQueueRow(
     remainingFor10Percent: options.approved ? 0 : remaining ?? null,
     paymentPercentOfQuotation: percentOfQuotation ?? null,
     tenPercentMet: options.approved ? true : tenPercentMet,
-    canApprove: !options.approved && tenPercentMet,
+    canApprove: canFinanceApproveSalesClosure(tenPercentMet, options.approved),
     submittedAt: r.salesClosureSubmittedAt || r.submittedAt || null,
     approvedAt,
     bookingDate: r.bookingDate || payloadObj.booking_date || null,
@@ -6527,7 +6535,7 @@ app.post("/api/leads/:id/approve-sales-closure", async (req: Request, res: Respo
     const leadRow = (leadRows as { payload?: unknown }[])[0];
     if (!leadRow) return res.status(404).json({ message: "Lead not found" });
     const payloadObj = parseLeadPayloadObject(leadRow.payload);
-    if (!salesClosureTenPercentMet(payloadObj)) {
+    if (!TEMP_FINANCE_RELAXED_APPROVAL && !salesClosureTenPercentMet(payloadObj)) {
       return res.status(400).json({
         message:
           "Cannot approve until the customer has paid at least 10% of the quotation. Ask sales to update the paid amount.",
@@ -6775,7 +6783,7 @@ app.get("/api/leads/finance-10p-queue", async (req: Request, res: Response) => {
       id: l.id,
       projectName: l.projectName || "—",
       status: has10pCollection(l.id) ? "Pending approval" : "Pending upload",
-      canApprove: has10pCollection(l.id),
+      canApprove: TEMP_FINANCE_RELAXED_APPROVAL || has10pCollection(l.id),
     }));
     return res.json(list);
   } catch (err) {
@@ -7280,7 +7288,7 @@ app.get("/api/leads/finance-40p-queue", async (req: Request, res: Response) => {
       id: l.id,
       projectName: l.projectName || "—",
       status: has40pUpload(l.id) ? "Pending approval" : "Pending upload",
-      canApprove: has40pUpload(l.id),
+      canApprove: TEMP_FINANCE_RELAXED_APPROVAL || has40pUpload(l.id),
     }));
     return res.json(list);
   } catch (err) {
