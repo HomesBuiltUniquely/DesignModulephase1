@@ -46,23 +46,6 @@ import { openProlanceBrowserForProjectId } from '@/app/lib/prolanceLinks';
 
 const API = getApiBase();
 
-/** Flat discount % — same model as `/quote/[quoteId]` internal discount editor */
-const QUOTE_MODAL_MAX_FLAT_PCT = 35;
-function quoteModalClampFlatPct(p: number): number {
-    if (!Number.isFinite(p)) return 0;
-    return Math.min(QUOTE_MODAL_MAX_FLAT_PCT, Math.max(0, Math.round(p * 100) / 100));
-}
-function quoteModalDiscountRsFromFlatPct(pct: number, baseTotal: number): number {
-    return (baseTotal * quoteModalClampFlatPct(pct)) / 100;
-}
-function quoteModalFinalPriceFromFlatPct(pct: number, baseTotal: number): number {
-    return Math.max(baseTotal - quoteModalDiscountRsFromFlatPct(pct, baseTotal), 0);
-}
-function quoteModalFlatPctFromFinalPrice(finalPrice: number, baseTotal: number): number {
-    if (!baseTotal || baseTotal <= 0) return 0;
-    return quoteModalClampFlatPct(((baseTotal - finalPrice) / baseTotal) * 100);
-}
-
 export default function ProjectDetailPage() {
     const params = useParams();
     const searchParams = useSearchParams();
@@ -185,9 +168,6 @@ export default function ProjectDetailPage() {
     const [getQuoteLastBody, setGetQuoteLastBody] = useState<unknown>(null);
     const [latestQuoteResponse, setLatestQuoteResponse] = useState<unknown>(null);
     const [showQuotePreviewModal, setShowQuotePreviewModal] = useState(false);
-    const [quoteModalFlatDiscountPct, setQuoteModalFlatDiscountPct] = useState(0);
-    const [quoteModalFlatDiscountDraft, setQuoteModalFlatDiscountDraft] = useState(0);
-    const [quoteModalDiscountOpen, setQuoteModalDiscountOpen] = useState(true);
     const [quoteSummaryTab, setQuoteSummaryTab] = useState<'overall' | 'roomwise'>('overall');
     const [expandedQuoteRooms, setExpandedQuoteRooms] = useState<Record<string, boolean>>({});
     const [quoteLinkCopied, setQuoteLinkCopied] = useState(false);
@@ -206,13 +186,6 @@ export default function ProjectDetailPage() {
         { id: 5, pid: "P005", projectName: "Downtown", projectStage: "10-20%", createAt: "2024-03-10T14:00:00.000Z", updateAt: "2024-04-05T11:20:00.000Z" },
     ];
     const [project, setProject] = useState<LeadshipTypes | null>(null);
-
-    useEffect(() => {
-        if (!showQuotePreviewModal) return;
-        setQuoteModalFlatDiscountPct(0);
-        setQuoteModalFlatDiscountDraft(0);
-        setQuoteModalDiscountOpen(true);
-    }, [showQuotePreviewModal, latestQuoteResponse]);
 
     // Legacy: ?postGetQuote=1 — open full /quote/preview tab (sessionStorage); preview page clears storage.
     useEffect(() => {
@@ -2074,13 +2047,6 @@ export default function ProjectDetailPage() {
                             <div className="flex flex-wrap items-center gap-2">
                                 <button
                                     type="button"
-                                    onClick={() => setQuoteModalDiscountOpen((o) => !o)}
-                                    className="rounded-md border border-white/25 bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/20"
-                                >
-                                    {quoteModalDiscountOpen ? 'Hide discount' : 'Discount'}
-                                </button>
-                                <button
-                                    type="button"
                                     onClick={() => setShowQuotePreviewModal(false)}
                                     className="rounded-md bg-rose-500 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-600"
                                 >
@@ -2146,34 +2112,7 @@ export default function ProjectDetailPage() {
                                 extractNumber(view.totals.designAndManagementFees) != null ||
                                 extractNumber(view.totals.discount) != null ||
                                 extractNumber(view.totals.totalPayableAmount) != null;
-                            const baseTotalModal =
-                                extractNumber(view.totals.totalPayableAmount) ??
-                                (view.quoteOptionsData.length
-                                    ? view.quoteOptionsData.reduce((s, o) => s + (extractNumber(o.totalPrice) || 0), 0)
-                                    : null);
-                            const discountCapModal = baseTotalModal ?? 0;
-                            const normalizedDiscountModal = Math.min(
-                                quoteModalDiscountRsFromFlatPct(quoteModalFlatDiscountPct, discountCapModal),
-                                discountCapModal,
-                            );
-                            const discountedTotalModal =
-                                baseTotalModal != null
-                                    ? Math.max(baseTotalModal - normalizedDiscountModal, 0)
-                                    : null;
-                            const sidebarDiscountPreviewModal = Math.min(
-                                quoteModalDiscountRsFromFlatPct(quoteModalFlatDiscountDraft, discountCapModal),
-                                discountCapModal,
-                            );
-                            const sidebarTotalPreviewModal =
-                                baseTotalModal != null
-                                    ? Math.max(baseTotalModal - sidebarDiscountPreviewModal, 0)
-                                    : null;
-                            const sidebarFinalPricePreviewModal =
-                                baseTotalModal != null
-                                    ? quoteModalFinalPriceFromFlatPct(quoteModalFlatDiscountDraft, baseTotalModal)
-                                    : null;
-                            const displayPayableModal =
-                                discountedTotalModal ?? extractNumber(view.totals.totalPayableAmount);
+                            const displayPayableModal = extractNumber(view.totals.totalPayableAmount);
                             const fullEditorQuoteId =
                                 shareQuoteIdRaw != null && shareQuoteIdRaw >= 1
                                     ? Math.trunc(Number(shareQuoteIdRaw))
@@ -2181,7 +2120,7 @@ export default function ProjectDetailPage() {
                                       ? prolanceQuoteId
                                       : null;
     return (
-                                <div className="flex min-h-0 min-w-0 flex-1 flex-col lg:flex-row lg:overflow-hidden">
+                                <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
                                     <div className="mx-auto min-h-0 w-full max-w-5xl space-y-5 overflow-y-auto px-6 py-6 lg:mx-0">
                                     <div className="rounded-2xl bg-white p-6 shadow-sm">
                                         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -2195,7 +2134,7 @@ export default function ProjectDetailPage() {
                                                     }
                                                     className="rounded-md border border-teal-300 bg-teal-50 px-3 py-1 text-xs font-semibold text-teal-800 hover:bg-teal-100"
                                                 >
-                                                    Open full quote (discount + versions)
+                                                    Open full quote (versions)
                                                 </button>
                                             ) : null}
                                             {shareQuoteLink ? (
@@ -2317,13 +2256,9 @@ export default function ProjectDetailPage() {
                                                                 <span className="font-semibold text-gray-900">{formatCurrency(view.totals.designAndManagementFees)}</span>
                                                             </div>
                                                             <div className="flex justify-between border-t border-gray-100 pt-3">
-                                                                <span className="text-sm text-gray-600">Discount (category editor)</span>
+                                                                <span className="text-sm text-gray-600">Discount</span>
                                                                 <span className="font-semibold text-gray-900">
-                                                                    {formatCurrency(
-                                                                        baseTotalModal != null
-                                                                            ? normalizedDiscountModal
-                                                                            : view.totals.discount,
-                                                                    )}
+                                                                    {formatCurrency(view.totals.discount)}
                                                                 </span>
                                                             </div>
                                                             <div className="flex justify-between border-t border-gray-200 pt-3">
@@ -2502,108 +2437,6 @@ export default function ProjectDetailPage() {
 
                                     </div>
 
-                                    {quoteModalDiscountOpen ? (
-                                        <aside className="flex max-h-[min(100vh-8rem,56rem)] w-full shrink-0 flex-col overflow-hidden border-t border-gray-200 bg-white shadow-sm lg:max-w-[min(100%,24rem)] lg:border-l lg:border-t-0">
-                                            <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
-                                                <span className="text-lg font-semibold text-gray-900">Discount</span>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setQuoteModalDiscountOpen(false)}
-                                                    className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100"
-                                                    aria-label="Close discount panel"
-                                                >
-                                                    ✕
-                                                </button>
-                                            </div>
-                                            <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4 text-gray-800">
-                                                <div className="flex items-center justify-between text-sm">
-                                                    <span className="text-gray-600">Subtotal</span>
-                                                    <span className="font-semibold tabular-nums text-gray-900">
-                                                        {formatCurrency(baseTotalModal)}
-                                                    </span>
-                                                </div>
-                                                <div className="flex items-center justify-between text-sm">
-                                                    <span className="text-gray-600">Discount</span>
-                                                    <span className="font-semibold tabular-nums text-rose-600">
-                                                        {formatCurrency(sidebarDiscountPreviewModal)}
-                                                    </span>
-                                                </div>
-                                                <p className="text-sm font-semibold text-gray-900">Flat discount</p>
-                                                <div className="grid grid-cols-2 gap-3">
-                                                    <div>
-                                                        <label className="mb-1 block text-xs font-medium text-gray-600">Final price</label>
-                                                        <div className="relative">
-                                                            <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-medium text-gray-400">
-                                                                ₹
-                                                            </span>
-                                                            <input
-                                                                type="number"
-                                                                min={0}
-                                                                max={baseTotalModal ?? undefined}
-                                                                step={0.01}
-                                                                value={sidebarFinalPricePreviewModal ?? ''}
-                                                                onChange={(e) => {
-                                                                    const v = Number(e.target.value);
-                                                                    if (!Number.isFinite(v) || baseTotalModal == null) {
-                                                                        setQuoteModalFlatDiscountDraft(0);
-                                                                        return;
-                                                                    }
-                                                                    const cappedFinal = Math.min(Math.max(0, v), baseTotalModal);
-                                                                    setQuoteModalFlatDiscountDraft(
-                                                                        quoteModalFlatPctFromFinalPrice(cappedFinal, baseTotalModal),
-                                                                    );
-                                                                }}
-                                                                className="w-full rounded-md border border-teal-200 bg-white py-2 pl-7 pr-2 text-sm font-semibold tabular-nums text-gray-900 outline-none focus:ring-2 focus:ring-teal-500/40"
-                                                            />
-                                                        </div>
-                                                    </div>
-                                                    <div>
-                                                        <label className="mb-1 block text-xs font-medium text-gray-600">Discount</label>
-                                                        <div className="relative">
-                                                            <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-medium text-gray-400">
-                                                                %
-                                                            </span>
-                                                            <input
-                                                                type="number"
-                                                                min={0}
-                                                                max={QUOTE_MODAL_MAX_FLAT_PCT}
-                                                                step={0.01}
-                                                                value={quoteModalFlatDiscountDraft}
-                                                                onChange={(e) => {
-                                                                    const v = Number(e.target.value);
-                                                                    if (!Number.isFinite(v)) {
-                                                                        setQuoteModalFlatDiscountDraft(0);
-                                                                        return;
-                                                                    }
-                                                                    setQuoteModalFlatDiscountDraft(quoteModalClampFlatPct(v));
-                                                                }}
-                                                                className="w-full rounded-md border border-teal-200 bg-white py-2 pl-7 pr-2 text-sm font-semibold tabular-nums text-gray-900 outline-none focus:ring-2 focus:ring-teal-500/40"
-                                                            />
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                            <div className="space-y-4 border-t border-gray-100 bg-white px-4 py-4">
-                                                <div className="flex items-center justify-between">
-                                                    <span className="text-base font-bold text-gray-900">Total cost</span>
-                                                    <span className="text-base font-bold tabular-nums text-gray-900">
-                                                        {formatCurrency(sidebarTotalPreviewModal)}
-                                                    </span>
-                                                </div>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                        const next = quoteModalClampFlatPct(quoteModalFlatDiscountDraft);
-                                                        setQuoteModalFlatDiscountPct(next);
-                                                        setQuoteModalFlatDiscountDraft(next);
-                                                    }}
-                                                    className="w-full rounded-lg bg-teal-700 py-3 text-sm font-semibold text-white shadow-sm hover:bg-teal-800"
-                                                >
-                                                    Save changes
-                                                </button>
-                                            </div>
-                                        </aside>
-                                    ) : null}
                                 </div>
                             );
                         })()}

@@ -1,10 +1,9 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { buildAuthHeaders, getApiBase } from '@/app/lib/apiBase';
+import { getApiBase } from '@/app/lib/apiBase';
 import { useSearchParams } from 'next/navigation';
 import { extractQuoteIdFromBody } from '@/app/lib/prolanceApiGetQuote';
-import { useAuth } from '@/app/auth/AuthContext';
 
 const API = getApiBase();
 
@@ -263,74 +262,6 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
 
 type QuoteVersionRow = { quoteId: number; createdAt: string };
 
-const MAX_FLAT_DISCOUNT_PCT = 35;
-
-function clampFlatPct(p: number): number {
-  if (!Number.isFinite(p)) return 0;
-  return Math.min(MAX_FLAT_DISCOUNT_PCT, Math.max(0, Math.round(p * 100) / 100));
-}
-
-function discountRsFromFlatPct(pct: number, baseTotal: number): number {
-  return (baseTotal * clampFlatPct(pct)) / 100;
-}
-
-function finalPriceFromFlatPct(pct: number, baseTotal: number): number {
-  return Math.max(baseTotal - discountRsFromFlatPct(pct, baseTotal), 0);
-}
-
-function flatPctFromFinalPrice(finalPrice: number, baseTotal: number): number {
-  if (!baseTotal || baseTotal <= 0) return 0;
-  return clampFlatPct(((baseTotal - finalPrice) / baseTotal) * 100);
-}
-
-function readSavedFlatDiscountPct(v: unknown, baseTotal: number): number {
-  if (!v || typeof v !== 'object') return 0;
-  const root = v as Record<string, unknown>;
-  const data = root.data ?? root.Data;
-  const nested =
-    data && typeof data === 'object' && !Array.isArray(data)
-      ? (data as Record<string, unknown>)
-      : Array.isArray(data) && data[0] && typeof data[0] === 'object'
-        ? (data[0] as Record<string, unknown>)
-        : null;
-
-  const pickNum = (n: unknown): number | null => {
-    if (typeof n === 'number' && Number.isFinite(n)) return n;
-    if (typeof n === 'string' && n.trim() && Number.isFinite(Number(n))) return Number(n);
-    return null;
-  };
-
-  const flatDirect = pickNum(root.hubFlatDiscountPct) ?? (nested ? pickNum(nested.hubFlatDiscountPct) : null);
-  if (flatDirect != null) return clampFlatPct(flatDirect);
-
-  const amount =
-    pickNum(root.hubFlatDiscountAmount) ??
-    pickNum(root.hubCategoryDiscountAmount) ??
-    (nested ? pickNum(nested.hubFlatDiscountAmount) ?? pickNum(nested.hubCategoryDiscountAmount) : null);
-  if (amount != null && baseTotal > 0) return clampFlatPct((amount / baseTotal) * 100);
-
-  return 0;
-}
-
-function applyFlatDiscountToPayload(
-  source: Record<string, unknown>,
-  pct: number,
-  discountAmount: number,
-): Record<string, unknown> {
-  const meta = {
-    hubFlatDiscountPct: pct,
-    hubFlatDiscountAmount: discountAmount,
-  };
-  const next: Record<string, unknown> = { ...source, ...meta };
-  const data = source.data ?? source.Data;
-  if (data && typeof data === 'object' && !Array.isArray(data)) {
-    next.data = { ...(data as Record<string, unknown>), ...meta };
-  } else if (Array.isArray(data) && data[0] && typeof data[0] === 'object') {
-    next.data = [{ ...(data[0] as Record<string, unknown>), ...meta }, ...data.slice(1)];
-  }
-  return next;
-}
-
 export type QuoteExperienceProps = {
   quoteId: string;
   /**
@@ -344,7 +275,6 @@ export type QuoteExperienceProps = {
 export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: QuoteExperienceProps) {
   const searchParams = useSearchParams();
   const isInternalMode = searchParams.get('internal') === '1';
-  const { sessionId } = useAuth();
 
   const inlinePayload =
     preloadedPayload != null && typeof preloadedPayload === 'object' ? preloadedPayload : null;
@@ -363,9 +293,6 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
   const [quoteVersionsLoading, setQuoteVersionsLoading] = useState(false);
   const [quoteVersionsError, setQuoteVersionsError] = useState<string | null>(null);
   const [versionCopyId, setVersionCopyId] = useState<number | null>(null);
-  const [discountSidebarOpen, setDiscountSidebarOpen] = useState(true);
-  const [discountSaveState, setDiscountSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
-  const [discountSaveError, setDiscountSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     if (preloadedPayload !== undefined) return;
@@ -513,30 +440,6 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     if (lid) q.set('leadId', lid);
     return `?${q.toString()}`;
   }, [isInternalMode, searchParams]);
-  const [flatDiscountPct, setFlatDiscountPct] = useState(0);
-  const [flatDiscountPctDraft, setFlatDiscountPctDraft] = useState(0);
-  const leadId = useMemo(() => {
-    const lid = searchParams.get('leadId');
-    const n = lid != null ? Number(lid) : NaN;
-    return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null;
-  }, [searchParams]);
-  const quoteIdForSnapshot = useMemo(() => {
-    const q = Number(versionFetchId);
-    return Number.isFinite(q) && q > 0 ? Math.trunc(q) : null;
-  }, [versionFetchId]);
-
-  useEffect(() => {
-    const base =
-      quote.rooms.length > 0
-        ? quote.rooms.reduce((sum, r) => sum + (r.totalPrice || 0), 0)
-        : (quote.totalPayableAmount ?? 0);
-    const next = payload ? readSavedFlatDiscountPct(payload, base) : 0;
-    setFlatDiscountPct(next);
-    setFlatDiscountPctDraft(next);
-    setDiscountSaveState('idle');
-    setDiscountSaveError(null);
-  }, [quote.quotationId, payload, quote.rooms, quote.totalPayableAmount]);
-
   useEffect(() => {
     if (!payload) return;
     const dash = (v: string) => (v === '-' ? '' : v);
@@ -550,35 +453,6 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       quoteNum: dash(quote.quoteNum),
     });
   }, [payload, fallbackNormId, quote]);
-
-  const baseTotal = useMemo(() => {
-    const roomSum = quote.rooms.length
-      ? quote.rooms.reduce((sum, r) => sum + (r.totalPrice || 0), 0)
-      : 0;
-    // Always discount against the undiscouted quote base (room sum when present),
-    // not a previously discounted total from saved snapshots.
-    if (roomSum > 0) return roomSum;
-    return quote.totalPayableAmount;
-  }, [quote.totalPayableAmount, quote.rooms]);
-  const discountCap = baseTotal ?? 0;
-  const normalizedDiscount = useMemo(() => {
-    return Math.min(discountRsFromFlatPct(flatDiscountPct, discountCap), discountCap);
-  }, [flatDiscountPct, discountCap]);
-  const discountedTotal = useMemo(() => {
-    if (baseTotal == null) return null;
-    return Math.max(baseTotal - normalizedDiscount, 0);
-  }, [baseTotal, normalizedDiscount]);
-  const sidebarDiscountPreview = useMemo(() => {
-    return Math.min(discountRsFromFlatPct(flatDiscountPctDraft, discountCap), discountCap);
-  }, [flatDiscountPctDraft, discountCap]);
-  const sidebarTotalPreview = useMemo(() => {
-    if (baseTotal == null) return null;
-    return Math.max(baseTotal - sidebarDiscountPreview, 0);
-  }, [baseTotal, sidebarDiscountPreview]);
-  const sidebarFinalPricePreview = useMemo(() => {
-    if (baseTotal == null) return null;
-    return finalPriceFromFlatPct(flatDiscountPctDraft, baseTotal);
-  }, [baseTotal, flatDiscountPctDraft]);
 
   if (loading) {
     return <div className="min-h-screen bg-[#f5f5f8] p-6 text-gray-700">Loading quote...</div>;
@@ -597,12 +471,9 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
   return (
     <div className={`min-h-screen ${pageBg} py-6`}>
       <div
-        className={`mx-auto w-full px-3 sm:px-4 ${isInternalMode ? 'max-w-7xl xl:max-w-[90rem]' : 'max-w-5xl'}`}
+        className={`mx-auto w-full px-3 sm:px-4 max-w-5xl`}
       >
-        <div className={isInternalMode ? 'flex flex-col gap-4 lg:flex-row lg:items-start' : ''}>
-          <div
-            className={`rounded-xl shadow-sm ${panelBg} ${isInternalMode ? 'min-w-0 flex-1' : ''}`}
-          >
+        <div className={`rounded-xl shadow-sm ${panelBg}`}>
           <div className="rounded-t-xl bg-[#282a2f] px-5 py-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
@@ -643,15 +514,6 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                 >
                   {isDark ? 'Light Mode' : 'Dark Mode'}
                 </button>
-                {isInternalMode ? (
-                  <button
-                    type="button"
-                    onClick={() => setDiscountSidebarOpen(true)}
-                    className="rounded-md border border-white/25 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/20"
-                  >
-                    Discount
-                  </button>
-                ) : null}
               </div>
             </div>
           </div>
@@ -722,7 +584,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
               <>
                 <div className="mt-5 rounded-xl bg-[#efeff2] py-10 text-center">
                   <p className="text-lg font-semibold text-gray-700">
-                    Total <span className="text-2xl text-gray-900">{money(discountedTotal)}</span>
+                    Total <span className="text-2xl text-gray-900">{money(quote.totalPayableAmount)}</span>
                   </p>
                 </div>
 
@@ -764,14 +626,14 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                   </div>
                   <div className="flex justify-between border-t border-gray-100 pt-3">
                     <span className="text-sm text-gray-600">Discount</span>
-                    <span className="font-semibold text-gray-900">{money(normalizedDiscount)}</span>
+                    <span className="font-semibold text-gray-900">{money(quote.discount)}</span>
                   </div>
                   <div className="flex justify-between border-t border-gray-200 pt-3">
                     <div>
                       <p className="text-xl font-bold text-gray-900">Total Payable Amount</p>
                       <p className="text-xs text-gray-500">Inclusive of all taxes &amp; discount</p>
                     </div>
-                    <span className="text-2xl font-bold text-gray-900">{money(discountedTotal)}</span>
+                    <span className="text-2xl font-bold text-gray-900">{money(quote.totalPayableAmount)}</span>
                   </div>
                 </div>
               </>
@@ -1004,203 +866,6 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           ) : null}
 
         </div>
-          </div>
-
-          {isInternalMode && discountSidebarOpen ? (
-            <aside
-              className={`flex max-h-[min(100vh-5rem,56rem)] w-full shrink-0 flex-col overflow-hidden rounded-xl border shadow-xl lg:sticky lg:top-6 lg:w-[min(100%,24rem)] ${
-                isDark ? 'border-slate-600 bg-[#1a1f28]' : 'border-gray-200 bg-white'
-              }`}
-            >
-              <div
-                className={`flex items-center justify-between border-b px-4 py-3 ${
-                  isDark ? 'border-slate-600' : 'border-gray-100'
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <span className={isDark ? 'text-slate-300' : 'text-gray-600'} aria-hidden>
-                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                      />
-                    </svg>
-                  </span>
-                  <span className={`text-lg font-semibold ${isDark ? 'text-slate-100' : 'text-gray-900'}`}>Discount</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setDiscountSidebarOpen(false)}
-                  className={`rounded-md p-1.5 ${isDark ? 'hover:bg-slate-700' : 'hover:bg-gray-100'}`}
-                  aria-label="Close discount panel"
-                >
-                  <span className={isDark ? 'text-slate-300' : 'text-gray-500'} aria-hidden>
-                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </span>
-                </button>
-              </div>
-
-              <div className={`flex-1 space-y-4 overflow-y-auto px-4 py-4 ${isDark ? 'text-slate-200' : ''}`}>
-                <div className="flex items-center justify-between text-sm">
-                  <span className={isDark ? 'text-slate-400' : 'text-gray-600'}>Subtotal</span>
-                  <span className={`font-semibold tabular-nums ${isDark ? 'text-slate-100' : 'text-gray-900'}`}>
-                    {money(baseTotal)}
-                  </span>
-                </div>
-
-                <div className="flex items-center justify-between text-sm">
-                  <span className={isDark ? 'text-slate-400' : 'text-gray-600'}>Discount</span>
-                  <span className="font-semibold tabular-nums text-rose-600 dark:text-rose-400">
-                    {money(sidebarDiscountPreview)}
-                  </span>
-                </div>
-
-                <p className={`text-sm font-semibold ${isDark ? 'text-slate-100' : 'text-gray-900'}`}>Flat discount</p>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className={`mb-1 block text-xs font-medium ${isDark ? 'text-slate-400' : 'text-gray-600'}`}>
-                      Final price
-                    </label>
-                    <div className="relative">
-                      <span
-                        className={`pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-medium ${
-                          isDark ? 'text-slate-500' : 'text-gray-400'
-                        }`}
-                      >
-                        ₹
-                      </span>
-                      <input
-                        type="number"
-                        min={0}
-                        max={baseTotal ?? undefined}
-                        step={0.01}
-                        value={sidebarFinalPricePreview ?? ''}
-                        onChange={(e) => {
-                          const v = Number(e.target.value);
-                          if (!Number.isFinite(v) || baseTotal == null) {
-                            setFlatDiscountPctDraft(0);
-                            return;
-                          }
-                          const cappedFinal = Math.min(Math.max(0, v), baseTotal);
-                          setFlatDiscountPctDraft(flatPctFromFinalPrice(cappedFinal, baseTotal));
-                        }}
-                        className={`w-full rounded-md border py-2 pl-7 pr-2 text-sm font-semibold tabular-nums outline-none focus:ring-2 focus:ring-teal-500/40 ${
-                          isDark
-                            ? 'border-slate-600 bg-slate-900 text-slate-100'
-                            : 'border-teal-200 bg-white text-gray-900'
-                        }`}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className={`mb-1 block text-xs font-medium ${isDark ? 'text-slate-400' : 'text-gray-600'}`}>
-                      Discount
-                    </label>
-                    <div className="relative">
-                      <span
-                        className={`pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-medium ${
-                          isDark ? 'text-slate-500' : 'text-gray-400'
-                        }`}
-                      >
-                        %
-                      </span>
-                      <input
-                        type="number"
-                        min={0}
-                        max={MAX_FLAT_DISCOUNT_PCT}
-                        step={0.01}
-                        value={flatDiscountPctDraft}
-                        onChange={(e) => {
-                          const v = Number(e.target.value);
-                          if (!Number.isFinite(v)) {
-                            setFlatDiscountPctDraft(0);
-                            return;
-                          }
-                          setFlatDiscountPctDraft(clampFlatPct(v));
-                        }}
-                        className={`w-full rounded-md border py-2 pl-7 pr-2 text-sm font-semibold tabular-nums outline-none focus:ring-2 focus:ring-teal-500/40 ${
-                          isDark
-                            ? 'border-slate-600 bg-slate-900 text-slate-100'
-                            : 'border-teal-200 bg-white text-gray-900'
-                        }`}
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div
-                className={`space-y-4 border-t px-4 py-4 ${isDark ? 'border-slate-600 bg-[#161a22]' : 'border-gray-100 bg-white'}`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className={`text-base font-bold ${isDark ? 'text-slate-100' : 'text-gray-900'}`}>Total cost</span>
-                  <span className={`text-base font-bold tabular-nums ${isDark ? 'text-slate-100' : 'text-gray-900'}`}>
-                    {money(sidebarTotalPreview)}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    const next = clampFlatPct(flatDiscountPctDraft);
-                    setFlatDiscountPct(next);
-                    setFlatDiscountPctDraft(next);
-                    if (!payload || !isInternalMode || leadId == null || quoteIdForSnapshot == null) return;
-                    if (!sessionId) {
-                      setDiscountSaveState('error');
-                      setDiscountSaveError('Session expired. Please sign in again and retry.');
-                      return;
-                    }
-                    const nextDiscount = Math.min(discountRsFromFlatPct(next, discountCap), discountCap);
-                    const nextPayload = applyFlatDiscountToPayload(payload, next, nextDiscount);
-                    setPayload(nextPayload);
-                    setDiscountSaveState('saving');
-                    setDiscountSaveError(null);
-                    try {
-                      const res = await fetch(`${API}/api/leads/${leadId}/prolance-quote-snapshots`, {
-                        method: 'POST',
-                        headers: buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' }),
-                        body: JSON.stringify({ quoteId: quoteIdForSnapshot, payload: nextPayload }),
-                      });
-                      if (!res.ok) {
-                        const t = await res.text();
-                        let msg = `Save failed (HTTP ${res.status}).`;
-                        try {
-                          const b = t ? (JSON.parse(t) as { message?: unknown }) : null;
-                          if (b && b.message != null) msg = String(b.message);
-                        } catch {
-                          // ignore parse error
-                        }
-                        throw new Error(msg);
-                      }
-                      setDiscountSaveState('saved');
-                      setTimeout(() => setDiscountSaveState('idle'), 1800);
-                    } catch (e) {
-                      setDiscountSaveState('error');
-                      setDiscountSaveError(e instanceof Error ? e.message : 'Could not persist discount. Please try again.');
-                    }
-                  }}
-                  className="w-full rounded-lg bg-teal-700 py-3 text-sm font-semibold text-white shadow-sm hover:bg-teal-800"
-                >
-                  {discountSaveState === 'saving'
-                    ? 'Saving...'
-                    : discountSaveState === 'saved'
-                      ? 'Saved'
-                      : discountSaveState === 'error'
-                        ? 'Retry Save'
-                        : 'Save changes'}
-                </button>
-                {discountSaveState === 'error' ? (
-                  <p className={`text-xs ${isDark ? 'text-rose-300' : 'text-rose-600'}`}>
-                    {discountSaveError || 'Could not persist discount. Please try again.'}
-                  </p>
-                ) : null}
-              </div>
-            </aside>
-          ) : null}
         </div>
       </div>
     </div>
