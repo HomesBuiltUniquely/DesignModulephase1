@@ -35,6 +35,7 @@ import {
 } from './components';
 import { checklistDefinitions, getChecklistKeyForTask } from './components/Checklists/checklistRegistry';
 import { buildAuthHeaders, getApiBase } from '@/app/lib/apiBase';
+import { QuoteTermsAndConditions } from '@/app/quote/QuoteTermsAndConditions';
 import { createProlanceProjectViaApi } from '@/app/lib/prolanceApiCreateProject';
 import { extractQuoteIdFromBody, runProlanceGetQuoteApiFlow } from '@/app/lib/prolanceApiGetQuote';
 import {
@@ -168,7 +169,7 @@ export default function ProjectDetailPage() {
     const [getQuoteLastBody, setGetQuoteLastBody] = useState<unknown>(null);
     const [latestQuoteResponse, setLatestQuoteResponse] = useState<unknown>(null);
     const [showQuotePreviewModal, setShowQuotePreviewModal] = useState(false);
-    const [quoteSummaryTab, setQuoteSummaryTab] = useState<'overall' | 'roomwise'>('overall');
+    const [quoteSummaryTab, setQuoteSummaryTab] = useState<'overall' | 'roomwise' | 'terms'>('overall');
     const [expandedQuoteRooms, setExpandedQuoteRooms] = useState<Record<string, boolean>>({});
     const [quoteLinkCopied, setQuoteLinkCopied] = useState(false);
     const [prolanceProjectIdSaveBusy, setProlanceProjectIdSaveBusy] = useState(false);
@@ -2183,7 +2184,7 @@ export default function ProjectDetailPage() {
 
                                     <div className="rounded-2xl bg-white p-4 shadow-sm">
                                         <p className="text-3xl font-bold text-gray-800">Summary Detail</p>
-                                        <div className="mt-4 grid grid-cols-2 rounded-xl border border-gray-200 p-1">
+                                        <div className="mt-4 grid grid-cols-1 gap-1 rounded-xl border border-gray-200 p-1 sm:grid-cols-3">
                                             <button
                                                 type="button"
                                                 onClick={() => setQuoteSummaryTab('overall')}
@@ -2198,9 +2199,18 @@ export default function ProjectDetailPage() {
                                             >
                                                 Room Wise Summary
                                             </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setQuoteSummaryTab('terms')}
+                                                className={`rounded-lg py-2 text-sm font-semibold ${quoteSummaryTab === 'terms' ? 'bg-rose-500 text-white' : 'text-gray-700'}`}
+                                            >
+                                                Terms and Condition
+                                            </button>
                                         </div>
 
-                                        {quoteSummaryTab === 'overall' ? (
+                                        {quoteSummaryTab === 'terms' ? (
+                                            <QuoteTermsAndConditions />
+                                        ) : quoteSummaryTab === 'overall' ? (
                                             <>
                                                 <div className="mt-5 rounded-xl bg-[#efeff2] py-10 text-center">
                                                     <p className="text-lg font-semibold text-gray-700">
