@@ -4,7 +4,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { getApiBase } from '@/app/lib/apiBase';
 import { useSearchParams } from 'next/navigation';
 import { extractQuoteIdFromBody } from '@/app/lib/prolanceApiGetQuote';
-import { QuoteTermsAndConditions } from './QuoteTermsAndConditions';
+import { QuoteTermsAndConditions } from '@/app/quote/hubQuoteTermsPanel';
+import {
+  buildQuoteDiscountBreakdown,
+  resolveTotalDiscount,
+  type QuoteDiscountBreakdownRow,
+} from '@/app/quote/quoteDiscountBreakdown';
+import { QuoteDiscountDetails } from '@/app/quote/QuoteDiscountDetails';
 
 const API = getApiBase();
 
@@ -83,6 +89,7 @@ type NormalizedQuote = {
   interiorProjectAmount: number | null;
   designAndManagementFees: number | null;
   discount: number | null;
+  discountBreakdown: QuoteDiscountBreakdownRow[];
   lineItems: Array<{ roomKey: string; name: string; amount: number | null; discountedAmount: number | null }>;
   rooms: QuoteRoom[];
 };
@@ -240,6 +247,12 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
       ? totalPayableAmount - interiorProjectAmount + disc
       : pickedFeesExplicit;
 
+  const breakdownSource = { ...rootTop, ...root, ...quoteObj };
+  const discountBreakdown = buildQuoteDiscountBreakdown(breakdownSource, optionDetailsRaw, summaryRows);
+  const resolvedDiscount =
+    resolveTotalDiscount(breakdownSource, discountBreakdown, interiorProjectAmount, totalPayableAmount) ??
+    discount;
+
   return {
     quotationId:
       asStr(pick('quotationId', 'quotationID', 'quoteID', 'quoteId')) !== '-'
@@ -255,7 +268,8 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
     totalPayableAmount,
     interiorProjectAmount,
     designAndManagementFees,
-    discount,
+    discount: resolvedDiscount,
+    discountBreakdown,
     lineItems,
     rooms,
   };
@@ -630,14 +644,10 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                     </div>
                     <p className="text-lg font-semibold text-gray-900">{money(quote.interiorProjectAmount)}</p>
                   </div>
-                  <div className="flex justify-between border-t border-gray-100 pt-3">
-                    <span className="text-sm text-gray-600">Design and Management Fees</span>
-                    <span className="font-semibold text-gray-900">{money(quote.designAndManagementFees)}</span>
-                  </div>
-                  <div className="flex justify-between border-t border-gray-100 pt-3">
-                    <span className="text-sm text-gray-600">Discount</span>
-                    <span className="font-semibold text-gray-900">{money(quote.discount)}</span>
-                  </div>
+                  <QuoteDiscountDetails
+                    rows={quote.discountBreakdown}
+                    totalDiscount={quote.discount}
+                  />
                   <div className="flex justify-between border-t border-gray-200 pt-3">
                     <div>
                       <p className="text-xl font-bold text-gray-900">Total Payable Amount</p>

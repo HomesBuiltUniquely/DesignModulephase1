@@ -35,7 +35,9 @@ import {
 } from './components';
 import { checklistDefinitions, getChecklistKeyForTask } from './components/Checklists/checklistRegistry';
 import { buildAuthHeaders, getApiBase } from '@/app/lib/apiBase';
-import { QuoteTermsAndConditions } from '@/app/quote/QuoteTermsAndConditions';
+import { QuoteTermsAndConditions } from '@/app/quote/hubQuoteTermsPanel';
+import { buildQuoteDiscountBreakdown, resolveTotalDiscount } from '@/app/quote/quoteDiscountBreakdown';
+import { QuoteDiscountDetails } from '@/app/quote/QuoteDiscountDetails';
 import { createProlanceProjectViaApi } from '@/app/lib/prolanceApiCreateProject';
 import { extractQuoteIdFromBody, runProlanceGetQuoteApiFlow } from '@/app/lib/prolanceApiGetQuote';
 import {
@@ -576,15 +578,25 @@ export default function ProjectDetailPage() {
             interiorProjectAmountNum != null && totalPayableAmountNum != null
                 ? Math.max(0, interiorProjectAmountNum - totalPayableAmountNum)
                 : null;
+        const discountBreakdown = buildQuoteDiscountBreakdown(
+            { ...(root as Record<string, unknown>), ...(quoteObj as Record<string, unknown>) },
+            optionDetails,
+            quoteOptionsData,
+        );
         const effectiveDiscount =
-            discountNum != null && discountNum > 0
-                ? discountNum
-                : computedDiscount;
+            resolveTotalDiscount(
+                { ...(root as Record<string, unknown>), ...(quoteObj as Record<string, unknown>) },
+                discountBreakdown,
+                interiorProjectAmountNum,
+                totalPayableAmountNum,
+            ) ??
+            (discountNum != null && discountNum > 0 ? discountNum : computedDiscount);
 
         const totals = {
             interiorProjectAmount: interiorProjectAmountRaw,
             designAndManagementFees: pick('designAndManagementFees', 'designFee', 'managementFee', 'servicesPrice'),
             discount: effectiveDiscount,
+            discountBreakdown,
             totalPayableAmount: totalPayableAmountRaw,
         };
 
@@ -2261,16 +2273,10 @@ export default function ProjectDetailPage() {
                                                                 </div>
                                                                 <p className="text-lg font-semibold text-gray-900">{formatCurrency(view.totals.interiorProjectAmount)}</p>
                                                             </div>
-                                                            <div className="flex justify-between border-t border-gray-100 pt-3">
-                                                                <span className="text-sm text-gray-600">Design and Management Fees</span>
-                                                                <span className="font-semibold text-gray-900">{formatCurrency(view.totals.designAndManagementFees)}</span>
-                                                            </div>
-                                                            <div className="flex justify-between border-t border-gray-100 pt-3">
-                                                                <span className="text-sm text-gray-600">Discount</span>
-                                                                <span className="font-semibold text-gray-900">
-                                                                    {formatCurrency(view.totals.discount)}
-                                                                </span>
-                                                            </div>
+                                                            <QuoteDiscountDetails
+                                                                rows={view.totals.discountBreakdown}
+                                                                totalDiscount={view.totals.discount}
+                                                            />
                                                             <div className="flex justify-between border-t border-gray-200 pt-3">
                                                                 <div>
                                                                     <p className="text-xl font-bold text-gray-900">Total Payable Amount</p>
