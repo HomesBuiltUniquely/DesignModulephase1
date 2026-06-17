@@ -1,7 +1,10 @@
 export type QuoteDiscountBreakdownRow = {
   key: string;
   label: string;
+  /** Price before discount. */
   price: number | null;
+  /** Price after discount is applied. */
+  discountedPrice: number | null;
   discountPct: number | null;
   discountAmount: number | null;
   factor: number | null;
@@ -214,10 +217,15 @@ function buildRow(
 
   if (!alwaysShow && !hasPrice && !hasDiscount && !hasFactor) return null;
 
+  const basePrice = price ?? 0;
+  const discountedPrice =
+    discountAmount != null && discountAmount > 0 ? basePrice - discountAmount : basePrice;
+
   return {
     key: cat.key,
     label: cat.label,
-    price: price ?? 0,
+    price: basePrice,
+    discountedPrice,
     discountPct: effectivePct ?? 0,
     discountAmount: discountAmount != null && discountAmount > 0 ? discountAmount : null,
     factor: hasFactor ? factor : null,
@@ -250,6 +258,7 @@ export function buildQuoteDiscountBreakdown(
       key: 'flatDiscount',
       label: 'Flat Discount',
       price: null,
+      discountedPrice: null,
       discountPct: flatPct ?? null,
       discountAmount: flatDiscount,
       factor: null,
