@@ -307,7 +307,6 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
   const [quoteVersions, setQuoteVersions] = useState<QuoteVersionRow[]>([]);
   const [quoteVersionsLoading, setQuoteVersionsLoading] = useState(false);
   const [quoteVersionsError, setQuoteVersionsError] = useState<string | null>(null);
-  const [versionCopyId, setVersionCopyId] = useState<number | null>(null);
 
   useEffect(() => {
     if (preloadedPayload !== undefined) return;
@@ -495,20 +494,20 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                 <p className="text-xl font-bold text-white">HUBINTERIOR</p>
                 <p className="text-[11px] text-gray-300">Quotation View</p>
               </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={async () => {
-                    if (!customerShareLink) return;
-                    await navigator.clipboard.writeText(customerShareLink);
-                    setLinkCopiedState('customer');
-                    setTimeout(() => setLinkCopiedState(null), 1600);
-                  }}
-                  className="rounded-md border border-emerald-400/60 bg-emerald-500/15 px-3 py-1.5 text-xs font-semibold text-emerald-100 hover:bg-emerald-500/25"
-                >
-                  {linkCopiedState === 'customer' ? 'Customer Link Copied' : 'Copy Customer Link'}
-                </button>
-                {isInternalMode ? (
+              {isInternalMode ? (
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!customerShareLink) return;
+                      await navigator.clipboard.writeText(customerShareLink);
+                      setLinkCopiedState('customer');
+                      setTimeout(() => setLinkCopiedState(null), 1600);
+                    }}
+                    className="rounded-md border border-emerald-400/60 bg-emerald-500/15 px-3 py-1.5 text-xs font-semibold text-emerald-100 hover:bg-emerald-500/25"
+                  >
+                    {linkCopiedState === 'customer' ? 'Customer Link Copied' : 'Copy Customer Link'}
+                  </button>
                   <button
                     type="button"
                     onClick={async () => {
@@ -521,15 +520,15 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                   >
                     {linkCopiedState === 'internal' ? 'Internal Link Copied' : 'Copy Internal Link'}
                   </button>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => setThemeMode((prev) => (prev === 'light' ? 'dark' : 'light'))}
-                  className="rounded-md border border-white/25 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/20"
-                >
-                  {isDark ? 'Light Mode' : 'Dark Mode'}
-                </button>
-              </div>
+                  <button
+                    type="button"
+                    onClick={() => setThemeMode((prev) => (prev === 'light' ? 'dark' : 'light'))}
+                    className="rounded-md border border-white/25 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/20"
+                  >
+                    {isDark ? 'Light Mode' : 'Dark Mode'}
+                  </button>
+                </div>
+              ) : null}
             </div>
           </div>
 
@@ -816,7 +815,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                   </span>
                 </div>
                 <p className={`mt-1 text-xs leading-relaxed ${isDark ? 'text-slate-500' : 'text-gray-500'}`}>
-                  Each link is a saved quotation for this project. Open an earlier version anytime.
+                  Click a version to open that quotation.
                 </p>
               </div>
               <ul className="flex flex-col gap-3 p-4 sm:flex-row sm:flex-wrap">
@@ -829,10 +828,6 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                   } catch {
                     dateLabel = '';
                   }
-                  const customerUrl =
-                    typeof window !== 'undefined'
-                      ? `${window.location.origin}/quote/${encodeURIComponent(String(v.quoteId))}`
-                      : href;
                   return (
                     <li
                       key={`qv-main-${v.quoteId}-${idx}`}
@@ -867,17 +862,6 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                         ID {v.quoteId}
                         {dateLabel ? ` · ${dateLabel}` : ''}
                       </p>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          await navigator.clipboard.writeText(customerUrl);
-                          setVersionCopyId(v.quoteId);
-                          setTimeout(() => setVersionCopyId((x) => (x === v.quoteId ? null : x)), 1600);
-                        }}
-                        className="mt-3 w-full rounded-lg bg-teal-700 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-teal-800"
-                      >
-                        {versionCopyId === v.quoteId ? 'Link copied' : 'Copy link'}
-                      </button>
                     </li>
                   );
                 })}
