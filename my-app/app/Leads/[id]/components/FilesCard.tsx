@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { getApiBase } from '@/app/lib/apiBase';
+import { d2UploadRoleLabel } from '@/app/lib/d2UploadLabels';
+import type { D2UploadAsRole } from '@/app/lib/d2UploadLabels';
+import D2UploadConfirmModal from './popups/D2UploadConfirmModal';
 const API = getApiBase();
 
 type Props = {
@@ -14,25 +17,38 @@ type Props = {
     canUpload?: boolean;
     /** When mmt_manager or admin, show Approve button for pending uploads. */
     userRole?: string;
+    userName?: string;
     /** When true (MMT), show Delete button so they can remove and re-upload. */
     canDelete?: boolean;
     /** Upload type tag sent to backend: 'd2_masking' for D2 SITE MASKING milestone, empty/undefined for D1. */
     uploadType?: string;
+    /** Called after successful D2 upload (e.g. refresh task state). */
+    onD2UploadComplete?: () => void;
 };
 
 type ZipEntry = { path: string; size: number };
 
-type UploadRow = { id: number; originalName: string; uploadedAt: string; status?: string };
+type UploadRow = {
+    id: number;
+    originalName: string;
+    uploadedAt: string;
+    status?: string;
+    uploadType?: string;
+    uploaderName?: string | null;
+    uploaderRole?: string | null;
+};
 
 /**
  * Files Uploaded card. Designers see only approved uploads. MMT Executive/Manager see all; Manager or Admin can approve.
  */
-export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, leadId, sessionId, canUpload, userRole, canDelete, uploadType }: Props) {
+export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, leadId, sessionId, canUpload, userRole, userName, canDelete, uploadType, onD2UploadComplete }: Props) {
     const [uploads, setUploads] = useState<UploadRow[]>([]);
     const [loading, setLoading] = useState(false);
     const [uploading, setUploading] = useState(false);
     const [deletingId, setDeletingId] = useState<number | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
+    const [pendingFiles, setPendingFiles] = useState<File[]>([]);
     const [expandedId, setExpandedId] = useState<number | null>(null);
     const [approvingId, setApprovingId] = useState<number | null>(null);
     const [contentsCache, setContentsCache] = useState<Record<number, { loading: boolean; files?: ZipEntry[]; error?: string }>>({});
@@ -98,20 +114,54 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
 
     const onPickZip = () => fileRef.current?.click();
 
-    const onZipSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0] || null;
+    const isD2Upload = uploadType === 'd2_masking';
+
+    const onFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const selected = Array.from(e.target.files ?? []);
         e.target.value = '';
-        if (!file || !leadId) return;
+        if (!selected.length || !leadId) return;
+        if (isD2Upload) {
+            const pdfs = selected.filter(
+                (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'),
+            );
+            if (pdfs.length === 0) {
+                setError('Select at least one PDF file.');
+                return;
+            }
+            setError(null);
+            setUploadSuccess(null);
+            setPendingFiles(pdfs);
+            return;
+        }
+        void uploadFiles(selected, null);
+    };
+
+    const uploadFiles = async (files: File[], uploadedAsRole: D2UploadAsRole | null) => {
+        if (!leadId || files.length === 0) return;
         setUploading(true);
         setError(null);
+        setUploadSuccess(null);
         try {
             const fd = new FormData();
-            fd.append('zip', file);
+            if (isD2Upload) {
+                files.forEach((file) => fd.append('files', file));
+                if (uploadedAsRole) fd.append('uploadedAsRole', uploadedAsRole);
+            } else {
+                fd.append('zip', files[0]);
+            }
             if (uploadType) fd.append('uploadType', uploadType);
             const res = await fetch(`${API}/api/leads/${leadId}/uploads`, { method: 'POST', headers: { ...authHeaders }, body: fd });
             const text = await res.text();
             const data = (() => { try { return text ? JSON.parse(text) : null; } catch { return null; } })();
             if (!res.ok) throw new Error(data?.message || 'Upload failed');
+            const message =
+                (data?.message as string) ||
+                (isD2Upload ? `${files.length} PDF(s) uploaded successfully.` : 'File uploaded successfully.');
+            setUploadSuccess(message);
+            if (isD2Upload) {
+                window.alert(message);
+                onD2UploadComplete?.();
+            }
             await loadUploads();
         } catch (e: any) {
             setError(e?.message || 'Upload failed');
@@ -204,7 +254,11 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
                 {canUpload && (
                     <div className="flex flex-shrink-0 items-center justify-between gap-3 mb-4">
                         <div className="text-sm text-gray-700">
-                            Upload <span className="font-semibold">ZIP</span> or <span className="font-semibold">.dwg</span> (AutoCAD).
+                            {isD2Upload ? (
+                                <>Upload one or more <span className="font-semibold">PDF</span> files.</>
+                            ) : (
+                                <>Upload <span className="font-semibold">ZIP</span> or <span className="font-semibold">.dwg</span> (AutoCAD).</>
+                            )}
                         </div>
                         <button
                             type="button"
@@ -212,13 +266,25 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
                             disabled={!leadId || uploading}
                             className="px-4 py-2 rounded-lg bg-green-700 text-white text-sm font-semibold hover:bg-green-800 disabled:opacity-60"
                         >
-                            {uploading ? 'Uploading…' : 'Upload ZIP'}
+                            {uploading ? 'Uploading…' : isD2Upload ? 'Upload PDFs' : 'Upload ZIP'}
                         </button>
-                        <input ref={fileRef} type="file" accept=".zip,application/zip,.dwg" className="hidden" onChange={onZipSelected} />
+                        <input
+                            ref={fileRef}
+                            type="file"
+                            accept={isD2Upload ? '.pdf,application/pdf' : '.zip,application/zip,.dwg'}
+                            multiple={isD2Upload}
+                            className="hidden"
+                            onChange={onFilesSelected}
+                        />
                     </div>
                 )}
 
                 {error && <div className="flex-shrink-0 text-sm text-red-600 mb-3">{error}</div>}
+                {uploadSuccess && (
+                    <div className="flex-shrink-0 text-sm text-green-800 bg-green-50 border border-green-200 rounded-lg px-3 py-2 mb-3">
+                        {uploadSuccess}
+                    </div>
+                )}
 
                 <div className="flex flex-shrink-0 items-center justify-between mb-2">
                     <div className="text-sm font-semibold text-gray-900">Uploaded files</div>
@@ -231,7 +297,10 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
                     <div className="flex-shrink-0 text-sm text-gray-600">{loading ? 'Loading…' : 'No uploads yet.'}</div>
                 ) : (
                     <div className="flex-1 min-h-0 min-w-0 overflow-auto overflow-x-auto space-y-2 pb-4 pr-1 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-gray-100 [&::-webkit-scrollbar-track]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-thumb]:rounded-full">
-                        {uploads.map((u) => (
+                        {uploads.map((u) => {
+                            const isPdf = u.originalName.toLowerCase().endsWith('.pdf');
+                            const isZip = u.originalName.toLowerCase().endsWith('.zip');
+                            return (
                             <div key={u.id} className="bg-white/70 border border-gray-200 rounded-xl px-3 py-2 min-w-0">
                                 <div className="flex items-center justify-between gap-3 min-w-0">
                                     <div className="min-w-0 flex-1 overflow-hidden">
@@ -244,6 +313,12 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
                                             )}
                                         </div>
                                         <div className="text-xs text-gray-600">{new Date(u.uploadedAt).toLocaleString()}</div>
+                                        {isD2Upload && u.uploaderName && (
+                                            <div className="text-xs text-gray-500 mt-0.5">
+                                                Uploaded by {u.uploaderName}
+                                                {u.uploaderRole ? ` (${d2UploadRoleLabel(u.uploaderRole)})` : ''}
+                                            </div>
+                                        )}
                                     </div>
                                     <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
                                         {canApproveUploads && u.status === 'pending' && (
@@ -261,7 +336,7 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
                                             onClick={() => toggleContents(u.id)}
                                             className="text-sm text-green-800 font-semibold hover:underline"
                                         >
-                                            {expandedId === u.id ? 'Hide contents' : 'View contents'}
+                                            {expandedId === u.id ? 'Hide' : isPdf ? 'Preview' : 'View contents'}
                                         </button>
                                         <a
                                             className="text-sm text-green-800 font-semibold hover:underline"
@@ -269,7 +344,7 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
                                             target="_blank"
                                             rel="noreferrer"
                                         >
-                                            Download ZIP
+                                            {isZip ? 'Download ZIP' : 'Download'}
                                         </a>
                                         {canDelete && (
                                             <button
@@ -310,7 +385,8 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
                                     </div>
                                 )}
                             </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 )}
             </div>
@@ -378,6 +454,20 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
                     </div>
                 </div>
             )}
+
+            <D2UploadConfirmModal
+                open={pendingFiles.length > 0}
+                files={pendingFiles}
+                userName={userName}
+                userRole={userRole}
+                uploading={uploading}
+                onCancel={() => setPendingFiles([])}
+                onConfirm={async (uploadedAsRole) => {
+                    const files = pendingFiles;
+                    setPendingFiles([]);
+                    await uploadFiles(files, uploadedAsRole);
+                }}
+            />
         </div>
     );
 }

@@ -310,7 +310,7 @@ function parseDataUrl(dataUrl: string): { buffer: Buffer; contentType: string; e
     throw new Error("Invalid data URL");
   }
   const contentType = match[1];
-  const base64 = match[2];
+  const base64 = match[2];  
   const buffer = Buffer.from(base64, "base64");
   let ext = "jpg";
   if (contentType === "image/png") ext = "png";
@@ -318,7 +318,6 @@ function parseDataUrl(dataUrl: string): { buffer: Buffer; contentType: string; e
   else if (contentType === "image/webp") ext = "webp";
   return { buffer, contentType, ext };
 }
-
 async function uploadProfileImage(userId: number, dataUrl: string): Promise<string> {
   const { buffer, contentType, ext } = parseDataUrl(dataUrl);
   const filename = `user-${userId}-${Date.now()}.${ext}`;
@@ -954,13 +953,20 @@ async function initDb() {
       CREATE TABLE IF NOT EXISTS lead_d2_assignments (
         id INT AUTO_INCREMENT PRIMARY KEY,
         lead_id INT NOT NULL,
-        assigned_to_user_id INT NOT NULL,
+        assigned_to_user_id INT NULL,
         masking_date DATE,
         masking_time VARCHAR(20),
         status VARCHAR(20) NOT NULL DEFAULT 'pending',
         created_at DATETIME NOT NULL
       );
     `);
+    try {
+      await conn.query(
+        "ALTER TABLE lead_d2_assignments MODIFY assigned_to_user_id INT NULL",
+      );
+    } catch {
+      /* column may already allow NULL */
+    }
 
     await conn.query(`
       CREATE TABLE IF NOT EXISTS lead_dqc_reviews (
@@ -2131,17 +2137,50 @@ function canAssignProjectManagerRole(role: string | null | undefined): boolean {
   );
 }
 
-/** Who may complete "Project manager approval" (assigned PM or Admin). */
+/** Who may complete or reject "Project manager approval" (assigned PM, SPM, or Admin). */
 function canCompleteProjectManagerApproval(
   role: string | null | undefined,
   userId: number,
   assignedPmId: number | null | undefined,
 ): boolean {
   const r = (role || "").toLowerCase();
-  if (r === "admin") return true;
+  if (r === "admin" || r === "senior_project_manager") return true;
   if (r !== "project_manager") return false;
   const pmId = assignedPmId != null ? Number(assignedPmId) : NaN;
   return Number.isFinite(pmId) && pmId > 0 && pmId === userId;
+}
+
+const DQC2_PM_REVERT_TASKS = [
+  "DQC 2 submission",
+  "DQC 2 approval",
+  "DQC 2 approval ",
+  "Project manager approval",
+];
+
+/** Who may upload D2 masking files (SPM, assigned PM, or Admin). */
+function canUploadD2FilesRole(role: string | null | undefined): boolean {
+  const r = (role || "").toLowerCase();
+  return r === "senior_project_manager" || r === "project_manager" || r === "admin";
+}
+
+function d2UploadRoleLabel(role: string): string {
+  const r = role.toLowerCase();
+  if (r === "senior_project_manager") return "Senior Project Manager";
+  if (r === "project_manager") return "Project Manager";
+  if (r === "admin") return "Admin";
+  return role.replace(/_/g, " ");
+}
+
+function resolveD2UploadedAsRole(sessionRole: string, bodyRole?: string): string {
+  const r = sessionRole.toLowerCase();
+  const body = (bodyRole || "").toLowerCase();
+  if (r === "project_manager") return "project_manager";
+  if (r === "senior_project_manager") return "senior_project_manager";
+  if (r === "admin") {
+    if (body === "project_manager" || body === "senior_project_manager") return body;
+    return "senior_project_manager";
+  }
+  return r;
 }
 
 /** Who may approve MMT D1/D2 masking uploads (pending → approved). */
@@ -4337,31 +4376,10 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
       const pmId = (lr as any[])[0]?.pmId;
       if (!canCompleteProjectManagerApproval(user.role, user.id, pmId)) {
         return res.status(403).json({
-          message: "Only the assigned Project Manager or Admin can complete this task",
+          message: "Only the assigned Project Manager, Senior Project Manager, or Admin can complete this task",
         });
       }
     }
-    if (milestoneIndex === 3 && tNorm === "Assign project manager") {
-      const user = await getUserFromSession(req);
-      if (!user) return res.status(401).json({ message: "Unauthorized" });
-      const role = (user.role || "").toLowerCase();
-      if (!canAssignProjectManagerRole(role)) {
-        return res.status(403).json({
-          message:
-            "Only Admin, Territorial Design Manager, Deputy General Manager, or Senior Project Manager can complete this step",
-        });
-      }
-      const [ar] = await pool.query(
-        "SELECT assigned_project_manager_id as pmId FROM leads WHERE id = ?",
-        [id],
-      );
-      if (!(ar as any[])[0]?.pmId) {
-        return res
-          .status(400)
-          .json({ message: "Choose a project manager and save before marking this step complete" });
-      }
-    }
-
     const actingUser = await getUserFromSession(req);
     if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
 
@@ -4417,7 +4435,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         // Milestone 3: D2 SITE MASKING
         case 3:
           if (t === "D2 - masking request raise") {
-            // Sl no 9 – D2 masking: internal (Designer→PM) + CX
+            // Sl no 9 – D2 masking: internal (Designer→SPM) + CX
             return "D2_MASKING_DUAL";
           }
           break;
@@ -4819,13 +4837,10 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
           const [rows] = await pool.query(
             `SELECT l.pid, l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
                     a.masking_date as maskingDate, a.masking_time as maskingTime,
-                    a.assigned_to_user_id as mmtExecutiveId,
-                    u_mmt.name as mmtExecutiveName, u_mmt.email as mmtExecutiveEmail, u_mmt.mmt_manager_id as executiveManagerId,
                     u_designer.email as designerEmail, u_designer.name as designerName,
                     u_pm.email as pmEmail, u_pm.name as pmName
              FROM leads l
              LEFT JOIN lead_d2_assignments a ON a.lead_id = l.id
-             LEFT JOIN users u_mmt ON u_mmt.id = a.assigned_to_user_id
              LEFT JOIN users u_designer ON u_designer.id = l.assigned_designer_id
              LEFT JOIN users u_pm ON u_pm.id = l.assigned_project_manager_id
              WHERE l.id = ?
@@ -4834,18 +4849,14 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             [id],
           );
           const row = (rows as any[])[0];
-          let pmEmail = row?.pmEmail || null;
-          let pmName = row?.pmName || null;
-          if (!pmEmail) {
-            const [mmtRows] = await pool.query(
-              "SELECT email, name FROM users WHERE role IN ('mmt_manager', 'mmt_executive') AND email IS NOT NULL ORDER BY id ASC LIMIT 1",
-            );
-            const mmtRow = (mmtRows as any[])[0];
-            if (mmtRow) {
-              pmEmail = mmtRow.email;
-              pmName = mmtRow.name || "MMT";
-            }
-          }
+          const [spmRows] = await pool.query(
+            "SELECT id, email, name FROM users WHERE role = 'senior_project_manager' AND email IS NOT NULL ORDER BY id ASC LIMIT 1",
+          );
+          const spmRow = (spmRows as any[])[0];
+          const spmEmail = spmRow?.email || null;
+          const spmName = spmRow?.name || "Senior Project Manager";
+          const pmEmail = row?.pmEmail || null;
+          const pmName = row?.pmName || null;
           if (row) {
             let payload: any = {};
             try {
@@ -4879,23 +4890,22 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               ? (row.maskingDate instanceof Date ? row.maskingDate.toISOString().split("T")[0] : row.maskingDate)
               : null;
             const maskingTime = row.maskingTime || null;
-            const mmtExecutiveName = row.mmtExecutiveName || "MMT Executive";
             const googleStart = formatGoogleDateTime(maskingDate, maskingTime);
 
             if (googleStart) {
               try {
                 await createGoogleCalendarEventForFirstAvailableUser({
-                  userIds: [row.mmtExecutiveId, row.executiveManagerId, actingUser.id],
+                  userIds: [spmRow?.id, actingUser.id].filter(Boolean),
                   summary: `D2 Site Masking - ${customerName}`,
                   description: [
                     `D2 masking visit scheduled for ${customerName}.`,
-                    mmtExecutiveName ? `Assigned MMT executive: ${mmtExecutiveName}` : null,
+                    spmName ? `Senior Project Manager: ${spmName}` : null,
                     pmName ? `Project Manager: ${pmName}` : null,
                     designerName ? `Designer: ${designerName}` : null,
                   ].filter(Boolean).join("\n"),
                   startDateTimeIso: googleStart,
                   endDateTimeIso: addHoursToIso(googleStart, 1),
-                  attendees: distinctEmails([customerEmail, row.designerEmail, row.mmtExecutiveEmail, pmEmail, actingUser.email]),
+                  attendees: distinctEmails([customerEmail, row.designerEmail, spmEmail, pmEmail, actingUser.email]),
                 });
               } catch (calendarErr) {
                 console.error("D2 masking Google event create error (non-fatal)", {
@@ -4905,7 +4915,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               }
             }
 
-            if (pmEmail && customerName && designerName && ecName) {
+            if (spmEmail && customerName && designerName && ecName) {
               const internalCc = await getMailLoopCcEmails([actingUser.email, row.designerEmail], id);
               void triggerMailRouteWithLog({
                 leadId: id,
@@ -4914,15 +4924,14 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                 route: "/api/email/send-d2-masking-request-internal",
                 visibility: "internal+external",
                 payload: {
-                  to: pmEmail,
+                  to: spmEmail,
                   cc: internalCc,
                   subject: buildMailChainSubject(projectId, row.projectName, customerName),
                   projectId,
                   customerName,
                   designerName,
                   ecName,
-                  mmtName: mmtExecutiveName,
-                  pmName,
+                  pmName: pmName || spmName,
                   maskingDate,
                   maskingTime,
                 },
@@ -4933,6 +4942,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               const mailChainCc = await getMailLoopCcEmails([
                 actingUser.email,
                 row.designerEmail,
+                spmEmail,
                 pmEmail,
               ], id);
               const mailChainSubject = buildMailChainSubject(projectId, row.projectName, customerName);
@@ -7501,78 +7511,177 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
   }
 });
 
-// MMT uploads: upload a ZIP "folder" for a lead
+function isPdfUpload(file: Express.Multer.File): boolean {
+  const name = (file.originalname || "").toLowerCase();
+  return file.mimetype === "application/pdf" || name.endsWith(".pdf");
+}
+
+// Lead file uploads: ZIP/DWG for D1; multiple PDFs (or ZIP) for D2 masking
 app.post(
   "/api/leads/:id/uploads",
-  upload.single("zip"),
+  upload.fields([
+    { name: "zip", maxCount: 1 },
+    { name: "files", maxCount: 50 },
+  ]),
   async (req: Request, res: Response) => {
     const leadId = Number(req.params.id);
     if (Number.isNaN(leadId))
       return res.status(400).json({ message: "Invalid id" });
-    const file = (req as any).file as Express.Multer.File | undefined;
-    if (!file) return res.status(400).json({ message: "zip file is required" });
+
+    const uploaded = (req as any).files as {
+      zip?: Express.Multer.File[];
+      files?: Express.Multer.File[];
+    };
+    const zipFile = uploaded?.zip?.[0];
+    const batchFiles = uploaded?.files ?? [];
+    const uploadType = (req.body?.uploadType as string) || "";
+    const isD2 = uploadType === "d2_masking";
 
     try {
       const user = await getUserFromSession(req);
       const uploaderId = user?.id ?? null;
       const role = (user?.role ?? "").toLowerCase();
-      const status = role === "mmt_manager" || role === "admin" ? "approved" : "pending";
-      const now = new Date();
-      let s3Url: string | null = null;
-      if (process.env.AWS_ACCESS_KEY_ID) {
-        s3Url = await uploadLeadFileToS3(leadId, file.path, file.originalname, file.mimetype);
+      if (isD2 && !canUploadD2FilesRole(role)) {
+        return res.status(403).json({ message: "Only SPM, Project Manager, or Admin can upload D2 files" });
       }
-      const uploadType = (req.body?.uploadType as string) || "";
-      const isD2 = uploadType === "d2_masking";
-      console.log("[mmt-upload] received uploadType:", JSON.stringify(uploadType), "| isD2:", isD2, "| role:", role);
-      // milestoneIndex: 0 = D1 SITE MEASUREMENT, 3 = D2 SITE MASKING
+
+      const status =
+        (isD2 && canUploadD2FilesRole(role)) || role === "mmt_manager" || role === "admin"
+          ? "approved"
+          : "pending";
+      const now = new Date();
       const uploadMilestoneIndex = isD2 ? 3 : 0;
       const uploadTaskName = isD2 ? "D2 - files upload" : "D1 files upload";
+      const uploadedAsRole = isD2 ? resolveD2UploadedAsRole(role, req.body?.uploadedAsRole as string) : null;
+      const uploadedAsLabel = uploadedAsRole ? d2UploadRoleLabel(uploadedAsRole) : null;
 
-      const [insertResult] = await pool.query(
-        `INSERT INTO lead_uploads
-         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          leadId,
-          uploaderId,
-          file.originalname,
-          file.filename,
-          file.path,
-          file.mimetype,
-          file.size,
-          now,
-          status,
-          uploadType || null,
-          s3Url,
-        ],
-      );
-      const newUploadId = (insertResult as any).insertId;
+      const recordD2UploadHistory = async (fileNames: string[], uploadIds: number[]) => {
+        const uploaderLabel = user?.name ?? "Team";
+        const count = fileNames.length;
+        const names = fileNames.join(", ");
+        const roleNote = uploadedAsLabel ? ` (uploaded as ${uploadedAsLabel})` : "";
+        await addLeadHistoryEvent(leadId, {
+          id: `upload-${Date.now()}`,
+          type: "file_upload",
+          taskName: uploadTaskName,
+          milestoneName: "D2 SITE MASKING",
+          timestamp: now.toISOString(),
+          description: `D2 files uploaded by ${uploaderLabel}${roleNote} (${count} PDF${count === 1 ? "" : "s"}): ${names}`,
+          user: { name: uploaderLabel },
+          details: {
+            kind: "file_upload",
+            fileNames,
+            count,
+            uploadIds,
+            uploadedAsRole,
+            uploadedAsLabel,
+            uploaderName: uploaderLabel,
+          },
+        });
+      };
 
-      // If the uploader is an MMT manager the upload is immediately approved →
-      // auto-complete the corresponding task in lead_task_completions.
-      if (role === "mmt_manager" || role === "admin") {
-        await pool.query(
-          `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
-           VALUES (?, ?, ?, ?)
-           ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
-          [leadId, uploadMilestoneIndex, uploadTaskName, now],
+      const d2UploadResponse = (fileNames: string[], uploadIds: number[]) => {
+        const uploaderLabel = user?.name ?? "Team";
+        const count = fileNames.length;
+        const message = `${count} PDF${count === 1 ? "" : "s"} uploaded by ${uploaderLabel}${uploadedAsLabel ? ` (${uploadedAsLabel})` : ""}.`;
+        return {
+          ok: true,
+          count,
+          uploadIds,
+          message,
+          uploadedBy: { name: uploaderLabel, role: uploadedAsRole, roleLabel: uploadedAsLabel },
+        };
+      };
+
+      const persistOne = async (file: Express.Multer.File): Promise<number> => {
+        let s3Url: string | null = null;
+        if (process.env.AWS_ACCESS_KEY_ID) {
+          s3Url = await uploadLeadFileToS3(leadId, file.path, file.originalname, file.mimetype);
+        }
+        const [insertResult] = await pool.query(
+          `INSERT INTO lead_uploads
+           (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            leadId,
+            uploaderId,
+            file.originalname,
+            file.filename,
+            file.path,
+            file.mimetype,
+            file.size,
+            now,
+            status,
+            uploadType || null,
+            s3Url,
+          ],
         );
+        return (insertResult as any).insertId as number;
+      };
+
+      const maybeCompleteTask = async () => {
+        if (
+          role === "mmt_manager" ||
+          role === "admin" ||
+          (isD2 && canUploadD2FilesRole(role))
+        ) {
+          await pool.query(
+            `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+             VALUES (?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
+            [leadId, uploadMilestoneIndex, uploadTaskName, now],
+          );
+        }
+      };
+
+      // D2: multiple PDFs in one request
+      if (isD2 && batchFiles.length > 0) {
+        const invalid = batchFiles.find((f) => !isPdfUpload(f));
+        if (invalid) {
+          return res.status(400).json({ message: "D2 uploads must be PDF files only" });
+        }
+        const uploadIds: number[] = [];
+        for (const file of batchFiles) {
+          uploadIds.push(await persistOne(file));
+        }
+        await maybeCompleteTask();
+        const fileNames = batchFiles.map((f) => f.originalname);
+        await recordD2UploadHistory(fileNames, uploadIds);
+        return res.status(201).json(d2UploadResponse(fileNames, uploadIds));
       }
 
-      const ev = {
+      const file = zipFile ?? batchFiles[0];
+      if (!file) {
+        return res.status(400).json({
+          message: isD2 ? "Select one or more PDF files to upload" : "zip file is required",
+        });
+      }
+
+      if (isD2 && !isPdfUpload(file) && !file.originalname.toLowerCase().endsWith(".zip")) {
+        return res.status(400).json({ message: "D2 uploads must be PDF files (or a ZIP of PDFs)" });
+      }
+
+      console.log("[mmt-upload] received uploadType:", JSON.stringify(uploadType), "| isD2:", isD2, "| role:", role);
+      const newUploadId = await persistOne(file);
+      await maybeCompleteTask();
+
+      const uploaderLabel = isD2 ? user?.name ?? "Team" : user?.name ?? "MMT";
+      if (isD2) {
+        await recordD2UploadHistory([file.originalname], [newUploadId]);
+        return res.status(201).json(d2UploadResponse([file.originalname], [newUploadId]));
+      }
+      await addLeadHistoryEvent(leadId, {
         id: `upload-${Date.now()}`,
         type: "file_upload",
         taskName: uploadTaskName,
         milestoneName: isD2 ? "D2 SITE MASKING" : "D1 SITE MEASUREMENT",
         timestamp: now.toISOString(),
         description: isD2 ? `D2 files uploaded: ${file.originalname}` : `MMT uploaded files: ${file.originalname}`,
-        user: { name: user?.name ?? "MMT" },
+        user: { name: uploaderLabel },
         details: { kind: "file_upload", fileName: file.originalname, size: `${file.size}`, uploadId: newUploadId },
-      };
-      await addLeadHistoryEvent(leadId, ev);
+      });
 
-      return res.status(201).json({ ok: true });
+      return res.status(201).json({ ok: true, uploadId: newUploadId });
     } catch (err) {
       console.error("lead upload error", err);
       return res.status(500).json({ message: "Failed to upload files" });
@@ -7836,10 +7945,16 @@ app.get("/api/leads/:id/uploads", async (req: Request, res: Response) => {
 
     const [rows] = await pool.query(
       onlyApproved
-        ? `SELECT id, original_name as originalName, uploaded_at as uploadedAt, status, upload_type as uploadType, s3_url as s3Url
-           FROM lead_uploads WHERE lead_id = ? AND status = 'approved' ORDER BY uploaded_at DESC`
-        : `SELECT id, original_name as originalName, uploaded_at as uploadedAt, status, upload_type as uploadType, s3_url as s3Url
-           FROM lead_uploads WHERE lead_id = ? ORDER BY uploaded_at DESC`,
+        ? `SELECT lu.id, lu.original_name as originalName, lu.uploaded_at as uploadedAt, lu.status, lu.upload_type as uploadType, lu.s3_url as s3Url,
+                  u.name as uploaderName, u.role as uploaderRole
+           FROM lead_uploads lu
+           LEFT JOIN users u ON u.id = lu.uploader_id
+           WHERE lu.lead_id = ? AND lu.status = 'approved' ORDER BY lu.uploaded_at DESC`
+        : `SELECT lu.id, lu.original_name as originalName, lu.uploaded_at as uploadedAt, lu.status, lu.upload_type as uploadType, lu.s3_url as s3Url,
+                  u.name as uploaderName, u.role as uploaderRole
+           FROM lead_uploads lu
+           LEFT JOIN users u ON u.id = lu.uploader_id
+           WHERE lu.lead_id = ? ORDER BY lu.uploaded_at DESC`,
       [leadId],
     );
     return res.json(rows);
@@ -8401,15 +8516,15 @@ async function persistDqc2SubmissionFromMeta(
 app.post("/api/leads/:id/dqc-submission/presign", async (req: Request, res: Response) => {
   const leadId = Number(req.params.id);
   if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
-  if (!process.env.AWS_ACCESS_KEY_ID) {
-    return res.status(501).json({ message: "Direct upload not configured", directUpload: false });
-  }
   try {
     const user = await getUserFromSession(req);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
     const role = (user?.role ?? "").toLowerCase();
     const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
     if (!allowed.includes(role)) return res.status(403).json({ message: "Not allowed to submit DQC" });
+    if (!process.env.AWS_ACCESS_KEY_ID) {
+      return res.status(501).json({ message: "Direct upload not configured", directUpload: false });
+    }
     const body = req.body as {
       drawingName?: string;
       drawingMime?: string;
@@ -8576,15 +8691,15 @@ app.post("/api/leads/:id/dqc-submission/complete", async (req: Request, res: Res
 app.post("/api/leads/:id/dqc2-submission/presign", async (req: Request, res: Response) => {
   const leadId = Number(req.params.id);
   if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
-  if (!process.env.AWS_ACCESS_KEY_ID) {
-    return res.status(501).json({ message: "Direct upload not configured", directUpload: false });
-  }
   try {
     const user = await getUserFromSession(req);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
     const role = (user?.role ?? "").toLowerCase();
     const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
     if (!allowed.includes(role)) return res.status(403).json({ message: "Not allowed to submit DQC" });
+    if (!process.env.AWS_ACCESS_KEY_ID) {
+      return res.status(501).json({ message: "Direct upload not configured", directUpload: false });
+    }
     const body = req.body as {
       drawingName?: string;
       drawingMime?: string;
@@ -9300,7 +9415,42 @@ app.post("/api/leads/:id/d1-request", async (req: Request, res: Response) => {
   }
 });
 
-// Submit D2 masking request – assigns an MMT executive (same as D1); they will see the lead in D2 queue
+// Get latest D2 masking request for a lead (date/time + status)
+app.get("/api/leads/:id/d2-masking-request", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const [rows] = await pool.query(
+      `SELECT a.id, a.masking_date as maskingDate, a.masking_time as maskingTime, a.status, a.created_at as createdAt,
+              l.assigned_project_manager_id as assignedProjectManagerId
+       FROM leads l
+       LEFT JOIN lead_d2_assignments a ON a.lead_id = l.id
+       WHERE l.id = ?
+       ORDER BY a.created_at DESC
+       LIMIT 1`,
+      [leadId],
+    );
+    const row = (rows as any[])[0];
+    if (!row?.id) {
+      return res.json({ raised: false });
+    }
+    return res.json({
+      raised: true,
+      maskingDate: row.maskingDate instanceof Date ? row.maskingDate.toISOString().split("T")[0] : row.maskingDate,
+      maskingTime: row.maskingTime || null,
+      status: row.status || "pending",
+      createdAt: row.createdAt,
+      assignedProjectManagerId: row.assignedProjectManagerId ?? null,
+    });
+  } catch (err) {
+    console.error("d2-masking-request get error", err);
+    return res.status(500).json({ message: "Failed to load D2 masking request" });
+  }
+});
+
+// Submit D2 masking request – notifies SPM; SPM assigns PM separately
 app.post("/api/leads/:id/d2-masking-request", async (req: Request, res: Response) => {
   const leadId = Number(req.params.id);
   if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
@@ -9308,16 +9458,26 @@ app.post("/api/leads/:id/d2-masking-request", async (req: Request, res: Response
     const user = await getUserFromSession(req);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
     const role = (user.role || "").toLowerCase();
-    if (role === "mmt_executive") {
-      return res.status(403).json({ message: "MMT executives cannot raise masking requests" });
+    if (role === "mmt_executive" || role === "mmt_manager") {
+      return res.status(403).json({ message: "MMT users cannot raise D2 masking requests" });
     }
-    const { maskingExecutiveId, maskingDate, maskingTime } = req.body || {};
-    const execId = Number(maskingExecutiveId);
-    if (!execId) return res.status(400).json({ message: "maskingExecutiveId is required" });
+    if (role === "senior_project_manager") {
+      return res.status(403).json({
+        message: "As Senior Project Manager, assign the project manager from this task instead of submitting a new request.",
+      });
+    }
+    const { maskingDate, maskingTime } = req.body || {};
+    const [existing] = await pool.query(
+      "SELECT id FROM lead_d2_assignments WHERE lead_id = ? LIMIT 1",
+      [leadId],
+    );
+    if ((existing as any[]).length > 0) {
+      return res.status(400).json({ message: "A D2 masking request already exists for this lead" });
+    }
     await pool.query(
       `INSERT INTO lead_d2_assignments (lead_id, assigned_to_user_id, masking_date, masking_time, status, created_at)
-       VALUES (?, ?, ?, ?, 'pending', ?)`,
-      [leadId, execId, maskingDate || null, maskingTime || null, new Date()],
+       VALUES (?, NULL, ?, ?, 'awaiting_spm', ?)`,
+      [leadId, maskingDate || null, maskingTime || null, new Date()],
     );
     const ev = {
       id: `d2-masking-${Date.now()}`,
@@ -9356,7 +9516,7 @@ const MILESTONE_TASKS: string[][] = [
     "DQC 1 approval",
   ],
   ["10% payment collection", "10% payment approval"],
-  ["Assign project manager", "D2 - masking request raise", "D2 - files upload"],
+  ["D2 - masking request raise", "D2 - files upload"],
   [
     "Material selection meeting + quotation discussion",
     "Material selection meeting completed",
@@ -9398,7 +9558,7 @@ function getCurrentMilestoneProgress(
   return Math.round((completed / tasks.length) * 100);
 }
 
-// Dashboard: list all leads (sales closure submissions); MMT executives only see leads they're assigned to
+// Dashboard: list leads; role-specific filters (MMT → D1 assignments, SPM → D2 masking raised, PM → assigned leads)
 // Query param type=d2: return leads that have D2 masking assignment (for D2 uploads page); mmt_executive sees only their D2 assignments
 app.get("/api/leads/queue", async (req: Request, res: Response) => {
   const now = new Date();
@@ -9418,15 +9578,20 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
     const isMmt = role === "mmt_manager" || role === "mmt_executive";
 
     if (queueType === "d2") {
-      if (!isMmt) return res.json([]);
-      if (role === "mmt_executive" && user?.id) {
+      const canD2Queue =
+        role === "senior_project_manager" ||
+        role === "project_manager" ||
+        role === "admin";
+      if (!canD2Queue) return res.json([]);
+      if (role === "project_manager" && user?.id) {
         const [rows] = await pool.query(
           `SELECT l.id, l.pid, l.project_name as projectName, l.project_stage as projectStage,
                   l.contact_no as contactNo, l.client_email as clientEmail,
                   l.is_on_hold as isOnHold, l.resume_at as resumeAt,
                   l.create_at as createAt, l.update_at as updateAt
            FROM leads l
-           INNER JOIN lead_d2_assignments a ON a.lead_id = l.id AND a.assigned_to_user_id = ?
+           WHERE l.assigned_project_manager_id = ?
+             AND EXISTS (SELECT 1 FROM lead_d2_assignments a WHERE a.lead_id = l.id)
            ORDER BY l.id ASC`,
           [user.id],
         );
@@ -9434,12 +9599,12 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
         return res.json(list);
       }
       const [rows] = await pool.query(
-        `SELECT DISTINCT l.id, l.pid, l.project_name as projectName, l.project_stage as projectStage,
+        `SELECT l.id, l.pid, l.project_name as projectName, l.project_stage as projectStage,
                 l.contact_no as contactNo, l.client_email as clientEmail,
                 l.is_on_hold as isOnHold, l.resume_at as resumeAt,
                 l.create_at as createAt, l.update_at as updateAt
          FROM leads l
-         INNER JOIN lead_d2_assignments a ON a.lead_id = l.id
+         WHERE EXISTS (SELECT 1 FROM lead_d2_assignments a WHERE a.lead_id = l.id)
          ORDER BY l.id ASC`,
       );
       const list = (rows as any[]).map((r) => ({ ...r, isOnHold: !!r.isOnHold }));
@@ -9600,6 +9765,15 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
       const filtered = enrichedList.filter(
         (l: any) => l.assigned_project_manager_id && l.assigned_project_manager_id === user.id,
       );
+      return res.json(filtered);
+    }
+
+    if (user && role === "senior_project_manager") {
+      const [d2Rows] = await pool.query(
+        "SELECT DISTINCT lead_id as leadId FROM lead_d2_assignments",
+      );
+      const d2Ids = new Set((d2Rows as { leadId: number }[]).map((r) => r.leadId));
+      const filtered = enrichedList.filter((l: any) => d2Ids.has(l.id));
       return res.json(filtered);
     }
 
@@ -9922,7 +10096,7 @@ app.post("/api/leads/assign-designer/bulk", async (req: Request, res: Response) 
   }
 });
 
-// Assign project manager on a lead (after DQC 2 approval; same roles as completing "Assign project manager")
+// Assign project manager on a lead (SPM during D2 site masking; Admin/TDM/DGM may also assign)
 app.patch("/api/leads/:id/assign-project-manager", async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
@@ -9949,6 +10123,10 @@ app.patch("/api/leads/:id/assign-project-manager", async (req: Request, res: Res
       "UPDATE leads SET assigned_project_manager_id = ?, update_at = ? WHERE id = ?",
       [pmId, new Date(), id],
     );
+    await pool.query(
+      "UPDATE lead_d2_assignments SET status = 'pm_assigned' WHERE lead_id = ?",
+      [id],
+    );
 
     // ── Fire internal email to the newly assigned Project Manager ──
     try {
@@ -9956,13 +10134,11 @@ app.patch("/api/leads/:id/assign-project-manager", async (req: Request, res: Res
         `SELECT l.pid, l.project_name as projectName, l.payload, l.assigned_designer_id,
                 u.name as designerName, u.email as designerEmail,
                 pm.name as pmName, pm.email as pmEmail,
-                a.masking_date as maskingDate, a.masking_time as maskingTime,
-                u_mmt.name as mmtExecutiveName, u_mmt.email as mmtExecutiveEmail
+                a.masking_date as maskingDate, a.masking_time as maskingTime
          FROM leads l
          LEFT JOIN users u ON u.id = l.assigned_designer_id
          LEFT JOIN users pm ON pm.id = ?
          LEFT JOIN lead_d2_assignments a ON a.lead_id = l.id
-         LEFT JOIN users u_mmt ON u_mmt.id = a.assigned_to_user_id
          WHERE l.id = ?
          ORDER BY a.created_at DESC LIMIT 1`,
         [pmId, id],
@@ -9989,11 +10165,10 @@ app.patch("/api/leads/:id/assign-project-manager", async (req: Request, res: Res
 
         const ccList = await getMailLoopCcEmails([user.email || null, leadRow.designerEmail || null], id);
 
-        // 1. Send PM assignment notification email
         void triggerMailRouteWithLog({
           leadId: id,
           milestoneIndex: 3,
-          taskName: "Assign project manager",
+          taskName: "D2 - SPM assigns project manager",
           route: "/api/email/send-pm-assignment-notification",
           visibility: "internal",
           payload: {
@@ -10009,15 +10184,12 @@ app.patch("/api/leads/:id/assign-project-manager", async (req: Request, res: Res
           },
         });
 
-        // 2. Also send D2 Site Masking Request internal email to PM & MMT
-        const mmtExecutiveName = leadRow.mmtExecutiveName || "";
-        const mmtExecutiveEmail = leadRow.mmtExecutiveEmail || null;
         const maskingDate = leadRow.maskingDate
           ? (leadRow.maskingDate instanceof Date ? leadRow.maskingDate.toISOString().split("T")[0] : leadRow.maskingDate)
           : null;
         const maskingTime = leadRow.maskingTime || null;
 
-        const d2CcList = await getMailLoopCcEmails([user.email || null, leadRow.designerEmail || null, mmtExecutiveEmail], id);
+        const d2CcList = await getMailLoopCcEmails([user.email || null, leadRow.designerEmail || null], id);
         void triggerMailRouteWithLog({
           leadId: id,
           milestoneIndex: 3,
@@ -10032,7 +10204,6 @@ app.patch("/api/leads/:id/assign-project-manager", async (req: Request, res: Res
             customerName,
             designerName,
             ecName: branch || "Experience Center",
-            mmtName: mmtExecutiveName,
             pmName: leadRow.pmName || "Project Manager",
             maskingDate,
             maskingTime,
@@ -10040,7 +10211,7 @@ app.patch("/api/leads/:id/assign-project-manager", async (req: Request, res: Res
         });
       }
     } catch (mailErr) {
-      console.error("PM assignment notification & D2 internal masking request email error (non-fatal)", { leadId: id, error: mailErr });
+      console.error("PM assignment & D2 internal masking request email error (non-fatal)", { leadId: id, error: mailErr });
     }
 
     return res.json({ ok: true });
@@ -10049,6 +10220,145 @@ app.patch("/api/leads/:id/assign-project-manager", async (req: Request, res: Res
     return res.status(500).json({ message: "Failed to assign project manager" });
   }
 });
+
+// Reject PM approval: upload pointer-to-change file and revert workflow to DQC 2 submission
+app.post(
+  "/api/leads/:id/reject-pm-approval",
+  upload.single("file"),
+  async (req: Request, res: Response) => {
+    const leadId = Number(req.params.id);
+    if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+    const file = (req as any).file as Express.Multer.File | undefined;
+    if (!file) return res.status(400).json({ message: "Pointer-to-change file is required" });
+
+    try {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+
+      const [lr] = await pool.query(
+        "SELECT assigned_project_manager_id as pmId FROM leads WHERE id = ?",
+        [leadId],
+      );
+      const pmId = (lr as any[])[0]?.pmId;
+      if (!pmId) {
+        return res.status(400).json({ message: "No project manager assigned on this lead" });
+      }
+      if (!canCompleteProjectManagerApproval(user.role, user.id, pmId)) {
+        return res.status(403).json({
+          message: "Only the assigned Project Manager, Senior Project Manager, or Admin can reject",
+        });
+      }
+
+      const notes = typeof req.body?.notes === "string" ? req.body.notes.trim() : "";
+      const now = new Date();
+      let s3Url: string | null = null;
+      if (process.env.AWS_ACCESS_KEY_ID) {
+        s3Url = await uploadLeadFileToS3(leadId, file.path, file.originalname, file.mimetype);
+      }
+
+      const [insertResult] = await pool.query(
+        `INSERT INTO lead_uploads
+         (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'pm_pointer_to_change', ?)`,
+        [
+          leadId,
+          user.id,
+          file.originalname,
+          file.filename,
+          file.path,
+          file.mimetype,
+          file.size,
+          now,
+          s3Url,
+        ],
+      );
+      const uploadId = (insertResult as any).insertId;
+
+      for (const taskName of DQC2_PM_REVERT_TASKS) {
+        await pool.query(
+          "DELETE FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 4 AND task_name = ?",
+          [leadId, taskName],
+        );
+      }
+
+      const remarkText =
+        notes ||
+        `Project manager rejected the DQC 2 submission. See pointer-to-change file: ${file.originalname}`;
+      const remarks = [{ priority: "high", text: remarkText, pointerUploadId: uploadId }];
+      await pool.query(
+        `INSERT INTO lead_dqc_reviews (lead_id, verdict, remarks, created_at, reviewed_by_user_id)
+         VALUES (?, 'pm_rejected', ?, ?, ?)`,
+        [leadId, JSON.stringify(remarks), now, user.id],
+      );
+
+      const ev = {
+        id: `pm-reject-${Date.now()}`,
+        type: "note",
+        taskName: "Project manager approval",
+        milestoneName: "DQC2",
+        timestamp: now.toISOString(),
+        description: `DQC 2 rejected by ${user.name ?? "Project Manager"}. Sent back to DQC 2 submission.`,
+        user: { name: user.name ?? "Project Manager" },
+        details: {
+          kind: "pm_rejection",
+          fileName: file.originalname,
+          uploadId,
+          notes: notes || null,
+        },
+      };
+      await addLeadHistoryEvent(leadId, ev);
+
+      try {
+        const [leadRows] = await pool.query(
+          `SELECT l.project_name as projectName, l.payload, u.email as designerEmail, u.name as designerName
+           FROM leads l
+           LEFT JOIN users u ON u.id = l.assigned_designer_id
+           WHERE l.id = ?`,
+          [leadId],
+        );
+        const leadRow = (leadRows as any[])[0];
+        if (leadRow?.designerEmail) {
+          let payload: any = {};
+          try {
+            payload = leadRow.payload ? JSON.parse(leadRow.payload) : {};
+          } catch {
+            payload = {};
+          }
+          const customerName =
+            payload.customer_name || payload?.form?.customer_name || leadRow.projectName || "Customer";
+          const ecName = payload.experience_center || payload?.form?.experience_center || "";
+          void triggerMailRouteWithLog({
+            leadId,
+            milestoneIndex: 4,
+            taskName: "Project manager approval rejected",
+            route: "/api/email/send-dqc-review-feedback-internal",
+            visibility: "internal",
+            payload: {
+              to: leadRow.designerEmail,
+              cc: await getMailLoopCcEmails([user.email, leadRow.designerEmail], leadId),
+              subject: buildMailChainSubject(leadId, leadRow.projectName, customerName),
+              projectId: leadRow.projectName || String(leadId),
+              customerName,
+              ecName,
+              designerName: leadRow.designerName || "Designer",
+              dqcRepName: user.name || "Project Manager",
+              verdict: "pm_rejected",
+              submissionVariant: "dqc2",
+              remarks: [{ priority: "high", text: remarkText }],
+            },
+          });
+        }
+      } catch (mailErr) {
+        console.error("PM rejection designer email error (non-fatal)", mailErr);
+      }
+
+      return res.status(201).json({ ok: true, uploadId, revertedTasks: DQC2_PM_REVERT_TASKS });
+    } catch (err) {
+      console.error("reject-pm-approval error", err);
+      return res.status(500).json({ message: "Failed to reject PM approval" });
+    }
+  },
+);
 
 // Lead detail by id (for /Leads/[id]); MMT executives only get leads they're assigned to
 app.get("/api/leads/:id", async (req: Request, res: Response) => {
@@ -10114,6 +10424,16 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
 
     if (user && role === "project_manager") {
       if (!row.assigned_project_manager_id || row.assigned_project_manager_id !== user.id) {
+        return res.status(404).json({ message: "Lead not found" });
+      }
+    }
+
+    if (user && role === "senior_project_manager") {
+      const [d2Rows] = await pool.query(
+        "SELECT 1 FROM lead_d2_assignments WHERE lead_id = ? LIMIT 1",
+        [id],
+      );
+      if ((d2Rows as any[]).length === 0) {
         return res.status(404).json({ message: "Lead not found" });
       }
     }

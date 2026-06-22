@@ -33,7 +33,7 @@ const MileStonesArray: MileStonesTypes = {
     {
       id: 4,
       name: "D2 SITE MASKING",
-      taskList: ["Assign project manager", "D2 - masking request raise", "D2 - files upload"],
+      taskList: ["D2 - masking request raise", "D2 - files upload"],
       Css: "xl:w-75 xl:mt-5 xl:mx-auto xl:mt-12  border-2 border-dashed border-red-300 hover:bg-blue-50  cursor-pointer overflow-y-auto xl:rounded-2xl xl:my-20",
     },
     {

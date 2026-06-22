@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { getApiBase } from '@/app/lib/apiBase';
+import type { D2UploadAsRole } from '@/app/lib/d2UploadLabels';
+import D2UploadConfirmModal from '@/app/Leads/[id]/components/popups/D2UploadConfirmModal';
 
 type LeadRow = {
     id: number;
@@ -12,17 +14,19 @@ type LeadRow = {
 };
 
 /**
- * D2 uploads: same as MMT uploads – list leads that have a D2 masking request (queue?type=d2),
- * upload ZIP for each. Assigned MMT executives see only their D2 leads; MMT manager sees all D2 leads.
+ * D2 uploads: list leads with a D2 masking request (queue?type=d2).
+ * SPM or assigned PM upload multiple PDFs per lead.
  */
 export default function D2UploadsPage() {
     const { user, sessionId } = useAuth();
     const [leads, setLeads] = useState<LeadRow[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [success, setSuccess] = useState<string | null>(null);
     const [uploadingLeadId, setUploadingLeadId] = useState<number | null>(null);
     const fileRef = useRef<HTMLInputElement | null>(null);
     const [targetLeadId, setTargetLeadId] = useState<number | null>(null);
+    const [pendingFiles, setPendingFiles] = useState<File[]>([]);
 
     const authHeaders = useMemo(() => {
         const headers: Record<string, string> = {};
@@ -42,7 +46,9 @@ export default function D2UploadsPage() {
                 try { return JSON.parse(text); } catch { return null; }
             })();
             if (!res.ok) throw new Error(data?.message || 'Failed to load leads');
-            setLeads(Array.isArray(data) ? data : []);
+            const rows = Array.isArray(data) ? data : [];
+            const unique = Array.from(new Map(rows.map((l: LeadRow) => [l.id, l])).values());
+            setLeads(unique);
         } catch (e: unknown) {
             setError(e instanceof Error ? e.message : 'Failed to load leads');
         } finally {
@@ -57,19 +63,45 @@ export default function D2UploadsPage() {
 
     const onUploadClick = (leadId: number) => {
         setTargetLeadId(leadId);
+        setSuccess(null);
         fileRef.current?.click();
     };
 
-    const onZipSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0] || null;
+    const onFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const selected = Array.from(e.target.files ?? []);
         e.target.value = '';
-        if (!file || !targetLeadId) return;
+        if (!selected.length || !targetLeadId) return;
+
+        const pdfs = selected.filter(
+            (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'),
+        );
+        if (pdfs.length === 0) {
+            setError('Select at least one PDF file.');
+            return;
+        }
+        if (pdfs.length !== selected.length) {
+            setError('Only PDF files are allowed for D2 uploads. Non-PDF files were skipped.');
+        } else {
+            setError(null);
+        }
+        setPendingFiles(pdfs);
+    };
+
+    const cancelPendingUpload = () => {
+        setPendingFiles([]);
+        setTargetLeadId(null);
+    };
+
+    const confirmUpload = async (uploadedAsRole: D2UploadAsRole) => {
+        if (!targetLeadId || pendingFiles.length === 0) return;
         setUploadingLeadId(targetLeadId);
         setError(null);
+        setSuccess(null);
         try {
             const fd = new FormData();
-            fd.append('zip', file);
+            pendingFiles.forEach((file) => fd.append('files', file));
             fd.append('uploadType', 'd2_masking');
+            fd.append('uploadedAsRole', uploadedAsRole);
             const res = await fetch(`${getApiBase()}/api/leads/${targetLeadId}/uploads`, {
                 method: 'POST',
                 headers: { ...authHeaders },
@@ -80,17 +112,23 @@ export default function D2UploadsPage() {
                 try { return JSON.parse(text); } catch { return null; }
             })();
             if (!res.ok) throw new Error(data?.message || 'Upload failed');
+            const message =
+                (data?.message as string) ||
+                `${pendingFiles.length} PDF(s) uploaded successfully.`;
+            setSuccess(message);
+            window.alert(message);
+            setPendingFiles([]);
+            setTargetLeadId(null);
             loadLeads();
         } catch (e: unknown) {
             setError(e instanceof Error ? e.message : 'Upload failed');
         } finally {
             setUploadingLeadId(null);
-            setTargetLeadId(null);
         }
     };
 
-    const isMmt = ['mmt', 'mmt_manager', 'mmt_executive'].includes(role || '');
-    if (role && !isMmt) {
+    const canAccess = ['senior_project_manager', 'project_manager', 'admin'].includes(role || '');
+    if (role && !canAccess) {
         return (
             <div className="min-h-screen bg-slate-900 p-6">
                 <div className="max-w-3xl mx-auto bg-white rounded-2xl p-6">
@@ -107,7 +145,10 @@ export default function D2UploadsPage() {
                 <div className="flex items-start justify-between gap-3">
                     <div>
                         <h1 className="text-xl font-bold text-gray-900">D2 Uploads</h1>
-                        <p className="text-sm text-gray-600 mt-1">Upload a ZIP folder for each lead with a D2 masking request. It will appear in the lead “Files Uploaded” card and History.</p>
+                        <p className="text-sm text-gray-600 mt-1">
+                            Upload one or more PDF files for each lead with a D2 masking request. Confirm who is
+                            uploading (Project Manager or Senior Project Manager) before files are saved.
+                        </p>
                     </div>
                     <button
                         type="button"
@@ -120,6 +161,11 @@ export default function D2UploadsPage() {
                 </div>
 
                 {error && <div className="text-sm text-red-600 mt-4">{error}</div>}
+                {success && (
+                    <div className="text-sm text-green-800 bg-green-50 border border-green-200 rounded-lg px-3 py-2 mt-4">
+                        {success}
+                    </div>
+                )}
 
                 <div className="mt-5 border border-gray-200 rounded-2xl overflow-hidden">
                     <div className="grid grid-cols-12 bg-gray-50 px-4 py-3 text-xs font-semibold text-gray-600">
@@ -128,7 +174,9 @@ export default function D2UploadsPage() {
                         <div className="col-span-2 text-right">Upload</div>
                     </div>
                     {leads.length === 0 ? (
-                        <div className="px-4 py-6 text-sm text-gray-600">{loading ? 'Loading…' : 'No D2 masking leads found. Raise a D2 masking request from a lead to see it here.'}</div>
+                        <div className="px-4 py-6 text-sm text-gray-600">
+                            {loading ? 'Loading…' : 'No D2 masking leads found. Raise a D2 masking request from a lead to see it here.'}
+                        </div>
                     ) : (
                         leads.map((l) => {
                             const name = l.projectName || l.project_name || 'Unnamed';
@@ -144,7 +192,7 @@ export default function D2UploadsPage() {
                                             disabled={!sessionId || busy}
                                             className="px-3 py-2 rounded-lg bg-green-700 text-white text-sm font-semibold hover:bg-green-800 disabled:opacity-60"
                                         >
-                                            {busy ? 'Uploading…' : 'Upload ZIP'}
+                                            {busy ? 'Uploading…' : 'Upload PDFs'}
                                         </button>
                                     </div>
                                 </div>
@@ -156,11 +204,22 @@ export default function D2UploadsPage() {
                 <input
                     ref={fileRef}
                     type="file"
-                    accept=".zip,application/zip,.dwg"
+                    accept=".pdf,application/pdf"
+                    multiple
                     className="hidden"
-                    onChange={onZipSelected}
+                    onChange={onFilesSelected}
                 />
             </div>
+
+            <D2UploadConfirmModal
+                open={pendingFiles.length > 0 && targetLeadId != null}
+                files={pendingFiles}
+                userName={user?.name}
+                userRole={user?.role}
+                uploading={uploadingLeadId != null}
+                onCancel={cancelPendingUpload}
+                onConfirm={confirmUpload}
+            />
         </div>
     );
 }

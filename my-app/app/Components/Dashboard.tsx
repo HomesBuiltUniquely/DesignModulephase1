@@ -241,6 +241,7 @@ export default function Dashboard() {
     const isDesigner = (user?.role || "").toLowerCase() === "designer";
     const isDqcUser = ["dqc_manager", "dqe"].includes((user?.role || "").toLowerCase());
     const isFinanceUser = (user?.role || "").toLowerCase() === "finance";
+    const isSpmUser = (user?.role || "").toLowerCase() === "senior_project_manager";
     const isAdmin = (user?.role || "").toLowerCase() === "admin";
     const canImportLeads =
         isAdmin ||
@@ -390,16 +391,19 @@ export default function Dashboard() {
     const [showFinancePopup, setShowFinancePopup] = useState(false);
     const [showAddProjectModal, setShowAddProjectModal] = useState(false);
 
-    const phaseFilteredProjects =
-        statusSelected === SideDashboardStatus.Cancelled
-            ? projects.filter(isCancelledLead)
-            : isSelected === "All Projects (10-60%)"
-              ? projects.filter((p) => {
-                    if (isCancelledLead(p)) return false;
-                    const phase = getPhaseBucket(p);
-                    return phase === "10-20%" || phase === "20-60%";
-                })
-              : projects.filter((p) => !isCancelledLead(p) && getPhaseBucket(p) === isSelected);
+    const phaseFilteredProjects = isSpmUser
+        ? projects.filter((p) =>
+              statusSelected === SideDashboardStatus.Cancelled ? isCancelledLead(p) : !isCancelledLead(p),
+          )
+        : statusSelected === SideDashboardStatus.Cancelled
+          ? projects.filter(isCancelledLead)
+          : isSelected === "All Projects (10-60%)"
+            ? projects.filter((p) => {
+                  if (isCancelledLead(p)) return false;
+                  const phase = getPhaseBucket(p);
+                  return phase === "10-20%" || phase === "20-60%";
+              })
+            : projects.filter((p) => !isCancelledLead(p) && getPhaseBucket(p) === isSelected);
 
     const filteredProjects = phaseFilteredProjects.filter((p) =>
         passesWorkspaceStatusFilter(p, statusSelected),
@@ -414,7 +418,7 @@ export default function Dashboard() {
         : filteredProjects;
 
     const showBranchDesignerFilters =
-        !isDesigner && !isDqcUser && !isMmtUser && !isFinanceUser;
+        !isDesigner && !isDqcUser && !isMmtUser && !isFinanceUser && !isSpmUser;
 
     const designerFilterOptions = useMemo(() => {
         const idMap = new Map<number, string>(); // id -> name
@@ -1431,7 +1435,7 @@ export default function Dashboard() {
                 <div className="xl:grid xl:grid-cols-5 xl:gap-4">
                     <div className=" xl:grid-cols-1 xl:h-screen border-r border-gray-300 xl:pt-4 xl:pl-2">
 
-                    {!isDqcUser && (
+                    {!isDqcUser && !isSpmUser && (
                         <>
                     <button
                         type="button"
@@ -1559,8 +1563,14 @@ export default function Dashboard() {
                             <div className="p-4 xl:p-6 space-y-6 max-w-[1600px]">
                                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                                     <div>
-                                        <h1 className="text-xl xl:text-2xl font-bold text-gray-900">Design Phase Projects</h1>
-                                        <p className="text-sm text-gray-500 mt-0.5">Projects between 10% and 60% progress.</p>
+                                        <h1 className="text-xl xl:text-2xl font-bold text-gray-900">
+                                            {isSpmUser ? "D2 Site Masking Queue" : "Design Phase Projects"}
+                                        </h1>
+                                        <p className="text-sm text-gray-500 mt-0.5">
+                                            {isSpmUser
+                                                ? "Leads where a D2 masking request has been raised — assign PM and manage D2 files."
+                                                : "Projects between 10% and 60% progress."}
+                                        </p>
                                     </div>
                                     <div className="flex flex-wrap items-center gap-3">
                                         <input
@@ -1636,6 +1646,7 @@ export default function Dashboard() {
                     </div>
                                             )}
                                         </div>
+                                        {!isSpmUser && (
                                         <button
                                             type="button"
                                             disabled={!sessionId}
@@ -1645,6 +1656,7 @@ export default function Dashboard() {
                                         >
                                             + Add Project
                                         </button>
+                                        )}
                                         {canImportLeads && (
                                             <button
                                                 type="button"

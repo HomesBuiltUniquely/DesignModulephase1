@@ -103,8 +103,15 @@ export default function PopupMmtFilesUploadApproval({
     return (
         <div className="px-6 pb-6 space-y-4">
             <p className="text-sm text-gray-600">
-                Review MMT uploads for <strong>{taskLabel}</strong>. Pending files must be approved before designers
-                can use them.
+                {uploadType === 'd2_masking' ? (
+                    <>
+                        Review D2 masking uploads for <strong>{taskLabel}</strong>. SPM or the assigned project manager can upload multiple PDF files from the Files card or D2 uploads page.
+                    </>
+                ) : (
+                    <>
+                        Review MMT uploads for <strong>{taskLabel}</strong>. Pending files must be approved before designers can use them.
+                    </>
+                )}
                 {isAdmin && (
                     <span className="block mt-2 text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs">
                         You are approving as Admin (same as MMT Manager).
@@ -120,7 +127,10 @@ export default function PopupMmtFilesUploadApproval({
                 <p className="text-sm text-gray-500">Loading uploads…</p>
             ) : uploads.length === 0 ? (
                 <p className="text-sm text-gray-600">
-                    No uploads yet. MMT can upload from this lead&apos;s Files card or the D2 uploads page.
+                    No uploads yet.{' '}
+                    {uploadType === 'd2_masking'
+                        ? 'SPM or the assigned project manager can upload PDFs from this lead’s Files card or the D2 uploads page.'
+                        : 'MMT can upload from this lead’s Files card or the D1 uploads page.'}
                 </p>
             ) : (
                 <ul className="space-y-2 max-h-64 overflow-y-auto">

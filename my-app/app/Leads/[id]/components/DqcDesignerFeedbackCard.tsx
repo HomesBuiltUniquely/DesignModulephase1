@@ -67,7 +67,9 @@ export default function DqcDesignerFeedbackCard({ leadId, sessionId, cardClass =
 
   const showCard =
     review &&
-    (review.verdict === 'rejected' || review.verdict === 'approved_with_changes') &&
+    (review.verdict === 'rejected' ||
+      review.verdict === 'approved_with_changes' ||
+      review.verdict === 'pm_rejected') &&
     review.remarks?.length > 0;
 
   if (!showCard) return null;
@@ -77,7 +79,9 @@ export default function DqcDesignerFeedbackCard({ leadId, sessionId, cardClass =
       <div className={embedded ? 'pb-2' : 'px-4 py-3 border-b border-gray-200'}>
         <h2 className={embedded ? 'text-base font-bold text-gray-900' : 'text-lg font-bold text-gray-900'}>DQC Review Feedback</h2>
         <p className="text-sm text-gray-500 mt-0.5">
-          {review.verdict === 'rejected'
+          {review.verdict === 'pm_rejected'
+            ? 'Project manager rejected the DQC 2 submission. Review the pointer-to-change file in Files, then upload revised files and resubmit for DQC 2.'
+            : review.verdict === 'rejected'
             ? 'DQC was rejected. Address each comment and mark as solved when done. Then upload a new file and resubmit for review.'
             : 'Approved with changes. Address each comment and mark as solved. Then upload a new file and resubmit for review.'}
         </p>

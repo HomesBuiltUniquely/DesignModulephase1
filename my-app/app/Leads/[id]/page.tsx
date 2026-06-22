@@ -28,7 +28,6 @@ import {
     PopupGroupDescription,
     PopupMailLoopChain,
     GenericMeetingChecklistPopup,
-    PopupAssignProjectManager,
     PopupProjectManagerApproval,
     Popup40pCollection,
     PopupFinancePaymentApproval,
@@ -57,6 +56,7 @@ export default function ProjectDetailPage() {
     const projectId = params?.id ? Number(params.id) : null;
     const isMmtUser = ['mmt', 'mmt_manager', 'mmt_executive'].includes((authUser?.role || '').toLowerCase());
     const canApproveMmtWorkflow = ['admin', 'mmt_manager'].includes((authUser?.role || '').toLowerCase());
+    const canUploadD2Files = ['senior_project_manager', 'project_manager', 'admin'].includes((authUser?.role || '').toLowerCase());
     const viewDqc = searchParams.get('view') === 'dqc';
     const dqcStage = viewDqc ? (searchParams.get('stage') === 'dqc2' ? 'dqc2' as const : 'dqc1' as const) : null;
     const isDqcUser = ['dqc_manager', 'dqe'].includes((authUser?.role || '').toLowerCase());
@@ -70,6 +70,9 @@ export default function ProjectDetailPage() {
     const [completedTaskKeys, setCompletedTaskKeys] = useState<string[]>([]);
     // Track which tasks that have checklists have had their checklist completed
     const [completedChecklistKeys, setCompletedChecklistKeys] = useState<string[]>([]);
+
+    const filesCanUpload = currentMilestoneIndex === 3 ? canUploadD2Files : isMmtUser;
+    const filesCanDelete = currentMilestoneIndex === 3 ? canUploadD2Files : isMmtUser;
 
     const taskKey = (milestoneIndex: number, taskName: string) => `${milestoneIndex}-${taskName}`;
 
@@ -116,6 +119,20 @@ export default function ProjectDetailPage() {
             })
             .catch(() => {});
     }, [projectId, sessionId]);
+
+    const refreshCompletions = useCallback(() => {
+        if (!projectId || !sessionId) return;
+        fetch(`${API}/api/leads/${projectId}/completions`, {
+            headers: { Authorization: `Bearer ${sessionId}` },
+        })
+            .then((res) => res.json())
+            .then((data: { milestoneIndex: number; taskName: string }[]) => {
+                if (!Array.isArray(data)) return;
+                setCompletedTaskKeys(data.map((c) => taskKey(c.milestoneIndex, c.taskName)));
+            })
+            .catch(() => {});
+    }, [projectId, sessionId]);
+
     // Which milestone popup is open (null = closed). Lets you show different popup content per milestone/task.
     const [popupContext, setPopupContext] = useState<{ milestoneIndex: number; milestoneName: string; taskName: string } | null>(null);
     // Checklist popup (opened from "Visit checklist" in milestone task menu)
@@ -1289,40 +1306,22 @@ export default function ProjectDetailPage() {
 
         // If this task has a checklist, force the checklist to be completed before showing the popup.
         const tTrim = taskName.trim();
-        if (milestoneIndex === 3 && tTrim === 'Assign project manager') {
-            const paymentApproved = completedTaskKeys.includes(taskKey(2, '10% payment approval'));
-            if (!paymentApproved) {
-                setBlockedTaskMessage('Complete 10% payment approval before assigning a project manager.');
-                setTimeout(() => setBlockedTaskMessage(null), 4000);
-                return;
-            }
-            const assignerRole = (authUser?.role || '').toLowerCase();
-            const canAssignPm = ['admin', 'territorial_design_manager', 'deputy_general_manager', 'senior_project_manager'].includes(
-                assignerRole,
-            );
-            if (!canAssignPm) {
-                setBlockedTaskMessage(
-                    'Only Admin, Territorial Design Manager, Deputy General Manager, or Senior Project Manager can assign a project manager.',
-                );
-                setTimeout(() => setBlockedTaskMessage(null), 5000);
-                return;
-            }
-        }
         if (milestoneIndex === 4 && tTrim === 'Project manager approval') {
-            const assignDone = completedTaskKeys.includes(taskKey(3, 'Assign project manager'));
-            if (!assignDone) {
-                setBlockedTaskMessage('Assign a project manager first.');
-                setTimeout(() => setBlockedTaskMessage(null), 4000);
+            const pmAssigned = project?.assigned_project_manager_id;
+            if (!pmAssigned) {
+                setBlockedTaskMessage('A project manager must be assigned by the Senior Project Manager during D2 site masking.');
+                setTimeout(() => setBlockedTaskMessage(null), 5000);
                 return;
             }
             const role = (authUser?.role || '').toLowerCase();
             const pmId = project?.assigned_project_manager_id;
             const canPmApprove =
                 role === 'admin' ||
+                role === 'senior_project_manager' ||
                 (role === 'project_manager' && pmId && authUser?.id && pmId === authUser.id);
             if (!canPmApprove) {
                 setBlockedTaskMessage(
-                    'Only the assigned project manager or Admin can open this approval step.',
+                    'Only the assigned project manager, Senior Project Manager, or Admin can open this approval step.',
                 );
                 setTimeout(() => setBlockedTaskMessage(null), 4000);
                 return;
@@ -2509,6 +2508,7 @@ export default function ProjectDetailPage() {
                                     sessionId={sessionId}
                                     canUpload={false}
                                     userRole={authUser?.role}
+                                    userName={authUser?.name}
                                     canDelete={false}
                                     uploadType={currentMilestoneIndex === 3 ? 'd2_masking' : undefined}
                                 />
@@ -2527,10 +2527,15 @@ export default function ProjectDetailPage() {
                                     isMaximized={activeCard === 'files'}
                                     leadId={projectId}
                                     sessionId={sessionId}
-                                    canUpload={isMmtUser}
+                                    canUpload={filesCanUpload}
                                     userRole={authUser?.role}
-                                    canDelete={isMmtUser}
+                                    userName={authUser?.name}
+                                    canDelete={filesCanDelete}
                                     uploadType={currentMilestoneIndex === 3 ? 'd2_masking' : undefined}
+                                    onD2UploadComplete={() => {
+                                        refreshCompletions();
+                                        setUploadsVersion((v) => v + 1);
+                                    }}
                                 />
                                 {!isMmtUser && !isDesigner && (
                                     <ChatCard
@@ -3019,8 +3024,10 @@ export default function ProjectDetailPage() {
                             leadId={projectId}
                             sessionId={sessionId}
                             userRole={authUser?.role}
+                            currentPmId={project?.assigned_project_manager_id}
+                            currentPmName={project?.projectManagerName}
                             onAdminApprove={
-                                canApproveMmtWorkflow
+                                (authUser?.role || '').toLowerCase() === 'admin'
                                     ? () => {
                                           recordTaskComplete(3, 'D2 - masking request raise');
                                           closePopup();
@@ -3030,6 +3037,26 @@ export default function ProjectDetailPage() {
                             onSubmit={() => {
                                 recordTaskComplete(3, 'D2 - masking request raise');
                                 closePopup();
+                            }}
+                            onPmAssigned={() => {
+                                if (sessionId && projectId) {
+                                    fetch(`${API}/api/leads/${projectId}`, {
+                                        headers: { Authorization: `Bearer ${sessionId}` },
+                                    })
+                                        .then(async (res) => {
+                                            const text = await res.text();
+                                            if (!res.ok || !text) return null;
+                                            try {
+                                                return JSON.parse(text) as LeadshipTypes;
+                                            } catch {
+                                                return null;
+                                            }
+                                        })
+                                        .then((data: LeadshipTypes | null) => {
+                                            if (data) setProject(data);
+                                        })
+                                        .catch(() => {});
+                                }
                             }}
                         />
                     )}
@@ -3063,7 +3090,6 @@ export default function ProjectDetailPage() {
                     )}
                     {popupContext.milestoneIndex === 3 &&
                         popupContext.taskName !== 'D2 - masking request raise' &&
-                        popupContext.taskName !== 'Assign project manager' &&
                         popupContext.taskName !== 'D2 - files upload' && (
                         <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(3, popupContext.taskName); closePopup(); }} />
                     )}
@@ -3321,46 +3347,23 @@ export default function ProjectDetailPage() {
                             />
                         )
                     )}
-                    {popupContext.milestoneIndex === 3 && popupContext.taskName === 'Assign project manager' && projectId != null && project && (
-                        <PopupAssignProjectManager
-                            leadId={projectId}
-                            apiBase={API}
-                            sessionId={sessionId}
-                            currentPmId={project.assigned_project_manager_id}
-                            currentPmName={project.projectManagerName}
-                            onClose={closePopup}
-                            onAssigned={() => {
-                                recordTaskComplete(3, 'Assign project manager');
-                                if (sessionId) {
-                                    fetch(`${API}/api/leads/${projectId}`, {
-                                        headers: { Authorization: `Bearer ${sessionId}` },
-                                    })
-                                        .then(async (res) => {
-                                            const text = await res.text();
-                                            if (!res.ok || !text) return null;
-                                            try {
-                                                return JSON.parse(text) as LeadshipTypes;
-                                            } catch {
-                                                return null;
-                                            }
-                                        })
-                                        .then((data: LeadshipTypes | null) => {
-                                            if (data) setProject(data);
-                                        })
-                                        .catch(() => {});
-                                }
-                                closePopup();
-                            }}
-                        />
-                    )}
-                    {popupContext.milestoneIndex === 4 && popupContext.taskName === 'Project manager approval' && project && (
+                    {popupContext.milestoneIndex === 4 && popupContext.taskName === 'Project manager approval' && project && projectId != null && (
                         <PopupProjectManagerApproval
+                            leadId={projectId}
+                            sessionId={sessionId}
                             projectName={project.projectName}
                             projectManagerName={project.projectManagerName ?? null}
+                            userRole={authUser?.role}
                             isAdminApprover={(authUser?.role || '').toLowerCase() === 'admin'}
+                            isSpmApprover={(authUser?.role || '').toLowerCase() === 'senior_project_manager'}
                             onClose={closePopup}
                             onApprove={() => {
                                 recordTaskComplete(4, 'Project manager approval');
+                                closePopup();
+                            }}
+                            onReject={() => {
+                                refreshCompletions();
+                                setUploadsVersion((v) => v + 1);
                                 closePopup();
                             }}
                         />
@@ -3369,7 +3372,6 @@ export default function ProjectDetailPage() {
                         popupContext.taskName !== 'DQC 2 submission' &&
                         popupContext.taskName !== 'DQC 2 approval' &&
                         popupContext.taskName !== 'DQC 2 approval ' &&
-                        popupContext.taskName !== 'Assign project manager' &&
                         popupContext.taskName !== 'Project manager approval' &&
                         popupContext.taskName !== 'Material selection meeting + quotation discussion' &&
                         popupContext.taskName !== 'Material selection meeting completed' &&

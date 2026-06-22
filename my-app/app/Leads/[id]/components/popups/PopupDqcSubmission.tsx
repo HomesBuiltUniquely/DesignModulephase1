@@ -3,7 +3,18 @@
 import { useState, useRef } from 'react';
 
 import { getApiBase } from '@/app/lib/apiBase';
+
 const API = getApiBase();
+
+function dqcSubmitErrorMessage(status: number, message?: string): string {
+  if (status === 401) {
+    return 'Your session expired or you are not logged in. Log out, sign in again (as admin or designer), then retry.';
+  }
+  if (status === 403 && message?.includes('Not allowed to submit DQC')) {
+    return 'Only designers, design managers, TDM, or admin can submit DQC files.';
+  }
+  return message || 'Upload failed';
+}
 const DRAWING_ACCEPT = '.skp,.dwg,.pdf,.zip,application/zip';
 const QUOTATION_ACCEPT = '.pdf,.xlsx,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
@@ -139,8 +150,11 @@ export default function PopupDqcSubmission({
         const doneData = await done.json().catch(() => ({}));
         if (!done.ok) {
           setSubmitError(
-            (doneData as { message?: string }).message ||
-              (submissionVariant === 'dqc2' ? 'Failed to finalize DQC 2 submission' : 'Failed to finalize DQC submission'),
+            dqcSubmitErrorMessage(
+              done.status,
+              (doneData as { message?: string }).message ||
+                (submissionVariant === 'dqc2' ? 'Failed to finalize DQC 2 submission' : 'Failed to finalize DQC submission'),
+            ),
           );
           return;
         }
@@ -153,8 +167,11 @@ export default function PopupDqcSubmission({
       if (presignRes.status !== 501) {
         const errBody = await presignRes.json().catch(() => ({}));
         setSubmitError(
-          (errBody as { message?: string }).message ||
-            (submissionVariant === 'dqc2' ? 'Failed to upload DQC 2 files' : 'Failed to upload DQC files'),
+          dqcSubmitErrorMessage(
+            presignRes.status,
+            (errBody as { message?: string }).message ||
+              (submissionVariant === 'dqc2' ? 'Failed to upload DQC 2 files' : 'Failed to upload DQC files'),
+          ),
         );
         return;
       }
@@ -169,7 +186,12 @@ export default function PopupDqcSubmission({
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setSubmitError(data.message || (submissionVariant === 'dqc2' ? 'Failed to upload DQC 2 files' : 'Failed to upload DQC files'));
+        setSubmitError(
+          dqcSubmitErrorMessage(
+            res.status,
+            data.message || (submissionVariant === 'dqc2' ? 'Failed to upload DQC 2 files' : 'Failed to upload DQC files'),
+          ),
+        );
         return;
       }
       onUploadSuccess?.();

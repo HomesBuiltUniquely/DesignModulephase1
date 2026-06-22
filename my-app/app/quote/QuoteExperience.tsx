@@ -4,13 +4,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { getApiBase } from '@/app/lib/apiBase';
 import { useSearchParams } from 'next/navigation';
 import { extractQuoteIdFromBody } from '@/app/lib/prolanceApiGetQuote';
-import { QuoteTermsAndConditions } from '@/app/quote/hubQuoteTermsPanel';
+import { QuoteExperienceView } from '@/app/quote/QuoteExperienceView';
 import {
   buildQuoteDiscountBreakdown,
   resolveTotalDiscount,
   type QuoteDiscountBreakdownRow,
 } from '@/app/quote/quoteDiscountBreakdown';
-import { QuoteDiscountDetails } from '@/app/quote/QuoteDiscountDetails';
+import type { QuoteRoom } from '@/app/quote/quoteTypes';
 
 const API = getApiBase();
 
@@ -24,12 +24,6 @@ function asStr(v: unknown): string {
   if (typeof v === 'string' && v.trim()) return v.trim();
   if (typeof v === 'number' && Number.isFinite(v)) return String(v);
   return '-';
-}
-
-function money(v: unknown): string {
-  const n = asNum(v);
-  if (n == null) return '-';
-  return `Rs ${n.toLocaleString('en-IN')}`;
 }
 
 function asObj(v: unknown): Record<string, unknown> {
@@ -56,25 +50,43 @@ function deepFindByKeys(obj: unknown, keys: string[]): unknown {
   return null;
 }
 
-type QuoteRoom = {
-  key: string;
-  roomName: string;
-  optionName: string;
-  totalPrice: number | null;
-  totalPriceOld: number | null;
-  unitsPrice: number | null;
-  loftsPrice: number | null;
-  servicesPrice: number | null;
-  appliancesPrice: number | null;
-  skirtingsPrice: number | null;
-  worktopsPrice: number | null;
-  additionalHWPrice: number | null;
-  roomRev: string;
-  matlInfo: string;
-  units: Array<{ label: string; cabinetClass: string; description: string; dimensions: string; price: number | null }>;
-  lofts: Array<{ description: string; dimensions: string; price: number | null }>;
-  servicesList: Array<{ category: string; description: string; qty: number | null; uom: string; price: number | null }>;
-};
+function pickCreatedOn(payload: Record<string, unknown> | null): string {
+  if (!payload) return '';
+  const walk = (obj: unknown): string => {
+    if (!obj || typeof obj !== 'object') return '';
+    const o = obj as Record<string, unknown>;
+    for (const k of ['createdOn', 'createdAt', 'quoteDate']) {
+      const v = o[k];
+      if (typeof v === 'string' && v.trim()) return v.trim();
+    }
+    for (const v of Object.values(o)) {
+      if (Array.isArray(v)) {
+        for (const item of v) {
+          const found = walk(item);
+          if (found) return found;
+        }
+      } else if (v && typeof v === 'object') {
+        const found = walk(v);
+        if (found) return found;
+      }
+    }
+    return '';
+  };
+  return walk(payload);
+}
+
+function formatQuoteDate(iso: string): string {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleDateString('en-IN', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    });
+  } catch {
+    return iso;
+  }
+}
 
 type NormalizedQuote = {
   quotationId: string;
@@ -302,8 +314,8 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
   const [summaryTab, setSummaryTab] = useState<'overall' | 'roomwise' | 'terms'>('overall');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [linkCopiedState, setLinkCopiedState] = useState<'customer' | 'internal' | null>(null);
-  const [themeMode, setThemeMode] = useState<'light' | 'dark'>('light');
   const [metaDraft, setMetaDraft] = useState<Record<string, string>>({});
+  const [productTab, setProductTab] = useState<Record<string, string>>({});
   const [quoteVersions, setQuoteVersions] = useState<QuoteVersionRow[]>([]);
   const [quoteVersionsLoading, setQuoteVersionsLoading] = useState(false);
   const [quoteVersionsError, setQuoteVersionsError] = useState<string | null>(null);
@@ -457,6 +469,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
   useEffect(() => {
     if (!payload) return;
     const dash = (v: string) => (v === '-' ? '' : v);
+    const createdRaw = pickCreatedOn(payload);
     setMetaDraft({
       customerName: dash(quote.customerName),
       refId: dash(quote.refId),
@@ -465,414 +478,53 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       projectType: dash(quote.projectType),
       projectId: dash(quote.projectId),
       quoteNum: dash(quote.quoteNum),
+      date: formatQuoteDate(createdRaw),
     });
   }, [payload, fallbackNormId, quote]);
 
   if (loading) {
-    return <div className="min-h-screen bg-[#f5f5f8] p-6 text-gray-700">Loading quote...</div>;
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#f7f3ef] text-[#5c5650]">
+        Loading quote...
+      </div>
+    );
   }
   if (error) {
-    return <div className="min-h-screen bg-[#f5f5f8] p-6 text-rose-700">{error}</div>;
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#f7f3ef] p-6 text-[#c1272d]">
+        {error}
+      </div>
+    );
   }
 
-  const isDark = themeMode === 'dark';
-  const pageBg = isDark ? 'bg-[#161a22]' : 'bg-[#f3f3f5]';
-  const panelBg = isDark ? 'bg-[#1e2430] border border-slate-700' : 'bg-white';
-  const cardBg = isDark ? 'bg-[#232b39]' : 'bg-white';
-  const headingText = isDark ? 'text-slate-100' : 'text-gray-800';
-  const mutedText = isDark ? 'text-slate-300' : 'text-gray-500';
+  const customerFirstName =
+    (metaDraft.customerName ?? '').trim().split(/\s+/)[0] ||
+    (quote.customerName !== '-' ? quote.customerName.split(/\s+/)[0] : '') ||
+    'Customer';
 
   return (
-    <div className={`min-h-screen ${pageBg} py-6`}>
-      <div
-        className={`mx-auto w-full px-3 sm:px-4 max-w-5xl`}
-      >
-        <div className={`rounded-xl shadow-sm ${panelBg}`}>
-          <div className="rounded-t-xl bg-[#282a2f] px-5 py-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <p className="text-xl font-bold text-white">HUBINTERIOR</p>
-                <p className="text-[11px] text-gray-300">Quotation View</p>
-              </div>
-              {isInternalMode ? (
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      if (!customerShareLink) return;
-                      await navigator.clipboard.writeText(customerShareLink);
-                      setLinkCopiedState('customer');
-                      setTimeout(() => setLinkCopiedState(null), 1600);
-                    }}
-                    className="rounded-md border border-emerald-400/60 bg-emerald-500/15 px-3 py-1.5 text-xs font-semibold text-emerald-100 hover:bg-emerald-500/25"
-                  >
-                    {linkCopiedState === 'customer' ? 'Customer Link Copied' : 'Copy Customer Link'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      if (!internalShareLink) return;
-                      await navigator.clipboard.writeText(internalShareLink);
-                      setLinkCopiedState('internal');
-                      setTimeout(() => setLinkCopiedState(null), 1600);
-                    }}
-                    className="rounded-md border border-cyan-400/60 bg-cyan-500/15 px-3 py-1.5 text-xs font-semibold text-cyan-100 hover:bg-cyan-500/25"
-                  >
-                    {linkCopiedState === 'internal' ? 'Internal Link Copied' : 'Copy Internal Link'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setThemeMode((prev) => (prev === 'light' ? 'dark' : 'light'))}
-                    className="rounded-md border border-white/25 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/20"
-                  >
-                    {isDark ? 'Light Mode' : 'Dark Mode'}
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="space-y-4 p-5">
-          <div className={`rounded-2xl p-6 shadow-sm ${cardBg}`}>
-            <p className={`text-xs font-semibold tracking-wide ${mutedText}`}>QUOTATION ID : {quote.quotationId}</p>
-            <h3 className={`mt-2 text-4xl font-bold ${headingText}`}>
-              Hey{' '}
-              {(metaDraft.customerName ?? '').trim() ||
-                (quote.customerName !== '-' ? quote.customerName : '') ||
-                'Customer'}
-              , your quotation is ready!
-            </h3>
-          </div>
-
-          <div className={`rounded-2xl p-4 shadow-sm ${cardBg}`}>
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              {(
-                [
-                  ['Customer Name', 'customerName'],
-                  ['Ref ID', 'refId'],
-                  ['City', 'city'],
-                  ['BHK Type', 'bhkType'],
-                  ['Project Type', 'projectType'],
-                  ['Project ID', 'projectId'],
-                  ['Quote Number', 'quoteNum'],
-                ] as const
-              ).map(([label, key]) => (
-                <div key={String(label)} className="rounded-lg bg-gray-50 p-3">
-                  <p className="text-[10px] uppercase tracking-wide text-gray-500">{label}</p>
-                  <input
-                    value={metaDraft[key] ?? ''}
-                    onChange={(e) =>
-                      setMetaDraft((prev) => ({
-                        ...prev,
-                        [key]: e.target.value,
-                      }))
-                    }
-                    placeholder={`Enter ${String(label).toLowerCase()}`}
-                    className="mt-1 w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-base font-semibold text-gray-900"
-                  />
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className={`rounded-2xl p-4 shadow-sm ${cardBg}`}>
-            <p className={`text-3xl font-bold ${headingText}`}>Summary Detail</p>
-            <div className="mt-4 grid grid-cols-1 gap-1 rounded-xl border border-gray-200 p-1 sm:grid-cols-3">
-              <button
-                type="button"
-                onClick={() => setSummaryTab('overall')}
-                className={`rounded-lg py-2 text-sm font-semibold ${summaryTab === 'overall' ? 'bg-rose-500 text-white' : 'text-gray-700'}`}
-              >
-                Overall Summary
-              </button>
-              <button
-                type="button"
-                onClick={() => setSummaryTab('roomwise')}
-                className={`rounded-lg py-2 text-sm font-semibold ${summaryTab === 'roomwise' ? 'bg-rose-500 text-white' : 'text-gray-700'}`}
-              >
-                Room Wise Summary
-              </button>
-              <button
-                type="button"
-                onClick={() => setSummaryTab('terms')}
-                className={`rounded-lg py-2 text-sm font-semibold ${summaryTab === 'terms' ? 'bg-rose-500 text-white' : 'text-gray-700'}`}
-              >
-                Terms and Condition
-              </button>
-            </div>
-
-            {summaryTab === 'terms' ? (
-              <QuoteTermsAndConditions isDark={isDark} />
-            ) : summaryTab === 'overall' ? (
-              <>
-                <div className="mt-5 rounded-xl bg-[#efeff2] py-10 text-center">
-                  <p className="text-lg font-semibold text-gray-700">
-                    Total <span className="text-2xl text-gray-900">{money(quote.totalPayableAmount)}</span>
-                  </p>
-                </div>
-
-                <div className="mt-4 grid grid-cols-12 px-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
-                  <div className="col-span-8">Name</div>
-                  <div className="col-span-4 text-right">Amount</div>
-                </div>
-                {quote.lineItems.length ? (
-                  quote.lineItems.map((item, idx) => (
-                    <div key={`${item.name}-${idx}`} className="grid grid-cols-12 items-center border-t border-gray-100 py-4 text-sm">
-                      <div className="col-span-8 flex items-center gap-3">
-                        <span className="inline-block h-5 w-1 rounded-full bg-violet-400" />
-                        <p className="font-semibold text-gray-800">{item.name}</p>
-                      </div>
-                      <div className="col-span-4 text-right">
-                        <p className="font-semibold text-gray-900">
-                          {money(item.discountedAmount ?? item.amount)}
-                        </p>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-                    Quote details are being prepared. Please verify totals below.
-                  </div>
-                )}
-
-                <div className="mt-5 space-y-3 rounded-xl border border-gray-200 p-4">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <p className="text-xl font-semibold text-gray-900">Interior Project Amount</p>
-                      <p className="text-xs text-gray-500">*Design &amp; Management Fees are not included</p>
-                    </div>
-                    <p className="text-lg font-semibold text-gray-900">{money(quote.interiorProjectAmount)}</p>
-                  </div>
-                  <QuoteDiscountDetails
-                    rows={quote.discountBreakdown}
-                    totalDiscount={quote.discount}
-                  />
-                  <div className="flex justify-between border-t border-gray-200 pt-3">
-                    <div>
-                      <p className="text-xl font-bold text-gray-900">Total Payable Amount</p>
-                      <p className="text-xs text-gray-500">Inclusive of all taxes &amp; discount</p>
-                    </div>
-                    <span className="text-2xl font-bold text-gray-900">{money(quote.totalPayableAmount)}</span>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <div className="mt-5 space-y-4">
-                {quote.rooms.length ? (
-                  quote.rooms.map((room) => {
-                    const roomTotal = room.totalPrice;
-                    const saving =
-                      room.totalPriceOld != null && roomTotal != null ? room.totalPriceOld - roomTotal : null;
-                    return (
-                      <div key={room.key} className="rounded-xl border border-gray-200 p-4">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div>
-                            <p className="text-lg font-semibold text-gray-900">{room.roomName}</p>
-                            <p className="text-sm text-gray-600">{room.optionName}</p>
-                          </div>
-                          <div className="text-right">
-                            <p className="text-xs text-gray-500">Room Total</p>
-                            <p className="text-xl font-bold text-gray-900">{money(roomTotal)}</p>
-                            {room.totalPriceOld != null ? (
-                              <p className="text-xs text-rose-400 line-through">{money(room.totalPriceOld)}</p>
-                            ) : null}
-                          </div>
-                        </div>
-                        <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
-                          {[
-                            ['Units', room.unitsPrice],
-                            ['Lofts', room.loftsPrice],
-                            ['Services', room.servicesPrice],
-                            ['Appliances', room.appliancesPrice],
-                            ['Skirtings', room.skirtingsPrice],
-                            ['Worktops', room.worktopsPrice],
-                            ['Additional HW', room.additionalHWPrice],
-                            ['Savings', saving],
-                          ].map(([label, value]) => (
-                            <div key={`${room.key}-${label}`} className="rounded-lg bg-gray-50 p-2">
-                              <p className="text-[10px] uppercase tracking-wide text-gray-500">{label}</p>
-                              <p className={`mt-1 text-sm font-semibold ${label === 'Savings' ? 'text-emerald-700' : 'text-gray-900'}`}>
-                                {money(value)}
-                              </p>
-                            </div>
-                          ))}
-                        </div>
-                        <div className="mt-4">
-                          <button
-                            type="button"
-                            onClick={() => setExpanded((prev) => ({ ...prev, [room.key]: !prev[room.key] }))}
-                            className="text-sm font-semibold text-indigo-700 hover:text-indigo-900"
-                          >
-                            {expanded[room.key] ? 'Read less' : 'Read more'}
-                          </button>
-                        </div>
-                        {expanded[room.key] ? (
-                          <div className="mt-3 space-y-3 rounded-lg border border-indigo-100 bg-indigo-50/40 p-3">
-                            {room.roomRev !== '-' ? (
-                              <p className="text-xs text-gray-600">
-                                <span className="font-semibold text-gray-800">Room Revision:</span> {room.roomRev}
-                              </p>
-                            ) : null}
-                            {room.matlInfo ? (
-                              <div>
-                                <p className="text-xs font-semibold uppercase tracking-wide text-gray-700">Material Info</p>
-                                <pre className="mt-1 whitespace-pre-wrap text-xs text-gray-700">{room.matlInfo}</pre>
-                              </div>
-                            ) : null}
-                            {room.units.length ? (
-                              <div>
-                                <p className="text-xs font-semibold uppercase tracking-wide text-gray-700">Base Cabinets / Units</p>
-                                <div className="mt-2 space-y-2">
-                                  {room.units.map((u, idx) => (
-                                    <div key={`${u.label}-${idx}`} className="rounded border border-gray-200 bg-white p-2 text-xs">
-                                      <p className="font-semibold text-gray-900">
-                                        {u.label} - {u.cabinetClass}
-                                      </p>
-                                      <p className="text-gray-700">{u.description}</p>
-                                      <p className="text-gray-600">Size: {u.dimensions}</p>
-                                      <p className="font-semibold text-gray-900">Price: {money(u.price)}</p>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : null}
-                            {room.lofts.length ? (
-                              <div>
-                                <p className="text-xs font-semibold uppercase tracking-wide text-gray-700">Lofts</p>
-                                <div className="mt-2 space-y-2">
-                                  {room.lofts.map((l, idx) => (
-                                    <div key={`${l.description}-${idx}`} className="rounded border border-gray-200 bg-white p-2 text-xs">
-                                      <p className="font-semibold text-gray-900">{l.description}</p>
-                                      <p className="text-gray-600">Size: {l.dimensions}</p>
-                                      <p className="font-semibold text-gray-900">Price: {money(l.price)}</p>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : null}
-                            {room.servicesList.length ? (
-                              <div>
-                                <p className="text-xs font-semibold uppercase tracking-wide text-gray-700">Services</p>
-                                <div className="mt-2 space-y-2">
-                                  {room.servicesList.map((s, idx) => (
-                                    <div key={`${s.category}-${idx}`} className="rounded border border-gray-200 bg-white p-2 text-xs">
-                                      <p className="font-semibold text-gray-900">{s.category}</p>
-                                      <p className="text-gray-700">{s.description}</p>
-                                      <p className="text-gray-600">
-                                        Qty: {s.qty ?? '-'} {s.uom}
-                                      </p>
-                                      <p className="font-semibold text-gray-900">Price: {money(s.price)}</p>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : null}
-                          </div>
-                        ) : null}
-                      </div>
-                    );
-                  })
-                ) : (
-                  <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm text-amber-900">
-                    Room-wise summary is not available in this response.
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          {quoteVersionsLoading ? (
-            <div className={`rounded-2xl p-4 shadow-sm ${cardBg}`}>
-              <p className={`text-sm ${mutedText}`}>Loading quotation versions…</p>
-            </div>
-          ) : null}
-          {quoteVersionsError ? (
-            <div className={`rounded-2xl border border-amber-200/60 bg-amber-50/90 p-4 shadow-sm dark:border-amber-900/50 dark:bg-amber-950/40`}>
-              <p className="text-sm text-amber-900 dark:text-amber-100">{quoteVersionsError}</p>
-            </div>
-          ) : null}
-          {!quoteVersionsLoading && !quoteVersionsError && quoteVersions.length > 1 ? (
-            <div
-              className={`overflow-hidden rounded-xl border shadow-xl ${
-                isDark ? 'border-slate-600 bg-[#1a1f28]' : 'border-gray-200 bg-white'
-              }`}
-            >
-              <div
-                className={`border-b px-4 py-3 ${isDark ? 'border-slate-600' : 'border-gray-100'}`}
-              >
-                <div className="flex items-center gap-2">
-                  <span className={isDark ? 'text-slate-300' : 'text-gray-600'} aria-hidden>
-                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-                      />
-                    </svg>
-                  </span>
-                  <span className={`text-lg font-semibold ${isDark ? 'text-slate-100' : 'text-gray-900'}`}>
-                    Quotation versions
-                  </span>
-                </div>
-                <p className={`mt-1 text-xs leading-relaxed ${isDark ? 'text-slate-500' : 'text-gray-500'}`}>
-                  Click a version to open that quotation.
-                </p>
-              </div>
-              <ul className="flex flex-col gap-3 p-4 sm:flex-row sm:flex-wrap">
-                {quoteVersions.map((v, idx) => {
-                  const isCurrent = String(v.quoteId) === String(versionFetchId);
-                  const href = `/quote/${encodeURIComponent(String(v.quoteId))}${internalVersionSuffix}`;
-                  let dateLabel = '';
-                  try {
-                    dateLabel = v.createdAt ? new Date(v.createdAt).toLocaleDateString() : '';
-                  } catch {
-                    dateLabel = '';
-                  }
-                  return (
-                    <li
-                      key={`qv-main-${v.quoteId}-${idx}`}
-                      className={`flex min-w-[12rem] flex-1 flex-col rounded-lg border px-3 py-3 ${
-                        isCurrent
-                          ? isDark
-                            ? 'border-teal-500/40 bg-teal-950/30'
-                            : 'border-teal-200 bg-teal-50/60'
-                          : isDark
-                            ? 'border-slate-600 bg-slate-900/40'
-                            : 'border-gray-100 bg-gray-50/90'
-                      }`}
-                    >
-                      <a
-                        href={href}
-                        className={`text-base font-semibold underline-offset-2 hover:underline ${
-                          isDark ? 'text-slate-100 hover:text-teal-300' : 'text-gray-900 hover:text-teal-800'
-                        }`}
-                      >
-                        V{idx + 1} quotation
-                        {isCurrent ? (
-                          <span
-                            className={`ml-1 text-sm font-normal ${
-                              isDark ? 'text-teal-400' : 'text-teal-700'
-                            }`}
-                          >
-                            (this page)
-                          </span>
-                        ) : null}
-                      </a>
-                      <p className={`mt-1 text-xs tabular-nums ${isDark ? 'text-slate-400' : 'text-gray-600'}`}>
-                        ID {v.quoteId}
-                        {dateLabel ? ` · ${dateLabel}` : ''}
-                      </p>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          ) : null}
-
-        </div>
-        </div>
-      </div>
-    </div>
+    <QuoteExperienceView
+      quote={quote}
+      metaDraft={metaDraft}
+      setMetaDraft={setMetaDraft}
+      customerFirstName={customerFirstName}
+      isInternalMode={isInternalMode}
+      customerShareLink={customerShareLink}
+      internalShareLink={internalShareLink}
+      linkCopiedState={linkCopiedState}
+      setLinkCopiedState={setLinkCopiedState}
+      summaryTab={summaryTab}
+      setSummaryTab={setSummaryTab}
+      expanded={expanded}
+      setExpanded={setExpanded}
+      productTab={productTab}
+      setProductTab={setProductTab}
+      quoteVersions={quoteVersions}
+      quoteVersionsLoading={quoteVersionsLoading}
+      quoteVersionsError={quoteVersionsError}
+      versionFetchId={versionFetchId}
+      internalVersionSuffix={internalVersionSuffix}
+    />
   );
 }
 

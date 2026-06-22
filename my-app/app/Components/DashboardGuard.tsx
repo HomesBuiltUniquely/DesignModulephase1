@@ -67,7 +67,7 @@ export default function DashboardGuard() {
               HUB Calendar
             </a>
           )}
-          {((user.role === 'territorial_design_manager' || user.role === 'deputy_general_manager') || user.role === 'dqc_manager' || user.role === 'mmt_manager' || user.role === 'mmt_executive' || user.role === 'finance' || user.role === 'admin') && (
+          {((user.role === 'territorial_design_manager' || user.role === 'deputy_general_manager') || user.role === 'dqc_manager' || user.role === 'mmt_manager' || user.role === 'mmt_executive' || user.role === 'finance' || user.role === 'admin' || user.role === 'senior_project_manager' || user.role === 'project_manager') && (
             <>
               {(user.role === 'territorial_design_manager' || user.role === 'deputy_general_manager') && <a href="/tdm/register" className="text-gray-600 hover:text-gray-900 text-sm">Register DM / Designer</a>}
               {user.role === 'deputy_general_manager' && <a href="/admin/create-tdm" className="text-gray-600 hover:text-gray-900 text-sm">Create TDM</a>}
@@ -82,14 +82,13 @@ export default function DashboardGuard() {
                 <>
                   <a href="/mmt-manager/register" className="text-gray-600 hover:text-gray-900 text-sm">Register MMT Executive</a>
                   <a href="/mmt" className="text-gray-600 hover:text-gray-900 text-sm">D1 Uploads</a>
-                  <a href="/d2-uploads" className="text-gray-600 hover:text-gray-900 text-sm">D2 Uploads</a>
                 </>
               )}
               {user.role === 'mmt_executive' && (
-                <>
-                  <a href="/mmt" className="text-gray-600 hover:text-gray-900 text-sm">D1 Uploads</a>
-                  <a href="/d2-uploads" className="text-gray-600 hover:text-gray-900 text-sm">D2 Uploads</a>
-                </>
+                <a href="/mmt" className="text-gray-600 hover:text-gray-900 text-sm">D1 Uploads</a>
+              )}
+              {(user.role === 'senior_project_manager' || user.role === 'project_manager' || user.role === 'admin') && (
+                <a href="/d2-uploads" className="text-gray-600 hover:text-gray-900 text-sm">D2 Uploads</a>
               )}
             </>
           )}
