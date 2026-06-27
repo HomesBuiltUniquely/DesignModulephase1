@@ -2719,6 +2719,8 @@ export default function ProjectDetailPage() {
                             onDesignDragOver={onDesignDragOver}
                             removeDesignFile={removeDesignFile}
                             ecLocation={getLeadBranchName(project)}
+                            designerName={authUser?.name}
+                            apiBase={API}
                             initialDate={(() => {
                                 const ev = historyEvents.find(e => e.taskName === 'First cut design + quotation discussion meeting request' && (e.meta as any)?.meetingDate);
                                 return (ev?.meta as any)?.meetingDate || '';
@@ -2778,10 +2780,14 @@ export default function ProjectDetailPage() {
                                             meetingType: 'dqc1_first_cut',
                                             meetingDate: meta?.meetingDate,
                                             meetingTime: meta?.meetingTime,
+                                            meetingEndTime: meta?.meetingEndTime,
                                             meetingMode: meta?.meetingMode,
                                             meetingLink: meta?.meetingLink,
                                             ecLocation: meta?.ecLocation || getLeadBranchName(project),
                                             attachments: uploadedAttachments,
+                                            startTime: meta?.startTime,
+                                            endTime: meta?.endTime,
+                                            slotId: meta?.slotId,
                                         }),
                                     });
                                     addHistoryEvent({
@@ -3103,6 +3109,8 @@ export default function ProjectDetailPage() {
                             onDesignDragOver={onDesignDragOver}
                             removeDesignFile={removeDesignFile}
                             ecLocation={getLeadBranchName(project)}
+                            designerName={authUser?.name}
+                            apiBase={API}
                             initialDate={(() => {
                                 const ev = historyEvents.find(e => e.taskName === 'Material selection meeting + quotation discussion' && (e.meta as any)?.meetingDate);
                                 return (ev?.meta as any)?.meetingDate || '';
@@ -3156,9 +3164,13 @@ export default function ProjectDetailPage() {
                                             meetingType: 'dqc2_material_selection',
                                             meetingDate: meta?.meetingDate,
                                             meetingTime: meta?.meetingTime,
+                                            meetingEndTime: meta?.meetingEndTime,
                                             meetingMode: meta?.meetingMode,
                                             meetingLink: meta?.meetingLink,
                                             ecLocation: meta?.ecLocation || getLeadBranchName(project),
+                                            startTime: meta?.startTime,
+                                            endTime: meta?.endTime,
+                                            slotId: meta?.slotId,
                                             ...(attachments.length ? { attachments } : {}),
                                         }),
                                     });
@@ -3388,6 +3400,8 @@ export default function ProjectDetailPage() {
                             onDesignDragOver={onDesignDragOver}
                             removeDesignFile={removeDesignFile}
                             ecLocation={getLeadBranchName(project)}
+                            designerName={authUser?.name}
+                            apiBase={API}
                             initialDate={(() => {
                                 const ev = historyEvents.find(e => e.taskName === 'Design sign off' && (e.meta as any)?.meetingDate);
                                 return (ev?.meta as any)?.meetingDate || '';
@@ -3441,10 +3455,14 @@ export default function ProjectDetailPage() {
                                             meetingType: 'design_signoff',
                                             meetingDate: meta?.meetingDate,
                                             meetingTime: meta?.meetingTime,
+                                            meetingEndTime: meta?.meetingEndTime,
                                             meetingMode: meta?.meetingMode,
                                             meetingLink: meta?.meetingLink,
                                             ecLocation: meta?.ecLocation || getLeadBranchName(project),
                                             attachments: uploadedAttachments,
+                                            startTime: meta?.startTime,
+                                            endTime: meta?.endTime,
+                                            slotId: meta?.slotId,
                                         }),
                                     });
                                     addHistoryEvent({

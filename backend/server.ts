@@ -125,9 +125,9 @@ app.get("/api/health", (_req, res) => {
 // ----- MySQL setup -----
 // Defaults are set from the credentials you provided; you can still override via env vars if needed.
 const pool = mysql.createPool({
-  host: process.env.DB_HOST || "database-1.cl002gu0o5ft.ap-south-2.rds.amazonaws.com",
-  user: process.env.DB_USER || "admin",
-  password: process.env.DB_PASSWORD || "Hubinterior2019",
+  host: process.env.DB_HOST || "localhost",
+  user: process.env.DB_USER || "root",
+  password: process.env.DB_PASSWORD || "Root@123",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -160,7 +160,7 @@ if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 const PROFILE_IMAGES_DIR = path.join(UPLOADS_DIR, "profile-images");
 if (!fs.existsSync(PROFILE_IMAGES_DIR)) fs.mkdirSync(PROFILE_IMAGES_DIR, { recursive: true });
 const API_BASE = process.env.API_BASE_URL || "http://localhost:3001";
-const FRONTEND_BASE = (process.env.FRONTEND_BASE_URL || "http://localhost:3000").replace(/\/$/, "");
+const FRONTEND_BASE = (process.env.FRONTEND_BASE_URL || "http://localhost:3000" || "http://localhost:3002" ).replace(/\/$/, "");
 const CRM_CALLBACK_BASE =
   process.env.CRM_CALLBACK_BASE_URL ||
   process.env.CRM_API_BASE_URL ||
@@ -270,6 +270,32 @@ async function fetchFromErpWithRetry(endpoint: string) {
   }
 
   if (!res.ok) throw new Error(`ERP API error: ${res.status}`);
+  return res.json();
+}
+
+async function callErpApi(endpoint: string, options: { method?: string; body?: string } = {}): Promise<any> {
+  const method = options.method || "GET";
+  let token = await getErpToken();
+  if (!token) throw new Error("Could not get ERP auth token");
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  };
+
+  let res = await fetch(`${ERP_BASE_URL}${endpoint}`, { method, headers, body: options.body });
+
+  if (res.status === 401) {
+    token = await getErpToken(true);
+    if (!token) throw new Error("Could not refresh ERP auth token");
+    headers.Authorization = `Bearer ${token}`;
+    res = await fetch(`${ERP_BASE_URL}${endpoint}`, { method, headers, body: options.body });
+  }
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`ERP API error: ${res.status} ${errText}`.trim());
+  }
   return res.json();
 }
 
@@ -3112,6 +3138,19 @@ app.all("/api/auth/register", async (req: Request, res: Response) => {
         designManagerId = idNum;
       }
     }
+    // Designer names must be unique to guarantee slot matching with CRM
+    if (targetRole === "designer") {
+      const [nameCheck] = await pool.query(
+        "SELECT id FROM users WHERE name = ? AND role = 'designer' LIMIT 1",
+        [displayName]
+      );
+      if ((nameCheck as any[]).length > 0) {
+        return res.status(409).json({
+          message: `A designer with the name "${displayName}" already exists. Designer names must be unique.`,
+        });
+      }
+    }
+
     const [result] = await pool.query(
       "INSERT INTO users (email, password, name, role, phone, design_manager_id, territorial_design_manager_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
       [normalized, String(password), displayName, targetRole, phoneVal || null, designManagerId, territorialDesignManagerId],
@@ -7707,10 +7746,14 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       meetingType,
       meetingDate,
       meetingTime,
+      meetingEndTime,
       meetingLink,
       meetingMode,
       ecLocation,
       attachments,
+      slotId,
+      startTime,
+      endTime,
     } = req.body || {};
 
     if (!meetingType || !meetingDate || !meetingTime) {
@@ -7839,21 +7882,78 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       return res.status(400).json({ message: "Unsupported meetingType" });
     }
 
+    // Compute the correct end time from the slot's endTime (HH:MM), falling back to 90 min default
+    const eventEnd = meetingEndTime
+      ? formatGoogleDateTime(meetingDate, meetingEndTime) ?? addHoursToIso(eventStart, 1.5)
+      : addHoursToIso(eventStart, 1.5);
+
+    // Create Google Calendar event and capture the result so we can pass eventId to Java
+    let gcalEventId: string | null = null;
+    let gcalHtmlLink: string | null = null;
     try {
-      await createGoogleCalendarEventForFirstAvailableUser({
+      const gcalResult = await createGoogleCalendarEventForFirstAvailableUser({
         userIds: [row.assigned_designer_id, actingUser.id],
         summary,
         description,
         startDateTimeIso: eventStart,
-        endDateTimeIso: addHoursToIso(eventStart, 1),
+        endDateTimeIso: eventEnd,
         attendees: distinctEmails([customerEmail, row.designerEmail, actingUser.email]),
       });
+      if (gcalResult) {
+        gcalEventId = (gcalResult as any).id ?? (gcalResult as any).eventId ?? null;
+        gcalHtmlLink = (gcalResult as any).htmlLink ?? null;
+        console.log(`[GCal] Event created: ${gcalEventId}`);
+      }
     } catch (calendarErr) {
       console.error("meeting invite Google event create error (non-fatal)", {
         leadId,
         meetingType,
         error: calendarErr,
       });
+    }
+
+    // Register slot + Google event details in Java CRM (non-fatal — GCal event and email already sent)
+    if (slotId && meetingDate) {
+      try {
+        await callErpApi("/v1/Appointment", {
+          method: "POST",
+          body: JSON.stringify({
+            designerName: actingUser.name,
+            date: meetingDate,
+            slotId,
+            source: "DESIGN_MODULE",
+            description: `Design meeting - Lead ID: ${leadId}`,
+            leadId,
+            // Pass the GCal event details so Java stores them without a second sync attempt
+            googleEventId: gcalEventId,
+            googleHtmlLink: gcalHtmlLink,
+            googleSyncStatus: gcalEventId ? "SYNCED" : "DM_GCAL_FAILED",
+          }),
+        });
+        console.log(`[SlotSync] Slot ${slotId} blocked in Java for ${actingUser.name} on ${meetingDate} (gcal=${gcalEventId ?? "none"})`);
+      } catch (slotErr) {
+        console.error("[SlotSync] Java appointment registration failed (non-fatal)", slotErr);
+      }
+    } else if (startTime && endTime) {
+      try {
+        await callErpApi("/v1/Appointment", {
+          method: "POST",
+          body: JSON.stringify({
+            designerName: actingUser.name,
+            startTime,
+            endTime,
+            source: "DESIGN_MODULE",
+            description: `Design meeting - Lead ID: ${leadId}`,
+            leadId,
+            googleEventId: gcalEventId,
+            googleHtmlLink: gcalHtmlLink,
+            googleSyncStatus: gcalEventId ? "SYNCED" : "DM_GCAL_FAILED",
+          }),
+        });
+        console.log(`[SlotSync] Dynamic window ${startTime}–${endTime} blocked in Java for ${actingUser.name} (gcal=${gcalEventId ?? "none"})`);
+      } catch (slotErr) {
+        console.error("[SlotSync] Java dynamic appointment registration failed (non-fatal)", slotErr);
+      }
     }
 
     if (customerEmail) {
@@ -9893,32 +9993,40 @@ app.get("/api/sales-admins", async (req: Request, res: Response) => {
   }
 });
 
-// Designers for Sales Closure form (from users with role designer or design_manager)
+// Designers for Sales Closure form AND CRM slot-sync (source of truth for designer list)
 app.get("/api/designers", async (req: Request, res: Response) => {
+  console.log("[GET /api/designers] request received");
   try {
     const currentUser = await getUserFromSession(req);
     const currentRole = (currentUser?.role || "").toLowerCase();
+    console.log(`[GET /api/designers] caller role: "${currentRole}", id: ${currentUser?.id ?? "unauthenticated"}`);
+
     let query = `SELECT u.id,
                         u.name,
+                        u.email,
                         u.role,
                         COALESCE(m.name, '') as leadName
                  FROM users u
                  LEFT JOIN users m ON u.design_manager_id = m.id
-                 WHERE u.role IN ('designer', 'design_manager')`;
+                 WHERE u.role = 'designer'`;
     const params: number[] = [];
     if (currentRole === "territorial_design_manager" && currentUser) {
-      query += ` AND (
-        (u.role = 'design_manager' AND u.territorial_design_manager_id = ?)
-        OR (u.role = 'designer' AND m.territorial_design_manager_id = ?)
-      )`;
-      params.push(currentUser.id, currentUser.id);
+      query += ` AND m.territorial_design_manager_id = ?`;
+      params.push(currentUser.id);
     }
     query += " ORDER BY u.name ASC";
+
+    console.log("[GET /api/designers] running query...");
     const [rows] = await pool.query(query, params);
-    res.json(rows);
-  } catch (err) {
-    console.error("designers error", err);
-    res.status(500).json({ message: "Failed to load designers" });
+    const list = rows as any[];
+    console.log(`[GET /api/designers] found ${list.length} designers`);
+
+    // Always return { designers: [...] } so CRM and legacy callers both work
+    return res.json({ designers: list });
+  } catch (err: any) {
+    console.error("[GET /api/designers] DB error:", err?.code, err?.message);
+    // Return empty list — do NOT crash; CRM shows graceful empty dropdown
+    return res.json({ designers: [] });
   }
 });
 
@@ -11115,6 +11223,73 @@ app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
   const msg = err instanceof Error ? err.message : "Server error";
   console.error("Express error:", err);
   return res.status(500).json({ message: msg });
+});
+
+// ========== Slot Sync — New Endpoints ==========
+
+// NOTE: GET /api/designers is defined earlier in this file (line ~9957) — do not re-register here.
+
+// GET /api/appointment/designer/:designerName — proxy to Java CRM (booked appointments)
+app.get("/api/appointment/designer/:designerName", async (req: Request, res: Response) => {
+  const designerName = String(req.params.designerName || "").trim();
+  if (!designerName) {
+    return res.status(400).json({ message: "designerName is required" });
+  }
+  try {
+    const data = await callErpApi(
+      `/v1/Appointment/designer/${encodeURIComponent(designerName)}`,
+    );
+    return res.json(data);
+  } catch (err: any) {
+    console.error("designer appointments proxy error", err);
+    return res.status(500).json({ message: "Failed to fetch designer appointments", error: err?.message });
+  }
+});
+
+// GET /api/appointment/available-slots — proxy to Java CRM
+app.get("/api/appointment/available-slots", async (req: Request, res: Response) => {
+  const { date, designerName } = req.query as { date?: string; designerName?: string };
+  if (!date || !designerName) {
+    return res.status(400).json({ message: "date and designerName are required" });
+  }
+  try {
+    const data = await callErpApi(
+      `/v1/Appointment/available-slots?date=${encodeURIComponent(date)}&designerName=${encodeURIComponent(designerName)}`
+    );
+    return res.json(data);
+  } catch (err: any) {
+    console.error("available-slots proxy error", err);
+    return res.status(500).json({ message: "Failed to fetch slots", error: err?.message });
+  }
+});
+
+// POST /api/appointment — proxy slot booking to Java CRM
+app.post("/api/appointment", async (req: Request, res: Response) => {
+  const actingUser = await getUserFromSession(req);
+  if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+
+  const { designerName, date, slotId, leadId } = req.body || {};
+  if (!designerName || !date || !slotId) {
+    return res.status(400).json({ message: "designerName, date, slotId are required" });
+  }
+
+  try {
+    const data = await callErpApi("/v1/Appointment", {
+      method: "POST",
+      body: JSON.stringify({
+        designerName,
+        date,
+        slotId,
+        source: "DESIGN_MODULE",
+        description: `Design Module meeting - Lead ID: ${leadId ?? "N/A"}`,
+        leadId: leadId ?? null,
+      }),
+    });
+    return res.status(201).json(data);
+  } catch (err: any) {
+    console.error("appointment create proxy error", err);
+    return res.status(500).json({ message: "Failed to create appointment", error: err?.message });
+  }
 });
 
 // ----- Keep process alive on unhandled errors (log instead of exit) -----

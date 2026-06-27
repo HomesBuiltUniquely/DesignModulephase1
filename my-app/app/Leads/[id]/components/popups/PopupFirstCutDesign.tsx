@@ -2,6 +2,27 @@
 
 import { useState } from "react";
 import type { RefObject } from "react";
+import MeetingSlotPickerModal from "./MeetingSlotPickerModal";
+import {
+  buildHubMeetingDateTimeIso,
+  formatHubTimeRange,
+  HUB_MEETING_DURATION_MIN,
+  minutesToHubTime24,
+} from "@/lib/hub-meeting-schedule";
+
+type MeetingMeta = {
+  meetingDate?: string;
+  meetingTime?: string;
+  meetingEndTime?: string;
+  meetingMode?: "online" | "offline";
+  meetingLink?: string;
+  ecLocation?: string | null;
+  completionPercent?: number;
+  /** Legacy catalog slot — optional when using dynamic 90-min window */
+  slotId?: string;
+  startTime?: string;
+  endTime?: string;
+};
 
 type Props = {
   designUploadFiles: File[];
@@ -11,39 +32,25 @@ type Props = {
   onDesignDrop: (e: React.DragEvent) => void;
   onDesignDragOver: (e: React.DragEvent) => void;
   removeDesignFile: (index: number) => void;
-  /**
-   * Send meeting invite + upload; does not complete task or close.
-   * Can be called multiple times.
-   */
   /** Sales closure experience center / branch (from lead payload) */
   ecLocation?: string | null;
+  /** Logged-in designer's name — used to fetch their available slots */
+  designerName?: string | null;
+  /** API base URL for slot fetching */
+  apiBase?: string;
   /** Pre-fill values if available */
   initialDate?: string;
   initialTime?: string;
   initialMode?: "online" | "offline";
   initialLink?: string;
   initialCompletionPercent?: number;
-  onSubmit?: (meta?: {
-    meetingDate?: string;
-    meetingTime?: string;
-    meetingMode?: "online" | "offline";
-    meetingLink?: string;
-    ecLocation?: string | null;
-    completionPercent?: number;
-  }) => void;
+  onSubmit?: (meta?: MeetingMeta) => void;
   /** Called when designer marks 100% complete; parent should record task complete and close. */
-  onCompleteAndProceed?: (meta?: {
-    meetingDate?: string;
-    meetingTime?: string;
-    meetingMode?: "online" | "offline";
-    meetingLink?: string;
-    ecLocation?: string | null;
-    completionPercent?: number;
-  }) => void;
+  onCompleteAndProceed?: (meta?: MeetingMeta) => void;
 };
 
 /**
- * First cut design + quotation discussion meeting request – date, time, meeting mode, design upload.
+ * First cut design + quotation discussion meeting request – date, slot picker, meeting mode, design upload.
  */
 export default function PopupFirstCutDesign({
   designUploadFiles,
@@ -54,6 +61,8 @@ export default function PopupFirstCutDesign({
   onDesignDragOver,
   removeDesignFile,
   ecLocation,
+  designerName,
+  apiBase = "",
   initialDate,
   initialTime,
   initialMode,
@@ -67,10 +76,40 @@ export default function PopupFirstCutDesign({
   const [meetingMode, setMeetingMode] = useState<"online" | "offline">(initialMode || "online");
   const [meetingLink, setMeetingLink] = useState(initialLink || "");
   const [completionPercent, setCompletionPercent] = useState(initialCompletionPercent || 0);
+  const [selectedStartMin, setSelectedStartMin] = useState<number | null>(null);
+  const [slotPickerOpen, setSlotPickerOpen] = useState(false);
 
   const isMeetingLinkEmpty = meetingLink.trim().length === 0;
-  // If offline, meeting link is not mandatory
-  const isMeetingScheduleIncomplete = !meetingDate || !meetingTime || (meetingMode === "online" && isMeetingLinkEmpty);
+  const isMeetingScheduleIncomplete =
+    !meetingDate ||
+    selectedStartMin === null ||
+    (meetingMode === "online" && isMeetingLinkEmpty);
+
+  const buildMeta = (): MeetingMeta => {
+    const endMin =
+      selectedStartMin !== null ? selectedStartMin + HUB_MEETING_DURATION_MIN : null;
+    const startTime24 =
+      selectedStartMin !== null ? minutesToHubTime24(selectedStartMin) : meetingTime;
+    const endTime24 = endMin !== null ? minutesToHubTime24(endMin) : undefined;
+
+    return {
+      meetingDate,
+      meetingTime: startTime24 || meetingTime,
+      meetingEndTime: endTime24,
+      meetingMode,
+      meetingLink: meetingLink.trim(),
+      ecLocation,
+      completionPercent,
+      startTime:
+        selectedStartMin !== null && meetingDate
+          ? buildHubMeetingDateTimeIso(meetingDate, selectedStartMin)
+          : undefined,
+      endTime:
+        endMin !== null && meetingDate
+          ? buildHubMeetingDateTimeIso(meetingDate, endMin)
+          : undefined,
+    };
+  };
 
   return (
     <div className="w-full">
@@ -95,6 +134,8 @@ export default function PopupFirstCutDesign({
             MEETING SCHEDULE
           </div>
         </div>
+
+        {/* Meeting Link */}
         <div className="px-6 pt-2">
           <div className="font-bold text-sm text-black mb-1">
             Meeting link {meetingMode === "online" && <span className="text-red-500">*</span>}
@@ -112,26 +153,66 @@ export default function PopupFirstCutDesign({
             </p>
           )}
         </div>
-        <div className="flex items-center justify-between gap-2 px-6 py-2">
-          <div>
-            <div className="font-bold text-sm text-black">Date</div>
-            <input
-              type="date"
-              className="w-[250px] border border-gray-300 rounded-md p-2 mt-2"
-              value={meetingDate}
-              onChange={(e) => setMeetingDate(e.target.value)}
-            />
-          </div>
-          <div>
-            <div className="font-bold text-sm text-black">Time</div>
-            <input
-              type="time"
-              className="w-[250px] border border-gray-300 rounded-md p-2 mt-2"
-              value={meetingTime}
-              onChange={(e) => setMeetingTime(e.target.value)}
-            />
-          </div>
+
+        {/* Date picker */}
+        <div className="px-6 py-2">
+          <div className="font-bold text-sm text-black mb-1">Date <span className="text-red-500">*</span></div>
+          <input
+            type="date"
+            className="w-full max-w-xs border border-gray-300 rounded-md p-2"
+            value={meetingDate}
+            onChange={(e) => {
+              setMeetingDate(e.target.value);
+              setSelectedStartMin(null);
+            }}
+          />
         </div>
+
+        {/* Time slot — open picker modal; show selection summary here */}
+        <div className="px-6 py-2">
+          <div className="font-bold text-sm text-black mb-2">
+            Time Slot <span className="text-red-500">*</span>
+          </div>
+
+          {!meetingDate ? (
+            <p className="text-xs text-gray-400">Pick a date first, then select a time slot.</p>
+          ) : !designerName ? (
+            <p className="text-xs text-orange-600">Designer name missing — cannot load slots.</p>
+          ) : selectedStartMin !== null ? (
+            <div className="flex max-w-sm items-center justify-between gap-3 rounded-md border border-gray-300 bg-gray-50 px-3 py-2.5">
+              <p className="text-sm font-medium text-gray-900">
+                {formatHubTimeRange(selectedStartMin, selectedStartMin + HUB_MEETING_DURATION_MIN)}
+              </p>
+              <button
+                type="button"
+                onClick={() => setSlotPickerOpen(true)}
+                className="shrink-0 text-xs font-semibold text-blue-600 hover:underline"
+              >
+                Change
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setSlotPickerOpen(true)}
+              className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-800 hover:bg-gray-50"
+            >
+              Select time slot
+            </button>
+          )}
+        </div>
+
+        <MeetingSlotPickerModal
+          open={slotPickerOpen}
+          onClose={() => setSlotPickerOpen(false)}
+          onConfirm={setSelectedStartMin}
+          apiBase={apiBase}
+          designerName={designerName || ""}
+          meetingDate={meetingDate}
+          initialStartMin={selectedStartMin}
+        />
+
+        {/* Meeting mode */}
         <div className="flex items-center gap-2 py-4 px-6">
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -180,6 +261,8 @@ export default function PopupFirstCutDesign({
             </div>
           )}
         </div>
+
+        {/* Design upload */}
         <div className="flex items-center gap-2 py-4 px-6 mt-4">
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -207,9 +290,7 @@ export default function PopupFirstCutDesign({
           />
           <div
             className="w-full max-w-[540px] border-2 border-dashed border-gray-300 rounded-xl bg-white p-8 flex flex-col items-center justify-center min-h-[220px] cursor-pointer hover:border-blue-400 hover:bg-blue-50/30 transition-colors"
-            onClick={() =>
-              openDesignFileUpload(".pdf,.jpg,.jpeg,.png,.fig,.psd")
-            }
+            onClick={() => openDesignFileUpload(".pdf,.jpg,.jpeg,.png,.fig,.psd")}
             onDrop={onDesignDrop}
             onDragOver={onDesignDragOver}
           >
@@ -238,30 +319,21 @@ export default function PopupFirstCutDesign({
             <div className="flex items-center justify-center gap-4 flex-wrap">
               <button
                 type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  openDesignFileUpload(".pdf");
-                }}
+                onClick={(e) => { e.stopPropagation(); openDesignFileUpload(".pdf"); }}
                 className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 text-red-600 font-medium text-sm"
               >
                 PDF
               </button>
               <button
                 type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  openDesignFileUpload(".jpg,.jpeg,.png");
-                }}
+                onClick={(e) => { e.stopPropagation(); openDesignFileUpload(".jpg,.jpeg,.png"); }}
                 className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 text-blue-600 font-medium text-sm"
               >
                 JPG/PNG
               </button>
               <button
                 type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  openDesignFileUpload(".fig,.psd");
-                }}
+                onClick={(e) => { e.stopPropagation(); openDesignFileUpload(".fig,.psd"); }}
                 className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 text-purple-600 font-medium text-sm"
               >
                 FIG/PSD
@@ -278,9 +350,7 @@ export default function PopupFirstCutDesign({
                   key={`${file.name}-${index}`}
                   className="flex items-center justify-between text-sm bg-gray-100 rounded-lg px-3 py-2"
                 >
-                  <span className="text-gray-700 truncate flex-1">
-                    {file.name}
-                  </span>
+                  <span className="text-gray-700 truncate flex-1">{file.name}</span>
                   <button
                     type="button"
                     onClick={() => removeDesignFile(index)}
@@ -293,8 +363,10 @@ export default function PopupFirstCutDesign({
             </div>
           )}
         </div>
+
         <div className="w-full border border-gray-200 mt-4" />
-        {/* Design completion level bar: 0–100%; only "Mark 100% complete & proceed" advances the stage */}
+
+        {/* Completion level */}
         <div className="px-6 py-4 space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-[14px] font-bold text-black">Design completion</span>
@@ -329,16 +401,7 @@ export default function PopupFirstCutDesign({
         <div className="flex justify-end gap-2 bg-gray-100 px-6 py-3">
           <button
             type="button"
-            onClick={() =>
-              onSubmit?.({
-                meetingDate,
-                meetingTime,
-                meetingMode,
-                meetingLink: meetingLink.trim(),
-                ecLocation,
-                completionPercent,
-              })
-            }
+            onClick={() => onSubmit?.(buildMeta())}
             disabled={isMeetingScheduleIncomplete}
             className="bg-blue-500 text-white px-4 h-9 rounded-md flex items-center gap-2 font-bold disabled:opacity-50 disabled:cursor-not-allowed"
           >
@@ -360,16 +423,7 @@ export default function PopupFirstCutDesign({
           </button>
           <button
             type="button"
-            onClick={() =>
-              onCompleteAndProceed?.({
-                meetingDate,
-                meetingTime,
-                meetingMode,
-                meetingLink: meetingLink.trim(),
-                ecLocation,
-                completionPercent,
-              })
-            }
+            onClick={() => onCompleteAndProceed?.(buildMeta())}
             disabled={completionPercent < 100 || isMeetingScheduleIncomplete}
             className="bg-green-600 text-white px-4 h-9 rounded-md flex items-center gap-2 font-bold disabled:opacity-50 disabled:cursor-not-allowed"
           >
