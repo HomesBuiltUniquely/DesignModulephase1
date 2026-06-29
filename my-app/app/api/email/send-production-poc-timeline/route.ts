@@ -32,7 +32,7 @@ export async function POST(request: Request) {
       designerName,
       productionPoc,
       executionPoc,
-      spmPoc,
+      spmPoc: spmPoc ?? 'guruvignesh@hubinterior.com',
       operationManager,
       operationHead,
     });
