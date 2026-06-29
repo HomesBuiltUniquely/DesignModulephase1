@@ -6074,8 +6074,12 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                 "Customer";
               const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
               const productionPoc = meta?.productionPoc ?? "Prajwal - prajwal@hubinterior.com";
-              const executionPoc = row.pmName && row.pmEmail ? `${row.pmName} - ${row.pmEmail}` : (meta?.executionPoc ?? "Project Manager - PM automatically");
-              const spmPoc = meta?.spmPoc ?? "Dummy SPM - dummy.spm@hubinterior.com";
+              const executionPoc = row.pmEmail
+                ? row.pmName
+                  ? `${row.pmName} - ${row.pmEmail}`
+                  : row.pmEmail
+                : "Project Manager — not yet assigned";
+              const spmPoc = "guruvignesh@hubinterior.com";
               const operationManager = meta?.operationManager ?? "Balaji - balaji@hubinterior.com";
               const operationHead = meta?.operationHead ?? "Alex - alex@hubinterior.com";
               const mailChainCc = await getMailLoopCcEmails([actingUser.email], id);
@@ -6092,6 +6096,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   subject: mailChainSubject,
                   customerName,
                   designerName,
+                  projectId,
                   productionPoc,
                   executionPoc,
                   spmPoc,
