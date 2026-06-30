@@ -2,6 +2,7 @@
 
 import Image from 'next/image';
 import type { QuoteDiscountBreakdownRow } from './quoteDiscountBreakdown';
+import { QuoteBrandLogo } from './QuoteBrandLogo';
 import { QuoteDiscountDetails } from './QuoteDiscountDetails';
 import { QuoteTermsAndConditions } from './hubQuoteTermsPanel';
 import { inr, QUOTE } from './quoteStyles';
@@ -132,11 +133,11 @@ export function QuoteExperienceView(props: Props) {
       <header className="px-4 py-4 sm:px-6" style={{ backgroundColor: QUOTE.brown }}>
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <span className="text-2xl font-black tracking-tight" style={{ color: QUOTE.red }}>
-              HUB
-            </span>
+            <QuoteBrandLogo />
             <span className="h-8 w-px bg-white/30" />
-            <span className="text-sm font-bold uppercase tracking-[0.2em] text-white">Quotation</span>
+            <span className="quote-heading text-2xl font-bold uppercase tracking-[0.2em] text-white">
+              Quotation
+            </span>
           </div>
           {isInternalMode ? (
             <div className="flex flex-wrap items-center gap-2">
@@ -179,7 +180,7 @@ export function QuoteExperienceView(props: Props) {
               <p className="text-sm font-semibold uppercase tracking-wide" style={{ color: QUOTE.red }}>
                 Quotation ID : {quote.quotationId}
               </p>
-              <h1 className="mt-3 font-serif text-3xl font-bold leading-tight text-[#2a1d14] sm:text-4xl">
+              <h1 className="quote-heading mt-3 text-3xl font-bold leading-tight text-[#2a1d14] sm:text-4xl">
                 Hey {customerFirstName}, your quotation is ready!
               </h1>
               <div className="mt-4 h-1 w-16 rounded-full" style={{ backgroundColor: QUOTE.gold }} />
@@ -216,7 +217,7 @@ export function QuoteExperienceView(props: Props) {
             >
               <FieldIcon type="home" />
             </span>
-            <h2 className="text-lg font-bold uppercase tracking-wide" style={{ color: QUOTE.red }}>
+            <h2 className="quote-heading text-lg font-bold uppercase tracking-wide" style={{ color: QUOTE.red }}>
               Project Details
             </h2>
           </div>
@@ -240,7 +241,7 @@ export function QuoteExperienceView(props: Props) {
 
         {/* Breakdown */}
         <section className="rounded-2xl border border-[#ece6df] bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-bold text-[#2a1d14]">Breakdown</h2>
+          <h2 className="quote-heading text-lg font-bold text-[#2a1d14]">Breakdown</h2>
           <div className="mt-4 overflow-hidden rounded-xl border-2" style={{ borderColor: QUOTE.red }}>
             <div className="grid grid-cols-1 divide-y divide-[#ece6df] sm:grid-cols-3 sm:divide-x sm:divide-y-0">
               {TABS.map((tab) => (
@@ -309,7 +310,7 @@ export function QuoteExperienceView(props: Props) {
                 style={{ backgroundColor: QUOTE.brown }}
               >
                 <div>
-                  <p className="text-lg font-bold">Total Payable Amount</p>
+                  <p className="quote-heading text-lg font-bold">Total Payable Amount</p>
                   <p className="text-xs text-white/70">Inclusive of all tax and discount</p>
                 </div>
                 <p className="text-3xl font-bold tabular-nums">{inr(quote.totalPayableAmount)}</p>
@@ -350,7 +351,7 @@ export function QuoteExperienceView(props: Props) {
                             <FieldIcon type="home" />
                           </span>
                           <div>
-                            <p className="text-lg font-bold text-[#2a1d14]">{room.roomName}</p>
+                            <p className="quote-heading text-lg font-bold text-[#2a1d14]">{room.roomName}</p>
                             <p className="text-sm" style={{ color: QUOTE.muted }}>
                               {room.optionName}
                             </p>
@@ -552,7 +553,7 @@ export function QuoteExperienceView(props: Props) {
               <svg className="h-5 w-5" style={{ color: QUOTE.red }} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              <h2 className="text-lg font-bold text-[#2a1d14]">Revision History</h2>
+              <h2 className="quote-heading text-lg font-bold text-[#2a1d14]">Revision History</h2>
             </div>
             <p className="mb-4 text-xs" style={{ color: QUOTE.muted }}>
               Each revision is saved for your reference. Click a version to open it.

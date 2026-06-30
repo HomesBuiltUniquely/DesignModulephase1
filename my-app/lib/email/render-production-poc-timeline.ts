@@ -10,8 +10,8 @@ export function renderProductionPocTimelineEmail(params: {
   const {
     customerName,
     productionPoc = "Prajwal - prajwal@hubinterior.com",
-    executionPoc = "Project Manager - PM automatically",
-    spmPoc = "SPM automatically",
+    executionPoc = "Project Manager — assigned at D2",
+    spmPoc = "guruvignesh@hubinterior.com",
     operationManager = "Balaji - balaji@hubinterior.com",
     operationHead = "Alex - alex@hubinterior.com",
     designerName = "Designer",

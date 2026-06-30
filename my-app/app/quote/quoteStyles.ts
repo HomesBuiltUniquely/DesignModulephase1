@@ -1,3 +1,5 @@
+import { QUOTE_FONTS } from './quoteBrand';
+
 export const QUOTE = {
   red: '#c1272d',
   brown: '#3d2b1f',
@@ -7,6 +9,7 @@ export const QUOTE = {
   cream: '#faf8f5',
   border: '#e8e0d8',
   muted: '#6b6560',
+  fonts: QUOTE_FONTS,
 };
 
 export function inr(v: unknown): string {

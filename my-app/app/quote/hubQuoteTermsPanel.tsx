@@ -23,7 +23,7 @@ export function QuoteTermsAndConditions() {
         <div key={section.title} className="overflow-hidden rounded-xl border border-[#ece6df] bg-white">
           <div className="flex items-center gap-3 border-b border-[#ece6df] px-4 py-3">
             <SectionIcon />
-            <h4 className="text-base font-bold" style={{ color: QUOTE.red }}>
+            <h4 className="quote-heading text-base font-bold" style={{ color: QUOTE.red }}>
               {section.title}
             </h4>
           </div>
