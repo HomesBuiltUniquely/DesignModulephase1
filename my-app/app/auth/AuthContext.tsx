@@ -50,6 +50,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUserState(u);
     if (!u) setSessionId(null);
   }, []);
+  
 
   const login = useCallback(async (email: string, password: string): Promise<{ success: true; user: AuthUser } | { success: false; message: string }> => {
     const res = await fetch(`${getApiBase()}/api/auth/login`, {
