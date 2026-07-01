@@ -14,6 +14,7 @@ import * as XLSX from "xlsx";
 import { registerCustomerNumberRoutes } from "./routes/customerNumberApi";
 import { registerMsg91InboundRoutes } from "./routes/msg91InboundApi";
 import { registerProlanceRoutes } from "./routes/prolanceApi";
+import { registerCrmHubBookingRoutes, notifyHubFinanceReview, getHubBookingSyncForLead, buildFinance10pQueueList, buildCrmSalesClosureQueueRows, buildCrmSalesClosureLeadDetail } from "./routes/crmHubBookingRoutes";
 
 function loadEnvFile() {
   const envPath = path.join(__dirname, ".env");
@@ -52,6 +53,8 @@ function buildAllowedOrigins(): string[] {
     "https://www.design.hubinterior.com",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:3002",
+    "http://127.0.0.1:3002",
   ];
   const set = new Set<string>([...defaults, ...fromEnv]);
   const fe = (process.env.FRONTEND_BASE_URL || "").replace(/\/$/, "");
@@ -131,6 +134,9 @@ const pool = mysql.createPool({
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 0,
+  connectTimeout: 60000,
 });
 
 // Standalone route: /api/customer/:customerNumber (see routes/customerNumberApi.ts)
@@ -6427,7 +6433,21 @@ app.get("/api/leads/finance-sales-closure-queue", async (req: Request, res: Resp
     );
 
     const list = (rows as any[]).map((r) => mapFinanceSalesClosureQueueRow(r, { approved }));
-    return res.json(list);
+    const crmRows = await buildCrmSalesClosureQueueRows(pool, approved, {
+      customerName,
+      month,
+      dateFrom,
+      dateTo,
+    });
+    const crmIds = new Set(crmRows.map((r) => Number(r.id)));
+    const manualOnly = list.filter((r) => !crmIds.has(Number(r.id)));
+    const merged = [...crmRows, ...manualOnly];
+    merged.sort((a, b) => {
+      const ta = a.submittedAt ? new Date(String(a.submittedAt)).getTime() : 0;
+      const tb = b.submittedAt ? new Date(String(b.submittedAt)).getTime() : 0;
+      return tb - ta;
+    });
+    return res.json(merged);
   } catch (err) {
     console.error("finance-sales-closure-queue error", err);
     return res.status(500).json({ message: "Failed to load queue" });
@@ -6514,6 +6534,8 @@ app.get("/api/leads/finance-sales-closure/:leadId", async (req: Request, res: Re
     );
     const row = (rows as any[])[0];
     if (!row) return res.status(404).json({ message: "Lead not found" });
+    const crmDetail = await buildCrmSalesClosureLeadDetail(pool, leadId);
+    if (crmDetail) return res.json(crmDetail);
     const payloadObj = parseLeadPayloadObject(row.payload);
     await persistRepairedFinanceHistory(leadId, payloadObj);
     const detail = buildFinanceSalesClosureLeadDetail({ ...row, payload: payloadObj });
@@ -6774,27 +6796,7 @@ app.get("/api/leads/finance-10p-queue", async (req: Request, res: Response) => {
     if (role !== "finance" && role !== "admin") {
       return res.status(403).json({ message: "Only finance or admin can access this queue" });
     }
-    const [allLeads] = await pool.query(
-      "SELECT id, project_name as projectName, project_stage as projectStage FROM leads ORDER BY id ASC"
-    );
-    const leads = allLeads as { id: number; projectName: string; projectStage: string }[];
-    const [completions] = await pool.query(
-      "SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName FROM lead_task_completions"
-    );
-    const compList = completions as { leadId: number; milestoneIndex: number; taskName: string }[];
-    const hasDqc1Approval = (leadId: number) =>
-      compList.some((c) => c.leadId === leadId && c.milestoneIndex === 1 && c.taskName === "DQC 1 approval");
-    const has10pCollection = (leadId: number) =>
-      compList.some((c) => c.leadId === leadId && c.milestoneIndex === 2 && c.taskName === "10% payment collection");
-    const has10pApproval = (leadId: number) =>
-      compList.some((c) => c.leadId === leadId && c.milestoneIndex === 2 && c.taskName === "10% payment approval");
-    const at10p = leads.filter((l) => hasDqc1Approval(l.id) && !has10pApproval(l.id));
-    const list = at10p.map((l) => ({
-      id: l.id,
-      projectName: l.projectName || "—",
-      status: has10pCollection(l.id) ? "Pending approval" : "Pending upload",
-      canApprove: TEMP_FINANCE_RELAXED_APPROVAL || has10pCollection(l.id),
-    }));
+    const list = await buildFinance10pQueueList(pool, TEMP_FINANCE_RELAXED_APPROVAL);
     return res.json(list);
   } catch (err) {
     console.error("finance-10p-queue error", err);
@@ -6981,8 +6983,12 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
       [leadId, now]
     );
     await pool.query(
-      "UPDATE lead_uploads SET status = 'approved' WHERE lead_id = ? AND upload_type = 'payment_10p' AND status = 'pending'",
+      "UPDATE lead_uploads SET status = 'approved' WHERE lead_id = ? AND upload_type IN ('payment_10p', 'hub_payment_proof') AND status = 'pending'",
       [leadId]
+    );
+    await pool.query(
+      "UPDATE leads SET project_stage = '10-20%', update_at = ? WHERE id = ?",
+      [now, leadId]
     );
     const ev = {
       id: `10p-approval-${Date.now()}`,
@@ -7164,10 +7170,58 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
       });
     }
 
+    const hubSync = await getHubBookingSyncForLead(pool, leadId);
+    if (hubSync) {
+      void notifyHubFinanceReview(pool, leadId, "APPROVED", user.name ?? "Finance", null);
+    }
+
     return res.status(201).json({ ok: true });
   } catch (err) {
     console.error("approve-10p-payment error", err);
     return res.status(500).json({ message: "Failed to approve" });
+  }
+});
+
+// Finance: reject 10% payment (CRM hub path notifies Hub webhook)
+app.post("/api/leads/:id/reject-10p-payment", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user?.role ?? "").toLowerCase();
+    if (role !== "finance" && role !== "admin") {
+      return res.status(403).json({ message: "Only finance can reject 10% payment" });
+    }
+    const reason = String((req.body || {}).reason ?? "").trim() || null;
+    const now = new Date();
+    await pool.query(
+      "UPDATE lead_uploads SET status = 'rejected' WHERE lead_id = ? AND upload_type IN ('payment_10p', 'hub_payment_proof') AND status = 'pending'",
+      [leadId]
+    );
+    await pool.query(
+      `DELETE FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 2 AND task_name = '10% payment approval'`,
+      [leadId]
+    );
+    const ev = {
+      id: `10p-reject-${Date.now()}`,
+      type: "note",
+      taskName: "10% payment approval",
+      milestoneName: "10% PAYMENT",
+      timestamp: now.toISOString(),
+      description: reason ? `10% payment rejected: ${reason}` : "10% payment rejected by Finance.",
+      user: { name: user.name ?? "Finance" },
+      details: { kind: "note", noteText: reason || "10% payment rejected." },
+    };
+    await addLeadHistoryEvent(leadId, ev);
+    const hubSync = await getHubBookingSyncForLead(pool, leadId);
+    if (hubSync) {
+      void notifyHubFinanceReview(pool, leadId, "REJECTED", user.name ?? "Finance", reason);
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("reject-10p-payment error", err);
+    return res.status(500).json({ message: "Failed to reject" });
   }
 });
 
@@ -11104,6 +11158,7 @@ app.post("/api/leads/:id/cancel", async (req: Request, res: Response) => {
   }
 });
 
+registerCrmHubBookingRoutes(app, { pool, getUserFromSession, addLeadHistoryEvent });
 registerProlanceRoutes(app, getUserFromSession, pool);
 
 // Ensure CORS headers are present on error responses (multer, etc.) so the browser doesn't only show a generic CORS error

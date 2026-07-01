@@ -15,6 +15,7 @@ type PaymentSubmission = {
   rejected?: boolean;
   hasScreenshot?: boolean;
   screenshot?: string | null;
+  uploadId?: number | null;
 };
 
 type QueueTab = 'pending' | 'approved';
@@ -40,6 +41,7 @@ type FinanceLead = {
   bookingDate: string | null;
   submissionCount: number;
   paymentSubmissions: PaymentSubmission[];
+  paymentSource?: 'crm_hub' | 'manual';
 };
 
 type FinanceLeadDetail = FinanceLead & {
@@ -76,17 +78,77 @@ function currentMonthValue(): string {
 }
 
 function SubmissionsTable({
+  leadId,
   submissions,
+  sessionId,
+  authHeaders,
   onViewScreenshot,
+  onProofError,
+  proofError,
 }: {
+  leadId: number;
   submissions: PaymentSubmission[];
+  sessionId: string | null;
+  authHeaders: Record<string, string>;
   onViewScreenshot: (src: string) => void;
+  onProofError?: (message: string) => void;
+  proofError?: string | null;
 }) {
+  const [loadingProofId, setLoadingProofId] = useState<string | null>(null);
+
+  async function loadProof(submission: PaymentSubmission) {
+    if (submission.uploadId && sessionId) {
+      setLoadingProofId(submission.id);
+      onProofError?.('');
+      try {
+        const res = await fetch(
+          `${getApiBase()}/api/leads/${leadId}/hub-payment-proofs/${submission.uploadId}/content`,
+          { headers: { ...authHeaders } },
+        );
+        if (!res.ok) {
+          let message = 'Failed to load payment proof';
+          try {
+            const data = (await res.json()) as { message?: string };
+            if (data?.message) message = data.message;
+          } catch {
+            /* ignore */
+          }
+          throw new Error(message);
+        }
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          throw new Error('Payment proof unavailable from Hub');
+        }
+        const blob = await res.blob();
+        onViewScreenshot(URL.createObjectURL(blob));
+      } finally {
+        setLoadingProofId(null);
+      }
+      return;
+    }
+    if (submission.screenshot) {
+      onViewScreenshot(submission.screenshot);
+      return;
+    }
+    if (submission.hasScreenshot) {
+      throw new Error(
+        'Payment proof is not linked yet. Re-run Convert to Booking in CRM to refresh proofs.',
+      );
+    }
+  }
+
   if (submissions.length === 0) {
     return <p className="text-sm text-gray-500">No payment submissions recorded yet.</p>;
   }
+
   return (
-    <div className="border border-gray-200 rounded-xl overflow-hidden">
+    <div className="space-y-2">
+      {proofError ? (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+          {proofError}
+        </div>
+      ) : null}
+      <div className="border border-gray-200 rounded-xl overflow-hidden">
       <div className="grid grid-cols-12 bg-gray-100 px-3 py-2 text-xs font-semibold text-gray-600">
         <div className="col-span-1">#</div>
         <div className="col-span-2">Date</div>
@@ -120,15 +182,20 @@ function SubmissionsTable({
           <div className="col-span-1 text-center">
             <button
               type="button"
-              disabled={!s.screenshot && !s.hasScreenshot}
-              onClick={() => s.screenshot && onViewScreenshot(s.screenshot)}
+              disabled={(!s.uploadId && !s.screenshot && !s.hasScreenshot) || loadingProofId === s.id}
+              onClick={() => {
+                void loadProof(s).catch((e: unknown) => {
+                  onProofError?.(e instanceof Error ? e.message : 'Failed to load payment proof');
+                });
+              }}
               className="px-2 py-1 rounded border border-gray-300 text-xs font-semibold hover:bg-gray-50 disabled:opacity-40"
             >
-              View
+              {loadingProofId === s.id ? '…' : 'View'}
             </button>
           </div>
         </div>
       ))}
+    </div>
     </div>
   );
 }
@@ -141,6 +208,21 @@ export default function FinanceSalesClosurePage() {
   const [approvingLeadId, setApprovingLeadId] = useState<number | null>(null);
   const [rejectingLeadId, setRejectingLeadId] = useState<number | null>(null);
   const [viewScreenshot, setViewScreenshot] = useState<string | null>(null);
+  const [proofError, setProofError] = useState<string | null>(null);
+  const [refreshingProofs, setRefreshingProofs] = useState(false);
+
+  const closeScreenshot = () => {
+    setViewScreenshot((prev) => {
+      if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
+      return null;
+    });
+  };
+
+  useEffect(() => {
+    return () => {
+      if (viewScreenshot?.startsWith('blob:')) URL.revokeObjectURL(viewScreenshot);
+    };
+  }, [viewScreenshot]);
   const [rejectConfirmLead, setRejectConfirmLead] = useState<FinanceLead | null>(null);
   const [historyLead, setHistoryLead] = useState<FinanceLeadDetail | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -220,6 +302,7 @@ export default function FinanceSalesClosurePage() {
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data?.message || 'Lead not found');
         setHistoryLead(data as FinanceLeadDetail);
+        setProofError(null);
       } catch (e: unknown) {
         setHistoryLead(null);
         setError(e instanceof Error ? e.message : 'Failed to load lead history');
@@ -230,15 +313,38 @@ export default function FinanceSalesClosurePage() {
     [sessionId, authHeaders],
   );
 
+  const refreshHubProofs = async () => {
+    if (!historyLead || !sessionId) return;
+    setRefreshingProofs(true);
+    setProofError(null);
+    try {
+      const res = await fetch(
+        `${getApiBase()}/api/leads/${historyLead.id}/refresh-hub-payment-proofs`,
+        { method: 'POST', headers: { ...authHeaders } },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.message || 'Failed to refresh proofs');
+      await fetchLeadHistory(historyLead.id);
+    } catch (e: unknown) {
+      setProofError(e instanceof Error ? e.message : 'Failed to refresh proofs');
+    } finally {
+      setRefreshingProofs(false);
+    }
+  };
+
   useEffect(() => {
     loadLeads();
   }, [loadLeads]);
 
-  const onApprove = async (leadId: number) => {
+  const onApprove = async (leadId: number, paymentSource?: 'crm_hub' | 'manual') => {
     setApprovingLeadId(leadId);
     setError(null);
     try {
-      const res = await fetch(`${getApiBase()}/api/leads/${leadId}/approve-sales-closure`, {
+      const path =
+        paymentSource === 'crm_hub'
+          ? `${getApiBase()}/api/leads/${leadId}/approve-10p-payment`
+          : `${getApiBase()}/api/leads/${leadId}/approve-sales-closure`;
+      const res = await fetch(path, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders },
       });
@@ -260,11 +366,16 @@ export default function FinanceSalesClosurePage() {
   const onRejectConfirm = async () => {
     if (!rejectConfirmLead) return;
     const leadId = rejectConfirmLead.id;
+    const paymentSource = rejectConfirmLead.paymentSource;
     setRejectConfirmLead(null);
     setRejectingLeadId(leadId);
     setError(null);
     try {
-      const res = await fetch(`${getApiBase()}/api/leads/${leadId}/reject-sales-closure`, {
+      const path =
+        paymentSource === 'crm_hub'
+          ? `${getApiBase()}/api/leads/${leadId}/reject-10p-payment`
+          : `${getApiBase()}/api/leads/${leadId}/reject-sales-closure`;
+      const res = await fetch(path, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders },
       });
@@ -414,15 +525,32 @@ export default function FinanceSalesClosurePage() {
                 project has moved to the <span className="font-semibold">10–20%</span> design phase.
               </div>
             )}
+            {historyLead.paymentSource === 'crm_hub' && (
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => void refreshHubProofs()}
+                  disabled={refreshingProofs || !sessionId}
+                  className="px-3 py-1.5 rounded-lg border border-indigo-300 text-indigo-800 text-xs font-semibold hover:bg-indigo-50 disabled:opacity-60"
+                >
+                  {refreshingProofs ? 'Refreshing proofs…' : 'Refresh proofs from CRM sync'}
+                </button>
+              </div>
+            )}
             <SubmissionsTable
+              leadId={historyLead.id}
               submissions={historyLead.paymentSubmissions || []}
+              sessionId={sessionId}
+              authHeaders={authHeaders}
               onViewScreenshot={setViewScreenshot}
+              onProofError={setProofError}
+              proofError={proofError}
             />
             {!historyLead.financeApproved && historyLead.tenPercentMet && (
               <div className="flex gap-2 justify-end">
                 <button
                   type="button"
-                  onClick={() => onApprove(historyLead.id)}
+                  onClick={() => onApprove(historyLead.id, historyLead.paymentSource)}
                   disabled={approvingLeadId === historyLead.id}
                   className="px-4 py-2 rounded-lg bg-green-700 text-white text-sm font-semibold hover:bg-green-800 disabled:opacity-60"
                 >
@@ -561,6 +689,11 @@ export default function FinanceSalesClosurePage() {
                       <div className="col-span-2 text-sm text-gray-800">
                         <div className="font-medium truncate" title={String(l.customerName)}>
                           {l.customerName}
+                          {l.paymentSource === 'crm_hub' && (
+                            <span className="ml-1 inline-block px-1.5 py-0.5 rounded bg-violet-100 text-violet-800 text-[10px] font-bold">
+                              CRM
+                            </span>
+                          )}
                         </div>
                       </div>
                       <div className="col-span-2 text-xs text-gray-700 space-y-0.5">
@@ -606,7 +739,7 @@ export default function FinanceSalesClosurePage() {
                       <div className="col-span-1 text-center">
                         <button
                           type="button"
-                          onClick={() => onApprove(l.id)}
+                          onClick={() => onApprove(l.id, l.paymentSource)}
                           disabled={!l.canApprove || busyApprove || !sessionId}
                           className="px-2 py-1.5 rounded-lg bg-green-700 text-white text-xs font-semibold hover:bg-green-800 disabled:opacity-60"
                         >
@@ -689,7 +822,7 @@ export default function FinanceSalesClosurePage() {
         {viewScreenshot && (
           <div
             className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-            onClick={() => setViewScreenshot(null)}
+            onClick={closeScreenshot}
           >
             <div
               className="bg-white rounded-xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col"
@@ -699,7 +832,7 @@ export default function FinanceSalesClosurePage() {
                 <h2 className="text-lg font-bold text-gray-900">Payment Screenshot</h2>
                 <button
                   type="button"
-                  onClick={() => setViewScreenshot(null)}
+                  onClick={closeScreenshot}
                   className="text-gray-500 hover:text-gray-700 text-2xl leading-none"
                 >
                   &times;
