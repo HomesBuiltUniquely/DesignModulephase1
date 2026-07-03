@@ -79,6 +79,39 @@ function pickNum(...values: unknown[]): number | null {
   return null;
 }
 
+/** Mirror CRM hub sales payment into leads.payload so design milestone math sees it. */
+async function persistHubSalesPaymentToLeadPayload(
+  pool: Pool,
+  leadId: number,
+  amountReceived: number | null,
+  tenPercentAmount: number | null,
+  quoteAmount: number | null,
+): Promise<void> {
+  if (amountReceived == null || amountReceived <= 0) return;
+  const [rows] = await pool.query(`SELECT payload FROM leads WHERE id = ? LIMIT 1`, [leadId]);
+  const raw = (rows as { payload?: unknown }[])[0]?.payload;
+  const payload = parseLeadPayload(raw);
+  const existing =
+    pickNum(payload.total_paid_cumulative, payload.total_paid_toward_10_percent, payload.amount_paid) ?? 0;
+  const cumulative = Math.max(existing, amountReceived);
+  payload.total_paid_cumulative = cumulative;
+  payload.total_paid_toward_10_percent = cumulative;
+  payload.amount_paid = cumulative;
+  if (tenPercentAmount != null && tenPercentAmount > 0) {
+    payload.ten_percent_target = tenPercentAmount;
+    payload.remaining_for_10_percent = Math.max(0, tenPercentAmount - cumulative);
+    payload.ten_percent_payment_met = cumulative >= tenPercentAmount;
+  }
+  if (quoteAmount != null && quoteAmount > 0) {
+    payload.quotation_total = quoteAmount;
+  }
+  await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
+    JSON.stringify(payload),
+    new Date(),
+    leadId,
+  ]);
+}
+
 function hubProofUrl(base: string, contentPath: string): string {
   const b = base.replace(/\/$/, "");
   const p = contentPath.startsWith("/") ? contentPath : `/${contentPath}`;
@@ -562,6 +595,7 @@ async function handleConvertBooking(
   const paymentHistoryId = pickStr(body.paymentHistoryId) || null;
   const amountReceived = pickNum(body.amountReceived, body.amount_received);
   const tenPercentAmount = pickNum(body.tenPercentAmount, body.ten_percent_amount, body.quoteAmount != null ? Number(body.quoteAmount) * 0.1 : null);
+  const quoteAmount = pickNum(body.quoteAmount, body.quote_amount, body.quotationTotal, body.quotation_total);
   const now = new Date();
   const payloadJson = JSON.stringify(body);
 
@@ -589,6 +623,14 @@ async function handleConvertBooking(
       payloadJson,
       now,
     ],
+  );
+
+  await persistHubSalesPaymentToLeadPayload(
+    pool,
+    designLeadId,
+    amountReceived,
+    tenPercentAmount,
+    quoteAmount,
   );
 
   await importHubPaymentProofs(pool, designLeadId, { ...body, _syncedAt: now });

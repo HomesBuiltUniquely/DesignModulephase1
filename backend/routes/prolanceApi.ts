@@ -1226,6 +1226,33 @@ export type LeadMilestonePaymentBreakdown = LeadQuotePaymentSummary & {
   remainingAfterSixtyPercent: number;
 };
 
+function readPaidFromFinanceHistory(payload: Record<string, unknown>): number {
+  const raw = payload.finance_submission_history;
+  if (!Array.isArray(raw)) return 0;
+  let max = 0;
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const cum = parseLeadPayloadAmount(o.cumulativeTotal ?? o.cumulative_total);
+    if (cum != null && cum > max) max = cum;
+  }
+  return max;
+}
+
+async function readHubBookingAmountReceived(pool: Pool, leadId: number): Promise<number> {
+  try {
+    const [rows] = await pool.query(
+      `SELECT amount_received as amountReceived
+       FROM lead_hub_booking_sync WHERE lead_id = ? ORDER BY synced_at DESC LIMIT 1`,
+      [leadId],
+    );
+    const n = parseLeadPayloadAmount((rows as { amountReceived?: unknown }[])[0]?.amountReceived);
+    return n != null && n > 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
 /** Latest quote + sales/design payments → amounts designers must collect now. */
 export async function resolveLeadMilestonePaymentBreakdown(
   pool: Pool,
@@ -1251,11 +1278,15 @@ export async function resolveLeadMilestonePaymentBreakdown(
     return 0;
   };
 
-  const totalPaidCumulative = readPaid([
-    "total_paid_cumulative",
-    "total_paid_toward_10_percent",
-    "amount_paid",
-  ]);
+  const totalPaidCumulative = Math.max(
+    readPaid([
+      "total_paid_cumulative",
+      "total_paid_toward_10_percent",
+      "amount_paid",
+    ]),
+    readPaidFromFinanceHistory(payload),
+    await readHubBookingAmountReceived(pool, leadId),
+  );
   const totalPaidToward10Percent = totalPaidCumulative;
   const totalPaidToward40Percent = readPaid(["total_paid_toward_40_percent"]);
 
