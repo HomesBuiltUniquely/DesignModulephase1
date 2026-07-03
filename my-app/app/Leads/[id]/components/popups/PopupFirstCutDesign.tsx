@@ -38,6 +38,7 @@ type Props = {
   designerName?: string | null;
   /** API base URL for slot fetching */
   apiBase?: string;
+  sessionId?: string | null;
   /** Pre-fill values if available */
   initialDate?: string;
   initialTime?: string;
@@ -63,6 +64,7 @@ export default function PopupFirstCutDesign({
   ecLocation,
   designerName,
   apiBase = "",
+  sessionId = null,
   initialDate,
   initialTime,
   initialMode,
@@ -210,6 +212,8 @@ export default function PopupFirstCutDesign({
           designerName={designerName || ""}
           meetingDate={meetingDate}
           initialStartMin={selectedStartMin}
+          durationMin={HUB_MEETING_DURATION_MIN}
+          sessionId={sessionId}
         />
 
         {/* Meeting mode */}

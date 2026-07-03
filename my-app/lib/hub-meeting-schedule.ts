@@ -29,16 +29,34 @@ export function formatHubTimeRange(startMin: number, endMin: number): string {
   return `${minutesToHubTimeLabel(startMin)} – ${minutesToHubTimeLabel(endMin)}`;
 }
 
-export function listHubMeetingStartOptions(): number[] {
+export function listHubMeetingStartOptions(durationMin = HUB_MEETING_DURATION_MIN): number[] {
   const options: number[] = [];
   for (
     let m = HUB_MEETING_TIMELINE_START_MIN;
-    m + HUB_MEETING_DURATION_MIN <= HUB_MEETING_TIMELINE_END_MIN;
+    m + durationMin <= HUB_MEETING_TIMELINE_END_MIN;
     m += HUB_MEETING_SLOT_STEP_MIN
   ) {
     options.push(m);
   }
   return options;
+}
+
+export function currentLocalMinutes(): number {
+  const now = new Date();
+  return now.getHours() * 60 + now.getMinutes();
+}
+
+export function isTodayIso(dateIso: string): boolean {
+  const trimmed = dateIso.trim();
+  if (!trimmed) return false;
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  return trimmed.slice(0, 10) === today;
+}
+
+export function isHubMeetingStartInPast(dateIso: string, startMin: number): boolean {
+  if (!isTodayIso(dateIso)) return false;
+  return startMin < currentLocalMinutes();
 }
 
 export function rangesOverlap(startA: number, endA: number, startB: number, endB: number): boolean {
@@ -48,10 +66,25 @@ export function rangesOverlap(startA: number, endA: number, startB: number, endB
 export function isHubMeetingStartAvailable(
   startMin: number,
   booked: BookedTimelineBlock[],
+  durationMin = HUB_MEETING_DURATION_MIN,
+  dateIso?: string,
 ): boolean {
-  const endMin = startMin + HUB_MEETING_DURATION_MIN;
+  const endMin = startMin + durationMin;
   if (endMin > HUB_MEETING_TIMELINE_END_MIN) return false;
+  if (dateIso && isHubMeetingStartInPast(dateIso, startMin)) return false;
   return !booked.some((b) => rangesOverlap(startMin, endMin, b.startMin, b.endMin));
+}
+
+/** Personal blocks: no leadId and not a design-meeting description line. */
+export function isPersonalAppointmentRow(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  const o = raw as Record<string, unknown>;
+  const leadId = o.leadId ?? o.lead_id;
+  if (leadId != null && String(leadId).trim() !== "" && String(leadId) !== "0") return false;
+  const desc = String(o.description ?? "").trim();
+  if (/lead\s*id\s*:/i.test(desc)) return false;
+  if (/design\s+meeting/i.test(desc)) return false;
+  return Boolean(desc);
 }
 
 function parseIsoToMinutesOnDate(iso: string, dateIso: string): number | null {
@@ -144,9 +177,22 @@ export function buildHubMeetingDateTimeIso(dateIso: string, startMin: number): s
   return `${dateIso}T${minutesToHubTime24(startMin)}:00`;
 }
 
-export function findEarliestAvailableStart(booked: BookedTimelineBlock[]): number | null {
-  for (const start of listHubMeetingStartOptions()) {
-    if (isHubMeetingStartAvailable(start, booked)) return start;
+export function findEarliestAvailableStart(
+  booked: BookedTimelineBlock[],
+  durationMin = HUB_MEETING_DURATION_MIN,
+  dateIso?: string,
+): number | null {
+  for (const start of listHubMeetingStartOptions(durationMin)) {
+    if (isHubMeetingStartAvailable(start, booked, durationMin, dateIso)) return start;
   }
   return null;
 }
+
+export const PERSONAL_BLOCK_REASON_PRESETS = [
+  "Site visit",
+  "Leave",
+  "Internal meeting",
+  "Other",
+] as const;
+
+export type PersonalBlockReasonPreset = (typeof PERSONAL_BLOCK_REASON_PRESETS)[number];

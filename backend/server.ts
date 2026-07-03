@@ -1908,6 +1908,181 @@ async function getCalendarVisibleUsers(currentUser: { id: number; email: string;
   return [currentUser];
 }
 
+type AppointmentUserRow = { id: number; name: string; role: string; email?: string };
+
+async function getPersonalAppointmentVisibleUsers(
+  currentUser: { id: number; name: string; role: string },
+): Promise<AppointmentUserRow[]> {
+  const role = (currentUser.role || "").toLowerCase();
+
+  if (role === "admin" || role === "deputy_general_manager") {
+    const [rows] = await pool.query(
+      `SELECT id, name, role, email FROM users
+       WHERE role IN ('designer','design_manager')
+       ORDER BY name ASC`,
+    );
+    return rows as AppointmentUserRow[];
+  }
+
+  if (role === "territorial_design_manager") {
+    const [rows] = await pool.query(
+      `SELECT DISTINCT u.id, u.name, u.role, u.email
+       FROM users u
+       LEFT JOIN users dm ON dm.id = u.design_manager_id
+       WHERE u.role IN ('designer','design_manager')
+         AND (
+           u.id = ?
+           OR (u.role = 'design_manager' AND u.territorial_design_manager_id = ?)
+           OR (u.role = 'designer' AND dm.territorial_design_manager_id = ?)
+         )
+       ORDER BY u.name ASC`,
+      [currentUser.id, currentUser.id, currentUser.id],
+    );
+    return rows as AppointmentUserRow[];
+  }
+
+  if (role === "design_manager") {
+    const [rows] = await pool.query(
+      `SELECT DISTINCT u.id, u.name, u.role, u.email
+       FROM users u
+       WHERE u.role IN ('designer','design_manager')
+         AND (u.id = ? OR (u.role = 'designer' AND u.design_manager_id = ?))
+       ORDER BY u.name ASC`,
+      [currentUser.id, currentUser.id],
+    );
+    return rows as AppointmentUserRow[];
+  }
+
+  if (role === "designer") {
+    return [{ id: currentUser.id, name: currentUser.name, role: "designer" }];
+  }
+
+  return [];
+}
+
+async function canViewDesignerAppointments(
+  currentUser: { id: number; name: string; role: string },
+  targetDesignerName: string,
+): Promise<boolean> {
+  const normalizedTarget = targetDesignerName.trim().toLowerCase();
+  if (!normalizedTarget) return false;
+  if (currentUser.name.trim().toLowerCase() === normalizedTarget) return true;
+  const visible = await getPersonalAppointmentVisibleUsers(currentUser);
+  return visible.some((u) => u.name.trim().toLowerCase() === normalizedTarget);
+}
+
+function isPersonalAppointmentErpRow(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  const o = raw as Record<string, unknown>;
+  const leadId = o.leadId ?? o.lead_id;
+  if (leadId != null && String(leadId).trim() !== "" && String(leadId) !== "0") return false;
+  const desc = String(o.description ?? "").trim();
+  if (/lead\s*id\s*:/i.test(desc)) return false;
+  if (/design\s+meeting/i.test(desc)) return false;
+  return Boolean(desc);
+}
+
+async function resolvePersonalBlockMailRecipients(actingUserId: number, actingUserRole: string) {
+  const role = (actingUserRole || "").toLowerCase();
+  const [userRows] = await pool.query(
+    "SELECT id, name, email, role FROM users WHERE id = ? LIMIT 1",
+    [actingUserId],
+  );
+  const actingUser = (userRows as { name: string; email: string }[])[0];
+  if (!actingUser) return { to: null as string | null, toName: null as string | null, cc: [] as string[] };
+
+  const [adminRows] = await pool.query(
+    "SELECT email FROM users WHERE role = 'admin' AND email IS NOT NULL",
+  );
+  const [dgmRows] = await pool.query(
+    "SELECT email FROM users WHERE role = 'deputy_general_manager' AND email IS NOT NULL",
+  );
+  const [allTdmRows] = await pool.query(
+    "SELECT id, email, name FROM users WHERE role = 'territorial_design_manager' AND email IS NOT NULL",
+  );
+
+  const ccSet = new Set<string>();
+  for (const r of adminRows as { email: string }[]) {
+    if (r.email) ccSet.add(normalizeEmail(r.email)!);
+  }
+  for (const r of dgmRows as { email: string }[]) {
+    if (r.email) ccSet.add(normalizeEmail(r.email)!);
+  }
+
+  let toEmail: string | null = null;
+  let toName: string | null = null;
+
+  if (role === "designer") {
+    const [dmRows] = await pool.query(
+      `SELECT dm.email, dm.name, tdm.email AS tdmEmail
+       FROM users u
+       JOIN users dm ON dm.id = u.design_manager_id
+       LEFT JOIN users tdm ON tdm.id = dm.territorial_design_manager_id
+       WHERE u.id = ?`,
+      [actingUserId],
+    );
+    const dm = (dmRows as { email: string; name: string; tdmEmail: string | null }[])[0];
+    if (dm?.email) {
+      toEmail = normalizeEmail(dm.email);
+      toName = dm.name;
+    }
+    if (dm?.tdmEmail) ccSet.add(normalizeEmail(dm.tdmEmail)!);
+    for (const t of allTdmRows as { email: string }[]) {
+      const em = normalizeEmail(t.email);
+      if (em && em !== toEmail) ccSet.add(em);
+    }
+  } else if (role === "design_manager") {
+    const [tdmRows] = await pool.query(
+      `SELECT tdm.email, tdm.name
+       FROM users u
+       JOIN users tdm ON tdm.id = u.territorial_design_manager_id
+       WHERE u.id = ?`,
+      [actingUserId],
+    );
+    const tdm = (tdmRows as { email: string; name: string }[])[0];
+    if (tdm?.email) {
+      toEmail = normalizeEmail(tdm.email);
+      toName = tdm.name;
+    }
+    for (const t of allTdmRows as { email: string }[]) {
+      const em = normalizeEmail(t.email);
+      if (em && em !== toEmail) ccSet.add(em);
+    }
+  }
+
+  if (actingUser.email) {
+    const self = normalizeEmail(actingUser.email);
+    if (self) ccSet.delete(self);
+  }
+  if (toEmail) ccSet.delete(toEmail);
+
+  return { to: toEmail, toName, cc: Array.from(ccSet) };
+}
+
+async function triggerInternalMailRoute(
+  route: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  try {
+    const resp = await fetch(`${FRONTEND_BASE}${route}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      console.error("[internal-mail-failed]", { route, status: resp.status, body });
+    }
+  } catch (error) {
+    console.error("[internal-mail-error]", { route, error });
+  }
+}
+
+function isErpAppointmentConflictError(err: unknown): boolean {
+  const msg = String(err instanceof Error ? err.message : err || "").toLowerCase();
+  return msg.includes("409") || /overlap|conflict|already booked|not available/.test(msg);
+}
+
 async function exchangeGoogleCodeForTokens(code: string) {
   const body = new URLSearchParams();
   body.set("code", code);
@@ -11436,6 +11611,18 @@ app.get("/api/appointment/designer/:designerName", async (req: Request, res: Res
     return res.status(400).json({ message: "designerName is required" });
   }
   try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+    const role = (actingUser.role || "").toLowerCase();
+    const isSelf = actingUser.name.trim().toLowerCase() === designerName.toLowerCase();
+    const canBook = ["designer", "design_manager"].includes(role);
+    if (!isSelf) {
+      const allowed = await canViewDesignerAppointments(actingUser, designerName);
+      if (!allowed) return res.status(403).json({ message: "Not allowed to view this designer's appointments" });
+    } else if (!canBook && !["admin", "deputy_general_manager", "territorial_design_manager"].includes(role)) {
+      return res.status(403).json({ message: "Not allowed" });
+    }
+
     const data = await callErpApi(
       `/v1/Appointment/designer/${encodeURIComponent(designerName)}`,
     );
@@ -11489,6 +11676,189 @@ app.post("/api/appointment", async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error("appointment create proxy error", err);
     return res.status(500).json({ message: "Failed to create appointment", error: err?.message });
+  }
+});
+
+// GET /api/appointment/personal/viewable-users — hierarchy list for history filter
+app.get("/api/appointment/personal/viewable-users", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+    const role = (actingUser.role || "").toLowerCase();
+    const allowed = [
+      "designer",
+      "design_manager",
+      "territorial_design_manager",
+      "admin",
+      "deputy_general_manager",
+    ];
+    if (!allowed.includes(role)) {
+      return res.status(403).json({ message: "Not allowed" });
+    }
+    const users = await getPersonalAppointmentVisibleUsers(actingUser);
+    return res.json(users);
+  } catch (err: any) {
+    console.error("personal viewable-users error", err);
+    return res.status(500).json({ message: "Failed to load team members" });
+  }
+});
+
+// GET /api/appointment/personal/history — personal blocks for self or hierarchy
+app.get("/api/appointment/personal/history", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+    const role = (actingUser.role || "").toLowerCase();
+    const allowed = [
+      "designer",
+      "design_manager",
+      "territorial_design_manager",
+      "admin",
+      "deputy_general_manager",
+    ];
+    if (!allowed.includes(role)) {
+      return res.status(403).json({ message: "Not allowed" });
+    }
+
+    const requestedName = String(req.query.designerName || actingUser.name).trim();
+    if (!(await canViewDesignerAppointments(actingUser, requestedName))) {
+      return res.status(403).json({ message: "Not allowed to view this designer's appointments" });
+    }
+
+    const data = await callErpApi(
+      `/v1/Appointment/designer/${encodeURIComponent(requestedName)}`,
+    );
+    const list = Array.isArray(data) ? data : [];
+    const appointments = list.filter(isPersonalAppointmentErpRow).map((row: any) => ({
+      ...row,
+      designerName: requestedName,
+    }));
+    return res.json({ appointments, designerName: requestedName });
+  } catch (err: any) {
+    console.error("personal history error", err);
+    return res.status(500).json({ message: "Failed to load appointment history" });
+  }
+});
+
+// POST /api/appointment/personal — book personal time (same ERP table as meetings)
+app.post("/api/appointment/personal", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+
+    const role = (actingUser.role || "").toLowerCase();
+    if (!["designer", "design_manager"].includes(role)) {
+      return res.status(403).json({ message: "Only designers and design managers can book personal time" });
+    }
+
+    const {
+      reason,
+      reasonPreset,
+      startTime,
+      endTime,
+      meetingDate,
+      meetingTime,
+      meetingEndTime,
+      durationMin,
+    } = req.body || {};
+
+    const trimmedReason = String(reason ?? "").trim();
+    if (!trimmedReason) {
+      return res.status(400).json({ message: "reason is required" });
+    }
+    if (!startTime || !endTime) {
+      return res.status(400).json({ message: "startTime and endTime are required" });
+    }
+
+    const startParsed = new Date(startTime);
+    if (Number.isNaN(startParsed.getTime())) {
+      return res.status(400).json({ message: "Invalid startTime" });
+    }
+    if (startParsed.getTime() < Date.now() - 60_000) {
+      return res.status(400).json({ message: "Cannot book appointments in the past" });
+    }
+
+    const designerName = actingUser.name;
+    const eventStart = formatGoogleDateTime(meetingDate, meetingTime) || startParsed.toISOString();
+    const eventEnd =
+      formatGoogleDateTime(meetingDate, meetingEndTime) || new Date(endTime).toISOString();
+
+    let gcalEventId: string | null = null;
+    let gcalHtmlLink: string | null = null;
+    try {
+      const gcalResult = await createGoogleCalendarEventForUser({
+        userId: actingUser.id,
+        summary: `Personal block – ${designerName}`,
+        description: trimmedReason,
+        startDateTimeIso: eventStart,
+        endDateTimeIso: eventEnd,
+        attendees: [],
+      });
+      if (gcalResult) {
+        gcalEventId = (gcalResult as any).id ?? null;
+        gcalHtmlLink = (gcalResult as any).htmlLink ?? null;
+      }
+    } catch (calendarErr) {
+      console.error("[personal-block] Google event create error (non-fatal)", calendarErr);
+    }
+
+    let erpData: unknown = null;
+    try {
+      erpData = await callErpApi("/v1/Appointment", {
+        method: "POST",
+        body: JSON.stringify({
+          designerName,
+          startTime,
+          endTime,
+          source: "DESIGN_MODULE",
+          description: trimmedReason,
+          leadId: null,
+          googleEventId: gcalEventId,
+          googleHtmlLink: gcalHtmlLink,
+          googleSyncStatus: gcalEventId ? "SYNCED" : "DM_GCAL_FAILED",
+        }),
+      });
+    } catch (erpErr) {
+      if (isErpAppointmentConflictError(erpErr)) {
+        return res.status(409).json({
+          conflict: true,
+          message: "This time slot is no longer available. Please choose another slot.",
+        });
+      }
+      throw erpErr;
+    }
+
+    const timeRange =
+      meetingTime && meetingEndTime
+        ? `${formatTime12Hour(meetingTime) || meetingTime} – ${formatTime12Hour(meetingEndTime) || meetingEndTime}`
+        : `${startTime} – ${endTime}`;
+
+    const mailRecipients = await resolvePersonalBlockMailRecipients(actingUser.id, actingUser.role);
+    if (mailRecipients.to) {
+      void triggerInternalMailRoute("/api/email/send-personal-block-notification-internal", {
+        to: mailRecipients.to,
+        cc: mailRecipients.cc,
+        recipientName: mailRecipients.toName || "Team Member",
+        bookedByName: designerName,
+        bookedByRole: actingUser.role,
+        appointmentDate: meetingDate || startParsed.toLocaleDateString("en-IN"),
+        timeRange,
+        durationMinutes: durationMin ?? 90,
+        reason: trimmedReason,
+        reasonPreset: reasonPreset || undefined,
+        subject: `Personal time block – ${designerName} · ${meetingDate || ""}`.trim(),
+      });
+    } else {
+      console.warn("[personal-block] No primary mail recipient; skipping notification", {
+        userId: actingUser.id,
+        role: actingUser.role,
+      });
+    }
+
+    return res.status(201).json({ ok: true, appointment: erpData, googleEventId: gcalEventId });
+  } catch (err: any) {
+    console.error("personal appointment create error", err);
+    return res.status(500).json({ message: err?.message || "Failed to book personal appointment" });
   }
 });
 
