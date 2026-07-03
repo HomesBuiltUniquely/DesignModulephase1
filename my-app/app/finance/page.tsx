@@ -17,11 +17,12 @@ type UploadItem = {
   uploadedAt: string;
   status: string;
   uploadType?: string;
+  s3Url?: string | null;
 };
 
 /**
  * Finance 10% payment queue: limited access – Lead ID, Lead name, Status, Upload (screenshots), Approve.
- * Finance uploads payment screenshots then approves; lead moves to next stage.
+ * Finance 10% payment queue: manual DQC1 path. CRM leads appear in Sales Closure queue.
  */
 export default function Finance10pPage() {
   const { user, sessionId } = useAuth();
@@ -46,7 +47,6 @@ export default function Finance10pPage() {
 
   const loadLeads = async () => {
     if (!sessionId) {
-      // Not authenticated yet; avoid calling API without token (would return 401).
       setLeads([]);
       setError(null);
       setLoading(false);
@@ -58,7 +58,11 @@ export default function Finance10pPage() {
       const res = await fetch(`${getApiBase()}/api/leads/finance-10p-queue`, { headers: { ...authHeaders } });
       const text = await res.text();
       const data = (() => {
-        try { return JSON.parse(text); } catch { return null; }
+        try {
+          return JSON.parse(text);
+        } catch {
+          return null;
+        }
       })();
       if (!res.ok) throw new Error(data?.message || 'Failed to load queue');
       setLeads(Array.isArray(data) ? data : []);
@@ -113,7 +117,10 @@ export default function Finance10pPage() {
       const data = await res.json().catch(() => []);
       const list = Array.isArray(data) ? data : [];
       const payment = list.filter(
-        (u: UploadItem) => u.uploadType === 'payment_10p' || u.uploadType === 'payment_screenshot'
+        (u: UploadItem) =>
+          u.uploadType === 'payment_10p' ||
+          u.uploadType === 'payment_screenshot' ||
+          u.uploadType === 'hub_payment_proof',
       );
       setViewUploads(payment);
     } catch {
@@ -123,9 +130,14 @@ export default function Finance10pPage() {
     }
   };
 
-  const downloadUpload = async (leadId: number, uploadId: number, fileName: string) => {
+  const openUpload = async (leadId: number, upload: UploadItem) => {
+    const external = upload.s3Url && /^https?:\/\//i.test(upload.s3Url);
+    if (external) {
+      window.open(upload.s3Url!, '_blank', 'noopener,noreferrer');
+      return;
+    }
     try {
-      const res = await fetch(`${getApiBase()}/api/leads/${leadId}/uploads/${uploadId}/download`, {
+      const res = await fetch(`${getApiBase()}/api/leads/${leadId}/uploads/${upload.id}/download`, {
         headers: { ...authHeaders },
       });
       if (!res.ok) return;
@@ -133,7 +145,7 @@ export default function Finance10pPage() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = fileName || 'download';
+      a.download = upload.originalName || 'download';
       a.click();
       URL.revokeObjectURL(url);
     } catch {
@@ -165,7 +177,7 @@ export default function Finance10pPage() {
       <div className="min-h-screen bg-slate-900 p-6">
         <div className="max-w-3xl mx-auto bg-white rounded-2xl p-6">
           <h1 className="text-xl font-bold text-gray-900">10% Payment</h1>
-          <p className="text-sm text-gray-600 mt-2">You don’t have access to this page.</p>
+          <p className="text-sm text-gray-600 mt-2">You don&apos;t have access to this page.</p>
         </div>
       </div>
     );
@@ -178,12 +190,23 @@ export default function Finance10pPage() {
           <div>
             <h1 className="text-xl font-bold text-gray-900">10% Payment</h1>
             <p className="text-sm text-gray-600 mt-1">
-              Project team uploads screenshots in the lead; you can view them here, then approve. You can also upload (e.g. if received offline). Approved leads move to the next stage.
+              Project team uploads screenshots in the lead; you can view them here, then approve. You can also upload
+              (e.g. if received offline). Approved leads move to the next stage.
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <a href="/finance/sales-closure" className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-semibold hover:bg-gray-50">Sales Closure</a>
-            <a href="/finance/40" className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-semibold hover:bg-gray-50">40% Payment</a>
+            <a
+              href="/finance/sales-closure"
+              className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-semibold hover:bg-gray-50"
+            >
+              Sales Closure
+            </a>
+            <a
+              href="/finance/40"
+              className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-semibold hover:bg-gray-50"
+            >
+              40% Payment
+            </a>
             <button
               type="button"
               onClick={loadLeads}
@@ -208,7 +231,9 @@ export default function Finance10pPage() {
           </div>
           {leads.length === 0 ? (
             <div className="px-4 py-6 text-sm text-gray-600">
-              {loading ? 'Loading…' : 'No leads at 10% payment stage. Leads appear here after DQC 1 approval.'}
+              {loading
+                ? 'Loading…'
+                : 'No leads at 10% payment stage. Leads appear here after DQC 1 approval.'}
             </div>
           ) : (
             leads.map((l) => {
@@ -221,9 +246,15 @@ export default function Finance10pPage() {
                       {l.id}
                     </a>
                   </div>
-                  <div className="col-span-3 text-sm text-gray-800 truncate" title={l.projectName}>{l.projectName}</div>
+                  <div className="col-span-3 text-sm text-gray-800 truncate" title={l.projectName}>
+                    {l.projectName}
+                  </div>
                   <div className="col-span-2 text-sm">
-                    <span className={l.status === 'Pending approval' ? 'text-amber-700 font-medium' : 'text-gray-600'}>
+                    <span
+                      className={
+                        l.status === 'Pending approval' ? 'text-amber-700 font-medium' : 'text-gray-600'
+                      }
+                    >
                       {l.status}
                     </span>
                   </div>
@@ -271,33 +302,52 @@ export default function Finance10pPage() {
         />
 
         {viewLeadId != null && (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setViewLeadId(null)}>
-            <div className="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[80vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+            onClick={() => setViewLeadId(null)}
+          >
+            <div
+              className="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[80vh] overflow-hidden flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
               <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
                 <h2 className="text-lg font-bold text-gray-900">Payment screenshots – Lead {viewLeadId}</h2>
-                <button type="button" onClick={() => setViewLeadId(null)} className="text-gray-500 hover:text-gray-700 text-2xl leading-none">&times;</button>
+                <button
+                  type="button"
+                  onClick={() => setViewLeadId(null)}
+                  className="text-gray-500 hover:text-gray-700 text-2xl leading-none"
+                >
+                  &times;
+                </button>
               </div>
               <div className="p-4 overflow-auto flex-1">
-                
                 {viewLoading ? (
                   <p className="text-sm text-gray-500">Loading…</p>
                 ) : viewUploads.length === 0 ? (
                   <p className="text-sm text-gray-500">No payment screenshots uploaded yet.</p>
                 ) : (
                   <ul className="space-y-2">
-                    {viewUploads.map((u) => (
-                      <li key={u.id} className="flex items-center justify-between gap-2 py-2 border-b border-gray-100 last:border-0">
-                        <span className="text-sm text-gray-800 truncate flex-1" title={u.originalName}>{u.originalName}</span>
-                        <span className="text-xs text-gray-500 flex-shrink-0">{u.status}</span>
-                        <button
-                          type="button"
-                          onClick={() => downloadUpload(viewLeadId, u.id, u.originalName)}
-                          className="text-sm text-blue-600 font-semibold hover:underline flex-shrink-0"
+                    {viewUploads.map((u) => {
+                      const isExternal = !!(u.s3Url && /^https?:\/\//i.test(u.s3Url));
+                      return (
+                        <li
+                          key={u.id}
+                          className="flex items-center justify-between gap-2 py-2 border-b border-gray-100 last:border-0"
                         >
-                          Download
-                        </button>
-                      </li>
-                    ))}
+                          <span className="text-sm text-gray-800 truncate flex-1" title={u.originalName}>
+                            {u.originalName}
+                          </span>
+                          <span className="text-xs text-gray-500 flex-shrink-0">{u.status}</span>
+                          <button
+                            type="button"
+                            onClick={() => void openUpload(viewLeadId, u)}
+                            className="text-sm text-blue-600 font-semibold hover:underline flex-shrink-0"
+                          >
+                            {isExternal ? 'Open' : 'Download'}
+                          </button>
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
               </div>

@@ -13,7 +13,8 @@ import AdmZip from "adm-zip";
 import * as XLSX from "xlsx";
 import { registerCustomerNumberRoutes } from "./routes/customerNumberApi";
 import { registerMsg91InboundRoutes } from "./routes/msg91InboundApi";
-import { registerProlanceRoutes, resolveLeadMilestonePaymentBreakdown, formatQuoteInrAmount } from "./routes/prolanceApi";
+import { registerProlanceRoutes } from "./routes/prolanceApi";
+import { registerCrmHubBookingRoutes, notifyHubFinanceReview, getHubBookingSyncForLead, buildFinance10pQueueList, buildCrmSalesClosureQueueRows, buildCrmSalesClosureLeadDetail } from "./routes/crmHubBookingRoutes";
 
 function loadEnvFile() {
   const envPath = path.join(__dirname, ".env");
@@ -52,6 +53,8 @@ function buildAllowedOrigins(): string[] {
     "https://www.design.hubinterior.com",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:3002",
+    "http://127.0.0.1:3002",
   ];
   const set = new Set<string>([...defaults, ...fromEnv]);
   const fe = (process.env.FRONTEND_BASE_URL || "").replace(/\/$/, "");
@@ -125,12 +128,15 @@ app.get("/api/health", (_req, res) => {
 // ----- MySQL setup -----
 // Defaults are set from the credentials you provided; you can still override via env vars if needed.
 const pool = mysql.createPool({
-  host: process.env.DB_HOST || "database-1.cl002gu0o5ft.ap-south-2.rds.amazonaws.com",
-  user: process.env.DB_USER || "admin",
-  password: process.env.DB_PASSWORD || "Hubinterior2019",
+  host: process.env.DB_HOST || "localhost",
+  user: process.env.DB_USER || "root",
+  password: process.env.DB_PASSWORD || "Root@123",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 0,
+  connectTimeout: 60000,
 });
 
 // Standalone route: /api/customer/:customerNumber (see routes/customerNumberApi.ts)
@@ -160,7 +166,7 @@ if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 const PROFILE_IMAGES_DIR = path.join(UPLOADS_DIR, "profile-images");
 if (!fs.existsSync(PROFILE_IMAGES_DIR)) fs.mkdirSync(PROFILE_IMAGES_DIR, { recursive: true });
 const API_BASE = process.env.API_BASE_URL || "http://localhost:3001";
-const FRONTEND_BASE = (process.env.FRONTEND_BASE_URL || "http://localhost:3000").replace(/\/$/, "");
+const FRONTEND_BASE = (process.env.FRONTEND_BASE_URL || "http://localhost:3000" || "http://localhost:3002" ).replace(/\/$/, "");
 const CRM_CALLBACK_BASE =
   process.env.CRM_CALLBACK_BASE_URL ||
   process.env.CRM_API_BASE_URL ||
@@ -270,6 +276,32 @@ async function fetchFromErpWithRetry(endpoint: string) {
   }
 
   if (!res.ok) throw new Error(`ERP API error: ${res.status}`);
+  return res.json();
+}
+
+async function callErpApi(endpoint: string, options: { method?: string; body?: string } = {}): Promise<any> {
+  const method = options.method || "GET";
+  let token = await getErpToken();
+  if (!token) throw new Error("Could not get ERP auth token");
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  };
+
+  let res = await fetch(`${ERP_BASE_URL}${endpoint}`, { method, headers, body: options.body });
+
+  if (res.status === 401) {
+    token = await getErpToken(true);
+    if (!token) throw new Error("Could not refresh ERP auth token");
+    headers.Authorization = `Bearer ${token}`;
+    res = await fetch(`${ERP_BASE_URL}${endpoint}`, { method, headers, body: options.body });
+  }
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`ERP API error: ${res.status} ${errText}`.trim());
+  }
   return res.json();
 }
 
@@ -3120,6 +3152,19 @@ app.all("/api/auth/register", async (req: Request, res: Response) => {
         designManagerId = idNum;
       }
     }
+    // Designer names must be unique to guarantee slot matching with CRM
+    if (targetRole === "designer") {
+      const [nameCheck] = await pool.query(
+        "SELECT id FROM users WHERE name = ? AND role = 'designer' LIMIT 1",
+        [displayName]
+      );
+      if ((nameCheck as any[]).length > 0) {
+        return res.status(409).json({
+          message: `A designer with the name "${displayName}" already exists. Designer names must be unique.`,
+        });
+      }
+    }
+
     const [result] = await pool.query(
       "INSERT INTO users (email, password, name, role, phone, design_manager_id, territorial_design_manager_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
       [normalized, String(password), displayName, targetRole, phoneVal || null, designManagerId, territorialDesignManagerId],
@@ -6100,8 +6145,12 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                 "Customer";
               const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
               const productionPoc = meta?.productionPoc ?? "Prajwal - prajwal@hubinterior.com";
-              const executionPoc = row.pmName && row.pmEmail ? `${row.pmName} - ${row.pmEmail}` : (meta?.executionPoc ?? "Project Manager - PM automatically");
-              const spmPoc = meta?.spmPoc ?? "Dummy SPM - dummy.spm@hubinterior.com";
+              const executionPoc = row.pmEmail
+                ? row.pmName
+                  ? `${row.pmName} - ${row.pmEmail}`
+                  : row.pmEmail
+                : "Project Manager — not yet assigned";
+              const spmPoc = "guruvignesh@hubinterior.com";
               const operationManager = meta?.operationManager ?? "Balaji - balaji@hubinterior.com";
               const operationHead = meta?.operationHead ?? "Alex - alex@hubinterior.com";
               const mailChainCc = await getMailLoopCcEmails([actingUser.email], id);
@@ -6118,6 +6167,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   subject: mailChainSubject,
                   customerName,
                   designerName,
+                  projectId,
                   productionPoc,
                   executionPoc,
                   spmPoc,
@@ -6492,7 +6542,21 @@ app.get("/api/leads/finance-sales-closure-queue", async (req: Request, res: Resp
     );
 
     const list = (rows as any[]).map((r) => mapFinanceSalesClosureQueueRow(r, { approved }));
-    return res.json(list);
+    const crmRows = await buildCrmSalesClosureQueueRows(pool, approved, {
+      customerName,
+      month,
+      dateFrom,
+      dateTo,
+    });
+    const crmIds = new Set(crmRows.map((r) => Number(r.id)));
+    const manualOnly = list.filter((r) => !crmIds.has(Number(r.id)));
+    const merged = [...crmRows, ...manualOnly];
+    merged.sort((a, b) => {
+      const ta = a.submittedAt ? new Date(String(a.submittedAt)).getTime() : 0;
+      const tb = b.submittedAt ? new Date(String(b.submittedAt)).getTime() : 0;
+      return tb - ta;
+    });
+    return res.json(merged);
   } catch (err) {
     console.error("finance-sales-closure-queue error", err);
     return res.status(500).json({ message: "Failed to load queue" });
@@ -6579,6 +6643,8 @@ app.get("/api/leads/finance-sales-closure/:leadId", async (req: Request, res: Re
     );
     const row = (rows as any[])[0];
     if (!row) return res.status(404).json({ message: "Lead not found" });
+    const crmDetail = await buildCrmSalesClosureLeadDetail(pool, leadId);
+    if (crmDetail) return res.json(crmDetail);
     const payloadObj = parseLeadPayloadObject(row.payload);
     await persistRepairedFinanceHistory(leadId, payloadObj);
     const detail = buildFinanceSalesClosureLeadDetail({ ...row, payload: payloadObj });
@@ -6839,27 +6905,7 @@ app.get("/api/leads/finance-10p-queue", async (req: Request, res: Response) => {
     if (role !== "finance" && role !== "admin") {
       return res.status(403).json({ message: "Only finance or admin can access this queue" });
     }
-    const [allLeads] = await pool.query(
-      "SELECT id, project_name as projectName, project_stage as projectStage FROM leads ORDER BY id ASC"
-    );
-    const leads = allLeads as { id: number; projectName: string; projectStage: string }[];
-    const [completions] = await pool.query(
-      "SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName FROM lead_task_completions"
-    );
-    const compList = completions as { leadId: number; milestoneIndex: number; taskName: string }[];
-    const hasDqc1Approval = (leadId: number) =>
-      compList.some((c) => c.leadId === leadId && c.milestoneIndex === 1 && c.taskName === "DQC 1 approval");
-    const has10pCollection = (leadId: number) =>
-      compList.some((c) => c.leadId === leadId && c.milestoneIndex === 2 && c.taskName === "10% payment collection");
-    const has10pApproval = (leadId: number) =>
-      compList.some((c) => c.leadId === leadId && c.milestoneIndex === 2 && c.taskName === "10% payment approval");
-    const at10p = leads.filter((l) => hasDqc1Approval(l.id) && !has10pApproval(l.id));
-    const list = at10p.map((l) => ({
-      id: l.id,
-      projectName: l.projectName || "—",
-      status: has10pCollection(l.id) ? "Pending approval" : "Pending upload",
-      canApprove: TEMP_FINANCE_RELAXED_APPROVAL || has10pCollection(l.id),
-    }));
+    const list = await buildFinance10pQueueList(pool, TEMP_FINANCE_RELAXED_APPROVAL);
     return res.json(list);
   } catch (err) {
     console.error("finance-10p-queue error", err);
@@ -7046,8 +7092,12 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
       [leadId, now]
     );
     await pool.query(
-      "UPDATE lead_uploads SET status = 'approved' WHERE lead_id = ? AND upload_type = 'payment_10p' AND status = 'pending'",
+      "UPDATE lead_uploads SET status = 'approved' WHERE lead_id = ? AND upload_type IN ('payment_10p', 'hub_payment_proof') AND status = 'pending'",
       [leadId]
+    );
+    await pool.query(
+      "UPDATE leads SET project_stage = '10-20%', update_at = ? WHERE id = ?",
+      [now, leadId]
     );
     const ev = {
       id: `10p-approval-${Date.now()}`,
@@ -7262,10 +7312,58 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
       });
     }
 
+    const hubSync = await getHubBookingSyncForLead(pool, leadId);
+    if (hubSync) {
+      void notifyHubFinanceReview(pool, leadId, "APPROVED", user.name ?? "Finance", null);
+    }
+
     return res.status(201).json({ ok: true });
   } catch (err) {
     console.error("approve-10p-payment error", err);
     return res.status(500).json({ message: "Failed to approve" });
+  }
+});
+
+// Finance: reject 10% payment (CRM hub path notifies Hub webhook)
+app.post("/api/leads/:id/reject-10p-payment", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user?.role ?? "").toLowerCase();
+    if (role !== "finance" && role !== "admin") {
+      return res.status(403).json({ message: "Only finance can reject 10% payment" });
+    }
+    const reason = String((req.body || {}).reason ?? "").trim() || null;
+    const now = new Date();
+    await pool.query(
+      "UPDATE lead_uploads SET status = 'rejected' WHERE lead_id = ? AND upload_type IN ('payment_10p', 'hub_payment_proof') AND status = 'pending'",
+      [leadId]
+    );
+    await pool.query(
+      `DELETE FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 2 AND task_name = '10% payment approval'`,
+      [leadId]
+    );
+    const ev = {
+      id: `10p-reject-${Date.now()}`,
+      type: "note",
+      taskName: "10% payment approval",
+      milestoneName: "10% PAYMENT",
+      timestamp: now.toISOString(),
+      description: reason ? `10% payment rejected: ${reason}` : "10% payment rejected by Finance.",
+      user: { name: user.name ?? "Finance" },
+      details: { kind: "note", noteText: reason || "10% payment rejected." },
+    };
+    await addLeadHistoryEvent(leadId, ev);
+    const hubSync = await getHubBookingSyncForLead(pool, leadId);
+    if (hubSync) {
+      void notifyHubFinanceReview(pool, leadId, "REJECTED", user.name ?? "Finance", reason);
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("reject-10p-payment error", err);
+    return res.status(500).json({ message: "Failed to reject" });
   }
 });
 
@@ -7843,10 +7941,14 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       meetingType,
       meetingDate,
       meetingTime,
+      meetingEndTime,
       meetingLink,
       meetingMode,
       ecLocation,
       attachments,
+      slotId,
+      startTime,
+      endTime,
     } = req.body || {};
 
     if (!meetingType || !meetingDate || !meetingTime) {
@@ -7975,21 +8077,78 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       return res.status(400).json({ message: "Unsupported meetingType" });
     }
 
+    // Compute the correct end time from the slot's endTime (HH:MM), falling back to 90 min default
+    const eventEnd = meetingEndTime
+      ? formatGoogleDateTime(meetingDate, meetingEndTime) ?? addHoursToIso(eventStart, 1.5)
+      : addHoursToIso(eventStart, 1.5);
+
+    // Create Google Calendar event and capture the result so we can pass eventId to Java
+    let gcalEventId: string | null = null;
+    let gcalHtmlLink: string | null = null;
     try {
-      await createGoogleCalendarEventForFirstAvailableUser({
+      const gcalResult = await createGoogleCalendarEventForFirstAvailableUser({
         userIds: [row.assigned_designer_id, actingUser.id],
         summary,
         description,
         startDateTimeIso: eventStart,
-        endDateTimeIso: addHoursToIso(eventStart, 1),
+        endDateTimeIso: eventEnd,
         attendees: distinctEmails([customerEmail, row.designerEmail, actingUser.email]),
       });
+      if (gcalResult) {
+        gcalEventId = (gcalResult as any).id ?? (gcalResult as any).eventId ?? null;
+        gcalHtmlLink = (gcalResult as any).htmlLink ?? null;
+        console.log(`[GCal] Event created: ${gcalEventId}`);
+      }
     } catch (calendarErr) {
       console.error("meeting invite Google event create error (non-fatal)", {
         leadId,
         meetingType,
         error: calendarErr,
       });
+    }
+
+    // Register slot + Google event details in Java CRM (non-fatal — GCal event and email already sent)
+    if (slotId && meetingDate) {
+      try {
+        await callErpApi("/v1/Appointment", {
+          method: "POST",
+          body: JSON.stringify({
+            designerName: actingUser.name,
+            date: meetingDate,
+            slotId,
+            source: "DESIGN_MODULE",
+            description: `Design meeting - Lead ID: ${leadId}`,
+            leadId,
+            // Pass the GCal event details so Java stores them without a second sync attempt
+            googleEventId: gcalEventId,
+            googleHtmlLink: gcalHtmlLink,
+            googleSyncStatus: gcalEventId ? "SYNCED" : "DM_GCAL_FAILED",
+          }),
+        });
+        console.log(`[SlotSync] Slot ${slotId} blocked in Java for ${actingUser.name} on ${meetingDate} (gcal=${gcalEventId ?? "none"})`);
+      } catch (slotErr) {
+        console.error("[SlotSync] Java appointment registration failed (non-fatal)", slotErr);
+      }
+    } else if (startTime && endTime) {
+      try {
+        await callErpApi("/v1/Appointment", {
+          method: "POST",
+          body: JSON.stringify({
+            designerName: actingUser.name,
+            startTime,
+            endTime,
+            source: "DESIGN_MODULE",
+            description: `Design meeting - Lead ID: ${leadId}`,
+            leadId,
+            googleEventId: gcalEventId,
+            googleHtmlLink: gcalHtmlLink,
+            googleSyncStatus: gcalEventId ? "SYNCED" : "DM_GCAL_FAILED",
+          }),
+        });
+        console.log(`[SlotSync] Dynamic window ${startTime}–${endTime} blocked in Java for ${actingUser.name} (gcal=${gcalEventId ?? "none"})`);
+      } catch (slotErr) {
+        console.error("[SlotSync] Java dynamic appointment registration failed (non-fatal)", slotErr);
+      }
     }
 
     if (customerEmail) {
@@ -10029,32 +10188,40 @@ app.get("/api/sales-admins", async (req: Request, res: Response) => {
   }
 });
 
-// Designers for Sales Closure form (from users with role designer or design_manager)
+// Designers for Sales Closure form AND CRM slot-sync (source of truth for designer list)
 app.get("/api/designers", async (req: Request, res: Response) => {
+  console.log("[GET /api/designers] request received");
   try {
     const currentUser = await getUserFromSession(req);
     const currentRole = (currentUser?.role || "").toLowerCase();
+    console.log(`[GET /api/designers] caller role: "${currentRole}", id: ${currentUser?.id ?? "unauthenticated"}`);
+
     let query = `SELECT u.id,
                         u.name,
+                        u.email,
                         u.role,
                         COALESCE(m.name, '') as leadName
                  FROM users u
                  LEFT JOIN users m ON u.design_manager_id = m.id
-                 WHERE u.role IN ('designer', 'design_manager')`;
+                 WHERE u.role = 'designer'`;
     const params: number[] = [];
     if (currentRole === "territorial_design_manager" && currentUser) {
-      query += ` AND (
-        (u.role = 'design_manager' AND u.territorial_design_manager_id = ?)
-        OR (u.role = 'designer' AND m.territorial_design_manager_id = ?)
-      )`;
-      params.push(currentUser.id, currentUser.id);
+      query += ` AND m.territorial_design_manager_id = ?`;
+      params.push(currentUser.id);
     }
     query += " ORDER BY u.name ASC";
+
+    console.log("[GET /api/designers] running query...");
     const [rows] = await pool.query(query, params);
-    res.json(rows);
-  } catch (err) {
-    console.error("designers error", err);
-    res.status(500).json({ message: "Failed to load designers" });
+    const list = rows as any[];
+    console.log(`[GET /api/designers] found ${list.length} designers`);
+
+    // Always return { designers: [...] } so CRM and legacy callers both work
+    return res.json({ designers: list });
+  } catch (err: any) {
+    console.error("[GET /api/designers] DB error:", err?.code, err?.message);
+    // Return empty list — do NOT crash; CRM shows graceful empty dropdown
+    return res.json({ designers: [] });
   }
 });
 
@@ -11240,6 +11407,7 @@ app.post("/api/leads/:id/cancel", async (req: Request, res: Response) => {
   }
 });
 
+registerCrmHubBookingRoutes(app, { pool, getUserFromSession, addLeadHistoryEvent });
 registerProlanceRoutes(app, getUserFromSession, pool);
 
 // Ensure CORS headers are present on error responses (multer, etc.) so the browser doesn't only show a generic CORS error
@@ -11251,6 +11419,73 @@ app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
   const msg = err instanceof Error ? err.message : "Server error";
   console.error("Express error:", err);
   return res.status(500).json({ message: msg });
+});
+
+// ========== Slot Sync — New Endpoints ==========
+
+// NOTE: GET /api/designers is defined earlier in this file (line ~9957) — do not re-register here.
+
+// GET /api/appointment/designer/:designerName — proxy to Java CRM (booked appointments)
+app.get("/api/appointment/designer/:designerName", async (req: Request, res: Response) => {
+  const designerName = String(req.params.designerName || "").trim();
+  if (!designerName) {
+    return res.status(400).json({ message: "designerName is required" });
+  }
+  try {
+    const data = await callErpApi(
+      `/v1/Appointment/designer/${encodeURIComponent(designerName)}`,
+    );
+    return res.json(data);
+  } catch (err: any) {
+    console.error("designer appointments proxy error", err);
+    return res.status(500).json({ message: "Failed to fetch designer appointments", error: err?.message });
+  }
+});
+
+// GET /api/appointment/available-slots — proxy to Java CRM
+app.get("/api/appointment/available-slots", async (req: Request, res: Response) => {
+  const { date, designerName } = req.query as { date?: string; designerName?: string };
+  if (!date || !designerName) {
+    return res.status(400).json({ message: "date and designerName are required" });
+  }
+  try {
+    const data = await callErpApi(
+      `/v1/Appointment/available-slots?date=${encodeURIComponent(date)}&designerName=${encodeURIComponent(designerName)}`
+    );
+    return res.json(data);
+  } catch (err: any) {
+    console.error("available-slots proxy error", err);
+    return res.status(500).json({ message: "Failed to fetch slots", error: err?.message });
+  }
+});
+
+// POST /api/appointment — proxy slot booking to Java CRM
+app.post("/api/appointment", async (req: Request, res: Response) => {
+  const actingUser = await getUserFromSession(req);
+  if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+
+  const { designerName, date, slotId, leadId } = req.body || {};
+  if (!designerName || !date || !slotId) {
+    return res.status(400).json({ message: "designerName, date, slotId are required" });
+  }
+
+  try {
+    const data = await callErpApi("/v1/Appointment", {
+      method: "POST",
+      body: JSON.stringify({
+        designerName,
+        date,
+        slotId,
+        source: "DESIGN_MODULE",
+        description: `Design Module meeting - Lead ID: ${leadId ?? "N/A"}`,
+        leadId: leadId ?? null,
+      }),
+    });
+    return res.status(201).json(data);
+  } catch (err: any) {
+    console.error("appointment create proxy error", err);
+    return res.status(500).json({ message: "Failed to create appointment", error: err?.message });
+  }
 });
 
 // ----- Keep process alive on unhandled errors (log instead of exit) -----

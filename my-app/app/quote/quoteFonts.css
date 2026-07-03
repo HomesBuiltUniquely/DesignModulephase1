@@ -1,0 +1,25 @@
+@font-face {
+  font-family: 'Wulkan';
+  src: url('https://hubinterior-quote-2026.s3.ap-south-2.amazonaws.com/fonts/Wulkan-Regular.woff2')
+    format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Wulkan';
+  src: url('https://hubinterior-quote-2026.s3.ap-south-2.amazonaws.com/fonts/Wulkan-Bold.woff2')
+    format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+.quote-page {
+  font-family: var(--font-manrope), 'Manrope', Arial, sans-serif;
+}
+
+.quote-heading {
+  font-family: 'Wulkan', Georgia, serif;
+}
