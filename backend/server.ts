@@ -176,6 +176,12 @@ const CRM_CALLBACK_BASE =
   process.env.CRM_API_BASE_URL ||
   process.env.CRM_BASE_URL ||
   "";
+const OFFLINE_MEETING_CALLBACK_URL = (process.env.OFFLINE_MEETING_CALLBACK_URL || "").trim();
+const OFFLINE_MEETING_CALLBACK_API_KEY = (
+  process.env.OFFLINE_MEETING_CALLBACK_API_KEY ||
+  process.env.EXTERNAL_LEAD_INGEST_API_KEY ||
+  ""
+).trim();
 const ERP_BASE_URL = process.env.ERP_BASE_URL || "https://hows.hubinterior.com";
 const ERP_USERNAME = process.env.ERP_USERNAME || "admin@hubinterior.com";
 const ERP_PASSWORD = process.env.ERP_PASSWORD || "admin123";
@@ -222,6 +228,56 @@ async function notifyCrmSalesClosureStatus(payload: Record<string, unknown>): Pr
     const body = await response.text().catch(() => "");
     throw new Error(`CRM callback failed (${response.status}) ${body}`.trim());
   }
+}
+
+type OfflineMeetingCreatedPayload = {
+  leadId: number;
+  designerName: string;
+  clientName: string;
+  milestoneName: string;
+  timeSlot: string;
+  branch: string | null;
+};
+
+function offlineMeetingMilestoneName(meetingType: string): string {
+  if (meetingType === "dqc2_material_selection") return "DQC2";
+  if (meetingType === "design_signoff") return "40% PAYMENT";
+  return "DQC1";
+}
+
+function formatOfflineMeetingTimeSlot(meetingTime: string, meetingEndTime?: string | null): string {
+  const start = formatTime12Hour(meetingTime) || meetingTime;
+  if (meetingEndTime) {
+    const end = formatTime12Hour(meetingEndTime) || meetingEndTime;
+    return `${start} – ${end}`;
+  }
+  return start;
+}
+
+/** POST offline meeting details to the external module (non-fatal). */
+async function notifyOfflineMeetingCreated(payload: OfflineMeetingCreatedPayload): Promise<void> {
+  if (!OFFLINE_MEETING_CALLBACK_URL) {
+    console.warn("[offline-meeting-callback] OFFLINE_MEETING_CALLBACK_URL is not configured; skipping");
+    return;
+  }
+
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (OFFLINE_MEETING_CALLBACK_API_KEY) {
+    headers["x-external-api-key"] = OFFLINE_MEETING_CALLBACK_API_KEY;
+    headers["x-api-key"] = OFFLINE_MEETING_CALLBACK_API_KEY;
+    headers.Authorization = `Bearer ${OFFLINE_MEETING_CALLBACK_API_KEY}`;
+  }
+
+  const response = await fetch(OFFLINE_MEETING_CALLBACK_URL, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Offline meeting callback failed (${response.status}) ${body}`.trim());
+  }
+  console.log(`[offline-meeting-callback] Notified lead ${payload.leadId} (${payload.milestoneName})`);
 }
 
 async function getErpToken(forceRefresh = false): Promise<string | null> {
@@ -732,6 +788,17 @@ async function initDb() {
       } catch {
         // ignore
       }
+    }
+    // Branch (HBR / SJR / JPN) for designers and design managers
+    try {
+      const [branchCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'branch'",
+      );
+      if ((branchCol as any[]).length === 0) {
+        await conn.query("ALTER TABLE users ADD COLUMN branch VARCHAR(50) NULL");
+      }
+    } catch {
+      // ignore
     }
 
     await conn.query(`
@@ -3114,7 +3181,7 @@ app.all("/api/auth/register", async (req: Request, res: Response) => {
     if (!current) return res.status(401).json({ message: "Unauthorized" });
     const role = (current.role || "").toLowerCase();
     if (role !== "territorial_design_manager" && role !== "deputy_general_manager" && role !== "admin") return res.status(403).json({ message: "Only TDM, Deputy General Manager, or Admin can register designers" });
-    const { email, password, name, phone, role: bodyRole, managerId } = req.body || {};
+    const { email, password, name, phone, role: bodyRole, managerId, branch } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
     if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
@@ -3169,9 +3236,11 @@ app.all("/api/auth/register", async (req: Request, res: Response) => {
       }
     }
 
+    const branchVal = branch != null && String(branch).trim() ? String(branch).trim() : null;
+
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone, design_manager_id, territorial_design_manager_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, targetRole, phoneVal || null, designManagerId, territorialDesignManagerId],
+      "INSERT INTO users (email, password, name, role, phone, design_manager_id, territorial_design_manager_id, branch) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, targetRole, phoneVal || null, designManagerId, territorialDesignManagerId, branchVal],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: targetRole } });
@@ -7961,7 +8030,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
 
     const [rows] = await pool.query(
       `SELECT l.pid, l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
-              u.name as designerName, u.email as designerEmail
+              u.name as designerName, u.email as designerEmail, u.branch as designerBranch
        FROM leads l
        LEFT JOIN users u ON u.id = l.assigned_designer_id
        WHERE l.id = ?`,
@@ -8162,6 +8231,19 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
         route: emailRoutePath,
         visibility: "external",
         payload: emailBody,
+      });
+    }
+
+    if (String(meetingMode || "").trim().toLowerCase() === "offline") {
+      void notifyOfflineMeetingCreated({
+        leadId,
+        designerName,
+        clientName,
+        milestoneName: offlineMeetingMilestoneName(meetingType),
+        timeSlot: formatOfflineMeetingTimeSlot(meetingTime, meetingEndTime),
+        branch: pickTrimmedString(row.designerBranch) || null,
+      }).catch((callbackErr) => {
+        console.error("[offline-meeting-callback] notify error (non-fatal)", callbackErr);
       });
     }
 
