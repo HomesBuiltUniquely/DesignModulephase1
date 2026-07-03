@@ -13,7 +13,11 @@ import AdmZip from "adm-zip";
 import * as XLSX from "xlsx";
 import { registerCustomerNumberRoutes } from "./routes/customerNumberApi";
 import { registerMsg91InboundRoutes } from "./routes/msg91InboundApi";
-import { registerProlanceRoutes } from "./routes/prolanceApi";
+import {
+  registerProlanceRoutes,
+  formatQuoteInrAmount,
+  resolveLeadMilestonePaymentBreakdown,
+} from "./routes/prolanceApi";
 import { registerCrmHubBookingRoutes, notifyHubFinanceReview, getHubBookingSyncForLead, buildFinance10pQueueList, buildCrmSalesClosureQueueRows, buildCrmSalesClosureLeadDetail } from "./routes/crmHubBookingRoutes";
 
 function loadEnvFile() {
