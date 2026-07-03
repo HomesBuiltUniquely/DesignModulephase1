@@ -3,6 +3,8 @@
  * Proxied through the Hub API to https://api.prolance.design (see backend `prolanceApi.ts`).
  */
 
+import { mergeQuoteLineItemArrays } from '@/app/quote/quoteLineItems';
+
 export type RunProlanceGetQuoteResult =
     | {
           ok: true;
@@ -503,6 +505,18 @@ export async function runProlanceGetQuoteApiFlow(params: {
                             skirtingsPrice: baseItem.skirtingsPrice ?? it?.skirtingsPrice,
                             worktopsPrice: baseItem.worktopsPrice ?? it?.worktopsPrice,
                             additionalHWPrice: baseItem.additionalHWPrice ?? it?.additionalHWPrice,
+                            units: mergeQuoteLineItemArrays(
+                                Array.isArray(baseItem.units) ? baseItem.units : [],
+                                Array.isArray(it?.units) ? (it.units as unknown[]) : [],
+                            ),
+                            lofts: mergeQuoteLineItemArrays(
+                                Array.isArray(baseItem.lofts) ? baseItem.lofts : [],
+                                Array.isArray(it?.lofts) ? (it.lofts as unknown[]) : [],
+                            ),
+                            services: mergeQuoteLineItemArrays(
+                                Array.isArray(baseItem.services) ? baseItem.services : [],
+                                Array.isArray(it?.services) ? (it.services as unknown[]) : [],
+                            ),
                         };
                     });
                     if (mergedOptionsData.length > 0) {

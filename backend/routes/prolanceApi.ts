@@ -677,6 +677,209 @@ function parseFiniteNum(v: unknown): number | null {
   return null;
 }
 
+function asQuoteRecord(v: unknown): Record<string, unknown> {
+  return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+}
+
+const QUOTE_LINE_PRICE_KEYS = [
+  "price",
+  "unitPrice",
+  "netPrice",
+  "finalPrice",
+  "discountedPrice",
+  "totalPrice",
+  "amount",
+  "payableAmount",
+  "grossPrice",
+  "priceAfterDiscount",
+  "discountedAmount",
+  "netAmount",
+  "totalAmount",
+  "finalAmount",
+  "baseAmount",
+] as const;
+
+function extractQuoteLinePrice(o: Record<string, unknown>): number | null {
+  for (const key of QUOTE_LINE_PRICE_KEYS) {
+    const n = parseFiniteNum(o[key]);
+    if (n != null && n > 0) return n;
+  }
+  return parseFiniteNum(o.price);
+}
+
+/** Match Prolance Excel BOQ: show woodWorkPrice when higher than discounted `price`. */
+function extractUnitDisplayPrice(o: Record<string, unknown>): number | null {
+  const linePrice = extractQuoteLinePrice(o);
+  const wood = parseFiniteNum(o.woodWorkPrice);
+  const acc = parseFiniteNum(o.accessoriesPrice) ?? 0;
+  const hw = parseFiniteNum(o.hardwarePrice) ?? 0;
+  const listKeys = ["priceOld", "oldPrice", "listPrice", "basePrice", "unitPriceOld", "grossPrice", "amountOld"];
+  let listHint: number | null = null;
+  for (const key of listKeys) {
+    const n = parseFiniteNum(o[key]);
+    if (n != null && n > 0) listHint = listHint == null ? n : Math.max(listHint, n);
+  }
+
+  if (wood != null && wood > 0 && linePrice != null && linePrice > 0 && wood > linePrice) {
+    return Math.max(wood, listHint ?? 0) || wood;
+  }
+
+  if (linePrice != null && linePrice > 0) return linePrice;
+  if (listHint != null && listHint > 0) return listHint;
+  if (wood != null && wood > 0) return wood + acc + hw;
+  return null;
+}
+
+function quoteLineMergeKey(o: Record<string, unknown>, idx: number): string {
+  const itemId = asString(o.itemID ?? o.itemId);
+  if (itemId) return `item-${itemId}`;
+  const label = asString(o.label) || "";
+  const desc = asString(o.description) || "";
+  const dim = asString(o.dimensions) || "";
+  const category = asString(o.category) || "";
+  if (label || desc || dim) return `${label}|${desc}|${dim}|${category}`;
+  return `idx-${idx}`;
+}
+
+function mergeQuoteLineItemArrays(a: unknown[], b: unknown[]): Record<string, unknown>[] {
+  const map = new Map<string, Record<string, unknown>>();
+  const order: string[] = [];
+  const add = (arr: unknown[]) => {
+    arr.forEach((item, idx) => {
+      const o = asQuoteRecord(item);
+      const key = quoteLineMergeKey(o, idx);
+      if (!map.has(key)) order.push(key);
+      const prev = map.get(key) || {};
+      const merged = { ...prev, ...o };
+      const display = extractUnitDisplayPrice(merged);
+      if (display != null) merged.price = display;
+      map.set(key, merged);
+    });
+  };
+  add(Array.isArray(a) ? a : []);
+  add(Array.isArray(b) ? b : []);
+  return order.map((k) => map.get(k)!).filter(Boolean);
+}
+
+function quoteOptionKey(o: Record<string, unknown>, idx: number): string {
+  const id = o.optionID ?? o.optionId ?? o.roomID ?? o.roomId;
+  return id != null ? String(id) : `idx-${idx}`;
+}
+
+function mergeQuoteOptionRow(summary: Record<string, unknown>, detail: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...detail,
+    ...summary,
+    totalPrice: summary.totalPrice ?? detail.totalPrice,
+    totalPriceOld: summary.totalPriceOld ?? detail.totalPriceOld,
+    unitsPrice: summary.unitsPrice ?? detail.unitsPrice,
+    loftsPrice: summary.loftsPrice ?? detail.loftsPrice,
+    servicesPrice: summary.servicesPrice ?? detail.servicesPrice,
+    appliancesPrice: summary.appliancesPrice ?? detail.appliancesPrice,
+    skirtingsPrice: summary.skirtingsPrice ?? detail.skirtingsPrice,
+    worktopsPrice: summary.worktopsPrice ?? detail.worktopsPrice,
+    additionalHWPrice: summary.additionalHWPrice ?? detail.additionalHWPrice,
+    units: mergeQuoteLineItemArrays(
+      Array.isArray(summary.units) ? summary.units : [],
+      Array.isArray(detail.units) ? detail.units : [],
+    ),
+    lofts: mergeQuoteLineItemArrays(
+      Array.isArray(summary.lofts) ? summary.lofts : [],
+      Array.isArray(detail.lofts) ? detail.lofts : [],
+    ),
+    services: mergeQuoteLineItemArrays(
+      Array.isArray(summary.services) ? summary.services : [],
+      Array.isArray(detail.services) ? detail.services : [],
+    ),
+  };
+}
+
+function mergeQuoteOptionsData(summaryRows: unknown[], detailRows: unknown[]): Record<string, unknown>[] {
+  const detailByKey = new Map<string, Record<string, unknown>>();
+  detailRows.forEach((row, idx) => {
+    const o = asQuoteRecord(row);
+    detailByKey.set(quoteOptionKey(o, idx), o);
+  });
+  if (summaryRows.length === 0) return detailRows.map((r) => asQuoteRecord(r));
+  return summaryRows.map((row, idx) => {
+    const summary = asQuoteRecord(row);
+    const detail = detailByKey.get(quoteOptionKey(summary, idx));
+    if (!detail) return summary;
+    return mergeQuoteOptionRow(summary, detail);
+  });
+}
+
+function applyHubDiscountOverlay(
+  live: Record<string, unknown>,
+  snapshot: Record<string, unknown>,
+): Record<string, unknown> {
+  const overlay: Record<string, unknown> = {};
+  const keys = [
+    "hubFlatDiscountPct",
+    "hubFlatDiscountAmount",
+    "hubCategoryDiscountPct",
+    "hubCategoryDiscountAmount",
+  ] as const;
+  for (const k of keys) {
+    if (snapshot[k] != null) overlay[k] = snapshot[k];
+  }
+  const snapData = snapshot.data ?? snapshot.Data;
+  const snapRow =
+    snapData && typeof snapData === "object" && !Array.isArray(snapData)
+      ? (snapData as Record<string, unknown>)
+      : Array.isArray(snapData) && snapData[0] && typeof snapData[0] === "object"
+        ? (snapData[0] as Record<string, unknown>)
+        : null;
+  if (snapRow) {
+    for (const k of keys) {
+      if (overlay[k] == null && snapRow[k] != null) overlay[k] = snapRow[k];
+    }
+  }
+  if (Object.keys(overlay).length === 0) return live;
+
+  const out: Record<string, unknown> = { ...live, ...overlay };
+  const data = out.data ?? out.Data;
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    out.data = { ...(data as Record<string, unknown>), ...overlay };
+  } else if (Array.isArray(data) && data[0] && typeof data[0] === "object") {
+    out.data = [{ ...(data[0] as Record<string, unknown>), ...overlay }, ...data.slice(1)];
+  }
+  return out;
+}
+
+function mergeFullDetailsWithSummaryQuote(
+  fullRoot: Record<string, unknown>,
+  fullData: Record<string, unknown>,
+  matched: Record<string, unknown>,
+): Record<string, unknown> {
+  const summaryOptionsData = Array.isArray(matched.quoteOptionsData) ? matched.quoteOptionsData : [];
+  const fullOptionsData = Array.isArray(fullData.quoteOptionsData)
+    ? fullData.quoteOptionsData
+    : Array.isArray(fullData.optionDetails)
+      ? fullData.optionDetails
+      : [];
+  const mergedOptionsData = mergeQuoteOptionsData(summaryOptionsData, fullOptionsData);
+
+  return {
+    ...fullRoot,
+    data: {
+      ...fullData,
+      totalPrice: matched.totalPrice ?? fullData.totalPrice,
+      finalTotalPrice: matched.finalTotalPrice ?? fullData.finalTotalPrice,
+      discount: matched.discount ?? fullData.discount,
+      quoteNum: matched.quoteNum ?? fullData.quoteNum,
+      quoteOptionsData:
+        mergedOptionsData.length > 0
+          ? mergedOptionsData
+          : summaryOptionsData.length > 0
+            ? summaryOptionsData
+            : fullData.quoteOptionsData ?? fullData.optionDetails,
+      optionDetails: mergedOptionsData.length > 0 ? mergedOptionsData : fullData.optionDetails,
+    },
+  };
+}
+
+
 function normalizeQuotePricingRow(data: unknown): Record<string, unknown> | null {
   if (!data || typeof data !== "object") return null;
   let v: unknown = data;
@@ -879,6 +1082,240 @@ async function fetchQuoteBodyByQuoteId(
     return fullDetails.data;
   }
   return null;
+}
+
+export type LeadQuotePaymentSummary = {
+  quoteId: number | null;
+  quoteNum: string | null;
+  totalPayableAmount: number;
+  tenPercentAmount: number;
+  fortyPercentAmount: number;
+};
+
+export function formatQuoteInrAmount(amount: number): string {
+  return `₹${Math.round(amount).toLocaleString("en-IN")}`;
+}
+
+/** Latest quotation total + milestone amounts (10% / 40%) for payment emails and sales closure. */
+export async function resolveLeadQuotePaymentSummary(
+  pool: Pool,
+  leadId: number,
+): Promise<LeadQuotePaymentSummary | null> {
+  const [leadRows] = await pool.query(
+    `SELECT id, prolance_project_id AS prolanceProjectId, prolance_quote_id AS prolanceQuoteId, payload
+     FROM leads WHERE id = ? LIMIT 1`,
+    [leadId],
+  );
+  const lead = (leadRows as { prolanceProjectId?: unknown; prolanceQuoteId?: unknown; payload?: unknown }[])[0];
+  if (!lead) return null;
+
+  const prolanceProjectId =
+    lead.prolanceProjectId != null && Number.isFinite(Number(lead.prolanceProjectId))
+      ? Number(lead.prolanceProjectId)
+      : null;
+  let quoteId =
+    lead.prolanceQuoteId != null && Number.isFinite(Number(lead.prolanceQuoteId))
+      ? Number(lead.prolanceQuoteId)
+      : null;
+
+  let quoteBody: unknown | null = null;
+
+  if (prolanceProjectId != null && prolanceProjectId >= 1) {
+    const session = await createProlanceServerSession();
+    if (!("error" in session)) {
+      quoteBody = await fetchLatestQuoteBodyForProject(prolanceProjectId, session);
+      const resolved = extractQuoteIdFromResponse(quoteBody);
+      if (resolved) quoteId = Number(resolved);
+    }
+  } else if (quoteId != null && quoteId >= 1) {
+    const session = await createProlanceServerSession();
+    if (!("error" in session)) {
+      quoteBody = await fetchQuoteBodyByQuoteId(quoteId, session);
+    }
+  }
+
+  if (quoteBody == null) {
+    const [snapRows] = await pool.query(
+      `SELECT quote_id AS quoteId, payload_json AS payloadJson
+       FROM lead_prolance_quote_snapshots
+       WHERE lead_id = ?
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+      [leadId],
+    );
+    const snap = (snapRows as { quoteId?: unknown; payloadJson?: unknown }[])[0];
+    if (snap?.quoteId != null && Number.isFinite(Number(snap.quoteId))) {
+      quoteId = Number(snap.quoteId);
+    }
+    if (snap?.payloadJson != null) {
+      const raw = String(snap.payloadJson);
+      if (raw.length > 0) {
+        try {
+          quoteBody = JSON.parse(raw) as unknown;
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
+  const totalPayableAmount = extractTotalPayableAmount(quoteBody);
+  if (totalPayableAmount == null || !Number.isFinite(totalPayableAmount) || totalPayableAmount <= 0) {
+    return null;
+  }
+
+  const row = normalizeQuotePricingRow(quoteBody);
+  const quoteNum =
+    row &&
+    (asString(row.quoteNum) ||
+      asString(row.quoteNo) ||
+      asString(row.quotationNum) ||
+      asString(row.quoteID) ||
+      asString(row.quoteId));
+
+  return {
+    quoteId: quoteId != null && quoteId >= 1 ? quoteId : null,
+    quoteNum,
+    totalPayableAmount,
+    tenPercentAmount: Math.round(totalPayableAmount * 0.1),
+    fortyPercentAmount: Math.round(totalPayableAmount * 0.4),
+  };
+}
+
+function parseLeadPayloadAmount(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
+  if (typeof v === "string" && v.trim() && Number.isFinite(Number(v))) {
+    const n = Number(v);
+    return n >= 0 ? n : null;
+  }
+  return null;
+}
+
+function readLeadPayloadRecord(raw: unknown): Record<string, unknown> {
+  if (raw == null) return {};
+  try {
+    const v = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+export type LeadMilestonePaymentBreakdown = LeadQuotePaymentSummary & {
+  /** Cumulative paid so far (sales 10% + any design payments). */
+  totalPaidCumulative: number;
+  totalPaidToward10Percent: number;
+  totalPaidToward40Percent: number;
+  /** Design 10% milestone = reach 20% cumulative (sales 10% + design 10%). */
+  twentyPercentTarget: number;
+  /** Design 40% payment milestone = reach 60% cumulative (sales 10% + design 10% + design 40%). */
+  sixtyPercentTarget: number;
+  previousTenPercentTarget: number | null;
+  previousTwentyPercentTarget: number | null;
+  previousSixtyPercentTarget: number | null;
+  previousFortyPercentTarget: number | null;
+  quotationTotalAtLastPayment: number | null;
+  /** Collect now at design 10% milestone → 20% of latest quote minus already paid. */
+  amountToCollect10: number;
+  /** Collect now at 40% payment milestone → 60% of latest quote minus already paid. */
+  amountToCollect40: number;
+  quoteRevisionTopUp10: number;
+  quoteRevisionTopUp40: number;
+  remainingAfterTwentyPercent: number;
+  /** Balance remaining after 60% cumulative is reached. */
+  remainingAfterSixtyPercent: number;
+};
+
+/** Latest quote + sales/design payments → amounts designers must collect now. */
+export async function resolveLeadMilestonePaymentBreakdown(
+  pool: Pool,
+  leadId: number,
+): Promise<LeadMilestonePaymentBreakdown | null> {
+  const summary = await resolveLeadQuotePaymentSummary(pool, leadId);
+  if (!summary) return null;
+
+  const [leadRows] = await pool.query(`SELECT payload FROM leads WHERE id = ? LIMIT 1`, [leadId]);
+  const payload = readLeadPayloadRecord((leadRows as { payload?: unknown }[])[0]?.payload);
+  const nested =
+    payload.formData && typeof payload.formData === "object"
+      ? (payload.formData as Record<string, unknown>)
+      : payload.form_data && typeof payload.form_data === "object"
+        ? (payload.form_data as Record<string, unknown>)
+        : {};
+
+  const readPaid = (keys: string[]): number => {
+    for (const k of keys) {
+      const n = parseLeadPayloadAmount(payload[k] ?? nested[k]);
+      if (n != null && n > 0) return n;
+    }
+    return 0;
+  };
+
+  const totalPaidCumulative = readPaid([
+    "total_paid_cumulative",
+    "total_paid_toward_10_percent",
+    "amount_paid",
+  ]);
+  const totalPaidToward10Percent = totalPaidCumulative;
+  const totalPaidToward40Percent = readPaid(["total_paid_toward_40_percent"]);
+
+  const twentyPercentTarget = Math.round(summary.totalPayableAmount * 0.2);
+  const sixtyPercentTarget = Math.round(summary.totalPayableAmount * 0.6);
+
+  const previousTenPercentTarget = parseLeadPayloadAmount(
+    payload.ten_percent_target ?? nested.ten_percent_target,
+  );
+  const previousFortyPercentTarget = parseLeadPayloadAmount(
+    payload.forty_percent_target ?? nested.forty_percent_target,
+  );
+  const quotationTotalAtLastPayment = parseLeadPayloadAmount(
+    payload.quotation_total ?? nested.quotation_total,
+  );
+  const previousTwentyPercentTarget =
+    quotationTotalAtLastPayment != null && quotationTotalAtLastPayment > 0
+      ? Math.round(quotationTotalAtLastPayment * 0.2)
+      : previousTenPercentTarget != null && previousTenPercentTarget > 0
+        ? Math.round(previousTenPercentTarget * 2)
+        : null;
+  const previousSixtyPercentTarget =
+    quotationTotalAtLastPayment != null && quotationTotalAtLastPayment > 0
+      ? Math.round(quotationTotalAtLastPayment * 0.6)
+      : parseLeadPayloadAmount(payload.sixty_percent_target ?? nested.sixty_percent_target);
+  const previousSixtyFromOldQuote = previousSixtyPercentTarget;
+
+  // Design 10% milestone: sales 10% + design 10% = 20% cumulative of latest quote.
+  const amountToCollect10 = Math.max(0, twentyPercentTarget - totalPaidCumulative);
+  // 40% payment milestone: collect until 60% cumulative of latest quote.
+  const amountToCollect40 = Math.max(0, sixtyPercentTarget - totalPaidCumulative);
+
+  const quoteRevisionTopUp10 =
+    previousTwentyPercentTarget != null && previousTwentyPercentTarget > 0
+      ? Math.max(0, twentyPercentTarget - previousTwentyPercentTarget)
+      : 0;
+  const quoteRevisionTopUp40 =
+    previousSixtyFromOldQuote != null && previousSixtyFromOldQuote > 0
+      ? Math.max(0, sixtyPercentTarget - previousSixtyFromOldQuote)
+      : 0;
+
+  return {
+    ...summary,
+    totalPaidCumulative,
+    totalPaidToward10Percent,
+    totalPaidToward40Percent,
+    twentyPercentTarget,
+    sixtyPercentTarget,
+    previousTenPercentTarget,
+    previousTwentyPercentTarget,
+    previousSixtyPercentTarget,
+    previousFortyPercentTarget,
+    quotationTotalAtLastPayment,
+    amountToCollect10,
+    amountToCollect40,
+    quoteRevisionTopUp10,
+    quoteRevisionTopUp40,
+    remainingAfterTwentyPercent: Math.max(0, summary.totalPayableAmount - twentyPercentTarget),
+    remainingAfterSixtyPercent: Math.max(0, summary.totalPayableAmount - sixtyPercentTarget),
+  };
 }
 
 export function registerProlanceRoutes(
@@ -1293,6 +1730,7 @@ export function registerProlanceRoutes(
         return;
       }
 
+      let snapshotPayload: Record<string, unknown> | null = null;
       const snapshotQid = Number(quoteId);
       if (Number.isFinite(snapshotQid) && snapshotQid > 0) {
         try {
@@ -1305,8 +1743,7 @@ export function registerProlanceRoutes(
           if (raw.length > 0) {
             const parsed = JSON.parse(raw) as unknown;
             if (parsed && typeof parsed === "object") {
-              send(res, 200, parsed);
-              return;
+              snapshotPayload = parsed as Record<string, unknown>;
             }
           }
         } catch (snapErr) {
@@ -1316,6 +1753,10 @@ export function registerProlanceRoutes(
 
       const apiKey = readApiKey(req);
       if (!apiKey) {
+        if (snapshotPayload) {
+          send(res, 200, snapshotPayload);
+          return;
+        }
         res.status(500).json({ message: "Origin API key is not configured" });
         return;
       }
@@ -1323,148 +1764,185 @@ export function registerProlanceRoutes(
       const username = asString(envTrim("PROLANCE_USERNAME"));
       const password = asString(envTrim("PROLANCE_PASSWORD"));
       if (!username || !password) {
+        if (snapshotPayload) {
+          send(res, 200, snapshotPayload);
+          return;
+        }
         res.status(500).json({ message: "Prolance API credentials are not configured" });
         return;
       }
 
-      const tokenResp = await proxiedFetch({
-        method: "POST",
-        path: "/token",
-        asForm: true,
-        body: { grant_type: "password", username, password },
-      });
-      if (tokenResp.status < 200 || tokenResp.status >= 300 || !tokenResp.data || typeof tokenResp.data !== "object") {
-        send(res, tokenResp.status, tokenResp.data);
-        return;
-      }
-      const tokenObj = tokenResp.data as Record<string, unknown>;
-      const token = asString(tokenObj.access_token) || asString(tokenObj.accessToken) || asString(tokenObj.token);
-      if (!token) {
-        res.status(500).json({ message: "Failed to generate Prolance token" });
-        return;
-      }
+      let livePayload: Record<string, unknown> | null = null;
 
-      const loginID = asString(envTrim("PROLANCE_PARTNER_LOGIN_ID"));
-      const partnerPassword = asString(envTrim("PROLANCE_PARTNER_PASSWORD"));
-      if (!loginID || !partnerPassword) {
-        res.status(500).json({ message: "Partner login credentials are not configured" });
-        return;
-      }
-
-      const partnerResp = await proxiedFetch({
-        method: "POST",
-        path: "/Origin/Partners/LoginAPI",
-        token,
-        includeOriginApiHeaders: true,
-        apiKey,
-        body: { LoginID: loginID, Password: partnerPassword, LoginFrom: 1 },
-      });
-      if (partnerResp.status < 200 || partnerResp.status >= 300 || !partnerResp.data || typeof partnerResp.data !== "object") {
-        send(res, partnerResp.status, partnerResp.data);
-        return;
-      }
-      const partnerRoot = partnerResp.data as Record<string, unknown>;
-      const partnerData = Array.isArray(partnerRoot.data) && partnerRoot.data[0] && typeof partnerRoot.data[0] === "object"
-        ? (partnerRoot.data[0] as Record<string, unknown>)
-        : {};
-      const originSessionId =
-        asString(partnerData.sessionID) ||
-        asString(partnerData.sessionId) ||
-        asString(partnerData.originSessionID) ||
-        asString(partnerData.originSessionId);
-      if (!originSessionId) {
-        res.status(500).json({ message: "Failed to get OriginSessionID from Prolance partner login" });
-        return;
-      }
-
-      let fullDetails = await proxiedFetch({
-        method: "GET",
-        path: `/Origin/Quotes/FullDetails/${pathSegment(quoteId)}`,
-        token,
-        originSessionId,
-        includeOriginApiHeaders: true,
-        apiKey,
-      });
-      if (fullDetails.status === 401) {
-        fullDetails = await proxiedFetch({
-          method: "GET",
-          path: `/Origin/Quotes/FullDetails/${pathSegment(quoteId)}`,
-          token: null,
-          originSessionId,
-          includeOriginApiHeaders: true,
-          apiKey,
+      try {
+        const tokenResp = await proxiedFetch({
+          method: "POST",
+          path: "/token",
+          asForm: true,
+          body: { grant_type: "password", username, password },
         });
+        if (tokenResp.status >= 200 && tokenResp.status < 300 && tokenResp.data && typeof tokenResp.data === "object") {
+          const tokenObj = tokenResp.data as Record<string, unknown>;
+          const token = asString(tokenObj.access_token) || asString(tokenObj.accessToken) || asString(tokenObj.token);
+          const loginID = asString(envTrim("PROLANCE_PARTNER_LOGIN_ID"));
+          const partnerPassword = asString(envTrim("PROLANCE_PARTNER_PASSWORD"));
+
+          if (token && loginID && partnerPassword) {
+            const partnerResp = await proxiedFetch({
+              method: "POST",
+              path: "/Origin/Partners/LoginAPI",
+              token,
+              includeOriginApiHeaders: true,
+              apiKey,
+              body: { LoginID: loginID, Password: partnerPassword, LoginFrom: 1 },
+            });
+            if (
+              partnerResp.status >= 200 &&
+              partnerResp.status < 300 &&
+              partnerResp.data &&
+              typeof partnerResp.data === "object"
+            ) {
+              const partnerRoot = partnerResp.data as Record<string, unknown>;
+              const partnerData =
+                Array.isArray(partnerRoot.data) && partnerRoot.data[0] && typeof partnerRoot.data[0] === "object"
+                  ? (partnerRoot.data[0] as Record<string, unknown>)
+                  : {};
+              const originSessionId =
+                asString(partnerData.sessionID) ||
+                asString(partnerData.sessionId) ||
+                asString(partnerData.originSessionID) ||
+                asString(partnerData.originSessionId);
+
+              if (originSessionId) {
+                let fullDetails = await proxiedFetch({
+                  method: "GET",
+                  path: `/Origin/Quotes/FullDetails/${pathSegment(quoteId)}`,
+                  token,
+                  originSessionId,
+                  includeOriginApiHeaders: true,
+                  apiKey,
+                });
+                if (fullDetails.status === 401) {
+                  fullDetails = await proxiedFetch({
+                    method: "GET",
+                    path: `/Origin/Quotes/FullDetails/${pathSegment(quoteId)}`,
+                    token: null,
+                    originSessionId,
+                    includeOriginApiHeaders: true,
+                    apiKey,
+                  });
+                }
+
+                if (
+                  fullDetails.status >= 200 &&
+                  fullDetails.status < 300 &&
+                  fullDetails.data &&
+                  typeof fullDetails.data === "object"
+                ) {
+                  const fullRoot = fullDetails.data as Record<string, unknown>;
+                  const fullData =
+                    fullRoot.data && typeof fullRoot.data === "object"
+                      ? (fullRoot.data as Record<string, unknown>)
+                      : fullRoot;
+                  const projectIdRaw = fullData.projectID ?? fullData.projectId;
+                  const projectId =
+                    typeof projectIdRaw === "number" && Number.isFinite(projectIdRaw)
+                      ? String(projectIdRaw)
+                      : asString(projectIdRaw);
+
+                  if (projectId) {
+                    let quotesResp = await proxiedFetch({
+                      method: "GET",
+                      path: `/Origin/Quotes/${pathSegment(projectId)}`,
+                      token,
+                      originSessionId,
+                      includeOriginApiHeaders: true,
+                      apiKey,
+                    });
+                    if (quotesResp.status === 401) {
+                      quotesResp = await proxiedFetch({
+                        method: "GET",
+                        path: `/Origin/Quotes/${pathSegment(projectId)}`,
+                        token: null,
+                        originSessionId,
+                        includeOriginApiHeaders: true,
+                        apiKey,
+                      });
+                    }
+                    if (
+                      quotesResp.status >= 200 &&
+                      quotesResp.status < 300 &&
+                      quotesResp.data &&
+                      typeof quotesResp.data === "object"
+                    ) {
+                      const quotesRoot = quotesResp.data as Record<string, unknown>;
+                      const quoteList = Array.isArray(quotesRoot.data) ? quotesRoot.data : [];
+                      const matchedQuote = quoteList.find((q) => {
+                        if (!q || typeof q !== "object") return false;
+                        const qo = q as Record<string, unknown>;
+                        const qid = qo.quoteID ?? qo.quoteId ?? qo.quotationId ?? qo.quotationID;
+                        return String(qid ?? "") === String(quoteId);
+                      });
+                      if (matchedQuote && typeof matchedQuote === "object") {
+                        livePayload = mergeFullDetailsWithSummaryQuote(
+                          fullRoot,
+                          fullData,
+                          matchedQuote as Record<string, unknown>,
+                        );
+                      } else {
+                        livePayload = fullRoot;
+                      }
+                    } else {
+                      livePayload = fullRoot;
+                    }
+                  } else {
+                    livePayload = fullRoot;
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (liveErr) {
+        console.error("live prolance quote fetch error", liveErr);
       }
-      if (fullDetails.status < 200 || fullDetails.status >= 300 || !fullDetails.data || typeof fullDetails.data !== "object") {
-        send(res, fullDetails.status, fullDetails.data);
+
+      if (livePayload) {
+        const response =
+          snapshotPayload != null ? applyHubDiscountOverlay(livePayload, snapshotPayload) : livePayload;
+        res.setHeader("X-Quote-Data-Source", "prolance-live");
+        send(res, 200, response);
+
+        // Refresh stored snapshot so older links stay aligned with Prolance BOQ prices.
+        if (Number.isFinite(snapshotQid) && snapshotQid > 0) {
+          try {
+            const [leadRows] = await pool.query(
+              "SELECT lead_id AS leadId FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1",
+              [snapshotQid],
+            );
+            const leadId = (leadRows as { leadId?: unknown }[])[0]?.leadId;
+            if (leadId != null && Number.isFinite(Number(leadId))) {
+              await pool.query(
+                `INSERT INTO lead_prolance_quote_snapshots (lead_id, quote_id, payload_json, created_at)
+                 VALUES (?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE payload_json = VALUES(payload_json), created_at = VALUES(created_at)`,
+                [Number(leadId), snapshotQid, JSON.stringify(response), new Date()],
+              );
+            }
+          } catch (snapWriteErr) {
+            console.error("quote snapshot refresh error", snapWriteErr);
+          }
+        }
         return;
       }
 
-      const fullRoot = fullDetails.data as Record<string, unknown>;
-      const fullData = (fullRoot.data && typeof fullRoot.data === "object")
-        ? (fullRoot.data as Record<string, unknown>)
-        : fullRoot;
-      const projectIdRaw = fullData.projectID ?? fullData.projectId;
-      const projectId = typeof projectIdRaw === "number" && Number.isFinite(projectIdRaw)
-        ? String(projectIdRaw)
-        : asString(projectIdRaw);
-
-      if (!projectId) {
-        send(res, 200, fullDetails.data);
+      if (snapshotPayload) {
+        res.setHeader("X-Quote-Data-Source", "snapshot-fallback");
+        send(res, 200, snapshotPayload);
         return;
       }
 
-      let quotesResp = await proxiedFetch({
-        method: "GET",
-        path: `/Origin/Quotes/${pathSegment(projectId)}`,
-        token,
-        originSessionId,
-        includeOriginApiHeaders: true,
-        apiKey,
-      });
-      if (quotesResp.status === 401) {
-        quotesResp = await proxiedFetch({
-          method: "GET",
-          path: `/Origin/Quotes/${pathSegment(projectId)}`,
-          token: null,
-          originSessionId,
-          includeOriginApiHeaders: true,
-          apiKey,
-        });
-      }
-      if (quotesResp.status < 200 || quotesResp.status >= 300 || !quotesResp.data || typeof quotesResp.data !== "object") {
-        send(res, 200, fullDetails.data);
-        return;
-      }
-
-      const quotesRoot = quotesResp.data as Record<string, unknown>;
-      const quoteList = Array.isArray(quotesRoot.data) ? quotesRoot.data : [];
-      const matchedQuote = quoteList.find((q) => {
-        if (!q || typeof q !== "object") return false;
-        const qo = q as Record<string, unknown>;
-        const qid = qo.quoteID ?? qo.quoteId ?? qo.quotationId ?? qo.quotationID;
-        return String(qid ?? "") === String(quoteId);
-      });
-      if (!matchedQuote || typeof matchedQuote !== "object") {
-        send(res, 200, fullDetails.data);
-        return;
-      }
-
-      const matched = matchedQuote as Record<string, unknown>;
-      const summaryOptionsData = Array.isArray(matched.quoteOptionsData) ? matched.quoteOptionsData : [];
-
-      const merged = {
-        ...fullRoot,
-        data: {
-          ...fullData,
-          totalPrice: matched.totalPrice ?? fullData.totalPrice,
-          finalTotalPrice: matched.finalTotalPrice ?? fullData.finalTotalPrice,
-          discount: matched.discount ?? fullData.discount,
-          quoteNum: matched.quoteNum ?? fullData.quoteNum,
-          quoteOptionsData: summaryOptionsData.length > 0 ? summaryOptionsData : (fullData.quoteOptionsData ?? fullData.optionDetails),
-        },
-      };
-      send(res, 200, merged);
+      res.status(404).json({ message: "Quote not found" });
     } catch (err) {
       console.error("prolance public quote view fetch error", err);
       res.status(500).json({ message: asErrorMessage(err) });
@@ -1634,7 +2112,7 @@ export function registerProlanceRoutes(
     }
   });
 
-  // Sales closure: latest quotation total + 10% (no CRM session; server-side Prolance credentials).
+  // Sales closure / design module: latest quotation + milestone collection amounts.
   app.get("/api/sales-closure/lead/:leadId/quote-payment-summary", async (req: Request, res: Response) => {
     const leadId = Number(req.params.leadId);
     if (!Number.isFinite(leadId) || leadId < 1) {
@@ -1642,114 +2120,43 @@ export function registerProlanceRoutes(
     }
 
     try {
-      const [leadRows] = await pool.query(
-        `SELECT id, prolance_project_id AS prolanceProjectId, prolance_quote_id AS prolanceQuoteId, payload
-         FROM leads WHERE id = ? LIMIT 1`,
-        [leadId],
-      );
-      const lead = (leadRows as { prolanceProjectId?: unknown; prolanceQuoteId?: unknown; payload?: unknown }[])[0];
+      const [leadRows] = await pool.query(`SELECT payload FROM leads WHERE id = ? LIMIT 1`, [leadId]);
+      const lead = (leadRows as { payload?: unknown }[])[0];
       if (!lead) return res.status(404).json({ message: "Lead not found" });
 
-      let totalPaidToward10Percent = 0;
-      try {
-        const rawPayload = lead.payload != null ? String(lead.payload) : "";
-        if (rawPayload.length > 0) {
-          const parsed = JSON.parse(rawPayload) as Record<string, unknown>;
-          const cumulative = parsed.total_paid_toward_10_percent;
-          if (typeof cumulative === "number" && Number.isFinite(cumulative) && cumulative >= 0) {
-            totalPaidToward10Percent = cumulative;
-          } else {
-            const legacy = parsed.amount_paid;
-            if (typeof legacy === "number" && Number.isFinite(legacy) && legacy >= 0) {
-              totalPaidToward10Percent = legacy;
-            }
-          }
-        }
-      } catch {
-        /* ignore */
-      }
-
-      const prolanceProjectId =
-        lead.prolanceProjectId != null && Number.isFinite(Number(lead.prolanceProjectId))
-          ? Number(lead.prolanceProjectId)
-          : null;
-      let quoteId =
-        lead.prolanceQuoteId != null && Number.isFinite(Number(lead.prolanceQuoteId))
-          ? Number(lead.prolanceQuoteId)
-          : null;
-
-      let quoteBody: unknown | null = null;
-
-      if (quoteId == null || quoteId < 1) {
-        const [snapRows] = await pool.query(
-          `SELECT quote_id AS quoteId, payload_json AS payloadJson
-           FROM lead_prolance_quote_snapshots
-           WHERE lead_id = ?
-           ORDER BY created_at DESC, id DESC
-           LIMIT 1`,
-          [leadId],
-        );
-        const snap = (snapRows as { quoteId?: unknown; payloadJson?: unknown }[])[0];
-        if (snap?.quoteId != null && Number.isFinite(Number(snap.quoteId))) {
-          quoteId = Number(snap.quoteId);
-        }
-        if (snap?.payloadJson != null) {
-          const raw = String(snap.payloadJson);
-          if (raw.length > 0) {
-            try {
-              quoteBody = JSON.parse(raw) as unknown;
-            } catch {
-              /* use live fetch below */
-            }
-          }
-        }
-      }
-
-      if (quoteBody == null && (prolanceProjectId != null || (quoteId != null && quoteId >= 1))) {
-        const session = await createProlanceServerSession();
-        if ("error" in session) {
-          return res.status(session.status).json({ message: session.error });
-        }
-        if (prolanceProjectId != null && prolanceProjectId >= 1) {
-          quoteBody = await fetchLatestQuoteBodyForProject(prolanceProjectId, session);
-          if (quoteId == null || quoteId < 1) {
-            const resolved = extractQuoteIdFromResponse(quoteBody);
-            if (resolved) quoteId = Number(resolved);
-          }
-        } else if (quoteId != null && quoteId >= 1) {
-          quoteBody = await fetchQuoteBodyByQuoteId(quoteId, session);
-        }
-      }
-
-      const totalPayableAmount = extractTotalPayableAmount(quoteBody);
-      if (totalPayableAmount == null || !Number.isFinite(totalPayableAmount) || totalPayableAmount <= 0) {
+      const breakdown = await resolveLeadMilestonePaymentBreakdown(pool, leadId);
+      if (!breakdown) {
         return res.status(404).json({
-          message: prolanceProjectId
-            ? "Could not determine quotation total for this project"
-            : "No Prolance project or quotation found for this lead yet",
+          message: "No Prolance project or quotation found for this lead yet",
         });
       }
 
-      const tenPercentAmount = Math.round(totalPayableAmount * 0.1);
-      const row = normalizeQuotePricingRow(quoteBody);
-      const quoteNum =
-        row &&
-        (asString(row.quoteNum) ||
-          asString(row.quoteNo) ||
-          asString(row.quotationNum) ||
-          asString(row.quoteID) ||
-          asString(row.quoteId));
-
-      const remainingFor10Percent = Math.max(0, tenPercentAmount - totalPaidToward10Percent);
+      const remainingFor10Percent = breakdown.amountToCollect10;
 
       return res.json({
         ok: true,
         leadId,
-        quoteId: quoteId != null && quoteId >= 1 ? quoteId : null,
-        quoteNum,
-        totalPayableAmount,
-        tenPercentAmount,
-        totalPaidToward10Percent,
+        quoteId: breakdown.quoteId,
+        quoteNum: breakdown.quoteNum,
+        totalPayableAmount: breakdown.totalPayableAmount,
+        tenPercentAmount: breakdown.tenPercentAmount,
+        twentyPercentTarget: breakdown.twentyPercentTarget,
+        sixtyPercentTarget: breakdown.sixtyPercentTarget,
+        fortyPercentAmount: breakdown.fortyPercentAmount,
+        totalPaidCumulative: breakdown.totalPaidCumulative,
+        totalPaidToward10Percent: breakdown.totalPaidToward10Percent,
+        totalPaidToward40Percent: breakdown.totalPaidToward40Percent,
+        previousTenPercentTarget: breakdown.previousTenPercentTarget,
+        previousTwentyPercentTarget: breakdown.previousTwentyPercentTarget,
+        previousSixtyPercentTarget: breakdown.previousSixtyPercentTarget,
+        previousFortyPercentTarget: breakdown.previousFortyPercentTarget,
+        quotationTotalAtLastPayment: breakdown.quotationTotalAtLastPayment,
+        amountToCollect10: breakdown.amountToCollect10,
+        amountToCollect40: breakdown.amountToCollect40,
+        quoteRevisionTopUp10: breakdown.quoteRevisionTopUp10,
+        quoteRevisionTopUp40: breakdown.quoteRevisionTopUp40,
+        remainingAfterTwentyPercent: breakdown.remainingAfterTwentyPercent,
+        remainingAfterSixtyPercent: breakdown.remainingAfterSixtyPercent,
         remainingFor10Percent,
       });
     } catch (err) {

@@ -13,7 +13,7 @@ import AdmZip from "adm-zip";
 import * as XLSX from "xlsx";
 import { registerCustomerNumberRoutes } from "./routes/customerNumberApi";
 import { registerMsg91InboundRoutes } from "./routes/msg91InboundApi";
-import { registerProlanceRoutes } from "./routes/prolanceApi";
+import { registerProlanceRoutes, resolveLeadMilestonePaymentBreakdown, formatQuoteInrAmount } from "./routes/prolanceApi";
 
 function loadEnvFile() {
   const envPath = path.join(__dirname, ".env");
@@ -1051,6 +1051,14 @@ function readTotalPaidToward10Percent(payload: Record<string, unknown>): number 
   const cumulative = parseFiniteNumber(payload.total_paid_toward_10_percent);
   if (cumulative != null && cumulative >= 0) return cumulative;
   const legacy = parseFiniteNumber(payload.amount_paid);
+  return legacy != null && legacy >= 0 ? legacy : 0;
+}
+
+/** Cumulative amount recorded toward the 40% milestone. */
+function readTotalPaidToward40Percent(payload: Record<string, unknown>): number {
+  const cumulative = parseFiniteNumber(payload.total_paid_toward_40_percent);
+  if (cumulative != null && cumulative >= 0) return cumulative;
+  const legacy = parseFiniteNumber(payload.forty_percent_amount);
   return legacy != null && legacy >= 0 ? legacy : 0;
 }
 
@@ -3573,6 +3581,54 @@ function parseFiniteNumber(v: unknown): number | null {
   return null;
 }
 
+function orderValueToMilestoneAmount(rawOrderValue: unknown, fraction: 0.1 | 0.4): string | undefined {
+  if (typeof rawOrderValue === "number" && Number.isFinite(rawOrderValue) && rawOrderValue > 0) {
+    return formatQuoteInrAmount(rawOrderValue * fraction);
+  }
+  if (typeof rawOrderValue === "string" && rawOrderValue.trim()) {
+    const num = Number(rawOrderValue.replace(/[^0-9.]/g, ""));
+    if (!Number.isNaN(num) && num > 0) {
+      return formatQuoteInrAmount(num * fraction);
+    }
+  }
+  return undefined;
+}
+
+async function resolveMilestonePaymentAmounts(
+  leadId: number,
+  fraction: 0.1 | 0.4,
+  fallbackOrderValue: unknown,
+): Promise<{
+  amountDue: string | undefined;
+  quotationTotal: string | undefined;
+  milestoneTarget: string | undefined;
+  alreadyPaid: string | undefined;
+}> {
+  try {
+    const breakdown = await resolveLeadMilestonePaymentBreakdown(pool, leadId);
+    if (breakdown) {
+      const toCollect = fraction === 0.1 ? breakdown.amountToCollect10 : breakdown.amountToCollect40;
+      const target =
+        fraction === 0.1 ? breakdown.twentyPercentTarget : breakdown.sixtyPercentTarget;
+      const paid = breakdown.totalPaidCumulative;
+      return {
+        amountDue: formatQuoteInrAmount(toCollect),
+        quotationTotal: formatQuoteInrAmount(breakdown.totalPayableAmount),
+        milestoneTarget: formatQuoteInrAmount(target),
+        alreadyPaid: paid > 0 ? formatQuoteInrAmount(paid) : undefined,
+      };
+    }
+  } catch (err) {
+    console.error("resolveMilestonePaymentAmounts error (non-fatal)", { leadId, fraction, error: err });
+  }
+  return {
+    amountDue: orderValueToMilestoneAmount(fallbackOrderValue, fraction),
+    quotationTotal: undefined,
+    milestoneTarget: undefined,
+    alreadyPaid: undefined,
+  };
+}
+
 function readDiscountMetaFromSnapshot(snapshotPayload: Record<string, unknown>): {
   flatDiscountPct: number | null;
   categoryPct: unknown;
@@ -4565,15 +4621,11 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const projectId = leadRow.pid || `HUB-${id}`;
             const propertyType = formData.property_configuration || "";
             const rawOrderValue = formData.order_value ?? payload.order_value ?? null;
-            let amountDue: string | undefined;
-            if (typeof rawOrderValue === "number") {
-              amountDue = `₹${(rawOrderValue * 0.1).toFixed(0)}`;
-            } else if (typeof rawOrderValue === "string" && rawOrderValue.trim()) {
-              const num = Number(rawOrderValue.replace(/[^0-9.]/g, ""));
-              if (!Number.isNaN(num) && num > 0) {
-                amountDue = `₹${(num * 0.1).toFixed(0)}`;
-              }
-            }
+            const paymentAmounts = await resolveMilestonePaymentAmounts(id, 0.1, rawOrderValue);
+            const amountDue = paymentAmounts.amountDue;
+            const quotationTotal = paymentAmounts.quotationTotal;
+            const milestoneTarget = paymentAmounts.milestoneTarget;
+            const alreadyPaid = paymentAmounts.alreadyPaid;
 
             console.log("[DQC1_APPROVAL_DUAL] Lead data:", {
               leadId: id,
@@ -4643,6 +4695,9 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   projectId,
                   propertyType,
                   amountDue,
+                  quotationTotal,
+                  milestoneTarget,
+                  alreadyPaid,
                   designerName: actingUser.name,
                   attachments: await (async () => {
                     try {
@@ -4769,15 +4824,11 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const projectId = leadRow.pid || "";
             const propertyType = formData.property_configuration || "";
             const rawOrderValue = formData.order_value ?? payload.order_value ?? null;
-            let amountDue: string | undefined;
-            if (typeof rawOrderValue === "number") {
-              amountDue = `₹${(rawOrderValue * 0.1).toFixed(0)}`;
-            } else if (typeof rawOrderValue === "string" && rawOrderValue.trim()) {
-              const num = Number(rawOrderValue.replace(/[^0-9.]/g, ""));
-              if (!Number.isNaN(num) && num > 0) {
-                amountDue = `₹${(num * 0.1).toFixed(0)}`;
-              }
-            }
+            const paymentAmounts = await resolveMilestonePaymentAmounts(id, 0.1, rawOrderValue);
+            const amountDue = paymentAmounts.amountDue;
+            const quotationTotal = paymentAmounts.quotationTotal;
+            const milestoneTarget = paymentAmounts.milestoneTarget;
+            const alreadyPaid = paymentAmounts.alreadyPaid;
 
             if (!designerEmail) {
               console.warn("[10P_COLLECTION_DUAL] Skipping internal email: no designer email (tried assigned_designer_id, lead_d1_assignments, designer_name lookup)", {
@@ -4821,6 +4872,9 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   projectId,
                   propertyType,
                   amountDue,
+                  quotationTotal,
+                  milestoneTarget,
+                  alreadyPaid,
                   designerName: actingUser.name,
                 },
               });
@@ -5780,7 +5834,15 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               row.projectName ||
               "Customer";
             const designerName = row.designerName || formData.designer_name || formData.designerName || "Team HUB Interior";
-            const amount = meta?.amount ?? meta?.amountDue ?? meta?.payableAmount ?? formData.forty_percent_amount ?? payload?.forty_percent_amount ?? null;
+            const rawOrderValue = formData.order_value ?? payload.order_value ?? null;
+            const paymentAmounts = await resolveMilestonePaymentAmounts(id, 0.4, rawOrderValue);
+            const amount =
+              paymentAmounts.amountDue != null
+                ? paymentAmounts.amountDue.replace(/^₹\s*/, "")
+                : meta?.amount ?? meta?.amountDue ?? meta?.payableAmount ?? formData.forty_percent_amount ?? payload?.forty_percent_amount ?? null;
+            const quotationTotal = paymentAmounts.quotationTotal;
+            const milestoneTarget = paymentAmounts.milestoneTarget;
+            const alreadyPaid = paymentAmounts.alreadyPaid;
             const accountName = meta?.accountName ?? "Brightspace Creation Private Limited";
             const accountNumber = meta?.accountNumber ?? "748305000519";
             const ifscCode = meta?.ifscCode ?? "ICIC0007483";
@@ -5802,6 +5864,9 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   customerName,
                   designerName,
                   amount: amount != null ? String(amount) : undefined,
+                  quotationTotal,
+                  milestoneTarget,
+                  alreadyPaid,
                   accountName,
                   accountNumber,
                   ifscCode,
@@ -6995,6 +7060,43 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
       details: { kind: "note", noteText: "10% payment approved. Lead moves to next stage." },
     };
     await addLeadHistoryEvent(leadId, ev);
+
+    // Sync latest quote milestone targets into lead payload after finance approval.
+    try {
+      const breakdown = await resolveLeadMilestonePaymentBreakdown(pool, leadId);
+      if (breakdown) {
+        const [lr] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [leadId]);
+        const raw = (lr as { payload?: unknown }[])[0]?.payload;
+        let payload: Record<string, unknown> = {};
+        try {
+          payload = raw ? (JSON.parse(String(raw)) as Record<string, unknown>) : {};
+        } catch {
+          payload = {};
+        }
+        const paid = Math.max(
+          readTotalPaidToward10Percent(payload),
+          breakdown.twentyPercentTarget,
+        );
+        payload.quotation_total = breakdown.totalPayableAmount;
+        payload.ten_percent_target = breakdown.tenPercentAmount;
+        payload.twenty_percent_target = breakdown.twentyPercentTarget;
+        payload.total_paid_cumulative = paid;
+        payload.total_paid_toward_10_percent = paid;
+        payload.amount_paid = paid;
+        payload.cumulative_payment_percent = 20;
+        payload.remaining_for_10_percent = 0;
+        payload.ten_percent_payment_met = true;
+        payload.design_ten_percent_payment_met = true;
+        await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
+          JSON.stringify(payload),
+          now,
+          leadId,
+        ]);
+      }
+    } catch (syncErr) {
+      console.error("10p approval payload sync error (non-fatal)", syncErr);
+    }
+
     // Fire-and-forget: trigger 10% payment approval email (custom template with receipt details)
     try {
       const [rows] = await pool.query(
@@ -7030,14 +7132,10 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
           "Customer";
         const projectId = row.pid || `HUB-${leadId}`;
         const rawOrderValue = formData.order_value ?? payload.order_value ?? null;
-        let amountPaid: string | undefined;
-        if (typeof rawOrderValue === "number") {
-          amountPaid = `₹${(rawOrderValue * 0.1).toFixed(0)}`;
-        } else if (typeof rawOrderValue === "string" && rawOrderValue.trim()) {
-          const num = Number(rawOrderValue.replace(/[^0-9.]/g, ""));
-          if (!Number.isNaN(num) && num > 0) {
-            amountPaid = `₹${(num * 0.1).toFixed(0)}`;
-          }
+        const paymentAmounts = await resolveMilestonePaymentAmounts(leadId, 0.1, rawOrderValue);
+        let amountPaid = paymentAmounts.amountDue;
+        if (!amountPaid) {
+          amountPaid = orderValueToMilestoneAmount(rawOrderValue, 0.1);
         }
         const paymentDate = now.toLocaleDateString("en-IN", {
           day: "2-digit",
@@ -7384,6 +7482,40 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
       details: { kind: "note", noteText: "40% payment approved. Lead moves to next stage." },
     };
     await addLeadHistoryEvent(leadId, ev);
+
+    try {
+      const breakdown = await resolveLeadMilestonePaymentBreakdown(pool, leadId);
+      if (breakdown) {
+        const [lr] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [leadId]);
+        const raw = (lr as { payload?: unknown }[])[0]?.payload;
+        let payload: Record<string, unknown> = {};
+        try {
+          payload = raw ? (JSON.parse(String(raw)) as Record<string, unknown>) : {};
+        } catch {
+          payload = {};
+        }
+        const paid = Math.max(
+          readTotalPaidToward40Percent(payload),
+          breakdown.sixtyPercentTarget,
+        );
+        payload.quotation_total = breakdown.totalPayableAmount;
+        payload.sixty_percent_target = breakdown.sixtyPercentTarget;
+        payload.forty_percent_target = breakdown.fortyPercentAmount;
+        payload.total_paid_cumulative = paid;
+        payload.total_paid_toward_40_percent = paid;
+        payload.forty_percent_amount = paid;
+        payload.cumulative_payment_percent = 60;
+        payload.forty_percent_payment_met = true;
+        await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
+          JSON.stringify(payload),
+          now,
+          leadId,
+        ]);
+      }
+    } catch (syncErr) {
+      console.error("40p approval payload sync error (non-fatal)", syncErr);
+    }
+
     // Fire-and-forget: trigger 40% payment approval CX email (receipt)
     try {
       const [rows] = await pool.query(
@@ -7425,7 +7557,15 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
           year: "numeric",
         });
 
-        const amountReceived = formData.forty_percent_amount ?? payload?.forty_percent_amount ?? undefined;
+        const rawOrderValue = formData.order_value ?? payload.order_value ?? null;
+        const paymentAmounts = await resolveMilestonePaymentAmounts(leadId, 0.4, rawOrderValue);
+        const amountReceived =
+          formData.forty_percent_amount ??
+          payload?.forty_percent_amount ??
+          (paymentAmounts.amountDue ? paymentAmounts.amountDue.replace(/^₹\s*/, "") : undefined);
+        const totalProjectValue = paymentAmounts.quotationTotal ?? rawOrderValue ?? undefined;
+        const transactionRef = projectId ? `${projectId}-40PCT-${Date.now()}` : `40PCT-${Date.now()}`;
+        const paymentMode = formData.mode_of_payment || payload?.mode_of_payment || "Bank Transfer (NEFT)";
 
         // Collect approved 40% payment screenshots (if any) to attach when S3 URLs are available.
         let attachments: { filename: string; path: string }[] | undefined;
@@ -7456,10 +7596,6 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
           }
         }
 
-        const rawOrderValue = formData.order_value ?? payload.order_value ?? null;
-        const transactionRef = projectId ? `${projectId}-40PCT-${Date.now()}` : `40PCT-${Date.now()}`;
-        const paymentMode = formData.mode_of_payment || payload?.mode_of_payment || "Bank Transfer (NEFT)";
-
         if (customerEmail) {
           void triggerMailRouteWithLog({
             leadId,
@@ -7476,7 +7612,7 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
               amountReceived,
               dateOfReceipt: dateStr,
               modeOfPayment: paymentMode,
-              totalProjectValue: rawOrderValue || undefined,
+              totalProjectValue: totalProjectValue || undefined,
               transactionRef,
               ...(attachments ? { attachments } : {}),
             },

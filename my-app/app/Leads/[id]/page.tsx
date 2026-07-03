@@ -37,6 +37,7 @@ import { buildAuthHeaders, getApiBase } from '@/app/lib/apiBase';
 import { QuoteTermsAndConditions } from '@/app/quote/hubQuoteTermsPanel';
 import { buildQuoteDiscountBreakdown, resolveTotalDiscount } from '@/app/quote/quoteDiscountBreakdown';
 import { QuoteDiscountDetails } from '@/app/quote/QuoteDiscountDetails';
+import { extractUnitDisplayPrice } from '@/app/quote/quoteLineItems';
 import { createProlanceProjectViaApi } from '@/app/lib/prolanceApiCreateProject';
 import { extractQuoteIdFromBody, runProlanceGetQuoteApiFlow } from '@/app/lib/prolanceApiGetQuote';
 import {
@@ -386,7 +387,7 @@ export default function ProjectDetailPage() {
                       const decors = Array.isArray(o.decors) ? (o.decors as Record<string, unknown>[]) : [];
                       const services = Array.isArray(o.services) ? (o.services as Record<string, unknown>[]) : [];
                       const sumPrice = (arr: Record<string, unknown>[]) =>
-                          arr.reduce((sum, item) => sum + (extractNumber(item.price) || 0), 0);
+                          arr.reduce((sum, item) => sum + (extractUnitDisplayPrice(item) || 0), 0);
                       const detailedRoomTotal = [
                           sumPrice(units),
                           sumPrice(lofts),
@@ -441,19 +442,19 @@ export default function ProjectDetailPage() {
                               cabinetClass: extractString(u.cabinetClass) || '-',
                               description: extractString(u.description) || '-',
                               dimensions: extractString(u.dimensions) || '-',
-                              price: extractNumber(u.price),
+                              price: extractUnitDisplayPrice(u),
                           })),
                           lofts: lofts.map((l) => ({
                               description: extractString(l.description) || '-',
                               dimensions: extractString(l.dimensions) || '-',
-                              price: extractNumber(l.price),
+                              price: extractUnitDisplayPrice(l),
                           })),
                           servicesList: services.map((s) => ({
                               category: extractString(s.category) || '-',
                               description: extractString(s.description) || '-',
                               qty: extractNumber(s.qty),
                               uom: extractString(s.uom) || '-',
-                              price: extractNumber(s.price),
+                              price: extractUnitDisplayPrice(s),
                           })),
                       };
                   })
@@ -2477,6 +2478,7 @@ export default function ProjectDetailPage() {
                             setChecklistContext({ milestoneIndex, milestoneName: milestone?.name ?? '', taskName });
                         }}
                         getTaskStatus={getTaskStatus}
+                        leadId={projectId}
                     />
                 )}
 

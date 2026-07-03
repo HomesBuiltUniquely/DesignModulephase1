@@ -1,6 +1,8 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import MilestonePaymentSummary, { type QuotePaymentSummary } from '../MilestonePaymentSummary';
+import { mapQuotePaymentSummaryFromApi } from '../mapQuotePaymentSummary';
 
 type Props = {
     leadId: number;
@@ -17,7 +19,44 @@ export default function Popup40pCollection({ leadId, apiBase, sessionId, onSucce
     const [files, setFiles] = useState<File[]>([]);
     const [uploading, setUploading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [paymentSummary, setPaymentSummary] = useState<QuotePaymentSummary | null>(null);
+    const [paymentSummaryLoading, setPaymentSummaryLoading] = useState(true);
+    const [paymentSummaryError, setPaymentSummaryError] = useState<string | null>(null);
     const inputRef = useRef<HTMLInputElement>(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            setPaymentSummaryLoading(true);
+            setPaymentSummaryError(null);
+            try {
+                const res = await fetch(
+                    `${apiBase}/api/sales-closure/lead/${encodeURIComponent(String(leadId))}/quote-payment-summary`,
+                    { cache: 'no-store' },
+                );
+                const body = await res.json().catch(() => ({}));
+                if (cancelled) return;
+                if (!res.ok) {
+                    setPaymentSummary(null);
+                    setPaymentSummaryError(
+                        typeof body?.message === 'string' ? body.message : 'Could not load quotation totals',
+                    );
+                    return;
+                }
+                setPaymentSummary(mapQuotePaymentSummaryFromApi(body as Record<string, unknown>));
+            } catch {
+                if (!cancelled) {
+                    setPaymentSummary(null);
+                    setPaymentSummaryError('Could not load quotation totals');
+                }
+            } finally {
+                if (!cancelled) setPaymentSummaryLoading(false);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [apiBase, leadId]);
 
     const accept = 'image/*,.pdf,application/pdf';
     const openFileDialog = () => {
@@ -70,6 +109,12 @@ export default function Popup40pCollection({ leadId, apiBase, sessionId, onSucce
 
     return (
         <div className="px-6 pb-6">
+            <MilestonePaymentSummary
+                variant="40"
+                summary={paymentSummary}
+                loading={paymentSummaryLoading}
+                error={paymentSummaryError}
+            />
             <h3 className="text-sm font-bold text-gray-800 mb-1">40% payment screenshots (for finance)</h3>
             <p className="text-xs text-gray-500 mb-4">
                 Upload payment screenshots. These will be sent to the finance team to review and approve; the milestone

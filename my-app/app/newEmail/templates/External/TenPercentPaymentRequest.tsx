@@ -10,6 +10,9 @@ export interface TenPercentPaymentRequestEmailProps {
   projectId?: string;
   propertyType?: string;
   amountDue?: string;
+  quotationTotal?: string;
+  milestoneTarget?: string;
+  alreadyPaid?: string;
   dueDate?: string;
   designerName?: string;
 }
@@ -19,13 +22,19 @@ export default function TenPercentPaymentRequestEmail({
   projectId = 'HI-2025-0000',
   propertyType = '',
   amountDue = '',
+  quotationTotal = '',
+  milestoneTarget = '',
+  alreadyPaid = '',
   dueDate = '',
   designerName = 'Your Design Consultant',
 }: TenPercentPaymentRequestEmailProps) {
   const paymentDetails: DetailItem[] = [
     { label: 'Project ID', value: projectId },
     ...(propertyType ? [{ label: 'Property Type', value: propertyType }] : []),
-    ...(amountDue ? [{ label: 'Payable Amount', value: amountDue }] : []),
+    ...(quotationTotal ? [{ label: 'Latest Quotation Total', value: quotationTotal }] : []),
+    ...(milestoneTarget ? [{ label: '20% Cumulative Target (Sales 10% + Design 10%)', value: milestoneTarget }] : []),
+    ...(alreadyPaid ? [{ label: 'Already Paid (Sales)', value: alreadyPaid }] : []),
+    ...(amountDue ? [{ label: 'Amount to Collect Now', value: amountDue }] : []),
     ...(dueDate ? [{ label: 'Due Date', value: dueDate }] : []),
   ];
 

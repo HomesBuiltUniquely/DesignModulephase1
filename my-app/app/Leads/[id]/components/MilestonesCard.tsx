@@ -5,6 +5,11 @@ import { useState, useEffect } from "react";
 import MileStonesArray from "@/app/Components/Types/MileStoneArray";
 import { hasChecklistForTask } from "./Checklists/checklistRegistry";
 import { getTaskTimeline } from "./taskTimelines";
+import MilestonePaymentSummary, { type QuotePaymentSummary } from "./MilestonePaymentSummary";
+import { mapQuotePaymentSummaryFromApi } from "./mapQuotePaymentSummary";
+import { getApiBase } from "@/app/lib/apiBase";
+
+const PAYMENT_MILESTONE_INDICES = new Set([2, 5]);
 
 type TaskStatus = {
   icon: "completed" | "current" | "delayed" | "pending";
@@ -28,6 +33,7 @@ type Props = {
     taskIndex: number,
     taskList: string[],
   ) => TaskStatus;
+  leadId?: number | null;
 };
 
 /**
@@ -44,10 +50,53 @@ export default function MilestonesCard({
   onOpenTask,
   onVisitChecklist,
   getTaskStatus,
+  leadId,
 }: Props) {
   const [openMenuFor, setOpenMenuFor] = useState<
     { milestoneIndex: number; taskIndex: number } | undefined
   >(undefined);
+  const [paymentSummary, setPaymentSummary] = useState<QuotePaymentSummary | null>(null);
+  const [paymentSummaryLoading, setPaymentSummaryLoading] = useState(false);
+  const [paymentSummaryError, setPaymentSummaryError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!leadId || leadId < 1) {
+      setPaymentSummary(null);
+      setPaymentSummaryError(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      setPaymentSummaryLoading(true);
+      setPaymentSummaryError(null);
+      try {
+        const res = await fetch(
+          `${getApiBase()}/api/sales-closure/lead/${encodeURIComponent(String(leadId))}/quote-payment-summary`,
+          { cache: 'no-store' },
+        );
+        const body = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        if (!res.ok) {
+          setPaymentSummary(null);
+          setPaymentSummaryError(
+            typeof body?.message === 'string' ? body.message : 'Could not load quotation totals',
+          );
+          return;
+        }
+        setPaymentSummary(mapQuotePaymentSummaryFromApi(body as Record<string, unknown>));
+      } catch {
+        if (!cancelled) {
+          setPaymentSummary(null);
+          setPaymentSummaryError('Could not load quotation totals');
+        }
+      } finally {
+        if (!cancelled) setPaymentSummaryLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [leadId]);
 
   // When maximized, scroll so the current milestone is in view.
   useEffect(() => {
@@ -293,6 +342,14 @@ export default function MilestonesCard({
                         style={{ width: `${progressPercent}%` }}
                       />
                     </div>
+                    {PAYMENT_MILESTONE_INDICES.has(milestoneIndex) && (
+                      <MilestonePaymentSummary
+                        variant={milestoneIndex === 2 ? '10' : '40'}
+                        summary={paymentSummary}
+                        loading={paymentSummaryLoading}
+                        error={paymentSummaryError}
+                      />
+                    )}
                     <div className="space-y-2 flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain pr-1 [scrollbar-gutter:stable]">
                       {taskList.map((task: string, taskIndex: number) => {
                         const canVisitChecklist = hasChecklistForTask(

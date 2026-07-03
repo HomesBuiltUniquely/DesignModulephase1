@@ -11,6 +11,7 @@ import {
   type QuoteDiscountBreakdownRow,
 } from '@/app/quote/quoteDiscountBreakdown';
 import type { QuoteRoom } from '@/app/quote/quoteTypes';
+import { extractLineItemPrice, extractUnitDisplayPrice, mergeQuoteLineItemArrays } from '@/app/quote/quoteLineItems';
 
 const API = getApiBase();
 
@@ -148,7 +149,11 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
       ? (root.optionDetails as unknown[])
       : Array.isArray(rootTop.optionDetails)
         ? (rootTop.optionDetails as unknown[])
-        : [];
+        : Array.isArray(quoteObj.quoteOptionsData)
+          ? (quoteObj.quoteOptionsData as unknown[])
+          : Array.isArray(root.quoteOptionsData)
+            ? (root.quoteOptionsData as unknown[])
+            : [];
 
   const detailsMap = new Map<string, Record<string, unknown>>();
   optionDetailsRaw.forEach((r, idx) => {
@@ -162,9 +167,18 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
       const r = asObj(row);
       const key = String(r.optionID ?? r.optionId ?? r.roomID ?? r.roomId ?? idx);
       const d = detailsMap.get(key) || {};
-      const unitsRaw = Array.isArray(d.units) ? d.units : [];
-      const loftsRaw = Array.isArray(d.lofts) ? d.lofts : [];
-      const servicesRaw = Array.isArray(d.services) ? d.services : [];
+      const unitsRaw = mergeQuoteLineItemArrays(
+        Array.isArray(r.units) ? (r.units as unknown[]) : [],
+        Array.isArray(d.units) ? (d.units as unknown[]) : [],
+      );
+      const loftsRaw = mergeQuoteLineItemArrays(
+        Array.isArray(r.lofts) ? (r.lofts as unknown[]) : [],
+        Array.isArray(d.lofts) ? (d.lofts as unknown[]) : [],
+      );
+      const servicesRaw = mergeQuoteLineItemArrays(
+        Array.isArray(r.services) ? (r.services as unknown[]) : [],
+        Array.isArray(d.services) ? (d.services as unknown[]) : [],
+      );
       return {
         key,
         roomName: asStr(r.roomName),
@@ -187,7 +201,7 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
             cabinetClass: asStr(x.cabinetClass),
             description: asStr(x.description),
             dimensions: asStr(x.dimensions),
-            price: asNum(x.price),
+            price: extractUnitDisplayPrice(x),
           };
         }),
         lofts: loftsRaw.map((l) => {
@@ -195,7 +209,7 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
           return {
             description: asStr(x.description),
             dimensions: asStr(x.dimensions),
-            price: asNum(x.price),
+            price: extractUnitDisplayPrice(x),
           };
         }),
         servicesList: servicesRaw.map((s) => {
@@ -205,7 +219,7 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
             description: asStr(x.description),
             qty: asNum(x.qty),
             uom: asStr(x.uom),
-            price: asNum(x.price),
+            price: extractUnitDisplayPrice(x),
           };
         }),
       };
@@ -337,7 +351,10 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           setLoading(true);
           setError(null);
         }
-        const res = await fetch(`${API}/api/prolance-test/quotes/share/${encodeURIComponent(q)}`);
+        const res = await fetch(
+          `${API}/api/prolance-test/quotes/share/${encodeURIComponent(q)}?live=1`,
+          { cache: 'no-store' },
+        );
         const txt = await res.text();
         let body: unknown = null;
         try {

@@ -12,6 +12,9 @@ export async function POST(request: Request) {
     const subject = body.subject as string | undefined;
     const customerName = body.customerName as string | undefined;
     const amount = body.amount as string | undefined;
+    const quotationTotal = body.quotationTotal as string | undefined;
+    const milestoneTarget = body.milestoneTarget as string | undefined;
+    const alreadyPaid = body.alreadyPaid as string | undefined;
     const accountName = body.accountName as string | undefined;
     const accountNumber = body.accountNumber as string | undefined;
     const ifscCode = body.ifscCode as string | undefined;
@@ -29,6 +32,9 @@ export async function POST(request: Request) {
       customerName,
       projectId,
       amount,
+      quotationTotal,
+      milestoneTarget,
+      alreadyPaid,
       accountName,
       accountNumber,
       ifscCode,

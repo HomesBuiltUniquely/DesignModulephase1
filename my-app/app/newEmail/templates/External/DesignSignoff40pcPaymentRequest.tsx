@@ -10,6 +10,9 @@ export interface DesignSignoff40pcPaymentRequestEmailProps {
   projectId?: string;
   designerName?: string;
   amount?: string;
+  quotationTotal?: string;
+  milestoneTarget?: string;
+  alreadyPaid?: string;
   accountName?: string;
   accountNumber?: string;
   ifscCode?: string;
@@ -20,12 +23,18 @@ export default function DesignSignoff40pcPaymentRequestEmail({
   projectId = 'HI-2025-0000',
   designerName = 'Your Design Consultant',
   amount = '0.00',
+  quotationTotal = '',
+  milestoneTarget = '',
+  alreadyPaid = '',
   accountName = 'Brightspace Creation Private Limited',
   accountNumber = '748305000519',
   ifscCode = 'ICIC0007483',
 }: DesignSignoff40pcPaymentRequestEmailProps) {
   const paymentDetails: DetailItem[] = [
-    { label: 'Payable Amount (40%)', value: `₹ ${amount}` },
+    ...(quotationTotal ? [{ label: 'Latest Quotation Total', value: quotationTotal }] : []),
+    ...(milestoneTarget ? [{ label: '60% Cumulative Target', value: milestoneTarget }] : []),
+    ...(alreadyPaid ? [{ label: 'Already Paid (Sales / Prior)', value: alreadyPaid }] : []),
+    { label: 'Amount to Collect Now', value: amount.startsWith('₹') ? amount : `₹ ${amount}` },
   ];
 
   const bankDetails: DetailItem[] = [

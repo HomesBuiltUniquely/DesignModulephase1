@@ -14,6 +14,9 @@ export async function POST(request: Request) {
     const projectId = body.projectId as string | undefined;
     const propertyType = body.propertyType as string | undefined;
     const amountDue = body.amountDue as string | undefined;
+    const quotationTotal = body.quotationTotal as string | undefined;
+    const milestoneTarget = body.milestoneTarget as string | undefined;
+    const alreadyPaid = body.alreadyPaid as string | undefined;
     const dueDate = body.dueDate as string | undefined;
     const attachments = body.attachments as { filename: string; path: string }[] | undefined;
 
@@ -31,6 +34,9 @@ export async function POST(request: Request) {
       projectId,
       propertyType,
       amountDue,
+      quotationTotal,
+      milestoneTarget,
+      alreadyPaid,
       dueDate,
       designerName: designerName || 'Your Design Consultant',
     });
