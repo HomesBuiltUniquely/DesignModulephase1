@@ -176,12 +176,6 @@ const CRM_CALLBACK_BASE =
   process.env.CRM_API_BASE_URL ||
   process.env.CRM_BASE_URL ||
   "";
-const OFFLINE_MEETING_CALLBACK_URL = (process.env.OFFLINE_MEETING_CALLBACK_URL || "").trim();
-const OFFLINE_MEETING_CALLBACK_API_KEY = (
-  process.env.OFFLINE_MEETING_CALLBACK_API_KEY ||
-  process.env.EXTERNAL_LEAD_INGEST_API_KEY ||
-  ""
-).trim();
 const ERP_BASE_URL = process.env.ERP_BASE_URL || "https://hows.hubinterior.com";
 const ERP_USERNAME = process.env.ERP_USERNAME || "admin@hubinterior.com";
 const ERP_PASSWORD = process.env.ERP_PASSWORD || "admin123";
@@ -254,30 +248,24 @@ function formatOfflineMeetingTimeSlot(meetingTime: string, meetingEndTime?: stri
   return start;
 }
 
-/** POST offline meeting details to the external module (non-fatal). */
-async function notifyOfflineMeetingCreated(payload: OfflineMeetingCreatedPayload): Promise<void> {
-  if (!OFFLINE_MEETING_CALLBACK_URL) {
-    console.warn("[offline-meeting-callback] OFFLINE_MEETING_CALLBACK_URL is not configured; skipping");
-    return;
-  }
-
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (OFFLINE_MEETING_CALLBACK_API_KEY) {
-    headers["x-external-api-key"] = OFFLINE_MEETING_CALLBACK_API_KEY;
-    headers["x-api-key"] = OFFLINE_MEETING_CALLBACK_API_KEY;
-    headers.Authorization = `Bearer ${OFFLINE_MEETING_CALLBACK_API_KEY}`;
-  }
-
-  const response = await fetch(OFFLINE_MEETING_CALLBACK_URL, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(`Offline meeting callback failed (${response.status}) ${body}`.trim());
-  }
-  console.log(`[offline-meeting-callback] Notified lead ${payload.leadId} (${payload.milestoneName})`);
+/** Queue offline meeting for external module poll (fetched_at NULL until GET picks it up). */
+async function queueOfflineMeetingNotification(payload: OfflineMeetingCreatedPayload): Promise<void> {
+  const now = new Date();
+  await pool.query(
+    `INSERT INTO offline_meeting_notifications
+     (lead_id, designer_name, client_name, milestone_name, time_slot, branch, created_at, fetched_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+    [
+      payload.leadId,
+      payload.designerName,
+      payload.clientName,
+      payload.milestoneName,
+      payload.timeSlot,
+      payload.branch,
+      now,
+    ],
+  );
+  console.log(`[offline-meeting-queue] Queued lead ${payload.leadId} (${payload.milestoneName})`);
 }
 
 async function getErpToken(forceRefresh = false): Promise<string | null> {
@@ -984,6 +972,21 @@ async function initDb() {
         task_name VARCHAR(255) NOT NULL,
         completed_at DATETIME NOT NULL,
         UNIQUE KEY uniq_lead_task (lead_id, milestone_index, task_name)
+      );
+    `);
+
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS offline_meeting_notifications (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        lead_id INT NOT NULL,
+        designer_name VARCHAR(255) NOT NULL,
+        client_name VARCHAR(255) NOT NULL,
+        milestone_name VARCHAR(100) NOT NULL,
+        time_slot VARCHAR(100) NOT NULL,
+        branch VARCHAR(50) NULL,
+        created_at DATETIME NOT NULL,
+        fetched_at DATETIME NULL,
+        FOREIGN KEY (lead_id) REFERENCES leads(id)
       );
     `);
 
@@ -3679,7 +3682,7 @@ function requireExternalApiKey(req: Request, res: Response, featureName: string)
     res.status(503).json({ message: `${featureName} is disabled (missing EXTERNAL_LEAD_INGEST_API_KEY)` });
     return false;
   }
-  const apiKeyHeader = String(req.headers["x-external-api-key"] || "").trim();
+  const apiKeyHeader = String(req.headers["x-external-api-key"] || req.headers["x-api-key"] || "").trim();
   const bearer = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "").trim();
   const providedKey = apiKeyHeader || bearer;
   if (!providedKey || providedKey !== expectedKey) {
@@ -3688,6 +3691,33 @@ function requireExternalApiKey(req: Request, res: Response, featureName: string)
   }
   return true;
 }
+
+app.get("/api/integrations/offline-meetings/pending", async (req: Request, res: Response) => {
+  if (!requireExternalApiKey(req, res, "Offline meetings poll")) return;
+  try {
+    const [rows] = await pool.query(
+      `SELECT id, lead_id as leadId, designer_name as designerName, client_name as clientName,
+              milestone_name as milestoneName, time_slot as timeSlot, branch
+       FROM offline_meeting_notifications
+       WHERE fetched_at IS NULL
+       ORDER BY created_at ASC`,
+    );
+    const pending = rows as { id: number; leadId: number; designerName: string; clientName: string; milestoneName: string; timeSlot: string; branch: string | null }[];
+    if (pending.length > 0) {
+      const now = new Date();
+      const ids = pending.map((r) => r.id);
+      await pool.query(
+        `UPDATE offline_meeting_notifications SET fetched_at = ? WHERE id IN (${ids.map(() => "?").join(",")})`,
+        [now, ...ids],
+      );
+    }
+    const meetings = pending.map(({ id: _id, ...rest }) => rest);
+    return res.json({ ok: true, meetings });
+  } catch (err) {
+    console.error("offline-meetings/pending error", err);
+    return res.status(500).json({ message: "Failed to fetch pending offline meetings" });
+  }
+});
 
 function frontendBase(): string {
   return (process.env.FRONTEND_BASE_URL || "http://localhost:3000").replace(/\/$/, "");
@@ -8235,16 +8265,18 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
     }
 
     if (String(meetingMode || "").trim().toLowerCase() === "offline") {
-      void notifyOfflineMeetingCreated({
-        leadId,
-        designerName,
-        clientName,
-        milestoneName: offlineMeetingMilestoneName(meetingType),
-        timeSlot: formatOfflineMeetingTimeSlot(meetingTime, meetingEndTime),
-        branch: pickTrimmedString(row.designerBranch) || null,
-      }).catch((callbackErr) => {
-        console.error("[offline-meeting-callback] notify error (non-fatal)", callbackErr);
-      });
+      try {
+        await queueOfflineMeetingNotification({
+          leadId,
+          designerName,
+          clientName,
+          milestoneName: offlineMeetingMilestoneName(meetingType),
+          timeSlot: formatOfflineMeetingTimeSlot(meetingTime, meetingEndTime),
+          branch: pickTrimmedString(row.designerBranch) || null,
+        });
+      } catch (queueErr) {
+        console.error("[offline-meeting-queue] insert error (non-fatal)", queueErr);
+      }
     }
 
     return res.status(201).json({ ok: true });
