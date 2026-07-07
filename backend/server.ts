@@ -12,6 +12,7 @@ import { pipeline } from "node:stream/promises";
 import AdmZip from "adm-zip";
 import * as XLSX from "xlsx";
 import { registerCustomerNumberRoutes } from "./routes/customerNumberApi";
+import { registerOfflineMeetingScheduledRoutes } from "./routes/offlineMeetingScheduledApi";
 import { registerMsg91InboundRoutes } from "./routes/msg91InboundApi";
 import {
   registerProlanceRoutes,
@@ -145,6 +146,8 @@ const pool = mysql.createPool({
 
 // Standalone route: /api/customer/:customerNumber (see routes/customerNumberApi.ts)
 registerCustomerNumberRoutes(app, pool);
+// EC poll — same pattern as CRM showroom-meeting-scheduled (see routes/offlineMeetingScheduledApi.ts)
+registerOfflineMeetingScheduledRoutes(app, pool);
 // MSG91 inbound webhook + phone lookup (see routes/msg91InboundApi.ts)
 registerMsg91InboundRoutes(app, pool);
 
@@ -230,6 +233,7 @@ type OfflineMeetingCreatedPayload = {
   clientName: string;
   milestoneName: string;
   timeSlot: string;
+  meetingDate: string;
   branch: string | null;
 };
 
@@ -253,19 +257,20 @@ async function queueOfflineMeetingNotification(payload: OfflineMeetingCreatedPay
   const now = new Date();
   await pool.query(
     `INSERT INTO offline_meeting_notifications
-     (lead_id, designer_name, client_name, milestone_name, time_slot, branch, created_at, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+     (lead_id, designer_name, client_name, milestone_name, time_slot, meeting_date, branch, created_at, fetched_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
     [
       payload.leadId,
       payload.designerName,
       payload.clientName,
       payload.milestoneName,
       payload.timeSlot,
+      payload.meetingDate,
       payload.branch,
       now,
     ],
   );
-  console.log(`[offline-meeting-queue] Queued lead ${payload.leadId} (${payload.milestoneName})`);
+  console.log(`[offline-meeting-queue] Queued lead ${payload.leadId} (${payload.milestoneName}) on ${payload.meetingDate}`);
 }
 
 async function getErpToken(forceRefresh = false): Promise<string | null> {
@@ -983,12 +988,24 @@ async function initDb() {
         client_name VARCHAR(255) NOT NULL,
         milestone_name VARCHAR(100) NOT NULL,
         time_slot VARCHAR(100) NOT NULL,
+        meeting_date DATE NULL,
         branch VARCHAR(50) NULL,
         created_at DATETIME NOT NULL,
         fetched_at DATETIME NULL,
         FOREIGN KEY (lead_id) REFERENCES leads(id)
       );
     `);
+
+    try {
+      const [meetingDateCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'offline_meeting_notifications' AND COLUMN_NAME = 'meeting_date'",
+      );
+      if ((meetingDateCol as any[]).length === 0) {
+        await conn.query("ALTER TABLE offline_meeting_notifications ADD COLUMN meeting_date DATE NULL");
+      }
+    } catch {
+      // ignore
+    }
 
     await conn.query(`
       CREATE TABLE IF NOT EXISTS lead_uploads (
@@ -3692,6 +3709,7 @@ function requireExternalApiKey(req: Request, res: Response, featureName: string)
   return true;
 }
 
+/** @deprecated Use GET /v1/Appointment/offline-meeting-scheduled/recent?since=... (CRM-style checkpoint poll). */
 app.get("/api/integrations/offline-meetings/pending", async (req: Request, res: Response) => {
   if (!requireExternalApiKey(req, res, "Offline meetings poll")) return;
   try {
@@ -8269,9 +8287,10 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
         await queueOfflineMeetingNotification({
           leadId,
           designerName,
-          clientName,
+          clientName: customerName,
           milestoneName: offlineMeetingMilestoneName(meetingType),
           timeSlot: formatOfflineMeetingTimeSlot(meetingTime, meetingEndTime),
+          meetingDate: String(meetingDate).trim().slice(0, 10),
           branch: pickTrimmedString(row.designerBranch) || null,
         });
       } catch (queueErr) {
