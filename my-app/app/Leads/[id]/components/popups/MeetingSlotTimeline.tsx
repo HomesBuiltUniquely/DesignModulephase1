@@ -9,6 +9,7 @@ import {
   HUB_MEETING_TIMELINE_END_MIN,
   HUB_MEETING_TIMELINE_START_MIN,
   isHubMeetingStartAvailable,
+  isFullDayBlockedOnTimeline,
   listHubMeetingStartOptions,
   minutesToHubTimeLabel,
   type BookedTimelineBlock,
@@ -78,6 +79,7 @@ export default function MeetingSlotTimeline({
   }, [apiBase, designerName, meetingDate, sessionId]);
 
   const startOptions = useMemo(() => listHubMeetingStartOptions(durationMin), [durationMin]);
+  const fullDayBlocked = useMemo(() => isFullDayBlockedOnTimeline(bookedBlocks), [bookedBlocks]);
   const selectedEndMin =
     selectedStartMin !== null ? selectedStartMin + durationMin : null;
   const timelineHeight = (HUB_MEETING_TIMELINE_END_MIN - HUB_MEETING_TIMELINE_START_MIN) * PX_PER_MIN;
@@ -100,9 +102,15 @@ export default function MeetingSlotTimeline({
 
   return (
     <div className="w-full">
-      <p className="mb-3 text-center text-xs text-gray-500">
-        Click a start time to book {durationMin} minutes (11:00 AM – 7:00 PM)
-      </p>
+      {fullDayBlocked ? (
+        <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-center text-xs text-amber-900">
+          Full-day leave is active for this date (11:00 AM – 7:00 PM). No slots available.
+        </p>
+      ) : (
+        <p className="mb-3 text-center text-xs text-gray-500">
+          Click a start time to book {durationMin} minutes (11:00 AM – 7:00 PM)
+        </p>
+      )}
 
       <div className="flex w-full gap-3">
         {/* Time labels */}

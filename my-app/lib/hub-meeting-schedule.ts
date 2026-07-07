@@ -97,6 +97,10 @@ function parseIsoToMinutesOnDate(iso: string, dateIso: string): number | null {
 
 function labelFromDescription(desc: string): { label: string; sublabel?: string } {
   const trimmed = desc.trim();
+  if (trimmed.toUpperCase().startsWith(FULL_DAY_LEAVE_DESC_PREFIX)) {
+    const reason = trimmed.slice(FULL_DAY_LEAVE_DESC_PREFIX.length).trim() || "Full-day leave";
+    return { label: "Full-day leave", sublabel: reason };
+  }
   const leadMatch = trimmed.match(/Lead ID:\s*(\d+)/i);
   const nameMatch = trimmed.match(/Meeting with\s+(.+?)\s*-\s*Lead ID:/i);
   if (nameMatch) {
@@ -196,3 +200,44 @@ export const PERSONAL_BLOCK_REASON_PRESETS = [
 ] as const;
 
 export type PersonalBlockReasonPreset = (typeof PERSONAL_BLOCK_REASON_PRESETS)[number];
+
+export const FULL_DAY_LEAVE_DESC_PREFIX = "FULL_DAY_LEAVE:";
+
+export function isFullDayLeaveRow(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  const desc = String((raw as Record<string, unknown>).description ?? "").trim();
+  return desc.toUpperCase().startsWith(FULL_DAY_LEAVE_DESC_PREFIX);
+}
+
+export function isFullDayBlockedOnTimeline(booked: BookedTimelineBlock[]): boolean {
+  return booked.some(
+    (b) =>
+      b.startMin <= HUB_MEETING_TIMELINE_START_MIN &&
+      b.endMin >= HUB_MEETING_TIMELINE_END_MIN,
+  );
+}
+
+export type FullDayRequestStatus = "pending" | "approved" | "rejected" | "cancelled";
+
+/** Cancel personal block if at least 30 minutes before start and block has not begun. */
+export function canCancelPersonalBlockStart(startTimeIso: string): boolean {
+  const start = new Date(startTimeIso);
+  if (Number.isNaN(start.getTime())) return false;
+  return Date.now() < start.getTime() - 30 * 60 * 1000;
+}
+
+/** Cancel full-day leave only before the leave date (local calendar day). */
+export function canCancelFullDayBlockDate(blockDateIso: string): boolean {
+  const blockStart = new Date(`${blockDateIso}T00:00:00`);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return blockStart > today;
+}
+
+export type FullDayRequestSummary = {
+  id: number;
+  blockDate: string;
+  status: FullDayRequestStatus;
+  reason?: string;
+  reasonPreset?: string;
+};

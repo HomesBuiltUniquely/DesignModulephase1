@@ -19,7 +19,10 @@ import { openProlanceBrowserForProjectId } from "@/app/lib/prolanceLinks";
 import { Pre10LeadViewModal } from "./Pre10LeadViewModal";
 import { AddProjectModal } from "./AddProjectModal";
 import { PersonalAppointmentModal } from "./PersonalAppointmentModal";
-import { AppointmentHistoryPanel } from "./AppointmentHistoryPanel";
+import {
+    AppointmentSuccessToast,
+    type AppointmentSuccessPayload,
+} from "./AppointmentSuccessToast";
 
 // Stage column: Active / Inactive (sales) / Cancelled (TDM admin DGM)
 function getStatusDisplay(stage: string): "Active" | "Inactive" | "Cancelled" {
@@ -242,15 +245,11 @@ export default function Dashboard() {
     const isMmtUser = ["mmt_manager", "mmt_executive"].includes((user?.role || "").toLowerCase());
     const isDesigner = (user?.role || "").toLowerCase() === "designer";
     const isDesignManager = (user?.role || "").toLowerCase() === "design_manager";
-    const isTdm = (user?.role || "").toLowerCase() === "territorial_design_manager";
-    const isDgm = (user?.role || "").toLowerCase() === "deputy_general_manager";
+    const isAdmin = (user?.role || "").toLowerCase() === "admin";
     const canBookPersonalAppointment = isDesigner || isDesignManager;
-    const canViewAppointmentHistory =
-        canBookPersonalAppointment || isTdm || isAdmin || isDgm;
     const isDqcUser = ["dqc_manager", "dqe"].includes((user?.role || "").toLowerCase());
     const isFinanceUser = (user?.role || "").toLowerCase() === "finance";
     const isSpmUser = (user?.role || "").toLowerCase() === "senior_project_manager";
-    const isAdmin = (user?.role || "").toLowerCase() === "admin";
     const canImportLeads =
         isAdmin ||
         (user?.role || "").toLowerCase() === "territorial_design_manager" ||
@@ -400,6 +399,8 @@ export default function Dashboard() {
     const [showAddProjectModal, setShowAddProjectModal] = useState(false);
     const [showPersonalAppointmentModal, setShowPersonalAppointmentModal] = useState(false);
     const [appointmentHistoryRefreshKey, setAppointmentHistoryRefreshKey] = useState(0);
+    const [appointmentSuccessToast, setAppointmentSuccessToast] =
+        useState<AppointmentSuccessPayload | null>(null);
 
     const phaseFilteredProjects = isSpmUser
         ? projects.filter((p) =>
@@ -1667,7 +1668,7 @@ export default function Dashboard() {
                                             + Add Project
                                         </button>
                                         )}
-                                        {canBookPersonalAppointment && (
+                                        {canBookPersonalAppointment && isDesigner && (
                                         <button
                                             type="button"
                                             disabled={!sessionId}
@@ -1689,16 +1690,6 @@ export default function Dashboard() {
                                         )}
                                     </div>
                                 </div>
-                                {canViewAppointmentHistory && sessionId && user?.name && (
-                                    <AppointmentHistoryPanel
-                                        apiBase={API}
-                                        sessionId={sessionId}
-                                        currentUserName={user.name}
-                                        currentUserRole={user.role}
-                                        canPickTeamMember={isTdm || isAdmin || isDgm || isDesignManager}
-                                        refreshKey={appointmentHistoryRefreshKey}
-                                    />
-                                )}
                                 {canImportLeads && showImportPanel && (
                                     <div className="rounded-xl border border-indigo-100 bg-indigo-50/30 p-4">
                                         <p className="text-sm font-semibold text-indigo-900">Import Leads from Excel</p>
@@ -1887,7 +1878,16 @@ export default function Dashboard() {
                     sessionId={sessionId}
                     designerName={user.name}
                     onClose={() => setShowPersonalAppointmentModal(false)}
-                    onSuccess={() => setAppointmentHistoryRefreshKey((k) => k + 1)}
+                    onSuccess={(payload) => {
+                        setAppointmentHistoryRefreshKey((k) => k + 1);
+                        if (payload) setAppointmentSuccessToast(payload);
+                    }}
+                />
+            ) : null}
+            {appointmentSuccessToast ? (
+                <AppointmentSuccessToast
+                    payload={appointmentSuccessToast}
+                    onDismiss={() => setAppointmentSuccessToast(null)}
                 />
             ) : null}
         </div>
