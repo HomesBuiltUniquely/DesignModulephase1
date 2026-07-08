@@ -1052,6 +1052,58 @@ async function initDb() {
       );
     `);
 
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS designer_full_day_requests (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        designer_id INT NOT NULL,
+        designer_name VARCHAR(255) NOT NULL,
+        block_date DATE NOT NULL,
+        reason_preset VARCHAR(50) NOT NULL,
+        reason TEXT NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        requested_by_id INT NOT NULL,
+        reviewed_by_id INT NULL,
+        reviewed_at DATETIME NULL,
+        review_note TEXT NULL,
+        erp_appointment_id VARCHAR(100) NULL,
+        google_event_id VARCHAR(255) NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_full_day_designer_date (designer_id, block_date),
+        INDEX idx_full_day_status (status),
+        INDEX idx_full_day_block_date (block_date)
+      );
+    `);
+
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS personal_block_cancellations (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        erp_appointment_id VARCHAR(100) NULL,
+        designer_id INT NOT NULL,
+        designer_name VARCHAR(255) NOT NULL,
+        start_time DATETIME NOT NULL,
+        end_time DATETIME NOT NULL,
+        description TEXT NULL,
+        cancelled_by_id INT NOT NULL,
+        cancelled_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_pbc_designer (designer_id),
+        INDEX idx_pbc_cancelled_at (cancelled_at)
+      );
+    `);
+
+    try {
+      const [seenCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'personal_appointments_last_seen_at'",
+      );
+      if ((seenCol as any[]).length === 0) {
+        await conn.query(
+          "ALTER TABLE users ADD COLUMN personal_appointments_last_seen_at DATETIME NULL",
+        );
+      }
+    } catch {
+      // ignore
+    }
+
     // seed admin
     const [rows] = await conn.query(
       "SELECT id FROM users WHERE email = ?",
@@ -1906,6 +1958,633 @@ async function getCalendarVisibleUsers(currentUser: { id: number; email: string;
   }
 
   return [currentUser];
+}
+
+type AppointmentUserRow = { id: number; name: string; role: string; email?: string };
+
+async function getPersonalAppointmentVisibleUsers(
+  currentUser: { id: number; name: string; role: string },
+): Promise<AppointmentUserRow[]> {
+  const role = (currentUser.role || "").toLowerCase();
+
+  if (role === "admin" || role === "deputy_general_manager") {
+    const [rows] = await pool.query(
+      `SELECT id, name, role, email FROM users
+       WHERE role IN ('designer','design_manager')
+       ORDER BY name ASC`,
+    );
+    return rows as AppointmentUserRow[];
+  }
+
+  if (role === "territorial_design_manager") {
+    const [rows] = await pool.query(
+      `SELECT DISTINCT u.id, u.name, u.role, u.email
+       FROM users u
+       LEFT JOIN users dm ON dm.id = u.design_manager_id
+       WHERE u.role IN ('designer','design_manager')
+         AND (
+           u.id = ?
+           OR (u.role = 'design_manager' AND u.territorial_design_manager_id = ?)
+           OR (u.role = 'designer' AND dm.territorial_design_manager_id = ?)
+         )
+       ORDER BY u.name ASC`,
+      [currentUser.id, currentUser.id, currentUser.id],
+    );
+    return rows as AppointmentUserRow[];
+  }
+
+  if (role === "design_manager") {
+    const [rows] = await pool.query(
+      `SELECT DISTINCT u.id, u.name, u.role, u.email
+       FROM users u
+       WHERE u.role IN ('designer','design_manager')
+         AND (u.id = ? OR (u.role = 'designer' AND u.design_manager_id = ?))
+       ORDER BY u.name ASC`,
+      [currentUser.id, currentUser.id],
+    );
+    return rows as AppointmentUserRow[];
+  }
+
+  if (role === "designer") {
+    return [{ id: currentUser.id, name: currentUser.name, role: "designer" }];
+  }
+
+  return [];
+}
+
+async function canViewDesignerAppointments(
+  currentUser: { id: number; name: string; role: string },
+  targetDesignerName: string,
+): Promise<boolean> {
+  const normalizedTarget = targetDesignerName.trim().toLowerCase();
+  if (!normalizedTarget) return false;
+  if (currentUser.name.trim().toLowerCase() === normalizedTarget) return true;
+  const visible = await getPersonalAppointmentVisibleUsers(currentUser);
+  return visible.some((u) => u.name.trim().toLowerCase() === normalizedTarget);
+}
+
+function isPersonalAppointmentErpRow(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  const o = raw as Record<string, unknown>;
+  const leadId = o.leadId ?? o.lead_id;
+  if (leadId != null && String(leadId).trim() !== "" && String(leadId) !== "0") return false;
+  const desc = String(o.description ?? "").trim();
+  if (/lead\s*id\s*:/i.test(desc)) return false;
+  if (/design\s+meeting/i.test(desc)) return false;
+  return Boolean(desc);
+}
+
+const HUB_DAY_START_TIME = "11:00";
+const HUB_DAY_END_TIME = "19:00";
+const FULL_DAY_LEAVE_DESC_PREFIX = "FULL_DAY_LEAVE:";
+
+type FullDayRequestRow = {
+  id: number;
+  designer_id: number;
+  designer_name: string;
+  block_date: string | Date;
+  reason_preset: string;
+  reason: string;
+  status: "pending" | "approved" | "rejected" | "cancelled";
+  requested_by_id: number;
+  reviewed_by_id: number | null;
+  reviewed_at: string | Date | null;
+  review_note: string | null;
+  erp_appointment_id: string | null;
+  google_event_id: string | null;
+  created_at: string | Date;
+  updated_at: string | Date;
+};
+
+function normalizeBlockDateIso(dateRaw: unknown): string | null {
+  if (dateRaw == null) return null;
+  const trimmed = String(dateRaw).trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return null;
+  return trimmed;
+}
+
+function formatBlockDateForDb(dateIso: string): string {
+  return dateIso.slice(0, 10);
+}
+
+function blockDateFromRow(row: FullDayRequestRow): string {
+  const raw = row.block_date;
+  if (raw instanceof Date) {
+    return `${raw.getFullYear()}-${String(raw.getMonth() + 1).padStart(2, "0")}-${String(raw.getDate()).padStart(2, "0")}`;
+  }
+  return String(raw).slice(0, 10);
+}
+
+function isClientMeetingErpRow(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  const o = raw as Record<string, unknown>;
+  const leadId = o.leadId ?? o.lead_id;
+  if (leadId != null && String(leadId).trim() !== "" && String(leadId) !== "0") return true;
+  const desc = String(o.description ?? "").trim();
+  if (/lead\s*id\s*:/i.test(desc)) return true;
+  if (/design\s+meeting/i.test(desc)) return true;
+  return false;
+}
+
+function isFullDayLeaveErpRow(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  const desc = String((raw as Record<string, unknown>).description ?? "").trim();
+  return desc.toUpperCase().startsWith(FULL_DAY_LEAVE_DESC_PREFIX);
+}
+
+function erpAppointmentOnDate(raw: unknown, dateIso: string): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  const o = raw as Record<string, unknown>;
+  const dateField = o.date;
+  if (dateField != null && String(dateField).slice(0, 10) === dateIso) return true;
+  const startIso = String(o.startTime ?? o.start ?? "");
+  if (!startIso) return false;
+  const d = new Date(startIso);
+  if (Number.isNaN(d.getTime())) return false;
+  const localDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return localDate === dateIso;
+}
+
+function getErpAppointmentId(raw: unknown): string | number | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const id = o.id ?? o.appointmentId;
+  return id != null ? (id as string | number) : null;
+}
+
+/** ERP LocalDateTime.parse expects `YYYY-MM-DDTHH:mm:ss` without timezone suffix. */
+function buildFullDayIsoRange(dateIso: string): { startTime: string; endTime: string } {
+  return {
+    startTime: `${dateIso}T${HUB_DAY_START_TIME}:00`,
+    endTime: `${dateIso}T${HUB_DAY_END_TIME}:00`,
+  };
+}
+
+function buildFullDayUnavailableResponse(
+  status: "pending" | "approved",
+  designerName: string,
+  date: string,
+) {
+  const message =
+    status === "pending"
+      ? `Designer ${designerName} has applied for leave on ${date}. Booking is not available for this date.`
+      : `Designer ${designerName} is not available on ${date} (approved leave).`;
+  return {
+    date,
+    designerName,
+    availableSlots: [],
+    unavailable: true,
+    unavailableReason: message,
+    fullDayLeaveStatus: status,
+  };
+}
+
+function canApproveFullDayLeave(role: string): boolean {
+  return ["territorial_design_manager", "admin", "design_manager"].includes(
+    (role || "").toLowerCase(),
+  );
+}
+
+async function canReviewFullDayLeaveRequest(
+  actingUser: { id: number; name: string; role: string },
+  request: FullDayRequestRow,
+): Promise<boolean> {
+  const role = (actingUser.role || "").toLowerCase();
+
+  if (role === "admin") return true;
+
+  if (role === "territorial_design_manager") {
+    const [userRows] = await pool.query(
+      `SELECT role FROM users WHERE id = ? LIMIT 1`,
+      [request.designer_id],
+    );
+    const designerRole = String((userRows as { role: string }[])[0]?.role ?? "").toLowerCase();
+    if (designerRole !== "design_manager") return false;
+    return canViewDesignerAppointments(actingUser, request.designer_name);
+  }
+
+  if (role === "design_manager") {
+    if (request.designer_id === actingUser.id) return false;
+    const [rows] = await pool.query(
+      `SELECT id FROM users
+       WHERE id = ? AND role = 'designer' AND design_manager_id = ?
+       LIMIT 1`,
+      [request.designer_id, actingUser.id],
+    );
+    return (rows as { id: number }[]).length > 0;
+  }
+
+  return false;
+}
+
+async function loadPendingFullDayRequestsForApprover(
+  actingUser: { id: number; name: string; role: string },
+): Promise<FullDayRequestRow[]> {
+  const role = (actingUser.role || "").toLowerCase();
+
+  if (role === "admin") {
+    const [rows] = await pool.query(
+      `SELECT * FROM designer_full_day_requests
+       WHERE status = 'pending'
+       ORDER BY created_at DESC, block_date DESC`,
+    );
+    return rows as FullDayRequestRow[];
+  }
+
+  if (role === "design_manager") {
+    const [rows] = await pool.query(
+      `SELECT r.* FROM designer_full_day_requests r
+       INNER JOIN users u ON u.id = r.designer_id
+       WHERE r.status = 'pending'
+         AND u.role = 'designer'
+         AND u.design_manager_id = ?
+       ORDER BY r.created_at DESC, r.block_date DESC`,
+      [actingUser.id],
+    );
+    return rows as FullDayRequestRow[];
+  }
+
+  if (role === "territorial_design_manager") {
+    const [rows] = await pool.query(
+      `SELECT r.* FROM designer_full_day_requests r
+       INNER JOIN users u ON u.id = r.designer_id
+       WHERE r.status = 'pending'
+         AND u.role = 'design_manager'
+         AND u.territorial_design_manager_id = ?
+       ORDER BY r.created_at DESC, r.block_date DESC`,
+      [actingUser.id],
+    );
+    return rows as FullDayRequestRow[];
+  }
+
+  const visible = await getPersonalAppointmentVisibleUsers(actingUser);
+  const visibleIds = visible.map((u) => u.id).filter((id) => Number.isFinite(id));
+  if (visibleIds.length === 0) return [];
+
+  const placeholders = visibleIds.map(() => "?").join(", ");
+  const [rows] = await pool.query(
+    `SELECT * FROM designer_full_day_requests
+     WHERE status = 'pending'
+       AND designer_id IN (${placeholders})
+     ORDER BY created_at DESC, block_date DESC`,
+    visibleIds,
+  );
+  return rows as FullDayRequestRow[];
+}
+
+function serializeFullDayRequest(
+  row: FullDayRequestRow,
+  reviewer?: { name: string; role: string } | null,
+) {
+  return {
+    id: row.id,
+    designerId: row.designer_id,
+    designerName: row.designer_name,
+    blockDate: blockDateFromRow(row),
+    reasonPreset: row.reason_preset,
+    reason: row.reason,
+    status: row.status,
+    requestedById: row.requested_by_id,
+    reviewedById: row.reviewed_by_id,
+    reviewedByName: reviewer?.name ?? null,
+    reviewedByRole: reviewer?.role ?? null,
+    reviewedAt: row.reviewed_at,
+    reviewNote: row.review_note,
+    erpAppointmentId: row.erp_appointment_id,
+    googleEventId: row.google_event_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+async function serializeFullDayRequests(rows: FullDayRequestRow[]) {
+  const reviewerIds = [
+    ...new Set(
+      rows
+        .map((r) => r.reviewed_by_id)
+        .filter((id): id is number => id != null && Number.isFinite(id)),
+    ),
+  ];
+  const reviewerMap = new Map<number, { name: string; role: string }>();
+  if (reviewerIds.length > 0) {
+    const placeholders = reviewerIds.map(() => "?").join(", ");
+    const [userRows] = await pool.query(
+      `SELECT id, name, role FROM users WHERE id IN (${placeholders})`,
+      reviewerIds,
+    );
+    for (const u of userRows as { id: number; name: string; role: string }[]) {
+      reviewerMap.set(u.id, { name: u.name, role: u.role });
+    }
+  }
+
+  const designerIds = [
+    ...new Set(
+      rows
+        .map((r) => r.designer_id)
+        .filter((id): id is number => id != null && Number.isFinite(id)),
+    ),
+  ];
+  const designerRoleMap = new Map<number, string>();
+  if (designerIds.length > 0) {
+    const placeholders = designerIds.map(() => "?").join(", ");
+    const [designerRows] = await pool.query(
+      `SELECT id, role FROM users WHERE id IN (${placeholders})`,
+      designerIds,
+    );
+    for (const u of designerRows as { id: number; role: string }[]) {
+      designerRoleMap.set(u.id, u.role);
+    }
+  }
+
+  return rows.map((row) => ({
+    ...serializeFullDayRequest(row, row.reviewed_by_id ? reviewerMap.get(row.reviewed_by_id) ?? null : null),
+    designerRole: designerRoleMap.get(row.designer_id) ?? null,
+  }));
+}
+
+function parseErpDateTime(raw: unknown): Date | null {
+  if (raw == null) return null;
+  const d = new Date(String(raw));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function canCancelPersonalBlockStart(startTimeIso: string): boolean {
+  const start = new Date(startTimeIso);
+  if (Number.isNaN(start.getTime())) return false;
+  return Date.now() < start.getTime() - 30 * 60 * 1000;
+}
+
+function canCancelFullDayBlockDate(blockDateIso: string): boolean {
+  const blockStart = new Date(`${blockDateIso}T00:00:00`);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return blockStart > today;
+}
+
+async function getPersonalAppointmentsLastSeen(userId: number): Promise<Date | null> {
+  const [rows] = await pool.query(
+    "SELECT personal_appointments_last_seen_at FROM users WHERE id = ? LIMIT 1",
+    [userId],
+  );
+  const raw = (rows as { personal_appointments_last_seen_at: string | Date | null }[])[0]
+    ?.personal_appointments_last_seen_at;
+  if (!raw) return null;
+  const d = raw instanceof Date ? raw : new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+async function setPersonalAppointmentsLastSeen(userId: number): Promise<void> {
+  await pool.query("UPDATE users SET personal_appointments_last_seen_at = NOW() WHERE id = ?", [
+    userId,
+  ]);
+}
+
+function isPersonalAppointmentsManagerRole(role: string): boolean {
+  return [
+    "design_manager",
+    "territorial_design_manager",
+    "admin",
+    "deputy_general_manager",
+  ].includes((role || "").toLowerCase());
+}
+
+async function countUnreadPersonalAppointmentAlerts(
+  actingUser: { id: number; name: string; role: string },
+): Promise<{ unread: boolean; count: number }> {
+  if (!isPersonalAppointmentsManagerRole(actingUser.role)) {
+    return { unread: false, count: 0 };
+  }
+
+  const lastSeen = (await getPersonalAppointmentsLastSeen(actingUser.id)) ?? new Date(0);
+  let count = 0;
+
+  const pendingFullDay = await loadPendingFullDayRequestsForApprover(actingUser);
+  for (const row of pendingFullDay) {
+    const created = row.created_at instanceof Date ? row.created_at : new Date(String(row.created_at));
+    if (!Number.isNaN(created.getTime()) && created > lastSeen) count++;
+  }
+
+  const visible = await getPersonalAppointmentVisibleUsers(actingUser);
+  for (const member of visible) {
+    if (member.id === actingUser.id) continue;
+    try {
+      const appointments = await fetchDesignerErpAppointments(member.name);
+      for (const raw of appointments) {
+        if (!isPersonalAppointmentErpRow(raw) || isFullDayLeaveErpRow(raw)) continue;
+        const o = raw as Record<string, unknown>;
+        const created = parseErpDateTime(o.createdAt ?? o.created_at ?? o.startTime ?? o.start);
+        if (created && created > lastSeen) count++;
+      }
+    } catch {
+      // ignore per-designer ERP errors
+    }
+  }
+
+  return { unread: count > 0, count };
+}
+
+async function fetchDesignerErpAppointments(designerName: string): Promise<unknown[]> {
+  const data = await callErpApi(`/v1/Appointment/designer/${encodeURIComponent(designerName)}`);
+  return Array.isArray(data) ? data : [];
+}
+
+async function getActiveFullDayBlock(
+  designerName: string,
+  blockDate: string,
+): Promise<FullDayRequestRow | null> {
+  const [rows] = await pool.query(
+    `SELECT * FROM designer_full_day_requests
+     WHERE LOWER(TRIM(designer_name)) = LOWER(TRIM(?))
+       AND block_date = ?
+       AND status IN ('pending', 'approved')
+     ORDER BY id DESC
+     LIMIT 1`,
+    [designerName.trim(), formatBlockDateForDb(blockDate)],
+  );
+  return (rows as FullDayRequestRow[])[0] ?? null;
+}
+
+async function countClientMeetingsOnDate(designerName: string, dateIso: string): Promise<number> {
+  const appointments = await fetchDesignerErpAppointments(designerName);
+  return appointments.filter(
+    (row) => erpAppointmentOnDate(row, dateIso) && isClientMeetingErpRow(row),
+  ).length;
+}
+
+async function deletePartialPersonalBlocksForDate(designerName: string, dateIso: string): Promise<void> {
+  const appointments = await fetchDesignerErpAppointments(designerName);
+  for (const row of appointments) {
+    if (!erpAppointmentOnDate(row, dateIso)) continue;
+    if (!isPersonalAppointmentErpRow(row)) continue;
+    if (isFullDayLeaveErpRow(row)) continue;
+    const id = getErpAppointmentId(row);
+    if (id == null) continue;
+    try {
+      await callErpApi(`/v1/Appointment/${id}`, { method: "DELETE" });
+    } catch (err) {
+      console.error("[full-day] failed to delete partial personal block", { id, err });
+    }
+  }
+}
+
+async function resolveFullDayLeaveApprovalNotifyRecipients(
+  actingUserId: number,
+  actingUserRole: string,
+): Promise<{ to: string | null; toName: string | null; cc: string[] }> {
+  const [adminRows] = await pool.query(
+    "SELECT email, name FROM users WHERE role = 'admin' AND email IS NOT NULL",
+  );
+  const [tdmRows] = await pool.query(
+    "SELECT email, name FROM users WHERE role = 'territorial_design_manager' AND email IS NOT NULL",
+  );
+
+  const approverEmails: string[] = [];
+  let toName = "Approver";
+  for (const r of tdmRows as { email: string; name: string }[]) {
+    const em = normalizeEmail(r.email);
+    if (em) {
+      approverEmails.push(em);
+      if (toName === "Approver") toName = r.name;
+    }
+  }
+  for (const r of adminRows as { email: string; name: string }[]) {
+    const em = normalizeEmail(r.email);
+    if (em) approverEmails.push(em);
+  }
+
+  const ccSet = new Set<string>();
+  const dmNotify = await resolvePersonalBlockMailRecipients(actingUserId, actingUserRole);
+  if (dmNotify.to) ccSet.add(dmNotify.to);
+  for (const c of dmNotify.cc) ccSet.add(c);
+
+  const uniqueApprovers = Array.from(new Set(approverEmails));
+  const primary = uniqueApprovers[0] ?? null;
+  for (const em of uniqueApprovers.slice(1)) ccSet.add(em);
+  if (primary) ccSet.delete(primary);
+
+  return { to: primary, toName, cc: Array.from(ccSet) };
+}
+
+async function resolveFullDayLeaveDesignerEmail(designerId: number): Promise<{ email: string | null; name: string }> {
+  const [rows] = await pool.query(
+    "SELECT email, name FROM users WHERE id = ? LIMIT 1",
+    [designerId],
+  );
+  const row = (rows as { email: string | null; name: string }[])[0];
+  return { email: row?.email ? normalizeEmail(row.email) : null, name: row?.name || "Designer" };
+}
+
+async function resolveFullDayLeaveManagerEmail(designerId: number): Promise<string | null> {
+  const [rows] = await pool.query(
+    `SELECT dm.email
+     FROM users u
+     JOIN users dm ON dm.id = u.design_manager_id
+     WHERE u.id = ? LIMIT 1`,
+    [designerId],
+  );
+  const email = (rows as { email: string | null }[])[0]?.email;
+  return email ? normalizeEmail(email) : null;
+}
+
+async function resolvePersonalBlockMailRecipients(actingUserId: number, actingUserRole: string) {
+  const role = (actingUserRole || "").toLowerCase();
+  const [userRows] = await pool.query(
+    "SELECT id, name, email, role FROM users WHERE id = ? LIMIT 1",
+    [actingUserId],
+  );
+  const actingUser = (userRows as { name: string; email: string }[])[0];
+  if (!actingUser) return { to: null as string | null, toName: null as string | null, cc: [] as string[] };
+
+  const [adminRows] = await pool.query(
+    "SELECT email FROM users WHERE role = 'admin' AND email IS NOT NULL",
+  );
+  const [dgmRows] = await pool.query(
+    "SELECT email FROM users WHERE role = 'deputy_general_manager' AND email IS NOT NULL",
+  );
+  const [allTdmRows] = await pool.query(
+    "SELECT id, email, name FROM users WHERE role = 'territorial_design_manager' AND email IS NOT NULL",
+  );
+
+  const ccSet = new Set<string>();
+  for (const r of adminRows as { email: string }[]) {
+    if (r.email) ccSet.add(normalizeEmail(r.email)!);
+  }
+  for (const r of dgmRows as { email: string }[]) {
+    if (r.email) ccSet.add(normalizeEmail(r.email)!);
+  }
+
+  let toEmail: string | null = null;
+  let toName: string | null = null;
+
+  if (role === "designer") {
+    const [dmRows] = await pool.query(
+      `SELECT dm.email, dm.name, tdm.email AS tdmEmail
+       FROM users u
+       JOIN users dm ON dm.id = u.design_manager_id
+       LEFT JOIN users tdm ON tdm.id = dm.territorial_design_manager_id
+       WHERE u.id = ?`,
+      [actingUserId],
+    );
+    const dm = (dmRows as { email: string; name: string; tdmEmail: string | null }[])[0];
+    if (dm?.email) {
+      toEmail = normalizeEmail(dm.email);
+      toName = dm.name;
+    }
+    if (dm?.tdmEmail) ccSet.add(normalizeEmail(dm.tdmEmail)!);
+    for (const t of allTdmRows as { email: string }[]) {
+      const em = normalizeEmail(t.email);
+      if (em && em !== toEmail) ccSet.add(em);
+    }
+  } else if (role === "design_manager") {
+    const [tdmRows] = await pool.query(
+      `SELECT tdm.email, tdm.name
+       FROM users u
+       JOIN users tdm ON tdm.id = u.territorial_design_manager_id
+       WHERE u.id = ?`,
+      [actingUserId],
+    );
+    const tdm = (tdmRows as { email: string; name: string }[])[0];
+    if (tdm?.email) {
+      toEmail = normalizeEmail(tdm.email);
+      toName = tdm.name;
+    }
+    for (const t of allTdmRows as { email: string }[]) {
+      const em = normalizeEmail(t.email);
+      if (em && em !== toEmail) ccSet.add(em);
+    }
+  }
+
+  if (actingUser.email) {
+    const self = normalizeEmail(actingUser.email);
+    if (self) ccSet.delete(self);
+  }
+  if (toEmail) ccSet.delete(toEmail);
+
+  return { to: toEmail, toName, cc: Array.from(ccSet) };
+}
+
+async function triggerInternalMailRoute(
+  route: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  try {
+    const resp = await fetch(`${FRONTEND_BASE}${route}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      console.error("[internal-mail-failed]", { route, status: resp.status, body });
+    }
+  } catch (error) {
+    console.error("[internal-mail-error]", { route, error });
+  }
+}
+
+function isErpAppointmentConflictError(err: unknown): boolean {
+  const msg = String(err instanceof Error ? err.message : err || "").toLowerCase();
+  return msg.includes("409") || /overlap|conflict|already booked|not available/.test(msg);
 }
 
 async function exchangeGoogleCodeForTokens(code: string) {
@@ -3505,6 +4184,24 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
         assignedDesignerId = Number(row.id);
         if (row.designManagerName) {
           designManagerName = row.designManagerName;
+        }
+      }
+    }
+
+    if (designerName && appointmentDate) {
+      const dateIso = normalizeBlockDateIso(appointmentDate);
+      if (dateIso) {
+        const activeBlock = await getActiveFullDayBlock(designerName, dateIso);
+        if (activeBlock) {
+          const resp = buildFullDayUnavailableResponse(activeBlock.status as "pending" | "approved", designerName, dateIso);
+          return res.status(409).json({
+            message: resp.unavailableReason,
+            unavailable: true,
+            unavailableReason: resp.unavailableReason,
+            fullDayLeaveStatus: activeBlock.status,
+            designerName,
+            appointmentDate: dateIso,
+          });
         }
       }
     }
@@ -7959,6 +8656,17 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       return res.status(400).json({ message: "meetingType, meetingDate and meetingTime are required" });
     }
 
+    const meetingDateIso = normalizeBlockDateIso(meetingDate);
+    if (meetingDateIso) {
+      const approvedBlock = await getActiveFullDayBlock(actingUser.name, meetingDateIso);
+      if (approvedBlock?.status === "approved") {
+        return res.status(409).json({
+          message: `You are on approved full-day leave on ${meetingDateIso}. Cannot schedule client meetings.`,
+          fullDayLeaveStatus: "approved",
+        });
+      }
+    }
+
     const [rows] = await pool.query(
       `SELECT l.pid, l.project_name as projectName, l.client_email as clientEmail, l.payload, l.assigned_designer_id,
               u.name as designerName, u.email as designerEmail
@@ -11436,6 +12144,18 @@ app.get("/api/appointment/designer/:designerName", async (req: Request, res: Res
     return res.status(400).json({ message: "designerName is required" });
   }
   try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+    const role = (actingUser.role || "").toLowerCase();
+    const isSelf = actingUser.name.trim().toLowerCase() === designerName.toLowerCase();
+    const canBook = ["designer", "design_manager"].includes(role);
+    if (!isSelf) {
+      const allowed = await canViewDesignerAppointments(actingUser, designerName);
+      if (!allowed) return res.status(403).json({ message: "Not allowed to view this designer's appointments" });
+    } else if (!canBook && !["admin", "deputy_general_manager", "territorial_design_manager"].includes(role)) {
+      return res.status(403).json({ message: "Not allowed" });
+    }
+
     const data = await callErpApi(
       `/v1/Appointment/designer/${encodeURIComponent(designerName)}`,
     );
@@ -11456,6 +12176,12 @@ app.get("/api/appointment/available-slots", async (req: Request, res: Response) 
     const data = await callErpApi(
       `/v1/Appointment/available-slots?date=${encodeURIComponent(date)}&designerName=${encodeURIComponent(designerName)}`
     );
+    const activeBlock = await getActiveFullDayBlock(designerName, date);
+    if (activeBlock && (activeBlock.status === "pending" || activeBlock.status === "approved")) {
+      return res.json(
+        buildFullDayUnavailableResponse(activeBlock.status as "pending" | "approved", designerName, date),
+      );
+    }
     return res.json(data);
   } catch (err: any) {
     console.error("available-slots proxy error", err);
@@ -11471,6 +12197,25 @@ app.post("/api/appointment", async (req: Request, res: Response) => {
   const { designerName, date, slotId, leadId } = req.body || {};
   if (!designerName || !date || !slotId) {
     return res.status(400).json({ message: "designerName, date, slotId are required" });
+  }
+
+  const dateIso = normalizeBlockDateIso(date);
+  if (dateIso) {
+    const activeBlock = await getActiveFullDayBlock(designerName, dateIso);
+    if (activeBlock && (activeBlock.status === "pending" || activeBlock.status === "approved")) {
+      const resp = buildFullDayUnavailableResponse(
+        activeBlock.status as "pending" | "approved",
+        designerName,
+        dateIso,
+      );
+      return res.status(409).json({
+        conflict: true,
+        message: resp.unavailableReason,
+        unavailable: true,
+        unavailableReason: resp.unavailableReason,
+        fullDayLeaveStatus: activeBlock.status,
+      });
+    }
   }
 
   try {
@@ -11489,6 +12234,844 @@ app.post("/api/appointment", async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error("appointment create proxy error", err);
     return res.status(500).json({ message: "Failed to create appointment", error: err?.message });
+  }
+});
+
+// GET /api/appointment/personal/viewable-users — hierarchy list for history filter
+app.get("/api/appointment/personal/viewable-users", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+    const role = (actingUser.role || "").toLowerCase();
+    const allowed = [
+      "designer",
+      "design_manager",
+      "territorial_design_manager",
+      "admin",
+      "deputy_general_manager",
+    ];
+    if (!allowed.includes(role)) {
+      return res.status(403).json({ message: "Not allowed" });
+    }
+    const users = await getPersonalAppointmentVisibleUsers(actingUser);
+    return res.json(users);
+  } catch (err: any) {
+    console.error("personal viewable-users error", err);
+    return res.status(500).json({ message: "Failed to load team members" });
+  }
+});
+
+async function loadPersonalHistoryForDesigner(requestedName: string): Promise<{
+  appointments: unknown[];
+  cancelled: unknown[];
+}> {
+  const data = await callErpApi(
+    `/v1/Appointment/designer/${encodeURIComponent(requestedName)}`,
+  );
+  const list = Array.isArray(data) ? data : [];
+  const appointments = list
+    .filter(isPersonalAppointmentErpRow)
+    .map((row: any) => ({
+      ...row,
+      designerName: requestedName,
+      status: "active",
+    }))
+    .sort((a: any, b: any) => {
+      const ta = new Date(a.startTime ?? a.start ?? 0).getTime();
+      const tb = new Date(b.startTime ?? b.start ?? 0).getTime();
+      return tb - ta;
+    });
+
+  const [userRows] = await pool.query(
+    "SELECT id FROM users WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1",
+    [requestedName],
+  );
+  const designerUserId = (userRows as { id: number }[])[0]?.id;
+  let cancelled: unknown[] = [];
+  if (designerUserId != null) {
+    const [cancelRows] = await pool.query(
+      `SELECT * FROM personal_block_cancellations
+       WHERE designer_id = ?
+       ORDER BY cancelled_at DESC
+       LIMIT 100`,
+      [designerUserId],
+    );
+    cancelled = (cancelRows as any[]).map((c) => ({
+      id: `cancelled-${c.id}`,
+      erpAppointmentId: c.erp_appointment_id,
+      description: c.description,
+      startTime: c.start_time,
+      endTime: c.end_time,
+      designerName: requestedName,
+      status: "cancelled",
+      cancelledAt: c.cancelled_at,
+    }));
+  }
+
+  return { appointments, cancelled };
+}
+
+function isHierarchyPersonalHistoryRole(role: string): boolean {
+  return isPersonalAppointmentsManagerRole(role) || role === "deputy_general_manager";
+}
+
+// GET /api/appointment/personal/history — personal blocks for self or hierarchy
+app.get("/api/appointment/personal/history", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+    const role = (actingUser.role || "").toLowerCase();
+    const allowed = [
+      "designer",
+      "design_manager",
+      "territorial_design_manager",
+      "admin",
+      "deputy_general_manager",
+    ];
+    if (!allowed.includes(role)) {
+      return res.status(403).json({ message: "Not allowed" });
+    }
+
+    const designerParam =
+      req.query.designerName != null ? String(req.query.designerName).trim() : "";
+
+    if (designerParam === "" || designerParam.toLowerCase() === "all") {
+      if (isHierarchyPersonalHistoryRole(role)) {
+        const visible = await getPersonalAppointmentVisibleUsers(actingUser);
+        let appointments: unknown[] = [];
+        let cancelled: unknown[] = [];
+        for (const member of visible) {
+          try {
+            const chunk = await loadPersonalHistoryForDesigner(member.name);
+            appointments = appointments.concat(chunk.appointments);
+            cancelled = cancelled.concat(chunk.cancelled);
+          } catch (memberErr) {
+            console.error(`personal history error for ${member.name}`, memberErr);
+          }
+        }
+        const sortByTime = (a: any, b: any) => {
+          const ta = new Date(a.cancelledAt ?? a.startTime ?? a.start ?? 0).getTime();
+          const tb = new Date(b.cancelledAt ?? b.startTime ?? b.start ?? 0).getTime();
+          return tb - ta;
+        };
+        appointments.sort(sortByTime);
+        cancelled.sort(sortByTime);
+        return res.json({
+          appointments,
+          cancelled,
+          designerName: "all",
+          teamMembers: visible,
+        });
+      }
+
+      const selfHistory = await loadPersonalHistoryForDesigner(actingUser.name);
+      return res.json({ ...selfHistory, designerName: actingUser.name });
+    }
+
+    const requestedName = designerParam;
+    if (!(await canViewDesignerAppointments(actingUser, requestedName))) {
+      return res.status(403).json({ message: "Not allowed to view this designer's appointments" });
+    }
+
+    const history = await loadPersonalHistoryForDesigner(requestedName);
+    return res.json({ ...history, designerName: requestedName });
+  } catch (err: any) {
+    console.error("personal history error", err);
+    return res.status(500).json({ message: "Failed to load appointment history" });
+  }
+});
+
+// POST /api/appointment/personal — book personal time (same ERP table as meetings)
+app.post("/api/appointment/personal", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+
+    const role = (actingUser.role || "").toLowerCase();
+    if (!["designer", "design_manager"].includes(role)) {
+      return res.status(403).json({ message: "Only designers and design managers can book personal time" });
+    }
+
+    const {
+      reason,
+      reasonPreset,
+      startTime,
+      endTime,
+      meetingDate,
+      meetingTime,
+      meetingEndTime,
+      durationMin,
+    } = req.body || {};
+
+    const trimmedReason = String(reason ?? "").trim();
+    if (!trimmedReason) {
+      return res.status(400).json({ message: "reason is required" });
+    }
+    if (!startTime || !endTime) {
+      return res.status(400).json({ message: "startTime and endTime are required" });
+    }
+
+    const startParsed = new Date(startTime);
+    if (Number.isNaN(startParsed.getTime())) {
+      return res.status(400).json({ message: "Invalid startTime" });
+    }
+    if (startParsed.getTime() < Date.now() - 60_000) {
+      return res.status(400).json({ message: "Cannot book appointments in the past" });
+    }
+
+    const designerName = actingUser.name;
+    const blockDateIso =
+      normalizeBlockDateIso(meetingDate) || normalizeBlockDateIso(String(startTime).slice(0, 10));
+    if (blockDateIso) {
+      const activeBlock = await getActiveFullDayBlock(designerName, blockDateIso);
+      if (activeBlock?.status === "approved") {
+        return res.status(409).json({
+          message: `This day is blocked as approved full-day leave (${blockDateIso}).`,
+          fullDayLeaveStatus: "approved",
+        });
+      }
+    }
+
+    const eventStart = formatGoogleDateTime(meetingDate, meetingTime) || startParsed.toISOString();
+    const eventEnd =
+      formatGoogleDateTime(meetingDate, meetingEndTime) || new Date(endTime).toISOString();
+
+    let gcalEventId: string | null = null;
+    let gcalHtmlLink: string | null = null;
+    try {
+      const gcalResult = await createGoogleCalendarEventForUser({
+        userId: actingUser.id,
+        summary: `Personal block – ${designerName}`,
+        description: trimmedReason,
+        startDateTimeIso: eventStart,
+        endDateTimeIso: eventEnd,
+        attendees: [],
+      });
+      if (gcalResult) {
+        gcalEventId = (gcalResult as any).id ?? null;
+        gcalHtmlLink = (gcalResult as any).htmlLink ?? null;
+      }
+    } catch (calendarErr) {
+      console.error("[personal-block] Google event create error (non-fatal)", calendarErr);
+    }
+
+    let erpData: unknown = null;
+    try {
+      erpData = await callErpApi("/v1/Appointment", {
+        method: "POST",
+        body: JSON.stringify({
+          designerName,
+          startTime,
+          endTime,
+          source: "DESIGN_MODULE",
+          description: trimmedReason,
+          leadId: null,
+          googleEventId: gcalEventId,
+          googleHtmlLink: gcalHtmlLink,
+          googleSyncStatus: gcalEventId ? "SYNCED" : "DM_GCAL_FAILED",
+        }),
+      });
+    } catch (erpErr) {
+      if (isErpAppointmentConflictError(erpErr)) {
+        return res.status(409).json({
+          conflict: true,
+          message: "This time slot is no longer available. Please choose another slot.",
+        });
+      }
+      throw erpErr;
+    }
+
+    const timeRange =
+      meetingTime && meetingEndTime
+        ? `${formatTime12Hour(meetingTime) || meetingTime} – ${formatTime12Hour(meetingEndTime) || meetingEndTime}`
+        : `${startTime} – ${endTime}`;
+
+    const mailRecipients = await resolvePersonalBlockMailRecipients(actingUser.id, actingUser.role);
+    if (mailRecipients.to) {
+      void triggerInternalMailRoute("/api/email/send-personal-block-notification-internal", {
+        to: mailRecipients.to,
+        cc: mailRecipients.cc,
+        recipientName: mailRecipients.toName || "Team Member",
+        bookedByName: designerName,
+        bookedByRole: actingUser.role,
+        appointmentDate: meetingDate || startParsed.toLocaleDateString("en-IN"),
+        timeRange,
+        durationMinutes: durationMin ?? 90,
+        reason: trimmedReason,
+        reasonPreset: reasonPreset || undefined,
+        subject: `Personal time block – ${designerName} · ${meetingDate || ""}`.trim(),
+      });
+    } else {
+      console.warn("[personal-block] No primary mail recipient; skipping notification", {
+        userId: actingUser.id,
+        role: actingUser.role,
+      });
+    }
+
+    return res.status(201).json({ ok: true, appointment: erpData, googleEventId: gcalEventId });
+  } catch (err: any) {
+    console.error("personal appointment create error", err);
+    return res.status(500).json({ message: err?.message || "Failed to book personal appointment" });
+  }
+});
+
+// ----- Personal appointments badge (manager alerts) -----
+
+app.get("/api/appointment/personal-appointments-badge", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+    const badge = await countUnreadPersonalAppointmentAlerts(actingUser);
+    return res.json(badge);
+  } catch (err: any) {
+    console.error("personal-appointments-badge error", err);
+    return res.status(500).json({ message: "Failed to load notification badge" });
+  }
+});
+
+app.post("/api/appointment/personal-appointments/mark-seen", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+    await setPersonalAppointmentsLastSeen(actingUser.id);
+    return res.json({ ok: true });
+  } catch (err: any) {
+    console.error("personal-appointments mark-seen error", err);
+    return res.status(500).json({ message: "Failed to mark as seen" });
+  }
+});
+
+// POST /api/appointment/personal/:erpId/cancel — cancel personal block (30 min before start)
+app.post("/api/appointment/personal/:erpId/cancel", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+
+    const erpId = String(req.params.erpId || "").trim();
+    if (!erpId) return res.status(400).json({ message: "Invalid appointment id" });
+
+    const designerName = String(req.body?.designerName || actingUser.name).trim();
+    if (designerName.trim().toLowerCase() !== actingUser.name.trim().toLowerCase()) {
+      return res.status(403).json({ message: "Only the person who booked this block can cancel it" });
+    }
+
+    const appointments = await fetchDesignerErpAppointments(designerName);
+    const row = appointments.find((raw) => String(getErpAppointmentId(raw)) === erpId);
+    if (!row || !isPersonalAppointmentErpRow(row) || isFullDayLeaveErpRow(row)) {
+      return res.status(404).json({ message: "Personal block not found" });
+    }
+
+    const o = row as Record<string, unknown>;
+    const startIso = String(o.startTime ?? o.start ?? "");
+    const endIso = String(o.endTime ?? o.end ?? "");
+    if (!canCancelPersonalBlockStart(startIso)) {
+      return res.status(409).json({
+        message: "Cannot cancel within 30 minutes of start time or after the block has started.",
+      });
+    }
+
+    const [userRows] = await pool.query(
+      "SELECT id FROM users WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1",
+      [designerName],
+    );
+    const designerUserId = (userRows as { id: number }[])[0]?.id ?? actingUser.id;
+
+    await callErpApi(`/v1/Appointment/${erpId}`, { method: "DELETE" });
+
+    await pool.query(
+      `INSERT INTO personal_block_cancellations
+       (erp_appointment_id, designer_id, designer_name, start_time, end_time, description, cancelled_by_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        erpId,
+        designerUserId,
+        designerName,
+        startIso,
+        endIso,
+        String(o.description ?? ""),
+        actingUser.id,
+      ],
+    );
+
+    return res.json({ ok: true, message: "Personal block cancelled" });
+  } catch (err: any) {
+    console.error("personal block cancel error", err);
+    return res.status(500).json({ message: err?.message || "Failed to cancel personal block" });
+  }
+});
+
+// ----- Full-day leave requests (approval workflow; ERP block only on approve) -----
+
+app.post("/api/appointment/full-day", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+
+    const role = (actingUser.role || "").toLowerCase();
+    if (!["designer", "design_manager"].includes(role)) {
+      return res.status(403).json({ message: "Only designers and design managers can request full-day leave" });
+    }
+
+    const { blockDate, reason, reasonPreset } = req.body || {};
+    const dateIso = normalizeBlockDateIso(blockDate);
+    const trimmedReason = String(reason ?? "").trim();
+    const trimmedPreset = String(reasonPreset ?? "Leave").trim() || "Leave";
+
+    if (!dateIso) {
+      return res.status(400).json({ message: "blockDate is required (YYYY-MM-DD)" });
+    }
+    if (!trimmedReason) {
+      return res.status(400).json({ message: "reason is required" });
+    }
+
+    const blockStart = new Date(`${dateIso}T00:00:00`);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (blockStart < today) {
+      return res.status(400).json({ message: "Cannot request full-day leave for a past date" });
+    }
+
+    const designerName = actingUser.name;
+    const existing = await getActiveFullDayBlock(designerName, dateIso);
+    if (existing) {
+      return res.status(409).json({
+        message: `A full-day leave request already exists for ${dateIso} (status: ${existing.status}).`,
+        request: (await serializeFullDayRequests([existing]))[0],
+      });
+    }
+
+    const clientMeetings = await countClientMeetingsOnDate(designerName, dateIso);
+    if (clientMeetings > 0) {
+      return res.status(409).json({
+        message:
+          "Client meetings are already scheduled on this day. Cancel those meetings before applying for full-day leave.",
+        clientMeetingsOnDate: clientMeetings,
+      });
+    }
+
+    const [insertResult] = await pool.query(
+      `INSERT INTO designer_full_day_requests
+       (designer_id, designer_name, block_date, reason_preset, reason, status, requested_by_id)
+       VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+      [actingUser.id, designerName, dateIso, trimmedPreset, trimmedReason, actingUser.id],
+    );
+    const requestId = (insertResult as { insertId?: number })?.insertId;
+    const [createdRows] = await pool.query(
+      "SELECT * FROM designer_full_day_requests WHERE id = ? LIMIT 1",
+      [requestId],
+    );
+    const created = (createdRows as FullDayRequestRow[])[0];
+
+    const mailRecipients = await resolveFullDayLeaveApprovalNotifyRecipients(actingUser.id, actingUser.role);
+    if (mailRecipients.to) {
+      void triggerInternalMailRoute("/api/email/send-full-day-leave-request-internal", {
+        to: mailRecipients.to,
+        cc: mailRecipients.cc,
+        recipientName: mailRecipients.toName || "Approver",
+        requestedByName: designerName,
+        requestedByRole: actingUser.role,
+        blockDate: dateIso,
+        reason: trimmedReason,
+        reasonPreset: trimmedPreset,
+        subject: `Full-day leave request – ${designerName} · ${dateIso}`,
+      });
+    }
+
+    return res.status(201).json({ ok: true, request: (await serializeFullDayRequests([created]))[0] });
+  } catch (err: any) {
+    console.error("full-day request create error", err);
+    return res.status(500).json({ message: err?.message || "Failed to submit full-day leave request" });
+  }
+});
+
+app.get("/api/appointment/full-day/mine", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+
+    const role = (actingUser.role || "").toLowerCase();
+    if (!["designer", "design_manager"].includes(role)) {
+      return res.status(403).json({ message: "Not allowed" });
+    }
+
+    const [rows] = await pool.query(
+      `SELECT * FROM designer_full_day_requests
+       WHERE designer_id = ?
+       ORDER BY block_date DESC, id DESC
+       LIMIT 100`,
+      [actingUser.id],
+    );
+    return res.json({
+      requests: await serializeFullDayRequests(rows as FullDayRequestRow[]),
+    });
+  } catch (err: any) {
+    console.error("full-day mine error", err);
+    return res.status(500).json({ message: "Failed to load full-day leave requests" });
+  }
+});
+
+app.get("/api/appointment/full-day/pending", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+
+    if (!canApproveFullDayLeave(actingUser.role)) {
+      return res.status(403).json({ message: "Not allowed to view the approval queue" });
+    }
+
+    const rows = await loadPendingFullDayRequestsForApprover(actingUser);
+    return res.json({
+      requests: await serializeFullDayRequests(rows),
+    });
+  } catch (err: any) {
+    console.error("full-day pending error", err);
+    return res.status(500).json({ message: "Failed to load pending full-day requests" });
+  }
+});
+
+app.get("/api/appointment/full-day/history", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+
+    const role = (actingUser.role || "").toLowerCase();
+    const allowed = [
+      "designer",
+      "design_manager",
+      "territorial_design_manager",
+      "admin",
+      "deputy_general_manager",
+    ];
+    if (!allowed.includes(role)) {
+      return res.status(403).json({ message: "Not allowed" });
+    }
+
+    const requestedName = String(req.query.designerName || actingUser.name).trim();
+    if (!(await canViewDesignerAppointments(actingUser, requestedName))) {
+      return res.status(403).json({ message: "Not allowed to view this designer's full-day requests" });
+    }
+
+    const [rows] = await pool.query(
+      `SELECT * FROM designer_full_day_requests
+       WHERE LOWER(TRIM(designer_name)) = LOWER(TRIM(?))
+       ORDER BY block_date DESC, id DESC
+       LIMIT 200`,
+      [requestedName],
+    );
+    return res.json({
+      requests: await serializeFullDayRequests(rows as FullDayRequestRow[]),
+      designerName: requestedName,
+    });
+  } catch (err: any) {
+    console.error("full-day history error", err);
+    return res.status(500).json({ message: "Failed to load full-day history" });
+  }
+});
+
+app.get("/api/appointment/full-day/team", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+
+    const role = (actingUser.role || "").toLowerCase();
+    const allowed = [
+      "designer",
+      "design_manager",
+      "territorial_design_manager",
+      "admin",
+      "deputy_general_manager",
+    ];
+    if (!allowed.includes(role)) {
+      return res.status(403).json({ message: "Not allowed" });
+    }
+
+    const visible = await getPersonalAppointmentVisibleUsers(actingUser);
+    const visibleIds = visible.map((u) => u.id).filter((id) => Number.isFinite(id));
+    if (visibleIds.length === 0) {
+      return res.json({ requests: [], teamMembers: visible });
+    }
+
+    const placeholders = visibleIds.map(() => "?").join(", ");
+    const [rows] = await pool.query(
+      `SELECT * FROM designer_full_day_requests
+       WHERE designer_id IN (${placeholders})
+       ORDER BY created_at DESC, block_date DESC
+       LIMIT 500`,
+      visibleIds,
+    );
+    return res.json({
+      requests: await serializeFullDayRequests(rows as FullDayRequestRow[]),
+      teamMembers: visible,
+    });
+  } catch (err: any) {
+    console.error("full-day team error", err);
+    return res.status(500).json({ message: "Failed to load team full-day requests" });
+  }
+});
+
+app.post("/api/appointment/full-day/:id/approve", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+    if (!canApproveFullDayLeave(actingUser.role)) {
+      return res.status(403).json({ message: "Not allowed to approve full-day leave" });
+    }
+
+    const requestId = Number(req.params.id);
+    if (Number.isNaN(requestId)) return res.status(400).json({ message: "Invalid request id" });
+
+    const [rows] = await pool.query(
+      "SELECT * FROM designer_full_day_requests WHERE id = ? LIMIT 1",
+      [requestId],
+    );
+    const request = (rows as FullDayRequestRow[])[0];
+    if (!request) return res.status(404).json({ message: "Request not found" });
+    if (request.status !== "pending") {
+      return res.status(409).json({ message: `Request is already ${request.status}` });
+    }
+    if (!(await canReviewFullDayLeaveRequest(actingUser, request))) {
+      return res.status(403).json({ message: "Not allowed to approve this full-day leave request" });
+    }
+
+    const dateIso = blockDateFromRow(request);
+    const designerName = request.designer_name;
+
+    const clientMeetings = await countClientMeetingsOnDate(designerName, dateIso);
+    if (clientMeetings > 0) {
+      return res.status(409).json({
+        message:
+          "Client meetings exist on this day. Cancel them before approving full-day leave.",
+        clientMeetingsOnDate: clientMeetings,
+      });
+    }
+
+    await deletePartialPersonalBlocksForDate(designerName, dateIso);
+
+    const { startTime, endTime } = buildFullDayIsoRange(dateIso);
+    const erpDescription = `${FULL_DAY_LEAVE_DESC_PREFIX} ${request.reason_preset !== "Other" ? request.reason_preset : request.reason}`;
+
+    const gcalStart = formatGoogleDateTime(dateIso, HUB_DAY_START_TIME) || startTime;
+    const gcalEnd = formatGoogleDateTime(dateIso, HUB_DAY_END_TIME) || endTime;
+
+    let gcalEventId: string | null = null;
+    let gcalHtmlLink: string | null = null;
+    try {
+      const gcalResult = await createGoogleCalendarEventForUser({
+        userId: request.designer_id,
+        summary: `Full-day leave – ${designerName}`,
+        description: request.reason,
+        startDateTimeIso: gcalStart,
+        endDateTimeIso: gcalEnd,
+        attendees: [],
+      });
+      if (gcalResult) {
+        gcalEventId = (gcalResult as { id?: string }).id ?? null;
+        gcalHtmlLink = (gcalResult as { htmlLink?: string }).htmlLink ?? null;
+      }
+    } catch (calendarErr) {
+      console.error("[full-day] Google event create error (non-fatal)", calendarErr);
+    }
+
+    let erpData: Record<string, unknown> | null = null;
+    let erpAppointmentId: string | null = null;
+    try {
+      erpData = await callErpApi("/v1/Appointment", {
+        method: "POST",
+        body: JSON.stringify({
+          designerName,
+          startTime,
+          endTime,
+          source: "DESIGN_MODULE",
+          description: erpDescription,
+          leadId: null,
+          googleEventId: gcalEventId,
+          googleHtmlLink: gcalHtmlLink,
+          googleSyncStatus: gcalEventId ? "SYNCED" : "DM_GCAL_FAILED",
+        }),
+      });
+      const erpId = erpData?.id ?? erpData?.appointmentId;
+      if (erpId != null) erpAppointmentId = String(erpId);
+    } catch (erpErr) {
+      if (isErpAppointmentConflictError(erpErr)) {
+        return res.status(409).json({
+          conflict: true,
+          message: "Could not block the full day in ERP due to a scheduling conflict.",
+        });
+      }
+      throw erpErr;
+    }
+
+    await pool.query(
+      `UPDATE designer_full_day_requests
+       SET status = 'approved',
+           reviewed_by_id = ?,
+           reviewed_at = NOW(),
+           erp_appointment_id = ?,
+           google_event_id = ?
+       WHERE id = ?`,
+      [actingUser.id, erpAppointmentId, gcalEventId, requestId],
+    );
+
+    const designerMail = await resolveFullDayLeaveDesignerEmail(request.designer_id);
+    const managerMail = await resolveFullDayLeaveManagerEmail(request.designer_id);
+    if (designerMail.email) {
+      void triggerInternalMailRoute("/api/email/send-full-day-leave-approved", {
+        to: designerMail.email,
+        cc: managerMail ? [managerMail] : [],
+        recipientName: designerMail.name,
+        designerName,
+        blockDate: dateIso,
+        reason: request.reason,
+        reasonPreset: request.reason_preset,
+        approvedByName: actingUser.name,
+        subject: `Full-day leave approved – ${dateIso}`,
+      });
+    }
+
+    const [updatedRows] = await pool.query(
+      "SELECT * FROM designer_full_day_requests WHERE id = ? LIMIT 1",
+      [requestId],
+    );
+    return res.json({
+      ok: true,
+      request: (await serializeFullDayRequests([(updatedRows as FullDayRequestRow[])[0]]))[0],
+      appointment: erpData,
+    });
+  } catch (err: any) {
+    console.error("full-day approve error", err);
+    return res.status(500).json({ message: err?.message || "Failed to approve full-day leave" });
+  }
+});
+
+app.post("/api/appointment/full-day/:id/reject", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+    if (!canApproveFullDayLeave(actingUser.role)) {
+      return res.status(403).json({ message: "Not allowed to reject full-day leave" });
+    }
+
+    const requestId = Number(req.params.id);
+    if (Number.isNaN(requestId)) return res.status(400).json({ message: "Invalid request id" });
+
+    const reviewNote = String(req.body?.reviewNote ?? "").trim() || null;
+
+    const [rows] = await pool.query(
+      "SELECT * FROM designer_full_day_requests WHERE id = ? LIMIT 1",
+      [requestId],
+    );
+    const request = (rows as FullDayRequestRow[])[0];
+    if (!request) return res.status(404).json({ message: "Request not found" });
+    if (request.status !== "pending") {
+      return res.status(409).json({ message: `Request is already ${request.status}` });
+    }
+    if (!(await canReviewFullDayLeaveRequest(actingUser, request))) {
+      return res.status(403).json({ message: "Not allowed to reject this full-day leave request" });
+    }
+
+    await pool.query(
+      `UPDATE designer_full_day_requests
+       SET status = 'rejected',
+           reviewed_by_id = ?,
+           reviewed_at = NOW(),
+           review_note = ?
+       WHERE id = ?`,
+      [actingUser.id, reviewNote, requestId],
+    );
+
+    const dateIso = blockDateFromRow(request);
+    const designerMail = await resolveFullDayLeaveDesignerEmail(request.designer_id);
+    const managerMail = await resolveFullDayLeaveManagerEmail(request.designer_id);
+    if (designerMail.email) {
+      void triggerInternalMailRoute("/api/email/send-full-day-leave-rejected", {
+        to: designerMail.email,
+        cc: managerMail ? [managerMail] : [],
+        recipientName: designerMail.name,
+        designerName: request.designer_name,
+        blockDate: dateIso,
+        reason: request.reason,
+        reasonPreset: request.reason_preset,
+        rejectedByName: actingUser.name,
+        reviewNote: reviewNote || undefined,
+        subject: `Full-day leave not approved – ${dateIso}`,
+      });
+    }
+
+    const [updatedRows] = await pool.query(
+      "SELECT * FROM designer_full_day_requests WHERE id = ? LIMIT 1",
+      [requestId],
+    );
+    return res.json({
+      ok: true,
+      request: (await serializeFullDayRequests([(updatedRows as FullDayRequestRow[])[0]]))[0],
+    });
+  } catch (err: any) {
+    console.error("full-day reject error", err);
+    return res.status(500).json({ message: err?.message || "Failed to reject full-day leave" });
+  }
+});
+
+app.post("/api/appointment/full-day/:id/cancel", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+
+    const requestId = Number(req.params.id);
+    if (Number.isNaN(requestId)) return res.status(400).json({ message: "Invalid request id" });
+
+    const [rows] = await pool.query(
+      "SELECT * FROM designer_full_day_requests WHERE id = ? LIMIT 1",
+      [requestId],
+    );
+    const request = (rows as FullDayRequestRow[])[0];
+    if (!request) return res.status(404).json({ message: "Request not found" });
+    if (!["pending", "approved"].includes(request.status)) {
+      return res.status(409).json({
+        message: `Only pending or approved requests can be cancelled (current: ${request.status})`,
+      });
+    }
+
+    const dateIso = blockDateFromRow(request);
+    if (!canCancelFullDayBlockDate(dateIso)) {
+      return res.status(409).json({
+        message: "Cannot cancel full-day leave on or after the leave date has started.",
+      });
+    }
+
+    const isOwner =
+      request.requested_by_id === actingUser.id || request.designer_id === actingUser.id;
+    if (!isOwner) {
+      return res.status(403).json({ message: "Only the requester can cancel this full-day leave request" });
+    }
+
+    if (request.status === "approved" && request.erp_appointment_id) {
+      try {
+        await callErpApi(`/v1/Appointment/${request.erp_appointment_id}`, { method: "DELETE" });
+      } catch (erpErr) {
+        console.error("[full-day cancel] ERP delete failed (non-fatal)", erpErr);
+      }
+    }
+
+    await pool.query(
+      `UPDATE designer_full_day_requests
+       SET status = 'cancelled',
+           reviewed_by_id = COALESCE(reviewed_by_id, ?),
+           reviewed_at = NOW()
+       WHERE id = ?`,
+      [actingUser.id, requestId],
+    );
+
+    const [updatedRows] = await pool.query(
+      "SELECT * FROM designer_full_day_requests WHERE id = ? LIMIT 1",
+      [requestId],
+    );
+    return res.json({
+      ok: true,
+      request: (await serializeFullDayRequests([(updatedRows as FullDayRequestRow[])[0]]))[0],
+    });
+  } catch (err: any) {
+    console.error("full-day cancel error", err);
+    return res.status(500).json({ message: err?.message || "Failed to cancel full-day leave request" });
   }
 });
 

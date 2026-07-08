@@ -3,16 +3,28 @@
 import { useRouter, usePathname } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
+import { getApiBase, buildAuthHeaders } from '../lib/apiBase';
 import Dashboard from './Dashboard';
 import GoogleCalendarView from './GoogleCalendarView';
+import PersonalAppointmentsView from './PersonalAppointmentsView';
 import ThemeModeToggle from './ThemeModeToggle';
+import { PersonalAppointmentModal } from './PersonalAppointmentModal';
+import {
+  AppointmentSuccessToast,
+  type AppointmentSuccessPayload,
+} from './AppointmentSuccessToast';
 
 export default function DashboardGuard() {
   const router = useRouter();
   const pathname = usePathname();
-  const { user, loading, logout } = useAuth();
+  const { user, loading, logout, sessionId } = useAuth();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [badgeUnread, setBadgeUnread] = useState(false);
+  const [showAppointmentModal, setShowAppointmentModal] = useState(false);
+  const [appointmentSuccessToast, setAppointmentSuccessToast] =
+    useState<AppointmentSuccessPayload | null>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
+  const apiBase = getApiBase();
 
   useEffect(() => {
     if (loading) return;
@@ -33,6 +45,46 @@ export default function DashboardGuard() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [settingsOpen]);
 
+  const userRole = user?.role ?? '';
+  const isDesignManager = userRole === 'design_manager';
+  const showPersonalAppointmentsBadge =
+    userRole === 'admin' ||
+    userRole === 'deputy_general_manager' ||
+    userRole === 'territorial_design_manager' ||
+    userRole === 'design_manager';
+
+  useEffect(() => {
+    if (!sessionId || !showPersonalAppointmentsBadge) return;
+    const loadBadge = () => {
+      fetch(`${apiBase}/api/appointment/personal-appointments-badge`, {
+        headers: buildAuthHeaders(sessionId),
+        credentials: 'include',
+      })
+        .then((r) => r.json())
+        .then((data) => setBadgeUnread(Boolean(data?.unread)))
+        .catch(() => setBadgeUnread(false));
+    };
+    loadBadge();
+    const interval = setInterval(loadBadge, 60_000);
+    const onRefresh = () => loadBadge();
+    window.addEventListener('personal-appointments-badge-refresh', onRefresh);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('personal-appointments-badge-refresh', onRefresh);
+    };
+  }, [sessionId, showPersonalAppointmentsBadge, apiBase, pathname]);
+
+  useEffect(() => {
+    if (pathname !== '/personal-appointments' || !sessionId || !showPersonalAppointmentsBadge) return;
+    fetch(`${apiBase}/api/appointment/personal-appointments/mark-seen`, {
+      method: 'POST',
+      headers: buildAuthHeaders(sessionId),
+      credentials: 'include',
+    })
+      .then(() => setBadgeUnread(false))
+      .catch(() => {});
+  }, [pathname, sessionId, showPersonalAppointmentsBadge, apiBase]);
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-100">
@@ -44,6 +96,13 @@ export default function DashboardGuard() {
   if (!user) return null;
 
   const canAccessCalendar =
+    user.role === 'admin' ||
+    user.role === 'deputy_general_manager' ||
+    user.role === 'territorial_design_manager' ||
+    user.role === 'design_manager' ||
+    user.role === 'designer';
+
+  const canAccessPersonalAppointments =
     user.role === 'admin' ||
     user.role === 'deputy_general_manager' ||
     user.role === 'territorial_design_manager' ||
@@ -95,14 +154,30 @@ export default function DashboardGuard() {
         </div>
         <div className="flex items-center gap-3">
           <ThemeModeToggle />
+          {isDesignManager && sessionId && user ? (
+            <button
+              type="button"
+              onClick={() => setShowAppointmentModal(true)}
+              title="Block personal time on your calendar"
+              className="hidden sm:inline-flex px-3 py-2 rounded-lg border border-emerald-600 text-emerald-700 text-sm font-medium hover:bg-emerald-50"
+            >
+              Appointment
+            </button>
+          ) : null}
           <div className="relative" ref={settingsRef}>
             <button
               type="button"
               onClick={() => setSettingsOpen((o) => !o)}
-              className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100"
+              className="relative flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100"
               aria-expanded={settingsOpen}
               aria-haspopup="true"
             >
+              {showPersonalAppointmentsBadge && badgeUnread ? (
+                <span
+                  className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-red-500 ring-2 ring-white"
+                  aria-label="New personal appointment activity"
+                />
+              ) : null}
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a7.723 7.723 0 0 1 0 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 0 1 0-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281Z" />
                 <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
@@ -120,6 +195,18 @@ export default function DashboardGuard() {
                 <a href="/change-password" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100" onClick={() => setSettingsOpen(false)}>
                   Change password
                 </a>
+                {canAccessPersonalAppointments && (
+                  <a
+                    href="/personal-appointments"
+                    className="flex items-center justify-between gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                    onClick={() => setSettingsOpen(false)}
+                  >
+                    <span>Personal Appointments</span>
+                    {showPersonalAppointmentsBadge && badgeUnread ? (
+                      <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" aria-hidden />
+                    ) : null}
+                  </a>
+                )}
                 {user.role === 'admin' && (
                   <a href="/admin" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100" onClick={() => setSettingsOpen(false)}>
                     Admin Panel
@@ -147,8 +234,33 @@ export default function DashboardGuard() {
         </div>
       </header>
       <main>
-        {pathname === '/google-calendar' ? <GoogleCalendarView /> : <Dashboard />}
+        {pathname === '/google-calendar' ? (
+          <GoogleCalendarView />
+        ) : pathname === '/personal-appointments' ? (
+          <PersonalAppointmentsView />
+        ) : (
+          <Dashboard />
+        )}
       </main>
+      {showAppointmentModal && sessionId && user && isDesignManager ? (
+        <PersonalAppointmentModal
+          open={showAppointmentModal}
+          apiBase={apiBase}
+          sessionId={sessionId}
+          designerName={user.name}
+          onClose={() => setShowAppointmentModal(false)}
+          onSuccess={(payload) => {
+            setShowAppointmentModal(false);
+            if (payload) setAppointmentSuccessToast(payload);
+          }}
+        />
+      ) : null}
+      {appointmentSuccessToast ? (
+        <AppointmentSuccessToast
+          payload={appointmentSuccessToast}
+          onDismiss={() => setAppointmentSuccessToast(null)}
+        />
+      ) : null}
     </div>
   );
 }

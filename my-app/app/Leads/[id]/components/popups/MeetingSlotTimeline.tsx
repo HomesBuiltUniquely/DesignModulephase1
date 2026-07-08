@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { buildAuthHeaders } from "@/app/lib/apiBase";
 import {
   appointmentToBookedBlock,
   formatHubTimeRange,
@@ -8,6 +9,7 @@ import {
   HUB_MEETING_TIMELINE_END_MIN,
   HUB_MEETING_TIMELINE_START_MIN,
   isHubMeetingStartAvailable,
+  isFullDayBlockedOnTimeline,
   listHubMeetingStartOptions,
   minutesToHubTimeLabel,
   type BookedTimelineBlock,
@@ -23,6 +25,9 @@ type Props = {
   selectedStartMin: number | null;
   onSelectStartMin: (startMin: number | null) => void;
   disabled?: boolean;
+  /** Meeting length in minutes (default 90 for client meetings). */
+  durationMin?: number;
+  sessionId?: string | null;
 };
 
 export default function MeetingSlotTimeline({
@@ -32,6 +37,8 @@ export default function MeetingSlotTimeline({
   selectedStartMin,
   onSelectStartMin,
   disabled = false,
+  durationMin = HUB_MEETING_DURATION_MIN,
+  sessionId = null,
 }: Props) {
   const [bookedBlocks, setBookedBlocks] = useState<BookedTimelineBlock[]>([]);
   const [loading, setLoading] = useState(false);
@@ -45,7 +52,10 @@ export default function MeetingSlotTimeline({
     setLoading(true);
     fetch(
       `${apiBase}/api/appointment/designer/${encodeURIComponent(designerName.trim())}`,
-      { credentials: "include" },
+      {
+        credentials: "include",
+        headers: buildAuthHeaders(sessionId),
+      },
     )
       .then((r) => r.json())
       .then((rows: unknown) => {
@@ -66,11 +76,12 @@ export default function MeetingSlotTimeline({
     return () => {
       cancelled = true;
     };
-  }, [apiBase, designerName, meetingDate]);
+  }, [apiBase, designerName, meetingDate, sessionId]);
 
-  const startOptions = useMemo(() => listHubMeetingStartOptions(), []);
+  const startOptions = useMemo(() => listHubMeetingStartOptions(durationMin), [durationMin]);
+  const fullDayBlocked = useMemo(() => isFullDayBlockedOnTimeline(bookedBlocks), [bookedBlocks]);
   const selectedEndMin =
-    selectedStartMin !== null ? selectedStartMin + HUB_MEETING_DURATION_MIN : null;
+    selectedStartMin !== null ? selectedStartMin + durationMin : null;
   const timelineHeight = (HUB_MEETING_TIMELINE_END_MIN - HUB_MEETING_TIMELINE_START_MIN) * PX_PER_MIN;
 
   const hourMarks = useMemo(() => {
@@ -91,9 +102,15 @@ export default function MeetingSlotTimeline({
 
   return (
     <div className="w-full">
-      <p className="mb-3 text-center text-xs text-gray-500">
-        Click a start time to book {HUB_MEETING_DURATION_MIN} minutes (11:00 AM – 7:00 PM)
-      </p>
+      {fullDayBlocked ? (
+        <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-center text-xs text-amber-900">
+          Full-day leave is active for this date (11:00 AM – 7:00 PM). No slots available.
+        </p>
+      ) : (
+        <p className="mb-3 text-center text-xs text-gray-500">
+          Click a start time to book {durationMin} minutes (11:00 AM – 7:00 PM)
+        </p>
+      )}
 
       <div className="flex w-full gap-3">
         {/* Time labels */}
@@ -102,7 +119,7 @@ export default function MeetingSlotTimeline({
           style={{ height: timelineHeight, width: TIME_COL_WIDTH }}
         >
           {startOptions.map((m) => {
-            const available = isHubMeetingStartAvailable(m, bookedBlocks);
+            const available = isHubMeetingStartAvailable(m, bookedBlocks, durationMin, meetingDate);
             const isSelected = selectedStartMin === m;
             return (
               <button
@@ -179,7 +196,7 @@ export default function MeetingSlotTimeline({
                   </span>
                 </div>
                 <p className="text-xs font-semibold text-emerald-800">
-                  {formatHubTimeRange(selectedStartMin, selectedEndMin)} ({HUB_MEETING_DURATION_MIN} mins)
+                  {formatHubTimeRange(selectedStartMin, selectedEndMin)} ({durationMin} mins)
                 </p>
               </div>
             </div>

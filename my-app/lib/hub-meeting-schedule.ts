@@ -29,16 +29,34 @@ export function formatHubTimeRange(startMin: number, endMin: number): string {
   return `${minutesToHubTimeLabel(startMin)} – ${minutesToHubTimeLabel(endMin)}`;
 }
 
-export function listHubMeetingStartOptions(): number[] {
+export function listHubMeetingStartOptions(durationMin = HUB_MEETING_DURATION_MIN): number[] {
   const options: number[] = [];
   for (
     let m = HUB_MEETING_TIMELINE_START_MIN;
-    m + HUB_MEETING_DURATION_MIN <= HUB_MEETING_TIMELINE_END_MIN;
+    m + durationMin <= HUB_MEETING_TIMELINE_END_MIN;
     m += HUB_MEETING_SLOT_STEP_MIN
   ) {
     options.push(m);
   }
   return options;
+}
+
+export function currentLocalMinutes(): number {
+  const now = new Date();
+  return now.getHours() * 60 + now.getMinutes();
+}
+
+export function isTodayIso(dateIso: string): boolean {
+  const trimmed = dateIso.trim();
+  if (!trimmed) return false;
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  return trimmed.slice(0, 10) === today;
+}
+
+export function isHubMeetingStartInPast(dateIso: string, startMin: number): boolean {
+  if (!isTodayIso(dateIso)) return false;
+  return startMin < currentLocalMinutes();
 }
 
 export function rangesOverlap(startA: number, endA: number, startB: number, endB: number): boolean {
@@ -48,10 +66,25 @@ export function rangesOverlap(startA: number, endA: number, startB: number, endB
 export function isHubMeetingStartAvailable(
   startMin: number,
   booked: BookedTimelineBlock[],
+  durationMin = HUB_MEETING_DURATION_MIN,
+  dateIso?: string,
 ): boolean {
-  const endMin = startMin + HUB_MEETING_DURATION_MIN;
+  const endMin = startMin + durationMin;
   if (endMin > HUB_MEETING_TIMELINE_END_MIN) return false;
+  if (dateIso && isHubMeetingStartInPast(dateIso, startMin)) return false;
   return !booked.some((b) => rangesOverlap(startMin, endMin, b.startMin, b.endMin));
+}
+
+/** Personal blocks: no leadId and not a design-meeting description line. */
+export function isPersonalAppointmentRow(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  const o = raw as Record<string, unknown>;
+  const leadId = o.leadId ?? o.lead_id;
+  if (leadId != null && String(leadId).trim() !== "" && String(leadId) !== "0") return false;
+  const desc = String(o.description ?? "").trim();
+  if (/lead\s*id\s*:/i.test(desc)) return false;
+  if (/design\s+meeting/i.test(desc)) return false;
+  return Boolean(desc);
 }
 
 function parseIsoToMinutesOnDate(iso: string, dateIso: string): number | null {
@@ -64,6 +97,10 @@ function parseIsoToMinutesOnDate(iso: string, dateIso: string): number | null {
 
 function labelFromDescription(desc: string): { label: string; sublabel?: string } {
   const trimmed = desc.trim();
+  if (trimmed.toUpperCase().startsWith(FULL_DAY_LEAVE_DESC_PREFIX)) {
+    const reason = trimmed.slice(FULL_DAY_LEAVE_DESC_PREFIX.length).trim() || "Full-day leave";
+    return { label: "Full-day leave", sublabel: reason };
+  }
   const leadMatch = trimmed.match(/Lead ID:\s*(\d+)/i);
   const nameMatch = trimmed.match(/Meeting with\s+(.+?)\s*-\s*Lead ID:/i);
   if (nameMatch) {
@@ -144,9 +181,63 @@ export function buildHubMeetingDateTimeIso(dateIso: string, startMin: number): s
   return `${dateIso}T${minutesToHubTime24(startMin)}:00`;
 }
 
-export function findEarliestAvailableStart(booked: BookedTimelineBlock[]): number | null {
-  for (const start of listHubMeetingStartOptions()) {
-    if (isHubMeetingStartAvailable(start, booked)) return start;
+export function findEarliestAvailableStart(
+  booked: BookedTimelineBlock[],
+  durationMin = HUB_MEETING_DURATION_MIN,
+  dateIso?: string,
+): number | null {
+  for (const start of listHubMeetingStartOptions(durationMin)) {
+    if (isHubMeetingStartAvailable(start, booked, durationMin, dateIso)) return start;
   }
   return null;
 }
+
+export const PERSONAL_BLOCK_REASON_PRESETS = [
+  "Site visit",
+  "Leave",
+  "Internal meeting",
+  "Other",
+] as const;
+
+export type PersonalBlockReasonPreset = (typeof PERSONAL_BLOCK_REASON_PRESETS)[number];
+
+export const FULL_DAY_LEAVE_DESC_PREFIX = "FULL_DAY_LEAVE:";
+
+export function isFullDayLeaveRow(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  const desc = String((raw as Record<string, unknown>).description ?? "").trim();
+  return desc.toUpperCase().startsWith(FULL_DAY_LEAVE_DESC_PREFIX);
+}
+
+export function isFullDayBlockedOnTimeline(booked: BookedTimelineBlock[]): boolean {
+  return booked.some(
+    (b) =>
+      b.startMin <= HUB_MEETING_TIMELINE_START_MIN &&
+      b.endMin >= HUB_MEETING_TIMELINE_END_MIN,
+  );
+}
+
+export type FullDayRequestStatus = "pending" | "approved" | "rejected" | "cancelled";
+
+/** Cancel personal block if at least 30 minutes before start and block has not begun. */
+export function canCancelPersonalBlockStart(startTimeIso: string): boolean {
+  const start = new Date(startTimeIso);
+  if (Number.isNaN(start.getTime())) return false;
+  return Date.now() < start.getTime() - 30 * 60 * 1000;
+}
+
+/** Cancel full-day leave only before the leave date (local calendar day). */
+export function canCancelFullDayBlockDate(blockDateIso: string): boolean {
+  const blockStart = new Date(`${blockDateIso}T00:00:00`);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return blockStart > today;
+}
+
+export type FullDayRequestSummary = {
+  id: number;
+  blockDate: string;
+  status: FullDayRequestStatus;
+  reason?: string;
+  reasonPreset?: string;
+};

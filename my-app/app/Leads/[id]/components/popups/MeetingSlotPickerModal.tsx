@@ -15,6 +15,8 @@ type Props = {
   designerName: string;
   meetingDate: string;
   initialStartMin: number | null;
+  durationMin?: number;
+  sessionId?: string | null;
 };
 
 function formatDateLabel(dateIso: string): string {
@@ -36,6 +38,8 @@ export default function MeetingSlotPickerModal({
   designerName,
   meetingDate,
   initialStartMin,
+  durationMin = HUB_MEETING_DURATION_MIN,
+  sessionId = null,
 }: Props) {
   const [draftStartMin, setDraftStartMin] = useState<number | null>(initialStartMin);
 
@@ -50,7 +54,7 @@ export default function MeetingSlotPickerModal({
   const canConfirm = draftStartMin !== null;
   const selectedRange =
     draftStartMin !== null
-      ? formatHubTimeRange(draftStartMin, draftStartMin + HUB_MEETING_DURATION_MIN)
+      ? formatHubTimeRange(draftStartMin, draftStartMin + durationMin)
       : null;
 
   return (
@@ -107,6 +111,8 @@ export default function MeetingSlotPickerModal({
             meetingDate={meetingDate}
             selectedStartMin={draftStartMin}
             onSelectStartMin={setDraftStartMin}
+            durationMin={durationMin}
+            sessionId={sessionId}
           />
         </div>
 
