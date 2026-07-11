@@ -27,19 +27,32 @@ type TeamPhones = {
 };
 
 type Props = {
+  leadId?: number | null;
   designerPhone: string;
   clientPhone: string;
   sessionId: string | null;
-  onMarkComplete: () => void;
+  /** Returns API result so popup can show mail-success toast */
+  onMarkComplete: () => Promise<{ ok: boolean; mailSent?: boolean; mailTo?: string[] }>;
   onClose: () => void;
 };
 
 /**
  * Milestone 1 first task: Create WhatsApp group — designer, client, admin, TDM, DMs.
+ * Mark as done starts the mail loop and shows a 3s success toast.
  */
-export default function PopupGroupDescription({ designerPhone, clientPhone, sessionId, onMarkComplete, onClose }: Props) {
+export default function PopupGroupDescription({
+  leadId,
+  designerPhone,
+  clientPhone,
+  sessionId,
+  onMarkComplete,
+  onClose,
+}: Props) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [teamPhones, setTeamPhones] = useState<TeamPhones | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const designerDigits = (designerPhone || '').replace(/\D/g, '');
   const clientDigits = (clientPhone || '').replace(/\D/g, '');
   const whatsappClient = toWhatsAppNumber(clientPhone);
@@ -94,6 +107,32 @@ export default function PopupGroupDescription({ designerPhone, clientPhone, sess
     } catch (_) {}
   };
 
+  const handleMarkDone = async () => {
+    if (isSubmitting || !leadId) return;
+    setIsSubmitting(true);
+    setError(null);
+    try {
+      const result = await onMarkComplete();
+      if (!result?.ok) {
+        setError('Could not complete task. Please retry.');
+        return;
+      }
+      if (result.mailSent) {
+        setToast('Mail loop chain is created and welcome mail sent successfully to client.');
+      } else {
+        setToast('Task completed. Welcome mail could not be sent — check client email on the lead.');
+      }
+      setTimeout(() => {
+        setToast(null);
+        onClose();
+      }, 3000);
+    } catch {
+      setError('Could not complete task. Please retry.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const renderRoleSection = (title: string, members: TeamMember[], prefix: string) => {
     return (
       <div>
@@ -131,6 +170,10 @@ export default function PopupGroupDescription({ designerPhone, clientPhone, sess
     <div className="px-6 pb-6">
       <p className="text-gray-600 text-sm mb-4">
         Create a WhatsApp group for this project. Add the designer (you), client, admin, TDM, and DMs. Open a chat with the client, then add the rest to create the group.
+      </p>
+      <p className="text-amber-700 text-xs mb-4 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+        Marking as done <strong>starts the mail loop</strong>: client email from the lead goes in{" "}
+        <strong>To</strong>; CC includes all admins, all TDMs, and this designer’s design manager.
       </p>
       <div className="space-y-4">
         <div>
@@ -188,22 +231,31 @@ export default function PopupGroupDescription({ designerPhone, clientPhone, sess
           <p className="text-xs text-gray-500 mt-1">Paste elsewhere or use when adding participants to the group.</p>
         </div>
       </div>
+      {error && <p className="mt-3 text-sm font-medium text-red-600">{error}</p>}
       <div className="mt-6 flex gap-3">
         <button
           type="button"
-          onClick={() => { onMarkComplete(); onClose(); }}
-          className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700"
+          onClick={handleMarkDone}
+          disabled={isSubmitting || !leadId}
+          className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          Mark as done
+          {isSubmitting ? 'Sending…' : 'Mark as done'}
         </button>
         <button
           type="button"
           onClick={onClose}
-          className="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200"
+          disabled={isSubmitting}
+          className="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200 disabled:opacity-50"
         >
           Close
         </button>
       </div>
+
+      {toast && (
+        <div className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-gray-800 text-white text-base font-medium px-8 py-4 rounded-lg shadow-2xl z-[9999] text-center max-w-md">
+          {toast}
+        </div>
+      )}
     </div>
   );
 }

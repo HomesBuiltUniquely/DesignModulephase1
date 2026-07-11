@@ -140,8 +140,12 @@ export default function DashboardGuard() {
               {user.role === 'mmt_manager' && (
                 <>
                   <a href="/mmt-manager/register" className="text-gray-600 hover:text-gray-900 text-sm">Register MMT Executive</a>
+                  <a href="/mmt-manager/d1-requests" className="text-gray-600 hover:text-gray-900 text-sm">D1 Requests</a>
                   <a href="/mmt" className="text-gray-600 hover:text-gray-900 text-sm">D1 Uploads</a>
                 </>
+              )}
+              {user.role === 'admin' && (
+                <a href="/mmt-manager/d1-requests" className="text-gray-600 hover:text-gray-900 text-sm">D1 Requests</a>
               )}
               {user.role === 'mmt_executive' && (
                 <a href="/mmt" className="text-gray-600 hover:text-gray-900 text-sm">D1 Uploads</a>

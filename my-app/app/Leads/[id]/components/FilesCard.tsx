@@ -24,6 +24,8 @@ type Props = {
     uploadType?: string;
     /** Called after successful D2 upload (e.g. refresh task state). */
     onD2UploadComplete?: () => void;
+    /** Called after D1 approve or manager/admin D1 upload (task auto-complete). */
+    onD1FilesReady?: () => void;
 };
 
 type ZipEntry = { path: string; size: number };
@@ -41,13 +43,14 @@ type UploadRow = {
 /**
  * Files Uploaded card. Designers see only approved uploads. MMT Executive/Manager see all; Manager or Admin can approve.
  */
-export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, leadId, sessionId, canUpload, userRole, userName, canDelete, uploadType, onD2UploadComplete }: Props) {
+export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, leadId, sessionId, canUpload, userRole, userName, canDelete, uploadType, onD2UploadComplete, onD1FilesReady }: Props) {
     const [uploads, setUploads] = useState<UploadRow[]>([]);
     const [loading, setLoading] = useState(false);
     const [uploading, setUploading] = useState(false);
     const [deletingId, setDeletingId] = useState<number | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
+    const [toast, setToast] = useState<string | null>(null);
     const [pendingFiles, setPendingFiles] = useState<File[]>([]);
     const [expandedId, setExpandedId] = useState<number | null>(null);
     const [approvingId, setApprovingId] = useState<number | null>(null);
@@ -158,13 +161,21 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
                 (data?.message as string) ||
                 (isD2Upload ? `${files.length} PDF(s) uploaded successfully.` : 'File uploaded successfully.');
             setUploadSuccess(message);
+            setToast(isD2Upload ? message : 'File uploaded successfully!');
+            setTimeout(() => setToast(null), 3000);
             if (isD2Upload) {
                 window.alert(message);
                 onD2UploadComplete?.();
+            } else if (canApproveUploads) {
+                // Manager/admin direct D1 upload → auto-approved + task complete
+                onD1FilesReady?.();
             }
             await loadUploads();
         } catch (e: any) {
-            setError(e?.message || 'Upload failed');
+            const msg = e?.message || 'File not uploaded. Please try again.';
+            setError(msg);
+            setToast(msg);
+            setTimeout(() => setToast(null), 3000);
         } finally {
             setUploading(false);
         }
@@ -206,6 +217,8 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data?.message || "Approve failed");
             await loadUploads();
+            onD1FilesReady?.();
+            if (isD2Upload) onD2UploadComplete?.();
         } catch (e: any) {
             setError(e?.message || "Approve failed");
         } finally {
@@ -468,6 +481,12 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
                     await uploadFiles(files, uploadedAsRole);
                 }}
             />
+
+            {toast && (
+                <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-gray-800 text-white text-base font-medium px-8 py-4 rounded-lg shadow-2xl z-[9999] text-center max-w-md">
+                    {toast}
+                </div>
+            )}
         </div>
     );
 }

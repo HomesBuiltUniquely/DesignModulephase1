@@ -241,6 +241,7 @@ export default function Dashboard() {
     const [uploadingId, setUploadingId] = useState<number | null>(null);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const targetLeadRef = useRef<number | null>(null);
+    const [uploadToast, setUploadToast] = useState<string | null>(null);
 
     const isMmtUser = ["mmt_manager", "mmt_executive"].includes((user?.role || "").toLowerCase());
     const isDesigner = (user?.role || "").toLowerCase() === "designer";
@@ -339,15 +340,20 @@ export default function Dashboard() {
         try {
             const fd = new FormData();
             fd.append("zip", file);
+            fd.append("uploadType", "d1");
             const res = await fetch(`${API}/api/leads/${leadId}/uploads`, {
                 method: "POST",
                 headers: { Authorization: `Bearer ${sessionId}` },
                 body: fd,
             });
             const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data.message || "Upload failed");
+            if (!res.ok) throw new Error(data.message || "File not uploaded. Please try again.");
+            setUploadToast("File uploaded successfully!");
+            setTimeout(() => setUploadToast(null), 3000);
         } catch (err) {
             console.error("Upload error", err);
+            setUploadToast(err instanceof Error ? err.message : "File not uploaded. Please try again.");
+            setTimeout(() => setUploadToast(null), 3000);
         } finally {
             setUploadingId(null);
             targetLeadRef.current = null;
@@ -1890,6 +1896,11 @@ export default function Dashboard() {
                     onDismiss={() => setAppointmentSuccessToast(null)}
                 />
             ) : null}
+            {uploadToast && (
+                <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-gray-800 text-white text-base font-medium px-8 py-4 rounded-lg shadow-2xl z-[9999] text-center max-w-md">
+                    {uploadToast}
+                </div>
+            )}
         </div>
     );
     }

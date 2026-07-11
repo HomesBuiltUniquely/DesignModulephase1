@@ -32,6 +32,7 @@ import {
     Popup40pCollection,
     PopupFinancePaymentApproval,
 } from './components';
+import PopupD1FilesWaiting from './components/popups/PopupD1FilesWaiting';
 import { checklistDefinitions, getChecklistKeyForTask } from './components/Checklists/checklistRegistry';
 import { buildAuthHeaders, getApiBase } from '@/app/lib/apiBase';
 import { QuoteTermsAndConditions } from '@/app/quote/hubQuoteTermsPanel';
@@ -1478,13 +1479,13 @@ export default function ProjectDetailPage() {
             description?: string;
             meta?: Record<string, unknown>;
         }
-    ) => {
+    ): Promise<{ ok: boolean; mailSent?: boolean; mailTo?: string[]; mailReason?: string | null }> => {
         const requiresChecklist = getChecklistKeyForTask(milestoneIndex, taskName) !== null;
         const key = taskKey(milestoneIndex, taskName);
         if (requiresChecklist && !completedChecklistKeys.includes(key)) {
             setBlockedTaskMessage('Please complete the checklist for this task before marking it as done.');
             setTimeout(() => setBlockedTaskMessage(null), 3000);
-            return;
+            return Promise.resolve({ ok: false });
         }
         const milestone = MileStonesArray.MilestonesName[milestoneIndex];
         const milestoneName = milestone?.name ?? `Milestone ${milestoneIndex + 1}`;
@@ -1497,28 +1498,34 @@ export default function ProjectDetailPage() {
             details: options?.details,
             meta: options?.meta,
         });
-        // persist completion for this lead so refresh keeps it completed
-        if (projectId != null) {
-            const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-            if (sessionId) headers.Authorization = `Bearer ${sessionId}`;
-            fetch(`${API}/api/leads/${projectId}/complete-task`, {
-                method: 'POST',
-                headers: buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' }),
-                body: JSON.stringify({ milestoneIndex, taskName, meta: options?.meta }),
-            })
-                .then(async (res) => {
-                    if (!res.ok) {
-                        const data = await res.json().catch(() => ({}));
-                        const msg = (data as { message?: string })?.message;
-                        if (msg) {
-                            setBlockedTaskMessage(msg);
-                            setTimeout(() => setBlockedTaskMessage(null), 5000);
-                        }
-                    }
-                })
-                .catch(() => {});
-        }
         markTaskComplete(milestoneIndex, taskName);
+        // persist completion for this lead so refresh keeps it completed
+        if (projectId == null) return Promise.resolve({ ok: true });
+        return fetch(`${API}/api/leads/${projectId}/complete-task`, {
+            method: 'POST',
+            headers: buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ milestoneIndex, taskName, meta: options?.meta }),
+        })
+            .then(async (res) => {
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    const msg = (data as { message?: string })?.message;
+                    if (msg) {
+                        setBlockedTaskMessage(msg);
+                        setTimeout(() => setBlockedTaskMessage(null), 5000);
+                    }
+                    return { ok: false as const };
+                }
+                return {
+                    ok: true as const,
+                    mailSent: Boolean((data as { mailSent?: boolean })?.mailSent),
+                    mailTo: Array.isArray((data as { mailTo?: string[] })?.mailTo)
+                        ? (data as { mailTo: string[] }).mailTo
+                        : undefined,
+                    mailReason: (data as { mailReason?: string | null })?.mailReason ?? null,
+                };
+            })
+            .catch(() => ({ ok: false as const }));
     };
 
     const submitDqc1Review = () => {
@@ -1973,7 +1980,7 @@ export default function ProjectDetailPage() {
                                     leadId={projectId}
                                     project={project}
                                     sessionId={sessionId}
-                                    readOnly={(authUser?.role || '').toLowerCase() === 'designer'}
+                                    readOnly={false}
                                     onUpdate={(patch) => setProject((prev) => (prev ? { ...prev, ...patch } : prev))}
                                     variant="settings"
                                 />
@@ -2533,8 +2540,12 @@ export default function ProjectDetailPage() {
                                     userRole={authUser?.role}
                                     userName={authUser?.name}
                                     canDelete={filesCanDelete}
-                                    uploadType={currentMilestoneIndex === 3 ? 'd2_masking' : undefined}
+                                    uploadType={currentMilestoneIndex === 3 ? 'd2_masking' : 'd1'}
                                     onD2UploadComplete={() => {
+                                        refreshCompletions();
+                                        setUploadsVersion((v) => v + 1);
+                                    }}
+                                    onD1FilesReady={() => {
                                         refreshCompletions();
                                         setUploadsVersion((v) => v + 1);
                                     }}
@@ -2671,14 +2682,20 @@ export default function ProjectDetailPage() {
                 <TaskModal context={popupContext} onClose={closePopup}>
                     {/* ---------- Milestone 0: D1 SITE MEASUREMENT – D1 popup only for "D1 for MMT request" ---------- */}
                     {popupContext.milestoneIndex === 0 && popupContext.taskName === 'D1 for MMT request' && (
-                        <PopupD1Measurement leadId={projectId} sessionId={sessionId} onSubmit={() => { recordTaskComplete(0, 'D1 for MMT request'); closePopup(); }} />
+                        <PopupD1Measurement
+                            leadId={projectId}
+                            sessionId={sessionId}
+                            onSubmit={() => recordTaskComplete(0, 'D1 for MMT request')}
+                            onClose={closePopup}
+                        />
                     )}
                     {popupContext.milestoneIndex === 0 && popupContext.taskName === 'Group Description' && (
                         <PopupGroupDescription
+                            leadId={projectId}
                             designerPhone={authUser?.phone ?? ''}
                             clientPhone={project?.contactNo ?? ''}
                             sessionId={sessionId}
-                            onMarkComplete={() => { recordTaskComplete(0, 'Group Description'); closePopup(); }}
+                            onMarkComplete={() => recordTaskComplete(0, 'Group Description')}
                             onClose={closePopup}
                         />
                     )}
@@ -2688,26 +2705,25 @@ export default function ProjectDetailPage() {
                             clientEmail={project?.clientEmail ?? ''}
                             alternateClientEmail={project?.alternateClientEmail ?? ''}
                             designerEmail={authUser?.email ?? ''}
-                            projectPid={project?.pid}
-                            projectName={project?.projectName}
                             designManagerEmail={
                                 (project as any)?.designManagerEmail ||
                                 (project as any)?.design_manager_email ||
                                 (project as any)?.designer_lead_email ||
                                 ''
                             }
-                            tdmEmail={
-                                (project as any)?.tdmEmail ||
-                                (project as any)?.tdm_email ||
-                                ''
-                            }
                             sessionId={sessionId}
-                            onMarkComplete={() => { recordTaskComplete(0, 'Mail loop chain 2 initiate'); closePopup(); }}
+                            onEmailsSaved={(emails) => {
+                                setProject((prev) => (prev ? { ...prev, ...emails } : prev));
+                            }}
+                            onMarkComplete={() => { recordTaskComplete(0, 'Mail loop chain 2 initiate'); }}
                             onClose={closePopup}
                         />
                     )}
-                    {popupContext.milestoneIndex === 0 && popupContext.taskName !== 'D1 for MMT request' && popupContext.taskName !== 'Group Description' && popupContext.taskName !== 'Mail loop chain 2 initiate' && (
+                    {popupContext.milestoneIndex === 0 && popupContext.taskName !== 'D1 for MMT request' && popupContext.taskName !== 'Group Description' && popupContext.taskName !== 'Mail loop chain 2 initiate' && popupContext.taskName !== 'D1 files upload' && (
                         <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(popupContext.milestoneIndex, popupContext.taskName); closePopup(); }} />
+                    )}
+                    {popupContext.milestoneIndex === 0 && popupContext.taskName === 'D1 files upload' && !canApproveMmtWorkflow && (
+                        <PopupD1FilesWaiting onClose={closePopup} />
                     )}
 
                 {/* ---------- Milestone 1: DQC1 – different popup per task ---------- */}
@@ -3091,7 +3107,7 @@ export default function ProjectDetailPage() {
                             uploadType="d1"
                             taskLabel="D1 files upload"
                             onApproved={() => {
-                                recordTaskComplete(0, 'D1 files upload');
+                                refreshCompletions();
                                 setUploadsVersion((v) => v + 1);
                             }}
                             onClose={closePopup}

@@ -16,42 +16,48 @@ type TeamEmails = {
 type Props = {
   leadId?: number | null;
   clientEmail: string;
-  /** Used as “To” when primary is empty */
+  /** Family member email (one) — stored as alternate client email */
   alternateClientEmail?: string;
   designerEmail: string;
-  projectPid?: string;
-  projectName?: string;
   designManagerEmail?: string;
-  tdmEmail?: string;
   sessionId: string | null;
+  onEmailsSaved?: (emails: { clientEmail: string | null; alternateClientEmail: string | null }) => void;
   onMarkComplete: () => void;
   onClose: () => void;
 };
 
 /**
- * Task: Mail loop chain 2 initiate — create email chain with client, designer, TDM, DM, admin.
+ * Task: Mail loop chain 2 initiate — verify loop members, add client / family emails.
  */
 export default function PopupMailLoopChain({
   leadId,
   clientEmail,
   alternateClientEmail = '',
   designerEmail,
-  projectPid,
-  projectName,
   designManagerEmail = '',
-  tdmEmail = '',
   sessionId,
+  onEmailsSaved,
   onMarkComplete,
   onClose,
 }: Props) {
+  const [primary, setPrimary] = useState((clientEmail || '').trim());
+  const [familyEmail, setFamilyEmail] = useState((alternateClientEmail || '').trim());
+  const [baselinePrimary, setBaselinePrimary] = useState((clientEmail || '').trim().toLowerCase());
+  const [baselineFamily, setBaselineFamily] = useState((alternateClientEmail || '').trim().toLowerCase());
   const [teamEmails, setTeamEmails] = useState<TeamEmails | null>(null);
-  const [teamEmailsLoaded, setTeamEmailsLoaded] = useState(true);
-  const [copyStatus, setCopyStatus] = useState<string>('');
-  const [isSendingChain, setIsSendingChain] = useState(false);
-  const [showToast, setShowToast] = useState(false);
+  const [teamEmailsLoaded, setTeamEmailsLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    setPrimary((clientEmail || '').trim());
+    setFamilyEmail((alternateClientEmail || '').trim());
+  }, [clientEmail, alternateClientEmail]);
 
   useEffect(() => {
     if (!sessionId) {
+      setTeamEmailsLoaded(true);
       return;
     }
     fetch(`${API}/api/auth/team-emails`, { headers: { Authorization: `Bearer ${sessionId}` } })
@@ -72,6 +78,12 @@ export default function PopupMailLoopChain({
   const normalizeEmail = (raw: string) => {
     const t = (raw || '').trim().toLowerCase();
     return t && t.includes('@') ? t : '';
+  };
+
+  const isValidEmail = (v: string) => {
+    const t = v.trim();
+    if (!t) return true;
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(t);
   };
 
   const uniqueMembers = (members: TeamMemberEmail[]) => {
@@ -106,83 +118,90 @@ export default function PopupMailLoopChain({
     designManagerEmail,
   );
 
-  // To: client only (email goes from designer to client). CC: designer, admin, TDM, DM.
-  const toEmails = (): string[] => {
-    const primary = normalizeEmail(clientEmail);
-    if (primary) return [primary];
-    const alt = normalizeEmail(alternateClientEmail);
-    return alt ? [alt] : [];
-  };
-  const ccEmails = (): string[] => {
-    const set = new Set<string>();
-    const add = (e: string) => {
-      const t = normalizeEmail(e);
-      if (t) set.add(t);
-    };
-    add(designerEmail);
-    adminsForLoop.forEach((m) => add(m.email));
-    tdmForLoop.forEach((m) => add(m.email));
-    dmForLoop.forEach((m) => add(m.email));
-    return Array.from(set);
-  };
+  const displayClient = normalizeEmail(primary) || normalizeEmail(clientEmail);
+  const displayFamily = normalizeEmail(familyEmail) || normalizeEmail(alternateClientEmail);
 
-  const toList = toEmails();
-  const ccList = ccEmails();
-  const name = projectName || 'CUSTOMER';
-  const subject = `HUB ${name.toUpperCase()} DESIGN JOURNEY`.replace(/\s+/g, ' ').trim();
-  const gmailInboxUrl = `https://mail.google.com/mail/u/0/#search/${encodeURIComponent(subject)}`;
-
-  const triggerMailChain = async (openGmailInbox = false) => {
-    if (!sessionId || !leadId || toList.length === 0 || isSendingChain) return;
-    setIsSendingChain(true);
-    setCopyStatus('');
+  const saveEmails = async (): Promise<{
+    ok: boolean;
+    clientEmail: string | null;
+    alternateClientEmail: string | null;
+  } | null> => {
+    if (!sessionId || !leadId) {
+      setMessage('Not signed in or lead missing.');
+      return null;
+    }
+    if (!isValidEmail(primary) || !isValidEmail(familyEmail)) {
+      setMessage('Enter a valid email address.');
+      return null;
+    }
+    setSaving(true);
+    setMessage(null);
     try {
-      const resp = await fetch(`${API}/api/leads/${leadId}/mail-loop-chain-initiate`, {
-        method: 'POST',
+      const res = await fetch(`${API}/api/leads/${leadId}/client-emails`, {
+        method: 'PATCH',
         headers: {
-          Authorization: `Bearer ${sessionId}`,
           'Content-Type': 'application/json',
+          Authorization: `Bearer ${sessionId}`,
         },
-        body: JSON.stringify({}),
+        body: JSON.stringify({
+          clientEmail: primary.trim() || null,
+          alternateClientEmail: familyEmail.trim() || null,
+        }),
       });
-      if (!resp.ok) {
-        const txt = await resp.text().catch(() => '');
-        throw new Error(txt || `HTTP ${resp.status}`);
-      }
-      setCopyStatus('Mail chain sent via communication@hubinterior.com');
-      setShowToast(true);
-      if (openGmailInbox) {
-        window.open(gmailInboxUrl, '_blank', 'noopener,noreferrer');
-      }
-      setTimeout(() => {
-        setCopyStatus('');
-        setShowToast(false);
-      }, 5000);
-    } catch {
-      setCopyStatus('Mail send failed. Please retry.');
-      setTimeout(() => setCopyStatus(''), 3000);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.message || 'Save failed');
+      const next = {
+        clientEmail: (data.clientEmail ?? null) as string | null,
+        alternateClientEmail: (data.alternateClientEmail ?? null) as string | null,
+      };
+      setPrimary((next.clientEmail ?? '').trim());
+      setFamilyEmail((next.alternateClientEmail ?? '').trim());
+      onEmailsSaved?.(next);
+      return { ok: true, ...next };
+    } catch (e) {
+      setMessage((e as Error).message || 'Save failed');
+      return null;
     } finally {
-      setIsSendingChain(false);
+      setSaving(false);
     }
   };
 
-  const copyDraft = async () => {
-    const draftText = [
-      `To: ${toList.join(', ') || '-'}`,
-      `CC: ${ccList.join(', ') || '-'}`,
-      `Subject: ${subject}`,
-    ].join('\n');
-    try {
-      await navigator.clipboard.writeText(draftText);
-      setCopyStatus('Copied To/CC/Subject.');
-      setTimeout(() => setCopyStatus(''), 2000);
-    } catch {
-      setCopyStatus('Copy failed. Please copy manually.');
-      setTimeout(() => setCopyStatus(''), 2500);
+  const buildChangeToast = (saved: {
+    clientEmail: string | null;
+    alternateClientEmail: string | null;
+  }) => {
+    const nextPrimary = (saved.clientEmail || '').trim().toLowerCase();
+    const nextFamily = (saved.alternateClientEmail || '').trim().toLowerCase();
+    const added: string[] = [];
+    if (nextPrimary && nextPrimary !== baselinePrimary) {
+      added.push(saved.clientEmail!.trim());
     }
+    if (nextFamily && nextFamily !== baselineFamily) {
+      added.push(saved.alternateClientEmail!.trim());
+    }
+    if (added.length === 0) {
+      return 'No mail changes in mail loop.';
+    }
+    return `New mail added to mail loop: ${added.join(', ')}`;
   };
 
-  const renderRow = (label: string, email: string, name?: string) => (
+  const handleSave = async () => {
+    const saved = await saveEmails();
+    if (!saved) return;
+    setToast(buildChangeToast(saved));
+    setBaselinePrimary((saved.clientEmail || '').trim().toLowerCase());
+    setBaselineFamily((saved.alternateClientEmail || '').trim().toLowerCase());
+    setTimeout(() => setToast(null), 2000);
+  };
+
+  const handleMarkComplete = async () => {
+    const saved = await saveEmails();
+    if (!saved) return;
+    onMarkComplete();
+    onClose();
+  };
+
+  const renderRow = (email: string, name?: string) => (
     <div className="flex items-center gap-2">
       <span className="flex-1 border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-gray-900 text-sm">
         {name ? `${name} · ${email}` : email || '—'}
@@ -197,7 +216,7 @@ export default function PopupMailLoopChain({
         <label className="block text-sm font-medium text-gray-700 mb-2">{title}</label>
         <div className="space-y-2">
           {members.map((m, i) => (
-            <div key={`${title}-${i}`}>{renderRow('', m.email, m.name)}</div>
+            <div key={`${title}-${i}`}>{renderRow(m.email, m.name)}</div>
           ))}
         </div>
       </div>
@@ -207,96 +226,99 @@ export default function PopupMailLoopChain({
   return (
     <div className="px-6 pb-6">
       <p className="text-gray-600 text-sm mb-4">
-        Start the mail chain from designer (you) to client. Client is in <strong>To</strong>; designer, admin, TDM, and DM are in <strong>CC</strong>.
+        Verify mail loop members below. Add or update client email and optionally one family member.
+        New addresses join the design-journey mail loop.
       </p>
-      <div className="space-y-4">
+
+      <div className="space-y-4 mb-6">
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Client email (primary)</label>
-          {renderRow('', clientEmail)}
-          {alternateClientEmail?.trim() && (
-            <>
-              <label className="block text-sm font-medium text-gray-700 mb-1 mt-3">Alternate client email</label>
-              {renderRow('', alternateClientEmail)}
-            </>
-          )}
-          {!clientEmail?.trim() && !alternateClientEmail?.trim() && (
-            <p className="text-xs text-amber-600 mt-1">
-              No client email yet. Ask your manager to add a primary or alternate on the lead page.
-            </p>
-          )}
+          <label className="block text-sm font-medium text-gray-700 mb-1">Client email (To)</label>
+          {renderRow(displayClient || '—')}
         </div>
+        {displayFamily ? (
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Family member (To)</label>
+            {renderRow(displayFamily)}
+          </div>
+        ) : null}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Designer email (you)</label>
-          {renderRow('', designerEmail)}
+          <label className="block text-sm font-medium text-gray-700 mb-1">Designer email (CC)</label>
+          {renderRow(designerEmail || '—')}
         </div>
         {!teamEmailsLoaded && (
           <p className="text-sm text-gray-500 italic">Loading admin, TDM, DM emails…</p>
         )}
         {teamEmailsLoaded && teamEmails && (
           <>
-            {renderRoleSection('Admin(s)', adminsForLoop)}
-            {renderRoleSection('Territorial Design Manager(s)', tdmForLoop)}
-            {renderRoleSection('Design Manager(s)', dmForLoop)}
+            {renderRoleSection('Admin(s) (CC)', adminsForLoop)}
+            {renderRoleSection('Territorial Design Manager(s) (CC)', tdmForLoop)}
+            {renderRoleSection('Design Manager(s) (CC)', dmForLoop)}
           </>
         )}
-      </div>
-      <div className="mt-6">
-        <p className="text-xs text-gray-500 mb-2">
-          <strong>To:</strong> Client · <strong>CC:</strong> Designer (you), Admin(s), TDM(s), DM(s)
+        <p className="text-xs text-gray-500">
+          <strong>To:</strong> Client (+ family if added) · <strong>CC:</strong> Designer, Admin(s), TDM(s), DM
         </p>
-        <p className="text-xs text-amber-600 mb-2">
-          Both actions below send from <code>communication@hubinterior.com</code> via SMTP.
-        </p>
-        <div className="flex flex-wrap gap-3">
-        {toList.length > 0 && teamEmailsLoaded ? (
-          <button
-            type="button"
-            onClick={() => triggerMailChain(false)}
-            disabled={isSendingChain}
-            className="inline-flex items-center px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700"
-          >
-            {isSendingChain ? 'Sending…' : 'Start email chain'}
-          </button>
-        ) : (
-          <button
-            type="button"
-            disabled
-            className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-medium opacity-50 cursor-not-allowed"
-          >
-            {!teamEmailsLoaded ? 'Loading…' : 'Start email chain'}
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={() => { onMarkComplete(); onClose(); }}
-          className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700"
-        >
-          Mark as done
-        </button>
-        <button
-          type="button"
-          onClick={() => triggerMailChain(true)}
-          disabled={toList.length === 0 || !teamEmailsLoaded || isSendingChain}
-          className={`inline-flex items-center px-4 py-2 rounded-lg text-sm font-medium ${toList.length > 0 && teamEmailsLoaded && !isSendingChain ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-blue-600 text-white opacity-50 cursor-not-allowed'}`}
-        >
-          Open in Gmail
-        </button>
-        <button
-          type="button"
-          onClick={copyDraft}
-          disabled={toList.length === 0}
-          className="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          Copy draft fields
-        </button>
-        
-        </div>
-        {!!copyStatus && <p className="text-xs text-gray-600 mt-2">{copyStatus}</p>}
       </div>
-      
-      {showToast && (
-        <div className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-gray-800 text-white text-base font-medium px-8 py-4 rounded-lg shadow-2xl z-[9999] text-center">
-          Loop chain is created for {projectName || 'customer'} design journey
+
+      <div className="border-t border-gray-100 pt-4 space-y-4">
+        <p className="text-sm font-medium text-gray-800">Add / update emails</p>
+        <label className="block">
+          <span className="block text-sm font-medium text-gray-700 mb-1">Client email</span>
+          <input
+            type="email"
+            value={primary}
+            onChange={(e) => setPrimary(e.target.value)}
+            placeholder="client@example.com"
+            autoComplete="email"
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-900 focus:border-green-500 focus:ring-2 focus:ring-green-500/20 outline-none"
+          />
+        </label>
+        <label className="block">
+          <span className="block text-sm font-medium text-gray-700 mb-1">
+            Family member email <span className="font-normal text-gray-500">(one only, optional)</span>
+          </span>
+          <input
+            type="email"
+            value={familyEmail}
+            onChange={(e) => setFamilyEmail(e.target.value)}
+            placeholder="family@example.com"
+            autoComplete="email"
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-900 focus:border-green-500 focus:ring-2 focus:ring-green-500/20 outline-none"
+          />
+        </label>
+        {message && <p className="text-sm font-medium text-red-600">{message}</p>}
+      </div>
+
+      <div className="mt-6 flex flex-wrap gap-3">
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={saving || !sessionId || !leadId || !!toast}
+          className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {saving ? 'Saving…' : 'Save emails'}
+        </button>
+        <button
+          type="button"
+          onClick={handleMarkComplete}
+          disabled={saving || !sessionId || !leadId}
+          className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {saving ? 'Saving…' : 'Mark as done'}
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          disabled={saving}
+          className="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200 disabled:opacity-50"
+        >
+          Close
+        </button>
+      </div>
+
+      {toast && (
+        <div className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-gray-800 text-white text-base font-medium px-8 py-4 rounded-lg shadow-2xl z-[9999] text-center max-w-md">
+          {toast}
         </div>
       )}
     </div>

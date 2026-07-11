@@ -121,7 +121,7 @@ export default function ClientEmailsSection({
                             <>
                                 <span className="text-slate-600 hidden sm:inline">·</span>
                                 <span className="text-slate-400 truncate max-w-[min(100vw-14rem,12rem)] sm:max-w-[14rem]" title={altShown}>
-                                    Alt: {altShown}
+                                    Family: {altShown}
                                 </span>
                             </>
                         ) : null}
@@ -144,7 +144,7 @@ export default function ClientEmailsSection({
                     </div>
                 </div>
                 {readOnly && (
-                    <p className="text-[11px] text-slate-500">View only — managers and staff can edit.</p>
+                    <p className="text-[11px] text-slate-500">View only.</p>
                 )}
             </div>
 
@@ -179,10 +179,10 @@ export default function ClientEmailsSection({
                         </div>
                         <div className="px-4 py-4 space-y-4">
                             <p className="text-xs text-slate-500">
-                                Primary is used for customer mail; alternate is used if primary is missing.
+                                Primary is used for customer mail. Family member (one) is CC’d on the mail loop; also used as To if primary is missing.
                             </p>
                             <label className="block text-left">
-                                <span className="text-xs font-medium text-slate-600">Primary (actual)</span>
+                                <span className="text-xs font-medium text-slate-600">Client email (primary)</span>
                                 <input
                                     type="email"
                                     value={primary}
@@ -193,7 +193,7 @@ export default function ClientEmailsSection({
                                 />
                             </label>
                             <label className="block text-left">
-                                <span className="text-xs font-medium text-slate-600">Alternate</span>
+                                <span className="text-xs font-medium text-slate-600">Family member email (one only)</span>
                                 <input
                                     type="email"
                                     value={alternate}
