@@ -1,4 +1,64 @@
 // app/Components/Types/Types.tsx
+export type ConfigScopeRoomUnit = {
+    label?: string;
+    selected?: boolean;
+};
+
+export type ConfigScopeRoom = {
+    roomName?: string;
+    units?: ConfigScopeRoomUnit[];
+    unitsRequired?: string[];
+    falseCeilingRequired?: boolean;
+    notes?: string | null;
+};
+
+export type ConfigScopeReferenceFile = {
+    id?: string;
+    fileName?: string;
+    mimeType?: string | null;
+    viewUrl?: string | null;
+};
+
+export type ConfigScopeSummary = {
+    propertyName?: string | null;
+    bookingType?: string | null;
+    designStylePreference?: string | null;
+    expectedTimeline?: string | null;
+    projectUnderstanding?: string | null;
+    /** CRM: Family Size & Details */
+    familySizeDetails?: string | null;
+    kitchenLayout?: string | null;
+    materialFinish?: string | null;
+    selectedRoomNames?: string[];
+    selectedRooms?: ConfigScopeRoom[];
+    familyContactName?: string | null;
+    familyContactRelationship?: string | null;
+    familyContactPhone?: string | null;
+    designHandoffNotes?: string | null;
+    salesRiskNotes?: string | null;
+    miscAddOns?: string[];
+    wfhSetup?: boolean;
+    petFriendly?: boolean;
+    referenceInspiration?: {
+        aestheticNotes?: string | null;
+        references?: ConfigScopeReferenceFile[];
+    } | null;
+    financialGuardrails?: {
+        investmentRange?: string | null;
+        sensitivity?: string | null;
+        financing?: string | null;
+    } | null;
+    internalExecutiveNotes?: {
+        personalityType?: string | null;
+        competition?: string | null;
+        executiveSummary?: string | null;
+        internalNotes?: string | null;
+        closureProbability?: string | null;
+    } | null;
+};
+
+export type PhaseSummaryBag = Record<string, unknown>;
+
 export type LeadshipTypes = {
     id: number;
     pid: string;
@@ -41,5 +101,19 @@ export type LeadshipTypes = {
     intakeConfiguration?: string | null;
     /** External intake notes (e.g. rawPayload.propertyNotes) */
     intakeNotes?: string | null;
+    intakeBudget?: string | null;
+    intakeLanguage?: string | null;
+    intakeBookingType?: string | null;
+    intakePropertyLocation?: string | null;
+    intakeMeetingType?: string | null;
+    floorPlanPublicLink?: string | null;
+    salesExecutive?: string | null;
+    intakePincode?: string | null;
+    intakeLeadSource?: string | null;
+    intakePossessionDate?: string | null;
+    intakeAltPhone?: string | null;
+    configScopeSummary?: ConfigScopeSummary | null;
+    experienceSummary?: PhaseSummaryBag | null;
+    decisionSummary?: PhaseSummaryBag | null;
     financeApprovedRaw?: string;
 };

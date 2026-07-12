@@ -132,9 +132,9 @@ app.get("/api/health", (_req, res) => {
 // ----- MySQL setup -----
 // Defaults are set from the credentials you provided; you can still override via env vars if needed.
 const pool = mysql.createPool({
-  host: process.env.DB_HOST || "localhost",
-  user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "Root@123",
+  host: process.env.DB_HOST || "database-1.cl002gu0o5ft.ap-south-2.rds.amazonaws.com",
+  user: process.env.DB_USER || "admin",
+  password: process.env.DB_PASSWORD || "Hubinterior2019",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -1605,24 +1605,69 @@ function extractLeadIntakeViewFromPayload(payloadInput: unknown): {
   intakeCustomerName: string | null;
   intakeConfiguration: string | null;
   intakeNotes: string | null;
+  intakeBudget: string | null;
+  intakeLanguage: string | null;
+  intakeBookingType: string | null;
+  intakePropertyLocation: string | null;
+  intakeMeetingType: string | null;
+  floorPlanPublicLink: string | null;
+  salesExecutive: string | null;
+  pincode: string | null;
+  leadSource: string | null;
+  possessionDate: string | null;
+  altPhone: string | null;
+  configScopeSummary: Record<string, unknown> | null;
+  experienceSummary: Record<string, unknown> | null;
+  decisionSummary: Record<string, unknown> | null;
 } {
   const schedule = extractLeadScheduleFromPayload(payloadInput);
+  const empty = {
+    ...schedule,
+    intakeCustomerName: null as string | null,
+    intakeConfiguration: null as string | null,
+    intakeNotes: null as string | null,
+    intakeBudget: null as string | null,
+    intakeLanguage: null as string | null,
+    intakeBookingType: null as string | null,
+    intakePropertyLocation: null as string | null,
+    intakeMeetingType: null as string | null,
+    floorPlanPublicLink: null as string | null,
+    salesExecutive: null as string | null,
+    pincode: null as string | null,
+    leadSource: null as string | null,
+    possessionDate: null as string | null,
+    altPhone: null as string | null,
+    configScopeSummary: null as Record<string, unknown> | null,
+    experienceSummary: null as Record<string, unknown> | null,
+    decisionSummary: null as Record<string, unknown> | null,
+  };
   let root: Record<string, unknown> = {};
   if (typeof payloadInput === "string") {
     try {
       root = JSON.parse(payloadInput) as Record<string, unknown>;
     } catch {
-      return { ...schedule, intakeCustomerName: null, intakeConfiguration: null, intakeNotes: null };
+      return empty;
     }
   } else if (payloadInput && typeof payloadInput === "object") {
     root = payloadInput as Record<string, unknown>;
   } else {
-    return { ...schedule, intakeCustomerName: null, intakeConfiguration: null, intakeNotes: null };
+    return empty;
   }
 
   const formData = (root.formData || root.form_data || root.form || root || {}) as Record<string, unknown>;
-  const rawPayload = (root.rawPayload || root.raw_payload || {}) as Record<string, unknown>;
+  const rawPayload = (root.rawPayload || root.raw_payload || root.rawHubPayload || {}) as Record<string, unknown>;
   const fetched = (root.fetchedData || root.fetched_data || {}) as Record<string, unknown>;
+  const discovery = (root.discovery || {}) as Record<string, unknown>;
+  const connection = (root.connection || {}) as Record<string, unknown>;
+  const experience = (root.experience || {}) as Record<string, unknown>;
+  const decision = (root.decision || {}) as Record<string, unknown>;
+  const scope =
+    (connection.configurationScope && typeof connection.configurationScope === "object"
+      ? (connection.configurationScope as Record<string, unknown>)
+      : null) ||
+    (root.configurationScope && typeof root.configurationScope === "object"
+      ? (root.configurationScope as Record<string, unknown>)
+      : null);
 
   const intakeCustomerName = pickTrimmedString(
     formData.customer_name,
@@ -1636,6 +1681,7 @@ function extractLeadIntakeViewFromPayload(payloadInput: unknown): {
   );
 
   const intakeNotes = pickTrimmedString(
+    discovery.propertyNotes,
     formData.custom_commitments,
     formData.special_offer,
     formData.property_notes,
@@ -1651,6 +1697,7 @@ function extractLeadIntakeViewFromPayload(payloadInput: unknown): {
   );
 
   const intakeConfiguration = pickTrimmedString(
+    discovery.configuration,
     formData.property_configuration,
     formData.configuration,
     fetched.property_configuration,
@@ -1660,11 +1707,80 @@ function extractLeadIntakeViewFromPayload(payloadInput: unknown): {
     root.configuration,
   );
 
+  const intakeBudget = pickTrimmedString(discovery.budget, formData.budget, root.budget, rawPayload.budget);
+  const intakeLanguage = pickTrimmedString(
+    discovery.language,
+    formData.language,
+    root.language,
+    rawPayload.language,
+  );
+  const intakeBookingType = pickTrimmedString(
+    discovery.bookingType,
+    formData.bookingType,
+    formData.booking_type,
+    root.bookingType,
+    root.booking_type,
+  );
+  const intakePropertyLocation = pickTrimmedString(
+    discovery.propertyLocation,
+    formData.propertyLocation,
+    formData.property_location,
+    root.propertyLocation,
+    scope?.propertyName,
+  );
+  const intakeMeetingType = pickTrimmedString(
+    connection.meetingType,
+    formData.meetingType,
+    formData.meeting_type,
+    root.meetingType,
+  );
+  const floorPlanPublicLink = pickTrimmedString(
+    connection.floorPlanPublicLink,
+    connection.floorPlanUrl,
+    formData.floorPlanPublicLink,
+    formData.floorPlanUrl,
+    root.floorPlanPublicLink,
+    root.floorPlanUrl,
+    rawPayload.floorPlanPublicLink,
+  );
+  const salesExecutive = pickTrimmedString(
+    formData.sales_executive,
+    formData.salesExecutive,
+    root.salesExecutive,
+    rawPayload.salesExecutive,
+  );
+  const pincode = pickTrimmedString(fetched.pincode, formData.pincode, root.pincode);
+  const leadSource = pickTrimmedString(
+    fetched.lead_source,
+    formData.leadSource,
+    root.leadSource,
+  );
+  const possessionDate = pickTrimmedString(
+    fetched.possession_date,
+    formData.possessionDate,
+    root.possessionDate,
+  );
+  const altPhone = pickTrimmedString(fetched.alt_phone, formData.altPhone, root.altPhone);
+
   return {
     ...schedule,
     intakeCustomerName,
     intakeConfiguration,
     intakeNotes,
+    intakeBudget,
+    intakeLanguage,
+    intakeBookingType,
+    intakePropertyLocation,
+    intakeMeetingType,
+    floorPlanPublicLink,
+    salesExecutive,
+    pincode,
+    leadSource,
+    possessionDate,
+    altPhone,
+    configScopeSummary: scope,
+    experienceSummary: Object.keys(experience).length ? experience : null,
+    decisionSummary: Object.keys(decision).length ? decision : null,
   };
 }
 
@@ -4058,6 +4174,15 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
 
   const pid = String(payload.pid || payload.externalLeadId || payload.referenceId || "").trim();
   const sourceProject = String(payload.sourceProject || payload.source || "").trim() || null;
+  const crmLeadType = pickTrimmedString(
+    payload.crmLeadType,
+    payload.leadType,
+    payload.crm_lead_type,
+  );
+  const crmLeadIdNum = (() => {
+    const n = Number(payload.crmLeadId ?? payload.leadId ?? payload.crm_lead_id);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  })();
 
   const appointmentDateRaw =
     payload.appointmentDate ??
@@ -4226,6 +4351,7 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
       formData.configuration,
       payload.property_configuration,
       formData.property_configuration,
+      payload?.discovery?.configuration,
     );
     const intakeNotes = pickTrimmedString(
       payload.propertyNotes,
@@ -4234,13 +4360,42 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
       formData.propertyNotes,
       formData.property_notes,
       formData.notes,
+      payload?.discovery?.propertyNotes,
     );
+    const discoveryIn =
+      payload.discovery && typeof payload.discovery === "object"
+        ? (payload.discovery as Record<string, unknown>)
+        : {};
+    const connectionIn =
+      payload.connection && typeof payload.connection === "object"
+        ? (payload.connection as Record<string, unknown>)
+        : {};
+    const floorPlanPublicLink = pickTrimmedString(
+      payload.floorPlanPublicLink,
+      payload.floorPlanUrl,
+      connectionIn.floorPlanPublicLink,
+      connectionIn.floorPlanUrl,
+    );
+    const intakeBudget = pickTrimmedString(payload.budget, discoveryIn.budget);
+    const intakeLanguage = pickTrimmedString(payload.language, discoveryIn.language);
+    const intakeBookingType = pickTrimmedString(
+      payload.bookingType,
+      payload.booking_type,
+      discoveryIn.bookingType,
+    );
+    const intakePropertyLocation = pickTrimmedString(
+      payload.propertyLocation,
+      discoveryIn.propertyLocation,
+    );
+    const intakeMeetingType = pickTrimmedString(payload.meetingType, connectionIn.meetingType);
 
     const payloadToPersist = {
       source: "external_intake_api",
       sourceProject,
       externalReferenceId: pid || null,
       receivedAt: now.toISOString(),
+      ...(crmLeadType ? { crmLeadType } : {}),
+      ...(crmLeadIdNum != null ? { crmLeadId: crmLeadIdNum } : {}),
       crmSchedule,
       formData: {
         customer_name: intakeCustomerName,
@@ -4256,9 +4411,139 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
         schedule_timezone: scheduleTimezone || "",
         ...(intakeConfiguration ? { configuration: intakeConfiguration } : {}),
         ...(intakeNotes ? { property_notes: intakeNotes, propertyNotes: intakeNotes } : {}),
+        ...(intakeBudget ? { budget: intakeBudget } : {}),
+        ...(intakeLanguage ? { language: intakeLanguage } : {}),
+        ...(intakeBookingType ? { bookingType: intakeBookingType } : {}),
+        ...(intakePropertyLocation ? { propertyLocation: intakePropertyLocation } : {}),
+        ...(intakeMeetingType ? { meetingType: intakeMeetingType } : {}),
+        ...(floorPlanPublicLink
+          ? { floorPlanPublicLink, floorPlanUrl: floorPlanPublicLink }
+          : {}),
       },
+      discovery: {
+        propertyLocation: intakePropertyLocation,
+        budget: intakeBudget,
+        language: intakeLanguage,
+        configuration: intakeConfiguration,
+        bookingType: intakeBookingType,
+        propertyNotes: intakeNotes,
+        ...discoveryIn,
+      },
+      connection: {
+        floorPlanPublicLink,
+        floorPlanUrl: floorPlanPublicLink,
+        meetingType: intakeMeetingType,
+        designerName: designerName || null,
+        ...connectionIn,
+      },
+      floorPlanPublicLink,
+      floorPlanUrl: floorPlanPublicLink,
+      meetingType: intakeMeetingType,
+      budget: intakeBudget,
+      language: intakeLanguage,
+      bookingType: intakeBookingType,
+      propertyLocation: intakePropertyLocation,
       rawPayload: payload,
     };
+
+    // Prefer update-or-insert so Meeting Schedule does not create a second Design row
+    let existingLeadId: number | null = null;
+    if (pid) {
+      const [existingRows] = await pool.query(
+        `SELECT id, payload FROM leads
+         WHERE pid = ?
+            OR JSON_UNQUOTE(JSON_EXTRACT(
+              CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END,
+              '$.externalReferenceId'
+            )) = ?
+            OR JSON_UNQUOTE(JSON_EXTRACT(
+              CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END,
+              '$.fetchedData.externalReferenceId'
+            )) = ?
+         ORDER BY id DESC
+         LIMIT 1`,
+        [pid, pid, pid],
+      );
+      const existing = (existingRows as { id: number; payload: unknown }[])[0];
+      if (existing?.id) existingLeadId = Number(existing.id);
+      if (existingLeadId && existing) {
+        let prev: Record<string, unknown> = {};
+        try {
+          prev =
+            typeof existing.payload === "string"
+              ? (JSON.parse(existing.payload) as Record<string, unknown>)
+              : existing.payload && typeof existing.payload === "object"
+                ? (existing.payload as Record<string, unknown>)
+                : {};
+        } catch {
+          prev = {};
+        }
+        const prevForm =
+          prev.formData && typeof prev.formData === "object"
+            ? (prev.formData as Record<string, unknown>)
+            : {};
+        const newForm = payloadToPersist.formData as Record<string, unknown>;
+        const prevDiscovery =
+          prev.discovery && typeof prev.discovery === "object"
+            ? (prev.discovery as Record<string, unknown>)
+            : {};
+        const newDiscovery = payloadToPersist.discovery as Record<string, unknown>;
+        const prevConnection =
+          prev.connection && typeof prev.connection === "object"
+            ? (prev.connection as Record<string, unknown>)
+            : {};
+        const newConnection = payloadToPersist.connection as Record<string, unknown>;
+        const merged = {
+          ...prev,
+          ...payloadToPersist,
+          formData: { ...prevForm, ...newForm },
+          discovery: { ...prevDiscovery, ...newDiscovery },
+          connection: { ...prevConnection, ...newConnection },
+          crmLeadType:
+            crmLeadType ||
+            (typeof prev.crmLeadType === "string" ? prev.crmLeadType : undefined),
+          crmLeadId:
+            crmLeadIdNum != null
+              ? crmLeadIdNum
+              : prev.crmLeadId != null
+                ? prev.crmLeadId
+                : undefined,
+        };
+        await pool.query(
+          `UPDATE leads
+           SET project_name = ?, contact_no = COALESCE(?, contact_no), client_email = COALESCE(?, client_email),
+               payload = ?, assigned_designer_id = COALESCE(?, assigned_designer_id), update_at = ?
+           WHERE id = ?`,
+          [
+            projectName,
+            contactNo,
+            clientEmail,
+            JSON.stringify(merged),
+            assignedDesignerId,
+            now,
+            existingLeadId,
+          ],
+        );
+        return res.status(200).json({
+          ok: true,
+          leadId: existingLeadId,
+          created: false,
+          projectName,
+          projectStage: "Pre 10%",
+          designerName,
+          assignedDesignerId,
+          salesExecutive,
+          salesExecutiveEmail,
+          crmSchedule: {
+            date: appointmentDate,
+            slot: appointmentSlot,
+            timezone: scheduleTimezone,
+            ...(slotDetails != null ? { slotDetails } : {}),
+          },
+          message: "Lead updated via external intake",
+        });
+      }
+    }
 
     const [result] = await pool.query(
       `INSERT INTO leads
@@ -4281,6 +4566,7 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
     return res.status(201).json({
       ok: true,
       leadId: (result as any)?.insertId ?? null,
+      created: true,
       projectName,
       projectStage: "Pre 10%",
       designerName,
@@ -10711,6 +10997,20 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
           intakeCustomerName: intake.intakeCustomerName,
           intakeConfiguration: intake.intakeConfiguration,
           intakeNotes: intake.intakeNotes,
+          intakeBudget: intake.intakeBudget,
+          intakeLanguage: intake.intakeLanguage,
+          intakeBookingType: intake.intakeBookingType,
+          intakePropertyLocation: intake.intakePropertyLocation,
+          intakeMeetingType: intake.intakeMeetingType,
+          floorPlanPublicLink: intake.floorPlanPublicLink,
+          salesExecutive: intake.salesExecutive,
+          intakePincode: intake.pincode,
+          intakeLeadSource: intake.leadSource,
+          intakePossessionDate: intake.possessionDate,
+          intakeAltPhone: intake.altPhone,
+          configScopeSummary: intake.configScopeSummary,
+          experienceSummary: intake.experienceSummary,
+          decisionSummary: intake.decisionSummary,
         };
       });
 
