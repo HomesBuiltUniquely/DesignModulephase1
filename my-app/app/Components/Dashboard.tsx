@@ -16,6 +16,7 @@ import {
     storePostGetQuotePreview,
 } from "@/app/lib/prolanceGetQuotePersistSnapshot";
 import { openProlanceBrowserForProjectId } from "@/app/lib/prolanceLinks";
+import { formatHubPid } from "@/app/lib/formatHubPid";
 import { Pre10LeadViewModal } from "./Pre10LeadViewModal";
 import { AddProjectModal } from "./AddProjectModal";
 import { PersonalAppointmentModal } from "./PersonalAppointmentModal";
@@ -601,7 +602,7 @@ export default function Dashboard() {
                         `Get quote succeeded (quote ${redirectQuoteId}) but saving on the lead failed. Open the quote from the link if needed.`,
                     );
                 } else {
-                    setBulkAssignMessage(`Get quote saved for HUB-${row.pid ?? row.id} (quote ${redirectQuoteId}).`);
+                    setBulkAssignMessage(`Get quote saved for ${formatHubPid(row.pid, row.id)} (quote ${redirectQuoteId}).`);
                 }
                 openInternalQuoteInNewTab(redirectQuoteId, row.id);
             } else {
@@ -704,7 +705,7 @@ export default function Dashboard() {
                     );
                 } else {
                     setBulkAssignMessage(
-                        `Prolance project created (ID ${createdProjectId}) and saved on HUB-${row.pid ?? row.id}.${warnSuffix}`,
+                        `Prolance project created (ID ${createdProjectId}) and saved on ${formatHubPid(row.pid, row.id)}.${warnSuffix}`,
                     );
                 }
             } else {
@@ -1055,7 +1056,7 @@ export default function Dashboard() {
                                                 )}
                                                 <td className="py-3 px-5">
                                                     <div className="flex items-center gap-2">
-                                                        <div className="font-medium text-gray-900">HUB-{row.pid || row.id}</div>
+                                                        <div className="font-medium text-gray-900">{formatHubPid(row.pid, row.id)}</div>
                                                         {row.financeApprovedRaw === "false" && (
                                                             <span className="inline-flex items-center rounded-md bg-red-50 px-2 py-1 text-[10px] font-medium text-red-700 ring-1 ring-inset ring-red-600/10 whitespace-nowrap">
                                                                 Not Approved
@@ -1230,7 +1231,7 @@ export default function Dashboard() {
                                                 )}
                                                 <td className="px-5 py-3">
                                                     <div className="flex items-center gap-2">
-                                                        <div className="font-medium text-gray-900">HUB-{row.pid || row.id}</div>
+                                                        <div className="font-medium text-gray-900">{formatHubPid(row.pid, row.id)}</div>
                                                         {row.financeApprovedRaw === "false" && (
                                                             <span className="inline-flex items-center rounded-md bg-red-50 px-2 py-1 text-[10px] font-medium text-red-700 ring-1 ring-inset ring-red-600/10 whitespace-nowrap">
                                                                 Not Approved

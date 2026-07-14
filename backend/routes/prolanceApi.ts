@@ -61,11 +61,17 @@ function normalizeUserKey(input: string | null | undefined): string {
     .toLowerCase();
 }
 
+function sanitizeJsonEnvString(s: string): string {
+  return s
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2018\u2019]/g, "'");
+}
+
 function readPartnerCredentialsMap(): Record<string, unknown> {
   const fromJsonEnv = envTrim("PROLANCE_PARTNER_CREDENTIALS_JSON");
   if (fromJsonEnv) {
     try {
-      const parsed = JSON.parse(fromJsonEnv) as unknown;
+      const parsed = JSON.parse(sanitizeJsonEnvString(fromJsonEnv)) as unknown;
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         return parsed as Record<string, unknown>;
       }
@@ -304,10 +310,21 @@ async function resolvePartnerLoginForUser(
   });
 
   if (partnerResp.status >= 400) {
-    console.error("[prolance-partner-login]", { userId, credSource, status: partnerResp.status });
+    const upstreamMsg =
+      partnerResp.data && typeof partnerResp.data === "object"
+        ? asString((partnerResp.data as Record<string, unknown>).message) ||
+          asString((partnerResp.data as Record<string, unknown>).Message)
+        : null;
+    console.error("[prolance-partner-login]", {
+      userId,
+      credSource,
+      loginId: maskValue(loginID, 4, 8),
+      status: partnerResp.status,
+      upstream: partnerResp.data,
+    });
     return {
       ok: false,
-      message: "Prolance partner login failed",
+      message: upstreamMsg || "Prolance partner login failed",
       status: partnerResp.status,
       credSource,
     };
@@ -1354,6 +1371,16 @@ export function registerProlanceRoutes(
   getUserFromSession: (req: Request) => Promise<SessionUser | null>,
   pool: Pool,
 ): void {
+  const credsMap = readPartnerCredentialsMap();
+  console.log("[prolance] partner credentials loaded:", {
+    keyCount: Object.keys(credsMap).length,
+    hasApiKey: Boolean(envTrim("PROLANCE_API_KEY")),
+    hasHubapiUser: Boolean(envTrim("PROLANCE_USERNAME")),
+    hasHubapiPassword: Boolean(envTrim("PROLANCE_PASSWORD")),
+    credentialsFromJson: Boolean(envTrim("PROLANCE_PARTNER_CREDENTIALS_JSON")),
+    credentialsFromFile: Boolean(envTrim("PROLANCE_PARTNER_CREDENTIALS_FILE")),
+  });
+
   const TEST_PREFIX = "/api/prolance-test";
   const requireUser = async (req: Request, res: Response): Promise<SessionUser | null> => {
     const user = await getUserFromSession(req);
@@ -1530,6 +1557,16 @@ export function registerProlanceRoutes(
    * Create a Prolance project as the logged-in CRM user (per-user partner creds from env/file).
    * partnerID always comes from the partner LoginAPI response for that user (Postman parity).
    */
+function formatProlancePName(pName: string, pid?: string | null): string {
+  const name = pName.trim() || "Untitled Project";
+  const rawPid = pid?.trim();
+  if (!rawPid) return name;
+  const clean = rawPid.replace(/^HUB-/i, "");
+  const hubRef = clean ? `HUB-${clean}` : rawPid;
+  if (name.toUpperCase().includes(hubRef.toUpperCase())) return name;
+  return `${hubRef} - ${name}`;
+}
+
   app.post(`${TEST_PREFIX}/projects/create-as-user`, async (req: Request, res: Response) => {
     const user = await requireUser(req, res);
     if (!user) return;
@@ -1539,7 +1576,10 @@ export function registerProlanceRoutes(
         ? (req.body as Record<string, unknown>)
         : {};
     const createBody: Record<string, unknown> = {
-      pName: asString(body.pName) || "Untitled Project",
+      pName: formatProlancePName(
+        asString(body.pName) || "Untitled Project",
+        asString(body.pid) || asString(body.leadPid),
+      ),
       customer: asString(body.customer) || "Customer",
       city: asString(body.city) || "Bengaluru",
       state: asString(body.state) || "Karnataka",

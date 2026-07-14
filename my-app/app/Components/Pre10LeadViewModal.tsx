@@ -2,6 +2,7 @@
 
 import { useEffect } from 'react';
 import type { LeadshipTypes } from './Types/Types';
+import { formatHubPid } from '@/app/lib/formatHubPid';
 
 type Props = {
     lead: LeadshipTypes;
@@ -15,7 +16,7 @@ function displayValue(value: string | null | undefined): string {
 }
 
 export function Pre10LeadViewModal({ lead, timeSlotLabel, onClose }: Props) {
-    const projectLabel = `HUB-${lead.pid || lead.id}`;
+    const projectLabel = formatHubPid(lead.pid, lead.id);
     const customerName =
         lead.intakeCustomerName?.trim() ||
         lead.projectName?.trim() ||

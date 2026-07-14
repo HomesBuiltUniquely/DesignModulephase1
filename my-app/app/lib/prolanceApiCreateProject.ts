@@ -1,4 +1,5 @@
 import type { LeadshipTypes } from "@/app/Components/Types/Types";
+import { formatHubPid, formatProlanceProjectName } from "@/app/lib/formatHubPid";
 
 /**
  * Creates a Prolance project through the Hub API, which proxies to
@@ -65,8 +66,10 @@ export function buildProlanceCreateProjectBody(project: LeadshipTypes): Record<s
         payloadObj?.formData && typeof payloadObj.formData === "object"
             ? (payloadObj.formData as Record<string, unknown>)
             : null;
+    const projectName = extractString(project.projectName) || "Untitled Project";
     const body: Record<string, unknown> = {
-        pName: extractString(project.projectName) || "Untitled Project",
+        pName: formatProlanceProjectName(projectName, project.pid, project.id),
+        pid: formatHubPid(project.pid, project.id) || undefined,
         customer:
             extractString(rawProj?.customer) ||
             extractString(formData?.customer_name) ||

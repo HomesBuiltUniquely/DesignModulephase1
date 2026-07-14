@@ -3,6 +3,7 @@
 import type { LeadshipTypes } from '@/app/Components/Types/Types';
 import type { ImageType } from '../types';
 import MileStonesArray from '@/app/Components/Types/MileStoneArray';
+import { formatHubPid } from '@/app/lib/formatHubPid';
 
 type Props = {
     project: LeadshipTypes;
@@ -77,7 +78,7 @@ export default function LeadDetailHeader({
             <div className="flex flex-wrap items-center justify-between gap-4 xl:gap-6">
                 <div className="flex flex-wrap items-baseline gap-6 xl:gap-8">
                     <p className="font-bold text-purple-100">
-                        <span className="text-gray-400">PID:</span> {project.id}
+                        <span className="text-gray-400">PID:</span> {formatHubPid(project.pid, project.id)}
                     </p>
                     <p className="font-bold text-purple-100">
                         <span className="text-gray-400">Status:</span> {holdLabel}
