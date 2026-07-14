@@ -1587,11 +1587,14 @@ function formatProlancePName(
       req.body && typeof req.body === "object" && !Array.isArray(req.body)
         ? (req.body as Record<string, unknown>)
         : {};
+    const leadIdRaw = body.leadId ?? body.designLeadId ?? body.id;
+    const leadIdForName =
+      typeof leadIdRaw === "number" || typeof leadIdRaw === "string" ? leadIdRaw : null;
     const createBody: Record<string, unknown> = {
       pName: formatProlancePName(
         asString(body.pName) || "Untitled Project",
         asString(body.pid) || asString(body.leadPid),
-        body.leadId ?? body.designLeadId ?? body.id,
+        leadIdForName,
       ),
       customer: asString(body.customer) || "Customer",
       city: asString(body.city) || "Bengaluru",
