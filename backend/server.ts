@@ -132,9 +132,9 @@ app.get("/api/health", (_req, res) => {
 // ----- MySQL setup -----
 // Defaults are set from the credentials you provided; you can still override via env vars if needed.
 const pool = mysql.createPool({
-  host: process.env.DB_HOST || "database-1.cl002gu0o5ft.ap-south-2.rds.amazonaws.com",
-  user: process.env.DB_USER || "admin",
-  password: process.env.DB_PASSWORD || "Hubinterior2019",
+  host: process.env.DB_HOST || "localhost",
+  user: process.env.DB_USER || "root",
+  password: process.env.DB_PASSWORD || "root@00",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -743,21 +743,21 @@ async function initDb() {
       );
     `);
 
-    await conn.query(`
-      CREATE TABLE IF NOT EXISTS google_calendar_connections (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        user_id INT NOT NULL UNIQUE,
-        google_email VARCHAR(255) NOT NULL
-        access_token TEXT NOT NULL,
-        refresh_token TEXT NULL,
-        expires_at DATETIME NULL,
-        scope TEXT NULL,
-        active TINYINT(1) NOT NULL DEFAULT 1,
-        created_at DATETIME NOT NULL,
-        updated_at DATETIME NOT NULL,
-        FOREIGN KEY (user_id) REFERENCES users(id)
-      );
-    `);
+await conn.query(`
+  CREATE TABLE IF NOT EXISTS google_calendar_connections (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL UNIQUE,
+    google_email VARCHAR(255) NOT NULL,
+    access_token TEXT NOT NULL,
+    refresh_token TEXT NULL,
+    expires_at DATETIME NULL,
+    scope TEXT NULL,
+    active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+`);
 
     await conn.query(`
       CREATE TABLE IF NOT EXISTS leads (
