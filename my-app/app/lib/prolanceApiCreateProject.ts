@@ -70,6 +70,7 @@ export function buildProlanceCreateProjectBody(project: LeadshipTypes): Record<s
     const body: Record<string, unknown> = {
         pName: formatProlanceProjectName(projectName, project.pid, project.id),
         pid: formatHubPid(project.pid, project.id) || undefined,
+        leadId: project.id,
         customer:
             extractString(rawProj?.customer) ||
             extractString(formData?.customer_name) ||

@@ -1557,12 +1557,24 @@ export function registerProlanceRoutes(
    * Create a Prolance project as the logged-in CRM user (per-user partner creds from env/file).
    * partnerID always comes from the partner LoginAPI response for that user (Postman parity).
    */
-function formatProlancePName(pName: string, pid?: string | null): string {
+function formatProlancePName(
+  pName: string,
+  pid?: string | null,
+  leadId?: string | number | null,
+): string {
   const name = pName.trim() || "Untitled Project";
-  const rawPid = pid?.trim();
-  if (!rawPid) return name;
-  const clean = rawPid.replace(/^HUB-/i, "");
-  const hubRef = clean ? `HUB-${clean}` : rawPid;
+  // Prefer Design lead id → HUB-1970; never CRM refs like HUB-AL-...
+  let hubRef = "";
+  if (leadId != null && Number.isFinite(Number(leadId)) && Number(leadId) > 0) {
+    hubRef = `HUB-${Number(leadId)}`;
+  } else if (pid?.trim()) {
+    let clean = pid.trim();
+    while (/^HUB[\s-]*/i.test(clean)) {
+      clean = clean.replace(/^HUB[\s-]*/i, "").trim();
+    }
+    if (/^\d+$/.test(clean)) hubRef = `HUB-${clean}`;
+  }
+  if (!hubRef) return name;
   if (name.toUpperCase().includes(hubRef.toUpperCase())) return name;
   return `${hubRef} - ${name}`;
 }
@@ -1579,6 +1591,7 @@ function formatProlancePName(pName: string, pid?: string | null): string {
       pName: formatProlancePName(
         asString(body.pName) || "Untitled Project",
         asString(body.pid) || asString(body.leadPid),
+        body.leadId ?? body.designLeadId ?? body.id,
       ),
       customer: asString(body.customer) || "Customer",
       city: asString(body.city) || "Bengaluru",
