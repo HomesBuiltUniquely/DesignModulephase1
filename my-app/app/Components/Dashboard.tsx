@@ -313,17 +313,61 @@ export default function Dashboard() {
         return () => { cancelled = true; };
     }, [sessionId, isDqcUser]);
 
+    // Branch/designer filters are shown for TDM/DM/admin/etc (not designer/DQC/MMT/finance/SPM).
+    const showBranchDesignerFilters =
+        !isDesigner && !isDqcUser && !isMmtUser && !isFinanceUser && !isSpmUser;
+
     useEffect(() => {
-        if ((!canImportLeads && !isAdmin) || !sessionId) return;
-        fetch(`${API}/api/designers/assignable`, {
-            headers: { Authorization: `Bearer ${sessionId}` },
-        })
-            .then((res) => res.json())
-            .then((rows: AssignableDesigner[]) => {
-                if (Array.isArray(rows)) setAssignableDesigners(rows);
-            })
-            .catch(() => setAssignableDesigners([]));
-    }, [canImportLeads, isAdmin, sessionId]);
+        if (!sessionId) return;
+        // Assign/import + designer filter need the DB designer list (not names scraped from leads).
+        if (!canImportLeads && !isAdmin && !showBranchDesignerFilters) return;
+
+        let cancelled = false;
+        const headers: Record<string, string> = { Authorization: `Bearer ${sessionId}` };
+
+        const loadAssignable = () =>
+            fetch(`${API}/api/designers/assignable`, { headers })
+                .then(async (res) => {
+                    if (!res.ok) return null;
+                    const rows = await res.json();
+                    return Array.isArray(rows) ? (rows as AssignableDesigner[]) : null;
+                })
+                .catch(() => null);
+
+        const loadDesignersFallback = () =>
+            fetch(`${API}/api/designers`, { headers })
+                .then(async (res) => {
+                    const data = await res.json().catch(() => null);
+                    const list = Array.isArray(data)
+                        ? data
+                        : Array.isArray(data?.designers)
+                          ? data.designers
+                          : [];
+                    return list
+                        .filter((d: { id?: number; name?: string; role?: string }) => d?.id != null && d?.name)
+                        .map((d: { id: number; name: string; role?: string }) => ({
+                            id: d.id,
+                            name: String(d.name).trim(),
+                            role: (d.role === "design_manager" ? "design_manager" : "designer") as AssignableDesigner["role"],
+                        }));
+                })
+                .catch(() => [] as AssignableDesigner[]);
+
+        (async () => {
+            let rows: AssignableDesigner[] | null = null;
+            if (canImportLeads || isAdmin) {
+                rows = await loadAssignable();
+            }
+            if (!rows) {
+                rows = await loadDesignersFallback();
+            }
+            if (!cancelled) setAssignableDesigners(rows ?? []);
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [canImportLeads, isAdmin, sessionId, showBranchDesignerFilters]);
 
     const onUploadClick = (e: React.MouseEvent, leadId: number) => {
         e.stopPropagation();
@@ -429,44 +473,29 @@ export default function Dashboard() {
           )
         : filteredProjects;
 
-    const showBranchDesignerFilters =
-        !isDesigner && !isDqcUser && !isMmtUser && !isFinanceUser && !isSpmUser;
-
+    // Source of truth: users from DB (/api/designers/assignable or /api/designers).
+    // Do NOT scrape names from lead payloads — that caused duplicates, phantom CRM names,
+    // and missing designers who have no leads in the current queue.
     const designerFilterOptions = useMemo(() => {
-        const idMap = new Map<number, string>(); // id -> name
-        const nameMap = new Map<string, string>(); // lowercaseName -> originalName
-
-        for (const p of projects) {
-            const id = p.assigned_designer_id;
-            const name = (p.designerName || "").trim();
-            if (!name) continue;
-
-            if (id != null) {
-                if (!idMap.has(id)) idMap.set(id, name);
-            } else {
-                const lower = name.toLowerCase();
-                if (!nameMap.has(lower)) nameMap.set(lower, name);
-            }
+        const byId = new Map<number, string>();
+        for (const d of assignableDesigners) {
+            const name = (d.name || "").trim();
+            if (d.id == null || !name) continue;
+            if (!byId.has(d.id)) byId.set(d.id, name);
         }
 
         const options: Array<[string, string]> = [];
         const seenNames = new Set<string>();
-
-        // Prefer real user IDs for designers in the system
-        for (const [id, name] of idMap.entries()) {
+        const sorted = [...byId.entries()].sort((a, b) => a[1].localeCompare(b[1], undefined, { sensitivity: "base" }));
+        for (const [id, name] of sorted) {
+            const key = name.toLowerCase();
+            // Same display name under two user ids → show once (filter still matches by name too).
+            if (seenNames.has(key)) continue;
+            seenNames.add(key);
             options.push([String(id), name]);
-            seenNames.add(name.toLowerCase());
         }
-
-        // Add designers found by name (from CRM intake) who aren't yet matched to a system user
-        for (const [lower, name] of nameMap.entries()) {
-            if (!seenNames.has(lower)) {
-                options.push([`name:${name}`, name]);
-            }
-        }
-
-        return options.sort((a, b) => a[1].localeCompare(b[1]));
-    }, [projects]);
+        return options;
+    }, [assignableDesigners]);
 
     const hasUnassignedInQueue = useMemo(
         () => projects.some((p) => p.assigned_designer_id == null),
@@ -484,16 +513,19 @@ export default function Dashboard() {
         if (designerFilter === "__unassigned__") {
             queueFilterFiltered = queueFilterFiltered.filter((p) => p.assigned_designer_id == null);
         } else if (designerFilter) {
-            if (designerFilter.startsWith("name:")) {
-                const nameToMatch = designerFilter.replace("name:", "").toLowerCase();
-                queueFilterFiltered = queueFilterFiltered.filter(
-                    (p) => (p.designerName || "").trim().toLowerCase() === nameToMatch,
-                );
-            } else {
-                const id = Number(designerFilter);
-                if (!Number.isNaN(id)) {
-                    queueFilterFiltered = queueFilterFiltered.filter((p) => p.assigned_designer_id === id);
-                }
+            const id = Number(designerFilter);
+            const selectedName = Number.isNaN(id)
+                ? ""
+                : (assignableDesigners.find((d) => d.id === id)?.name || "").trim().toLowerCase();
+            if (!Number.isNaN(id)) {
+                queueFilterFiltered = queueFilterFiltered.filter((p) => {
+                    if (p.assigned_designer_id === id) return true;
+                    // Match by display name too (payload-only leads, or another user id with same name)
+                    return (
+                        !!selectedName &&
+                        (p.designerName || "").trim().toLowerCase() === selectedName
+                    );
+                });
             }
         }
     }
