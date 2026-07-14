@@ -395,6 +395,67 @@ async function resolveDesignerId(pool: Pool, designerName: string): Promise<numb
   return row?.id ?? null;
 }
 
+/**
+ * When CRM intake + upsert both created rows for the same AL-/GL- id,
+ * keep the canonical Design lead and mark the extras Cancelled so Dashboard
+ * Active view shows one row.
+ */
+async function cancelDuplicateCrmLeads(
+  pool: Pool,
+  args: {
+    keepLeadId: number;
+    leadIdentifier: string;
+    leadType: string;
+    leadIdNum: number;
+    now: Date;
+  },
+): Promise<void> {
+  const ident = String(args.leadIdentifier || "").trim();
+  if (!ident || !Number.isFinite(args.keepLeadId)) return;
+  try {
+    const [rows] = await queryWithRetry(
+      pool,
+      `SELECT id FROM leads
+       WHERE id <> ?
+         AND LOWER(TRIM(COALESCE(project_stage, ''))) <> 'cancelled'
+         AND (
+           pid = ?
+           OR JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.externalReferenceId')) = ?
+           OR JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.fetchedData.externalReferenceId')) = ?
+           OR (
+             JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.crmLeadType')) = ?
+             AND CAST(JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.crmLeadId')) AS UNSIGNED) = ?
+           )
+         )`,
+      [args.keepLeadId, ident, ident, ident, args.leadType, args.leadIdNum],
+    );
+    const dupIds = (rows as { id: number }[])
+      .map((r) => Number(r.id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    for (const dupId of dupIds) {
+      await pool.query(
+        `UPDATE leads
+         SET project_stage = 'Cancelled', is_on_hold = 0, resume_at = NULL, update_at = ?
+         WHERE id = ?`,
+        [args.now, dupId],
+      );
+      console.info("[crm-hub] cancelled duplicate Design lead", {
+        keepLeadId: args.keepLeadId,
+        cancelledLeadId: dupId,
+        leadIdentifier: ident,
+      });
+    }
+  } catch (err) {
+    console.warn("[crm-hub] duplicate lead cleanup skipped", err);
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
 function buildCrmHubPayload(body: HubLeadBody, leadType: string, leadIdNum: number, leadIdentifier: string): Record<string, unknown> {
   const projectName = pickStr(body.projectName, body.customerName, "Unnamed");
   const contactNo = pickStr(body.contactNo, body.contact_no, body.phone);
@@ -402,6 +463,61 @@ function buildCrmHubPayload(body: HubLeadBody, leadType: string, leadIdNum: numb
   const designerName = pickStr(body.designerName, body.designer_name);
   const appointmentDate = pickStr(body.appointmentDate, body.appointment_date);
   const appointmentSlot = pickStr(body.appointmentSlot, body.appointment_slot, body.slot);
+  const discoveryIn = asRecord(body.discovery) || {};
+  const connectionIn = asRecord(body.connection) || {};
+  const propertyNotes = pickStr(
+    body.propertyNotes,
+    body.property_notes,
+    discoveryIn.propertyNotes,
+  );
+  const configuration = pickStr(
+    body.configuration,
+    body.property_configuration,
+    discoveryIn.configuration,
+  );
+  const budget = pickStr(body.budget, discoveryIn.budget);
+  const language = pickStr(body.language, discoveryIn.language);
+  const bookingType = pickStr(body.bookingType, body.booking_type, discoveryIn.bookingType);
+  const propertyLocation = pickStr(
+    body.propertyLocation,
+    body.property_location,
+    discoveryIn.propertyLocation,
+  );
+  const meetingType = pickStr(body.meetingType, body.meeting_type, connectionIn.meetingType);
+  const floorPlanPublicLink = pickStr(
+    body.floorPlanPublicLink,
+    body.floorPlanUrl,
+    body.floor_plan_public_link,
+    connectionIn.floorPlanPublicLink,
+    connectionIn.floorPlanUrl,
+  );
+  const salesExecutive = pickStr(body.salesExecutive, body.sales_executive);
+  const salesExecutiveEmail = pickStr(body.salesExecutiveEmail, body.sales_executive_email);
+  const pincode = pickStr(body.pincode);
+  const leadSource = pickStr(body.leadSource, body.lead_source);
+  const possessionDate = pickStr(body.possessionDate, body.possession_date);
+  const altPhone = pickStr(body.altPhone, body.alt_phone);
+  const scopeSummary =
+    asRecord(connectionIn.configurationScope) ||
+    asRecord(body.configurationScope) ||
+    null;
+
+  const discovery = {
+    propertyLocation: propertyLocation || null,
+    budget: budget || null,
+    language: language || null,
+    configuration: configuration || null,
+    bookingType: bookingType || null,
+    propertyNotes: propertyNotes || null,
+  };
+
+  const connection = {
+    floorPlanPublicLink: floorPlanPublicLink || null,
+    floorPlanUrl: floorPlanPublicLink || null,
+    meetingType: meetingType || null,
+    designerName: designerName || null,
+    configurationScope: scopeSummary,
+  };
 
   return {
     source: "crm_hub",
@@ -413,6 +529,10 @@ function buildCrmHubPayload(body: HubLeadBody, leadType: string, leadIdNum: numb
       customer_name: projectName,
       co_no: contactNo || "",
       email: clientEmail || "",
+      ...(altPhone ? { alt_phone: altPhone } : {}),
+      ...(pincode ? { pincode } : {}),
+      ...(leadSource ? { lead_source: leadSource } : {}),
+      ...(possessionDate ? { possession_date: possessionDate } : {}),
     },
     formData: {
       customer_name: projectName,
@@ -422,11 +542,32 @@ function buildCrmHubPayload(body: HubLeadBody, leadType: string, leadIdNum: numb
       designer_name: designerName || "",
       appointment_date: appointmentDate || "",
       appointment_slot: appointmentSlot || "",
+      ...(configuration ? { configuration } : {}),
+      ...(propertyNotes ? { property_notes: propertyNotes, propertyNotes } : {}),
+      ...(budget ? { budget } : {}),
+      ...(language ? { language } : {}),
+      ...(bookingType ? { bookingType, booking_type: bookingType } : {}),
+      ...(propertyLocation ? { propertyLocation, property_location: propertyLocation } : {}),
+      ...(meetingType ? { meetingType, meeting_type: meetingType } : {}),
+      ...(floorPlanPublicLink
+        ? { floorPlanPublicLink, floorPlanUrl: floorPlanPublicLink }
+        : {}),
+      ...(salesExecutive ? { sales_executive: salesExecutive } : {}),
+      ...(salesExecutiveEmail ? { sales_executive_email: salesExecutiveEmail } : {}),
     },
     crmSchedule: {
       date: appointmentDate || null,
       slot: appointmentSlot || null,
     },
+    discovery,
+    connection,
+    floorPlanPublicLink: floorPlanPublicLink || null,
+    floorPlanUrl: floorPlanPublicLink || null,
+    meetingType: meetingType || null,
+    budget: budget || null,
+    language: language || null,
+    bookingType: bookingType || null,
+    propertyLocation: propertyLocation || null,
     rawHubPayload: body,
   };
 }
@@ -463,7 +604,76 @@ async function upsertCrmDesignLead(
       payloadToPersist.fetchedData && typeof payloadToPersist.fetchedData === "object"
         ? (payloadToPersist.fetchedData as Record<string, unknown>)
         : {};
-    const merged = { ...prev, ...payloadToPersist, fetchedData: { ...prevFetched, ...newFetched } };
+    const prevForm =
+      prev.formData && typeof prev.formData === "object"
+        ? (prev.formData as Record<string, unknown>)
+        : {};
+    const newForm =
+      payloadToPersist.formData && typeof payloadToPersist.formData === "object"
+        ? (payloadToPersist.formData as Record<string, unknown>)
+        : {};
+    const prevDiscovery =
+      prev.discovery && typeof prev.discovery === "object"
+        ? (prev.discovery as Record<string, unknown>)
+        : {};
+    const newDiscovery =
+      payloadToPersist.discovery && typeof payloadToPersist.discovery === "object"
+        ? (payloadToPersist.discovery as Record<string, unknown>)
+        : {};
+    const prevConnection =
+      prev.connection && typeof prev.connection === "object"
+        ? (prev.connection as Record<string, unknown>)
+        : {};
+    const newConnection =
+      payloadToPersist.connection && typeof payloadToPersist.connection === "object"
+        ? (payloadToPersist.connection as Record<string, unknown>)
+        : {};
+    const prevScope =
+      prevConnection.configurationScope && typeof prevConnection.configurationScope === "object"
+        ? (prevConnection.configurationScope as Record<string, unknown>)
+        : {};
+    const newScope =
+      newConnection.configurationScope && typeof newConnection.configurationScope === "object"
+        ? (newConnection.configurationScope as Record<string, unknown>)
+        : {};
+    const merged = {
+      ...prev,
+      ...payloadToPersist,
+      fetchedData: { ...prevFetched, ...newFetched },
+      formData: { ...prevForm, ...newForm },
+      discovery: { ...prevDiscovery, ...newDiscovery },
+      connection: {
+        ...prevConnection,
+        ...newConnection,
+        configurationScope:
+          Object.keys(newScope).length > 0
+            ? {
+                ...prevScope,
+                ...newScope,
+                ...(Array.isArray(newScope.selectedRooms)
+                  ? { selectedRooms: newScope.selectedRooms }
+                  : {}),
+                ...(Array.isArray(newScope.miscAddOns)
+                  ? { miscAddOns: newScope.miscAddOns }
+                  : {}),
+                ...(newScope.referenceInspiration &&
+                typeof newScope.referenceInspiration === "object"
+                  ? { referenceInspiration: newScope.referenceInspiration }
+                  : {}),
+                ...(newScope.financialGuardrails &&
+                typeof newScope.financialGuardrails === "object"
+                  ? { financialGuardrails: newScope.financialGuardrails }
+                  : {}),
+                ...(newScope.internalExecutiveNotes &&
+                typeof newScope.internalExecutiveNotes === "object"
+                  ? { internalExecutiveNotes: newScope.internalExecutiveNotes }
+                  : {}),
+              }
+            : Object.keys(prevScope).length > 0
+              ? prevScope
+              : null,
+      },
+    };
     await pool.query(
       `UPDATE leads SET project_name = ?, contact_no = COALESCE(?, contact_no), client_email = COALESCE(?, client_email),
        payload = ?, assigned_designer_id = COALESCE(?, assigned_designer_id), update_at = ?
@@ -479,6 +689,13 @@ async function upsertCrmDesignLead(
       description: "Lead updated from CRM Booking & Token",
       user: { name: "CRM Hub" },
       details: { kind: "crm_hub_upsert", crmLeadType: leadType, crmLeadId: leadIdNum },
+    });
+    await cancelDuplicateCrmLeads(pool, {
+      keepLeadId: existingId,
+      leadIdentifier,
+      leadType,
+      leadIdNum,
+      now,
     });
     return { designLeadId: existingId, created: false };
   }
@@ -499,6 +716,13 @@ async function upsertCrmDesignLead(
     description: "Lead created from CRM Booking & Token",
     user: { name: "CRM Hub" },
     details: { kind: "crm_hub_upsert", crmLeadType: leadType, crmLeadId: leadIdNum },
+  });
+  await cancelDuplicateCrmLeads(pool, {
+    keepLeadId: designLeadId,
+    leadIdentifier,
+    leadType,
+    leadIdNum,
+    now,
   });
   return { designLeadId, created: true };
 }
@@ -632,6 +856,45 @@ async function handleConvertBooking(
     tenPercentAmount,
     quoteAmount,
   );
+
+  // Merge Experience / Decision / BookingDone snapshot into lead payload for Design View
+  try {
+    const [leadRows] = await pool.query(`SELECT payload FROM leads WHERE id = ? LIMIT 1`, [designLeadId]);
+    const prev = parseLeadPayload((leadRows as { payload?: unknown }[])[0]?.payload);
+    const experience = asRecord(body.experience) || {};
+    const decision = asRecord(body.decision) || {};
+    const bookingDone = asRecord(body.bookingDone) || {};
+    const merged = {
+      ...prev,
+      experience: {
+        ...(asRecord(prev.experience) || {}),
+        ...experience,
+        quoteAmount: quoteAmount ?? (asRecord(prev.experience) || {}).quoteAmount ?? null,
+      },
+      decision: {
+        ...(asRecord(prev.decision) || {}),
+        ...decision,
+        finalBudget:
+          pickNum(decision.finalBudget, quoteAmount) ??
+          (asRecord(prev.decision) || {}).finalBudget ??
+          null,
+      },
+      bookingDone: {
+        ...(asRecord(prev.bookingDone) || {}),
+        ...bookingDone,
+        quoteAmount: quoteAmount ?? null,
+        tenPercentAmount: tenPercentAmount ?? null,
+        amountReceived: amountReceived ?? null,
+      },
+    };
+    await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
+      JSON.stringify(merged),
+      now,
+      designLeadId,
+    ]);
+  } catch (mergeErr) {
+    console.warn("[crm-hub] experience/decision payload merge skipped", mergeErr);
+  }
 
   await importHubPaymentProofs(pool, designLeadId, { ...body, _syncedAt: now });
   await markTenPercentCollectionComplete(pool, designLeadId);
