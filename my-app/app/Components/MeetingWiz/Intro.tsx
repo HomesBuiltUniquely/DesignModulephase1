@@ -27,182 +27,68 @@ interface Props {
 
 export default function Intro({ onNext, onPrev }: Props) {
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        backgroundColor: "#f7f9fc",
-        fontFamily: "Arial, Helvetica, sans-serif",
-        display: "flex",
-        flexDirection: "column",
-      }}
-    >
+    <main className="min-h-screen w-full bg-[#f0f4f8]">
       {/* ── Top Bar ── */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "flex-end",
-          borderBottom: "1px solid #e5e7eb",
-          backgroundColor: "#ffffff",
-          padding: "10px 24px",
-          gap: "14px",
-        }}
-      >
-        {/* Duration pill */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "7px",
-            borderRadius: "9999px",
-            border: "1px solid #e5e7eb",
-            backgroundColor: "#f9fafb",
-            padding: "6px 16px",
-          }}
-        >
-          <svg
-            width="13"
-            height="13"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="#9ca3af"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <circle cx="12" cy="12" r="10" />
-            <polyline points="12 6 12 12 16 14" />
-          </svg>
-          <span
-            style={{
-              fontSize: "10px",
-              fontWeight: 600,
-              textTransform: "uppercase",
-              letterSpacing: "0.06em",
-              color: "#9ca3af",
-            }}
-          >
-            Duration:
-          </span>
-          <span style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>
-            00:24:18
-          </span>
+      <div className="flex items-center justify-between border-b border-gray-200 bg-white px-6 py-3">
+        <div className="flex items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-4 py-2">
+          <div className="h-2 w-2 rounded-full bg-gray-400"></div>
+          <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Duration:</span>
+          <span className="text-sm font-bold text-gray-900">00:24:18</span>
         </div>
+        <div className="flex items-center gap-4">
+          {/* Previous — disabled on step 1 */}
+          <button
+            onClick={onPrev}
+            disabled
+            className="cursor-not-allowed text-sm font-medium text-gray-300"
+          >
+            Previous
+          </button>
+          <button
+            onClick={onNext}
+            className="rounded-md bg-[#2EE86B] px-6 py-2 text-sm font-semibold text-black transition hover:bg-[#24d45d]"
+          >
+            Next Phase
+          </button>
+          <button className="text-xl font-light text-gray-500 transition hover:text-gray-800">×</button>
+        </div>
+      </div>
 
-        {/* Previous — disabled on step 1 */}
-        <button
-          onClick={onPrev}
-          disabled
-          style={{
-            fontSize: "13px",
-            fontWeight: 500,
-            color: "#d1d5db",
-            background: "none",
-            border: "none",
-            cursor: "not-allowed",
-            padding: "4px 2px",
-          }}
-        >
-          Previous
-        </button>
-
-        {/* Next Phase */}
-        <button
-          onClick={onNext}
-          style={{
-            borderRadius: "6px",
-            backgroundColor: "#2EE86B",
-            padding: "8px 18px",
-            fontSize: "13px",
-            fontWeight: 700,
-            color: "#000000",
-            border: "none",
-            cursor: "pointer",
-          }}
-        >
-          Next Phase
-        </button>
-
-        {/* Close */}
-        <button
-          style={{
-            fontSize: "18px",
-            fontWeight: 400,
-            color: "#9ca3af",
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            lineHeight: 1,
-            padding: "2px 4px",
-          }}
-        >
-          ✕
-        </button>
+      {/* ── Step Progress Dots ── */}
+      <div className="flex flex-col items-center py-4">
+        <div className="flex items-center gap-1">
+          {Array.from({ length: 9 }).map((_, i) => (
+            <div
+              key={i}
+              className={`h-1 rounded-full w-8 ${i < 1 ? "bg-[#2EE86B]" : "bg-gray-300"}`}
+            />
+          ))}
+        </div>
+        <span className="mt-1 text-xs font-medium uppercase tracking-widest text-gray-400">
+          Step 1 of 9
+        </span>
       </div>
 
       {/* ── Page Body ── */}
       <div
         style={{
           flex: 1,
-          padding: "28px 32px 40px",
+          padding: "0 32px 40px",
           maxWidth: "900px",
           margin: "0 auto",
           width: "100%",
           boxSizing: "border-box",
         }}
       >
-        {/* Current step label */}
-        <p
-          style={{
-            fontSize: "10px",
-            fontWeight: 600,
-            color: "#9ca3af",
-            textTransform: "uppercase",
-            letterSpacing: "0.09em",
-            margin: "0 0 4px",
-          }}
+        {/* Step title */}
+        <h1
+          style={{ fontSize: "30px", fontWeight: 800, color: "#111827", margin: "0 0 4px", lineHeight: 1.1 }}
         >
-          Current Step
+          1. Introduction
+        </h1>
+        <p style={{ fontSize: "13px", color: "#6b7280", margin: "0 0 24px" }}>
+          Personal check-in and project phase overview.
         </p>
-
-        {/* Step title + counter */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            marginBottom: "8px",
-          }}
-        >
-          <h1
-            style={{ fontSize: "21px", fontWeight: 800, color: "#111827", margin: 0 }}
-          >
-            1. Introduction
-          </h1>
-          <span style={{ fontSize: "13px", fontWeight: 500, color: "#9ca3af" }}>
-            1<span style={{ fontSize: "11px" }}>/9</span>
-          </span>
-        </div>
-
-        {/* Progress bar */}
-        <div
-          style={{
-            height: "3px",
-            backgroundColor: "#e5e7eb",
-            borderRadius: "9999px",
-            overflow: "hidden",
-            marginBottom: "28px",
-          }}
-        >
-          <div
-            style={{
-              width: "11%",
-              height: "100%",
-              backgroundColor: "#2EE86B",
-              borderRadius: "9999px",
-            }}
-          />
-        </div>
 
         {/* ── Two-column card row ── */}
         <div
@@ -465,33 +351,10 @@ export default function Intro({ onNext, onPrev }: Props) {
         {/* ── Next Button ── */}
         <button
           onClick={onNext}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: "10px",
-            backgroundColor: "#2EE86B",
-            border: "none",
-            borderRadius: "8px",
-            padding: "13px 22px",
-            fontSize: "13px",
-            fontWeight: 700,
-            color: "#000000",
-            cursor: "pointer",
-            letterSpacing: "0.04em",
-            textTransform: "uppercase",
-          }}
+          className="inline-flex items-center gap-3 rounded-lg bg-[#2EE86B] px-6 py-3 text-sm font-bold uppercase tracking-wider text-black transition hover:bg-[#24d45d]"
         >
           Next: About Hub
-          <svg
-            width="15"
-            height="15"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="#000000"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#000" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <line x1="5" y1="12" x2="19" y2="12" />
             <polyline points="12 5 19 12 12 19" />
           </svg>

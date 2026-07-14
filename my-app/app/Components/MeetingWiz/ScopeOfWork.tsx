@@ -32,123 +32,55 @@ interface Props {
 
 export default function ScopeOfWork({ onNext, onPrev }: Props) {
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        backgroundColor: "#f2f4f7",
-        fontFamily: "Arial, Helvetica, sans-serif",
-        display: "flex",
-        flexDirection: "column",
-      }}
-    >
+    <main className="min-h-screen w-full bg-[#f0f4f8]" style={{ fontFamily: "Arial, Helvetica, sans-serif", display: "flex", flexDirection: "column" }}>
       {/* ── Top Bar ── */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          borderBottom: "1px solid #e5e7eb",
-          backgroundColor: "#ffffff",
-          padding: "0 24px",
-          height: "44px",
-          flexShrink: 0,
-        }}
-      >
-        {/* Left — breadcrumb with green underline on active */}
-        <div style={{ display: "flex", alignItems: "center", gap: "0", height: "100%" }}>
-          {/* STEP 4/9 */}
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              padding: "0 14px",
-              height: "100%",
-              borderRight: "1px solid #e5e7eb",
-            }}
-          >
-            <span style={{ fontSize: "9px", fontWeight: 600, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.07em", lineHeight: 1 }}>
-              STEP 4/9
-            </span>
-          </div>
-          {/* SCOPE SUMMARY — active tab with green bottom border */}
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              padding: "0 14px",
-              height: "100%",
-              borderBottom: "2.5px solid #2EE86B",
-              marginBottom: "-1px",
-            }}
-          >
-            <span style={{ fontSize: "9px", fontWeight: 700, color: "#111827", textTransform: "uppercase", letterSpacing: "0.07em", lineHeight: 1 }}>
-              SCOPE SUMMARY
-            </span>
-          </div>
+      <div className="flex items-center justify-between border-b border-gray-200 bg-white px-6 py-3">
+        <div className="flex items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-4 py-2">
+          <div className="h-2 w-2 rounded-full bg-gray-400"></div>
+          <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Duration:</span>
+          <span className="text-sm font-bold text-gray-900">00:27:46</span>
         </div>
-
-        {/* Right — Previous + Save Draft */}
-        <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+        <div className="flex items-center gap-4">
           <button
             onClick={onPrev}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "4px",
-              fontSize: "12px",
-              fontWeight: 500,
-              color: "#6b7280",
-              background: "none",
-              border: "none",
-              cursor: "pointer",
-              padding: "4px 2px",
-            }}
+            className="text-sm font-medium text-gray-500 transition hover:text-gray-700"
           >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#6b7280" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="15 18 9 12 15 6" />
-            </svg>
             Previous
           </button>
           <button
-            style={{
-              borderRadius: "6px",
-              backgroundColor: "#111827",
-              padding: "7px 16px",
-              fontSize: "12px",
-              fontWeight: 600,
-              color: "#ffffff",
-              border: "none",
-              cursor: "pointer",
-            }}
+            className="rounded-md bg-slate-950 px-6 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-900"
           >
             Save Draft
           </button>
+          <button className="text-xl font-light text-gray-500 transition hover:text-gray-800">×</button>
         </div>
       </div>
 
+      {/* Step Progress Dots */}
+      <div className="flex flex-col items-center py-4">
+        <div className="flex items-center gap-1">
+          {Array.from({ length: 9 }).map((_, i) => (
+            <div
+              key={i}
+              className={`h-1 rounded-full w-8 ${i < 4 ? "bg-[#2EE86B]" : "bg-gray-300"}`}
+            />
+          ))}
+        </div>
+        <span className="mt-1 text-xs font-medium uppercase tracking-widest text-gray-400">
+          Step 4 of 9
+        </span>
+      </div>
+
       {/* ── Scrollable Body ── */}
-      <div
-        style={{
-          flex: 1,
-          padding: "32px 40px 100px",
-          maxWidth: "780px",
-          margin: "0 auto",
-          width: "100%",
-          boxSizing: "border-box",
-        }}
-      >
+      <div className="flex-1 mx-auto max-w-4xl px-6 pb-28 w-full box-border">
         {/* Page title */}
         <h1
           style={{
-            fontSize: "26px",
+            fontSize: "30px",
             fontWeight: 800,
             color: "#111827",
             margin: "0 0 6px",
-            lineHeight: 1.2,
+            lineHeight: 1.1,
           }}
         >
           4. Scope of Work Summary

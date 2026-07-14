@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useSearchParams } from "next/navigation";
+import { useState } from "react";
 import Intro from "../Components/meetingWiz/Intro";
+import AboutHub from "../Components/meetingWiz/AboutHub";
+import DesignPort from "../Components/meetingWiz/DesignPort";
 import ScopeOfWork from "../Components/meetingWiz/ScopeOfWork";
 import FinalQuoteSum from "../Components/meetingWiz/FinalQuoteSum";
 
@@ -158,10 +159,11 @@ function StepPlaceholder({
         >
           <h1
             style={{
-              fontSize: "21px",
+              fontSize: "30px",
               fontWeight: 800,
               color: "#111827",
               margin: 0,
+              lineHeight: 1.1,
             }}
           >
             {stepNumber}. {title}
@@ -306,19 +308,7 @@ function StepPlaceholder({
 const TOTAL_STEPS = 9;
 
 export default function MeetingWizPage() {
-  const searchParams = useSearchParams();
-  const initialStep = Math.min(
-    Math.max(Number(searchParams.get("step")) || 1, 1),
-    TOTAL_STEPS,
-  );
-  const [step, setStep] = useState(initialStep);
-
-  // Sync URL when step changes (no full navigation, just replaces query param)
-  useEffect(() => {
-    const url = new URL(window.location.href);
-    url.searchParams.set("step", String(step));
-    window.history.replaceState(null, "", url.toString());
-  }, [step]);
+  const [step, setStep] = useState(1);
 
   const next = () => setStep((s) => Math.min(s + 1, TOTAL_STEPS));
   const prev = () => setStep((s) => Math.max(s - 1, 1));
@@ -327,23 +317,9 @@ export default function MeetingWizPage() {
     case 1:
       return <Intro onNext={next} onPrev={prev} />;
     case 2:
-      return (
-        <StepPlaceholder
-          stepNumber={2}
-          title="About Hub"
-          onNext={next}
-          onPrev={prev}
-        />
-      );
+      return <AboutHub onNext={next} onPrev={prev} />;
     case 3:
-      return (
-        <StepPlaceholder
-          stepNumber={3}
-          title="Design Port"
-          onNext={next}
-          onPrev={prev}
-        />
-      );
+      return <DesignPort onNext={next} onPrev={prev} />;
     case 4:
       return <ScopeOfWork onNext={next} onPrev={prev} />;
     case 5:

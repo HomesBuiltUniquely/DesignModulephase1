@@ -48,89 +48,28 @@ const lineItems = [
   },
 ];
 
-export default function FinalQuoteSum({ onPrev }: Props) {
+export default function FinalQuoteSum({ onPrev, onNext: _onNext }: Props) {
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        backgroundColor: "#f2f4f7",
-        fontFamily: "Arial, Helvetica, sans-serif",
-        display: "flex",
-        flexDirection: "column",
-      }}
-    >
+    <main className="min-h-screen w-full bg-[#f0f4f8]" style={{ fontFamily: "Arial, Helvetica, sans-serif", display: "flex", flexDirection: "column" }}>
       {/* ── Top Bar ── */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          backgroundColor: "#f2f4f7",
-          padding: "10px 20px",
-          flexShrink: 0,
-        }}
-      >
-        {/* Left — timer + step label */}
-        <div style={{ display: "flex", flexDirection: "column", gap: "1px" }}>
-          <span
-            style={{
-              fontSize: "13px",
-              fontWeight: 700,
-              color: "#2EE86B",
-              letterSpacing: "0.02em",
-              lineHeight: 1,
-            }}
-          >
+      <div className="flex items-center justify-between border-b border-gray-200 bg-white px-6 py-3">
+        <div className="flex flex-col items-start gap-0 text-left">
+          <span className="text-xs font-semibold uppercase tracking-widest text-[#10b981]">
             00:24:15
           </span>
-          <span
-            style={{
-              fontSize: "9px",
-              fontWeight: 600,
-              color: "#9ca3af",
-              textTransform: "uppercase",
-              letterSpacing: "0.08em",
-              lineHeight: 1,
-            }}
-          >
+          <span className="text-[8px] font-semibold uppercase tracking-[0.18em] text-gray-400">
             STEP 9/9
           </span>
         </div>
-
-        {/* Right — close */}
-        <button
-          style={{
-            width: "28px",
-            height: "28px",
-            borderRadius: "9999px",
-            border: "1px solid #e5e7eb",
-            backgroundColor: "#ffffff",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            cursor: "pointer",
-            color: "#6b7280",
-            fontSize: "14px",
-            lineHeight: 1,
-          }}
-        >
-          ✕
-        </button>
+        <button className="text-xl font-light text-gray-500 transition hover:text-gray-800">×</button>
       </div>
 
+
+
       {/* ── Scrollable Body ── */}
-      <div
-        style={{
-          flex: 1,
-          padding: "8px 32px 60px",
-          maxWidth: "700px",
-          margin: "0 auto",
-          width: "100%",
-          boxSizing: "border-box",
-        }}
-      >
+      <div className="flex-1 mx-auto max-w-4xl px-6 pb-28 w-full box-border">
         {/* Green square icon */}
-        <div style={{ display: "flex", justifyContent: "center", marginBottom: "20px" }}>
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: "25px" }}>
           <div
             style={{
               width: "48px",
@@ -144,15 +83,15 @@ export default function FinalQuoteSum({ onPrev }: Props) {
         {/* Page title */}
         <h1
           style={{
-            fontSize: "28px",
+            fontSize: "30px",
             fontWeight: 800,
             color: "#111827",
             textAlign: "center",
             margin: "0 0 10px",
-            lineHeight: 1.2,
+            lineHeight: 1.1,
           }}
         >
-          9. Final Quote &amp; Summary
+          5. Final Quote &amp; Summary
         </h1>
 
         {/* Subtitle */}
