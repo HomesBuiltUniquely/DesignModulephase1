@@ -4691,6 +4691,106 @@ function readDiscountMetaFromSnapshot(snapshotPayload: Record<string, unknown>):
   return { flatDiscountPct, categoryPct, amount };
 }
 
+async function findLeadRowForCrmQuoteLookup(externalLeadId: string): Promise<{
+  id: number;
+  prolanceQuoteId: unknown;
+} | null> {
+  const id = String(externalLeadId || "").trim();
+  if (!id) return null;
+
+  /** Avoid JSON_EXTRACT errors on empty/invalid legacy payload rows. */
+  const SAFE_PAYLOAD_JSON =
+    "CASE WHEN payload IS NULL OR TRIM(CAST(payload AS CHAR)) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END";
+
+  const readProlanceQuoteId = async (leadRowId: number): Promise<unknown> => {
+    try {
+      const [qRows] = await pool.query(
+        `SELECT prolance_quote_id AS prolanceQuoteId FROM leads WHERE id = ? LIMIT 1`,
+        [leadRowId],
+      );
+      return (qRows as any[])[0]?.prolanceQuoteId ?? null;
+    } catch (colErr) {
+      console.error("crm quote link prolance_quote_id read failed", { leadRowId, error: colErr });
+      return null;
+    }
+  };
+
+  const returnLead = async (leadRowId: number) => ({
+    id: Number(leadRowId),
+    prolanceQuoteId: await readProlanceQuoteId(Number(leadRowId)),
+  });
+
+  // 1) Prefer simple pid match (idempotent; does not touch JSON).
+  try {
+    const [byPid] = await pool.query(
+      `SELECT id FROM leads WHERE pid = ? ORDER BY id DESC LIMIT 1`,
+      [id],
+    );
+    const row = (byPid as any[])[0];
+    if (row?.id != null) return returnLead(row.id);
+  } catch (err) {
+    console.error("crm quote link pid lookup failed", { externalLeadId: id, error: err });
+  }
+
+  // 2) CRM sync pattern: pid / lookup as `${leadType}-${crmLeadId}` or `${leadType}#${crmLeadId}`
+  const typed = id.match(/^([a-zA-Z][a-zA-Z0-9_]*)[-#](\d+)$/);
+  if (typed) {
+    const leadType = typed[1];
+    const leadIdNum = Number(typed[2]);
+    if (leadType && Number.isFinite(leadIdNum) && leadIdNum > 0) {
+      try {
+        const [byCrm] = await pool.query(
+          `SELECT id FROM leads
+           WHERE JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.crmLeadType')) = ?
+             AND CAST(JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.crmLeadId')) AS UNSIGNED) = ?
+           ORDER BY id DESC LIMIT 1`,
+          [leadType, leadIdNum],
+        );
+        const row = (byCrm as any[])[0];
+        if (row?.id != null) return returnLead(row.id);
+      } catch (err) {
+        console.error("crm quote link crmLeadType/Id lookup failed", {
+          externalLeadId: id,
+          error: err,
+        });
+      }
+    }
+  }
+
+  // 3) payload.externalReferenceId / fetchedData.externalReferenceId (same as hub upsert matcher)
+  try {
+    const [byRef] = await pool.query(
+      `SELECT id FROM leads
+       WHERE JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.fetchedData.externalReferenceId')) = ?
+          OR JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.externalReferenceId')) = ?
+          OR JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.externalLeadId')) = ?
+          OR JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.leadIdentifier')) = ?
+          OR JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.uniqueId')) = ?
+       ORDER BY id DESC LIMIT 1`,
+      [id, id, id, id, id],
+    );
+    const row = (byRef as any[])[0];
+    if (row?.id != null) return returnLead(row.id);
+  } catch (err) {
+    console.error("crm quote link payload ref lookup failed", { externalLeadId: id, error: err });
+  }
+
+  // 4) Last-resort substring match on payload text (bounded).
+  try {
+    const like = `%"${id.replace(/[%_\\]/g, "\\$&")}"%`;
+    const [byLike] = await pool.query(
+      `SELECT id FROM leads WHERE CAST(payload AS CHAR) LIKE ? ORDER BY id DESC LIMIT 1`,
+      [like],
+    );
+    const row = (byLike as any[])[0];
+    if (row?.id != null) return returnLead(row.id);
+  } catch (err) {
+    console.error("crm quote link payload LIKE lookup failed", { externalLeadId: id, error: err });
+  }
+
+  return null;
+}
+
 async function handleCrmInternalLinkByExternalLeadId(req: Request, res: Response): Promise<void> {
   if (!requireExternalApiKey(req, res, "CRM internal quote link")) return;
   const externalLeadId = String(req.params.externalLeadId || "").trim();
@@ -4700,16 +4800,7 @@ async function handleCrmInternalLinkByExternalLeadId(req: Request, res: Response
   }
 
   try {
-    const [leadRows] = await pool.query(
-      `SELECT id, prolance_quote_id AS prolanceQuoteId, payload
-       FROM leads
-       WHERE pid = ?
-          OR JSON_UNQUOTE(JSON_EXTRACT(payload, '$.externalReferenceId')) = ?
-       ORDER BY id DESC
-       LIMIT 1`,
-      [externalLeadId, externalLeadId],
-    );
-    const lead = (leadRows as any[])[0];
+    const lead = await findLeadRowForCrmQuoteLookup(externalLeadId);
     if (!lead) {
       res.status(404).json({ message: "Lead not found for externalLeadId" });
       return;
@@ -4722,16 +4813,43 @@ async function handleCrmInternalLinkByExternalLeadId(req: Request, res: Response
         : null;
 
     if (quoteId == null || quoteId < 1) {
-      const [snapRows] = await pool.query(
-        `SELECT quote_id AS quoteId
-         FROM lead_prolance_quote_snapshots
-         WHERE lead_id = ?
-         ORDER BY created_at DESC, id DESC
-         LIMIT 1`,
-        [leadId],
-      );
-      const snap = (snapRows as any[])[0];
-      quoteId = snap?.quoteId != null && Number.isFinite(Number(snap.quoteId)) ? Number(snap.quoteId) : null;
+      try {
+        const [snapRows] = await pool.query(
+          `SELECT quote_id AS quoteId
+           FROM lead_prolance_quote_snapshots
+           WHERE lead_id = ?
+           ORDER BY created_at DESC, id DESC
+           LIMIT 1`,
+          [leadId],
+        );
+        const snap = (snapRows as any[])[0];
+        quoteId =
+          snap?.quoteId != null && Number.isFinite(Number(snap.quoteId))
+            ? Number(snap.quoteId)
+            : null;
+      } catch (snapErr) {
+        console.error("crm quote link snapshot lookup failed", { leadId, error: snapErr });
+      }
+    }
+
+    if (quoteId == null || quoteId < 1) {
+      try {
+        const [verRows] = await pool.query(
+          `SELECT quote_id AS quoteId
+           FROM lead_prolance_quote_versions
+           WHERE lead_id = ?
+           ORDER BY created_at DESC, id DESC
+           LIMIT 1`,
+          [leadId],
+        );
+        const ver = (verRows as any[])[0];
+        quoteId =
+          ver?.quoteId != null && Number.isFinite(Number(ver.quoteId))
+            ? Number(ver.quoteId)
+            : null;
+      } catch (verErr) {
+        console.error("crm quote link version lookup failed", { leadId, error: verErr });
+      }
     }
 
     if (quoteId == null || quoteId < 1) {
