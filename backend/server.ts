@@ -5552,6 +5552,29 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         });
       }
     }
+    if (milestoneIndex === 1 && tNorm === "DQC 1 approval") {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const role = (user.role || "").toLowerCase();
+      if (role !== "dqc_manager" && role !== "dqe" && role !== "admin") {
+        return res.status(403).json({
+          message: "Only DQC Manager, DQE, or Admin can complete DQC 1 approval",
+        });
+      }
+    }
+    if (
+      milestoneIndex === 4 &&
+      (tNorm === "DQC 2 approval" || tNorm === "DQC 2 approval ")
+    ) {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const role = (user.role || "").toLowerCase();
+      if (role !== "dqc_manager" && role !== "dqe" && role !== "admin") {
+        return res.status(403).json({
+          message: "Only DQC Manager, DQE, or Admin can complete DQC 2 approval",
+        });
+      }
+    }
     const actingUser = await getUserFromSession(req);
     if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
 
@@ -10660,7 +10683,7 @@ app.post("/api/leads/:id/dqc-review", async (req: Request, res: Response) => {
     const role = (user.role ?? "").toLowerCase();
     if (role !== "dqc_manager" && role !== "dqe" && role !== "admin")
       return res.status(403).json({ message: "Only DQC Manager, DQE or Admin can submit DQC review" });
-    const { verdict, remarks } = req.body || {};
+    const { verdict, remarks, submissionVariant: bodyVariant } = req.body || {};
     if (!verdict || !Array.isArray(remarks))
       return res.status(400).json({ message: "verdict and remarks array required" });
     // Fetch the latest review before inserting the new one to know if it's DQC 1 or DQC 2
@@ -10676,7 +10699,14 @@ app.post("/api/leads/:id/dqc-review", async (req: Request, res: Response) => {
       [leadId],
     );
     const isDqc1Completed = (dqc1CompleteRows as any[]).length > 0;
-    const isDqc2 = isDqc1Completed || lastVerdict === "pending_dqc2";
+    const variantFromBody =
+      bodyVariant === "dqc1" || bodyVariant === "dqc2" ? bodyVariant : null;
+    const isDqc2 =
+      variantFromBody === "dqc2"
+        ? true
+        : variantFromBody === "dqc1"
+          ? false
+          : isDqc1Completed || lastVerdict === "pending_dqc2";
 
     await pool.query(
       `INSERT INTO lead_dqc_reviews (lead_id, verdict, remarks, created_at, reviewed_by_user_id)
@@ -10684,10 +10714,10 @@ app.post("/api/leads/:id/dqc-review", async (req: Request, res: Response) => {
       [leadId, verdict, JSON.stringify(remarks), new Date(), user.id],
     );
 
-    // Send internal email notification if verdict is rejected or approved_with_changes
+    // Send internal rejection / changes feedback email to assigned designer
     try {
       const [leadRows] = await pool.query(
-        `SELECT l.project_name as projectName, l.payload, l.assigned_designer_id,
+        `SELECT l.pid, l.project_name as projectName, l.payload, l.assigned_designer_id,
                 u.name as designerName, u.email as designerEmail
          FROM leads l
          LEFT JOIN users u ON u.id = l.assigned_designer_id
@@ -10702,11 +10732,16 @@ app.post("/api/leads/:id/dqc-review", async (req: Request, res: Response) => {
         } catch {
           payload = {};
         }
+        const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
         const customerName =
-          payload.customer_name || payload?.form?.customer_name || leadRow.projectName || "Customer";
-        const ecName =
-          payload.experience_center || payload?.form?.experience_center || "";
-        const designerName = leadRow.designerName || "Designer";
+          formData.customer_name ||
+          formData.sales_lead_name ||
+          payload.customer_name ||
+          payload?.form?.customer_name ||
+          leadRow.projectName ||
+          "Customer";
+        const ecName = resolveLeadBranchName(payload);
+        const designerName = leadRow.designerName || formData.designer_name || "Designer";
         const designerEmail = leadRow.designerEmail;
 
         if (designerEmail && (verdict === "rejected" || verdict === "approved_with_changes")) {
@@ -10714,7 +10749,15 @@ app.post("/api/leads/:id/dqc-review", async (req: Request, res: Response) => {
           const baseCc = await getMailLoopCcEmails([designerEmail, user.email], leadId);
           const ccList = distinctEmails(baseCc.filter((e) => e !== designerEmail));
           const submissionVariant = isDqc2 ? "dqc2" : "dqc1";
-          const subject = buildMailChainSubject(leadId, leadRow.projectName, customerName);
+          const projectIdLabel = leadRow.pid || leadRow.projectName || `HUB-${leadId}`;
+          const subject = buildMailChainSubject(projectIdLabel, leadRow.projectName, customerName);
+
+          console.log("[dqc-review] Triggering internal feedback email", {
+            leadId,
+            submissionVariant,
+            verdict,
+            to,
+          });
 
           void triggerMailRouteWithLog({
             leadId,
@@ -10726,15 +10769,24 @@ app.post("/api/leads/:id/dqc-review", async (req: Request, res: Response) => {
               to,
               cc: ccList,
               subject,
-              projectId: leadRow.projectName || String(leadId),
+              projectId: projectIdLabel,
               customerName,
               ecName,
               designerName,
               dqcRepName: user.name || "DQC Team Member",
               verdict,
               submissionVariant,
-              remarks: remarks.map((r: any) => ({ priority: r.priority || "medium", text: r.text || "" })),
+              remarks: remarks.map((r: any) => ({
+                priority: r.priority || "medium",
+                text: r.text || "",
+              })),
             },
+          });
+        } else if (verdict === "rejected" || verdict === "approved_with_changes") {
+          console.warn("[dqc-review] Skipping feedback email — assigned designer has no email", {
+            leadId,
+            verdict,
+            assignedDesignerId: leadRow.assigned_designer_id,
           });
         }
       }

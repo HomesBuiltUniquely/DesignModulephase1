@@ -3,6 +3,8 @@
 import * as React from 'react';
 import type { RefObject } from 'react';
 
+type ShareMomResult = { ok: boolean };
+
 type Props = {
     momMinutes: string;
     setMomMinutes: (v: string) => void;
@@ -13,7 +15,7 @@ type Props = {
     onMomDrop: (e: React.DragEvent) => void;
     removeMomFile: (index: number) => void;
     onClose: () => void;
-    onShareMom?: (extra?: { attendees: string; meetingDate: string; completionPercent?: number }) => void;
+    onShareMom?: (extra?: { completionPercent?: number }) => Promise<ShareMomResult | void> | ShareMomResult | void;
     /** Progress % saved from the meeting popup — shown read-only so MOM and meeting are in sync */
     initialCompletionPercent?: number;
     /** When true, show 40% payment screenshot upload section (for the "40% collection" task). */
@@ -25,8 +27,6 @@ type Props = {
     onPayment40pDrop?: (e: React.DragEvent) => void;
     onPayment40pDragOver?: (e: React.DragEvent) => void;
     removePayment40pFile?: (index: number) => void;
-    defaultAttendees?: string;
-    defaultMeetingDate?: string;
 };
 
 /**
@@ -52,11 +52,51 @@ export default function PopupMeetingCompleted({
     onPayment40pDrop,
     onPayment40pDragOver,
     removePayment40pFile,
-    defaultAttendees,
-    defaultMeetingDate,
 }: Props) {
-    const [attendees, setAttendees] = React.useState(defaultAttendees || 'Customer, Designer');
-    const [meetingDate, setMeetingDate] = React.useState(defaultMeetingDate || '');
+    const [isSharing, setIsSharing] = React.useState(false);
+    const [error, setError] = React.useState<string | null>(null);
+    const [toast, setToast] = React.useState<string | null>(null);
+
+    const hasMomText = momMinutes.trim().length > 0;
+    const hasAttachment = momReferenceFiles.length > 0;
+    const canShare = hasMomText && hasAttachment && !isSharing && !toast;
+
+    const handleShareMom = async () => {
+        if (isSharing || toast) return;
+
+        if (!hasMomText && !hasAttachment) {
+            setError('Please enter MOM text and add at least one attachment.');
+            return;
+        }
+        if (!hasMomText) {
+            setError('Please enter Minutes of Meeting (MOM) text.');
+            return;
+        }
+        if (!hasAttachment) {
+            setError('Please add at least one attachment.');
+            return;
+        }
+
+        if (!onShareMom) return;
+        setIsSharing(true);
+        setError(null);
+        try {
+            const result = await onShareMom({ completionPercent: initialCompletionPercent ?? 100 });
+            if (result && result.ok === false) {
+                setError('Failed to share MOM. Please try again.');
+                return;
+            }
+            setToast('MOM shared successfully.');
+            setTimeout(() => {
+                setToast(null);
+                onClose();
+            }, 3000);
+        } catch {
+            setError('Failed to share MOM. Please try again.');
+        } finally {
+            setIsSharing(false);
+        }
+    };
 
     return (
         <div className="px-6 pb-6 max-w-[640px] mt-6">
@@ -101,39 +141,25 @@ export default function PopupMeetingCompleted({
                         : `Design was ${initialCompletionPercent}% complete at the time of meeting.`}
                 </p>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
-                <div>
-                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-1.5">Meeting Participants</label>
-                    <input
-                        type="text"
-                        value={attendees}
-                        onChange={(e) => setAttendees(e.target.value)}
-                        className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-gray-700 bg-white text-sm"
-                        placeholder="Enter participants (e.g. John Doe – Client, Sarah Miller – Lead)"
-                    />
-                </div>
-                <div>
-                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-1.5">Date / Time</label>
-                    <input
-                        type="text"
-                        value={meetingDate}
-                        onChange={(e) => setMeetingDate(e.target.value)}
-                        className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-gray-700 bg-white text-sm"
-                        placeholder="Enter date & time (e.g. Oct 24, 2023 | 10:30 AM – 11:45 AM)"
-                    />
-                </div>
-            </div>
             <div className="mb-6">
                 <div className="flex items-center justify-between gap-2 mb-1.5">
-                    <label className="text-sm font-bold text-gray-800">Minutes of the Meeting (MOM)</label>
+                    <label className="text-sm font-bold text-gray-800">
+                        Minutes of the Meeting (MOM) <span className="text-red-500">*</span>
+                    </label>
                     <span className="text-xs text-gray-400">Required Field</span>
                 </div>
                 <textarea
                     value={momMinutes}
-                    onChange={(e) => setMomMinutes(e.target.value)}
+                    onChange={(e) => {
+                        setMomMinutes(e.target.value);
+                        if (error) setError(null);
+                    }}
                     placeholder={'• Customer liked kitchen layout; requested granite countertop switch.\n• Agreed on 15th Nov for next site visit.\n• Budget ceiling confirmed at $45,000.'}
-                    className="w-full border border-gray-300 rounded-lg px-3 py-3 text-gray-700 text-sm min-h-[140px] resize-y"
+                    className={`w-full border rounded-lg px-3 py-3 text-gray-700 text-sm min-h-[140px] resize-y ${
+                        error && !hasMomText ? 'border-red-400' : 'border-gray-300'
+                    }`}
                     rows={6}
+                    disabled={isSharing || !!toast}
                 />
                 <div className="flex items-start gap-2 mt-2 p-3 bg-gray-100 rounded-lg">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5"><path strokeLinecap="round" strokeLinejoin="round" d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z" /></svg>
@@ -141,15 +167,38 @@ export default function PopupMeetingCompleted({
                 </div>
             </div>
             <div className="mb-6">
-                <h3 className="text-sm font-bold text-gray-800 mb-1">Reference Images / Markups / Screenshots</h3>
-                <p className="text-xs text-gray-500 mb-3">Attach visual proof discussed during the meeting.</p>
-                <input ref={momFileInputRef} type="file" className="hidden" accept=".jpg,.jpeg,.png,.pdf" multiple onChange={onMomFilesSelected} />
+                <h3 className="text-sm font-bold text-gray-800 mb-1">
+                    Reference Images / Markups / Screenshots <span className="text-red-500">*</span>
+                </h3>
+                <p className="text-xs text-gray-500 mb-3">Attach visual proof discussed during the meeting. At least one attachment is required.</p>
+                <input
+                    ref={momFileInputRef}
+                    type="file"
+                    className="hidden"
+                    accept=".jpg,.jpeg,.png,.pdf"
+                    multiple
+                    onChange={(e) => {
+                        onMomFilesSelected(e);
+                        if (error) setError(null);
+                    }}
+                    disabled={isSharing || !!toast}
+                />
                 <div className="flex gap-4 flex-wrap">
                     <div
-                        onClick={openMomFileUpload}
-                        onDrop={(e) => { e.preventDefault(); onMomDrop(e); }}
+                        onClick={() => {
+                            if (isSharing || toast) return;
+                            openMomFileUpload();
+                        }}
+                        onDrop={(e) => {
+                            e.preventDefault();
+                            if (isSharing || toast) return;
+                            onMomDrop(e);
+                            if (error) setError(null);
+                        }}
                         onDragOver={(e) => e.preventDefault()}
-                        className="flex-1 min-w-[200px] border-2 border-dashed border-gray-300 rounded-xl bg-gray-50 p-6 flex flex-col items-center justify-center cursor-pointer hover:border-blue-300 hover:bg-gray-100 transition-colors"
+                        className={`flex-1 min-w-[200px] border-2 border-dashed rounded-xl bg-gray-50 p-6 flex flex-col items-center justify-center cursor-pointer hover:border-blue-300 hover:bg-gray-100 transition-colors ${
+                            error && !hasAttachment ? 'border-red-400' : 'border-gray-300'
+                        } ${isSharing || toast ? 'opacity-60 pointer-events-none' : ''}`}
                     >
                         <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center mb-2">
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-6 h-6 text-blue-600"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5" /></svg>
@@ -162,7 +211,14 @@ export default function PopupMeetingCompleted({
                             {momReferenceFiles[i] ? (
                                 <div className="w-full h-full flex flex-col items-center justify-center p-2">
                                     <p className="text-xs text-gray-600 truncate w-full text-center" title={momReferenceFiles[i].name}>{momReferenceFiles[i].name}</p>
-                                    <button type="button" onClick={() => removeMomFile(i)} className="text-xs text-red-600 mt-1">Remove</button>
+                                    <button
+                                        type="button"
+                                        onClick={() => removeMomFile(i)}
+                                        disabled={isSharing || !!toast}
+                                        className="text-xs text-red-600 mt-1 disabled:opacity-50"
+                                    >
+                                        Remove
+                                    </button>
                                 </div>
                             ) : (
                                 <>
@@ -209,12 +265,39 @@ export default function PopupMeetingCompleted({
                 </div>
             )}
 
+            {error && <p className="mb-3 text-sm font-medium text-red-600">{error}</p>}
+
             <div className="flex justify-end gap-3">
-                <button type="button" onClick={onClose} className="px-4 py-2 text-gray-700 font-medium hover:bg-gray-100 rounded-lg">Cancel</button>
-                <button type="button" onClick={() => onShareMom?.({ attendees, meetingDate, completionPercent: initialCompletionPercent ?? 100 })} className="px-5 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 flex items-center gap-1">
-                    {show40pUpload ? 'Share MOM & send to finance' : 'Share the MOM'} <span className="pl-2"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="size-6 fill-white"><path strokeLinecap="round" strokeLinejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" /></svg></span>
+                <button
+                    type="button"
+                    onClick={onClose}
+                    disabled={isSharing || !!toast}
+                    className="px-4 py-2 text-gray-700 font-medium hover:bg-gray-100 rounded-lg disabled:opacity-50"
+                >
+                    Cancel
+                </button>
+                <button
+                    type="button"
+                    onClick={handleShareMom}
+                    disabled={!canShare}
+                    className="px-5 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                    {isSharing ? 'Sharing…' : show40pUpload ? 'Share MOM & send to finance' : 'Share the MOM'}
+                    {!isSharing && (
+                        <span className="pl-2">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="size-6 fill-white">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" />
+                            </svg>
+                        </span>
+                    )}
                 </button>
             </div>
+
+            {toast && (
+                <div className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-gray-800 text-white text-base font-medium px-8 py-4 rounded-lg shadow-2xl z-[9999] text-center max-w-md">
+                    {toast}
+                </div>
+            )}
         </div>
     );
 }

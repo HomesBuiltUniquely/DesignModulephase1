@@ -75,6 +75,8 @@ type Props = {
   onLoadDqcSubmission?: () => void;
   /** Optional title (e.g. "DQC 1 Approval" / "DQC 2 Approval") instead of default "Design QC Review" */
   reviewTitle?: string;
+  /** When false, hide "Approved with Changes" (Approve / Reject only). Defaults to false. */
+  showApproveWithChanges?: boolean;
   dqcSubmissionFiles?: Array<{ id: number; originalName: string }>;
   selectedDqcSubmissionFileId?: number | null;
   onSelectDqcSubmissionFile?: (id: number) => void;
@@ -128,6 +130,7 @@ export default function PopupDqc1Approval({
   dqc1SubmissionLoading = false,
   onLoadDqcSubmission,
   reviewTitle,
+  showApproveWithChanges = false,
   dqcSubmissionFiles = [],
   selectedDqcSubmissionFileId = null,
   onSelectDqcSubmissionFile,
@@ -546,6 +549,7 @@ export default function PopupDqc1Approval({
                     </p>
                   </div>
                 </label>
+                {showApproveWithChanges && (
                 <label
                   className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer ${dqc1Verdict === "approved_with_changes" ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:bg-gray-50"}`}
                 >
@@ -581,6 +585,7 @@ export default function PopupDqc1Approval({
                     </p>
                   </div>
                 </label>
+                )}
                 <label
                   className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer ${dqc1Verdict === "rejected" ? "border-red-500 bg-red-50" : "border-gray-200 hover:bg-gray-50"}`}
                 >
@@ -633,8 +638,13 @@ export default function PopupDqc1Approval({
                 Project will move to the next milestone.
               </p>
             )}
-            {(dqc1Verdict === "approved_with_changes" ||
-              dqc1Verdict === "rejected") && (
+            {dqc1Verdict === "rejected" && (
+              <p className="text-xs text-gray-500 mt-2">
+                Designers will address comments and re-upload; you can review
+                again later.
+              </p>
+            )}
+            {showApproveWithChanges && dqc1Verdict === "approved_with_changes" && (
               <p className="text-xs text-gray-500 mt-2">
                 Designers will address comments and re-upload; you can review
                 again later.

@@ -33,13 +33,11 @@ const checklistRoutes: ChecklistRoute[] = [
 
 export const checklistDefinitions: Record<ChecklistKey, ChecklistDefinition> = {
   first_cut: {
-    title: "FIRST CUT MEETING – 2 HOUR CONTROL CHECKLIST - online",
+    title: "Before First Meeting Checklist",
     sections: meetingChecklist,
     postUrl: `${API}/api/checklist`,
     lastUrl: `${API}/api/checklist/last`,
     successMessage: "Checklist submitted successfully",
-    showBreakdownDividerAtIndex: 1,
-    breakdownDividerTitle: "MEETING STRUCTURE (2 HOURS BREAKDOWN)",
   },
   color_selection: {
     title: "COLOR & MATERIAL SELECTION MEETING CHECKLIST - online",

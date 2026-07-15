@@ -24,6 +24,8 @@ type MeetingMeta = {
   endTime?: string;
 };
 
+type InviteSubmitResult = { ok: boolean; mailSent?: boolean };
+
 type Props = {
   designUploadFiles: File[];
   designFileInputRef: RefObject<HTMLInputElement | null>;
@@ -45,7 +47,9 @@ type Props = {
   initialMode?: "online" | "offline";
   initialLink?: string;
   initialCompletionPercent?: number;
-  onSubmit?: (meta?: MeetingMeta) => void;
+  /** Close meeting popup after success toast */
+  onClose?: () => void;
+  onSubmit?: (meta?: MeetingMeta) => Promise<InviteSubmitResult | void> | InviteSubmitResult | void;
   /** Called when designer marks 100% complete; parent should record task complete and close. */
   onCompleteAndProceed?: (meta?: MeetingMeta) => void;
 };
@@ -70,6 +74,7 @@ export default function PopupFirstCutDesign({
   initialMode,
   initialLink,
   initialCompletionPercent,
+  onClose,
   onSubmit,
   onCompleteAndProceed,
 }: Props) {
@@ -80,6 +85,9 @@ export default function PopupFirstCutDesign({
   const [completionPercent, setCompletionPercent] = useState(initialCompletionPercent || 0);
   const [selectedStartMin, setSelectedStartMin] = useState<number | null>(null);
   const [slotPickerOpen, setSlotPickerOpen] = useState(false);
+  const [isSendingInvite, setIsSendingInvite] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const [inviteError, setInviteError] = useState<string | null>(null);
 
   const isMeetingLinkEmpty = meetingLink.trim().length === 0;
   const isMeetingScheduleIncomplete =
@@ -111,6 +119,32 @@ export default function PopupFirstCutDesign({
           ? buildHubMeetingDateTimeIso(meetingDate, endMin)
           : undefined,
     };
+  };
+
+  const handleSendInvite = async () => {
+    if (isSendingInvite || isMeetingScheduleIncomplete || !onSubmit) return;
+    setIsSendingInvite(true);
+    setInviteError(null);
+    try {
+      const result = await onSubmit(buildMeta());
+      if (result && result.ok === false) {
+        setInviteError("Failed to send invite. Please try again.");
+        return;
+      }
+      if (result?.mailSent === false) {
+        setToast("Meeting scheduled. Meeting mail could not be sent — check client email on the lead.");
+      } else {
+        setToast("Meeting scheduled and meeting mail sent to client.");
+      }
+      setTimeout(() => {
+        setToast(null);
+        onClose?.();
+      }, 3000);
+    } catch {
+      setInviteError("Failed to send invite. Please try again.");
+    } finally {
+      setIsSendingInvite(false);
+    }
   };
 
   return (
@@ -402,39 +436,50 @@ export default function PopupFirstCutDesign({
           </p>
         </div>
         <div className="w-full border border-gray-200" />
+        {inviteError && (
+          <p className="px-6 pt-2 text-sm font-medium text-red-600">{inviteError}</p>
+        )}
         <div className="flex justify-end gap-2 bg-gray-100 px-6 py-3">
           <button
             type="button"
-            onClick={() => onSubmit?.(buildMeta())}
-            disabled={isMeetingScheduleIncomplete}
+            onClick={handleSendInvite}
+            disabled={isMeetingScheduleIncomplete || isSendingInvite || !!toast}
             className="bg-blue-500 text-white px-4 h-9 rounded-md flex items-center gap-2 font-bold disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Send Invite
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              fill="none"
-              viewBox="0 0 24 24"
-              strokeWidth="1.5"
-              stroke="currentColor"
-              className="size-5"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5"
-              />
-            </svg>
+            {isSendingInvite ? "Sending…" : "Send Invite"}
+            {!isSendingInvite && (
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+                strokeWidth="1.5"
+                stroke="currentColor"
+                className="size-5"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5"
+                />
+              </svg>
+            )}
           </button>
           <button
             type="button"
             onClick={() => onCompleteAndProceed?.(buildMeta())}
-            disabled={completionPercent < 100 || isMeetingScheduleIncomplete}
+            disabled={completionPercent < 100 || isMeetingScheduleIncomplete || isSendingInvite || !!toast}
             className="bg-green-600 text-white px-4 h-9 rounded-md flex items-center gap-2 font-bold disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Mark 100% complete & proceed
           </button>
         </div>
       </div>
+
+      {toast && (
+        <div className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-gray-800 text-white text-base font-medium px-8 py-4 rounded-lg shadow-2xl z-[9999] text-center max-w-md">
+          {toast}
+        </div>
+      )}
     </div>
   );
 }

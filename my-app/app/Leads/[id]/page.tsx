@@ -62,6 +62,7 @@ export default function ProjectDetailPage() {
     const viewDqc = searchParams.get('view') === 'dqc';
     const dqcStage = viewDqc ? (searchParams.get('stage') === 'dqc2' ? 'dqc2' as const : 'dqc1' as const) : null;
     const isDqcUser = ['dqc_manager', 'dqe'].includes((authUser?.role || '').toLowerCase());
+    const canApproveDqc = ['dqc_manager', 'dqe', 'admin'].includes((authUser?.role || '').toLowerCase());
     const isDesigner = ['designer', 'design_manager'].includes((authUser?.role || '').toLowerCase());
     
     // State to track WHICH card is maximized (null = none)
@@ -1352,15 +1353,6 @@ export default function ProjectDetailPage() {
             setDqc1Verdict(null);
     };
 
-    const getMeetingDefaults = (meetingTaskName: string) => {
-        const ev = historyEvents.find(e => e.taskName === meetingTaskName && (e.meta as any)?.meetingDate);
-        if (!ev) return { date: '', attendees: 'Customer, Designer' };
-        const meta = ev.meta as any;
-        const dateStr = meta.meetingDate ? `${meta.meetingDate} ${meta.meetingTime ? '| ' + meta.meetingTime : ''}` : '';
-        const attendeesStr = meta.attendees || `${project?.projectName || 'Customer'}, ${authUser?.name || project?.designerName || 'Designer'}`;
-        return { date: dateStr, attendees: attendeesStr };
-    };
-
     const closePopup = () => {
         setPopupContext(null);
         setDqc1Verdict(null);
@@ -1538,6 +1530,11 @@ export default function ProjectDetailPage() {
         const taskName =
             (isDqc2 && popupContext?.taskName) ? popupContext.taskName : 'DQC 1 approval';
         const milestoneName = isDqc2 ? 'DQC2' : 'DQC1';
+        // DQC 1 / DQC 2 approval: only DQC Manager, DQE, or Admin
+        if (!canApproveDqc) {
+            alert('Only DQC Manager, DQE, or Admin can submit this DQC approval.');
+            return;
+        }
         if (dqc1Verdict) {
             addHistoryEvent({
                 type: 'completed',
@@ -1545,7 +1542,7 @@ export default function ProjectDetailPage() {
                 milestoneName,
                 description: dqc1Verdict === 'approved'
                     ? `${taskName} completed. Design QC review submitted.`
-                    : `DQC review submitted: ${dqc1Verdict === 'rejected' ? 'Rejected' : 'Approved with changes'}. Designer must address comments.`,
+                    : `DQC review submitted: Rejected. Designer must address comments.`,
                 user: { name: authUser?.name ?? 'Current User', avatar: authUser?.profileImage },
                 details: {
                     kind: 'dqc_review',
@@ -1608,6 +1605,7 @@ export default function ProjectDetailPage() {
                     headers: buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' }),
                     body: JSON.stringify({
                         verdict: dqc1Verdict,
+                        submissionVariant: isDqc2 ? 'dqc2' : 'dqc1',
                         remarks: dqc1Remarks.map((r) => ({
                             priority: r.priority,
                             text: r.text,
@@ -1619,7 +1617,9 @@ export default function ProjectDetailPage() {
                             uploadName: r.uploadName,
                         })),
                     }),
-                }).catch(() => {});
+                }).catch((err) => {
+                    console.error('dqc-review save / rejection mail failed', err);
+                });
             }
         }
         if (viewDqc && isDqcUser) {
@@ -2760,8 +2760,9 @@ export default function ProjectDetailPage() {
                                 const ev = historyEvents.find(e => e.taskName === 'First cut design + quotation discussion meeting request' && (e.meta as any)?.completionPercent !== undefined);
                                 return ev ? (ev.meta as any).completionPercent : 0;
                             })()}
+                            onClose={closePopup}
                             onSubmit={async (meta) => {
-                                if (!projectId) return;
+                                if (!projectId) return { ok: false };
                                 try {
                                     let uploadedAttachments: any[] = [];
                                     if (designUploadFiles.length > 0 && sessionId) {
@@ -2789,7 +2790,7 @@ export default function ProjectDetailPage() {
                                     }
 
                                     // Manual invite trigger if not already handled by upload endpoint or for re-sending
-                                    await fetch(`${API}/api/leads/${projectId}/schedule-meeting-invite`, {
+                                    const inviteRes = await fetch(`${API}/api/leads/${projectId}/schedule-meeting-invite`, {
                                         method: 'POST',
                                         headers: {
                                             'Content-Type': 'application/json',
@@ -2809,6 +2810,9 @@ export default function ProjectDetailPage() {
                                             slotId: meta?.slotId,
                                         }),
                                     });
+                                    if (!inviteRes.ok) {
+                                        return { ok: false };
+                                    }
                                     addHistoryEvent({
                                         type: 'note',
                                         milestoneIndex: 1,
@@ -2818,9 +2822,10 @@ export default function ProjectDetailPage() {
                                         meta: { ...meta },
                                     });
                                     setDesignUploadFiles([]);
+                                    return { ok: true, mailSent: true };
                                 } catch (err) {
                                     console.error('first-cut-design submission failed', err);
-                                    alert('Failed to submit design request. Please try again.');
+                                    return { ok: false };
                                 }
                             }}
                             onCompleteAndProceed={(meta) => {
@@ -2842,8 +2847,6 @@ export default function ProjectDetailPage() {
                     )}
                     {popupContext.milestoneIndex === 1 && popupContext.taskName === 'meeting completed' && (
                         <PopupMeetingCompleted
-                            defaultMeetingDate={getMeetingDefaults('First cut design + quotation discussion meeting request').date}
-                            defaultAttendees={getMeetingDefaults('First cut design + quotation discussion meeting request').attendees}
                             momMinutes={momMinutes}
                             setMomMinutes={setMomMinutes}
                             momReferenceFiles={momReferenceFiles}
@@ -2858,19 +2861,20 @@ export default function ProjectDetailPage() {
                                 return ev ? (ev.meta as any).completionPercent : undefined;
                             })()}
                             onShareMom={async (extra) => {
-                                if (!projectId) return;
+                                if (!projectId) return { ok: false };
                                 try {
                                     if (sessionId) {
                                         const fd = new FormData();
                                         fd.append('minutes', momMinutes);
                                         momReferenceFiles.forEach((f) => fd.append('files', f));
-                                        await fetch(`${API}/api/leads/${projectId}/mom-upload`, {
+                                        const res = await fetch(`${API}/api/leads/${projectId}/mom-upload`, {
                                             method: 'POST',
                                             headers: {
                                                 Authorization: `Bearer ${sessionId}`,
                                             },
                                             body: fd,
                                         });
+                                        if (!res.ok) return { ok: false };
                                     }
                                     recordTaskComplete(1, 'meeting completed', {
                                         description: 'Meeting completed. Minutes of meeting shared.',
@@ -2880,8 +2884,7 @@ export default function ProjectDetailPage() {
                                             referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
                                         },
                                         meta: {
-                                            attendees: extra?.attendees,
-                                            meetingDate: extra?.meetingDate,
+                                            completionPercent: extra?.completionPercent,
                                             details: {
                                                 kind: 'mom',
                                                 minutes: momMinutes,
@@ -2892,10 +2895,10 @@ export default function ProjectDetailPage() {
                                     setMomMinutes('');
                                     setMomReferenceFiles([]);
                                     setUploadsVersion((v) => v + 1);
-                                    closePopup();
+                                    return { ok: true };
                                 } catch (err) {
                                     console.error('mom upload failed', err);
-                                    alert('Failed to save MOM. Please try again.');
+                                    return { ok: false };
                                 }
                             }}
                         />
@@ -2983,7 +2986,7 @@ export default function ProjectDetailPage() {
                                     setPopupContext({ milestoneIndex: 1, milestoneName: 'DQC1', taskName: 'DQC 1 submission - dwg + quotation' });
                                 }}
                             />
-                        ) : (
+                        ) : canApproveDqc ? (
                             <PopupDqc1Approval
                                 onClose={closePopup}
                                 projectTitle={project.projectName}
@@ -3041,6 +3044,19 @@ export default function ProjectDetailPage() {
                                     });
                                 }}
                             />
+                        ) : (
+                            <div className="px-6 pb-6">
+                                <p className="text-sm text-gray-700 mb-4">
+                                    Only <strong>DQC Manager</strong>, <strong>DQE</strong>, or <strong>Admin</strong> can approve DQC 1. Other roles cannot submit this approval.
+                                </p>
+                                <button
+                                    type="button"
+                                    onClick={closePopup}
+                                    className="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200"
+                                >
+                                    Close
+                                </button>
+                            </div>
                         )
                     )}
 
@@ -3151,8 +3167,9 @@ export default function ProjectDetailPage() {
                                 const ev = historyEvents.find(e => e.taskName === 'Material selection meeting + quotation discussion' && (e.meta as any)?.completionPercent !== undefined);
                                 return ev ? (ev.meta as any).completionPercent : 0;
                             })()}
+                            onClose={closePopup}
                             onSubmit={async (meta) => {
-                                if (!projectId) return;
+                                if (!projectId) return { ok: false };
                                 try {
                                     // 1. Upload files first (no email side effect) → get attachment paths
                                     let attachments: { filename: string; path: string }[] = [];
@@ -3174,7 +3191,7 @@ export default function ProjectDetailPage() {
                                     }
 
                                     // 2. Schedule meeting invite + send email WITH attachments
-                                    await fetch(`${API}/api/leads/${projectId}/schedule-meeting-invite`, {
+                                    const inviteRes = await fetch(`${API}/api/leads/${projectId}/schedule-meeting-invite`, {
                                         method: 'POST',
                                         headers: {
                                             'Content-Type': 'application/json',
@@ -3194,6 +3211,9 @@ export default function ProjectDetailPage() {
                                             ...(attachments.length ? { attachments } : {}),
                                         }),
                                     });
+                                    if (!inviteRes.ok) {
+                                        return { ok: false };
+                                    }
                                     addHistoryEvent({
                                         type: 'note',
                                         milestoneIndex: 4,
@@ -3203,9 +3223,10 @@ export default function ProjectDetailPage() {
                                         meta: { ...meta },
                                     });
                                     setDesignUploadFiles([]);
+                                    return { ok: true, mailSent: true };
                                 } catch (err) {
                                     console.error('material-selection schedule failed', err);
-                                    alert('Failed to schedule meeting. Please try again.');
+                                    return { ok: false };
                                 }
                             }}
                             onCompleteAndProceed={(meta) => {
@@ -3227,8 +3248,6 @@ export default function ProjectDetailPage() {
                     )}
                     {popupContext.milestoneIndex === 4 && popupContext.taskName === 'Material selection meeting completed' && (
                         <PopupMeetingCompleted
-                            defaultMeetingDate={getMeetingDefaults('Material selection meeting + quotation discussion').date}
-                            defaultAttendees={getMeetingDefaults('Material selection meeting + quotation discussion').attendees}
                             momMinutes={momMinutes}
                             setMomMinutes={setMomMinutes}
                             momReferenceFiles={momReferenceFiles}
@@ -3243,7 +3262,7 @@ export default function ProjectDetailPage() {
                                 return ev ? (ev.meta as any).completionPercent : undefined;
                             })()}
                             onShareMom={async (extra) => {
-                                if (!projectId) return;
+                                if (!projectId) return { ok: false };
                                 try {
                                     let uploadedAttachments: { filename: string; path: string }[] = [];
                                     if (sessionId) {
@@ -3257,17 +3276,15 @@ export default function ProjectDetailPage() {
                                             },
                                             body: fd,
                                         });
-                                        if (res.ok) {
-                                            const data = await res.json();
-                                            uploadedAttachments = data.attachments || [];
-                                        }
+                                        if (!res.ok) return { ok: false };
+                                        const data = await res.json();
+                                        uploadedAttachments = data.attachments || [];
                                     }
                                     recordTaskComplete(4, 'Material selection meeting completed', {
                                         description: 'Material selection meeting completed. Minutes of meeting shared.',
                                         meta: {
                                             attachments: uploadedAttachments,
-                                            attendees: extra?.attendees,
-                                            meetingDate: extra?.meetingDate,
+                                            completionPercent: extra?.completionPercent,
                                             details: {
                                                 kind: 'mom',
                                                 minutes: momMinutes,
@@ -3283,10 +3300,10 @@ export default function ProjectDetailPage() {
                                     setMomMinutes('');
                                     setMomReferenceFiles([]);
                                     setUploadsVersion((v) => v + 1);
-                                    closePopup();
+                                    return { ok: true };
                                 } catch (err) {
                                     console.error('mom upload failed', err);
-                                    alert('Failed to save MOM. Please try again.');
+                                    return { ok: false };
                                 }
                             }}
                         />
@@ -3319,7 +3336,7 @@ export default function ProjectDetailPage() {
                                     });
                                 }}
                             />
-                        ) : (
+                        ) : canApproveDqc ? (
                             <PopupDqc1Approval
                                 onClose={closePopup}
                                 projectTitle={project.projectName}
@@ -3330,6 +3347,7 @@ export default function ProjectDetailPage() {
                                 reviewerInitials={getReviewerInitials(authUser?.name)}
                                 reviewerRoleLabel={getReviewerRoleLabel(authUser?.role)}
                                 reviewStatus="PENDING REVIEW"
+                                reviewTitle="DQC 2 Approval"
                                 dqc1Verdict={dqc1Verdict}
                                 setDqc1Verdict={setDqc1Verdict}
                                 dqc1Remarks={dqc1Remarks}
@@ -3377,6 +3395,19 @@ export default function ProjectDetailPage() {
                                     });
                                 }}
                             />
+                        ) : (
+                            <div className="px-6 pb-6">
+                                <p className="text-sm text-gray-700 mb-4">
+                                    Only <strong>DQC Manager</strong>, <strong>DQE</strong>, or <strong>Admin</strong> can approve DQC 2. Other roles cannot submit this approval.
+                                </p>
+                                <button
+                                    type="button"
+                                    onClick={closePopup}
+                                    className="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200"
+                                >
+                                    Close
+                                </button>
+                            </div>
                         )
                     )}
                     {popupContext.milestoneIndex === 4 && popupContext.taskName === 'Project manager approval' && project && projectId != null && (
@@ -3443,8 +3474,9 @@ export default function ProjectDetailPage() {
                                 const ev = historyEvents.find(e => e.taskName === 'Design sign off' && (e.meta as any)?.completionPercent !== undefined);
                                 return ev ? (ev.meta as any).completionPercent : 0;
                             })()}
+                            onClose={closePopup}
                             onSubmit={async (meta) => {
-                                if (!projectId) return;
+                                if (!projectId) return { ok: false };
                                 try {
                                     let uploadedAttachments: any[] = [];
                                     if (designUploadFiles.length > 0 && sessionId) {
@@ -3466,7 +3498,7 @@ export default function ProjectDetailPage() {
                                         }
                                     }
 
-                                    await fetch(`${API}/api/leads/${projectId}/schedule-meeting-invite`, {
+                                    const inviteRes = await fetch(`${API}/api/leads/${projectId}/schedule-meeting-invite`, {
                                         method: 'POST',
                                         headers: {
                                             'Content-Type': 'application/json',
@@ -3486,6 +3518,9 @@ export default function ProjectDetailPage() {
                                             slotId: meta?.slotId,
                                         }),
                                     });
+                                    if (!inviteRes.ok) {
+                                        return { ok: false };
+                                    }
                                     addHistoryEvent({
                                         type: 'note',
                                         milestoneIndex: 5,
@@ -3495,9 +3530,10 @@ export default function ProjectDetailPage() {
                                         meta: { ...meta },
                                     });
                                     setDesignUploadFiles([]);
+                                    return { ok: true, mailSent: true };
                                 } catch (err) {
                                     console.error('Submit failed', err);
-                                    alert('Failed to send invite. Please try again.');
+                                    return { ok: false };
                                 }
                             }}
                             onCompleteAndProceed={async (meta) => {
@@ -3566,8 +3602,6 @@ export default function ProjectDetailPage() {
                     )}
                     {popupContext.milestoneIndex === 5 && popupContext.taskName === 'meeting completed' && (
                         <PopupMeetingCompleted
-                            defaultMeetingDate={getMeetingDefaults('Design sign off').date}
-                            defaultAttendees={getMeetingDefaults('Design sign off').attendees}
                             momMinutes={momMinutes}
                             setMomMinutes={setMomMinutes}
                             momReferenceFiles={momReferenceFiles}
@@ -3583,17 +3617,18 @@ export default function ProjectDetailPage() {
                                 return ev ? (ev.meta as any).completionPercent : undefined;
                             })()}
                             onShareMom={async (extra) => {
-                                if (!projectId) return;
+                                if (!projectId) return { ok: false };
                                 try {
                                     if (sessionId) {
                                         const fd = new FormData();
                                         fd.append('minutes', momMinutes);
                                         momReferenceFiles.forEach((f) => fd.append('files', f));
-                                        await fetch(`${API}/api/leads/${projectId}/mom-upload`, {
+                                        const res = await fetch(`${API}/api/leads/${projectId}/mom-upload`, {
                                             method: 'POST',
                                             headers: { Authorization: `Bearer ${sessionId}` },
                                             body: fd,
                                         });
+                                        if (!res.ok) return { ok: false };
                                     }
                                     recordTaskComplete(5, 'meeting completed', {
                                         description: 'Design sign-off meeting completed. Minutes of meeting shared.',
@@ -3603,8 +3638,7 @@ export default function ProjectDetailPage() {
                                             referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
                                         },
                                         meta: {
-                                            attendees: extra?.attendees,
-                                            meetingDate: extra?.meetingDate,
+                                            completionPercent: extra?.completionPercent,
                                             details: {
                                                 kind: 'mom',
                                                 minutes: momMinutes,
@@ -3615,10 +3649,10 @@ export default function ProjectDetailPage() {
                                     setMomMinutes('');
                                     setMomReferenceFiles([]);
                                     setUploadsVersion((v) => v + 1);
-                                    closePopup();
+                                    return { ok: true };
                                 } catch (err) {
                                     console.error('MOM upload failed', err);
-                                    alert('Failed to save. Please try again.');
+                                    return { ok: false };
                                 }
                             }}
                         />
@@ -3641,8 +3675,6 @@ export default function ProjectDetailPage() {
                     )}
                     {popupContext.milestoneIndex === 6 && popupContext.taskName === 'Cx approval for production' && (
                         <PopupMeetingCompleted
-                            defaultMeetingDate={getMeetingDefaults('Cx approval for production').date}
-                            defaultAttendees={getMeetingDefaults('Cx approval for production').attendees}
                             momMinutes={momMinutes}
                             setMomMinutes={setMomMinutes}
                             momReferenceFiles={momReferenceFiles}
@@ -3657,19 +3689,20 @@ export default function ProjectDetailPage() {
                                 return ev ? (ev.meta as any).completionPercent : undefined;
                             })()}
                             onShareMom={async (extra) => {
-                                if (!projectId) return;
+                                if (!projectId) return { ok: false };
                                 try {
                                     if (sessionId) {
                                         const fd = new FormData();
                                         fd.append('minutes', momMinutes);
                                         momReferenceFiles.forEach((f) => fd.append('files', f));
-                                        await fetch(`${API}/api/leads/${projectId}/mom-upload`, {
+                                        const res = await fetch(`${API}/api/leads/${projectId}/mom-upload`, {
                                             method: 'POST',
                                             headers: {
                                                 Authorization: `Bearer ${sessionId}`,
                                             },
                                             body: fd,
                                         });
+                                        if (!res.ok) return { ok: false };
                                     }
                                     recordTaskComplete(6, popupContext.taskName, {
                                         description: 'Cx approval for production MOM shared.',
@@ -3679,8 +3712,7 @@ export default function ProjectDetailPage() {
                                             referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
                                         },
                                         meta: {
-                                            attendees: extra?.attendees,
-                                            meetingDate: extra?.meetingDate,
+                                            completionPercent: extra?.completionPercent,
                                             details: {
                                                 kind: 'mom',
                                                 minutes: momMinutes,
@@ -3691,10 +3723,10 @@ export default function ProjectDetailPage() {
                                     setMomMinutes('');
                                     setMomReferenceFiles([]);
                                     setUploadsVersion((v) => v + 1);
-                                    closePopup();
+                                    return { ok: true };
                                 } catch (err) {
                                     console.error('mom upload failed', err);
-                                    alert('Failed to save MOM. Please try again.');
+                                    return { ok: false };
                                 }
                             }}
                         />

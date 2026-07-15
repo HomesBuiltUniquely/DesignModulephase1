@@ -24,12 +24,16 @@ export default function TaskModal({ context, onClose, children }: Props) {
     : isDqcSubmission
       ? "flex-1 overflow-y-auto min-h-0"
       : "overflow-y-auto";
-  const modalTitle =
-    context.milestoneIndex === 1 && context.taskName === "meeting completed"
-      ? "Meeting Scheduled"
-      : context.milestoneIndex === 1
-        ? "First Cut Design Discussion"
-        : context.milestoneName;
+  const isMomPopup =
+    context.taskName === "meeting completed" ||
+    context.taskName === "Material selection meeting completed" ||
+    context.taskName === "Cx approval for production" ||
+    context.taskName.toLowerCase().includes("meeting completed");
+  const modalTitle = isMomPopup
+    ? "Meeting Completed"
+    : context.milestoneIndex === 1
+      ? "First Cut Design Discussion"
+      : context.milestoneName;
 
   return (
     <div
