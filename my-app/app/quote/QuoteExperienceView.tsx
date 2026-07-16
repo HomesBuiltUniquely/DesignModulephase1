@@ -131,11 +131,11 @@ export function QuoteExperienceView(props: Props) {
   return (
     <div className="min-h-screen" style={{ backgroundColor: QUOTE.beige }}>
       <header className="px-4 py-4 sm:px-6" style={{ backgroundColor: QUOTE.brown }}>
-        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4">
+        <div className="mx-auto flex max-w-6xl flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
-            <QuoteBrandLogo />
-            <span className="h-8 w-px bg-white/30" />
-            <span className="quote-heading text-2xl font-bold uppercase tracking-[0.2em] text-white">
+            <QuoteBrandLogo className="h-7 w-auto sm:h-8" height={28} />
+            <span className="h-7 w-px bg-white/30 sm:h-8" />
+            <span className="quote-heading text-lg font-bold uppercase tracking-[0.2em] text-white sm:text-2xl">
               Quotation
             </span>
           </div>
@@ -149,7 +149,7 @@ export function QuoteExperienceView(props: Props) {
                   setLinkCopiedState('customer');
                   setTimeout(() => setLinkCopiedState(null), 1600);
                 }}
-                className="flex items-center gap-2 rounded-md border border-white/40 px-4 py-2 text-sm font-medium text-white hover:bg-white/10"
+                className="flex items-center gap-2 rounded-md border border-white/40 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/10 sm:px-4 sm:py-2 sm:text-sm"
               >
                 <LinkIcon />
                 {linkCopiedState === 'customer' ? 'Copied!' : 'Customer Link'}
@@ -162,7 +162,7 @@ export function QuoteExperienceView(props: Props) {
                   setLinkCopiedState('internal');
                   setTimeout(() => setLinkCopiedState(null), 1600);
                 }}
-                className="flex items-center gap-2 rounded-md border border-white/40 px-4 py-2 text-sm font-medium text-white hover:bg-white/10"
+                className="flex items-center gap-2 rounded-md border border-white/40 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/10 sm:px-4 sm:py-2 sm:text-sm"
               >
                 <LinkIcon />
                 {linkCopiedState === 'internal' ? 'Copied!' : 'Internal Link'}
@@ -172,23 +172,37 @@ export function QuoteExperienceView(props: Props) {
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl space-y-6 px-4 py-6 sm:px-6">
+      <main className="mx-auto max-w-6xl space-y-4 px-4 py-4 sm:space-y-6 sm:px-6 sm:py-6">
         {/* Hero */}
         <section className="overflow-hidden rounded-2xl border border-[#ece6df] bg-white shadow-sm">
           <div className="grid lg:grid-cols-[1.1fr_0.9fr]">
-            <div className="p-8 lg:p-10">
-              <p className="text-sm font-semibold uppercase tracking-wide" style={{ color: QUOTE.red }}>
+            <div className="p-5 sm:p-8 lg:p-10">
+              <p className="text-xs font-semibold uppercase tracking-wide sm:text-sm" style={{ color: QUOTE.red }}>
                 Quotation ID : {quote.quotationId}
               </p>
-              <h1 className="quote-heading mt-3 text-3xl font-bold leading-tight text-[#2a1d14] sm:text-4xl">
+              <h1 className="quote-heading mt-2 text-2xl font-bold leading-tight text-[#2a1d14] sm:mt-3 sm:text-3xl sm:text-4xl">
                 Hey {customerFirstName}, your quotation is ready!
               </h1>
-              <div className="mt-4 h-1 w-16 rounded-full" style={{ backgroundColor: QUOTE.gold }} />
-              <p className="mt-4 max-w-md text-sm leading-relaxed" style={{ color: QUOTE.muted }}>
+              <div className="mt-3 h-1 w-12 rounded-full sm:mt-4 sm:w-16" style={{ backgroundColor: QUOTE.gold }} />
+              <p className="mt-3 max-w-md text-sm leading-relaxed sm:mt-4" style={{ color: QUOTE.muted }}>
                 We&apos;ve crafted a personalized estimate for your dream home
               </p>
+              {/* Total card — shown inline on mobile (below text), hidden on lg where the right column takes over) */}
+              <div className="mt-5 rounded-2xl border border-[#ece6df] bg-[#faf8f5] p-4 lg:hidden">
+                <p className="text-xs font-medium uppercase tracking-wide" style={{ color: QUOTE.muted }}>
+                  Estimated Total
+                </p>
+                <p className="mt-1 text-3xl font-bold tabular-nums" style={{ color: QUOTE.red }}>
+                  {inr(quote.totalPayableAmount)}
+                </p>
+                <p className="mt-1 text-xs" style={{ color: QUOTE.muted }}>
+                  Inclusive of all taxes
+                </p>
+                <div className="mt-3 h-0.5 w-10 rounded-full" style={{ backgroundColor: QUOTE.gold }} />
+              </div>
             </div>
-            <div className="relative min-h-[220px] lg:min-h-[280px]">
+            {/* Right column image — only visible on lg */}
+            <div className="relative hidden min-h-[280px] lg:block">
               <Image src="/quote.jpg" alt="" fill className="object-cover opacity-30" priority />
               <div className="absolute inset-0 flex items-center justify-center p-6">
                 <div className="w-full max-w-xs rounded-2xl border border-[#ece6df] bg-white/95 p-6 shadow-lg backdrop-blur-sm">
@@ -209,19 +223,19 @@ export function QuoteExperienceView(props: Props) {
         </section>
 
         {/* Project details */}
-        <section className="rounded-2xl border border-[#ece6df] bg-white p-6 shadow-sm">
-          <div className="mb-6 flex items-center gap-3">
+        <section className="rounded-2xl border border-[#ece6df] bg-white p-4 shadow-sm sm:p-6">
+          <div className="mb-4 flex items-center gap-3 sm:mb-6">
             <span
               className="inline-flex h-9 w-9 items-center justify-center rounded-lg"
               style={{ backgroundColor: '#fde8ea', color: QUOTE.red }}
             >
               <FieldIcon type="home" />
             </span>
-            <h2 className="quote-heading text-lg font-bold uppercase tracking-wide" style={{ color: QUOTE.red }}>
+            <h2 className="quote-heading text-base font-bold uppercase tracking-wide sm:text-lg" style={{ color: QUOTE.red }}>
               Project Details
             </h2>
           </div>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
             {PROJECT_FIELDS.map(({ label, key, icon }) => (
               <div key={key}>
                 <label className="mb-1.5 flex items-center gap-2 text-xs font-medium" style={{ color: QUOTE.muted }}>
@@ -232,7 +246,7 @@ export function QuoteExperienceView(props: Props) {
                   value={metaDraft[key] ?? ''}
                   onChange={(e) => setMetaDraft((prev) => ({ ...prev, [key]: e.target.value }))}
                   readOnly={!isInternalMode}
-                  className="w-full rounded-lg border border-[#e0d8d0] bg-[#faf8f5] px-3 py-2.5 text-sm font-semibold text-[#2a1d14] outline-none focus:border-[#c9a84c]"
+                  className="w-full rounded-lg border border-[#e0d8d0] bg-[#faf8f5] px-3 py-2 text-xs font-semibold text-[#2a1d14] outline-none focus:border-[#c9a84c] sm:py-2.5 sm:text-sm"
                 />
               </div>
             ))}
@@ -240,23 +254,23 @@ export function QuoteExperienceView(props: Props) {
         </section>
 
         {/* Breakdown */}
-        <section className="rounded-2xl border border-[#ece6df] bg-white p-6 shadow-sm">
-          <h2 className="quote-heading text-lg font-bold text-[#2a1d14]">Breakdown</h2>
+        <section className="rounded-2xl border border-[#ece6df] bg-white p-4 shadow-sm sm:p-6">
+          <h2 className="quote-heading text-base font-bold text-[#2a1d14] sm:text-lg">Breakdown</h2>
           <div className="mt-4 overflow-hidden rounded-xl border-2" style={{ borderColor: QUOTE.red }}>
-            <div className="grid grid-cols-1 divide-y divide-[#ece6df] sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+            <div className="flex flex-col divide-y divide-[#ece6df] sm:flex-row sm:divide-x sm:divide-y-0">
               {TABS.map((tab) => (
                 <button
                   key={tab.id}
                   type="button"
                   onClick={() => setSummaryTab(tab.id)}
-                  className="flex items-center justify-center gap-2 px-4 py-3 text-sm font-semibold transition-colors"
+                  className="flex flex-1 items-center justify-center gap-2 px-3 py-3 text-xs font-semibold transition-colors sm:px-4 sm:text-sm"
                   style={
                     summaryTab === tab.id
                       ? { backgroundColor: QUOTE.red, color: '#fff' }
                       : { backgroundColor: '#fff', color: QUOTE.muted }
                   }
                 >
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                   </svg>
                   {tab.label}
@@ -268,23 +282,23 @@ export function QuoteExperienceView(props: Props) {
           {summaryTab === 'terms' ? (
             <QuoteTermsAndConditions />
           ) : summaryTab === 'overall' ? (
-            <div className="mt-6 space-y-4">
+            <div className="mt-4 space-y-3 sm:mt-6 sm:space-y-4">
               {quote.lineItems.length ? (
                 quote.lineItems.map((item, idx) => (
                   <div
                     key={`${item.name}-${idx}`}
-                    className="flex items-center justify-between rounded-xl border border-[#ece6df] bg-[#faf8f5] px-5 py-4"
+                    className="flex items-center justify-between rounded-xl border border-[#ece6df] bg-[#faf8f5] px-4 py-3 sm:px-5 sm:py-4"
                   >
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2 sm:gap-3">
                       <span
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-white"
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-white sm:h-8 sm:w-8"
                         style={{ backgroundColor: QUOTE.red }}
                       >
                         <FieldIcon type="home" />
                       </span>
-                      <span className="font-semibold text-[#2a1d14]">{item.name}</span>
+                      <span className="text-sm font-semibold text-[#2a1d14] sm:text-base">{item.name}</span>
                     </div>
-                    <span className="text-lg font-bold tabular-nums text-[#2a1d14]">
+                    <span className="text-base font-bold tabular-nums text-[#2a1d14] sm:text-lg">
                       {inr(item.discountedAmount ?? item.amount)}
                     </span>
                   </div>
@@ -306,25 +320,25 @@ export function QuoteExperienceView(props: Props) {
               </div>
 
               <div
-                className="flex flex-wrap items-center justify-between gap-4 rounded-xl px-6 py-5 text-white"
+                className="flex flex-wrap items-center justify-between gap-3 rounded-xl px-4 py-4 text-white sm:gap-4 sm:px-6 sm:py-5"
                 style={{ backgroundColor: QUOTE.brown }}
               >
                 <div>
-                  <p className="quote-heading text-lg font-bold">Total Payable Amount</p>
+                  <p className="quote-heading text-base font-bold sm:text-lg">Total Payable Amount</p>
                   <p className="text-xs text-white/70">Inclusive of all tax and discount</p>
                 </div>
-                <p className="text-3xl font-bold tabular-nums">{inr(quote.totalPayableAmount)}</p>
+                <p className="text-2xl font-bold tabular-nums sm:text-3xl">{inr(quote.totalPayableAmount)}</p>
               </div>
 
               <p className="flex items-center gap-2 text-xs" style={{ color: QUOTE.muted }}>
-                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
                 This estimate is valid for 30 days from the date of issue
               </p>
             </div>
           ) : (
-            <div className="mt-6 space-y-6">
+            <div className="mt-4 space-y-4 sm:mt-6 sm:space-y-6">
               {quote.rooms.length ? (
                 quote.rooms.map((room) => {
                   const roomTotal = room.totalPrice;
@@ -342,17 +356,18 @@ export function QuoteExperienceView(props: Props) {
 
                   return (
                     <div key={room.key} className="overflow-hidden rounded-2xl border border-[#ece6df] bg-white">
-                      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-[#ece6df] p-5">
+                      {/* Room header */}
+                      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[#ece6df] p-4 sm:gap-4 sm:p-5">
                         <div className="flex items-start gap-3">
                           <span
-                            className="inline-flex h-10 w-10 items-center justify-center rounded-xl text-white"
+                            className="inline-flex h-9 w-9 items-center justify-center rounded-xl text-white sm:h-10 sm:w-10"
                             style={{ backgroundColor: QUOTE.red }}
                           >
                             <FieldIcon type="home" />
                           </span>
                           <div>
-                            <p className="quote-heading text-lg font-bold text-[#2a1d14]">{room.roomName}</p>
-                            <p className="text-sm" style={{ color: QUOTE.muted }}>
+                            <p className="quote-heading text-base font-bold text-[#2a1d14] sm:text-lg">{room.roomName}</p>
+                            <p className="text-xs sm:text-sm" style={{ color: QUOTE.muted }}>
                               {room.optionName}
                             </p>
                           </div>
@@ -361,12 +376,13 @@ export function QuoteExperienceView(props: Props) {
                           <p className="text-xs uppercase tracking-wide" style={{ color: QUOTE.muted }}>
                             Room total
                           </p>
-                          <p className="text-2xl font-bold tabular-nums" style={{ color: QUOTE.red }}>
+                          <p className="text-xl font-bold tabular-nums sm:text-2xl" style={{ color: QUOTE.red }}>
                             {inr(roomTotal)}
                           </p>
                         </div>
                       </div>
 
+                      {/* Stats — 2 cols on mobile, 4 on sm+ */}
                       <div className="grid grid-cols-2 gap-px border-b border-[#ece6df] bg-[#ece6df] sm:grid-cols-4">
                         {[
                           ['Units', room.unitsPrice],
@@ -378,12 +394,12 @@ export function QuoteExperienceView(props: Props) {
                           ['Additional HW', room.additionalHWPrice],
                           ['Savings', saving],
                         ].map(([label, value]) => (
-                          <div key={`${room.key}-${label}`} className="bg-[#faf8f5] px-4 py-3">
-                            <p className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: QUOTE.muted }}>
+                          <div key={`${room.key}-${label}`} className="bg-[#faf8f5] px-3 py-2.5">
+                            <p className="text-[9px] font-semibold uppercase tracking-wide" style={{ color: QUOTE.muted }}>
                               {label}
                             </p>
                             <p
-                              className={`mt-1 text-sm font-bold tabular-nums ${label === 'Savings' ? 'text-emerald-700' : 'text-[#2a1d14]'}`}
+                              className={`mt-0.5 text-xs font-bold tabular-nums sm:text-sm ${label === 'Savings' ? 'text-emerald-700' : 'text-[#2a1d14]'}`}
                             >
                               {inr(value)}
                             </p>
@@ -391,7 +407,7 @@ export function QuoteExperienceView(props: Props) {
                         ))}
                       </div>
 
-                      <div className="p-5">
+                      <div className="p-4 sm:p-5">
                         <button
                           type="button"
                           onClick={() => setExpanded((prev) => ({ ...prev, [room.key]: !prev[room.key] }))}
@@ -412,25 +428,15 @@ export function QuoteExperienceView(props: Props) {
                       </div>
 
                       {isOpen ? (
-                        <div className="space-y-6 border-t border-[#ece6df] px-5 pb-6 pt-2">
+                        <div className="space-y-4 border-t border-[#ece6df] px-3 pb-4 pt-3 sm:space-y-6 sm:px-5 sm:pb-6">
                           {room.matlInfo ? (
-                            <div className="rounded-xl border border-[#ece6df]">
-                              <div className="flex items-center justify-between border-b border-[#ece6df] px-4 py-3">
-                                <div className="flex items-center gap-2">
-                                  <SectionIconSmall />
-                                  <span className="font-semibold text-[#2a1d14]">Material specification</span>
-                                </div>
-                              </div>
-                              <pre className="whitespace-pre-wrap p-4 text-xs leading-relaxed text-[#5c5650]">
-                                {room.matlInfo}
-                              </pre>
-                            </div>
+                            <MatlInfoCard matlInfo={room.matlInfo} />
                           ) : null}
 
                           {room.units.length > 0 ? (
                             <div className="rounded-xl border border-[#ece6df]">
                               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#ece6df] px-4 py-3">
-                                <span className="font-semibold text-[#2a1d14]">
+                                <span className="text-sm font-semibold text-[#2a1d14] sm:text-base">
                                   Products ({room.units.length} items)
                                 </span>
                               </div>
@@ -441,7 +447,7 @@ export function QuoteExperienceView(props: Props) {
                                       key={cat}
                                       type="button"
                                       onClick={() => setProductTab((prev) => ({ ...prev, [room.key]: cat }))}
-                                      className="rounded-lg px-3 py-1.5 text-xs font-semibold"
+                                      className="rounded-lg px-2.5 py-1 text-[11px] font-semibold sm:px-3 sm:py-1.5 sm:text-xs"
                                       style={
                                         activeCat === cat
                                           ? { backgroundColor: QUOTE.red, color: '#fff' }
@@ -453,22 +459,23 @@ export function QuoteExperienceView(props: Props) {
                                   ))}
                                 </div>
                               ) : null}
-                              <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 lg:grid-cols-4">
+                              {/* 2 cols on mobile, 4 on lg */}
+                              <div className="grid grid-cols-2 gap-2 p-2 sm:gap-4 sm:p-4 lg:grid-cols-4">
                                 {filteredUnits.map((u, idx) => (
                                   <div
                                     key={`${u.label}-${idx}`}
                                     className="overflow-hidden rounded-xl border border-[#ece6df] bg-white"
                                   >
-                                    <div className="flex h-28 items-center justify-center bg-[#ece6df]">
-                                      <svg className="h-10 w-10 text-[#c4bdb5]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <div className="flex h-20 items-center justify-center bg-[#ece6df] sm:h-28">
+                                      <svg className="h-8 w-8 text-[#c4bdb5] sm:h-10 sm:w-10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                                       </svg>
                                     </div>
-                                    <div className="p-3">
-                                      <p className="text-xs font-bold text-[#2a1d14]">{u.label || u.cabinetClass}</p>
-                                      <p className="mt-1 line-clamp-2 text-[11px] text-[#6b6560]">{u.description}</p>
-                                      <p className="mt-2 text-[11px] text-[#9a928c]">Size : {u.dimensions}</p>
-                                      <p className="mt-2 text-sm font-bold tabular-nums" style={{ color: QUOTE.red }}>
+                                    <div className="p-2.5 sm:p-3">
+                                      <p className="text-[11px] font-bold text-[#2a1d14] sm:text-xs">{u.label || u.cabinetClass}</p>
+                                      <p className="mt-1 line-clamp-2 text-[10px] text-[#6b6560] sm:text-[11px]">{u.description}</p>
+                                      <p className="mt-1.5 text-[10px] text-[#9a928c] sm:text-[11px]">Size: {u.dimensions}</p>
+                                      <p className="mt-1.5 text-xs font-bold tabular-nums sm:text-sm" style={{ color: QUOTE.red }}>
                                         {inr(u.price)}
                                       </p>
                                     </div>
@@ -480,25 +487,25 @@ export function QuoteExperienceView(props: Props) {
 
                           {room.servicesList.length > 0 ? (
                             <div className="rounded-xl border border-[#ece6df]">
-                              <div className="border-b border-[#ece6df] px-4 py-3 font-semibold text-[#2a1d14]">
+                              <div className="border-b border-[#ece6df] px-4 py-3 text-sm font-semibold text-[#2a1d14] sm:text-base">
                                 Services ({room.servicesList.length} items)
                               </div>
                               <div className="divide-y divide-[#ece6df]">
                                 {room.servicesList.map((s, idx) => (
-                                  <div key={`${s.category}-${idx}`} className="flex gap-4 p-4">
-                                    <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-lg bg-[#ece6df]">
-                                      <svg className="h-8 w-8 text-[#c4bdb5]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                  <div key={`${s.category}-${idx}`} className="flex items-start gap-3 p-3 sm:p-4">
+                                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#ece6df] sm:h-12 sm:w-12">
+                                      <svg className="h-5 w-5 text-[#c4bdb5] sm:h-6 sm:w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
                                       </svg>
                                     </div>
                                     <div className="min-w-0 flex-1">
-                                      <p className="font-semibold text-[#2a1d14]">{s.category}</p>
-                                      <p className="mt-1 text-xs leading-relaxed text-[#6b6560]">{s.description}</p>
-                                      <p className="mt-1 text-xs text-[#9a928c]">
-                                        Qty : {s.qty ?? '01'} {s.uom}
+                                      <p className="text-xs font-semibold text-[#2a1d14] sm:text-sm">{s.category}</p>
+                                      <p className="mt-0.5 text-[11px] leading-relaxed text-[#6b6560] sm:text-xs">{s.description}</p>
+                                      <p className="mt-0.5 text-[10px] text-[#9a928c] sm:text-xs">
+                                        Qty: {s.qty ?? '01'} {s.uom}
                                       </p>
                                     </div>
-                                    <p className="shrink-0 text-sm font-bold tabular-nums" style={{ color: QUOTE.red }}>
+                                    <p className="shrink-0 text-xs font-bold tabular-nums sm:text-sm" style={{ color: QUOTE.red }}>
                                       {inr(s.price)}
                                     </p>
                                   </div>
@@ -508,13 +515,13 @@ export function QuoteExperienceView(props: Props) {
                           ) : null}
 
                           {room.lofts.length > 0 ? (
-                            <div className="rounded-xl border border-[#ece6df] p-4">
-                              <p className="mb-3 text-sm font-semibold text-[#2a1d14]">Lofts</p>
+                            <div className="rounded-xl border border-[#ece6df] p-3 sm:p-4">
+                              <p className="mb-3 text-xs font-semibold text-[#2a1d14] sm:text-sm">Lofts</p>
                               <div className="space-y-2">
                                 {room.lofts.map((l, idx) => (
-                                  <div key={idx} className="flex justify-between text-sm">
+                                  <div key={idx} className="flex items-start justify-between gap-3 text-xs sm:text-sm">
                                     <span className="text-[#5c5650]">{l.description}</span>
-                                    <span className="font-semibold">{inr(l.price)}</span>
+                                    <span className="shrink-0 font-semibold">{inr(l.price)}</span>
                                   </div>
                                 ))}
                               </div>
@@ -608,5 +615,83 @@ function SectionIconSmall() {
         <path strokeLinecap="round" strokeLinejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
       </svg>
     </span>
+  );
+}
+
+/**
+ * Parses matlInfo text into clean sub-section cards.
+ * Lines like "Key: Value" become row pairs; lines without ":" are section headers.
+ */
+function MatlInfoCard({ matlInfo }: { matlInfo: string }) {
+  const lines = matlInfo.split('\n').map((l) => l.trim()).filter(Boolean);
+
+  type SubSection = { header: string; rows: { key: string; value: string }[] };
+  const sections: SubSection[] = [];
+  let current: SubSection | null = null;
+
+  for (const line of lines) {
+    const colonIdx = line.indexOf(':');
+    if (colonIdx > 0 && colonIdx < line.length - 1) {
+      const key = line.slice(0, colonIdx).trim();
+      const value = line.slice(colonIdx + 1).trim();
+      if (!current) {
+        current = { header: '', rows: [] };
+        sections.push(current);
+      }
+      current.rows.push({ key, value });
+    } else {
+      current = { header: line, rows: [] };
+      sections.push(current);
+    }
+  }
+
+  const hasRichSections = sections.some((s) => s.rows.length > 0);
+
+  if (!hasRichSections) {
+    return (
+      <div className="rounded-xl border border-[#ece6df]">
+        <div className="flex items-center gap-2 border-b border-[#ece6df] px-4 py-3">
+          <SectionIconSmall />
+          <span className="text-sm font-semibold text-[#2a1d14]">Material specification</span>
+        </div>
+        <p className="p-4 text-xs leading-relaxed text-[#5c5650]">{matlInfo}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-[#ece6df]">
+      <div className="flex items-center gap-2 border-b border-[#ece6df] px-4 py-3">
+        <SectionIconSmall />
+        <span className="text-sm font-semibold text-[#2a1d14]">Material specification</span>
+      </div>
+      <div className="space-y-3 p-3 sm:p-4">
+        {sections.map((sec, si) => (
+          <div key={si} className="overflow-hidden rounded-lg border border-[#ece6df]">
+            {sec.header ? (
+              <div className="flex items-center gap-2 bg-[#faf8f5] px-3 py-2 sm:px-4">
+                <span
+                  className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-[9px] font-bold"
+                  style={{ backgroundColor: '#fde8ea', color: QUOTE.red }}
+                >
+                  ✦
+                </span>
+                <span className="text-xs font-bold text-[#2a1d14] sm:text-sm">{sec.header}</span>
+              </div>
+            ) : null}
+            {sec.rows.length > 0 ? (
+              <div className="divide-y divide-[#ece6df]">
+                {sec.rows.map((row, ri) => (
+                  <div key={ri} className="flex items-start justify-between gap-3 px-3 py-2 sm:px-4">
+                    <span className="shrink-0 text-[11px] font-medium text-[#6b7280] sm:text-xs">{row.key}</span>
+                    <span className="text-right text-[11px] text-[#2a1d14] sm:text-xs">{row.value}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
