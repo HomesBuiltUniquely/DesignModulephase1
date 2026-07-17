@@ -16,6 +16,7 @@ import {
   registerOfflineMeetingExportRoutes,
   recordOfflineMeetingExport,
   ensureOfflineMeetingExportTable,
+  offlineMeetingMilestoneLabel,
 } from "./routes/offlineMeetingExportApi";
 import { registerMsg91InboundRoutes } from "./routes/msg91InboundApi";
 import {
@@ -9291,12 +9292,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
     try {
       const mode = typeof meetingMode === "string" ? meetingMode.trim().toLowerCase() : "";
       if (mode === "offline") {
-        const milestoneMap: Record<string, string> = {
-          dqc1_first_cut: "DQC1",
-          dqc2_material_selection: "DQC2",
-          design_signoff: "40% PAYMENT",
-        };
-        const milestoneName = milestoneMap[String(meetingType)] || String(meetingType || "");
+        const milestoneName = offlineMeetingMilestoneLabel(meetingType);
         const startLabel = formatTime12Hour(meetingTime) || String(meetingTime || "");
         const endLabel = meetingEndTime
           ? formatTime12Hour(meetingEndTime) || String(meetingEndTime)

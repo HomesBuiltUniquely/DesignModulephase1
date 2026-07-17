@@ -139,7 +139,7 @@ export async function ensureOfflineMeetingExportTable(pool: Pool): Promise<void>
       lead_id INT NOT NULL,
       client_name VARCHAR(255) NOT NULL,
       designer_name VARCHAR(255) NOT NULL,
-      milestone_name VARCHAR(64) NOT NULL,
+      milestone_name VARCHAR(128) NOT NULL,
       meeting_date DATE NOT NULL,
       time_slot VARCHAR(128) NOT NULL,
       branch VARCHAR(128) NULL,
@@ -148,6 +148,26 @@ export async function ensureOfflineMeetingExportTable(pool: Pool): Promise<void>
       INDEX idx_ome_lead (lead_id)
     )
   `);
+
+  // Widen milestone_name on older DBs that still have VARCHAR(64)
+  try {
+    await pool.query(
+      "ALTER TABLE offline_meeting_exports MODIFY COLUMN milestone_name VARCHAR(128) NOT NULL",
+    );
+  } catch {
+    // ignore if already correct / no permission
+  }
+}
+
+/** Milestone label sent to EC for offline meeting export (task name, not raw code). */
+export function offlineMeetingMilestoneLabel(meetingType: unknown): string {
+  const key = String(meetingType || "").trim().toLowerCase();
+  const map: Record<string, string> = {
+    dqc1_first_cut: "DQC1 - First Cut Meeting",
+    dqc2_material_selection: "DQC2 - Material Selection",
+    design_signoff: "40% Payment - Sign Off",
+  };
+  return map[key] || String(meetingType || "Design Meeting");
 }
 
 export async function recordOfflineMeetingExport(
@@ -182,6 +202,11 @@ export async function recordOfflineMeetingExport(
 }
 
 export function registerOfflineMeetingExportRoutes(app: Express, pool: Pool): void {
+  // Auto-create on boot (hosted + local) even if initDb fails later
+  void ensureOfflineMeetingExportTable(pool).catch((err) => {
+    console.error("[offline-meeting-export] ensure table on register failed", err);
+  });
+
   // Must register /recent before /:appointmentId so "recent" is not parsed as an id.
   app.get(
     "/v1/Appointment/offline-meeting-scheduled/recent",
