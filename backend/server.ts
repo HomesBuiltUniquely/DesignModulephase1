@@ -12,6 +12,11 @@ import { pipeline } from "node:stream/promises";
 import AdmZip from "adm-zip";
 import * as XLSX from "xlsx";
 import { registerCustomerNumberRoutes } from "./routes/customerNumberApi";
+import {
+  registerOfflineMeetingExportRoutes,
+  recordOfflineMeetingExport,
+  ensureOfflineMeetingExportTable,
+} from "./routes/offlineMeetingExportApi";
 import { registerMsg91InboundRoutes } from "./routes/msg91InboundApi";
 import {
   registerProlanceRoutes,
@@ -134,7 +139,7 @@ app.get("/api/health", (_req, res) => {
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "root@root",
+  password: process.env.DB_PASSWORD || "Root@123",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -145,6 +150,7 @@ const pool = mysql.createPool({
 
 // Standalone route: /api/customer/:customerNumber (see routes/customerNumberApi.ts)
 registerCustomerNumberRoutes(app, pool);
+registerOfflineMeetingExportRoutes(app, pool);
 // MSG91 inbound webhook + phone lookup (see routes/msg91InboundApi.ts)
 registerMsg91InboundRoutes(app, pool);
 
@@ -747,7 +753,7 @@ async function initDb() {
       CREATE TABLE IF NOT EXISTS google_calendar_connections (
         id INT AUTO_INCREMENT PRIMARY KEY,
         user_id INT NOT NULL UNIQUE,
-        google_email VARCHAR(255) NOT NULL
+        google_email VARCHAR(255) NOT NULL,
         access_token TEXT NOT NULL,
         refresh_token TEXT NULL,
         expires_at DATETIME NULL,
@@ -1090,6 +1096,8 @@ async function initDb() {
         INDEX idx_pbc_cancelled_at (cancelled_at)
       );
     `);
+
+    await ensureOfflineMeetingExportTable(pool);
 
     try {
       const [seenCol] = await conn.query(
@@ -9275,6 +9283,43 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
         visibility: "external",
         payload: emailBody,
       });
+    }
+
+    // EC pull-sync: record offline meetings for Design → EC sync
+    try {
+      const mode = typeof meetingMode === "string" ? meetingMode.trim().toLowerCase() : "";
+      if (mode === "offline") {
+        const milestoneMap: Record<string, string> = {
+          dqc1_first_cut: "DQC1",
+          dqc2_material_selection: "DQC2",
+          design_signoff: "40% PAYMENT",
+        };
+        const milestoneName = milestoneMap[String(meetingType)] || String(meetingType || "");
+        const startLabel = formatTime12Hour(meetingTime) || String(meetingTime || "");
+        const endLabel = meetingEndTime
+          ? formatTime12Hour(meetingEndTime) || String(meetingEndTime)
+          : null;
+        const timeSlot = endLabel ? `${startLabel} - ${endLabel}` : startLabel;
+        const meetingDateNorm =
+          (typeof meetingDate === "string" && meetingDate.length >= 10
+            ? meetingDate.slice(0, 10)
+            : normalizeBlockDateIso(meetingDate)) || String(meetingDate || "").slice(0, 10);
+
+        const exportId = await recordOfflineMeetingExport(pool, {
+          leadId,
+          clientName: customerName,
+          designerName,
+          milestoneName,
+          meetingDate: meetingDateNorm,
+          timeSlot,
+          branch: resolvedEcLocation || null,
+        });
+        console.log(
+          `[offline-meeting-export] recorded id=${exportId} leadId=${leadId} milestone=${milestoneName}`,
+        );
+      }
+    } catch (exportErr) {
+      console.error("[offline-meeting-export] record failed (non-fatal)", exportErr);
     }
 
     return res.status(201).json({ ok: true });
