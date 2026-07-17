@@ -157,8 +157,10 @@ registerMsg91InboundRoutes(app, pool);
 // ----- S3 setup for profile images -----
 const S3_REGION = process.env.AWS_REGION || "ap-south-1";
 const S3_BUCKET = process.env.S3_BUCKET_NAME || "your-profile-images-bucket";
-                                                                                                                      
-const s3 = new S3Client({
+
+/** Runtime S3 client. Cast needed: broken @smithy/core installs omit Client.send in types. */
+type AppS3Client = S3Client & { send: (command: unknown) => Promise<any> };
+const s3: AppS3Client = new S3Client({
   region: S3_REGION,
   credentials: process.env.AWS_ACCESS_KEY_ID
     ? {
@@ -166,7 +168,7 @@ const s3 = new S3Client({
       secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || "",
     }
     : undefined,
-});
+}) as AppS3Client;
 
 // ----- Local uploads (MMT zip folders) -----
 const UPLOADS_DIR = path.join(process.cwd(), "uploads");

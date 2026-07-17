@@ -16,14 +16,22 @@ module.exports = {
       name: "backend",
       script: "server.ts",
       interpreter: "npx",
-      interpreter_args: "ts-node",
+      // transpile-only: do not crash the API on TS type errors (e.g. broken AWS SDK types)
+      interpreter_args: "ts-node --transpile-only",
       cwd: __dirname,
       instances: 1,
       autorestart: true,
       watch: false,
       max_memory_restart: "800M",
-      env: { PORT: 3001 },
-      env_production: { NODE_ENV: "production", PORT: 3001 },
+      env: {
+        PORT: 3001,
+        TS_NODE_TRANSPILE_ONLY: "1",
+      },
+      env_production: {
+        NODE_ENV: "production",
+        PORT: 3001,
+        TS_NODE_TRANSPILE_ONLY: "1",
+      },
     },
   ],
 };
