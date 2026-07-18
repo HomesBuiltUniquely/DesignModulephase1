@@ -742,6 +742,19 @@ async function initDb() {
         // ignore
       }
     }
+    // Branch / experience center collected on user create forms (HBR, SJR, JPN, …)
+    try {
+      const [branchCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'branch'",
+      );
+      if ((branchCol as any[]).length === 0) {
+        await conn.query(
+          "ALTER TABLE users ADD COLUMN branch VARCHAR(128) NULL",
+        );
+      }
+    } catch {
+      // ignore
+    }
 
     await conn.query(`
       CREATE TABLE IF NOT EXISTS sessions (
@@ -1795,12 +1808,19 @@ function extractLeadIntakeViewFromPayload(payloadInput: unknown): {
   };
 }
 
+function normalizeUserBranch(raw: unknown): string | null {
+  if (raw == null) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+  return s.slice(0, 128);
+}
+
 async function getUserFromSession(req: Request) {
   const auth = req.headers.authorization;
   const token = auth?.replace(/^Bearer\s+/i, "");
   if (!token) return null;
   const [rows] = await pool.query(
-    `SELECT u.id, u.email, u.name, u.role, u.profileImage, u.phone
+    `SELECT u.id, u.email, u.name, u.role, u.profileImage, u.phone, u.branch
        FROM sessions s
        JOIN users u ON u.id = s.user_id
        WHERE s.id = ?`,
@@ -1815,6 +1835,7 @@ async function getUserFromSession(req: Request) {
     role: user.role,
     profileImage: user.profileImage || null,
     phone: user.phone || "",
+    branch: user.branch || null,
   };
 }
 
@@ -3083,7 +3104,7 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
 
   try {
     const [rows] = await pool.query(
-      "SELECT id, email, name, role, profileImage, phone, password FROM users WHERE email = ?",
+      "SELECT id, email, name, role, profileImage, phone, branch, password FROM users WHERE email = ?",
       [email],
     );
     const userRow = (rows as any[])[0];
@@ -3098,6 +3119,7 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
       role: userRow.role,
       profileImage: userRow.profileImage || null,
       phone: userRow.phone || "",
+      branch: userRow.branch || null,
     };
 
     const sessionId =
@@ -3517,7 +3539,7 @@ app.all("/api/auth/create-mmt-manager", async (req: Request, res: Response) => {
       return res.status(403).json({ message: "Only admin can create MMT Manager" });
     }
 
-    const { email, password, name, phone } = req.body || {};
+    const { email, password, name, phone, branch } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) {
       return res.status(400).json({ message: "Email must end with @hubinterior.com" });
@@ -3528,10 +3550,11 @@ app.all("/api/auth/create-mmt-manager", async (req: Request, res: Response) => {
 
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
 
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, "mmt_manager", phoneVal || null],
+      "INSERT INTO users (email, password, name, role, phone, branch) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "mmt_manager", phoneVal || null, branchVal],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({
@@ -3564,7 +3587,7 @@ app.all("/api/auth/register-mmt-executive", async (req: Request, res: Response) 
       return res.status(403).json({ message: "Only MMT Manager or Admin can register MMT Executives" });
     }
 
-    const { email, password, name, phone } = req.body || {};
+    const { email, password, name, phone, branch } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) {
       return res.status(400).json({ message: "Email must end with @hubinterior.com" });
@@ -3575,15 +3598,17 @@ app.all("/api/auth/register-mmt-executive", async (req: Request, res: Response) 
 
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
 
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone, mmt_manager_id) VALUES (?, ?, ?, ?, ?, ?)",
+      "INSERT INTO users (email, password, name, role, phone, branch, mmt_manager_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
       [
         normalized,
         String(password),
         displayName,
         "mmt_executive",
         phoneVal || null,
+        branchVal,
         role === "mmt_manager" ? manager.id : null,
       ],
     );
@@ -3615,15 +3640,16 @@ app.all("/api/auth/create-tdm", async (req: Request, res: Response) => {
     if (role !== "admin" && role !== "deputy_general_manager") {
       return res.status(403).json({ message: "Only admin or Deputy General Manager can create TDM" });
     }
-    const { email, password, name, phone } = req.body || {};
+    const { email, password, name, phone, branch } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
     if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, "territorial_design_manager", phoneVal || null],
+      "INSERT INTO users (email, password, name, role, phone, branch) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "territorial_design_manager", phoneVal || null, branchVal],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "territorial_design_manager" } });
@@ -3641,15 +3667,16 @@ app.all("/api/auth/create-deputy-general-manager", async (req: Request, res: Res
     const admin = await getUserFromSession(req);
     if (!admin) return res.status(401).json({ message: "Unauthorized" });
     if (admin.role !== "admin") return res.status(403).json({ message: "Only admin can create Deputy General Manager" });
-    const { email, password, name, phone } = req.body || {};
+    const { email, password, name, phone, branch } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
     if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, "deputy_general_manager", phoneVal || null],
+      "INSERT INTO users (email, password, name, role, phone, branch) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "deputy_general_manager", phoneVal || null, branchVal],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "deputy_general_manager" } });
@@ -3667,15 +3694,16 @@ app.all("/api/auth/create-admin", async (req: Request, res: Response) => {
     const admin = await getUserFromSession(req);
     if (!admin) return res.status(401).json({ message: "Unauthorized" });
     if (admin.role !== "admin") return res.status(403).json({ message: "Only admin can create Admin" });
-    const { email, password, name, phone } = req.body || {};
+    const { email, password, name, phone, branch } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
     if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, "admin", phoneVal || null],
+      "INSERT INTO users (email, password, name, role, phone, branch) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "admin", phoneVal || null, branchVal],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "admin" } });
@@ -3693,15 +3721,16 @@ app.all("/api/auth/create-dqc-manager", async (req: Request, res: Response) => {
     const admin = await getUserFromSession(req);
     if (!admin) return res.status(401).json({ message: "Unauthorized" });
     if (admin.role !== "admin") return res.status(403).json({ message: "Only admin can create DQC Manager" });
-    const { email, password, name, phone } = req.body || {};
+    const { email, password, name, phone, branch } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
     if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, "dqc_manager", phoneVal || null],
+      "INSERT INTO users (email, password, name, role, phone, branch) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "dqc_manager", phoneVal || null, branchVal],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "dqc_manager" } });
@@ -3719,15 +3748,16 @@ app.all("/api/auth/create-escalation-manager", async (req: Request, res: Respons
     const admin = await getUserFromSession(req);
     if (!admin) return res.status(401).json({ message: "Unauthorized" });
     if (admin.role !== "admin") return res.status(403).json({ message: "Only admin can create Escalation Manager" });
-    const { email, password, name, phone } = req.body || {};
+    const { email, password, name, phone, branch } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
     if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, "escalation_manager", phoneVal || null],
+      "INSERT INTO users (email, password, name, role, phone, branch) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "escalation_manager", phoneVal || null, branchVal],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "escalation_manager" } });
@@ -3751,15 +3781,16 @@ app.all("/api/auth/create-project-manager", async (req: Request, res: Response) 
         message: "Only Admin, Territorial Design Manager, or Deputy General Manager can create a Project Manager",
       });
     }
-    const { email, password, name, phone } = req.body || {};
+    const { email, password, name, phone, branch } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
     if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, "project_manager", phoneVal || null],
+      "INSERT INTO users (email, password, name, role, phone, branch) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "project_manager", phoneVal || null, branchVal],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "project_manager" } });
@@ -3779,15 +3810,16 @@ app.all("/api/auth/create-senior-project-manager", async (req: Request, res: Res
     if ((admin.role || "").toLowerCase() !== "admin") {
       return res.status(403).json({ message: "Only admin can create a Senior Project Manager" });
     }
-    const { email, password, name, phone } = req.body || {};
+    const { email, password, name, phone, branch } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
     if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, "senior_project_manager", phoneVal || null],
+      "INSERT INTO users (email, password, name, role, phone, branch) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "senior_project_manager", phoneVal || null, branchVal],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({
@@ -3866,15 +3898,16 @@ app.all("/api/auth/create-finance", async (req: Request, res: Response) => {
     const admin = await getUserFromSession(req);
     if (!admin) return res.status(401).json({ message: "Unauthorized" });
     if (admin.role !== "admin") return res.status(403).json({ message: "Only admin can create Finance" });
-    const { email, password, name, phone } = req.body || {};
+    const { email, password, name, phone, branch } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
     if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, "finance", phoneVal || null],
+      "INSERT INTO users (email, password, name, role, phone, branch) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "finance", phoneVal || null, branchVal],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "finance" } });
@@ -3893,15 +3926,16 @@ app.all("/api/auth/register-dqe", async (req: Request, res: Response) => {
     if (!manager) return res.status(401).json({ message: "Unauthorized" });
     const role = (manager.role || "").toLowerCase();
     if (role !== "dqc_manager" && role !== "admin") return res.status(403).json({ message: "Only DQC Manager or Admin can register DQE" });
-    const { email, password, name, phone } = req.body || {};
+    const { email, password, name, phone, branch } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
     if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, "dqe", phoneVal || null],
+      "INSERT INTO users (email, password, name, role, phone, branch) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "dqe", phoneVal || null, branchVal],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "dqe" } });
@@ -3920,13 +3954,14 @@ app.all("/api/auth/register", async (req: Request, res: Response) => {
     if (!current) return res.status(401).json({ message: "Unauthorized" });
     const role = (current.role || "").toLowerCase();
     if (role !== "territorial_design_manager" && role !== "deputy_general_manager" && role !== "admin") return res.status(403).json({ message: "Only TDM, Deputy General Manager, or Admin can register designers" });
-    const { email, password, name, phone, role: bodyRole, managerId } = req.body || {};
+    const { email, password, name, phone, branch, role: bodyRole, managerId } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
     if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
     const targetRole = bodyRole === "design_manager" ? "design_manager" : "designer";
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
     let designManagerId: number | null = null;
     let territorialDesignManagerId: number | null = null;
     const isTdm = role === "territorial_design_manager";
@@ -3976,8 +4011,8 @@ app.all("/api/auth/register", async (req: Request, res: Response) => {
     }
 
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone, design_manager_id, territorial_design_manager_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, targetRole, phoneVal || null, designManagerId, territorialDesignManagerId],
+      "INSERT INTO users (email, password, name, role, phone, branch, design_manager_id, territorial_design_manager_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, targetRole, phoneVal || null, branchVal, designManagerId, territorialDesignManagerId],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: targetRole } });

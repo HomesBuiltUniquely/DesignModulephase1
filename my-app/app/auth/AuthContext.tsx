@@ -10,6 +10,7 @@ export type AuthUser = {
   email: string;
   name: string;
   phone?: string;
+  branch?: string | null;
   role: AuthRole;
   profileImage?: string;
 };

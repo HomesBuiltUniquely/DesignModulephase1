@@ -16,12 +16,59 @@ import {
   type DealLedgerRow,
   type DesignerIncentivesData,
   type IncentiveMember,
+  type IncentiveWeightStageId,
   type TeamIncentivesSummary,
 } from '../lib/designerIncentives';
 
-const JOURNEY_MARKS = [40, 50, 60, 80, 100] as const;
+const JOURNEY_MARKS = [0, 40, 50, 60, 80, 100] as const;
 
 type ViewMode = 'individual' | 'team';
+
+type WeightedPartFilter = IncentiveWeightStageId;
+
+const WEIGHTED_PART_META: Record<
+  WeightedPartFilter,
+  { short: string; title: string; accent: string; ring: string; selected: string }
+> = {
+  pre_d1_finance_10: {
+    short: 'Part 1',
+    title: 'Part 1 · Pre-D1 finance 10%',
+    accent: 'text-emerald-800',
+    ring: 'border-emerald-100 bg-emerald-50/50 hover:border-emerald-300',
+    selected: 'border-emerald-500 ring-2 ring-emerald-200 bg-emerald-50',
+  },
+  post_dqc1_design_10: {
+    short: 'Part 2',
+    title: 'Part 2 · Post-DQC1 design 10%',
+    accent: 'text-sky-800',
+    ring: 'border-sky-100 bg-sky-50/50 hover:border-sky-300',
+    selected: 'border-sky-500 ring-2 ring-sky-200 bg-sky-50',
+  },
+  part3_forty_percent: {
+    short: 'Part 3',
+    title: 'Part 3 · 40% payment + upsale',
+    accent: 'text-violet-800',
+    ring: 'border-violet-100 bg-violet-50/50 hover:border-violet-300',
+    selected: 'border-violet-500 ring-2 ring-violet-200 bg-violet-50',
+  },
+};
+
+function dealsForWeightedPart(
+  deals: DealLedgerRow[],
+  stageId: WeightedPartFilter,
+): Array<DealLedgerRow & { stageWeighted: number; stageUpsale: number }> {
+  return deals
+    .map((deal) => {
+      const stage = deal.stages.find((s) => s.stageId === stageId && s.cleared);
+      if (!stage) return null;
+      return {
+        ...deal,
+        stageWeighted: stage.weightedAmount,
+        stageUpsale: stage.upsaleAmount,
+      };
+    })
+    .filter((d): d is DealLedgerRow & { stageWeighted: number; stageUpsale: number } => d != null);
+}
 
 function MetricCard({
   label,
@@ -69,33 +116,64 @@ function IncentiveJourney({
   currentSlabPct: number;
 }) {
   const clamped = Math.min(100, Math.max(0, achievementPct));
+  const markerLeft = Math.min(96, Math.max(4, clamped));
+  const slabLabel =
+    currentSlabPct > 0 ? `${currentSlabPct}% unlocked` : 'Below first slab (40%)';
+
   return (
     <section className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-2">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-bold uppercase tracking-wide text-gray-800">Incentive Journey</h2>
         <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-          Current slab: <span className="text-emerald-600">{currentSlabPct}%</span>
+          Current slab:{' '}
+          <span className={currentSlabPct > 0 ? 'text-emerald-600' : 'text-amber-600'}>
+            {slabLabel}
+          </span>
         </p>
       </div>
-      <div className="relative px-1 pb-8 pt-6">
-        <div className="h-2.5 w-full rounded-full bg-gray-100">
+
+      <div className="relative mt-8 mb-2 px-1 pt-8 pb-10">
+        <div className="relative h-3 w-full rounded-full bg-gray-100">
           <div
-            className="h-2.5 rounded-full bg-emerald-400 transition-all"
+            className="absolute inset-y-0 left-0 rounded-full bg-emerald-400 transition-all"
             style={{ width: `${clamped}%` }}
           />
+          {JOURNEY_MARKS.map((m) => (
+            <div
+              key={m}
+              className="absolute top-1/2 z-[1] -translate-x-1/2 -translate-y-1/2"
+              style={{ left: `${m}%` }}
+            >
+              <div
+                className={`h-4 w-4 rounded-full border-2 bg-white ${
+                  clamped >= m ? 'border-emerald-500' : 'border-gray-300'
+                }`}
+              />
+            </div>
+          ))}
         </div>
-        <div className="absolute top-0 -translate-x-1/2" style={{ left: `${clamped}%` }}>
-          <div className="whitespace-nowrap rounded-md bg-emerald-500 px-2 py-1 text-[10px] font-bold uppercase text-white shadow">
+
+        <div
+          className="absolute top-0 z-[2] -translate-x-1/2"
+          style={{ left: `${markerLeft}%` }}
+        >
+          <div className="whitespace-nowrap rounded-md bg-emerald-600 px-2 py-1 text-[10px] font-bold uppercase text-white shadow">
             You are here ({achievementPct}%)
           </div>
-          <div className="mx-auto mt-1 h-3 w-0.5 bg-emerald-500" />
+          <div className="mx-auto mt-1 h-4 w-0.5 bg-emerald-600" />
         </div>
-        <div className="pointer-events-none absolute inset-x-1 top-[1.35rem] flex justify-between">
+
+        <div className="pointer-events-none absolute inset-x-1 bottom-0">
           {JOURNEY_MARKS.map((m) => (
-            <div key={m} className="flex flex-col items-center">
-              <div className="h-4 w-0.5 bg-gray-300" />
-              <span className="mt-6 text-[11px] font-semibold text-gray-500">{m}%</span>
-            </div>
+            <span
+              key={`label-${m}`}
+              className={`absolute -translate-x-1/2 text-[11px] font-semibold ${
+                clamped >= m ? 'text-emerald-700' : 'text-gray-500'
+              }`}
+              style={{ left: `${m}%` }}
+            >
+              {m}%
+            </span>
           ))}
         </div>
       </div>
@@ -104,17 +182,39 @@ function IncentiveJourney({
 }
 
 function exportDealsCsv(deals: DealLedgerRow[], filename: string) {
-  const header = ['Date', 'Customer', 'Deal Value', 'Closure Time', 'Contribution %', 'Incentive'];
-  const rows = deals.map((d) =>
-    [
+  const header = [
+    'Date',
+    'Customer',
+    'Quote (current)',
+    'Quote (at finance 10%)',
+    'Weighted revenue',
+    'Weight %',
+    'Part 1',
+    'Part 2',
+    'Part 3',
+    'Upsale (P3)',
+    'Closure Time',
+    'Incentive',
+  ];
+  const rows = deals.map((d) => {
+    const p1 = d.stages.find((s) => s.stageId === 'pre_d1_finance_10');
+    const p2 = d.stages.find((s) => s.stageId === 'post_dqc1_design_10');
+    const p3 = d.stages.find((s) => s.stageId === 'part3_forty_percent');
+    return [
       d.activityDate,
       d.customerName,
       String(d.dealValue),
-      d.closureTime,
+      String(d.quotationAtFinanceApproval),
+      String(d.weightedRevenue),
       String(d.contributionPct),
+      p1?.cleared ? String(p1.weightedAmount) : '0',
+      p2?.cleared ? String(p2.weightedAmount) : '0',
+      p3?.cleared ? String(p3.weightedAmount) : '0',
+      p3 ? String(p3.upsaleAmount) : '0',
+      d.closureTime,
       String(d.incentive),
-    ].join(','),
-  );
+    ].join(',');
+  });
   const blob = new Blob([[header.join(','), ...rows].join('\n')], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -131,6 +231,8 @@ function exportTeamCsv(team: TeamIncentivesSummary) {
     'Target',
     'Revenue',
     'Achievement %',
+    'Meetings',
+    'Meeting Gate',
     'Slab',
     'Incentive',
     'On-Spot Bonus',
@@ -142,6 +244,8 @@ function exportTeamCsv(team: TeamIncentivesSummary) {
       String(r.totalTarget),
       String(r.revenueAchieved),
       String(r.achievementPct),
+      `${r.meetingsCompleted}/${r.meetingsRequired}`,
+      r.meetingsEligible ? 'Eligible' : 'Locked',
       String(r.currentSlabPct),
       String(r.incentiveEarned),
       String(r.onSpotBonus),
@@ -165,11 +269,23 @@ function IndividualIncentivesPanel({
   subtitle?: string;
   selectedDate: string | null;
 }) {
+  const [selectedPart, setSelectedPart] = useState<WeightedPartFilter | null>(null);
   const visibleDeals = filterDealsByDate(data.deals, selectedDate);
   const dayActivity = selectedDate ? buildDayActivitySummary(data.deals, selectedDate) : null;
   const totalClosures = data.sameDayClosures + data.fortyEightHourClosures;
   const sameDayBar = totalClosures ? (data.sameDayClosures / totalClosures) * 100 : 0;
   const fortyEightBar = totalClosures ? (data.fortyEightHourClosures / totalClosures) * 100 : 0;
+
+  useEffect(() => {
+    setSelectedPart(null);
+  }, [data.designerId, data.cycle.cycleIndex, selectedDate]);
+
+  const partLeads = selectedPart ? dealsForWeightedPart(visibleDeals, selectedPart) : [];
+  const partMeta = selectedPart ? WEIGHTED_PART_META[selectedPart] : null;
+
+  const togglePart = (part: WeightedPartFilter) => {
+    setSelectedPart((prev) => (prev === part ? null : part));
+  };
 
   return (
     <div className="space-y-6">
@@ -213,7 +329,7 @@ function IndividualIncentivesPanel({
             <span className="text-xs text-emerald-800">{dayActivity.dealCount} deal(s)</span>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <MetricCard label="Day Revenue" value={formatInr(dayActivity.revenue)} />
+            <MetricCard label="Day Weighted" value={formatInr(dayActivity.revenue)} />
             <MetricCard label="Day Incentive" value={formatInr(dayActivity.incentive)} accent />
             <MetricCard label="Same Day Closures" value={String(dayActivity.sameDayClosures)} />
             <MetricCard label="48h Closures" value={String(dayActivity.fortyEightHourClosures)} />
@@ -224,20 +340,245 @@ function IndividualIncentivesPanel({
         </section>
       ) : null}
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      <section
+        className={`rounded-xl border p-4 shadow-sm ${
+          data.meetingsEligible
+            ? 'border-emerald-200 bg-emerald-50/50'
+            : 'border-amber-200 bg-amber-50/70'
+        }`}
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+              Fortnight meetings
+            </p>
+            <p className="mt-1 text-2xl font-bold text-gray-900">
+              {data.meetingsCompleted}
+              <span className="text-base font-semibold text-gray-500">
+                {' '}
+                / {data.meetingsRequired} required
+              </span>
+            </p>
+            <p className="mt-1 text-sm text-gray-600">
+              {data.meetingsEligible
+                ? 'Meeting gate cleared — incentives are unlocked for this fortnight.'
+                : `Complete at least ${data.meetingsRequired} meetings in this 15-day cycle to unlock incentives.`}
+            </p>
+          </div>
+          <span
+            className={`rounded-full px-3 py-1.5 text-[11px] font-bold uppercase tracking-wide ${
+              data.meetingsEligible
+                ? 'bg-emerald-500 text-white'
+                : 'bg-amber-500 text-white'
+            }`}
+          >
+            {data.meetingsEligible ? 'Eligible' : 'Locked'}
+          </span>
+        </div>
+        <div className="mt-3 h-2 rounded-full bg-white/80">
+          <div
+            className={`h-2 rounded-full ${data.meetingsEligible ? 'bg-emerald-500' : 'bg-amber-400'}`}
+            style={{
+              width: `${Math.min(
+                100,
+                (data.meetingsCompleted / Math.max(1, data.meetingsRequired)) * 100,
+              )}%`,
+            }}
+          />
+        </div>
+      </section>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6">
         <MetricCard
           label="Total Target (15 days)"
           value={formatInr(data.totalTarget)}
         />
         <MetricCard
-          label="Revenue Achieved"
+          label="Weighted Revenue"
           value={formatInr(data.revenueAchieved)}
           badge={`+${data.revenueDeltaPct}%`}
         />
         <MetricCard label="Achievement %" value={`${data.achievementPct}%`} />
-        <MetricCard label="Incentive Earned" value={formatInr(data.incentiveEarned)} accent />
+        <MetricCard
+          label="Meetings"
+          value={`${data.meetingsCompleted}/${data.meetingsRequired}`}
+          badge={data.meetingsEligible ? 'OK' : `Need ${data.meetingsRequired}`}
+        />
+        <MetricCard
+          label="Incentive Earned"
+          value={formatInr(data.incentiveEarned)}
+          accent={data.meetingsEligible}
+        />
         <MetricCard label="On-Spot Bonus" value={formatInr(data.onSpotBonus)} />
       </div>
+      {!data.meetingsEligible && data.potentialIncentiveEarned > 0 ? (
+        <p className="text-sm text-amber-800">
+          Potential incentive (after meeting gate):{' '}
+          <strong>{formatInr(data.potentialIncentiveEarned)}</strong>
+        </p>
+      ) : null}
+
+      <section className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+        <div className="mb-4 flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-bold uppercase tracking-wide text-gray-800">
+              Weighted collection (Parts 1–3)
+            </h3>
+            <p className="mt-1 text-sm text-gray-500">
+              Click a part to see which leads contribute. Weighted credit uses quotation milestones —
+              not raw cash collected.
+            </p>
+          </div>
+          <p className="text-sm font-semibold text-emerald-700">
+            Total weighted: {formatInr(data.weightedBreakdown.totalWeighted)}
+          </p>
+        </div>
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          <button
+            type="button"
+            onClick={() => togglePart('pre_d1_finance_10')}
+            className={`rounded-lg border p-4 text-left transition ${
+              selectedPart === 'pre_d1_finance_10'
+                ? WEIGHTED_PART_META.pre_d1_finance_10.selected
+                : WEIGHTED_PART_META.pre_d1_finance_10.ring
+            }`}
+          >
+            <p className={`text-[11px] font-bold uppercase tracking-wide ${WEIGHTED_PART_META.pre_d1_finance_10.accent}`}>
+              Part 1 · Pre-D1 finance 10%
+            </p>
+            <p className="mt-2 text-xl font-bold text-gray-900">
+              {formatInr(data.weightedBreakdown.preD1Weighted)}
+            </p>
+            <p className="mt-1 text-xs text-gray-600">
+              Collect 10% of quotation → <strong>finance approval</strong> → credit{' '}
+              <strong>50%</strong> of that quotation · {data.weightedBreakdown.dealsWithPart1}{' '}
+              deal(s)
+            </p>
+            <p className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
+              {selectedPart === 'pre_d1_finance_10' ? 'Showing leads · click to hide' : 'Click to view leads'}
+            </p>
+          </button>
+          <button
+            type="button"
+            onClick={() => togglePart('post_dqc1_design_10')}
+            className={`rounded-lg border p-4 text-left transition ${
+              selectedPart === 'post_dqc1_design_10'
+                ? WEIGHTED_PART_META.post_dqc1_design_10.selected
+                : WEIGHTED_PART_META.post_dqc1_design_10.ring
+            }`}
+          >
+            <p className={`text-[11px] font-bold uppercase tracking-wide ${WEIGHTED_PART_META.post_dqc1_design_10.accent}`}>
+              Part 2 · Post-DQC1 design 10%
+            </p>
+            <p className="mt-2 text-xl font-bold text-gray-900">
+              {formatInr(data.weightedBreakdown.postDqc1Weighted)}
+            </p>
+            <p className="mt-1 text-xs text-gray-600">
+              Collect 10% of current quote (+ revision top-up), then{' '}
+              <strong>finance approval</strong> → credit <strong>25%</strong> of the{' '}
+              <strong>Part 1 quotation</strong> (not the revised quote) ·{' '}
+              {data.weightedBreakdown.dealsWithPart2} deal(s)
+            </p>
+            <p className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-sky-700">
+              {selectedPart === 'post_dqc1_design_10' ? 'Showing leads · click to hide' : 'Click to view leads'}
+            </p>
+          </button>
+          <button
+            type="button"
+            onClick={() => togglePart('part3_forty_percent')}
+            className={`rounded-lg border p-4 text-left transition ${
+              selectedPart === 'part3_forty_percent'
+                ? WEIGHTED_PART_META.part3_forty_percent.selected
+                : WEIGHTED_PART_META.part3_forty_percent.ring
+            }`}
+          >
+            <p className={`text-[11px] font-bold uppercase tracking-wide ${WEIGHTED_PART_META.part3_forty_percent.accent}`}>
+              Part 3 · 40% payment + upsale
+            </p>
+            <p className="mt-2 text-xl font-bold text-gray-900">
+              {formatInr(data.weightedBreakdown.part3Weighted)}
+            </p>
+            <p className="mt-1 text-xs text-gray-600">
+              Finance-approved 40% collection → <strong>25%</strong> of Part 1 quotation + full{' '}
+              <strong>upsale</strong> (current − Part 1 quote) ·{' '}
+              {data.weightedBreakdown.dealsWithPart3} deal(s)
+            </p>
+            <p className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-violet-700">
+              {selectedPart === 'part3_forty_percent' ? 'Showing leads · click to hide' : 'Click to view leads'}
+            </p>
+          </button>
+        </div>
+
+        {selectedPart && partMeta ? (
+          <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50/80 p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <h4 className="text-sm font-bold text-gray-900">
+                Leads in {partMeta.short}
+                <span className="ml-2 text-xs font-medium text-gray-500">
+                  ({partLeads.length} lead{partLeads.length === 1 ? '' : 's'})
+                </span>
+              </h4>
+              <button
+                type="button"
+                onClick={() => setSelectedPart(null)}
+                className="text-xs font-semibold text-gray-500 hover:text-gray-800"
+              >
+                Close
+              </button>
+            </div>
+            {partLeads.length === 0 ? (
+              <p className="text-sm text-gray-500">
+                No leads have cleared this part yet
+                {selectedDate ? ' for the selected date' : ''}.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-200 text-[11px] uppercase tracking-wide text-gray-500">
+                      <th className="pb-2 pr-3 font-semibold">Date</th>
+                      <th className="pb-2 pr-3 font-semibold">Lead / Customer</th>
+                      <th className="pb-2 pr-3 font-semibold">Part 1 quote</th>
+                      <th className="pb-2 pr-3 font-semibold">Current quote</th>
+                      {selectedPart === 'part3_forty_percent' ? (
+                        <th className="pb-2 pr-3 font-semibold">Upsale</th>
+                      ) : null}
+                      <th className="pb-2 font-semibold">Weighted credit</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {partLeads.map((lead) => (
+                      <tr key={`${selectedPart}-${lead.id}`} className="border-b border-gray-100 last:border-0">
+                        <td className="py-2.5 pr-3 text-xs text-gray-600">{lead.activityDate}</td>
+                        <td className="py-2.5 pr-3">
+                          <div className="flex items-center gap-2">
+                            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-white text-[10px] font-bold text-gray-600 ring-1 ring-gray-200">
+                              {lead.initials}
+                            </span>
+                            <span className="font-medium text-gray-900">{lead.customerName}</span>
+                          </div>
+                        </td>
+                        <td className="py-2.5 pr-3 text-gray-800">
+                          {formatInr(lead.quotationAtFinanceApproval)}
+                        </td>
+                        <td className="py-2.5 pr-3 text-gray-800">{formatInr(lead.dealValue)}</td>
+                        {selectedPart === 'part3_forty_percent' ? (
+                          <td className="py-2.5 pr-3 text-violet-700">
+                            {lead.stageUpsale > 0 ? `+${formatInr(lead.stageUpsale)}` : '—'}
+                          </td>
+                        ) : null}
+                        <td className="py-2.5 font-semibold text-emerald-700">
+                          {formatInr(lead.stageWeighted)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        ) : null}
+      </section>
 
       <IncentiveJourney achievementPct={data.achievementPct} currentSlabPct={data.currentSlabPct} />
 
@@ -258,7 +599,8 @@ function IndividualIncentivesPanel({
               </thead>
               <tbody>
                 {data.slabs.map((slab) => {
-                  const active = slab.targetPct === data.currentSlabPct;
+                  const active = data.currentSlabPct > 0 && slab.targetPct === data.currentSlabPct;
+                  const reached = data.achievementPct >= slab.targetPct;
                   return (
                     <tr
                       key={slab.targetPct}
@@ -272,6 +614,10 @@ function IndividualIncentivesPanel({
                           {active ? (
                             <span className="rounded-full bg-emerald-500 px-2 py-0.5 text-[10px] font-bold uppercase text-white">
                               Active
+                            </span>
+                          ) : reached ? (
+                            <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-bold uppercase text-slate-600">
+                              Cleared
                             </span>
                           ) : null}
                         </span>
@@ -291,26 +637,49 @@ function IndividualIncentivesPanel({
           <h3 className="text-xs font-bold uppercase tracking-wide text-slate-300">Current Payout Math</h3>
           <div className="mt-4 rounded-lg border border-dashed border-slate-600 px-3 py-3">
             <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-              Revenue Achieved
+              Weighted Revenue
             </p>
             <p className="mt-1 text-lg font-bold">{formatInr(data.revenueAchieved)}</p>
+            <p className="mt-1 text-[10px] text-slate-500">
+              P1 {formatInr(data.weightedBreakdown.preD1Weighted)} + P2{' '}
+              {formatInr(data.weightedBreakdown.postDqc1Weighted)} + P3{' '}
+              {formatInr(data.weightedBreakdown.part3Weighted)}
+            </p>
           </div>
           <dl className="mt-4 space-y-2 text-sm">
             <div className="flex justify-between gap-2">
+              <dt className="text-slate-400">Meeting gate</dt>
+              <dd className="font-semibold">
+                {data.meetingsCompleted}/{data.meetingsRequired}{' '}
+                {data.meetingsEligible ? '(passed)' : '(locked)'}
+              </dd>
+            </div>
+            <div className="flex justify-between gap-2">
               <dt className="text-slate-400">Eligible Slab</dt>
-              <dd className="font-semibold">{data.eligibleSlabPct}%</dd>
+              <dd className="font-semibold">
+                {data.eligibleSlabPct > 0 ? `${data.eligibleSlabPct}%` : 'None yet'}
+              </dd>
             </div>
             <div className="flex justify-between gap-2">
               <dt className="text-slate-400">Incentive Multiplier</dt>
-              <dd className="font-semibold text-emerald-400">{data.incentiveMultiplierPct}%</dd>
+              <dd className="font-semibold text-emerald-400">
+                {data.incentiveMultiplierPct > 0 ? `${data.incentiveMultiplierPct}%` : '0%'}
+              </dd>
             </div>
           </dl>
           <div className="mt-6 border-t border-slate-700 pt-4">
             <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Total Payout</p>
             <p className="mt-1 text-3xl font-bold text-emerald-400">{formatInr(data.incentiveEarned)}</p>
-            <p className="mt-2 text-[11px] italic text-slate-500">
-              Calculated on collected revenue. Taxes extra.
-            </p>
+            {!data.meetingsEligible ? (
+              <p className="mt-2 text-[11px] text-amber-300">
+                Locked until {data.meetingsRequired} meetings are completed this fortnight.
+                Potential: {formatInr(data.potentialIncentiveEarned)}.
+              </p>
+            ) : (
+              <p className="mt-2 text-[11px] italic text-slate-500">
+                Calculated on weighted quotation credit. Taxes extra.
+              </p>
+            )}
           </div>
         </section>
       </div>
@@ -405,16 +774,17 @@ function IndividualIncentivesPanel({
               <tr className="border-b border-gray-100 text-[11px] uppercase tracking-wide text-gray-500">
                 <th className="pb-3 pr-4 font-semibold">Date</th>
                 <th className="pb-3 pr-4 font-semibold">Customer</th>
-                <th className="pb-3 pr-4 font-semibold">Deal Value</th>
-                <th className="pb-3 pr-4 font-semibold">Closure Time</th>
-                <th className="pb-3 pr-4 font-semibold">Contribution</th>
+                <th className="pb-3 pr-4 font-semibold">Quotation</th>
+                <th className="pb-3 pr-4 font-semibold">Stages</th>
+                <th className="pb-3 pr-4 font-semibold">Weighted</th>
+                <th className="pb-3 pr-4 font-semibold">Closure</th>
                 <th className="pb-3 font-semibold">Incentive</th>
               </tr>
             </thead>
             <tbody>
               {visibleDeals.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-6 text-center text-sm text-gray-500">
+                  <td colSpan={7} className="py-6 text-center text-sm text-gray-500">
                     No deals for this filter.
                   </td>
                 </tr>
@@ -430,24 +800,66 @@ function IndividualIncentivesPanel({
                         <span className="font-medium text-gray-900">{deal.customerName}</span>
                       </div>
                     </td>
-                    <td className="py-3.5 pr-4 font-medium text-gray-800">{formatInr(deal.dealValue)}</td>
+                    <td className="py-3.5 pr-4">
+                      <div className="font-medium text-gray-800">{formatInr(deal.dealValue)}</div>
+                      {deal.dealValue !== deal.quotationAtFinanceApproval ? (
+                        <div className="text-[10px] text-gray-500">
+                          At finance 10%: {formatInr(deal.quotationAtFinanceApproval)}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td className="py-3.5 pr-4">
+                      <div className="flex flex-wrap gap-1">
+                        {deal.stages.map((s) => {
+                            const pendingFinance = s.requestRaised && !s.financeApproved;
+                            return (
+                            <span
+                              key={s.stageId}
+                              title={
+                                pendingFinance
+                                  ? `${s.label}: amount raised — awaiting finance approval (no weighted credit yet)`
+                                  : s.stageId === 'post_dqc1_design_10'
+                                    ? `${s.label}: collect on current quote${s.revisionTopUp > 0 ? ` (+ top-up ${formatInr(s.revisionTopUp)})` : ''} → finance approve → ${s.weightPct}% of Part 1 quote (${formatInr(s.quotationValue)})`
+                                    : s.stageId === 'part3_forty_percent'
+                                      ? `${s.label}: finance-approve 40% → ${s.weightPct}% of Part 1 (${formatInr(s.quotationValue)}) + upsale ${formatInr(s.upsaleAmount)} = ${formatInr(s.weightedAmount)}`
+                                      : `${s.label}: collect ${formatInr(s.collectionRequired)} → finance approve → weight ${s.weightPct}%`
+                              }
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
+                                s.cleared
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : pendingFinance
+                                    ? 'bg-amber-100 text-amber-800'
+                                    : 'bg-gray-100 text-gray-500'
+                              }`}
+                            >
+                              {s.stageId === 'pre_d1_finance_10'
+                                ? pendingFinance
+                                  ? 'P1 pending'
+                                  : 'P1 50%'
+                                : s.stageId === 'post_dqc1_design_10'
+                                  ? pendingFinance
+                                    ? 'P2 pending'
+                                    : 'P2 25%'
+                                  : pendingFinance
+                                    ? 'P3 pending'
+                                    : s.upsaleAmount > 0
+                                      ? `P3 +upsale`
+                                      : 'P3 25%'}
+                            </span>
+                            );
+                          })}
+                      </div>
+                      <div className="mt-1 text-[10px] text-gray-500">{deal.contributionPct}% weight</div>
+                    </td>
+                    <td className="py-3.5 pr-4 font-semibold text-emerald-700">
+                      {formatInr(deal.weightedRevenue)}
+                    </td>
                     <td className="py-3.5 pr-4">
                       <span
                         className={`inline-flex rounded-md px-2 py-1 text-[10px] font-bold uppercase tracking-wide ring-1 ring-inset ${closureBadgeClass(deal.closureTime)}`}
                       >
                         {deal.closureTime}
                       </span>
-                    </td>
-                    <td className="py-3.5 pr-4">
-                      <div className="flex min-w-[120px] items-center gap-2">
-                        <div className="h-1.5 flex-1 rounded-full bg-gray-100">
-                          <div
-                            className="h-1.5 rounded-full bg-emerald-400"
-                            style={{ width: `${deal.contributionPct}%` }}
-                          />
-                        </div>
-                        <span className="text-xs text-gray-500">{deal.contributionPct}%</span>
-                      </div>
                     </td>
                     <td className="py-3.5 font-semibold text-gray-900">{formatInr(deal.incentive)}</td>
                   </tr>
@@ -513,14 +925,18 @@ function TeamIncentivesPanel({
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6">
         <MetricCard label="Team Size" value={String(team.memberCount)} />
         <MetricCard
           label="Combined Target (15 days)"
           value={formatInr(team.totalTarget)}
         />
-        <MetricCard label="Revenue Achieved" value={formatInr(team.revenueAchieved)} />
+        <MetricCard label="Weighted Revenue" value={formatInr(team.revenueAchieved)} />
         <MetricCard label="Team Achievement" value={`${team.achievementPct}%`} />
+        <MetricCard
+          label="Meeting Gate Passed"
+          value={`${team.rows.filter((r) => r.meetingsEligible).length}/${team.memberCount}`}
+        />
         <MetricCard label="Total Incentives" value={formatInr(team.incentiveEarned)} accent />
       </div>
 
@@ -539,6 +955,7 @@ function TeamIncentivesPanel({
                   <th className="pb-3 pr-4 font-semibold">Target</th>
                   <th className="pb-3 pr-4 font-semibold">Revenue</th>
                   <th className="pb-3 pr-4 font-semibold">Achievement</th>
+                  <th className="pb-3 pr-4 font-semibold">Meetings</th>
                   <th className="pb-3 pr-4 font-semibold">Slab</th>
                   <th className="pb-3 pr-4 font-semibold">Incentive</th>
                   <th className="pb-3 pr-4 font-semibold">On-Spot</th>
@@ -566,8 +983,22 @@ function TeamIncentivesPanel({
                       </div>
                     </td>
                     <td className="py-3.5 pr-4">
+                      <div className="flex flex-col gap-0.5">
+                        <span className="font-semibold text-gray-900">
+                          {row.meetingsCompleted}/{row.meetingsRequired}
+                        </span>
+                        <span
+                          className={`text-[10px] font-bold uppercase tracking-wide ${
+                            row.meetingsEligible ? 'text-emerald-600' : 'text-amber-600'
+                          }`}
+                        >
+                          {row.meetingsEligible ? 'Eligible' : 'Locked'}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="py-3.5 pr-4">
                       <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700">
-                        {row.currentSlabPct}%
+                        {row.currentSlabPct > 0 ? `${row.currentSlabPct}%` : '—'}
                       </span>
                     </td>
                     <td className="py-3.5 pr-4 font-semibold text-emerald-700">

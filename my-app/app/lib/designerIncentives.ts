@@ -7,13 +7,70 @@ export type IncentiveSlab = {
   potentialEarned: number;
 };
 
+/** Collection milestone % of quotation (sales 10% / design 10%). */
+export const COLLECTION_MILESTONE_PCT = 10;
+/** Design 40% payment milestone (cumulative target with prior 10%+10% = 60%). */
+export const COLLECTION_FORTY_PERCENT_PCT = 40;
+
+/**
+ * Weighted credit toward incentive revenue when a collection stage clears.
+ */
+export const WEIGHTED_CREDIT_PCT = {
+  /** Part 1: finance-approved first 10% (pre-D1) → 50% of quotation at that time */
+  preD1Finance10: 50,
+  /**
+   * Part 2: post-DQC1 design 10% finance-approved → 25% of the *Part 1* quotation
+   * (quotation at first finance 10%), not the revised current quote.
+   */
+  postDqc1Design10: 25,
+  /**
+   * Part 3: finance-approved 40% payment → 25% of Part 1 quotation + full upsale
+   * (current quote − Part 1 quote).
+   */
+  part3FortyPercent: 25,
+} as const;
+
+export type IncentiveWeightStageId =
+  | "pre_d1_finance_10"
+  | "post_dqc1_design_10"
+  | "part3_forty_percent";
+
+export type WeightedStageCredit = {
+  stageId: IncentiveWeightStageId;
+  label: string;
+  /** Quotation used for this stage's % weight base (usually Part 1 quote) */
+  quotationValue: number;
+  /** Milestone collection amount required (10% or 40% of applicable quote) */
+  collectionRequired: number;
+  /** Extra collection needed when quote revised upward (Part 2 / Part 3 top-ups) */
+  revisionTopUp: number;
+  /** Upsale added into weighted credit (Part 3): current quote − Part 1 quote */
+  upsaleAmount: number;
+  collectionReceived: number;
+  /** Payment request raised / amount received (may still await finance) */
+  requestRaised: boolean;
+  /** Finance has approved this milestone payment */
+  financeApproved: boolean;
+  /** Stage counts toward weighted revenue only when financeApproved */
+  cleared: boolean;
+  weightPct: number;
+  weightedAmount: number;
+};
+
 export type DealLedgerRow = {
   id: string;
   customerName: string;
   initials: string;
+  /** Current / latest quotation value */
   dealValue: number;
+  /** Quotation when finance approved the first 10% (pre-D1) */
+  quotationAtFinanceApproval: number;
   closureTime: "SAME DAY" | "48 HOURS" | "72 HOURS+";
+  /** Sum of unlocked weight % (e.g. 50, or 75 if Parts 1+2 cleared) */
   contributionPct: number;
+  /** Sum of weighted amounts credited for incentive revenue */
+  weightedRevenue: number;
+  stages: WeightedStageCredit[];
   incentive: number;
   /** ISO date YYYY-MM-DD within the selected fortnight */
   activityDate: string;
@@ -55,14 +112,30 @@ export type DayActivitySummary = {
   deals: DealLedgerRow[];
 };
 
+export type WeightedRevenueBreakdown = {
+  /** Part 1 — pre-D1 finance 10% collections */
+  preD1Weighted: number;
+  /** Part 2 — post-DQC1 design 10% collections */
+  postDqc1Weighted: number;
+  /** Part 3 — 40% payment + upsale */
+  part3Weighted: number;
+  totalWeighted: number;
+  dealsWithPart1: number;
+  dealsWithPart2: number;
+  dealsWithPart3: number;
+};
+
 export type DesignerIncentivesData = {
   designerId: number;
   designerName: string;
   totalTarget: number;
+  /** Weighted revenue (not raw collection) toward the ₹30L target */
   revenueAchieved: number;
   revenueDeltaPct: number;
   achievementPct: number;
   incentiveEarned: number;
+  /** Calculated incentive before meeting eligibility gate */
+  potentialIncentiveEarned: number;
   onSpotBonus: number;
   amountToNextSlab: number;
   currentSlabPct: number;
@@ -73,6 +146,12 @@ export type DesignerIncentivesData = {
   sameDayBonus: number;
   fortyEightHourClosures: number;
   fortyEightHourBonus: number;
+  /** Completed meetings in this fortnight */
+  meetingsCompleted: number;
+  /** Minimum meetings required to unlock incentives */
+  meetingsRequired: number;
+  meetingsEligible: boolean;
+  weightedBreakdown: WeightedRevenueBreakdown;
   deals: DealLedgerRow[];
   cycle: IncentiveCycleInfo;
 };
@@ -87,6 +166,9 @@ export type TeamIncentiveRow = {
   incentiveEarned: number;
   onSpotBonus: number;
   currentSlabPct: number;
+  meetingsCompleted: number;
+  meetingsRequired: number;
+  meetingsEligible: boolean;
 };
 
 export type TeamIncentivesSummary = {
@@ -109,6 +191,8 @@ export type IncentiveMember = {
 /** Per-designer target for each 15-day cycle */
 export const INCENTIVE_CYCLE_TARGET = 30_00_000;
 export const INCENTIVE_CYCLE_DAYS = 15;
+/** Designers must complete at least this many meetings in the fortnight to unlock incentives */
+export const MIN_MEETINGS_PER_FORTNIGHT = 3;
 
 /** Anchor so cycles are consistent across users (IST-friendly UTC midnight of 1 Jan 2026). */
 const CYCLE_EPOCH_UTC = Date.UTC(2026, 0, 1);
@@ -244,7 +328,7 @@ export function buildDayActivitySummary(
   dateIso: string,
 ): DayActivitySummary {
   const dayDeals = filterDealsByDate(deals, dateIso);
-  const revenue = dayDeals.reduce((s, d) => s + d.dealValue, 0);
+  const revenue = dayDeals.reduce((s, d) => s + d.weightedRevenue, 0);
   const incentive = dayDeals.reduce((s, d) => s + d.incentive, 0);
   return {
     dateIso,
@@ -255,6 +339,181 @@ export function buildDayActivitySummary(
     sameDayClosures: dayDeals.filter((d) => d.closureTime === "SAME DAY").length,
     fortyEightHourClosures: dayDeals.filter((d) => d.closureTime === "48 HOURS").length,
     deals: dayDeals,
+  };
+}
+
+/**
+ * Weighted incentive revenue from collection milestones.
+ *
+ * Part 1 (pre-D1): finance approves first 10% → credit 50% of that quotation.
+ * Part 2 (post-DQC1): design 10% of current quote (+ revision top-up) finance-approved
+ *   → credit 25% of Part 1 quotation.
+ * Part 3 (40% payment): finance approves 40% collection → credit
+ *   25% of Part 1 quotation + full upsale (current quote − Part 1 quote).
+ *   Example: Part 1 quote 10L, now 14L → 2.5L + 4L = 6.5L weighted.
+ */
+export function computeWeightedStages(input: {
+  quotationAtFinanceApproval: number;
+  quotationCurrent: number;
+  /** Amount collected toward the first (sales) 10% */
+  salesTenPercentCollected: number;
+  /** Finance has approved the first (sales) 10% payment */
+  salesTenPercentFinanceApproved: boolean;
+  /**
+   * Cumulative paid / requested toward sales 10% + design 10% (20% of current quote),
+   * including revision top-up. Amount alone is not enough for Part 2 credit.
+   */
+  cumulativeCollectedTowardDesign10: number;
+  /**
+   * Finance has approved the post-DQC1 design 10% payment request
+   * (including any quote-revision top-up). Required for Part 2 weighted credit.
+   */
+  designTenPercentFinanceApproved: boolean;
+  /**
+   * Cumulative paid / requested toward 60% of current quote
+   * (sales 10% + design 10% + design 40%).
+   */
+  cumulativeCollectedTowardFortyPercent: number;
+  /** Finance has approved the 40% payment collection request */
+  fortyPercentFinanceApproved: boolean;
+}): WeightedStageCredit[] {
+  const quoteAtApproval = Math.max(0, input.quotationAtFinanceApproval);
+  const quoteCurrent = Math.max(0, input.quotationCurrent);
+  const salesTenRequired = Math.round((quoteAtApproval * COLLECTION_MILESTONE_PCT) / 100);
+  const designTenOfCurrent = Math.round((quoteCurrent * COLLECTION_MILESTONE_PCT) / 100);
+  const priorTenOfOld = Math.round((quoteAtApproval * COLLECTION_MILESTONE_PCT) / 100);
+  const revisionTopUp = Math.max(0, designTenOfCurrent - priorTenOfOld);
+  // Design 10% milestone: 20% cumulative of current quote
+  const twentyPercentOfCurrent = Math.round((quoteCurrent * 20) / 100);
+  // 40% payment milestone: 60% cumulative of current quote
+  const sixtyPercentOfCurrent = Math.round((quoteCurrent * 60) / 100);
+  const fortyPercentOfCurrent = Math.round(
+    (quoteCurrent * COLLECTION_FORTY_PERCENT_PCT) / 100,
+  );
+  const upsaleAmount = Math.max(0, quoteCurrent - quoteAtApproval);
+
+  const part1AmountMet = salesTenRequired > 0 && input.salesTenPercentCollected >= salesTenRequired;
+  const part1Cleared = part1AmountMet && input.salesTenPercentFinanceApproved;
+
+  const part2AmountMet =
+    part1Cleared &&
+    twentyPercentOfCurrent > 0 &&
+    input.cumulativeCollectedTowardDesign10 >= twentyPercentOfCurrent;
+  const part2RequestRaised = part2AmountMet;
+  const part2Cleared = part2RequestRaised && input.designTenPercentFinanceApproved;
+
+  const part3AmountMet =
+    part2Cleared &&
+    sixtyPercentOfCurrent > 0 &&
+    input.cumulativeCollectedTowardFortyPercent >= sixtyPercentOfCurrent;
+  const part3RequestRaised = part3AmountMet;
+  const part3Cleared = part3RequestRaised && input.fortyPercentFinanceApproved;
+
+  const part1Weighted = part1Cleared
+    ? Math.round((quoteAtApproval * WEIGHTED_CREDIT_PCT.preD1Finance10) / 100)
+    : 0;
+  const part2Weighted = part2Cleared
+    ? Math.round((quoteAtApproval * WEIGHTED_CREDIT_PCT.postDqc1Design10) / 100)
+    : 0;
+  // Part 3: 25% of Part 1 quotation + full upsale vs Part 1 quote
+  const part3BaseWeighted = part3Cleared
+    ? Math.round((quoteAtApproval * WEIGHTED_CREDIT_PCT.part3FortyPercent) / 100)
+    : 0;
+  const part3Weighted = part3Cleared ? part3BaseWeighted + upsaleAmount : 0;
+
+  return [
+    {
+      stageId: "pre_d1_finance_10",
+      label: "Part 1 · Pre-D1 finance 10%",
+      quotationValue: quoteAtApproval,
+      collectionRequired: salesTenRequired,
+      revisionTopUp: 0,
+      upsaleAmount: 0,
+      collectionReceived: Math.min(input.salesTenPercentCollected, salesTenRequired),
+      requestRaised: part1AmountMet,
+      financeApproved: input.salesTenPercentFinanceApproved && part1AmountMet,
+      cleared: part1Cleared,
+      weightPct: WEIGHTED_CREDIT_PCT.preD1Finance10,
+      weightedAmount: part1Weighted,
+    },
+    {
+      stageId: "post_dqc1_design_10",
+      label: "Part 2 · Post-DQC1 design 10%",
+      quotationValue: quoteAtApproval,
+      collectionRequired: designTenOfCurrent,
+      revisionTopUp,
+      upsaleAmount: 0,
+      collectionReceived: Math.max(
+        0,
+        Math.min(
+          input.cumulativeCollectedTowardDesign10 - (part1Cleared ? salesTenRequired : 0),
+          designTenOfCurrent + revisionTopUp,
+        ),
+      ),
+      requestRaised: part2RequestRaised,
+      financeApproved: part2Cleared,
+      cleared: part2Cleared,
+      weightPct: WEIGHTED_CREDIT_PCT.postDqc1Design10,
+      weightedAmount: part2Weighted,
+    },
+    {
+      stageId: "part3_forty_percent",
+      label: "Part 3 · 40% payment + upsale",
+      quotationValue: quoteAtApproval,
+      collectionRequired: fortyPercentOfCurrent,
+      revisionTopUp: Math.max(
+        0,
+        sixtyPercentOfCurrent - Math.round((quoteAtApproval * 60) / 100),
+      ),
+      upsaleAmount,
+      collectionReceived: Math.max(
+        0,
+        Math.min(
+          input.cumulativeCollectedTowardFortyPercent -
+            (part2Cleared ? twentyPercentOfCurrent : 0),
+          fortyPercentOfCurrent,
+        ),
+      ),
+      requestRaised: part3RequestRaised,
+      financeApproved: part3Cleared,
+      cleared: part3Cleared,
+      weightPct: WEIGHTED_CREDIT_PCT.part3FortyPercent,
+      weightedAmount: part3Weighted,
+    },
+  ];
+}
+
+export function summarizeWeightedBreakdown(deals: DealLedgerRow[]): WeightedRevenueBreakdown {
+  let preD1Weighted = 0;
+  let postDqc1Weighted = 0;
+  let part3Weighted = 0;
+  let dealsWithPart1 = 0;
+  let dealsWithPart2 = 0;
+  let dealsWithPart3 = 0;
+  for (const d of deals) {
+    for (const s of d.stages) {
+      if (s.stageId === "pre_d1_finance_10" && s.cleared) {
+        preD1Weighted += s.weightedAmount;
+        dealsWithPart1 += 1;
+      }
+      if (s.stageId === "post_dqc1_design_10" && s.cleared) {
+        postDqc1Weighted += s.weightedAmount;
+        dealsWithPart2 += 1;
+      }
+      if (s.stageId === "part3_forty_percent" && s.cleared) {
+        part3Weighted += s.weightedAmount;
+        dealsWithPart3 += 1;
+      }
+    }
+  }
+  return {
+    preD1Weighted,
+    postDqc1Weighted,
+    part3Weighted,
+    totalWeighted: preD1Weighted + postDqc1Weighted + part3Weighted,
+    dealsWithPart1,
+    dealsWithPart2,
+    dealsWithPart3,
   };
 }
 
@@ -289,16 +548,18 @@ function pickSlab(achievementPct: number): number {
   if (achievementPct >= 60) return 60;
   if (achievementPct >= 50) return 50;
   if (achievementPct >= 40) return 40;
-  return 40;
+  return 0;
 }
 
 function multiplierForSlab(slab: number): number {
-  return SLAB_DEFS.find((s) => s.targetPct === slab)?.incentivePct ?? 0.25;
+  if (slab <= 0) return 0;
+  return SLAB_DEFS.find((s) => s.targetPct === slab)?.incentivePct ?? 0;
 }
 
 /**
  * Deterministic demo incentives for a selected 15-day cycle.
- * Target is always ₹30L; progress varies by designer + cycle until a real API exists.
+ * Target is always ₹30L; progress is driven by weighted collection milestones
+ * (Parts 1–3) until a real API exists.
  */
 export function buildDemoIncentivesForDesigner(
   member: IncentiveMember,
@@ -314,46 +575,106 @@ export function buildDemoIncentivesForDesigner(
   const totalTarget = cycle.totalTarget;
   const slabs = buildSlabsForTarget(totalTarget);
   const seed = hashSeed((member.id || 1) * 31 + cycle.cycleIndex * 17);
-  // Progress scales with days elapsed so a fresh cycle starts low and grows
-  const progressCap = Math.min(95, 18 + cycle.daysElapsed * 4.5 + (seed % 20));
-  const achievementPct = Math.round(progressCap * 10) / 10;
-  const revenueAchieved = Math.round((totalTarget * achievementPct) / 100);
-  const currentSlabPct = pickSlab(achievementPct);
-  const incentiveMultiplierPct = multiplierForSlab(currentSlabPct);
-  const incentiveEarned = Math.round((revenueAchieved * incentiveMultiplierPct) / 100);
-  const sameDayClosures = 1 + (seed % 5);
-  const fortyEightHourClosures = 1 + ((seed >> 3) % 4);
-  const sameDayBonus = sameDayClosures * 750;
-  const fortyEightHourBonus = fortyEightHourClosures * 375;
-  const onSpotBonus = sameDayBonus + fortyEightHourBonus;
-  const nextSlab =
-    slabs.find((s) => s.targetPct > currentSlabPct)?.revenue ?? totalTarget;
-  const amountToNextSlab = Math.max(0, nextSlab - revenueAchieved);
+
   const cycleDates = listDatesInCycle(cycle);
   const daysForDeals = cycle.isCurrent
     ? cycleDates.slice(0, Math.max(1, cycle.daysElapsed))
     : cycleDates;
   const dealCount = Math.min(daysForDeals.length, 4 + (seed % 5));
+
   const deals: DealLedgerRow[] = Array.from({ length: dealCount }, (_, i) => {
     const customerName = DEMO_CUSTOMERS[(seed + i) % DEMO_CUSTOMERS.length];
-    const dealValue = 1_50_000 + ((seed + i * 97) % 6) * 75_000;
+    const quotationAtFinanceApproval = 8_00_000 + ((seed + i * 97) % 7) * 1_00_000;
+    // Upsale can grow further by Part 3 (e.g. 10L → 14L)
+    const upsaleSteps = (seed + i) % 5;
+    const quotationCurrent =
+      quotationAtFinanceApproval + (upsaleSteps === 0 ? 0 : upsaleSteps * 1_00_000);
+    // 0 neither, 1 P1, 2 P2 pending, 3 P2 approved, 4 P3 pending, 5 P3 approved
+    const stageRoll = (seed + i * 5) % 8;
+    const stageProgress =
+      stageRoll <= 1 ? 0 : stageRoll <= 3 ? 1 : stageRoll === 4 ? 2 : stageRoll === 5 ? 3 : stageRoll === 6 ? 4 : 5;
+    const salesTenRequired = Math.round((quotationAtFinanceApproval * COLLECTION_MILESTONE_PCT) / 100);
+    const twentyPctCurrent = Math.round((quotationCurrent * 20) / 100);
+    const sixtyPctCurrent = Math.round((quotationCurrent * 60) / 100);
+    const salesTenPercentCollected = stageProgress >= 1 ? salesTenRequired : Math.round(salesTenRequired * 0.4);
+    const salesTenPercentFinanceApproved = stageProgress >= 1;
+    const cumulativeCollectedTowardDesign10 =
+      stageProgress >= 2
+        ? twentyPctCurrent
+        : stageProgress >= 1
+          ? salesTenRequired
+          : salesTenPercentCollected;
+    const designTenPercentFinanceApproved = stageProgress >= 3;
+    const cumulativeCollectedTowardFortyPercent =
+      stageProgress >= 4
+        ? sixtyPctCurrent
+        : stageProgress >= 3
+          ? twentyPctCurrent
+          : cumulativeCollectedTowardDesign10;
+    const fortyPercentFinanceApproved = stageProgress >= 5;
+    const stages = computeWeightedStages({
+      quotationAtFinanceApproval,
+      quotationCurrent,
+      salesTenPercentCollected,
+      salesTenPercentFinanceApproved,
+      cumulativeCollectedTowardDesign10,
+      designTenPercentFinanceApproved,
+      cumulativeCollectedTowardFortyPercent,
+      fortyPercentFinanceApproved,
+    });
+    const weightedRevenue = stages.reduce((s, st) => s + st.weightedAmount, 0);
+    const contributionPct = stages.reduce((s, st) => s + (st.cleared ? st.weightPct : 0), 0);
     const closureRoll = (seed + i * 3) % 3;
     const closureTime: DealLedgerRow["closureTime"] =
       closureRoll === 0 ? "SAME DAY" : closureRoll === 1 ? "48 HOURS" : "72 HOURS+";
-    const contributionPct = 40 + ((seed + i * 11) % 50);
-    const incentive = Math.round((dealValue * incentiveMultiplierPct * contributionPct) / 10000);
     const activityDate = daysForDeals[(seed + i * 5) % daysForDeals.length];
     return {
       id: `${member.id}-${cycle.cycleIndex}-${i + 1}`,
       customerName,
       initials: initialsFromName(customerName),
-      dealValue,
+      dealValue: quotationCurrent,
+      quotationAtFinanceApproval,
       closureTime,
       contributionPct,
-      incentive,
+      weightedRevenue,
+      stages,
+      incentive: 0, // filled after slab multiplier known
       activityDate,
     };
   }).sort((a, b) => a.activityDate.localeCompare(b.activityDate));
+
+  const weightedBreakdown = summarizeWeightedBreakdown(deals);
+  const revenueAchieved = weightedBreakdown.totalWeighted;
+  const achievementPct =
+    totalTarget > 0 ? Math.round((revenueAchieved / totalTarget) * 1000) / 10 : 0;
+  const currentSlabPct = pickSlab(achievementPct);
+  const incentiveMultiplierPct = multiplierForSlab(currentSlabPct);
+
+  const dealsWithIncentive = deals.map((d) => {
+    const dealIncentiveBase = Math.round((d.weightedRevenue * incentiveMultiplierPct) / 100);
+    return { ...d, incentive: dealIncentiveBase };
+  });
+
+  const potentialIncentiveEarned = Math.round((revenueAchieved * incentiveMultiplierPct) / 100);
+  // Demo meeting count: varies by designer/cycle; some fall short of the 3-meeting gate
+  const meetingsRequired = MIN_MEETINGS_PER_FORTNIGHT;
+  const meetingsCompleted =
+    seed % 6 === 0 ? 0 : seed % 6 === 1 ? 1 : seed % 6 === 2 ? 2 : 3 + (seed % 3);
+  const meetingsEligible = meetingsCompleted >= meetingsRequired;
+  const incentiveEarned = meetingsEligible ? potentialIncentiveEarned : 0;
+  const sameDayClosures = dealsWithIncentive.filter((d) => d.closureTime === "SAME DAY").length;
+  const fortyEightHourClosures = dealsWithIncentive.filter((d) => d.closureTime === "48 HOURS").length;
+  const sameDayBonus = sameDayClosures * 750;
+  const fortyEightHourBonus = fortyEightHourClosures * 375;
+  const onSpotBonus = meetingsEligible ? sameDayBonus + fortyEightHourBonus : 0;
+  const nextSlab =
+    slabs.find((s) => s.targetPct > currentSlabPct)?.revenue ??
+    (currentSlabPct <= 0 ? slabs[0]?.revenue ?? totalTarget : totalTarget);
+  const amountToNextSlab = Math.max(0, nextSlab - revenueAchieved);
+
+  const finalDeals = meetingsEligible
+    ? dealsWithIncentive
+    : dealsWithIncentive.map((d) => ({ ...d, incentive: 0 }));
 
   return {
     designerId: member.id,
@@ -363,6 +684,7 @@ export function buildDemoIncentivesForDesigner(
     revenueDeltaPct: 4 + (seed % 12),
     achievementPct,
     incentiveEarned,
+    potentialIncentiveEarned,
     onSpotBonus,
     amountToNextSlab,
     currentSlabPct,
@@ -370,10 +692,14 @@ export function buildDemoIncentivesForDesigner(
     incentiveMultiplierPct,
     slabs,
     sameDayClosures,
-    sameDayBonus,
+    sameDayBonus: meetingsEligible ? sameDayBonus : 0,
     fortyEightHourClosures,
-    fortyEightHourBonus,
-    deals,
+    fortyEightHourBonus: meetingsEligible ? fortyEightHourBonus : 0,
+    meetingsCompleted,
+    meetingsRequired,
+    meetingsEligible,
+    weightedBreakdown,
+    deals: finalDeals,
     cycle,
   };
 }
@@ -406,6 +732,9 @@ export function buildTeamIncentivesSummary(
       incentiveEarned: d.incentiveEarned,
       onSpotBonus: d.onSpotBonus,
       currentSlabPct: d.currentSlabPct,
+      meetingsCompleted: d.meetingsCompleted,
+      meetingsRequired: d.meetingsRequired,
+      meetingsEligible: d.meetingsEligible,
     };
   });
   const totalTarget = rows.reduce((s, r) => s + r.totalTarget, 0);
