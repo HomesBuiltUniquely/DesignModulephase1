@@ -24,6 +24,7 @@ import {
     AppointmentSuccessToast,
     type AppointmentSuccessPayload,
 } from "./AppointmentSuccessToast";
+import { IncentivesNavLink, canShowIncentivesNav } from "./IncentivesNavLink";
 
 // Stage column: Active / Inactive (sales) / Cancelled (TDM admin DGM)
 function getStatusDisplay(stage: string): "Active" | "Inactive" | "Cancelled" {
@@ -1502,6 +1503,12 @@ export default function Dashboard() {
                         <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
                         </svg>
                     </button>
+                    {canShowIncentivesNav(user?.role) && (
+                        <IncentivesNavLink
+                            active={false}
+                            className="mb-2 xl:w-66.25"
+                        />
+                    )}
                     {isDropdownOpen && (
                         <div id="workspace-sidebar-panel" className="transition-all duration-200 space-y-1">
                             <button

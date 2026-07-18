@@ -7,12 +7,14 @@ import { getApiBase, buildAuthHeaders } from '../lib/apiBase';
 import Dashboard from './Dashboard';
 import GoogleCalendarView from './GoogleCalendarView';
 import PersonalAppointmentsView from './PersonalAppointmentsView';
+import DesignerIncentivesView from './DesignerIncentivesView';
 import ThemeModeToggle from './ThemeModeToggle';
 import { PersonalAppointmentModal } from './PersonalAppointmentModal';
 import {
   AppointmentSuccessToast,
   type AppointmentSuccessPayload,
 } from './AppointmentSuccessToast';
+import { IncentivesNavLink, IncentivesSideRail, canShowIncentivesNav } from './IncentivesNavLink';
 
 export default function DashboardGuard() {
   const router = useRouter();
@@ -109,10 +111,35 @@ export default function DashboardGuard() {
     user.role === 'design_manager' ||
     user.role === 'designer';
 
+  const canAccessIncentives = canShowIncentivesNav(user.role);
+
+  const mainContent =
+    pathname === '/google-calendar' ? (
+      <GoogleCalendarView />
+    ) : pathname === '/personal-appointments' ? (
+      <PersonalAppointmentsView />
+    ) : pathname === '/incentives' ? (
+      canAccessIncentives ? (
+        <DesignerIncentivesView />
+      ) : (
+        <div className="flex min-h-[40vh] items-center justify-center text-sm text-gray-500">
+          Incentives are available for designers.
+        </div>
+      )
+    ) : (
+      <Dashboard />
+    );
+
+  const showIncentivesSideRail =
+    canAccessIncentives &&
+    (pathname === '/incentives' ||
+      pathname === '/google-calendar' ||
+      pathname === '/personal-appointments');
+
   return (
     <div>
       <header className="bg-white border-b border-gray-200 px-4 py-2 flex items-center justify-between">
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center gap-3">
           <a href="/" className="text-green-700 font-semibold">Dashboard</a>
           {canAccessCalendar && (
             <a
@@ -125,6 +152,12 @@ export default function DashboardGuard() {
             >
               HUB Calendar
             </a>
+          )}
+          {canAccessIncentives && (
+            <IncentivesNavLink
+              active={pathname === '/incentives'}
+              className="mb-0 py-1.5 xl:w-auto"
+            />
           )}
           {((user.role === 'territorial_design_manager' || user.role === 'deputy_general_manager') || user.role === 'dqc_manager' || user.role === 'mmt_manager' || user.role === 'mmt_executive' || user.role === 'finance' || user.role === 'admin' || user.role === 'senior_project_manager' || user.role === 'project_manager') && (
             <>
@@ -207,6 +240,15 @@ export default function DashboardGuard() {
                     ) : null}
                   </a>
                 )}
+                {canAccessIncentives && (
+                  <a
+                    href="/incentives"
+                    className="block px-4 py-2 text-sm text-emerald-700 font-semibold hover:bg-emerald-50"
+                    onClick={() => setSettingsOpen(false)}
+                  >
+                    Incentives
+                  </a>
+                )}
                 {user.role === 'admin' && (
                   <a href="/admin" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100" onClick={() => setSettingsOpen(false)}>
                     Admin Panel
@@ -234,12 +276,13 @@ export default function DashboardGuard() {
         </div>
       </header>
       <main>
-        {pathname === '/google-calendar' ? (
-          <GoogleCalendarView />
-        ) : pathname === '/personal-appointments' ? (
-          <PersonalAppointmentsView />
+        {showIncentivesSideRail ? (
+          <div className="xl:grid xl:grid-cols-5 xl:gap-4">
+            <IncentivesSideRail pathname={pathname} showCalendar={canAccessCalendar} />
+            <div className="xl:col-span-4">{mainContent}</div>
+          </div>
         ) : (
-          <Dashboard />
+          mainContent
         )}
       </main>
       {showAppointmentModal && sessionId && user && isDesignManager ? (
