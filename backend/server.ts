@@ -24,7 +24,7 @@ import {
   formatQuoteInrAmount,
   resolveLeadMilestonePaymentBreakdown,
 } from "./routes/prolanceApi";
-import { registerCrmHubBookingRoutes, notifyHubFinanceReview, getHubBookingSyncForLead, buildFinance10pQueueList, buildCrmSalesClosureQueueRows, buildCrmSalesClosureLeadDetail } from "./routes/crmHubBookingRoutes";
+import { registerCrmHubBookingRoutes, notifyHubFinanceReview, getHubBookingSyncForLead, buildFinance10pQueueList, buildCrmSalesClosureQueueRows, buildCrmSalesClosureLeadDetail, leadHasDqc1Approval, isCrmBookingFinanceApproved } from "./routes/crmHubBookingRoutes";
 
 function loadEnvFile() {
   const envPath = path.join(__dirname, ".env");
@@ -5635,12 +5635,33 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
     const actingUser = await getUserFromSession(req);
     if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
 
+    const tNormComplete = String(taskName).trim();
+    const isDqc1ApprovalComplete = milestoneIndex === 1 && tNormComplete === "DQC 1 approval";
+    let isFirstDqc1Approval = false;
+    if (isDqc1ApprovalComplete) {
+      const [priorDqc1Rows] = await pool.query(
+        `SELECT 1 FROM lead_task_completions
+         WHERE lead_id = ? AND milestone_index = 1 AND task_name = 'DQC 1 approval' LIMIT 1`,
+        [id],
+      );
+      isFirstDqc1Approval = (priorDqc1Rows as unknown[]).length === 0;
+    }
+
     await pool.query(
       `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
        VALUES (?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
       [id, milestoneIndex, taskName, new Date()],
     );
+
+    // CRM convert-booking / finance can mark design 10% tasks before DQC1. On first DQC1
+    // approval, clear those so the lead lands on the 10% PAYMENT milestone (not D2).
+    if (isDqc1ApprovalComplete && isFirstDqc1Approval) {
+      await pool.query(
+        `DELETE FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 2`,
+        [id],
+      );
+    }
 
     // Fire-and-forget: trigger milestone-specific customer emails where defined
     const emailRoutePath: string | null = (() => {
@@ -8224,7 +8245,7 @@ app.post(
   }
 );
 
-// Finance: approve 10% payment (marks "10% payment approval" complete; lead moves to next stage)
+// Finance: approve 10% payment — CRM booking (pre-DQC1) OR design milestone (post-DQC1)
 app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Response) => {
   const leadId = Number(req.params.id);
   if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
@@ -8236,6 +8257,57 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
       return res.status(403).json({ message: "Only finance can approve 10% payment" });
     }
     const now = new Date();
+    const hubSync = await getHubBookingSyncForLead(pool, leadId);
+    const hasDqc1 = await leadHasDqc1Approval(pool, leadId);
+    const [leadPayloadRows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [leadId]);
+    const leadPayload = parseLeadPayloadObject((leadPayloadRows as { payload?: unknown }[])[0]?.payload);
+    const crmAlreadyApproved = await isCrmBookingFinanceApproved(pool, leadId, leadPayload);
+    const isCrmBookingPayment = Boolean(hubSync) && !hasDqc1 && !crmAlreadyApproved;
+
+    if (Boolean(hubSync) && !hasDqc1 && crmAlreadyApproved) {
+      return res.status(201).json({ ok: true, path: "crm_booking_already" });
+    }
+
+    // ── CRM booking token payment (sales 10% at closure) → 10-20% intake, not design milestone 2 ──
+    if (isCrmBookingPayment) {
+      await pool.query(
+        "UPDATE lead_uploads SET status = 'approved' WHERE lead_id = ? AND upload_type = 'hub_payment_proof' AND status = 'pending'",
+        [leadId],
+      );
+      const [lr] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [leadId]);
+      const raw = (lr as { payload?: unknown }[])[0]?.payload;
+      let payload: Record<string, unknown> = {};
+      try {
+        payload = raw ? (JSON.parse(String(raw)) as Record<string, unknown>) : {};
+      } catch {
+        payload = {};
+      }
+      payload.crm_booking_finance_approved = true;
+      payload.crm_booking_finance_approved_at = now.toISOString();
+      await pool.query(
+        `UPDATE leads SET project_stage = '10-20%', payload = ?, update_at = ? WHERE id = ?`,
+        [JSON.stringify(payload), now, leadId],
+      );
+      await addLeadHistoryEvent(leadId, {
+        id: `crm-booking-finance-${Date.now()}`,
+        type: "note",
+        taskName: "CRM Booking Payment Approval",
+        milestoneName: "Pre 10%",
+        timestamp: now.toISOString(),
+        description: "Finance approved CRM booking token payment. Lead moved to 10–20% design intake.",
+        user: { name: user.name ?? "Finance" },
+        details: { kind: "note", noteText: "CRM pre-DQC1 payment approved." },
+      });
+      void notifyHubFinanceReview(pool, leadId, "APPROVED", user.name ?? "Finance", null);
+      return res.status(201).json({ ok: true, path: "crm_booking" });
+    }
+
+    if (!hasDqc1) {
+      return res.status(400).json({
+        message: "DQC 1 must be approved before design 10% payment can be approved.",
+      });
+    }
+
     await pool.query(
       `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
        VALUES (?, 2, '10% payment approval', ?)
@@ -8243,7 +8315,7 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
       [leadId, now]
     );
     await pool.query(
-      "UPDATE lead_uploads SET status = 'approved' WHERE lead_id = ? AND upload_type IN ('payment_10p', 'hub_payment_proof') AND status = 'pending'",
+      "UPDATE lead_uploads SET status = 'approved' WHERE lead_id = ? AND upload_type = 'payment_10p' AND status = 'pending'",
       [leadId]
     );
     await pool.query(
@@ -8463,19 +8535,14 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
       });
     }
 
-    const hubSync = await getHubBookingSyncForLead(pool, leadId);
-    if (hubSync) {
-      void notifyHubFinanceReview(pool, leadId, "APPROVED", user.name ?? "Finance", null);
-    }
-
-    return res.status(201).json({ ok: true });
+    return res.status(201).json({ ok: true, path: "design_10p" });
   } catch (err) {
     console.error("approve-10p-payment error", err);
     return res.status(500).json({ message: "Failed to approve" });
   }
 });
 
-// Finance: reject 10% payment (CRM hub path notifies Hub webhook)
+// Finance: reject 10% payment — CRM booking (pre-DQC1) or design milestone (post-DQC1)
 app.post("/api/leads/:id/reject-10p-payment", async (req: Request, res: Response) => {
   const leadId = Number(req.params.id);
   if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
@@ -8488,8 +8555,47 @@ app.post("/api/leads/:id/reject-10p-payment", async (req: Request, res: Response
     }
     const reason = String((req.body || {}).reason ?? "").trim() || null;
     const now = new Date();
+    const hubSync = await getHubBookingSyncForLead(pool, leadId);
+    const hasDqc1 = await leadHasDqc1Approval(pool, leadId);
+    const isCrmBookingPayment = Boolean(hubSync) && !hasDqc1;
+
+    if (isCrmBookingPayment) {
+      await pool.query(
+        "UPDATE lead_uploads SET status = 'rejected' WHERE lead_id = ? AND upload_type = 'hub_payment_proof' AND status = 'pending'",
+        [leadId],
+      );
+      const [lr] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [leadId]);
+      const raw = (lr as { payload?: unknown }[])[0]?.payload;
+      let payload: Record<string, unknown> = {};
+      try {
+        payload = raw ? (JSON.parse(String(raw)) as Record<string, unknown>) : {};
+      } catch {
+        payload = {};
+      }
+      payload.crm_booking_finance_approved = false;
+      payload.crm_booking_finance_rejected = true;
+      payload.crm_booking_finance_rejected_at = now.toISOString();
+      await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
+        JSON.stringify(payload),
+        now,
+        leadId,
+      ]);
+      await addLeadHistoryEvent(leadId, {
+        id: `crm-booking-reject-${Date.now()}`,
+        type: "note",
+        taskName: "CRM Booking Payment Approval",
+        milestoneName: "Pre 10%",
+        timestamp: now.toISOString(),
+        description: reason ? `CRM booking payment rejected: ${reason}` : "CRM booking payment rejected by Finance.",
+        user: { name: user.name ?? "Finance" },
+        details: { kind: "note", noteText: reason || "CRM booking payment rejected." },
+      });
+      void notifyHubFinanceReview(pool, leadId, "REJECTED", user.name ?? "Finance", reason);
+      return res.json({ ok: true, path: "crm_booking" });
+    }
+
     await pool.query(
-      "UPDATE lead_uploads SET status = 'rejected' WHERE lead_id = ? AND upload_type IN ('payment_10p', 'hub_payment_proof') AND status = 'pending'",
+      "UPDATE lead_uploads SET status = 'rejected' WHERE lead_id = ? AND upload_type = 'payment_10p' AND status = 'pending'",
       [leadId]
     );
     await pool.query(
@@ -8507,11 +8613,7 @@ app.post("/api/leads/:id/reject-10p-payment", async (req: Request, res: Response
       details: { kind: "note", noteText: reason || "10% payment rejected." },
     };
     await addLeadHistoryEvent(leadId, ev);
-    const hubSync = await getHubBookingSyncForLead(pool, leadId);
-    if (hubSync) {
-      void notifyHubFinanceReview(pool, leadId, "REJECTED", user.name ?? "Finance", reason);
-    }
-    return res.json({ ok: true });
+    return res.json({ ok: true, path: "design_10p" });
   } catch (err) {
     console.error("reject-10p-payment error", err);
     return res.status(500).json({ message: "Failed to reject" });
