@@ -79,31 +79,177 @@ function pickNum(...values: unknown[]): number | null {
   return null;
 }
 
+type HubLeadBody = Record<string, unknown>;
+
+type BookingFinanceSyncMode = "FULL_10" | "BUFFER_9_9";
+
+type ResolvedBookingFinance = {
+  mode: BookingFinanceSyncMode;
+  quoteAmount: number | null;
+  tenPercentAmount: number | null;
+  bufferThresholdAmount: number | null;
+  /** Amount credited toward the 10% milestone (excludes finance extra). */
+  amountToward10: number;
+  remainingAmount: number;
+  shortfallAmount: number;
+  extraAmountReceived: number;
+  totalAmountReceived: number;
+  bufferApplied: boolean;
+  financeBufferNote: string;
+};
+
+function roundMoney(n: number): number {
+  return Math.round(n);
+}
+
+/**
+ * Resolve FULL_10 vs BUFFER_9_9 from CRM convert payload.
+ * Accepts explicit bookingApprovalMode, or infers from paid vs 9.9%/10% thresholds.
+ */
+function resolveBookingFinanceSync(body: HubLeadBody): ResolvedBookingFinance {
+  const quoteAmount = pickNum(body.quoteAmount, body.quote_amount, body.quotationTotal, body.quotation_total);
+  const tenPercentAmount =
+    pickNum(body.tenPercentAmount, body.ten_percent_amount) ??
+    (quoteAmount != null && quoteAmount > 0 ? roundMoney(quoteAmount * 0.1) : null);
+  const bufferThresholdAmount =
+    pickNum(body.bufferThresholdAmount, body.buffer_threshold_amount) ??
+    (quoteAmount != null && quoteAmount > 0 ? roundMoney(quoteAmount * 0.099) : null);
+
+  const extraAmountReceived = Math.max(
+    0,
+    pickNum(body.extraAmountReceived, body.extra_amount_received) ?? 0,
+  );
+  const totalAmountReceived = pickNum(body.totalAmountReceived, body.total_amount_received);
+  const rawAmountReceived = pickNum(body.amountReceived, body.amount_received);
+
+  // Prefer explicit toward-10 amount; else derive from total − extra.
+  let amountToward10 =
+    rawAmountReceived ??
+    (totalAmountReceived != null ? Math.max(0, totalAmountReceived - extraAmountReceived) : null);
+  if (amountToward10 == null) amountToward10 = 0;
+
+  const remainingFromBody = pickNum(body.remainingAmount, body.remaining_amount, body.shortfallAmount, body.shortfall_amount);
+  const remainingAmount =
+    remainingFromBody != null
+      ? Math.max(0, remainingFromBody)
+      : tenPercentAmount != null
+        ? Math.max(0, tenPercentAmount - amountToward10)
+        : 0;
+  const shortfallAmount = remainingAmount;
+
+  const modeRaw = pickStr(body.bookingApprovalMode, body.booking_approval_mode).toUpperCase();
+  let mode: BookingFinanceSyncMode | null =
+    modeRaw === "FULL_10" || modeRaw === "BUFFER_9_9" ? (modeRaw as BookingFinanceSyncMode) : null;
+
+  if (!mode) {
+    if (tenPercentAmount != null && amountToward10 >= tenPercentAmount) {
+      mode = "FULL_10";
+    } else if (
+      bufferThresholdAmount != null &&
+      amountToward10 >= bufferThresholdAmount &&
+      (remainingAmount > 0 || (tenPercentAmount != null && amountToward10 < tenPercentAmount))
+    ) {
+      mode = "BUFFER_9_9";
+    } else if (tenPercentAmount != null && amountToward10 >= tenPercentAmount) {
+      mode = "FULL_10";
+    } else if (amountToward10 > 0 && tenPercentAmount == null) {
+      mode = "FULL_10";
+    }
+  }
+
+  if (!mode) {
+    if (bufferThresholdAmount != null && amountToward10 < bufferThresholdAmount) {
+      throw new Error("Paid amount below 9.9% buffer threshold");
+    }
+    if (tenPercentAmount != null && amountToward10 < tenPercentAmount) {
+      throw new Error("Paid amount below 9.9% buffer threshold");
+    }
+    throw new Error("Missing bookingApprovalMode");
+  }
+
+  if (mode === "BUFFER_9_9") {
+    if (bufferThresholdAmount != null && amountToward10 < bufferThresholdAmount) {
+      throw new Error("Paid amount below 9.9% buffer threshold");
+    }
+    if (
+      bufferThresholdAmount == null &&
+      tenPercentAmount != null &&
+      amountToward10 < roundMoney(tenPercentAmount * 0.99)
+    ) {
+      throw new Error("Paid amount below 9.9% buffer threshold");
+    }
+  } else if (mode === "FULL_10") {
+    if (tenPercentAmount != null && amountToward10 < tenPercentAmount) {
+      throw new Error("Full 10% must be received for FULL_10 finance sync");
+    }
+  }
+
+  const totalPaid =
+    totalAmountReceived != null
+      ? Math.max(0, totalAmountReceived)
+      : amountToward10 + extraAmountReceived;
+
+  const financeBufferNote =
+    pickStr(body.financeBufferNote, body.finance_buffer_note) ||
+    (mode === "BUFFER_9_9"
+      ? `Booking allowed from 9.9% buffer. ₹${shortfallAmount.toLocaleString("en-IN")} still due toward 10% for Finance.`
+      : "");
+
+  return {
+    mode,
+    quoteAmount,
+    tenPercentAmount,
+    bufferThresholdAmount,
+    amountToward10,
+    remainingAmount,
+    shortfallAmount,
+    extraAmountReceived,
+    totalAmountReceived: totalPaid,
+    bufferApplied: mode === "BUFFER_9_9" || body.bufferApplied === true || body.buffer_applied === true,
+    financeBufferNote,
+  };
+}
+
 /** Mirror CRM hub sales payment into leads.payload so design milestone math sees it. */
 async function persistHubSalesPaymentToLeadPayload(
   pool: Pool,
   leadId: number,
-  amountReceived: number | null,
-  tenPercentAmount: number | null,
-  quoteAmount: number | null,
+  finance: ResolvedBookingFinance,
 ): Promise<void> {
-  if (amountReceived == null || amountReceived <= 0) return;
+  if (finance.amountToward10 <= 0 && finance.totalAmountReceived <= 0) return;
   const [rows] = await pool.query(`SELECT payload FROM leads WHERE id = ? LIMIT 1`, [leadId]);
   const raw = (rows as { payload?: unknown }[])[0]?.payload;
   const payload = parseLeadPayload(raw);
-  const existing =
-    pickNum(payload.total_paid_cumulative, payload.total_paid_toward_10_percent, payload.amount_paid) ?? 0;
-  const cumulative = Math.max(existing, amountReceived);
-  payload.total_paid_cumulative = cumulative;
-  payload.total_paid_toward_10_percent = cumulative;
-  payload.amount_paid = cumulative;
-  if (tenPercentAmount != null && tenPercentAmount > 0) {
-    payload.ten_percent_target = tenPercentAmount;
-    payload.remaining_for_10_percent = Math.max(0, tenPercentAmount - cumulative);
-    payload.ten_percent_payment_met = cumulative >= tenPercentAmount;
+  const existingToward10 =
+    pickNum(payload.total_paid_toward_10_percent, payload.amount_paid) ?? 0;
+  const existingTotal =
+    pickNum(payload.total_paid_cumulative, payload.total_customer_paid) ?? existingToward10;
+  const toward10 = Math.max(existingToward10, finance.amountToward10);
+  const totalPaid = Math.max(existingTotal, finance.totalAmountReceived);
+  const extra = Math.max(
+    pickNum(payload.extra_amount_received, payload.finance_extra_amount) ?? 0,
+    finance.extraAmountReceived,
+  );
+
+  payload.total_paid_toward_10_percent = toward10;
+  payload.amount_paid = toward10;
+  payload.total_paid_cumulative = totalPaid;
+  payload.total_customer_paid = totalPaid;
+  payload.extra_amount_received = extra;
+  payload.finance_extra_amount = extra;
+  payload.booking_approval_mode = finance.mode;
+  payload.buffer_applied = finance.bufferApplied;
+  payload.buffer_threshold_amount = finance.bufferThresholdAmount;
+  payload.finance_buffer_note = finance.financeBufferNote || null;
+  payload.shortfall_toward_10_percent = finance.shortfallAmount;
+  payload.remaining_for_10_percent = finance.remainingAmount;
+
+  if (finance.tenPercentAmount != null && finance.tenPercentAmount > 0) {
+    payload.ten_percent_target = finance.tenPercentAmount;
+    payload.ten_percent_payment_met = toward10 >= finance.tenPercentAmount;
   }
-  if (quoteAmount != null && quoteAmount > 0) {
-    payload.quotation_total = quoteAmount;
+  if (finance.quoteAmount != null && finance.quoteAmount > 0) {
+    payload.quotation_total = finance.quoteAmount;
   }
   await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
     JSON.stringify(payload),
@@ -284,7 +430,30 @@ async function ensureLeadHubBookingSyncTable(pool: Pool): Promise<void> {
   `);
 }
 
-type HubLeadBody = Record<string, unknown>;
+async function ensureLeadHubBookingRefundTable(pool: Pool): Promise<void> {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS lead_hub_booking_refunds (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      refund_key VARCHAR(64) NOT NULL,
+      lead_id INT NOT NULL,
+      booking_token_record_id VARCHAR(64) NOT NULL,
+      crm_lead_type VARCHAR(32) NULL,
+      crm_lead_id BIGINT NULL,
+      refund_amount DECIMAL(14,2) NOT NULL,
+      extra_refund_amount DECIMAL(14,2) NULL DEFAULT 0,
+      cancellation_reason TEXT NULL,
+      cancelled_at DATETIME NULL,
+      cancellation_approved_at DATETIME NULL,
+      cancellation_approved_by VARCHAR(255) NULL,
+      refund_scope VARCHAR(32) NULL,
+      refund_payload MEDIUMTEXT NULL,
+      created_at DATETIME NOT NULL,
+      UNIQUE KEY uq_refund_key (refund_key),
+      KEY idx_refund_lead (lead_id),
+      KEY idx_refund_booking_token (booking_token_record_id)
+    );
+  `);
+}
 
 /** Avoid JSON_EXTRACT errors when payload is empty or invalid (legacy rows). */
 const SAFE_PAYLOAD_JSON =
@@ -802,9 +971,17 @@ async function handleConvertBooking(
   pool: Pool,
   body: HubLeadBody,
   addLeadHistoryEvent: RouteDeps["addLeadHistoryEvent"],
-): Promise<{ designLeadId: number; bookingTokenRecordId: string }> {
+): Promise<{
+  designLeadId: number;
+  bookingTokenRecordId: string;
+  financeSyncMode: BookingFinanceSyncMode;
+  shortfallRecorded: number;
+  extraAmountReceived: number;
+}> {
   const bookingTokenRecordId = pickStr(body.bookingTokenRecordId, body.recordId);
   if (!bookingTokenRecordId) throw new Error("bookingTokenRecordId is required");
+
+  const finance = resolveBookingFinanceSync(body);
 
   const leadType = pickStr(body.leadType, body.crmLeadType) || "addlead";
   const leadIdNum = pickNum(body.leadId, body.crmLeadId);
@@ -817,11 +994,24 @@ async function handleConvertBooking(
   }
 
   const paymentHistoryId = pickStr(body.paymentHistoryId) || null;
-  const amountReceived = pickNum(body.amountReceived, body.amount_received);
-  const tenPercentAmount = pickNum(body.tenPercentAmount, body.ten_percent_amount, body.quoteAmount != null ? Number(body.quoteAmount) * 0.1 : null);
-  const quoteAmount = pickNum(body.quoteAmount, body.quote_amount, body.quotationTotal, body.quotation_total);
+  const amountReceived = finance.amountToward10;
+  const tenPercentAmount = finance.tenPercentAmount;
+  const quoteAmount = finance.quoteAmount;
   const now = new Date();
-  const payloadJson = JSON.stringify(body);
+  const payloadJson = JSON.stringify({
+    ...body,
+    bookingApprovalMode: finance.mode,
+    bufferApplied: finance.bufferApplied,
+    bufferThresholdAmount: finance.bufferThresholdAmount,
+    remainingAmount: finance.remainingAmount,
+    shortfallAmount: finance.shortfallAmount,
+    extraAmountReceived: finance.extraAmountReceived,
+    totalAmountReceived: finance.totalAmountReceived,
+    financeBufferNote: finance.financeBufferNote || undefined,
+    amountReceived: finance.amountToward10,
+    tenPercentAmount: finance.tenPercentAmount,
+    quoteAmount: finance.quoteAmount,
+  });
 
   await pool.query(
     `INSERT INTO lead_hub_booking_sync
@@ -849,13 +1039,7 @@ async function handleConvertBooking(
     ],
   );
 
-  await persistHubSalesPaymentToLeadPayload(
-    pool,
-    designLeadId,
-    amountReceived,
-    tenPercentAmount,
-    quoteAmount,
-  );
+  await persistHubSalesPaymentToLeadPayload(pool, designLeadId, finance);
 
   // Merge Experience / Decision / BookingDone snapshot into lead payload for Design View
   try {
@@ -885,6 +1069,13 @@ async function handleConvertBooking(
         quoteAmount: quoteAmount ?? null,
         tenPercentAmount: tenPercentAmount ?? null,
         amountReceived: amountReceived ?? null,
+        bookingApprovalMode: finance.mode,
+        bufferApplied: finance.bufferApplied,
+        remainingAmount: finance.remainingAmount,
+        shortfallAmount: finance.shortfallAmount,
+        extraAmountReceived: finance.extraAmountReceived,
+        totalAmountReceived: finance.totalAmountReceived,
+        financeBufferNote: finance.financeBufferNote || null,
       },
     };
     await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
@@ -897,7 +1088,16 @@ async function handleConvertBooking(
   }
 
   await importHubPaymentProofs(pool, designLeadId, { ...body, _syncedAt: now });
+  // Buffer converts still enter the finance queue (collection synced) but remain
+  // not approval-ready until shortfall is closed (tenPercentMet gate).
   await markTenPercentCollectionComplete(pool, designLeadId);
+
+  const historyNote =
+    finance.mode === "BUFFER_9_9"
+      ? `CRM Booking & Token synced at 9.9% buffer. Shortfall ₹${finance.shortfallAmount.toLocaleString("en-IN")} toward 10%.`
+      : finance.extraAmountReceived > 0
+        ? `CRM Booking & Token payment synced (full 10% + extra ₹${finance.extraAmountReceived.toLocaleString("en-IN")}).`
+        : "CRM Booking & Token payment synced from Hub";
 
   await addLeadHistoryEvent(designLeadId, {
     id: `hub-payment-sync-${Date.now()}`,
@@ -905,12 +1105,26 @@ async function handleConvertBooking(
     taskName: "10% payment collection",
     milestoneName: "10% PAYMENT",
     timestamp: now.toISOString(),
-    description: "CRM Booking & Token payment synced from Hub",
+    description: historyNote,
     user: { name: "CRM Hub" },
-    details: { kind: "hub_payment_sync", bookingTokenRecordId, paymentHistoryId },
+    details: {
+      kind: "hub_payment_sync",
+      bookingTokenRecordId,
+      paymentHistoryId,
+      financeSyncMode: finance.mode,
+      shortfallAmount: finance.shortfallAmount,
+      extraAmountReceived: finance.extraAmountReceived,
+      bufferApplied: finance.bufferApplied,
+    },
   });
 
-  return { designLeadId, bookingTokenRecordId };
+  return {
+    designLeadId,
+    bookingTokenRecordId,
+    financeSyncMode: finance.mode,
+    shortfallRecorded: finance.shortfallAmount,
+    extraAmountReceived: finance.extraAmountReceived,
+  };
 }
 
 type TaskCompletion = { leadId: number; milestoneIndex: number; taskName: string; completedAt: Date | string };
@@ -1007,10 +1221,20 @@ async function buildFinanceQueueRows(
     const tenPercentTarget =
       pickNum(sync?.tenPercentAmount, paymentPayload.tenPercentAmount, paymentPayload.quoteAmount != null ? Number(paymentPayload.quoteAmount) * 0.1 : null) ?? 0;
     const totalPaid = pickNum(sync?.amountReceived, paymentPayload.amountReceived) ?? 0;
-    const remaining = Math.max(0, tenPercentTarget - totalPaid);
+    const remaining =
+      pickNum(paymentPayload.remainingAmount, paymentPayload.shortfallAmount) ??
+      Math.max(0, tenPercentTarget - totalPaid);
+    const extraAmountReceived = pickNum(paymentPayload.extraAmountReceived, paymentPayload.extra_amount_received) ?? 0;
+    const bookingApprovalMode = pickStr(paymentPayload.bookingApprovalMode, paymentPayload.booking_approval_mode) || null;
+    const bufferApplied =
+      paymentPayload.bufferApplied === true ||
+      paymentPayload.buffer_applied === true ||
+      bookingApprovalMode === "BUFFER_9_9";
 
     let status = "Awaiting 10% payment";
     if (hasApproval) status = "Approved";
+    else if (hasCollection && remaining <= 0) status = "Pending approval";
+    else if (hasCollection && bufferApplied) status = "Buffer convert — shortfall due";
     else if (hasCollection) status = "Pending approval";
 
     const crmLeadType = pickStr(sync?.crmLeadType, payload.crmLeadType);
@@ -1023,11 +1247,15 @@ async function buildFinanceQueueRows(
       totalPaid,
       tenPercentTarget,
       remaining,
+      extraAmountReceived,
+      bookingApprovalMode,
+      bufferApplied,
+      financeBufferNote: pickStr(paymentPayload.financeBufferNote, paymentPayload.finance_buffer_note) || null,
       subs: paymentHistory.length || (hasCollection ? 1 : 0),
       status,
       submittedAt: submittedDate ? submittedDate.toISOString() : null,
       approvedAt: approvalAt ? approvalAt.toISOString() : null,
-      canApprove: hasCollection && !hasApproval,
+      canApprove: hasCollection && !hasApproval && remaining <= 0,
       paymentSource,
       crmRef: crmLeadType && crmLeadId != null ? `${crmLeadType}#${crmLeadId}` : null,
       bookingTokenRecordId: sync?.bookingTokenRecordId ?? null,
@@ -1162,7 +1390,15 @@ async function mapCrmHubRowToSalesClosure(
   const amountPaid = pickNum(sync.amountReceived, paymentPayload.amountReceived) ?? 0;
   const tenPercentTarget =
     pickNum(sync.tenPercentAmount, paymentPayload.tenPercentAmount, paymentPayload.quoteAmount != null ? Number(paymentPayload.quoteAmount) * 0.1 : null) ?? 0;
-  const remaining = Math.max(0, tenPercentTarget - amountPaid);
+  const remaining =
+    pickNum(paymentPayload.remainingAmount, paymentPayload.shortfallAmount) ??
+    Math.max(0, tenPercentTarget - amountPaid);
+  const extraAmountReceived = pickNum(paymentPayload.extraAmountReceived, paymentPayload.extra_amount_received) ?? 0;
+  const bookingApprovalMode = pickStr(paymentPayload.bookingApprovalMode, paymentPayload.booking_approval_mode) || null;
+  const bufferApplied =
+    paymentPayload.bufferApplied === true ||
+    paymentPayload.buffer_applied === true ||
+    bookingApprovalMode === "BUFFER_9_9";
   const tenPercentMet = tenPercentTarget > 0 ? amountPaid >= tenPercentTarget : amountPaid > 0;
   const approvalAt = taskCompletedAt(compList, leadId, 2, "10% payment approval");
   const customerName =
@@ -1189,13 +1425,19 @@ async function mapCrmHubRowToSalesClosure(
       ? "Approved — moved to 10–20%"
       : tenPercentMet
         ? "Ready for approval (10% paid)"
-        : "Awaiting 10% payment",
+        : bufferApplied
+          ? "Buffer convert — shortfall due"
+          : "Awaiting 10% payment",
     paymentReceived: pickStr(paymentPayload.paymentKind) || "—",
     paymentMode: pickStr(paymentPayload.paymentKind) || "—",
     paymentScreenshot: firstUploadId,
     amountPaid,
     tenPercentTarget,
     remainingFor10Percent: approved ? 0 : remaining,
+    extraAmountReceived,
+    bookingApprovalMode,
+    bufferApplied,
+    financeBufferNote: pickStr(paymentPayload.financeBufferNote, paymentPayload.finance_buffer_note) || null,
     paymentPercentOfQuotation: null,
     tenPercentMet: approved ? true : tenPercentMet,
     canApprove: !approved && tenPercentMet && hasCollection,
@@ -1356,6 +1598,161 @@ export async function notifyHubFinanceReview(
   }
 }
 
+async function handleFinanceRefundSync(
+  pool: Pool,
+  body: HubLeadBody,
+  addLeadHistoryEvent: RouteDeps["addLeadHistoryEvent"],
+): Promise<{ refundId: string; refundAmount: number; designLeadId: number; bookingTokenRecordId: string }> {
+  const bookingTokenRecordId = pickStr(body.bookingTokenRecordId, body.recordId);
+  if (!bookingTokenRecordId) throw new Error("bookingTokenRecordId is required");
+
+  const leadType = pickStr(body.leadType, body.crmLeadType) || null;
+  const leadIdNum = pickNum(body.leadId, body.crmLeadId);
+  const extraAmountReceived = Math.max(
+    0,
+    pickNum(body.extraAmountReceived, body.extra_amount_received) ?? 0,
+  );
+  const totalAmountReceived = pickNum(body.totalAmountReceived, body.total_amount_received);
+  const amountReceived = pickNum(body.amountReceived, body.amount_received);
+  const refundAmount =
+    totalAmountReceived ??
+    (amountReceived != null ? amountReceived + extraAmountReceived : null) ??
+    0;
+  if (refundAmount <= 0) throw new Error("refund amount must be > 0 (totalAmountReceived / amountReceived)");
+
+  let designLeadId = await resolveDesignLeadIdForHubSync(pool, body);
+  if (!designLeadId) {
+    const [byToken] = await pool.query(
+      `SELECT lead_id as leadId FROM lead_hub_booking_sync WHERE booking_token_record_id = ? LIMIT 1`,
+      [bookingTokenRecordId],
+    );
+    designLeadId = Number((byToken as { leadId?: number }[])[0]?.leadId) || 0;
+  }
+  if (!designLeadId) throw new Error("Design lead not found for refund sync");
+
+  const now = new Date();
+  const cancelledAtRaw = pickStr(body.cancelledAt, body.cancelled_at);
+  const approvedAtRaw = pickStr(body.cancellationApprovedAt, body.cancellation_approved_at);
+  const cancelledAt = cancelledAtRaw ? new Date(cancelledAtRaw) : null;
+  const cancellationApprovedAt = approvedAtRaw ? new Date(approvedAtRaw) : now;
+  const cancellationReason = pickStr(body.cancellationReason, body.cancellation_reason) || null;
+  const cancellationApprovedBy =
+    pickStr(body.cancellationApprovedBy, body.cancellation_approved_by) || "CRM Hub";
+  const refundScope = pickStr(body.refundScope, body.refund_scope) || "deal";
+  const refundKey = pickStr(body.refundId, body.refund_id) || `refund-${bookingTokenRecordId}`;
+
+  await ensureLeadHubBookingRefundTable(pool);
+
+  await pool.query(
+    `INSERT INTO lead_hub_booking_refunds
+     (refund_key, lead_id, booking_token_record_id, crm_lead_type, crm_lead_id, refund_amount, extra_refund_amount,
+      cancellation_reason, cancelled_at, cancellation_approved_at, cancellation_approved_by, refund_scope, refund_payload, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       lead_id = VALUES(lead_id),
+       refund_amount = VALUES(refund_amount),
+       extra_refund_amount = VALUES(extra_refund_amount),
+       cancellation_reason = VALUES(cancellation_reason),
+       cancelled_at = VALUES(cancelled_at),
+       cancellation_approved_at = VALUES(cancellation_approved_at),
+       cancellation_approved_by = VALUES(cancellation_approved_by),
+       refund_scope = VALUES(refund_scope),
+       refund_payload = VALUES(refund_payload)`,
+    [
+      refundKey,
+      designLeadId,
+      bookingTokenRecordId,
+      leadType,
+      leadIdNum,
+      refundAmount,
+      extraAmountReceived,
+      cancellationReason,
+      cancelledAt && !Number.isNaN(cancelledAt.getTime()) ? cancelledAt : null,
+      cancellationApprovedAt && !Number.isNaN(cancellationApprovedAt.getTime())
+        ? cancellationApprovedAt
+        : now,
+      cancellationApprovedBy,
+      refundScope,
+      JSON.stringify(body),
+      now,
+    ],
+  );
+
+  // Reverse finance milestone flags so the lead is no longer treated as 10% collected/approved.
+  await pool.query(
+    `DELETE FROM lead_task_completions
+     WHERE lead_id = ?
+       AND milestone_index = 2
+       AND task_name IN ('10% payment collection', '10% payment approval')`,
+    [designLeadId],
+  );
+
+  try {
+    const [leadRows] = await pool.query(`SELECT payload FROM leads WHERE id = ? LIMIT 1`, [designLeadId]);
+    const prev = parseLeadPayload((leadRows as { payload?: unknown }[])[0]?.payload);
+    const merged = {
+      ...prev,
+      booking_cancelled: true,
+      booking_refund: {
+        refundId: refundKey,
+        refundAmount,
+        extraRefundAmount: extraAmountReceived,
+        cancellationReason,
+        cancelledAt: cancelledAtRaw || null,
+        cancellationApprovedAt: approvedAtRaw || now.toISOString(),
+        cancellationApprovedBy,
+        refundScope,
+        syncedAt: now.toISOString(),
+      },
+      ten_percent_payment_met: false,
+      remaining_for_10_percent: pickNum(prev.ten_percent_target) ?? prev.remaining_for_10_percent ?? null,
+      shortfall_toward_10_percent: null,
+      sales_closure_finance_approved: false,
+      total_paid_toward_10_percent: 0,
+      amount_paid: 0,
+      extra_amount_received: 0,
+      finance_extra_amount: 0,
+    };
+    await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
+      JSON.stringify(merged),
+      now,
+      designLeadId,
+    ]);
+  } catch (payloadErr) {
+    console.warn("[crm-hub] refund payload merge skipped", payloadErr);
+  }
+
+  await addLeadHistoryEvent(designLeadId, {
+    id: `hub-refund-sync-${Date.now()}`,
+    type: "note",
+    taskName: "Booking cancellation refund",
+    milestoneName: "10% PAYMENT",
+    timestamp: now.toISOString(),
+    description: `Cancellation approved — finance refund synced for ₹${refundAmount.toLocaleString("en-IN")}${
+      extraAmountReceived > 0
+        ? ` (includes extra ₹${extraAmountReceived.toLocaleString("en-IN")})`
+        : ""
+    }.`,
+    user: { name: cancellationApprovedBy },
+    details: {
+      kind: "hub_refund_sync",
+      bookingTokenRecordId,
+      refundId: refundKey,
+      refundAmount,
+      extraAmountReceived,
+      cancellationReason,
+      refundScope,
+    },
+  });
+
+  return {
+    refundId: refundKey,
+    refundAmount,
+    designLeadId,
+    bookingTokenRecordId,
+  };
+}
+
 export async function getHubBookingSyncForLead(pool: Pool, leadId: number) {
   const [rows] = await pool.query(
     `SELECT booking_token_record_id as bookingTokenRecordId, payment_history_id as paymentHistoryId
@@ -1370,6 +1767,9 @@ export function registerCrmHubBookingRoutes(app: Express, deps: RouteDeps): void
 
   void ensureLeadHubBookingSyncTable(pool).catch((err) => {
     console.error("[crm-hub] Failed to ensure lead_hub_booking_sync table:", err);
+  });
+  void ensureLeadHubBookingRefundTable(pool).catch((err) => {
+    console.error("[crm-hub] Failed to ensure lead_hub_booking_refunds table:", err);
   });
 
   app.post("/api/hub/crm-lead/upsert", requireHubApiKey, async (req: Request, res: Response) => {
@@ -1405,6 +1805,25 @@ export function registerCrmHubBookingRoutes(app: Express, deps: RouteDeps): void
 
   app.post("/api/hub/crm-lead/convert-booking", requireHubApiKey, convertHandler);
   app.post("/api/hub/booking-token/finance-10p-sync", requireHubApiKey, convertHandler);
+
+  app.post("/api/hub/booking-token/finance-refund-sync", requireHubApiKey, async (req: Request, res: Response) => {
+    try {
+      const body = (req.body || {}) as HubLeadBody;
+      const result = await handleFinanceRefundSync(pool, body, addLeadHistoryEvent);
+      return res.json({ ok: true, ...result });
+    } catch (err) {
+      if (isTransientDbError(err)) {
+        console.error("[crm-hub] finance-refund-sync DB connection error:", err);
+        return res.status(503).json({
+          ok: false,
+          message: "Database connection lost. Wait a few seconds and retry refund sync.",
+        });
+      }
+      const msg = err instanceof Error ? err.message : "Finance refund sync failed";
+      console.error("[crm-hub] finance-refund-sync error:", err);
+      return res.status(400).json({ ok: false, message: msg });
+    }
+  });
 
   app.get("/api/sales-closure/finance-queue", async (req: Request, res: Response) => {
     try {
@@ -1482,6 +1901,14 @@ export function registerCrmHubBookingRoutes(app: Express, deps: RouteDeps): void
             : null,
         amountReceived: sync.amountReceived,
         tenPercentAmount: sync.tenPercentAmount,
+        remainingAmount: payload.remainingAmount ?? payload.shortfallAmount ?? null,
+        shortfallAmount: payload.shortfallAmount ?? payload.remainingAmount ?? null,
+        extraAmountReceived: payload.extraAmountReceived ?? 0,
+        totalAmountReceived: payload.totalAmountReceived ?? null,
+        bookingApprovalMode: payload.bookingApprovalMode ?? null,
+        bufferApplied: payload.bufferApplied === true || payload.bookingApprovalMode === "BUFFER_9_9",
+        bufferThresholdAmount: payload.bufferThresholdAmount ?? null,
+        financeBufferNote: payload.financeBufferNote ?? null,
         syncedAt: sync.syncedAt,
         paymentHistory: enrichedHistory,
         quoteAmount: payload.quoteAmount ?? null,

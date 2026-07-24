@@ -30,6 +30,9 @@ export const WEIGHTED_CREDIT_PCT = {
   part3FortyPercent: 25,
 } as const;
 
+/** When current quote is below Part 1, deduct this % of the downsale from gross weighted */
+export const DOWNSALE_DEDUCTION_PCT = 50;
+
 export type IncentiveWeightStageId =
   | "pre_d1_finance_10"
   | "post_dqc1_design_10"
@@ -68,7 +71,13 @@ export type DealLedgerRow = {
   closureTime: "SAME DAY" | "48 HOURS" | "72 HOURS+";
   /** Sum of unlocked weight % (e.g. 50, or 75 if Parts 1+2 cleared) */
   contributionPct: number;
-  /** Sum of weighted amounts credited for incentive revenue */
+  /** Weighted credit from Parts 1–3 before downsale adjustment */
+  grossWeightedRevenue: number;
+  /** Part 1 quote − current quote when quote fell (0 if upsale / unchanged) */
+  downsaleAmount: number;
+  /** 50% of downsale deducted from gross weighted */
+  downsaleDeduction: number;
+  /** Net weighted toward incentive target (after downsale deduction) */
   weightedRevenue: number;
   stages: WeightedStageCredit[];
   incentive: number;
@@ -119,10 +128,16 @@ export type WeightedRevenueBreakdown = {
   postDqc1Weighted: number;
   /** Part 3 — 40% payment + upsale */
   part3Weighted: number;
+  /** Sum of per-deal gross weighted (Parts 1–3) before downsale */
+  totalGrossWeighted: number;
+  /** Total downsale deductions (50% of quote drop vs Part 1) */
+  totalDownsaleDeduction: number;
+  /** Net weighted after downsale deductions */
   totalWeighted: number;
   dealsWithPart1: number;
   dealsWithPart2: number;
   dealsWithPart3: number;
+  dealsWithDownsale: number;
 };
 
 export type DesignerIncentivesData = {
@@ -351,7 +366,25 @@ export function buildDayActivitySummary(
  * Part 3 (40% payment): finance approves 40% collection → credit
  *   25% of Part 1 quotation + full upsale (current quote − Part 1 quote).
  *   Example: Part 1 quote 10L, now 14L → 2.5L + 4L = 6.5L weighted.
+ * Downsale: if current quote falls below Part 1 (e.g. 10L → 6L), deduct 50% of
+ *   the downsale (4L → 2L) from gross weighted for that deal.
  */
+export function computeDownsaleAdjustment(
+  quotationAtFinanceApproval: number,
+  quotationCurrent: number,
+  grossWeighted: number,
+): { downsaleAmount: number; downsaleDeduction: number; netWeighted: number } {
+  const quoteAtApproval = Math.max(0, quotationAtFinanceApproval);
+  const quoteCurrent = Math.max(0, quotationCurrent);
+  const downsaleAmount = Math.max(0, quoteAtApproval - quoteCurrent);
+  const downsaleDeduction =
+    downsaleAmount > 0
+      ? Math.round((downsaleAmount * DOWNSALE_DEDUCTION_PCT) / 100)
+      : 0;
+  const netWeighted = Math.max(0, grossWeighted - downsaleDeduction);
+  return { downsaleAmount, downsaleDeduction, netWeighted };
+}
+
 export function computeWeightedStages(input: {
   quotationAtFinanceApproval: number;
   quotationCurrent: number;
@@ -487,10 +520,16 @@ export function summarizeWeightedBreakdown(deals: DealLedgerRow[]): WeightedReve
   let preD1Weighted = 0;
   let postDqc1Weighted = 0;
   let part3Weighted = 0;
+  let totalGrossWeighted = 0;
+  let totalDownsaleDeduction = 0;
   let dealsWithPart1 = 0;
   let dealsWithPart2 = 0;
   let dealsWithPart3 = 0;
+  let dealsWithDownsale = 0;
   for (const d of deals) {
+    totalGrossWeighted += d.grossWeightedRevenue;
+    totalDownsaleDeduction += d.downsaleDeduction;
+    if (d.downsaleAmount > 0) dealsWithDownsale += 1;
     for (const s of d.stages) {
       if (s.stageId === "pre_d1_finance_10" && s.cleared) {
         preD1Weighted += s.weightedAmount;
@@ -506,14 +545,18 @@ export function summarizeWeightedBreakdown(deals: DealLedgerRow[]): WeightedReve
       }
     }
   }
+  const totalWeighted = deals.reduce((s, d) => s + d.weightedRevenue, 0);
   return {
     preD1Weighted,
     postDqc1Weighted,
     part3Weighted,
-    totalWeighted: preD1Weighted + postDqc1Weighted + part3Weighted,
+    totalGrossWeighted,
+    totalDownsaleDeduction,
+    totalWeighted,
     dealsWithPart1,
     dealsWithPart2,
     dealsWithPart3,
+    dealsWithDownsale,
   };
 }
 
@@ -585,10 +628,14 @@ export function buildDemoIncentivesForDesigner(
   const deals: DealLedgerRow[] = Array.from({ length: dealCount }, (_, i) => {
     const customerName = DEMO_CUSTOMERS[(seed + i) % DEMO_CUSTOMERS.length];
     const quotationAtFinanceApproval = 8_00_000 + ((seed + i * 97) % 7) * 1_00_000;
-    // Upsale can grow further by Part 3 (e.g. 10L → 14L)
-    const upsaleSteps = (seed + i) % 5;
+    // Quote revision: upsale, flat, or downsale (e.g. 10L → 8L → 6L)
+    const quoteRoll = (seed + i * 11) % 7;
     const quotationCurrent =
-      quotationAtFinanceApproval + (upsaleSteps === 0 ? 0 : upsaleSteps * 1_00_000);
+      quoteRoll <= 1
+        ? quotationAtFinanceApproval + (1 + (seed % 3)) * 1_00_000
+        : quoteRoll <= 3
+          ? quotationAtFinanceApproval
+          : quotationAtFinanceApproval - (1 + (quoteRoll % 3)) * 1_00_000;
     // 0 neither, 1 P1, 2 P2 pending, 3 P2 approved, 4 P3 pending, 5 P3 approved
     const stageRoll = (seed + i * 5) % 8;
     const stageProgress =
@@ -622,7 +669,12 @@ export function buildDemoIncentivesForDesigner(
       cumulativeCollectedTowardFortyPercent,
       fortyPercentFinanceApproved,
     });
-    const weightedRevenue = stages.reduce((s, st) => s + st.weightedAmount, 0);
+    const grossWeightedRevenue = stages.reduce((s, st) => s + st.weightedAmount, 0);
+    const { downsaleAmount, downsaleDeduction, netWeighted } = computeDownsaleAdjustment(
+      quotationAtFinanceApproval,
+      quotationCurrent,
+      grossWeightedRevenue,
+    );
     const contributionPct = stages.reduce((s, st) => s + (st.cleared ? st.weightPct : 0), 0);
     const closureRoll = (seed + i * 3) % 3;
     const closureTime: DealLedgerRow["closureTime"] =
@@ -636,7 +688,10 @@ export function buildDemoIncentivesForDesigner(
       quotationAtFinanceApproval,
       closureTime,
       contributionPct,
-      weightedRevenue,
+      grossWeightedRevenue,
+      downsaleAmount,
+      downsaleDeduction,
+      weightedRevenue: netWeighted,
       stages,
       incentive: 0, // filled after slab multiplier known
       activityDate,

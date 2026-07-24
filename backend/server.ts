@@ -11052,6 +11052,8 @@ function getCurrentMilestoneProgress(
 app.get("/api/leads/queue", async (req: Request, res: Response) => {
   const now = new Date();
   const queueType = (req.query.type as string) || "d1";
+  // Large JSON — ask nginx not to buffer (avoids ERR_CONTENT_LENGTH_MISMATCH on proxy_temp)
+  res.setHeader("X-Accel-Buffering", "no");
   try {
     try {
       await pool.query(

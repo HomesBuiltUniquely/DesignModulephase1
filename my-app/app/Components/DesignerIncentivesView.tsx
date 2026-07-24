@@ -187,7 +187,10 @@ function exportDealsCsv(deals: DealLedgerRow[], filename: string) {
     'Customer',
     'Quote (current)',
     'Quote (at finance 10%)',
-    'Weighted revenue',
+    'Gross weighted',
+    'Downsale amount',
+    'Downsale deduction (50%)',
+    'Net weighted revenue',
     'Weight %',
     'Part 1',
     'Part 2',
@@ -205,6 +208,9 @@ function exportDealsCsv(deals: DealLedgerRow[], filename: string) {
       d.customerName,
       String(d.dealValue),
       String(d.quotationAtFinanceApproval),
+      String(d.grossWeightedRevenue),
+      String(d.downsaleAmount),
+      String(d.downsaleDeduction),
       String(d.weightedRevenue),
       String(d.contributionPct),
       p1?.cleared ? String(p1.weightedAmount) : '0',
@@ -429,9 +435,19 @@ function IndividualIncentivesPanel({
               not raw cash collected.
             </p>
           </div>
-          <p className="text-sm font-semibold text-emerald-700">
-            Total weighted: {formatInr(data.weightedBreakdown.totalWeighted)}
-          </p>
+          <div className="text-right text-sm">
+            <p className="font-semibold text-emerald-700">
+              Net weighted: {formatInr(data.weightedBreakdown.totalWeighted)}
+            </p>
+            {data.weightedBreakdown.totalDownsaleDeduction > 0 ? (
+              <p className="mt-0.5 text-xs text-rose-700">
+                Gross {formatInr(data.weightedBreakdown.totalGrossWeighted)} − downsale{' '}
+                {formatInr(data.weightedBreakdown.totalDownsaleDeduction)} (50% of quote drop vs Part
+                1 · {data.weightedBreakdown.dealsWithDownsale} deal
+                {data.weightedBreakdown.dealsWithDownsale === 1 ? '' : 's'})
+              </p>
+            ) : null}
+          </div>
         </div>
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
           <button
@@ -500,7 +516,8 @@ function IndividualIncentivesPanel({
             </p>
             <p className="mt-1 text-xs text-gray-600">
               Finance-approved 40% collection → <strong>25%</strong> of Part 1 quotation + full{' '}
-              <strong>upsale</strong> (current − Part 1 quote) ·{' '}
+              <strong>upsale</strong> (current − Part 1). If quote drops below Part 1,{' '}
+              <strong>50%</strong> of downsale is deducted from gross weighted ·{' '}
               {data.weightedBreakdown.dealsWithPart3} deal(s)
             </p>
             <p className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-violet-700">
@@ -543,6 +560,7 @@ function IndividualIncentivesPanel({
                       {selectedPart === 'part3_forty_percent' ? (
                         <th className="pb-2 pr-3 font-semibold">Upsale</th>
                       ) : null}
+                      <th className="pb-2 pr-3 font-semibold">Downsale</th>
                       <th className="pb-2 font-semibold">Weighted credit</th>
                     </tr>
                   </thead>
@@ -567,8 +585,17 @@ function IndividualIncentivesPanel({
                             {lead.stageUpsale > 0 ? `+${formatInr(lead.stageUpsale)}` : '—'}
                           </td>
                         ) : null}
+                        <td className="py-2.5 pr-3 text-rose-700">
+                          {lead.downsaleAmount > 0 ? `−${formatInr(lead.downsaleAmount)}` : '—'}
+                        </td>
                         <td className="py-2.5 font-semibold text-emerald-700">
                           {formatInr(lead.stageWeighted)}
+                          {lead.downsaleDeduction > 0 ? (
+                            <span className="mt-0.5 block text-[10px] font-medium text-rose-600">
+                              Net deal: {formatInr(lead.weightedRevenue)} (after −
+                              {formatInr(lead.downsaleDeduction)} downsale)
+                            </span>
+                          ) : null}
                         </td>
                       </tr>
                     ))}
@@ -643,8 +670,15 @@ function IndividualIncentivesPanel({
             <p className="mt-1 text-[10px] text-slate-500">
               P1 {formatInr(data.weightedBreakdown.preD1Weighted)} + P2{' '}
               {formatInr(data.weightedBreakdown.postDqc1Weighted)} + P3{' '}
-              {formatInr(data.weightedBreakdown.part3Weighted)}
+              {formatInr(data.weightedBreakdown.part3Weighted)} ={' '}
+              {formatInr(data.weightedBreakdown.totalGrossWeighted)} gross
             </p>
+            {data.weightedBreakdown.totalDownsaleDeduction > 0 ? (
+              <p className="mt-1 text-[10px] text-rose-300">
+                − downsale {formatInr(data.weightedBreakdown.totalDownsaleDeduction)} (50% of Part 1
+                − current quote)
+              </p>
+            ) : null}
           </div>
           <dl className="mt-4 space-y-2 text-sm">
             <div className="flex justify-between gap-2">
@@ -853,6 +887,12 @@ function IndividualIncentivesPanel({
                     </td>
                     <td className="py-3.5 pr-4 font-semibold text-emerald-700">
                       {formatInr(deal.weightedRevenue)}
+                      {deal.downsaleDeduction > 0 ? (
+                        <div className="mt-0.5 text-[10px] font-medium text-rose-600">
+                          Gross {formatInr(deal.grossWeightedRevenue)} − downsale{' '}
+                          {formatInr(deal.downsaleDeduction)}
+                        </div>
+                      ) : null}
                     </td>
                     <td className="py-3.5 pr-4">
                       <span
