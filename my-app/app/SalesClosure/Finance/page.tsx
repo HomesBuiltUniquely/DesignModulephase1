@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../../auth/AuthContext';
 import { getApiBase } from '@/app/lib/apiBase';
 
-type QueueTab = 'pending' | 'approved';
+type QueueTab = 'pending' | 'approved' | 'refunds';
 
 type FinanceQueueLead = {
   id: number;
@@ -20,6 +20,23 @@ type FinanceQueueLead = {
   paymentSource: 'crm_hub' | 'manual';
   crmRef: string | null;
   bookingTokenRecordId: string | null;
+};
+
+type FinanceRefundRow = {
+  refundId: string;
+  designLeadId: number;
+  bookingTokenRecordId: string;
+  customerName?: string | null;
+  leadIdentifier?: string | null;
+  refundAmount: number;
+  amountTowardTenRefund?: number;
+  extraAmountRefund?: number;
+  cancellationReason?: string | null;
+  cancellationApprovedAt?: string | null;
+  cancellationApprovedBy?: string | null;
+  refundScope?: string | null;
+  status?: string;
+  createdAt?: string | null;
 };
 
 type PaymentProof = {
@@ -79,6 +96,7 @@ function formatDate(value: string | null | undefined): string {
 export default function SalesClosureFinancePage() {
   const { user, sessionId } = useAuth();
   const [leads, setLeads] = useState<FinanceQueueLead[]>([]);
+  const [refunds, setRefunds] = useState<FinanceRefundRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [queueTab, setQueueTab] = useState<QueueTab>('pending');
@@ -112,7 +130,7 @@ export default function SalesClosureFinancePage() {
     setError(null);
     try {
       const params = new URLSearchParams();
-      params.set('tab', queueTab);
+      params.set('tab', queueTab === 'approved' ? 'approved' : 'pending');
       const name = customerFilter.trim();
       if (name) params.set('customer', name);
       if (dateFromFilter) params.set('submittedFrom', dateFromFilter);
@@ -129,6 +147,32 @@ export default function SalesClosureFinancePage() {
       setLoading(false);
     }
   }, [sessionId, authHeaders, queueTab, customerFilter, dateFromFilter, dateToFilter]);
+
+  const loadRefunds = useCallback(async () => {
+    if (!sessionId) {
+      setRefunds([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const params = new URLSearchParams();
+      const name = customerFilter.trim();
+      if (name) params.set('customer', name);
+      const res = await fetch(`${getApiBase()}/api/sales-closure/finance-refunds?${params.toString()}`, {
+        headers: { ...authHeaders },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data as { message?: string })?.message || 'Failed to load refunds');
+      setRefunds(Array.isArray(data) ? (data as FinanceRefundRow[]) : []);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to load refunds');
+      setRefunds([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [sessionId, authHeaders, customerFilter]);
 
   const loadHistory = useCallback(
     async (leadId: number) => {
@@ -155,8 +199,9 @@ export default function SalesClosureFinancePage() {
   );
 
   useEffect(() => {
-    loadLeads();
-  }, [loadLeads]);
+    if (queueTab === 'refunds') void loadRefunds();
+    else void loadLeads();
+  }, [queueTab, loadLeads, loadRefunds]);
 
   const onApprove = async (leadId: number) => {
     setApprovingLeadId(leadId);
@@ -221,7 +266,8 @@ export default function SalesClosureFinancePage() {
           <div>
             <h1 className="text-xl font-bold text-gray-900">CRM Booking &amp; Token — Finance queue</h1>
             <p className="text-sm text-gray-600 mt-1 max-w-2xl">
-              Leads synced from CRM Convert to Booking. Approve moves the project to 10–20% and notifies Hub/CRM.
+              Leads synced from CRM Convert to Booking. Approve moves the project to 10–20%. Refunds tab shows
+              cancellation refunds from Manager Approve cancel.
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
@@ -233,7 +279,7 @@ export default function SalesClosureFinancePage() {
             </a>
             <button
               type="button"
-              onClick={loadLeads}
+              onClick={() => void (queueTab === 'refunds' ? loadRefunds() : loadLeads())}
               disabled={loading}
               className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-semibold hover:bg-gray-50 disabled:opacity-60"
             >
@@ -242,7 +288,7 @@ export default function SalesClosureFinancePage() {
           </div>
         </div>
 
-        <div className="mt-4 flex gap-2">
+        <div className="mt-4 flex gap-2 flex-wrap">
           <button
             type="button"
             onClick={() => setQueueTab('pending')}
@@ -260,6 +306,15 @@ export default function SalesClosureFinancePage() {
             }`}
           >
             Approved history
+          </button>
+          <button
+            type="button"
+            onClick={() => setQueueTab('refunds')}
+            className={`px-4 py-2 rounded-lg text-sm font-semibold ${
+              queueTab === 'refunds' ? 'bg-rose-700 text-white' : 'border border-gray-300 hover:bg-gray-50'
+            }`}
+          >
+            Refunds
           </button>
         </div>
 
@@ -296,6 +351,67 @@ export default function SalesClosureFinancePage() {
 
         {error && <div className="text-sm text-red-600 mt-4">{error}</div>}
 
+        {queueTab === 'refunds' ? (
+          <div className="mt-5 border border-gray-200 rounded-2xl overflow-hidden">
+            <div className="grid grid-cols-12 bg-rose-50 px-4 py-3 text-xs font-semibold text-gray-600 gap-1">
+              <div className="col-span-2">Refund ID</div>
+              <div className="col-span-2">Customer</div>
+              <div className="col-span-2">Amount</div>
+              <div className="col-span-2">Split (10% / extra)</div>
+              <div className="col-span-2">Approved</div>
+              <div className="col-span-2 text-right">Lead</div>
+            </div>
+            {refunds.length === 0 ? (
+              <div className="px-4 py-6 text-sm text-gray-600">
+                {loading ? 'Loading…' : 'No CRM cancellation refunds yet.'}
+              </div>
+            ) : (
+              refunds.map((r) => (
+                <div
+                  key={r.refundId}
+                  className="grid grid-cols-12 px-4 py-3 border-t border-gray-200 items-center gap-1 text-sm"
+                >
+                  <div className="col-span-2 font-mono text-xs break-all" title={r.refundId}>
+                    {r.refundId}
+                    <div className="mt-0.5 text-[10px] font-semibold uppercase text-rose-700">
+                      {r.refundScope || 'deal'} · {r.status || 'PROCESSED'}
+                    </div>
+                  </div>
+                  <div className="col-span-2 truncate" title={r.customerName || ''}>
+                    {r.customerName || '—'}
+                    {r.leadIdentifier ? (
+                      <div className="text-[10px] text-gray-500">{r.leadIdentifier}</div>
+                    ) : null}
+                  </div>
+                  <div className="col-span-2 font-semibold text-rose-800">{formatInr(r.refundAmount)}</div>
+                  <div className="col-span-2 text-xs text-gray-600">
+                    <div>10%: {formatInr(r.amountTowardTenRefund)}</div>
+                    <div>Extra: {formatInr(r.extraAmountRefund)}</div>
+                  </div>
+                  <div className="col-span-2 text-xs text-gray-600">
+                    <div>{formatDate(r.cancellationApprovedAt || r.createdAt)}</div>
+                    <div className="truncate" title={r.cancellationApprovedBy || ''}>
+                      {r.cancellationApprovedBy || '—'}
+                    </div>
+                  </div>
+                  <div className="col-span-2 text-right">
+                    <a
+                      href={`/Leads/${r.designLeadId}`}
+                      className="text-indigo-700 hover:underline text-xs font-semibold"
+                    >
+                      Lead #{r.designLeadId}
+                    </a>
+                    {r.cancellationReason ? (
+                      <div className="mt-1 text-[10px] text-gray-500 truncate" title={r.cancellationReason}>
+                        {r.cancellationReason}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        ) : (
         <div className="mt-5 border border-gray-200 rounded-2xl overflow-hidden">
           <div className="grid grid-cols-12 bg-gray-50 px-4 py-3 text-xs font-semibold text-gray-600 gap-1">
             <div className="col-span-1">ID</div>
@@ -381,6 +497,7 @@ export default function SalesClosureFinancePage() {
             ))
           )}
         </div>
+        )}
 
         {historyLeadId != null && (
           <div
