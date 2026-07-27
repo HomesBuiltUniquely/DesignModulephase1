@@ -195,54 +195,64 @@ function requiresOwnProlancePartner(role: string | null | undefined): boolean {
 
 type PartnerCredSource = "body" | "per_user" | "env_fallback" | "org_shared";
 
-/**
- * Partner login for project create — same sequence as Postman:
- * hubapi token → CRM user's partner LoginAPI → create with that session's partnerID.
- */
-async function resolvePartnerLoginForCreate(
-  pool: Pool,
-  userId: number,
-  userRole: string,
-): Promise<
-  | {
-      ok: true;
-      token: string;
-      apiKey: string;
-      originSessionId: string;
-      partnerID: number;
-      credSource: PartnerCredSource;
-      loginId: string;
-    }
-  | { ok: false; message: string; status: number; credSource?: PartnerCredSource; code?: string }
-> {
-  return resolvePartnerLoginForUser(pool, userId, undefined, {
-    strictPerUser: requiresOwnProlancePartner(userRole),
-  });
+/** Shared Hub OAuth token (`POST /token`) — reused until near expiry. */
+type HubTokenCacheEntry = {
+  token: string;
+  expiresAtMs: number;
+};
+
+/** Per Design-user Prolance partner session — reused until near expiry. */
+type PartnerSessionCacheEntry = {
+  token: string;
+  apiKey: string;
+  originSessionId: string;
+  partnerID: number;
+  credSource: PartnerCredSource;
+  loginId: string;
+  expiresAtMs: number;
+};
+
+let hubTokenCache: HubTokenCacheEntry | null = null;
+const partnerSessionCache = new Map<number, PartnerSessionCacheEntry>();
+
+const DEFAULT_HUB_TOKEN_TTL_MS = 55 * 60 * 1000;
+const DEFAULT_PARTNER_SESSION_TTL_MS = 45 * 60 * 1000;
+const CACHE_SKEW_MS = 60_000;
+
+function partnerCacheStillValid(entry: PartnerSessionCacheEntry | undefined): entry is PartnerSessionCacheEntry {
+  return Boolean(entry && Date.now() < entry.expiresAtMs - CACHE_SKEW_MS);
 }
 
-async function resolvePartnerLoginForUser(
-  pool: Pool,
-  userId: number,
-  bodyLogin?: { loginID?: string | null; password?: string | null },
-  opts?: { strictPerUser?: boolean },
-): Promise<
-  | {
-      ok: true;
-      token: string;
-      apiKey: string;
-      originSessionId: string;
-      partnerID: number;
-      credSource: PartnerCredSource;
-      loginId: string;
-    }
-  | { ok: false; message: string; status: number; credSource?: PartnerCredSource; code?: string }
+function hubTokenStillValid(entry: HubTokenCacheEntry | null): entry is HubTokenCacheEntry {
+  return Boolean(entry && Date.now() < entry.expiresAtMs - CACHE_SKEW_MS);
+}
+
+function invalidateProlanceAuthCache(userId?: number): void {
+  hubTokenCache = null;
+  if (userId != null) partnerSessionCache.delete(userId);
+  else partnerSessionCache.clear();
+}
+
+function ttlFromTokenResponse(tokenObj: Record<string, unknown>, fallbackMs: number): number {
+  const expiresInSec = Number(tokenObj.expires_in ?? tokenObj.expiresIn);
+  if (Number.isFinite(expiresInSec) && expiresInSec > 60) {
+    return Math.floor(expiresInSec * 1000);
+  }
+  return fallbackMs;
+}
+
+async function getCachedOrFreshHubToken(opts?: {
+  forceRefresh?: boolean;
+}): Promise<
+  | { ok: true; token: string; expiresAtMs: number; fromCache: boolean }
+  | { ok: false; message: string; status: number }
 > {
-  const apiKey = envTrim("PROLANCE_API_KEY");
-  if (!apiKey) {
+  if (!opts?.forceRefresh && hubTokenStillValid(hubTokenCache)) {
     return {
-      ok: false,
-      message: "Origin API key is not configured. Set PROLANCE_API_KEY in backend/.env (or env.sh on EC2), then restart the server.",
-      status: 500,
+      ok: true,
+      token: hubTokenCache.token,
+      expiresAtMs: hubTokenCache.expiresAtMs,
+      fromCache: true,
     };
   }
 
@@ -263,7 +273,69 @@ async function resolvePartnerLoginForUser(
   const token =
     asString(tokenObj.access_token) || asString(tokenObj.accessToken) || asString(tokenObj.token);
   if (!token || tokenResp.status >= 400) {
+    hubTokenCache = null;
     return { ok: false, message: "Failed to generate Prolance token", status: tokenResp.status || 500 };
+  }
+
+  const expiresAtMs = Date.now() + ttlFromTokenResponse(tokenObj, DEFAULT_HUB_TOKEN_TTL_MS);
+  hubTokenCache = { token, expiresAtMs };
+  return { ok: true, token, expiresAtMs, fromCache: false };
+}
+
+/**
+ * Partner login for project create — same sequence as Postman:
+ * hubapi token → CRM user's partner LoginAPI → create with that session's partnerID.
+ * Reuses cached token + partner session until near expiry (or forceRefresh).
+ */
+async function resolvePartnerLoginForCreate(
+  pool: Pool,
+  userId: number,
+  userRole: string,
+  opts?: { forceRefresh?: boolean },
+): Promise<
+  | {
+      ok: true;
+      token: string;
+      apiKey: string;
+      originSessionId: string;
+      partnerID: number;
+      credSource: PartnerCredSource;
+      loginId: string;
+      fromCache?: boolean;
+    }
+  | { ok: false; message: string; status: number; credSource?: PartnerCredSource; code?: string }
+> {
+  return resolvePartnerLoginForUser(pool, userId, undefined, {
+    strictPerUser: requiresOwnProlancePartner(userRole),
+    forceRefresh: opts?.forceRefresh,
+  });
+}
+
+async function resolvePartnerLoginForUser(
+  pool: Pool,
+  userId: number,
+  bodyLogin?: { loginID?: string | null; password?: string | null },
+  opts?: { strictPerUser?: boolean; forceRefresh?: boolean },
+): Promise<
+  | {
+      ok: true;
+      token: string;
+      apiKey: string;
+      originSessionId: string;
+      partnerID: number;
+      credSource: PartnerCredSource;
+      loginId: string;
+      fromCache?: boolean;
+    }
+  | { ok: false; message: string; status: number; credSource?: PartnerCredSource; code?: string }
+> {
+  const apiKey = envTrim("PROLANCE_API_KEY");
+  if (!apiKey) {
+    return {
+      ok: false,
+      message: "Origin API key is not configured. Set PROLANCE_API_KEY in backend/.env (or env.sh on EC2), then restart the server.",
+      status: 500,
+    };
   }
 
   let loginID = bodyLogin?.loginID ?? null;
@@ -300,6 +372,43 @@ async function resolvePartnerLoginForUser(
     return { ok: false, message: "LoginID/password are required for partner login", status: 400 };
   }
 
+  if (!opts?.forceRefresh) {
+    const cached = partnerSessionCache.get(userId);
+    if (
+      partnerCacheStillValid(cached) &&
+      cached.loginId.toLowerCase() === loginID.toLowerCase() &&
+      cached.apiKey === apiKey
+    ) {
+      // Keep hub token fresh for downstream calls when partner session is still good.
+      const hub = await getCachedOrFreshHubToken();
+      const token = hub.ok ? hub.token : cached.token;
+      if (hub.ok) {
+        cached.token = hub.token;
+        cached.expiresAtMs = Math.min(cached.expiresAtMs, hub.expiresAtMs);
+        partnerSessionCache.set(userId, cached);
+      }
+      console.log("[prolance-partner-login] cache-hit", {
+        userId,
+        loginId: maskValue(loginID, 4, 8),
+        partnerID: cached.partnerID,
+      });
+      return {
+        ok: true,
+        token,
+        apiKey: cached.apiKey,
+        originSessionId: cached.originSessionId,
+        partnerID: cached.partnerID,
+        credSource: cached.credSource,
+        loginId: cached.loginId,
+        fromCache: true,
+      };
+    }
+  }
+
+  const hub = await getCachedOrFreshHubToken({ forceRefresh: opts?.forceRefresh });
+  if (!hub.ok) return hub;
+  const token = hub.token;
+
   const partnerResp = await proxiedFetch({
     method: "POST",
     path: "/Origin/Partners/LoginAPI",
@@ -322,6 +431,7 @@ async function resolvePartnerLoginForUser(
       status: partnerResp.status,
       upstream: partnerResp.data,
     });
+    invalidateProlanceAuthCache(userId);
     return {
       ok: false,
       message: upstreamMsg || "Prolance partner login failed",
@@ -340,11 +450,26 @@ async function resolvePartnerLoginForUser(
     };
   }
 
+  const expiresAtMs = Math.min(
+    hub.expiresAtMs,
+    Date.now() + DEFAULT_PARTNER_SESSION_TTL_MS,
+  );
+  partnerSessionCache.set(userId, {
+    token,
+    apiKey,
+    originSessionId: partnerFields.sessionID,
+    partnerID: partnerFields.partnerID,
+    credSource,
+    loginId: loginID,
+    expiresAtMs,
+  });
+
   console.log("[prolance-partner-login]", {
     userId,
     credSource,
     loginId: maskValue(loginID, 4, 8),
     partnerID: partnerFields.partnerID,
+    fromCache: false,
   });
 
   return {
@@ -355,6 +480,7 @@ async function resolvePartnerLoginForUser(
     partnerID: partnerFields.partnerID,
     credSource,
     loginId: loginID,
+    fromCache: false,
   };
 }
 
@@ -1422,6 +1548,24 @@ export function registerProlanceRoutes(
     const user = await requireUser(req, res);
     if (!user) return;
     try {
+      const forceRefresh =
+        req.body?.forceRefresh === true ||
+        req.body?.force === true ||
+        String(req.query.force || "").toLowerCase() === "1" ||
+        String(req.query.force || "").toLowerCase() === "true";
+
+      // Prefer shared env credentials + cache (same token Create Project / Get Quote reuse).
+      const cached = await getCachedOrFreshHubToken({ forceRefresh });
+      if (cached.ok) {
+        return res.json({
+          access_token: cached.token,
+          token: cached.token,
+          expires_at: new Date(cached.expiresAtMs).toISOString(),
+          fromCache: cached.fromCache,
+        });
+      }
+
+      // Fallback: allow explicit body username/password (legacy / testing).
       const username = asString(req.body?.username) || asString(envTrim("PROLANCE_USERNAME"));
       const password = asString(req.body?.password) || asString(envTrim("PROLANCE_PASSWORD"));
       if (!username || !password) {
@@ -1433,6 +1577,21 @@ export function registerProlanceRoutes(
         asForm: true,
         body: { grant_type: "password", username, password },
       });
+      if (
+        upstream.status < 400 &&
+        upstream.data &&
+        typeof upstream.data === "object"
+      ) {
+        const tokenObj = upstream.data as Record<string, unknown>;
+        const token =
+          asString(tokenObj.access_token) || asString(tokenObj.accessToken) || asString(tokenObj.token);
+        if (token) {
+          hubTokenCache = {
+            token,
+            expiresAtMs: Date.now() + ttlFromTokenResponse(tokenObj, DEFAULT_HUB_TOKEN_TTL_MS),
+          };
+        }
+      }
       return send(res, upstream.status, upstream.data);
     } catch (err) {
       console.error("prolance token error", err);
@@ -1445,80 +1604,48 @@ export function registerProlanceRoutes(
     const user = await requireUser(req, res);
     if (!user) return;
     try {
-      const token = readToken(req);
-      const apiKey = readApiKey(req);
-      if (!token) return res.status(400).json({ message: "token is required (X-Prolance-Token or body.token)" });
-      if (!apiKey) return res.status(400).json({ message: "Origin API key is required (env PROLANCE_API_KEY)" });
+      const forceRefresh =
+        req.body?.forceRefresh === true ||
+        req.body?.force === true ||
+        String(req.query.force || "").toLowerCase() === "1" ||
+        String(req.query.force || "").toLowerCase() === "true";
 
-      let loginID = asString(req.body?.loginID) || asString(req.body?.LoginID);
-      let password = asString(req.body?.password) || asString(req.body?.Password);
-      let credSource: "body" | "per_user" | "env_fallback" = "body";
+      const login = await resolvePartnerLoginForUser(
+        pool,
+        user.id,
+        {
+          loginID: asString(req.body?.loginID) || asString(req.body?.LoginID),
+          password: asString(req.body?.password) || asString(req.body?.Password),
+        },
+        {
+          strictPerUser: requiresOwnProlancePartner(user.role),
+          forceRefresh,
+        },
+      );
 
-      if (!loginID || !password) {
-        const perUserCred = await resolvePartnerCredentialForUser(pool, user.id);
-        if (perUserCred) {
-          loginID = perUserCred.loginId;
-          password = perUserCred.password;
-          credSource = "per_user";
-        }
-      }
-
-      if (!loginID || !password) {
-        loginID = asString(envTrim("PROLANCE_PARTNER_LOGIN_ID"));
-        password = asString(envTrim("PROLANCE_PARTNER_PASSWORD"));
-        credSource = "env_fallback";
-      }
-      if (!loginID || !password) return res.status(400).json({ message: "LoginID/password are required" });
-
-      console.log("[prolance-partner-login]", {
-        userId: user.id,
-        credSource,
-        loginId: maskValue(loginID, 4, 8),
-      });
-
-      const upstream = await proxiedFetch({
-        method: "POST",
-        path: "/Origin/Partners/LoginAPI",
-        token,
-        includeOriginApiHeaders: true,
-        apiKey,
-        body: { LoginID: loginID, Password: password, LoginFrom: 1 },
-      });
-
-      if (upstream.status >= 400) {
-        console.error("[prolance-partner-login] upstream failed", {
-          userId: user.id,
-          credSource,
-          status: upstream.status,
-          upstream: upstream.data,
-        });
-        return send(res, upstream.status, upstream.data);
-      }
-
-      const partnerFields = extractPartnerLoginFields(upstream.data);
-      if (!partnerFields) {
-        console.error("[prolance-partner-login] missing session/partner in response", {
-          userId: user.id,
-          credSource,
-          upstream: upstream.data,
-        });
-        return res.status(502).json({
-          message:
-            "Partner login succeeded but Prolance did not return sessionID/partnerID. Check LoginID/password for this user.",
-          credSource,
-          upstream: upstream.data,
+      if (!login.ok) {
+        return res.status(login.status).json({
+          message: login.message,
+          code: login.code,
+          credSource: login.credSource,
         });
       }
 
-      const payload =
-        upstream.data && typeof upstream.data === "object" && !Array.isArray(upstream.data)
-          ? { ...(upstream.data as Record<string, unknown>) }
-          : { data: upstream.data };
-      return res.status(upstream.status).json({
-        ...payload,
-        sessionID: partnerFields.sessionID,
-        partnerID: partnerFields.partnerID,
-        credSource,
+      return res.json({
+        data: [
+          {
+            sessionID: login.originSessionId,
+            sessionId: login.originSessionId,
+            partnerID: login.partnerID,
+            partnerId: login.partnerID,
+          },
+        ],
+        sessionID: login.originSessionId,
+        partnerID: login.partnerID,
+        credSource: login.credSource,
+        fromCache: login.fromCache === true,
+        access_token: login.token,
+        token: login.token,
       });
     } catch (err) {
       console.error("prolance partners login error", err);
@@ -1603,7 +1730,7 @@ function formatProlancePName(
     };
 
     try {
-      const login = await resolvePartnerLoginForCreate(pool, user.id, user.role);
+      let login = await resolvePartnerLoginForCreate(pool, user.id, user.role);
       if (!login.ok) {
         return res.status(login.status).json({
           message: login.message,
@@ -1614,15 +1741,34 @@ function formatProlancePName(
 
       createBody.partnerID = login.partnerID;
 
-      const upstream = await prolanceCreateProjectUpstream({
+      let upstream = await prolanceCreateProjectUpstream({
         token: login.token,
         originSessionId: login.originSessionId,
         apiKey: login.apiKey,
         body: createBody,
       });
 
+      // Expired Prolance session → clear cache, re-login once, retry create.
+      if (isProlanceAuthDenied(upstream) && login.fromCache) {
+        invalidateProlanceAuthCache(user.id);
+        const relogin = await resolvePartnerLoginForCreate(pool, user.id, user.role, {
+          forceRefresh: true,
+        });
+        if (relogin.ok) {
+          login = relogin;
+          createBody.partnerID = login.partnerID;
+          upstream = await prolanceCreateProjectUpstream({
+            token: login.token,
+            originSessionId: login.originSessionId,
+            apiKey: login.apiKey,
+            body: createBody,
+          });
+        }
+      }
+
       const warning = prolancePartnerWarning(user.role, login.credSource);
       if (!upstream.status || upstream.status >= 400) {
+        if (isProlanceAuthDenied(upstream)) invalidateProlanceAuthCache(user.id);
         console.error("[prolance-create-as-user] failed", {
           userId: user.id,
           loginId: maskValue(login.loginId, 4, 8),

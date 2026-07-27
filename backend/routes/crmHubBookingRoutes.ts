@@ -449,8 +449,10 @@ async function ensureLeadHubBookingRefundTable(pool: Pool): Promise<void> {
       cancellation_approved_at DATETIME NULL,
       cancellation_approved_by VARCHAR(255) NULL,
       refund_scope VARCHAR(32) NULL,
-      status VARCHAR(32) NOT NULL DEFAULT 'PROCESSED',
+      status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
       refund_payload MEDIUMTEXT NULL,
+      finance_approved_at DATETIME NULL,
+      finance_approved_by VARCHAR(255) NULL,
       created_at DATETIME NOT NULL,
       UNIQUE KEY uq_refund_key (refund_key),
       KEY idx_refund_lead (lead_id),
@@ -475,7 +477,9 @@ async function ensureLeadHubBookingRefundTable(pool: Pool): Promise<void> {
     "ALTER TABLE lead_hub_booking_refunds ADD COLUMN lead_identifier VARCHAR(128) NULL",
     "ALTER TABLE lead_hub_booking_refunds ADD COLUMN customer_name VARCHAR(255) NULL",
     "ALTER TABLE lead_hub_booking_refunds ADD COLUMN amount_toward_ten_refund DECIMAL(14,2) NULL DEFAULT 0",
-    "ALTER TABLE lead_hub_booking_refunds ADD COLUMN status VARCHAR(32) NOT NULL DEFAULT 'PROCESSED'",
+    "ALTER TABLE lead_hub_booking_refunds ADD COLUMN status VARCHAR(32) NOT NULL DEFAULT 'PENDING'",
+    "ALTER TABLE lead_hub_booking_refunds ADD COLUMN finance_approved_at DATETIME NULL",
+    "ALTER TABLE lead_hub_booking_refunds ADD COLUMN finance_approved_by VARCHAR(255) NULL",
   ];
   for (const sql of alters) {
     try {
@@ -1713,7 +1717,7 @@ function resolveRefundAmounts(body: HubLeadBody): {
   };
 }
 
-async function findProcessedRefundByBookingToken(
+async function findExistingRefundByBookingToken(
   pool: Pool,
   bookingTokenRecordId: string,
   refundScope: string,
@@ -1724,7 +1728,6 @@ async function findProcessedRefundByBookingToken(
      FROM lead_hub_booking_refunds
      WHERE booking_token_record_id = ?
        AND LOWER(COALESCE(refund_scope, 'deal')) = ?
-       AND UPPER(COALESCE(status, 'PROCESSED')) = 'PROCESSED'
      ORDER BY id DESC LIMIT 1`,
     [bookingTokenRecordId, refundScope.toLowerCase()],
   );
@@ -1744,6 +1747,123 @@ async function findProcessedRefundByBookingToken(
   };
 }
 
+async function applyFinanceRefundApproval(
+  pool: Pool,
+  refund: {
+    id: number;
+    refundKey: string;
+    leadId: number;
+    refundAmount: number;
+    amountTowardTen: number;
+    extraAmount: number;
+    refundScope: string;
+    refundPayload: unknown;
+  },
+  approvedBy: string,
+  addLeadHistoryEvent: RouteDeps["addLeadHistoryEvent"],
+): Promise<void> {
+  const now = new Date();
+  const body = parseLeadPayload(refund.refundPayload);
+  const refundScope = (refund.refundScope || "deal").toLowerCase();
+
+  await pool.query(
+    `UPDATE lead_hub_booking_refunds
+     SET status = 'APPROVED',
+         finance_approved_at = ?,
+         finance_approved_by = ?
+     WHERE id = ? AND UPPER(COALESCE(status, 'PENDING')) = 'PENDING'`,
+    [now, approvedBy, refund.id],
+  );
+
+  if (refundScope !== "payments") {
+    await pool.query(
+      `DELETE FROM lead_task_completions
+       WHERE lead_id = ?
+         AND milestone_index = 2
+         AND task_name IN ('10% payment collection', '10% payment approval')`,
+      [refund.leadId],
+    );
+  }
+
+  try {
+    const [leadRows] = await pool.query(`SELECT payload FROM leads WHERE id = ? LIMIT 1`, [refund.leadId]);
+    const prev = parseLeadPayload((leadRows as { payload?: unknown }[])[0]?.payload);
+    const prevRefunds = Array.isArray(prev.booking_refunds) ? [...prev.booking_refunds] : [];
+    const refundRecord = {
+      refundId: refund.refundKey,
+      refundAmount: refund.refundAmount,
+      amountTowardTenRefund: refund.amountTowardTen,
+      extraAmountRefund: refund.extraAmount,
+      refundScope,
+      status: "APPROVED",
+      financeApprovedAt: now.toISOString(),
+      financeApprovedBy: approvedBy,
+      syncedAt: now.toISOString(),
+    };
+    const idx = prevRefunds.findIndex(
+      (r) => r && typeof r === "object" && (r as { refundId?: string }).refundId === refund.refundKey,
+    );
+    if (idx >= 0) prevRefunds[idx] = { ...(prevRefunds[idx] as object), ...refundRecord };
+    else prevRefunds.push(refundRecord);
+
+    const merged: Record<string, unknown> = {
+      ...prev,
+      booking_cancelled: refundScope !== "payments" ? true : prev.booking_cancelled === true,
+      booking_refund: refundRecord,
+      booking_refunds: prevRefunds,
+      refund_pending: false,
+    };
+    if (refundScope !== "payments") {
+      merged.ten_percent_payment_met = false;
+      merged.shortfall_toward_10_percent = null;
+      merged.sales_closure_finance_approved = false;
+      merged.total_paid_toward_10_percent = 0;
+      merged.amount_paid = 0;
+      merged.extra_amount_received = 0;
+      merged.finance_extra_amount = 0;
+      merged.total_paid_cumulative = 0;
+      merged.total_customer_paid = 0;
+      merged.remaining_for_10_percent =
+        pickNum(prev.ten_percent_target) ?? prev.remaining_for_10_percent ?? null;
+    } else {
+      const prevToward = pickNum(prev.total_paid_toward_10_percent, prev.amount_paid) ?? 0;
+      const prevExtra = pickNum(prev.extra_amount_received, prev.finance_extra_amount) ?? 0;
+      const nextToward = Math.max(0, prevToward - refund.amountTowardTen);
+      const nextExtra = Math.max(0, prevExtra - refund.extraAmount);
+      merged.total_paid_toward_10_percent = nextToward;
+      merged.amount_paid = nextToward;
+      merged.extra_amount_received = nextExtra;
+      merged.finance_extra_amount = nextExtra;
+      const tenTarget = pickNum(prev.ten_percent_target) ?? 0;
+      merged.ten_percent_payment_met = tenTarget > 0 ? nextToward >= tenTarget : false;
+      merged.remaining_for_10_percent = tenTarget > 0 ? Math.max(0, tenTarget - nextToward) : 0;
+    }
+    await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
+      JSON.stringify(merged),
+      now,
+      refund.leadId,
+    ]);
+  } catch (payloadErr) {
+    console.warn("[crm-hub] refund approve payload merge skipped", payloadErr);
+  }
+
+  await addLeadHistoryEvent(refund.leadId, {
+    id: `hub-refund-approved-${Date.now()}`,
+    type: "note",
+    taskName: "Booking cancellation refund",
+    milestoneName: "10% PAYMENT",
+    timestamp: now.toISOString(),
+    description: `Finance approved refund ₹${refund.refundAmount.toLocaleString("en-IN")} (${refund.refundKey}).`,
+    user: { name: approvedBy },
+    details: {
+      kind: "hub_refund_approved",
+      refundId: refund.refundKey,
+      refundAmount: refund.refundAmount,
+      fromPayload: !!body.eventType,
+    },
+  });
+}
+
 async function handleFinanceRefundSync(
   pool: Pool,
   body: HubLeadBody,
@@ -1757,8 +1877,8 @@ async function handleFinanceRefundSync(
   const { refundScope, refundAmount, amountTowardTenRefund, extraAmountRefund, selectedPayments } =
     resolveRefundAmounts(body);
 
-  // Idempotency: same deal + scope already processed → return same refundId
-  const existing = await findProcessedRefundByBookingToken(pool, bookingTokenRecordId, refundScope);
+  // Idempotency: same deal + scope already synced (pending or approved) → return same refundId
+  const existing = await findExistingRefundByBookingToken(pool, bookingTokenRecordId, refundScope);
   if (existing) {
     return existing;
   }
@@ -1820,7 +1940,7 @@ async function handleFinanceRefundSync(
         refund_amount, amount_toward_ten_refund, extra_refund_amount,
         cancellation_reason, cancelled_at, cancellation_approved_at, cancellation_approved_by,
         refund_scope, status, refund_payload, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROCESSED', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)`,
       [
         refundKey,
         designLeadId,
@@ -1848,7 +1968,7 @@ async function handleFinanceRefundSync(
     const code = (err as { code?: string })?.code;
     if (code === "ER_DUP_ENTRY") {
       const again =
-        (await findProcessedRefundByBookingToken(pool, bookingTokenRecordId, refundScope)) ||
+        (await findExistingRefundByBookingToken(pool, bookingTokenRecordId, refundScope)) ||
         ({
           refundId: refundKey,
           refundAmount,
@@ -1876,17 +1996,7 @@ async function handleFinanceRefundSync(
     }
   }
 
-  // Full deal refund: reverse finance 10% milestones. Partial payments: keep milestones if still paid.
-  if (refundScope !== "payments") {
-    await pool.query(
-      `DELETE FROM lead_task_completions
-       WHERE lead_id = ?
-         AND milestone_index = 2
-         AND task_name IN ('10% payment collection', '10% payment approval')`,
-      [designLeadId],
-    );
-  }
-
+  // CRM sync only queues refund for Finance approval — ledger reversal happens on Approve.
   try {
     const [leadRows] = await pool.query(`SELECT payload FROM leads WHERE id = ? LIMIT 1`, [designLeadId]);
     const prev = parseLeadPayload((leadRows as { payload?: unknown }[])[0]?.payload);
@@ -1905,39 +2015,14 @@ async function handleFinanceRefundSync(
       bookingApprovalMode: pickStr(body.bookingApprovalMode) || null,
       bufferApplied: body.bufferApplied === true,
       syncedAt: now.toISOString(),
-      status: "PROCESSED",
+      status: "PENDING",
     };
     const merged: Record<string, unknown> = {
       ...prev,
-      booking_cancelled: refundScope !== "payments" ? true : prev.booking_cancelled === true,
+      refund_pending: true,
       booking_refund: refundRecord,
       booking_refunds: [...prevRefunds, refundRecord],
     };
-    if (refundScope !== "payments") {
-      merged.ten_percent_payment_met = false;
-      merged.shortfall_toward_10_percent = null;
-      merged.sales_closure_finance_approved = false;
-      merged.total_paid_toward_10_percent = 0;
-      merged.amount_paid = 0;
-      merged.extra_amount_received = 0;
-      merged.finance_extra_amount = 0;
-      merged.total_paid_cumulative = 0;
-      merged.total_customer_paid = 0;
-      merged.remaining_for_10_percent =
-        pickNum(prev.ten_percent_target) ?? prev.remaining_for_10_percent ?? null;
-    } else {
-      const prevToward = pickNum(prev.total_paid_toward_10_percent, prev.amount_paid) ?? 0;
-      const prevExtra = pickNum(prev.extra_amount_received, prev.finance_extra_amount) ?? 0;
-      const nextToward = Math.max(0, prevToward - amountTowardTenRefund);
-      const nextExtra = Math.max(0, prevExtra - extraAmountRefund);
-      merged.total_paid_toward_10_percent = nextToward;
-      merged.amount_paid = nextToward;
-      merged.extra_amount_received = nextExtra;
-      merged.finance_extra_amount = nextExtra;
-      const tenTarget = pickNum(prev.ten_percent_target) ?? 0;
-      merged.ten_percent_payment_met = tenTarget > 0 ? nextToward >= tenTarget : false;
-      merged.remaining_for_10_percent = tenTarget > 0 ? Math.max(0, tenTarget - nextToward) : 0;
-    }
     await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
       JSON.stringify(merged),
       now,
@@ -1953,7 +2038,7 @@ async function handleFinanceRefundSync(
     taskName: "Booking cancellation refund",
     milestoneName: "10% PAYMENT",
     timestamp: now.toISOString(),
-    description: `Cancellation approved — finance refund ₹${refundAmount.toLocaleString("en-IN")} (10% portion ₹${amountTowardTenRefund.toLocaleString("en-IN")}${
+    description: `CRM cancel approved — refund ₹${refundAmount.toLocaleString("en-IN")} queued for Finance approval (10% ₹${amountTowardTenRefund.toLocaleString("en-IN")}${
       extraAmountRefund > 0 ? ` + extra ₹${extraAmountRefund.toLocaleString("en-IN")}` : ""
     }, scope: ${refundScope}).`,
     user: { name: cancellationApprovedBy },
@@ -1967,6 +2052,7 @@ async function handleFinanceRefundSync(
       extraAmountRefund,
       cancellationReason,
       refundScope,
+      status: "PENDING",
       cancelledPaymentEntryIds: cancelledPaymentIds(body),
     },
   });
@@ -1991,6 +2077,7 @@ async function listFinanceRefunds(
             amount_toward_ten_refund as amountTowardTenRefund, extra_refund_amount as extraAmountRefund,
             cancellation_reason as cancellationReason, cancelled_at as cancelledAt,
             cancellation_approved_at as cancellationApprovedAt, cancellation_approved_by as cancellationApprovedBy,
+            finance_approved_at as financeApprovedAt, finance_approved_by as financeApprovedBy,
             refund_scope as refundScope, status, created_at as createdAt
      FROM lead_hub_booking_refunds
      ORDER BY id DESC
@@ -2003,9 +2090,26 @@ async function listFinanceRefunds(
       const name = String(r.customerName || "").toLowerCase();
       if (!name.includes(customerFilter)) return false;
     }
-    if (statusFilter && String(r.status || "").toUpperCase() !== statusFilter) return false;
+    const st = String(r.status || "PENDING").toUpperCase();
+    if (statusFilter === "PENDING") {
+      return st === "PENDING";
+    }
+    if (statusFilter === "APPROVED" || statusFilter === "HISTORY") {
+      // Legacy PROCESSED rows count as approved history
+      return st === "APPROVED" || st === "PROCESSED";
+    }
+    if (statusFilter && st !== statusFilter) return false;
     return true;
   });
+}
+
+async function countPendingFinanceRefunds(pool: Pool): Promise<number> {
+  await ensureLeadHubBookingRefundTable(pool);
+  const [rows] = await pool.query(
+    `SELECT COUNT(*) as cnt FROM lead_hub_booking_refunds
+     WHERE UPPER(COALESCE(status, 'PENDING')) = 'PENDING'`,
+  );
+  return Number((rows as { cnt?: number }[])[0]?.cnt) || 0;
 }
 
 export async function getHubBookingSyncForLead(pool: Pool, leadId: number) {
@@ -2110,6 +2214,88 @@ export function registerCrmHubBookingRoutes(app: Express, deps: RouteDeps): void
     }
   });
 
+  app.get("/api/sales-closure/finance-refunds/pending-count", async (req: Request, res: Response) => {
+    try {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const role = (user.role ?? "").toLowerCase();
+      if (role !== "finance" && role !== "admin") {
+        return res.status(403).json({ message: "Only finance or admin can access refunds" });
+      }
+      const count = await countPendingFinanceRefunds(pool);
+      return res.json({ count });
+    } catch (err) {
+      console.error("[crm-hub] finance-refunds pending-count error:", err);
+      return res.status(500).json({ message: "Failed to load pending refund count" });
+    }
+  });
+
+  app.post("/api/sales-closure/finance-refunds/:refundId/approve", async (req: Request, res: Response) => {
+    try {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const role = (user.role ?? "").toLowerCase();
+      if (role !== "finance" && role !== "admin") {
+        return res.status(403).json({ message: "Only finance or admin can approve refunds" });
+      }
+      const refundKey = String(req.params.refundId || "").trim();
+      if (!refundKey) return res.status(400).json({ message: "Invalid refund id" });
+      await ensureLeadHubBookingRefundTable(pool);
+      const [rows] = await pool.query(
+        `SELECT id, refund_key as refundKey, lead_id as leadId, refund_amount as refundAmount,
+                amount_toward_ten_refund as amountTowardTen, extra_refund_amount as extraAmount,
+                refund_scope as refundScope, status, refund_payload as refundPayload
+         FROM lead_hub_booking_refunds WHERE refund_key = ? OR CAST(id AS CHAR) = ? LIMIT 1`,
+        [refundKey, refundKey],
+      );
+      const row = (rows as {
+        id: number;
+        refundKey: string;
+        leadId: number;
+        refundAmount: number;
+        amountTowardTen: number;
+        extraAmount: number;
+        refundScope: string;
+        status: string;
+        refundPayload: unknown;
+      }[])[0];
+      if (!row) return res.status(404).json({ message: "Refund not found" });
+      const st = String(row.status || "").toUpperCase();
+      if (st === "APPROVED" || st === "PROCESSED") {
+        return res.json({
+          ok: true,
+          refundId: row.refundKey,
+          status: "APPROVED",
+          alreadyApproved: true,
+        });
+      }
+      if (st !== "PENDING") {
+        return res.status(400).json({ message: `Refund cannot be approved from status ${row.status}` });
+      }
+      const approvedBy = pickStr(user.name, user.email) || "Finance";
+      await applyFinanceRefundApproval(
+        pool,
+        {
+          id: row.id,
+          refundKey: row.refundKey,
+          leadId: row.leadId,
+          refundAmount: Number(row.refundAmount) || 0,
+          amountTowardTen: Number(row.amountTowardTen) || 0,
+          extraAmount: Number(row.extraAmount) || 0,
+          refundScope: String(row.refundScope || "deal"),
+          refundPayload: row.refundPayload,
+        },
+        approvedBy,
+        addLeadHistoryEvent,
+      );
+      return res.json({ ok: true, refundId: row.refundKey, status: "APPROVED" });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to approve refund";
+      console.error("[crm-hub] finance-refund approve error:", err);
+      return res.status(400).json({ message: msg });
+    }
+  });
+
   app.get("/api/sales-closure/finance-refunds/:refundId", async (req: Request, res: Response) => {
     try {
       const user = await getUserFromSession(req);
@@ -2128,6 +2314,7 @@ export function registerCrmHubBookingRoutes(app: Express, deps: RouteDeps): void
                 amount_toward_ten_refund as amountTowardTenRefund, extra_refund_amount as extraAmountRefund,
                 cancellation_reason as cancellationReason, cancelled_at as cancelledAt,
                 cancellation_approved_at as cancellationApprovedAt, cancellation_approved_by as cancellationApprovedBy,
+                finance_approved_at as financeApprovedAt, finance_approved_by as financeApprovedBy,
                 refund_scope as refundScope, status, refund_payload as refundPayload, created_at as createdAt
          FROM lead_hub_booking_refunds WHERE refund_key = ? OR CAST(id AS CHAR) = ? LIMIT 1`,
         [refundKey, refundKey],

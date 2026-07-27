@@ -340,84 +340,127 @@ export async function runProlanceGetQuoteApiFlow(params: {
     };
 
     try {
-        const tokenRes = await fetch(`${API}/api/prolance-test/token`, {
-            method: "POST",
-            headers: appHeaders,
-            body: JSON.stringify({}),
-        });
-        const tokenText = await tokenRes.text();
-        let tokenBody: Record<string, unknown> | string | null = null;
-        try {
-            tokenBody = tokenText ? (JSON.parse(tokenText) as Record<string, unknown>) : null;
-        } catch {
-            tokenBody = tokenText;
-        }
-        const prolanceToken =
-            (tokenBody &&
-                typeof tokenBody === "object" &&
-                (tokenBody.access_token || tokenBody.accessToken || tokenBody.token)) ||
-            "";
-        if (!tokenRes.ok || !String(prolanceToken).trim()) {
-            const msg =
-                (tokenBody && typeof tokenBody === "object" && (tokenBody.message || tokenBody.error)) ||
-                "Failed to generate Prolance token.";
-            return { ok: false, message: String(msg) };
+        const ensurePartnerSession = async (forceRefresh: boolean) => {
+            const partnerRes = await fetch(`${API}/api/prolance-test/partners/login`, {
+                method: "POST",
+                headers: appHeaders,
+                body: JSON.stringify(forceRefresh ? { forceRefresh: true } : {}),
+            });
+            const partnerText = await partnerRes.text();
+            let partnerBody: Record<string, unknown> | string | null = null;
+            try {
+                partnerBody = partnerText ? (JSON.parse(partnerText) as Record<string, unknown>) : null;
+            } catch {
+                partnerBody = partnerText;
+            }
+            const partnerData0 =
+                partnerBody && typeof partnerBody === "object" && Array.isArray(partnerBody.data)
+                    ? (partnerBody.data as unknown[])[0]
+                    : null;
+            const partnerIdRaw =
+                partnerData0 && typeof partnerData0 === "object"
+                    ? (partnerData0 as Record<string, unknown>).partnerID ??
+                      (partnerData0 as Record<string, unknown>).partnerId
+                    : partnerBody && typeof partnerBody === "object"
+                      ? partnerBody.partnerID ?? partnerBody.partnerId
+                      : null;
+            const partnerIdFromLogin =
+                partnerIdRaw != null && Number.isFinite(Number(partnerIdRaw)) ? Number(partnerIdRaw) : null;
+            const originSessionID =
+                (partnerData0 &&
+                    typeof partnerData0 === "object" &&
+                    ((partnerData0 as Record<string, unknown>).sessionID ||
+                        (partnerData0 as Record<string, unknown>).sessionId)) ||
+                (partnerBody && typeof partnerBody === "object"
+                    ? partnerBody.sessionID || partnerBody.sessionId
+                    : "") ||
+                "";
+            let prolanceToken =
+                (partnerBody &&
+                    typeof partnerBody === "object" &&
+                    (partnerBody.access_token || partnerBody.accessToken || partnerBody.token)) ||
+                "";
+
+            // Legacy fallback if partner login response has no hub token.
+            if (!String(prolanceToken).trim()) {
+                const tokenRes = await fetch(`${API}/api/prolance-test/token`, {
+                    method: "POST",
+                    headers: appHeaders,
+                    body: JSON.stringify(forceRefresh ? { forceRefresh: true } : {}),
+                });
+                const tokenText = await tokenRes.text();
+                let tokenBody: Record<string, unknown> | string | null = null;
+                try {
+                    tokenBody = tokenText ? (JSON.parse(tokenText) as Record<string, unknown>) : null;
+                } catch {
+                    tokenBody = tokenText;
+                }
+                prolanceToken =
+                    (tokenBody &&
+                        typeof tokenBody === "object" &&
+                        (tokenBody.access_token || tokenBody.accessToken || tokenBody.token)) ||
+                    "";
+                if (!tokenRes.ok || !String(prolanceToken).trim()) {
+                    const msg =
+                        (tokenBody && typeof tokenBody === "object" && (tokenBody.message || tokenBody.error)) ||
+                        "Failed to generate Prolance token.";
+                    return { ok: false as const, message: String(msg) };
+                }
+            }
+
+            if (!partnerRes.ok || !String(originSessionID).trim()) {
+                const msg =
+                    (partnerBody && typeof partnerBody === "object" && (partnerBody.message || partnerBody.error)) ||
+                    "Failed to login partner / fetch origin session.";
+                return { ok: false as const, message: String(msg) };
+            }
+
+            return {
+                ok: true as const,
+                prolanceToken: String(prolanceToken).trim(),
+                originSessionID: String(originSessionID).trim(),
+                partnerIdFromLogin,
+            };
+        };
+
+        let session = await ensurePartnerSession(false);
+        if (!session.ok) return { ok: false, message: session.message };
+
+        const fetchQuotes = async (prolanceToken: string, originSessionID: string) => {
+            const quoteRes = await fetch(
+                `${API}/api/prolance-test/quotes/${encodeURIComponent(String(quoteProjectId))}`,
+                {
+                    method: "GET",
+                    headers: {
+                        ...appHeaders,
+                        "X-Prolance-Token": prolanceToken,
+                        "X-Prolance-Origin-Session": originSessionID,
+                    },
+                },
+            );
+            const quoteText = await quoteRes.text();
+            let quoteBody: unknown = null;
+            try {
+                quoteBody = quoteText ? JSON.parse(quoteText) : null;
+            } catch {
+                quoteBody = quoteText;
+            }
+            return { quoteRes, quoteBody };
+        };
+
+        let { quoteRes, quoteBody } = await fetchQuotes(session.prolanceToken, session.originSessionID);
+
+        // Cached session expired upstream → force re-login once.
+        if (quoteRes.status === 401 || quoteRes.status === 403) {
+            session = await ensurePartnerSession(true);
+            if (!session.ok) return { ok: false, message: session.message };
+            ({ quoteRes, quoteBody } = await fetchQuotes(session.prolanceToken, session.originSessionID));
         }
 
-        const partnerRes = await fetch(`${API}/api/prolance-test/partners/login`, {
-            method: "POST",
-            headers: {
-                ...appHeaders,
-                "X-Prolance-Token": String(prolanceToken).trim(),
-            },
-            body: JSON.stringify({}),
-        });
-        const partnerText = await partnerRes.text();
-        let partnerBody: Record<string, unknown> | string | null = null;
-        try {
-            partnerBody = partnerText ? (JSON.parse(partnerText) as Record<string, unknown>) : null;
-        } catch {
-            partnerBody = partnerText;
-        }
-        const partnerData0 =
-            partnerBody && typeof partnerBody === "object" && Array.isArray(partnerBody.data)
-                ? (partnerBody.data as unknown[])[0]
-                : null;
-        const partnerIdRaw =
-            partnerData0 && typeof partnerData0 === "object"
-                ? (partnerData0 as Record<string, unknown>).partnerID ??
-                  (partnerData0 as Record<string, unknown>).partnerId
-                : null;
-        const partnerIdFromLogin =
-            partnerIdRaw != null && Number.isFinite(Number(partnerIdRaw)) ? Number(partnerIdRaw) : null;
-        const originSessionID =
-            (partnerData0 &&
-                typeof partnerData0 === "object" &&
-                ((partnerData0 as Record<string, unknown>).sessionID ||
-                    (partnerData0 as Record<string, unknown>).sessionId)) ||
-            "";
-        if (!partnerRes.ok || !String(originSessionID).trim()) {
-            const msg =
-                (partnerBody && typeof partnerBody === "object" && (partnerBody.message || partnerBody.error)) ||
-                "Failed to login partner / fetch origin session.";
-            return { ok: false, message: String(msg) };
-        }
+        const prolanceToken = session.prolanceToken;
+        const originSessionID = session.originSessionID;
+        const partnerIdFromLogin = session.partnerIdFromLogin;
 
-        const quoteRes = await fetch(`${API}/api/prolance-test/quotes/${encodeURIComponent(String(quoteProjectId))}`, {
-            method: "GET",
-            headers: {
-                ...appHeaders,
-                "X-Prolance-Token": String(prolanceToken).trim(),
-                "X-Prolance-Origin-Session": String(originSessionID).trim(),
-            },
-        });
-        const quoteText = await quoteRes.text();
-        let quoteBody: unknown = null;
-        try {
-            quoteBody = quoteText ? JSON.parse(quoteText) : null;
-        } catch {
-            quoteBody = quoteText;
-        }
         if (quoteBody && typeof quoteBody === "object") {
             quoteBody = preferLatestProlanceQuotesEnvelope(quoteBody);
         }

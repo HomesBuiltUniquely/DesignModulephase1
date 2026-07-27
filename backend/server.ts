@@ -136,11 +136,10 @@ app.get("/api/health", (_req, res) => {
 });
 
 // ----- MySQL setup -----
-// Defaults are set from the credentials you provided; you can still override via env vars if needed.
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "Root@123",
+  password: process.env.DB_PASSWORD || "root@root",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -1025,6 +1024,13 @@ async function initDb() {
     } catch {
       /* column may already allow NULL */
     }
+    try {
+      await conn.query(
+        "ALTER TABLE lead_d2_assignments ADD COLUMN requested_spm_id INT NULL",
+      );
+    } catch {
+      /* column may already exist */
+    }
 
     await conn.query(`
       CREATE TABLE IF NOT EXISTS lead_dqc_reviews (
@@ -1538,6 +1544,61 @@ function resolveLeadBranchName(payload: any, explicit?: unknown): string {
     payload?.form?.branch,
     payload?.form?.experience_center,
   ) || "Experience Center";
+}
+
+type HubBranchCode = "HBR" | "SJR" | "JPN";
+
+const HUB_BRANCH_LOCATIONS: Record<
+  HubBranchCode,
+  { label: string; address: string; mapsUrl: string }
+> = {
+  HBR: {
+    label: "HBR Layout",
+    address:
+      "1st Floor, 6th Cross Rd, 1st Stage, HBR Layout 4th Block, HBR Layout, Bengaluru, Karnataka 560044",
+    mapsUrl:
+      "https://www.google.com/maps/search/?api=1&query=HUB+Interior+HBR+Layout+Bengaluru+560044",
+  },
+  SJR: {
+    label: "Sarjapur",
+    address:
+      "First Floor, No 7,8, JNR Complex, Sarjapur - Marathahalli Rd, Sulikunte, Bengaluru, Karnataka 562125",
+    mapsUrl:
+      "https://www.google.com/maps/search/?api=1&query=HUB+Interior+Sarjapur+JNR+Complex+Sulikunte+Bengaluru+562125",
+  },
+  JPN: {
+    label: "JP Nagar",
+    address:
+      "Safa Heights, 2, Dr Puneeth Rajkumar Rd, JP Nagar 4th Phase, Dollar Layout, Bengaluru, Karnataka 560078",
+    mapsUrl:
+      "https://www.google.com/maps/search/?api=1&query=HUB+Interior+JP+Nagar+Safa+Heights+Bengaluru+560078",
+  },
+};
+
+function resolveHubBranchCode(value: string | null | undefined): HubBranchCode | null {
+  const raw = (value || "").trim().toLowerCase();
+  if (!raw || raw === "experience center" || raw === "experience centre") return null;
+  if (raw === "hbr" || raw.includes("hbr")) return "HBR";
+  if (raw === "sjr" || raw.includes("sarjapur") || raw.includes("sjr")) return "SJR";
+  if (raw === "jpn" || raw.includes("jp nagar") || raw.includes("j.p") || raw.includes("jpn")) {
+    return "JPN";
+  }
+  return null;
+}
+
+function formatHubBranchLocationText(value: string | null | undefined): string {
+  const code = resolveHubBranchCode(value);
+  if (!code) {
+    const name = (value || "").trim() || "Experience Center";
+    return `HUB Interior ${name} Experience Center`;
+  }
+  const loc = HUB_BRANCH_LOCATIONS[code];
+  return `HUB Interior ${loc.label} Experience Center, ${loc.address}`;
+}
+
+function getHubBranchMapsUrl(value: string | null | undefined): string | null {
+  const code = resolveHubBranchCode(value);
+  return code ? HUB_BRANCH_LOCATIONS[code].mapsUrl : null;
 }
 
 function slotTextFromValue(v: unknown): string | null {
@@ -2915,6 +2976,7 @@ async function createGoogleCalendarEventForUser(args: {
   userId: number;
   summary: string;
   description?: string;
+  location?: string;
   startDateTimeIso: string;
   endDateTimeIso: string;
   attendees?: string[];
@@ -2931,6 +2993,7 @@ async function createGoogleCalendarEventForUser(args: {
     body: JSON.stringify({
       summary: args.summary,
       description: args.description || "",
+      ...(args.location ? { location: args.location } : {}),
       start: { dateTime: args.startDateTimeIso, timeZone: GOOGLE_TIME_ZONE },
       end: { dateTime: args.endDateTimeIso, timeZone: GOOGLE_TIME_ZONE },
       attendees: (args.attendees || []).map((email) => ({ email })),
@@ -2952,6 +3015,7 @@ async function createGoogleCalendarEventForFirstAvailableUser(args: {
   userIds: Array<number | null | undefined>;
   summary: string;
   description?: string;
+  location?: string;
   startDateTimeIso: string;
   endDateTimeIso: string;
   attendees?: string[];
@@ -2965,6 +3029,7 @@ async function createGoogleCalendarEventForFirstAvailableUser(args: {
         userId,
         summary: args.summary,
         description: args.description,
+        location: args.location,
         startDateTimeIso: args.startDateTimeIso,
         endDateTimeIso: args.endDateTimeIso,
         attendees: args.attendees,
@@ -3851,6 +3916,21 @@ app.get("/api/auth/project-managers", async (req: Request, res: Response) => {
   }
 });
 
+// List senior project managers (for D2 masking request SPM dropdown)
+app.get("/api/auth/senior-project-managers", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const [rows] = await pool.query(
+      "SELECT id, name, email FROM users WHERE role = 'senior_project_manager' ORDER BY name ASC",
+    );
+    return res.json(rows);
+  } catch (err) {
+    console.error("senior-project-managers list error", err);
+    return res.status(500).json({ message: "Failed to load senior project managers" });
+  }
+});
+
 // List design managers (for assigning designer under a manager)
 app.get("/api/auth/design-managers", async (req: Request, res: Response) => {
   try {
@@ -4651,6 +4731,77 @@ function requireExternalApiKey(req: Request, res: Response, featureName: string)
 
 function frontendBase(): string {
   return (process.env.FRONTEND_BASE_URL || "http://localhost:3000").replace(/\/$/, "");
+}
+
+/** Resolve the latest Prolance quote id + share URLs for a Design lead. */
+async function resolveLatestQuoteLinkForLead(leadId: number): Promise<{
+  quoteId: number;
+  customerQuoteUrl: string;
+  internalQuoteUrl: string;
+} | null> {
+  let quoteId: number | null = null;
+
+  // Prefer newest version row (true latest quotation)
+  try {
+    const [verRows] = await pool.query(
+      `SELECT quote_id AS quoteId
+       FROM lead_prolance_quote_versions
+       WHERE lead_id = ?
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+      [leadId],
+    );
+    const ver = (verRows as { quoteId?: number }[])[0];
+    if (ver?.quoteId != null && Number(ver.quoteId) > 0) quoteId = Number(ver.quoteId);
+  } catch {
+    /* ignore */
+  }
+
+  if (quoteId == null || quoteId < 1) {
+    try {
+      const [lr] = await pool.query(
+        `SELECT prolance_quote_id AS prolanceQuoteId FROM leads WHERE id = ? LIMIT 1`,
+        [leadId],
+      );
+      const pq = (lr as { prolanceQuoteId?: number | null }[])[0]?.prolanceQuoteId;
+      if (pq != null && Number(pq) > 0) quoteId = Number(pq);
+    } catch {
+      /* column may be missing on older DBs */
+    }
+  }
+
+  if (quoteId == null || quoteId < 1) {
+    try {
+      const [snapRows] = await pool.query(
+        `SELECT quote_id AS quoteId
+         FROM lead_prolance_quote_snapshots
+         WHERE lead_id = ?
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1`,
+        [leadId],
+      );
+      const snap = (snapRows as { quoteId?: number }[])[0];
+      if (snap?.quoteId != null && Number(snap.quoteId) > 0) quoteId = Number(snap.quoteId);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (quoteId == null || quoteId < 1) return null;
+
+  const base = frontendBase();
+  return {
+    quoteId,
+    customerQuoteUrl: `${base}/quote/${encodeURIComponent(String(quoteId))}`,
+    internalQuoteUrl: `${base}/quote/${encodeURIComponent(String(quoteId))}?internal=1&leadId=${encodeURIComponent(String(leadId))}`,
+  };
+}
+
+function appendLatestQuoteLinkToMinutes(minutes: string, quoteUrl: string): string {
+  const trimmed = (minutes || "").trim();
+  if (trimmed.includes(quoteUrl)) return trimmed;
+  const block = `Latest quotation link:\n${quoteUrl}`;
+  return trimmed ? `${trimmed}\n\n${block}` : block;
 }
 
 function parseFiniteNumber(v: unknown): number | null {
@@ -7197,6 +7348,8 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const meetingMode = meta?.meetingMode ?? null;
             const meetingLink = meta?.meetingLink ?? null;
             const ecLocation = meta?.ecLocation ?? meta?.ecAddress ?? ecName;
+            const ecLocationText = formatHubBranchLocationText(ecLocation);
+            const ecMapsUrl = getHubBranchMapsUrl(ecLocation);
             if (meetingDate && meetingTime) {
               const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
 
@@ -7205,7 +7358,8 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   await createGoogleCalendarEventForFirstAvailableUser({
                     userIds: [row.assigned_designer_id, actingUser.id],
                     summary: `Material Selection - ${customerName}`,
-                    description: `Material selection meeting at ${ecLocation || ecName}.`,
+                    description: `Material selection meeting at ${ecLocationText}.`,
+                    location: meetingMode === "offline" ? ecLocationText : undefined,
                     startDateTimeIso: googleStart,
                     endDateTimeIso: addHoursToIso(googleStart, 1),
                     attendees: distinctEmails([customerEmail, row.designerEmail, actingUser.email]),
@@ -7242,6 +7396,8 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                     meetingMode,
                     meetingLink,
                     ecLocation,
+                    ecAddress: ecLocationText,
+                    ecMapsUrl,
                   },
                 });
               }
@@ -9163,15 +9319,18 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
     let emailBody: Record<string, unknown> = {};
 
     const resolvedEcLocation = resolveLeadBranchName(payload, ecLocation);
+    const resolvedEcLocationText = formatHubBranchLocationText(resolvedEcLocation);
+    const resolvedEcMapsUrl = getHubBranchMapsUrl(resolvedEcLocation);
 
     console.log("[schedule-meeting] resolvedEcLocation:", resolvedEcLocation, "ecLocation:", ecLocation, "formData.experience_center:", formData.experience_center);
 
     if (meetingType === "dqc2_material_selection") {
       summary = `Material Selection - ${customerName}`;
       description = [
-        `Material selection meeting at ${resolvedEcLocation}.`,
+        `Material selection meeting at ${resolvedEcLocationText}.`,
         meetingMode ? `Mode: ${meetingMode}` : null,
         meetingLink ? `Meeting link: ${meetingLink}` : null,
+        meetingMode === "offline" && resolvedEcMapsUrl ? `Maps: ${resolvedEcMapsUrl}` : null,
       ].filter(Boolean).join("\n");
       emailRoutePath = "/api/email/send-dqc2-material-selection-scheduled";
       emailBody = {
@@ -9187,14 +9346,17 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
         meetingMode,
         meetingLink,
         ecLocation: resolvedEcLocation,
+        ecAddress: resolvedEcLocationText,
+        ecMapsUrl: resolvedEcMapsUrl,
         ...(Array.isArray(attachments) && attachments.length ? { attachments } : {}),
       };
     } else if (meetingType === "design_signoff") {
       summary = `Design Sign-Off - ${customerName}`;
       description = [
-        `Design sign-off meeting at ${resolvedEcLocation}.`,
+        `Design sign-off meeting at ${resolvedEcLocationText}.`,
         meetingMode ? `Mode: ${meetingMode}` : null,
         meetingLink ? `Meeting link: ${meetingLink}` : null,
+        meetingMode === "offline" && resolvedEcMapsUrl ? `Maps: ${resolvedEcMapsUrl}` : null,
       ].filter(Boolean).join("\n");
       emailRoutePath = "/api/email/send-design-signoff-meeting-scheduled";
       emailBody = {
@@ -9210,14 +9372,17 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
         meetingMode,
         meetingLink,
         ecLocation: resolvedEcLocation,
+        ecAddress: resolvedEcLocationText,
+        ecMapsUrl: resolvedEcMapsUrl,
         ...(Array.isArray(attachments) && attachments.length ? { attachments } : {}),
       };
     } else if (meetingType === "dqc1_first_cut") {
       summary = `First Cut Design Discussion - ${customerName}`;
       description = [
-        `First cut design and quotation discussion meeting at ${resolvedEcLocation}.`,
+        `First cut design and quotation discussion meeting at ${resolvedEcLocationText}.`,
         meetingMode ? `Mode: ${meetingMode}` : null,
         meetingLink ? `Meeting link: ${meetingLink}` : null,
+        meetingMode === "offline" && resolvedEcMapsUrl ? `Maps: ${resolvedEcMapsUrl}` : null,
       ].filter(Boolean).join("\n");
       emailRoutePath = "/api/email/send-dqc1-first-cut-design-scheduled";
       emailBody = {
@@ -9233,6 +9398,8 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
         meetingMode,
         meetingLink,
         ecLocation: resolvedEcLocation,
+        ecAddress: resolvedEcLocationText,
+        ecMapsUrl: resolvedEcMapsUrl,
         ...(Array.isArray(attachments) && attachments.length ? { attachments } : {}),
       };
     } else {
@@ -9252,6 +9419,8 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
         userIds: [row.assigned_designer_id, actingUser.id],
         summary,
         description,
+        location:
+          meetingMode === "offline" ? resolvedEcLocationText : undefined,
         startDateTimeIso: eventStart,
         endDateTimeIso: eventEnd,
         attendees: distinctEmails([customerEmail, row.designerEmail, actingUser.email]),
@@ -10407,10 +10576,16 @@ app.post(
 
       const files = (req as any).files as Express.Multer.File[] | undefined;
       const minutesRaw = (req.body as any)?.minutes;
-      const minutes = typeof minutesRaw === "string" ? minutesRaw.trim() : "";
+      let minutes = typeof minutesRaw === "string" ? minutesRaw.trim() : "";
 
-      if ((!files || files.length === 0) && !minutes) {
-        return res.status(400).json({ message: "Minutes or at least one file is required" });
+      if (!files || files.length === 0) {
+        return res.status(400).json({ message: "At least one reference file is required to submit MOM" });
+      }
+
+      // Always attach the latest quotation link in the MOM text
+      const latestQuote = await resolveLatestQuoteLinkForLead(leadId);
+      if (latestQuote) {
+        minutes = appendLatestQuoteLinkToMinutes(minutes, latestQuote.customerQuoteUrl);
       }
 
       const now = new Date();
@@ -10456,10 +10631,10 @@ app.post(
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'mom_minutes', ?)`,
           [leadId, user.id, baseName, storedName, storedPath, "text/plain", sizeBytes, now, s3UrlText],
         );
-        // No longer adding minutes file to attachments array as per user request
       }
 
       const attachmentNames = files && files.length > 0 ? files.map((f) => f.originalname) : [];
+      const quoteNote = latestQuote ? ` Latest quotation: ${latestQuote.customerQuoteUrl}` : "";
       const ev = {
         id: `mom-${Date.now()}`,
         type: "mom",
@@ -10467,18 +10642,32 @@ app.post(
         milestoneName: "DQC1",
         timestamp: now.toISOString(),
         description: attachmentNames.length
-          ? `Minutes of Meeting recorded with attachments: ${attachmentNames.join(", ")}`
-          : "Minutes of Meeting recorded",
+          ? `Minutes of Meeting recorded with attachments: ${attachmentNames.join(", ")}.${quoteNote}`
+          : `Minutes of Meeting recorded.${quoteNote}`,
         user: { name: user.name ?? "User" },
         details: {
           kind: "mom",
           hasMinutes: !!minutes,
+          minutes,
           attachments: attachments.map((a) => ({ name: a.filename })),
+          latestQuoteId: latestQuote?.quoteId ?? null,
+          latestQuoteUrl: latestQuote?.customerQuoteUrl ?? null,
         },
       };
       await addLeadHistoryEvent(leadId, ev);
 
-      return res.status(201).json({ ok: true, attachments });
+      return res.status(201).json({
+        ok: true,
+        attachments,
+        minutes,
+        latestQuote: latestQuote
+          ? {
+              quoteId: latestQuote.quoteId,
+              customerQuoteUrl: latestQuote.customerQuoteUrl,
+              internalQuoteUrl: latestQuote.internalQuoteUrl,
+            }
+          : null,
+      });
     } catch (err) {
       console.error("mom-upload error", err);
       return res.status(500).json({ message: "Failed to save MOM" });
@@ -10913,6 +11102,7 @@ app.get("/api/leads/:id/d2-masking-request", async (req: Request, res: Response)
     if (!user) return res.status(401).json({ message: "Unauthorized" });
     const [rows] = await pool.query(
       `SELECT a.id, a.masking_date as maskingDate, a.masking_time as maskingTime, a.status, a.created_at as createdAt,
+              a.requested_spm_id as requestedSpmId,
               l.assigned_project_manager_id as assignedProjectManagerId
        FROM leads l
        LEFT JOIN lead_d2_assignments a ON a.lead_id = l.id
@@ -10925,6 +11115,17 @@ app.get("/api/leads/:id/d2-masking-request", async (req: Request, res: Response)
     if (!row?.id) {
       return res.json({ raised: false });
     }
+    // Repair: if request exists but task completion is missing, mark it complete
+    try {
+      await pool.query(
+        `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+         VALUES (?, 3, 'D2 - masking request raise', ?)
+         ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
+        [leadId, new Date()],
+      );
+    } catch {
+      /* ignore */
+    }
     return res.json({
       raised: true,
       maskingDate: row.maskingDate instanceof Date ? row.maskingDate.toISOString().split("T")[0] : row.maskingDate,
@@ -10932,6 +11133,7 @@ app.get("/api/leads/:id/d2-masking-request", async (req: Request, res: Response)
       status: row.status || "pending",
       createdAt: row.createdAt,
       assignedProjectManagerId: row.assignedProjectManagerId ?? null,
+      requestedSpmId: row.requestedSpmId ?? null,
     });
   } catch (err) {
     console.error("d2-masking-request get error", err);
@@ -10940,7 +11142,8 @@ app.get("/api/leads/:id/d2-masking-request", async (req: Request, res: Response)
 });
 
 // Submit D2 masking request – notifies SPM; SPM assigns PM separately
-app.post("/api/leads/:id/d2-masking-request", async (req: Request, res: Response) => {
+// Supports multipart file uploads (PDFs) alongside form fields
+app.post("/api/leads/:id/d2-masking-request", upload.array("files", 20), async (req: Request, res: Response) => {
   const leadId = Number(req.params.id);
   if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
   try {
@@ -10955,31 +11158,119 @@ app.post("/api/leads/:id/d2-masking-request", async (req: Request, res: Response
         message: "As Senior Project Manager, assign the project manager from this task instead of submitting a new request.",
       });
     }
-    const { maskingDate, maskingTime } = req.body || {};
+    const { maskingDate, maskingTime, requestedSpmId } = req.body || {};
     const [existing] = await pool.query(
-      "SELECT id FROM lead_d2_assignments WHERE lead_id = ? LIMIT 1",
+      "SELECT id, masking_date as maskingDate, masking_time as maskingTime FROM lead_d2_assignments WHERE lead_id = ? LIMIT 1",
       [leadId],
     );
     if ((existing as any[]).length > 0) {
-      return res.status(400).json({ message: "A D2 masking request already exists for this lead" });
+      // Request already raised — still ensure the task is marked complete (repair stuck leads)
+      try {
+        await pool.query(
+          `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+           VALUES (?, 3, 'D2 - masking request raise', ?)
+           ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
+          [leadId, new Date()],
+        );
+      } catch (completeErr) {
+        console.warn("[d2-masking-request] task completion repair skipped", completeErr);
+      }
+      const row = (existing as any[])[0];
+      return res.status(200).json({
+        ok: true,
+        alreadyRaised: true,
+        maskingDate:
+          row.maskingDate instanceof Date
+            ? row.maskingDate.toISOString().split("T")[0]
+            : row.maskingDate || maskingDate || null,
+        maskingTime: row.maskingTime || maskingTime || null,
+      });
     }
+    const spmId = requestedSpmId ? Number(requestedSpmId) : null;
     await pool.query(
-      `INSERT INTO lead_d2_assignments (lead_id, assigned_to_user_id, masking_date, masking_time, status, created_at)
-       VALUES (?, NULL, ?, ?, 'awaiting_spm', ?)`,
-      [leadId, maskingDate || null, maskingTime || null, new Date()],
+      `INSERT INTO lead_d2_assignments (lead_id, assigned_to_user_id, masking_date, masking_time, status, requested_spm_id, created_at)
+       VALUES (?, NULL, ?, ?, 'awaiting_spm', ?, ?)`,
+      [leadId, maskingDate || null, maskingTime || null, spmId, new Date()],
     );
+
+    // Mark task complete immediately so UI shows Completed even if file upload fails later
+    try {
+      await pool.query(
+        `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+         VALUES (?, 3, 'D2 - masking request raise', ?)
+         ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
+        [leadId, new Date()],
+      );
+    } catch (completeErr) {
+      console.warn("[d2-masking-request] task completion insert skipped", completeErr);
+    }
+
+    // Save uploaded files (PDFs / checklists / flyers)
+    const uploadedFiles: { name: string; id: number }[] = [];
+    const files = (req as any).files as Express.Multer.File[] | undefined;
+    if (files && files.length > 0) {
+      const now = new Date();
+      for (const file of files) {
+        try {
+          const s3Url = await uploadLeadFileToS3(leadId, file.path, file.originalname, file.mimetype);
+          const [insertResult] = await pool.query(
+            `INSERT INTO lead_uploads
+             (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'd2_masking_request', ?)`,
+            [
+              leadId,
+              user.id,
+              file.originalname,
+              file.filename,
+              file.path,
+              file.mimetype || "application/pdf",
+              file.size || 0,
+              now,
+              s3Url || null,
+            ],
+          );
+          uploadedFiles.push({ name: file.originalname, id: (insertResult as any).insertId });
+        } catch (fileErr) {
+          console.warn("[d2-masking-request] file persist skipped", file.originalname, fileErr);
+        }
+      }
+    }
+
+    // Look up SPM name for history event
+    let spmLabel = "Senior Project Manager";
+    if (spmId) {
+      const [spmRows] = await pool.query("SELECT name FROM users WHERE id = ? LIMIT 1", [spmId]);
+      const spmRow = (spmRows as any[])[0];
+      if (spmRow?.name) spmLabel = spmRow.name;
+    }
+
+    const fileNote = uploadedFiles.length > 0
+      ? ` with ${uploadedFiles.length} file${uploadedFiles.length === 1 ? "" : "s"} attached`
+      : "";
     const ev = {
       id: `d2-masking-${Date.now()}`,
       type: "note",
       taskName: "D2 - masking request raise",
       milestoneName: "D2 SITE MASKING",
       timestamp: new Date().toISOString(),
-      description: "D2 masking request submitted.",
+      description: `D2 masking request submitted to ${spmLabel}${fileNote}.`,
       user: { name: user.name ?? "System" },
-      details: { kind: "d2_masking_request", maskingDate: maskingDate || null, maskingTime: maskingTime || null },
+      details: {
+        kind: "d2_masking_request",
+        maskingDate: maskingDate || null,
+        maskingTime: maskingTime || null,
+        requestedSpmId: spmId,
+        uploadedFiles: uploadedFiles.map((f) => f.name),
+      },
     };
     await addLeadHistoryEvent(leadId, ev);
-    return res.status(201).json({ ok: true });
+
+    return res.status(201).json({
+      ok: true,
+      maskingDate: maskingDate || null,
+      maskingTime: maskingTime || null,
+      requestedSpmId: spmId,
+    });
   } catch (err) {
     console.error("d2-masking-request error", err);
     return res.status(500).json({ message: "Failed to submit D2 masking request" });
@@ -12218,6 +12509,32 @@ app.patch("/api/leads/:id/prolance-ids", async (req: Request, res: Response) => 
 });
 
 // All Prolance quote revisions saved for this lead (auth + same visibility as lead detail).
+// Latest quotation share link for a lead (used by MOM and other substages)
+app.get("/api/leads/:id/latest-quote-link", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+
+  const user = await getUserFromSession(req);
+  const access = await getLeadAccessRowForUser(res, user, id);
+  if (!access.ok) return;
+
+  try {
+    const latest = await resolveLatestQuoteLinkForLead(id);
+    if (!latest) {
+      return res.json({ ok: true, quoteId: null, customerQuoteUrl: null, internalQuoteUrl: null });
+    }
+    return res.json({
+      ok: true,
+      quoteId: latest.quoteId,
+      customerQuoteUrl: latest.customerQuoteUrl,
+      internalQuoteUrl: latest.internalQuoteUrl,
+    });
+  } catch (err) {
+    console.error("latest-quote-link error", err);
+    return res.status(500).json({ message: "Failed to load latest quotation link" });
+  }
+});
+
 app.get("/api/leads/:id/prolance-quote-versions", async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });

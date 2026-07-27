@@ -140,6 +140,7 @@ export default function ProjectDetailPage() {
     const [checklistContext, setChecklistContext] = useState<{ milestoneIndex: number; milestoneName: string; taskName: string } | null>(null);
     // Brief message when user tries to open a task in a future milestone (e.g. "Complete the current milestone first")
     const [blockedTaskMessage, setBlockedTaskMessage] = useState<string | null>(null);
+    const [successToast, setSuccessToast] = useState<string | null>(null);
     const [dqc1Verdict, setDqc1Verdict] = useState<'approved' | 'approved_with_changes' | 'rejected' | null>(null);
     const [dqc1Remarks, setDqc1Remarks] = useState<QCRemark[]>([
         { id: 1, priority: 'high', text: 'Dimension Issue: Missing cabinet clearance dimensions on Wall B. The spacing between the refrigerator island and main counter seems insufficient for ADA compliance.', pinNumber: 1, xPct: 28, yPct: 35, page: 1 },
@@ -241,11 +242,32 @@ export default function ProjectDetailPage() {
     const getLeadBranchName = (lead: LeadshipTypes | null | undefined): string => {
         if (!lead) return 'Experience Center';
         const raw = lead as Record<string, unknown>;
-        return (
+        const fromTop =
             extractString(raw.experienceCenter) ||
             extractString(raw.experience_center) ||
             extractString(raw.sales_closure_ec) ||
-            extractString(raw.branch) ||
+            extractString(raw.branch);
+        if (fromTop) return fromTop;
+        const payload = parseLeadPayload(raw.payload);
+        if (!payload) return 'Experience Center';
+        const formData =
+            (payload.formData && typeof payload.formData === 'object'
+                ? (payload.formData as Record<string, unknown>)
+                : null) ||
+            (payload.form_data && typeof payload.form_data === 'object'
+                ? (payload.form_data as Record<string, unknown>)
+                : null) ||
+            (payload.form && typeof payload.form === 'object'
+                ? (payload.form as Record<string, unknown>)
+                : null) ||
+            {};
+        return (
+            extractString(formData.sales_closure_ec) ||
+            extractString(formData.branch) ||
+            extractString(formData.experience_center) ||
+            extractString(payload.sales_closure_ec) ||
+            extractString(payload.branch) ||
+            extractString(payload.experience_center) ||
             'Experience Center'
         );
     };
@@ -1642,17 +1664,17 @@ export default function ProjectDetailPage() {
         setDesignUploadFiles((prev) => prev.filter((_, i) => i !== index));
     };
 
-    // MOM reference files upload
+    // MOM reference files upload (multiple files allowed)
     const openMomFileUpload = () => momFileInputRef.current?.click();
     const onMomFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
         const files = e.target.files ? Array.from(e.target.files) : [];
-        setMomReferenceFiles((prev) => [...prev, ...files].slice(0, 2)); // max 2 slots
+        setMomReferenceFiles((prev) => [...prev, ...files].slice(0, 20));
         e.target.value = '';
     };
     const onMomDrop = (e: React.DragEvent) => {
         e.preventDefault();
         const files = Array.from(e.dataTransfer.files || []);
-        setMomReferenceFiles((prev) => [...prev, ...files].slice(0, 2));
+        setMomReferenceFiles((prev) => [...prev, ...files].slice(0, 20));
     };
     const removeMomFile = (index: number) => setMomReferenceFiles((prev) => prev.filter((_, i) => i !== index));
 
@@ -1682,6 +1704,21 @@ export default function ProjectDetailPage() {
         const isCompleted = completedTaskKeys.includes(key);
         const isCurrentMilestone = milestoneIndex === currentMilestoneIndex;
         const isPastMilestone = milestoneIndex < currentMilestoneIndex;
+        const isSpm = (authUser?.role || '').toLowerCase() === 'senior_project_manager';
+        const needsSpmAssignPm =
+            isSpm &&
+            milestoneIndex === 3 &&
+            taskName === 'D2 - masking request raise' &&
+            !project?.assigned_project_manager_id;
+
+        // SPM: keep Assign PM actionable until a project manager is set
+        if (needsSpmAssignPm && isCurrentMilestone) {
+            return {
+                icon: 'current' as const,
+                subtitle: 'Assign project manager',
+                tags: ['CURRENT', 'ACTION'] as const,
+            };
+        }
 
         if (isCompleted) return { icon: 'completed' as const, subtitle: 'Completed', tags: ['ON-TIME'] as const };
         if (isPastMilestone) return { icon: 'completed' as const, subtitle: 'Completed', tags: ['ON-TIME'] as const };
@@ -1691,6 +1728,18 @@ export default function ProjectDetailPage() {
         const isCurrentTask = firstIncompleteIndex === taskIndex;
         if (isCurrentTask) return { icon: 'current' as const, subtitle: 'In progress', tags: ['CURRENT', 'ACTION'] as const };
         return { icon: 'pending' as const, subtitle: 'Not started', tags: ['PENDING'] as const };
+    };
+
+    const getTaskLabel = (milestoneIndex: number, taskName: string) => {
+        const role = (authUser?.role || '').toLowerCase();
+        if (
+            role === 'senior_project_manager' &&
+            milestoneIndex === 3 &&
+            taskName === 'D2 - masking request raise'
+        ) {
+            return 'Assign PM';
+        }
+        return taskName;
     };
 
     // DQC Manager / DQE: only show DQC1 approval UI (no Prolance, HOLD, RESUME, History, ChatBox, full tracker)
@@ -1986,6 +2035,26 @@ export default function ProjectDetailPage() {
             {blockedTaskMessage && (
                 <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[90] px-4 py-2 bg-amber-500 text-white text-sm font-medium rounded-lg shadow-lg animate-pulse">
                     {blockedTaskMessage}
+                </div>
+            )}
+            {successToast && (
+                <div
+                    className="fixed top-4 left-1/2 -translate-x-1/2 z-[100] max-w-md px-5 py-3 bg-emerald-600 text-white text-sm font-medium rounded-xl shadow-xl"
+                    role="status"
+                    aria-live="polite"
+                >
+                    <div className="flex items-start gap-3">
+                        <span className="text-lg leading-none" aria-hidden>✓</span>
+                        <p className="leading-relaxed">{successToast}</p>
+                        <button
+                            type="button"
+                            onClick={() => setSuccessToast(null)}
+                            className="shrink-0 text-white/80 hover:text-white text-lg leading-none"
+                            aria-label="Dismiss"
+                        >
+                            ×
+                        </button>
+                    </div>
                 </div>
             )}
 
@@ -2478,6 +2547,7 @@ export default function ProjectDetailPage() {
                             setChecklistContext({ milestoneIndex, milestoneName: milestone?.name ?? '', taskName });
                         }}
                         getTaskStatus={getTaskStatus}
+                        getTaskLabel={getTaskLabel}
                         leadId={projectId}
                     />
                 )}
@@ -2826,6 +2896,8 @@ export default function ProjectDetailPage() {
                     )}
                     {popupContext.milestoneIndex === 1 && popupContext.taskName === 'meeting completed' && (
                         <PopupMeetingCompleted
+                            leadId={projectId}
+                            sessionId={sessionId}
                             defaultMeetingDate={getMeetingDefaults('First cut design + quotation discussion meeting request').date}
                             defaultAttendees={getMeetingDefaults('First cut design + quotation discussion meeting request').attendees}
                             momMinutes={momMinutes}
@@ -2843,10 +2915,11 @@ export default function ProjectDetailPage() {
                             })()}
                             onShareMom={async (extra) => {
                                 if (!projectId) return;
+                                const minutesToSave = extra?.minutesWithQuote || momMinutes;
                                 try {
                                     if (sessionId) {
                                         const fd = new FormData();
-                                        fd.append('minutes', momMinutes);
+                                        fd.append('minutes', minutesToSave);
                                         momReferenceFiles.forEach((f) => fd.append('files', f));
                                         await fetch(`${API}/api/leads/${projectId}/mom-upload`, {
                                             method: 'POST',
@@ -2860,16 +2933,20 @@ export default function ProjectDetailPage() {
                                         description: 'Meeting completed. Minutes of meeting shared.',
                                         details: {
                                             kind: 'mom',
-                                            minutes: momMinutes,
+                                            minutes: minutesToSave,
                                             referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                            latestQuoteUrl: extra?.latestQuoteUrl ?? null,
+                                            latestQuoteId: extra?.latestQuoteId ?? null,
                                         },
                                         meta: {
                                             attendees: extra?.attendees,
                                             meetingDate: extra?.meetingDate,
                                             details: {
                                                 kind: 'mom',
-                                                minutes: momMinutes,
+                                                minutes: minutesToSave,
                                                 referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                                latestQuoteUrl: extra?.latestQuoteUrl ?? null,
+                                                latestQuoteId: extra?.latestQuoteId ?? null,
                                             }
                                         }
                                     });
@@ -3043,11 +3120,29 @@ export default function ProjectDetailPage() {
                                       }
                                     : undefined
                             }
-                            onSubmit={() => {
-                                recordTaskComplete(3, 'D2 - masking request raise');
+                            onSubmit={(info) => {
+                                const datePart = info?.maskingDate ? String(info.maskingDate) : '';
+                                const timePart = info?.maskingTime ? ` at ${info.maskingTime}` : '';
+                                const message = datePart
+                                    ? `D2 Site Masking scheduled for ${datePart}${timePart}.`
+                                    : 'D2 Site Masking request raised successfully.';
+                                // Optimistic UI: mark completed immediately so the row flips to Completed/ON-TIME
+                                markTaskComplete(3, 'D2 - masking request raise');
+                                setSuccessToast(message);
+                                window.setTimeout(() => setSuccessToast(null), 4500);
                                 closePopup();
+                                recordTaskComplete(3, 'D2 - masking request raise', {
+                                    description: message,
+                                });
+                                refreshCompletions();
                             }}
                             onPmAssigned={() => {
+                                setSuccessToast('Project manager assigned successfully.');
+                                window.setTimeout(() => setSuccessToast(null), 4000);
+                                closePopup();
+                                recordTaskComplete(3, 'D2 - masking request raise', {
+                                    description: 'Project manager assigned for D2 site masking.',
+                                });
                                 if (sessionId && projectId) {
                                     fetch(`${API}/api/leads/${projectId}`, {
                                         headers: { Authorization: `Bearer ${sessionId}` },
@@ -3211,6 +3306,8 @@ export default function ProjectDetailPage() {
                     )}
                     {popupContext.milestoneIndex === 4 && popupContext.taskName === 'Material selection meeting completed' && (
                         <PopupMeetingCompleted
+                            leadId={projectId}
+                            sessionId={sessionId}
                             defaultMeetingDate={getMeetingDefaults('Material selection meeting + quotation discussion').date}
                             defaultAttendees={getMeetingDefaults('Material selection meeting + quotation discussion').attendees}
                             momMinutes={momMinutes}
@@ -3228,11 +3325,12 @@ export default function ProjectDetailPage() {
                             })()}
                             onShareMom={async (extra) => {
                                 if (!projectId) return;
+                                const minutesToSave = extra?.minutesWithQuote || momMinutes;
                                 try {
                                     let uploadedAttachments: { filename: string; path: string }[] = [];
                                     if (sessionId) {
                                         const fd = new FormData();
-                                        fd.append('minutes', momMinutes);
+                                        fd.append('minutes', minutesToSave);
                                         momReferenceFiles.forEach((f) => fd.append('files', f));
                                         const res = await fetch(`${API}/api/leads/${projectId}/mom-upload`, {
                                             method: 'POST',
@@ -3254,14 +3352,18 @@ export default function ProjectDetailPage() {
                                             meetingDate: extra?.meetingDate,
                                             details: {
                                                 kind: 'mom',
-                                                minutes: momMinutes,
+                                                minutes: minutesToSave,
                                                 referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                                latestQuoteUrl: extra?.latestQuoteUrl ?? null,
+                                                latestQuoteId: extra?.latestQuoteId ?? null,
                                             }
                                         },
                                         details: {
                                             kind: 'mom',
-                                            minutes: momMinutes,
+                                            minutes: minutesToSave,
                                             referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                            latestQuoteUrl: extra?.latestQuoteUrl ?? null,
+                                            latestQuoteId: extra?.latestQuoteId ?? null,
                                         },
                                     });
                                     setMomMinutes('');
@@ -3407,6 +3509,7 @@ export default function ProjectDetailPage() {
                             designerName={authUser?.name}
                             apiBase={API}
                             sessionId={sessionId}
+                            hideDesignCompletion
                             initialDate={(() => {
                                 const ev = historyEvents.find(e => e.taskName === 'Design sign off' && (e.meta as any)?.meetingDate);
                                 return (ev?.meta as any)?.meetingDate || '';
@@ -3422,10 +3525,6 @@ export default function ProjectDetailPage() {
                             initialLink={(() => {
                                 const ev = historyEvents.find(e => e.taskName === 'Design sign off' && (e.meta as any)?.meetingLink);
                                 return (ev?.meta as any)?.meetingLink || '';
-                            })()}
-                            initialCompletionPercent={(() => {
-                                const ev = historyEvents.find(e => e.taskName === 'Design sign off' && (e.meta as any)?.completionPercent !== undefined);
-                                return ev ? (ev.meta as any).completionPercent : 0;
                             })()}
                             onSubmit={async (meta) => {
                                 if (!projectId) return;
@@ -3474,7 +3573,7 @@ export default function ProjectDetailPage() {
                                         type: 'note',
                                         milestoneIndex: 5,
                                         taskName: 'Design sign off',
-                                        description: `Meeting invite sent. Design completion: ${meta?.completionPercent ?? 0}%`,
+                                        description: 'Meeting invite sent.',
                                         user: { name: authUser?.name ?? 'Designer', avatar: authUser?.profileImage },
                                         meta: { ...meta },
                                     });
@@ -3487,11 +3586,10 @@ export default function ProjectDetailPage() {
                             onCompleteAndProceed={async (meta) => {
                                 if (!projectId) return;
                                 try {
-                                    let uploadedAttachments: any[] = [];
                                     if (designUploadFiles.length > 0 && sessionId) {
                                         const fd = new FormData();
                                         designUploadFiles.forEach((f) => fd.append('files', f));
-                                        const uploadRes = await fetch(
+                                        await fetch(
                                             `${API}/api/leads/${projectId}/first-cut-design-upload`,
                                             {
                                                 method: 'POST',
@@ -3499,12 +3597,6 @@ export default function ProjectDetailPage() {
                                                 body: fd,
                                             },
                                         );
-                                        if (uploadRes.ok) {
-                                            const uploadData = await uploadRes.json();
-                                            if (uploadData.attachments) {
-                                                uploadedAttachments = uploadData.attachments;
-                                            }
-                                        }
                                     }
                                 } catch (err) {
                                     console.error('Design upload failed (non-fatal)', err);
@@ -3550,6 +3642,8 @@ export default function ProjectDetailPage() {
                     )}
                     {popupContext.milestoneIndex === 5 && popupContext.taskName === 'meeting completed' && (
                         <PopupMeetingCompleted
+                            leadId={projectId}
+                            sessionId={sessionId}
                             defaultMeetingDate={getMeetingDefaults('Design sign off').date}
                             defaultAttendees={getMeetingDefaults('Design sign off').attendees}
                             momMinutes={momMinutes}
@@ -3568,10 +3662,11 @@ export default function ProjectDetailPage() {
                             })()}
                             onShareMom={async (extra) => {
                                 if (!projectId) return;
+                                const minutesToSave = extra?.minutesWithQuote || momMinutes;
                                 try {
                                     if (sessionId) {
                                         const fd = new FormData();
-                                        fd.append('minutes', momMinutes);
+                                        fd.append('minutes', minutesToSave);
                                         momReferenceFiles.forEach((f) => fd.append('files', f));
                                         await fetch(`${API}/api/leads/${projectId}/mom-upload`, {
                                             method: 'POST',
@@ -3583,16 +3678,20 @@ export default function ProjectDetailPage() {
                                         description: 'Design sign-off meeting completed. Minutes of meeting shared.',
                                         details: {
                                             kind: 'mom',
-                                            minutes: momMinutes,
+                                            minutes: minutesToSave,
                                             referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                            latestQuoteUrl: extra?.latestQuoteUrl ?? null,
+                                            latestQuoteId: extra?.latestQuoteId ?? null,
                                         },
                                         meta: {
                                             attendees: extra?.attendees,
                                             meetingDate: extra?.meetingDate,
                                             details: {
                                                 kind: 'mom',
-                                                minutes: momMinutes,
+                                                minutes: minutesToSave,
                                                 referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                                latestQuoteUrl: extra?.latestQuoteUrl ?? null,
+                                                latestQuoteId: extra?.latestQuoteId ?? null,
                                             }
                                         },
                                     });
@@ -3625,6 +3724,8 @@ export default function ProjectDetailPage() {
                     )}
                     {popupContext.milestoneIndex === 6 && popupContext.taskName === 'Cx approval for production' && (
                         <PopupMeetingCompleted
+                            leadId={projectId}
+                            sessionId={sessionId}
                             defaultMeetingDate={getMeetingDefaults('Cx approval for production').date}
                             defaultAttendees={getMeetingDefaults('Cx approval for production').attendees}
                             momMinutes={momMinutes}
@@ -3642,10 +3743,11 @@ export default function ProjectDetailPage() {
                             })()}
                             onShareMom={async (extra) => {
                                 if (!projectId) return;
+                                const minutesToSave = extra?.minutesWithQuote || momMinutes;
                                 try {
                                     if (sessionId) {
                                         const fd = new FormData();
-                                        fd.append('minutes', momMinutes);
+                                        fd.append('minutes', minutesToSave);
                                         momReferenceFiles.forEach((f) => fd.append('files', f));
                                         await fetch(`${API}/api/leads/${projectId}/mom-upload`, {
                                             method: 'POST',
@@ -3659,16 +3761,20 @@ export default function ProjectDetailPage() {
                                         description: 'Cx approval for production MOM shared.',
                                         details: {
                                             kind: 'mom',
-                                            minutes: momMinutes,
+                                            minutes: minutesToSave,
                                             referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                            latestQuoteUrl: extra?.latestQuoteUrl ?? null,
+                                            latestQuoteId: extra?.latestQuoteId ?? null,
                                         },
                                         meta: {
                                             attendees: extra?.attendees,
                                             meetingDate: extra?.meetingDate,
                                             details: {
                                                 kind: 'mom',
-                                                minutes: momMinutes,
+                                                minutes: minutesToSave,
                                                 referenceFiles: momReferenceFiles.map((f) => ({ name: f.name })),
+                                                latestQuoteUrl: extra?.latestQuoteUrl ?? null,
+                                                latestQuoteId: extra?.latestQuoteId ?? null,
                                             }
                                         },
                                     });

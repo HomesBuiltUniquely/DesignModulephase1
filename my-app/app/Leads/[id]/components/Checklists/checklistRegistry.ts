@@ -19,16 +19,6 @@ const checklistRoutes: ChecklistRoute[] = [
     taskName: "First cut design + quotation discussion meeting request",
     key: "first_cut",
   },
-  {
-    milestoneIndex: 4,
-    taskName: "Material selection meeting + quotation discussion",
-    key: "color_selection",
-  },
-  {
-    milestoneIndex: 5,
-    taskName: "Design sign off",
-    key: "design_signoff",
-  },
 ];
 
 export const checklistDefinitions: Record<ChecklistKey, ChecklistDefinition> = {

@@ -15,6 +15,7 @@ import {
   type AppointmentSuccessPayload,
 } from './AppointmentSuccessToast';
 import { IncentivesNavLink, IncentivesSideRail, canShowIncentivesNav } from './IncentivesNavLink';
+import FinanceRefundsNavLink from './FinanceRefundsNavLink';
 
 export default function DashboardGuard() {
   const router = useRouter();
@@ -167,6 +168,8 @@ export default function DashboardGuard() {
               {(user.role === 'finance' || user.role === 'admin') && (
                 <>
                   <a href="/finance" className="text-gray-600 hover:text-gray-900 text-sm">10% Payment</a>
+                  <FinanceRefundsNavLink variant="nav" />
+                  <a href="/finance/sales-closure" className="text-gray-600 hover:text-gray-900 text-sm">Sales Closure</a>
                   <a href="/finance/40" className="text-gray-600 hover:text-gray-900 text-sm">40% Payment</a>
                 </>
               )}

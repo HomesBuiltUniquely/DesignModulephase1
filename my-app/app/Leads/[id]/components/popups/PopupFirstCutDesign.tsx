@@ -4,6 +4,14 @@ import { useState } from "react";
 import type { RefObject } from "react";
 import MeetingSlotPickerModal from "./MeetingSlotPickerModal";
 import {
+  BRANCH_OPTIONS,
+  BRANCH_LOCATIONS,
+  formatBranchDisplayName,
+  getBranchLocation,
+  resolveBranchCode,
+  type Branch,
+} from "@/app/constants/branches";
+import {
   buildHubMeetingDateTimeIso,
   formatHubTimeRange,
   HUB_MEETING_DURATION_MIN,
@@ -45,6 +53,8 @@ type Props = {
   initialMode?: "online" | "offline";
   initialLink?: string;
   initialCompletionPercent?: number;
+  /** Hide the design completion slider (e.g. Design Sign Off). */
+  hideDesignCompletion?: boolean;
   onSubmit?: (meta?: MeetingMeta) => void;
   /** Called when designer marks 100% complete; parent should record task complete and close. */
   onCompleteAndProceed?: (meta?: MeetingMeta) => void;
@@ -70,6 +80,7 @@ export default function PopupFirstCutDesign({
   initialMode,
   initialLink,
   initialCompletionPercent,
+  hideDesignCompletion = false,
   onSubmit,
   onCompleteAndProceed,
 }: Props) {
@@ -77,15 +88,32 @@ export default function PopupFirstCutDesign({
   const [meetingTime, setMeetingTime] = useState(initialTime || "");
   const [meetingMode, setMeetingMode] = useState<"online" | "offline">(initialMode || "online");
   const [meetingLink, setMeetingLink] = useState(initialLink || "");
-  const [completionPercent, setCompletionPercent] = useState(initialCompletionPercent || 0);
+  const [completionPercent, setCompletionPercent] = useState(
+    hideDesignCompletion ? 100 : initialCompletionPercent || 0,
+  );
   const [selectedStartMin, setSelectedStartMin] = useState<number | null>(null);
   const [slotPickerOpen, setSlotPickerOpen] = useState(false);
+  const [selectedBranch, setSelectedBranch] = useState<Branch | "">(() => {
+    return resolveBranchCode(ecLocation) || "";
+  });
+
+  const resolvedEcLocation =
+    selectedBranch || formatBranchDisplayName(ecLocation) || "Experience Center";
+  const branchLocation = getBranchLocation(resolvedEcLocation);
 
   const isMeetingLinkEmpty = meetingLink.trim().length === 0;
+  const isOfflineBranchMissing = meetingMode === "offline" && !selectedBranch && !resolveBranchCode(ecLocation);
   const isMeetingScheduleIncomplete =
     !meetingDate ||
     selectedStartMin === null ||
-    (meetingMode === "online" && isMeetingLinkEmpty);
+    (meetingMode === "online" && isMeetingLinkEmpty) ||
+    isOfflineBranchMissing;
+
+  const openBranchMaps = () => {
+    const loc = branchLocation || (selectedBranch ? BRANCH_LOCATIONS[selectedBranch] : null);
+    if (!loc) return;
+    window.open(loc.mapsUrl, "_blank", "noopener,noreferrer");
+  };
 
   const buildMeta = (): MeetingMeta => {
     const endMin =
@@ -100,7 +128,7 @@ export default function PopupFirstCutDesign({
       meetingEndTime: endTime24,
       meetingMode,
       meetingLink: meetingLink.trim(),
-      ecLocation,
+      ecLocation: resolvedEcLocation,
       completionPercent,
       startTime:
         selectedStartMin !== null && meetingDate
@@ -259,9 +287,43 @@ export default function PopupFirstCutDesign({
               Offline
             </button>
           </div>
-          {meetingMode === "offline" && ecLocation && (
-            <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 border border-blue-100 rounded-lg">
-              <span className="text-sm font-semibold text-blue-700">📍 {ecLocation} branch</span>
+          {meetingMode === "offline" && (
+            <div className="flex flex-col gap-2 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <select
+                  value={selectedBranch}
+                  onChange={(e) => setSelectedBranch((e.target.value as Branch | "") || "")}
+                  className="border border-blue-200 bg-blue-50 text-blue-800 text-sm font-semibold rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-300"
+                  aria-label="Experience Center branch"
+                >
+                  <option value="">Select Experience Center</option>
+                  {BRANCH_OPTIONS.map((b) => (
+                    <option key={b} value={b}>
+                      {BRANCH_LOCATIONS[b].label} ({b})
+                    </option>
+                  ))}
+                </select>
+                {branchLocation && (
+                  <button
+                    type="button"
+                    onClick={openBranchMaps}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-sm font-semibold text-blue-700 hover:bg-blue-100 hover:border-blue-300 transition-colors"
+                    title="Open location in Google Maps"
+                  >
+                    <span aria-hidden>📍</span>
+                    Open map
+                  </button>
+                )}
+              </div>
+              {branchLocation ? (
+                <p className="text-xs text-gray-600 max-w-md leading-relaxed">
+                  {branchLocation.address}
+                </p>
+              ) : (
+                <p className="text-xs text-red-500">
+                  Select the Experience Center branch for this offline meeting.
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -370,38 +432,42 @@ export default function PopupFirstCutDesign({
 
         <div className="w-full border border-gray-200 mt-4" />
 
-        {/* Completion level */}
-        <div className="px-6 py-4 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[14px] font-bold text-black">Design completion</span>
-            <span className="text-sm font-medium text-gray-700">{completionPercent}%</span>
-          </div>
-          <div className="flex items-center gap-3">
-            <input
-              type="range"
-              min={0}
-              max={100}
-              value={completionPercent}
-              onChange={(e) => setCompletionPercent(Number(e.target.value))}
-              className="flex-1 h-2.5 rounded-full appearance-none bg-gray-200 accent-blue-500"
-            />
-            <input
-              type="number"
-              min={0}
-              max={100}
-              value={completionPercent}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                setCompletionPercent(Math.min(100, Math.max(0, isNaN(v) ? 0 : v)));
-              }}
-              className="w-14 border border-gray-300 rounded-md px-2 py-1 text-sm text-center"
-            />
-          </div>
-          <p className="text-xs text-gray-500">
-            Send as many meeting invites as needed. When design is 100% complete, use &quot;Mark 100% complete & proceed&quot; to advance to the next stage.
-          </p>
-        </div>
-        <div className="w-full border border-gray-200" />
+        {!hideDesignCompletion && (
+          <>
+            {/* Completion level */}
+            <div className="px-6 py-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[14px] font-bold text-black">Design completion</span>
+                <span className="text-sm font-medium text-gray-700">{completionPercent}%</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={completionPercent}
+                  onChange={(e) => setCompletionPercent(Number(e.target.value))}
+                  className="flex-1 h-2.5 rounded-full appearance-none bg-gray-200 accent-blue-500"
+                />
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={completionPercent}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    setCompletionPercent(Math.min(100, Math.max(0, isNaN(v) ? 0 : v)));
+                  }}
+                  className="w-14 border border-gray-300 rounded-md px-2 py-1 text-sm text-center"
+                />
+              </div>
+              <p className="text-xs text-gray-500">
+                Send as many meeting invites as needed. When design is 100% complete, use &quot;Mark 100% complete & proceed&quot; to advance to the next stage.
+              </p>
+            </div>
+            <div className="w-full border border-gray-200" />
+          </>
+        )}
         <div className="flex justify-end gap-2 bg-gray-100 px-6 py-3">
           <button
             type="button"
@@ -427,11 +493,20 @@ export default function PopupFirstCutDesign({
           </button>
           <button
             type="button"
-            onClick={() => onCompleteAndProceed?.(buildMeta())}
-            disabled={completionPercent < 100 || isMeetingScheduleIncomplete}
+            onClick={() =>
+              onCompleteAndProceed?.(
+                hideDesignCompletion
+                  ? { ...buildMeta(), completionPercent: 100 }
+                  : buildMeta(),
+              )
+            }
+            disabled={
+              (!hideDesignCompletion && completionPercent < 100) ||
+              isMeetingScheduleIncomplete
+            }
             className="bg-green-600 text-white px-4 h-9 rounded-md flex items-center gap-2 font-bold disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Mark 100% complete & proceed
+            {hideDesignCompletion ? "Complete & proceed" : "Mark 100% complete & proceed"}
           </button>
         </div>
       </div>

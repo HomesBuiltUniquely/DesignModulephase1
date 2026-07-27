@@ -547,41 +547,6 @@ export default function PopupDqc1Approval({
                   </div>
                 </label>
                 <label
-                  className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer ${dqc1Verdict === "approved_with_changes" ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:bg-gray-50"}`}
-                >
-                  <input
-                    type="radio"
-                    name="dqc1Verdict"
-                    checked={dqc1Verdict === "approved_with_changes"}
-                    onChange={() => setDqc1Verdict("approved_with_changes")}
-                    className="mt-1"
-                  />
-                  <div>
-                    <span className="flex items-center gap-2 font-medium text-blue-800">
-                      <span className="w-5 h-5 rounded-full border-2 border-blue-600 flex items-center justify-center">
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          strokeWidth="2"
-                          stroke="currentColor"
-                          className="w-3 h-3 text-blue-600"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            d="m4.5 12.75 6 6 9-13.5"
-                          />
-                        </svg>
-                      </span>{" "}
-                      Approved with Changes
-                    </span>
-                    <p className="text-xs text-gray-600 mt-0.5">
-                      Minor revisions required before final.
-                    </p>
-                  </div>
-                </label>
-                <label
                   className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer ${dqc1Verdict === "rejected" ? "border-red-500 bg-red-50" : "border-gray-200 hover:bg-gray-50"}`}
                 >
                   <input
@@ -633,8 +598,7 @@ export default function PopupDqc1Approval({
                 Project will move to the next milestone.
               </p>
             )}
-            {(dqc1Verdict === "approved_with_changes" ||
-              dqc1Verdict === "rejected") && (
+            {dqc1Verdict === "rejected" && (
               <p className="text-xs text-gray-500 mt-2">
                 Designers will address comments and re-upload; you can review
                 again later.

@@ -6,6 +6,8 @@ export function renderDqc2MaterialSelectionScheduledEmail(params: {
   meetingMode?: string | null;
   meetingLink?: string | null;
   ecLocation?: string | null;
+  ecAddress?: string | null;
+  ecMapsUrl?: string | null;
 }) {
   const {
     customerName,
@@ -15,6 +17,8 @@ export function renderDqc2MaterialSelectionScheduledEmail(params: {
     meetingMode,
     meetingLink,
     ecLocation = "–",
+    ecAddress,
+    ecMapsUrl,
   } = params;
 
   let timeDisplay = meetingTime;
@@ -29,9 +33,12 @@ export function renderDqc2MaterialSelectionScheduledEmail(params: {
   }
 
   const isOnline = meetingMode === 'online';
-  const locationDisplay = isOnline ? 
-    `Online Meeting - <a href="${meetingLink || '#'}" style="color:#da4b3a;text-decoration:underline;">Join Here</a>` : 
-    `${ecLocation} Branch`;
+  const offlineLabel = ecAddress || `${ecLocation} Branch`;
+  const locationDisplay = isOnline
+    ? `Online Meeting - <a href="${meetingLink || '#'}" style="color:#da4b3a;text-decoration:underline;">Join Here</a>`
+    : ecMapsUrl
+      ? `${offlineLabel} — <a href="${ecMapsUrl}" style="color:#da4b3a;text-decoration:underline;">Open in Maps</a>`
+      : offlineLabel;
 
   const subject = "Color & Material Selection Meeting – Scheduled";
 

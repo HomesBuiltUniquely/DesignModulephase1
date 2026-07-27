@@ -156,13 +156,17 @@ const MILESTONE_FILTER_OPTIONS: { value: string; label: string }[] = [
 ];
 
 // Next action from current milestone (Design Phase table)
-function getNextActionFromMilestone(milestoneIndex: number | undefined, milestoneName: string | null | undefined): string {
+function getNextActionFromMilestone(
+    milestoneIndex: number | undefined,
+    milestoneName: string | null | undefined,
+    opts?: { isSpm?: boolean },
+): string {
     if (milestoneIndex !== undefined && milestoneIndex >= 0) {
         const actions: Record<number, string> = {
             0: "Complete D1 tasks",
             1: "Submit for QC",
             2: "Collect 10% payment",
-            3: "Raise D2 masking / Upload D2",
+            3: opts?.isSpm ? "Assign PM" : "Raise D2 masking / Upload D2",
             4: "Submit for QC",
             5: "Request 40% payment",
             6: "Cx approval / Push to prod.",
@@ -174,7 +178,7 @@ function getNextActionFromMilestone(milestoneIndex: number | undefined, mileston
             "D1 SITE MEASUREMENT": "Complete D1 tasks",
             "DQC1": "Submit for QC",
             "10% PAYMENT": "Collect 10% payment",
-            "D2 SITE MASKING": "Raise D2 masking / Upload D2",
+            "D2 SITE MASKING": opts?.isSpm ? "Assign PM" : "Raise D2 masking / Upload D2",
             "DQC2": "Submit for QC",
             "40% PAYMENT": "Request 40% payment",
             "PUSH TO PRODUCTION": "Cx approval / Push to prod.",
@@ -1313,6 +1317,7 @@ export default function Dashboard() {
                                                           ? getNextActionFromMilestone(
                                                                 row.currentMilestoneIndex,
                                                                 row.currentMilestoneName ?? undefined,
+                                                                { isSpm: isSpmUser },
                                                             )
                                                           : getNextAction(bucket)}
                                                 </td>

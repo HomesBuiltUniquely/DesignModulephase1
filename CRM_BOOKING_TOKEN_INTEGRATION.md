@@ -4,6 +4,8 @@
 **Status:** Implemented on `main`  
 **Related systems:** CRM frontend (3000), Hub / Project-ERP (8081), Design backend (3001), Design frontend (3002)
 
+> **CRM handoff (buffer convert + refund pending Finance):** see [`CRM_FINANCE_BUFFER_AND_REFUND.md`](./CRM_FINANCE_BUFFER_AND_REFUND.md)
+
 ---
 
 ## 1. Goal
