@@ -25,6 +25,7 @@ import {
   resolveLeadMilestonePaymentBreakdown,
 } from "./routes/prolanceApi";
 import { registerCrmHubBookingRoutes, notifyHubFinanceReview, getHubBookingSyncForLead, buildFinance10pQueueList, buildCrmSalesClosureQueueRows, buildCrmSalesClosureLeadDetail } from "./routes/crmHubBookingRoutes";
+import { registerIncentivesRoutes } from "./routes/incentivesRoutes";
 
 function loadEnvFile() {
   const envPath = path.join(__dirname, ".env");
@@ -12936,6 +12937,7 @@ app.post("/api/leads/:id/cancel", async (req: Request, res: Response) => {
 
 registerCrmHubBookingRoutes(app, { pool, getUserFromSession, addLeadHistoryEvent });
 registerProlanceRoutes(app, getUserFromSession, pool);
+registerIncentivesRoutes(app, { pool, getUserFromSession });
 
 // Ensure CORS headers are present on error responses (multer, etc.) so the browser doesn't only show a generic CORS error
 app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {

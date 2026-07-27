@@ -19,8 +19,8 @@ export const WEIGHTED_CREDIT_PCT = {
   /** Part 1: finance-approved first 10% (pre-D1) → 50% of quotation at that time */
   preD1Finance10: 50,
   /**
-   * Part 2: post-DQC1 design 10% finance-approved → 25% of the *Part 1* quotation
-   * (quotation at first finance 10%), not the revised current quote.
+   * Part 2: post-DQC1 design 10% finance-approved → 25% of the *current* quotation
+   * (quote used for design-module 10% collection).
    */
   postDqc1Design10: 25,
   /**
@@ -41,7 +41,7 @@ export type IncentiveWeightStageId =
 export type WeightedStageCredit = {
   stageId: IncentiveWeightStageId;
   label: string;
-  /** Quotation used for this stage's % weight base (usually Part 1 quote) */
+  /** Quotation used for this stage's % weight base */
   quotationValue: number;
   /** Milestone collection amount required (10% or 40% of applicable quote) */
   collectionRequired: number;
@@ -362,7 +362,7 @@ export function buildDayActivitySummary(
  *
  * Part 1 (pre-D1): finance approves first 10% → credit 50% of that quotation.
  * Part 2 (post-DQC1): design 10% of current quote (+ revision top-up) finance-approved
- *   → credit 25% of Part 1 quotation.
+ *   → credit 25% of the current quotation.
  * Part 3 (40% payment): finance approves 40% collection → credit
  *   25% of Part 1 quotation + full upsale (current quote − Part 1 quote).
  *   Example: Part 1 quote 10L, now 14L → 2.5L + 4L = 6.5L weighted.
@@ -445,8 +445,9 @@ export function computeWeightedStages(input: {
   const part1Weighted = part1Cleared
     ? Math.round((quoteAtApproval * WEIGHTED_CREDIT_PCT.preD1Finance10) / 100)
     : 0;
+  // Part 2: 25% of current quotation (design-module 10% base)
   const part2Weighted = part2Cleared
-    ? Math.round((quoteAtApproval * WEIGHTED_CREDIT_PCT.postDqc1Design10) / 100)
+    ? Math.round((quoteCurrent * WEIGHTED_CREDIT_PCT.postDqc1Design10) / 100)
     : 0;
   // Part 3: 25% of Part 1 quotation + full upsale vs Part 1 quote
   const part3BaseWeighted = part3Cleared
@@ -472,7 +473,7 @@ export function computeWeightedStages(input: {
     {
       stageId: "post_dqc1_design_10",
       label: "Part 2 · Post-DQC1 design 10%",
-      quotationValue: quoteAtApproval,
+      quotationValue: quoteCurrent,
       collectionRequired: designTenOfCurrent,
       revisionTopUp,
       upsaleAmount: 0,
@@ -579,6 +580,25 @@ function hashSeed(id: number): number {
   return x >>> 0;
 }
 
+export type IncentiveDealInput = {
+  id: string;
+  customerName: string;
+  quotationAtFinanceApproval: number;
+  quotationCurrent: number;
+  salesTenPercentCollected: number;
+  salesTenPercentFinanceApproved: boolean;
+  cumulativeCollectedTowardDesign10: number;
+  designTenPercentFinanceApproved: boolean;
+  cumulativeCollectedTowardFortyPercent: number;
+  fortyPercentFinanceApproved: boolean;
+  /** Which stages unlocked inside this fortnight (credit only these). */
+  creditPart1InCycle: boolean;
+  creditPart2InCycle: boolean;
+  creditPart3InCycle: boolean;
+  activityDate: string;
+  closureTime?: DealLedgerRow["closureTime"];
+};
+
 function initialsFromName(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
@@ -597,6 +617,131 @@ function pickSlab(achievementPct: number): number {
 function multiplierForSlab(slab: number): number {
   if (slab <= 0) return 0;
   return SLAB_DEFS.find((s) => s.targetPct === slab)?.incentivePct ?? 0;
+}
+
+/**
+ * Build designer incentives from real (or demo) deal inputs for a fortnight.
+ * Only stages flagged `creditPart*InCycle` contribute weighted revenue this cycle.
+ */
+export function buildIncentivesFromDealInputs(
+  member: IncentiveMember,
+  cycle: IncentiveCycleInfo,
+  dealInputs: IncentiveDealInput[],
+  meetingsCompleted: number,
+  options?: { revenueDeltaPct?: number },
+): DesignerIncentivesData {
+  const totalTarget = cycle.totalTarget;
+  const slabs = buildSlabsForTarget(totalTarget);
+  const meetingsRequired = MIN_MEETINGS_PER_FORTNIGHT;
+
+  const deals: DealLedgerRow[] = dealInputs
+    .filter((d) => d.creditPart1InCycle || d.creditPart2InCycle || d.creditPart3InCycle)
+    .map((d) => {
+      const stagesRaw = computeWeightedStages({
+        quotationAtFinanceApproval: d.quotationAtFinanceApproval,
+        quotationCurrent: d.quotationCurrent,
+        salesTenPercentCollected: d.salesTenPercentCollected,
+        salesTenPercentFinanceApproved: d.salesTenPercentFinanceApproved,
+        cumulativeCollectedTowardDesign10: d.cumulativeCollectedTowardDesign10,
+        designTenPercentFinanceApproved: d.designTenPercentFinanceApproved,
+        cumulativeCollectedTowardFortyPercent: d.cumulativeCollectedTowardFortyPercent,
+        fortyPercentFinanceApproved: d.fortyPercentFinanceApproved,
+      });
+      const stages = stagesRaw.map((s) => {
+        const creditThisCycle =
+          (s.stageId === "pre_d1_finance_10" && d.creditPart1InCycle) ||
+          (s.stageId === "post_dqc1_design_10" && d.creditPart2InCycle) ||
+          (s.stageId === "part3_forty_percent" && d.creditPart3InCycle);
+        if (creditThisCycle && s.cleared) return s;
+        return {
+          ...s,
+          cleared: false,
+          weightedAmount: 0,
+        };
+      });
+      const grossWeightedRevenue = stages.reduce((sum, st) => sum + st.weightedAmount, 0);
+      const { downsaleAmount, downsaleDeduction, netWeighted } = computeDownsaleAdjustment(
+        d.quotationAtFinanceApproval,
+        d.quotationCurrent,
+        grossWeightedRevenue,
+      );
+      const contributionPct = stages.reduce((sum, st) => sum + (st.cleared ? st.weightPct : 0), 0);
+      return {
+        id: d.id,
+        customerName: d.customerName,
+        initials: initialsFromName(d.customerName),
+        dealValue: d.quotationCurrent,
+        quotationAtFinanceApproval: d.quotationAtFinanceApproval,
+        closureTime: d.closureTime || "48 HOURS",
+        contributionPct,
+        grossWeightedRevenue,
+        downsaleAmount,
+        downsaleDeduction,
+        weightedRevenue: netWeighted,
+        stages,
+        incentive: 0,
+        activityDate: d.activityDate,
+      };
+    })
+    .sort((a, b) => a.activityDate.localeCompare(b.activityDate));
+
+  const weightedBreakdown = summarizeWeightedBreakdown(deals);
+  const revenueAchieved = weightedBreakdown.totalWeighted;
+  const achievementPct =
+    totalTarget > 0 ? Math.round((revenueAchieved / totalTarget) * 1000) / 10 : 0;
+  const currentSlabPct = pickSlab(achievementPct);
+  const incentiveMultiplierPct = multiplierForSlab(currentSlabPct);
+
+  const dealsWithIncentive = deals.map((row) => ({
+    ...row,
+    incentive: Math.round((row.weightedRevenue * incentiveMultiplierPct) / 100),
+  }));
+
+  const potentialIncentiveEarned = Math.round((revenueAchieved * incentiveMultiplierPct) / 100);
+  const meetingsEligible = meetingsCompleted >= meetingsRequired;
+  const incentiveEarned = meetingsEligible ? potentialIncentiveEarned : 0;
+  const sameDayClosures = dealsWithIncentive.filter((row) => row.closureTime === "SAME DAY").length;
+  const fortyEightHourClosures = dealsWithIncentive.filter(
+    (row) => row.closureTime === "48 HOURS",
+  ).length;
+  const sameDayBonus = sameDayClosures * 750;
+  const fortyEightHourBonus = fortyEightHourClosures * 375;
+  const onSpotBonus = meetingsEligible ? sameDayBonus + fortyEightHourBonus : 0;
+  const nextSlab =
+    slabs.find((s) => s.targetPct > currentSlabPct)?.revenue ??
+    (currentSlabPct <= 0 ? slabs[0]?.revenue ?? totalTarget : totalTarget);
+  const amountToNextSlab = Math.max(0, nextSlab - revenueAchieved);
+
+  const finalDeals = meetingsEligible
+    ? dealsWithIncentive
+    : dealsWithIncentive.map((row) => ({ ...row, incentive: 0 }));
+
+  return {
+    designerId: member.id,
+    designerName: member.name,
+    totalTarget,
+    revenueAchieved,
+    revenueDeltaPct: options?.revenueDeltaPct ?? 0,
+    achievementPct,
+    incentiveEarned,
+    potentialIncentiveEarned,
+    onSpotBonus,
+    amountToNextSlab,
+    currentSlabPct,
+    eligibleSlabPct: currentSlabPct,
+    incentiveMultiplierPct,
+    slabs,
+    sameDayClosures,
+    sameDayBonus: meetingsEligible ? sameDayBonus : 0,
+    fortyEightHourClosures,
+    fortyEightHourBonus: meetingsEligible ? fortyEightHourBonus : 0,
+    meetingsCompleted,
+    meetingsRequired,
+    meetingsEligible,
+    weightedBreakdown,
+    deals: finalDeals,
+    cycle,
+  };
 }
 
 /**

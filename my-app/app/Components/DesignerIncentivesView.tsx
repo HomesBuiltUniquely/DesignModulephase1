@@ -5,18 +5,20 @@ import { useAuth } from '../auth/AuthContext';
 import { getApiBase, buildAuthHeaders } from '../lib/apiBase';
 import {
   buildDayActivitySummary,
-  buildDemoIncentivesForDesigner,
-  buildTeamIncentivesSummary,
+  buildIncentivesFromDealInputs,
   canManageTeamIncentives,
   filterDealsByDate,
   formatInr,
   formatInrCompact,
   getCurrentCycleIndex,
+  getIncentiveCycleByIndex,
   listFortnightOptions,
   type DealLedgerRow,
   type DesignerIncentivesData,
+  type IncentiveDealInput,
   type IncentiveMember,
   type IncentiveWeightStageId,
+  type TeamIncentiveRow,
   type TeamIncentivesSummary,
 } from '../lib/designerIncentives';
 
@@ -492,8 +494,7 @@ function IndividualIncentivesPanel({
             <p className="mt-1 text-xs text-gray-600">
               Collect 10% of current quote (+ revision top-up), then{' '}
               <strong>finance approval</strong> → credit <strong>25%</strong> of the{' '}
-              <strong>Part 1 quotation</strong> (not the revised quote) ·{' '}
-              {data.weightedBreakdown.dealsWithPart2} deal(s)
+              <strong>current quotation</strong> · {data.weightedBreakdown.dealsWithPart2} deal(s)
             </p>
             <p className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-sky-700">
               {selectedPart === 'post_dqc1_design_10' ? 'Showing leads · click to hide' : 'Click to view leads'}
@@ -853,7 +854,7 @@ function IndividualIncentivesPanel({
                                 pendingFinance
                                   ? `${s.label}: amount raised — awaiting finance approval (no weighted credit yet)`
                                   : s.stageId === 'post_dqc1_design_10'
-                                    ? `${s.label}: collect on current quote${s.revisionTopUp > 0 ? ` (+ top-up ${formatInr(s.revisionTopUp)})` : ''} → finance approve → ${s.weightPct}% of Part 1 quote (${formatInr(s.quotationValue)})`
+                                    ? `${s.label}: collect on current quote${s.revisionTopUp > 0 ? ` (+ top-up ${formatInr(s.revisionTopUp)})` : ''} → finance approve → ${s.weightPct}% of current quote (${formatInr(s.quotationValue)})`
                                     : s.stageId === 'part3_forty_percent'
                                       ? `${s.label}: finance-approve 40% → ${s.weightPct}% of Part 1 (${formatInr(s.quotationValue)}) + upsale ${formatInr(s.upsaleAmount)} = ${formatInr(s.weightedAmount)}`
                                       : `${s.label}: collect ${formatInr(s.collectionRequired)} → finance approve → weight ${s.weightPct}%`
@@ -1078,12 +1079,17 @@ export default function DesignerIncentivesView() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [cycleIndex, setCycleIndex] = useState(() => getCurrentCycleIndex());
   const [selectedDate, setSelectedDate] = useState<string>('');
+  const [individualData, setIndividualData] = useState<DesignerIncentivesData | null>(null);
+  const [teamSummary, setTeamSummary] = useState<TeamIncentivesSummary | null>(null);
+  const [loadingIncentives, setLoadingIncentives] = useState(false);
+  const [incentivesError, setIncentivesError] = useState<string | null>(null);
 
   const fortnightOptions = useMemo(() => listFortnightOptions(8), []);
   const selectedFortnight = useMemo(
     () => fortnightOptions.find((f) => f.cycleIndex === cycleIndex) || fortnightOptions[0],
     [fortnightOptions, cycleIndex],
   );
+  const cycle = useMemo(() => getIncentiveCycleByIndex(cycleIndex), [cycleIndex]);
 
   const scopeLabel = useMemo(() => {
     const role = (user?.role || '').toLowerCase();
@@ -1092,6 +1098,25 @@ export default function DesignerIncentivesView() {
     if (role === 'deputy_general_manager' || role === 'admin') return 'All designers';
     return 'Your incentives';
   }, [user?.role]);
+
+  const fetchDesignerIncentives = useCallback(
+    async (member: IncentiveMember): Promise<DesignerIncentivesData | null> => {
+      if (!sessionId) return null;
+      const res = await fetch(
+        `${apiBase}/api/incentives/designer/${member.id}?cycleIndex=${cycleIndex}`,
+        { headers: buildAuthHeaders(sessionId), credentials: 'include' },
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.message || `Failed to load incentives (${res.status})`);
+      }
+      const body = await res.json();
+      const deals = (Array.isArray(body?.deals) ? body.deals : []) as IncentiveDealInput[];
+      const meetingsCompleted = Number(body?.meetingsCompleted) || 0;
+      return buildIncentivesFromDealInputs(member, cycle, deals, meetingsCompleted);
+    },
+    [apiBase, cycle, cycleIndex, sessionId],
+  );
 
   const loadMembers = useCallback(async () => {
     if (!user) return;
@@ -1139,7 +1164,6 @@ export default function DesignerIncentivesView() {
             }));
         }
       }
-      // Prefer designers for team rollups; keep DMs if returned
       const designersFirst = [
         ...list.filter((m) => m.role === 'designer'),
         ...list.filter((m) => m.role !== 'designer'),
@@ -1169,25 +1193,103 @@ export default function DesignerIncentivesView() {
     [members, selectedId],
   );
 
-  const individualData = useMemo(() => {
-    if (!selectedMember) {
-      if (!user) return null;
-      return buildDemoIncentivesForDesigner(
-        {
-          id: user.id,
-          name: user.name,
-          role: user.role,
-        },
-        cycleIndex,
-      );
-    }
-    return buildDemoIncentivesForDesigner(selectedMember, cycleIndex);
-  }, [selectedMember, user, cycleIndex]);
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (!sessionId) return;
+      const member =
+        selectedMember ||
+        (user
+          ? ({ id: user.id, name: user.name, role: user.role } as IncentiveMember)
+          : null);
+      if (!member) {
+        setIndividualData(null);
+        return;
+      }
+      setLoadingIncentives(true);
+      setIncentivesError(null);
+      try {
+        const data = await fetchDesignerIncentives(member);
+        if (!cancelled) setIndividualData(data);
+      } catch (err) {
+        if (!cancelled) {
+          setIndividualData(null);
+          setIncentivesError(err instanceof Error ? err.message : 'Failed to load incentives');
+        }
+      } finally {
+        if (!cancelled) setLoadingIncentives(false);
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchDesignerIncentives, selectedMember, sessionId, user]);
 
-  const teamSummary = useMemo(
-    () => buildTeamIncentivesSummary(members, cycleIndex),
-    [members, cycleIndex],
-  );
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (!isManager || viewMode !== 'team' || !sessionId || members.length === 0) {
+        return;
+      }
+      setLoadingIncentives(true);
+      setIncentivesError(null);
+      try {
+        const rows: TeamIncentiveRow[] = [];
+        for (const m of members.filter(
+          (x) =>
+            (x.role || '').toLowerCase() === 'designer' ||
+            (x.role || '').toLowerCase() === 'design_manager',
+        )) {
+          const d = await fetchDesignerIncentives(m);
+          if (!d) continue;
+          rows.push({
+            designerId: d.designerId,
+            designerName: d.designerName,
+            role: m.role,
+            totalTarget: d.totalTarget,
+            revenueAchieved: d.revenueAchieved,
+            achievementPct: d.achievementPct,
+            incentiveEarned: d.incentiveEarned,
+            onSpotBonus: d.onSpotBonus,
+            currentSlabPct: d.currentSlabPct,
+            meetingsCompleted: d.meetingsCompleted,
+            meetingsRequired: d.meetingsRequired,
+            meetingsEligible: d.meetingsEligible,
+          });
+        }
+        const totalTarget = rows.reduce((s, r) => s + r.totalTarget, 0);
+        const revenueAchieved = rows.reduce((s, r) => s + r.revenueAchieved, 0);
+        const incentiveEarned = rows.reduce((s, r) => s + r.incentiveEarned, 0);
+        const onSpotBonus = rows.reduce((s, r) => s + r.onSpotBonus, 0);
+        const achievementPct =
+          totalTarget > 0 ? Math.round((revenueAchieved / totalTarget) * 1000) / 10 : 0;
+        if (!cancelled) {
+          setTeamSummary({
+            memberCount: rows.length,
+            totalTarget,
+            revenueAchieved,
+            achievementPct,
+            incentiveEarned,
+            onSpotBonus,
+            rows: rows.sort((a, b) => b.incentiveEarned - a.incentiveEarned),
+            cycle,
+          });
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setTeamSummary(null);
+          setIncentivesError(err instanceof Error ? err.message : 'Failed to load team incentives');
+        }
+      } finally {
+        if (!cancelled) setLoadingIncentives(false);
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [cycle, fetchDesignerIncentives, isManager, members, sessionId, viewMode]);
 
   const openDesigner = (designerId: number) => {
     setSelectedId(designerId);
@@ -1320,30 +1422,44 @@ export default function DesignerIncentivesView() {
           </div>
         ) : null}
 
+        {incentivesError ? (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+            {incentivesError}
+          </div>
+        ) : null}
+
         {loadingMembers && isManager ? (
           <p className="text-sm text-gray-500">Loading designers…</p>
         ) : null}
 
+        {loadingIncentives ? (
+          <p className="text-sm text-gray-500">Loading live incentive data…</p>
+        ) : null}
+
         {viewMode === 'team' && isManager ? (
-          <TeamIncentivesPanel
-            team={teamSummary}
-            scopeLabel={scopeLabel}
-            onOpenDesigner={openDesigner}
-            selectedDate={selectedDate || null}
-          />
+          teamSummary ? (
+            <TeamIncentivesPanel
+              team={teamSummary}
+              scopeLabel={scopeLabel}
+              onOpenDesigner={openDesigner}
+              selectedDate={selectedDate || null}
+            />
+          ) : !loadingIncentives ? (
+            <p className="text-sm text-gray-500">No team incentive data available.</p>
+          ) : null
         ) : individualData ? (
           <IndividualIncentivesPanel
             data={individualData}
             selectedDate={selectedDate || null}
             subtitle={
               isDesignerOnly
-                ? 'Your personal incentive dashboard'
-                : 'Individual designer incentive detail'
+                ? 'Your personal incentive dashboard (live leads)'
+                : 'Individual designer incentive detail (live leads)'
             }
           />
-        ) : (
-          <p className="text-sm text-gray-500">No incentive data available.</p>
-        )}
+        ) : !loadingIncentives ? (
+          <p className="text-sm text-gray-500">No incentive data available for this fortnight.</p>
+        ) : null}
       </div>
     </div>
   );
