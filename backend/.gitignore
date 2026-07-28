@@ -5,3 +5,4 @@ credentials/
 .env
 env.sh
 *.log
+.bin/

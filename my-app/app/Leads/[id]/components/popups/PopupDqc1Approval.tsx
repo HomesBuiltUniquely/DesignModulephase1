@@ -75,6 +75,8 @@ type Props = {
   onLoadDqcSubmission?: () => void;
   /** Optional title (e.g. "DQC 1 Approval" / "DQC 2 Approval") instead of default "Design QC Review" */
   reviewTitle?: string;
+  /** When false, hide "Approved with Changes" (Approve / Reject only). Defaults to false. */
+  showApproveWithChanges?: boolean;
   dqcSubmissionFiles?: Array<{ id: number; originalName: string }>;
   selectedDqcSubmissionFileId?: number | null;
   onSelectDqcSubmissionFile?: (id: number) => void;
@@ -128,6 +130,7 @@ export default function PopupDqc1Approval({
   dqc1SubmissionLoading = false,
   onLoadDqcSubmission,
   reviewTitle,
+  showApproveWithChanges = false,
   dqcSubmissionFiles = [],
   selectedDqcSubmissionFileId = null,
   onSelectDqcSubmissionFile,
@@ -546,6 +549,43 @@ export default function PopupDqc1Approval({
                     </p>
                   </div>
                 </label>
+                {showApproveWithChanges && (
+                <label
+                  className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer ${dqc1Verdict === "approved_with_changes" ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:bg-gray-50"}`}
+                >
+                  <input
+                    type="radio"
+                    name="dqc1Verdict"
+                    checked={dqc1Verdict === "approved_with_changes"}
+                    onChange={() => setDqc1Verdict("approved_with_changes")}
+                    className="mt-1"
+                  />
+                  <div>
+                    <span className="flex items-center gap-2 font-medium text-blue-800">
+                      <span className="w-5 h-5 rounded-full border-2 border-blue-600 flex items-center justify-center">
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          strokeWidth="2"
+                          stroke="currentColor"
+                          className="w-3 h-3 text-blue-600"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="m4.5 12.75 6 6 9-13.5"
+                          />
+                        </svg>
+                      </span>{" "}
+                      Approved with Changes
+                    </span>
+                    <p className="text-xs text-gray-600 mt-0.5">
+                      Minor revisions required before final.
+                    </p>
+                  </div>
+                </label>
+                )}
                 <label
                   className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer ${dqc1Verdict === "rejected" ? "border-red-500 bg-red-50" : "border-gray-200 hover:bg-gray-50"}`}
                 >
@@ -599,6 +639,12 @@ export default function PopupDqc1Approval({
               </p>
             )}
             {dqc1Verdict === "rejected" && (
+              <p className="text-xs text-gray-500 mt-2">
+                Designers will address comments and re-upload; you can review
+                again later.
+              </p>
+            )}
+            {showApproveWithChanges && dqc1Verdict === "approved_with_changes" && (
               <p className="text-xs text-gray-500 mt-2">
                 Designers will address comments and re-upload; you can review
                 again later.

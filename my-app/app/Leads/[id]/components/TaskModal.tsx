@@ -61,7 +61,14 @@ export default function TaskModal({ context, onClose, children }: Props) {
     : isDqcSubmission
       ? "flex-1 overflow-y-auto min-h-0"
       : "overflow-y-auto";
-  const modalTitle = formatSubstageTitle(context.taskName);
+  const isMomPopup =
+    context.taskName === "meeting completed" ||
+    context.taskName === "Material selection meeting completed" ||
+    context.taskName === "Cx approval for production" ||
+    context.taskName.toLowerCase().includes("meeting completed");
+  const modalTitle = isMomPopup
+    ? "Meeting Completed"
+    : formatSubstageTitle(context.taskName);
 
   return (
     <div

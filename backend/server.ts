@@ -467,16 +467,18 @@ function buildPaymentMailChainSubject(
 async function getMailLoopCcEmails(extraEmails: Array<string | null | undefined> = [], leadId?: number): Promise<string[]> {
   const validExtras = extraEmails.filter(Boolean) as string[];
 
+  // Always CC: all admins + all TDMs
   const [teamRows] = await pool.query(
     "SELECT email FROM users WHERE role IN ('admin','territorial_design_manager') AND email IS NOT NULL",
   );
   let teamEmails = (teamRows as { email: string | null }[]).map((r) => r.email || null);
 
+  // Design manager(s) for any designer emails passed in extras
   if (validExtras.length > 0) {
     const [dmRows] = await pool.query(
-      `SELECT dm.email 
-       FROM users u 
-       JOIN users dm ON dm.id = u.design_manager_id 
+      `SELECT dm.email
+       FROM users u
+       JOIN users dm ON dm.id = u.design_manager_id
        WHERE u.email IN (?) AND dm.email IS NOT NULL`,
       [validExtras]
     );
@@ -485,6 +487,22 @@ async function getMailLoopCcEmails(extraEmails: Array<string | null | undefined>
   }
 
   if (leadId) {
+    try {
+      // That lead's assigned designer's design manager (do not skip)
+      const [dmFromLead] = await pool.query(
+        `SELECT dm.email
+         FROM leads l
+         JOIN users d ON d.id = l.assigned_designer_id
+         JOIN users dm ON dm.id = d.design_manager_id
+         WHERE l.id = ? AND dm.email IS NOT NULL`,
+        [leadId],
+      );
+      const leadDm = (dmFromLead as { email: string | null }[])[0]?.email;
+      if (leadDm) teamEmails.push(leadDm);
+    } catch (err) {
+      console.error("Failed to fetch designer DM email for mail loop", err);
+    }
+
     try {
       const [pmRows] = await pool.query(
         `SELECT u.email FROM leads l JOIN users u ON u.id = l.assigned_project_manager_id WHERE l.id = ? AND u.email IS NOT NULL`,
@@ -500,6 +518,56 @@ async function getMailLoopCcEmails(extraEmails: Array<string | null | undefined>
   }
 
   return distinctEmails([...validExtras, ...teamEmails]);
+}
+
+/** Collect every client-side email on the lead — primary, family/alt, payload. Never skip any. */
+function collectLeadClientEmails(
+  row: { clientEmail?: string | null; alternateClientEmail?: string | null },
+  payload?: any,
+): string[] {
+  const p = payload && typeof payload === "object" ? payload : {};
+  const form = p.form && typeof p.form === "object" ? p.form : {};
+  const formData = p.formData && typeof p.formData === "object" ? p.formData : {};
+  return distinctEmails([
+    row.clientEmail,
+    row.alternateClientEmail,
+    p.email,
+    p.clientEmail,
+    p.client_email,
+    p.alternateClientEmail,
+    p.client_email_alt,
+    p.familyEmail,
+    p.family_email,
+    form.email,
+    form.clientEmail,
+    form.client_email,
+    formData.email,
+    formData.clientEmail,
+    formData.client_email,
+  ]);
+}
+
+/** Fresh read of all client emails for a lead (picks up family added in task 2). */
+async function getLeadClientToEmails(leadId: number): Promise<string[]> {
+  try {
+    const [rows] = await pool.query(
+      `SELECT client_email as clientEmail, client_email_alt as alternateClientEmail, payload
+       FROM leads WHERE id = ?`,
+      [leadId],
+    );
+    const row = (rows as any[])[0];
+    if (!row) return [];
+    let payload: any = {};
+    try {
+      payload = row.payload ? JSON.parse(row.payload) : {};
+    } catch {
+      payload = {};
+    }
+    return collectLeadClientEmails(row, payload);
+  } catch (err) {
+    console.error("getLeadClientToEmails error", { leadId, error: err });
+    return [];
+  }
 }
 
 type MailVisibility = "internal" | "external" | "internal+external";
@@ -538,11 +606,39 @@ async function triggerMailRouteWithLog(args: {
   route: string;
   visibility: MailVisibility;
   payload: Record<string, unknown>;
-}): Promise<void> {
+}): Promise<boolean> {
   const toRaw = args.payload.to;
   const ccRaw = args.payload.cc;
-  const to = Array.isArray(toRaw) ? toRaw.map(String) : toRaw ? [String(toRaw)] : [];
-  const cc = Array.isArray(ccRaw) ? ccRaw.map(String) : ccRaw ? [String(ccRaw)] : [];
+  let to = Array.isArray(toRaw) ? toRaw.map(String) : toRaw ? [String(toRaw)] : [];
+  let cc = Array.isArray(ccRaw) ? ccRaw.map(String) : ccRaw ? [String(ccRaw)] : [];
+
+  // Never skip client / family emails on customer-facing mail-loop sends
+  try {
+    const clientEmails = await getLeadClientToEmails(args.leadId);
+    if (clientEmails.length > 0) {
+      const clientSet = new Set(clientEmails.map((e) => e.toLowerCase()));
+      const toLooksLikeCustomer =
+        to.length === 0 || to.some((e) => clientSet.has(String(e).toLowerCase()));
+      if (
+        args.visibility === "external" ||
+        (args.visibility === "internal+external" && toLooksLikeCustomer)
+      ) {
+        to = distinctEmails([...to, ...clientEmails]);
+        const toSet = new Set(to.map((e) => e.toLowerCase()));
+        cc = cc.filter((e) => !toSet.has(String(e).toLowerCase()));
+        args.payload = {
+          ...args.payload,
+          to: to.length === 1 ? to[0] : to,
+          cc,
+        };
+      }
+    }
+  } catch (mergeErr) {
+    console.error("mail-loop client email merge error (non-fatal)", {
+      leadId: args.leadId,
+      error: mergeErr,
+    });
+  }
 
   console.log("[mail-trigger]", {
     leadId: args.leadId,
@@ -572,7 +668,7 @@ async function triggerMailRouteWithLog(args: {
         visibility: args.visibility,
         body,
       });
-      return;
+      return false;
     }
     console.log("[mail-trigger-sent]", {
       leadId: args.leadId,
@@ -582,6 +678,7 @@ async function triggerMailRouteWithLog(args: {
       to,
       cc,
     });
+    return true;
   } catch (error) {
     console.error("[mail-trigger-error]", {
       leadId: args.leadId,
@@ -591,14 +688,15 @@ async function triggerMailRouteWithLog(args: {
       bodyBytes: Buffer.byteLength(bodyStr, "utf8"),
       error,
     });
+    return false;
   }
 }
 
 async function triggerCustomerEmailForLead(
   leadId: number,
   emailRoutePath: string,
-  opts?: { actorEmail?: string | null },
-): Promise<void> {
+  opts?: { actorEmail?: string | null; awaitSend?: boolean },
+): Promise<{ ok: boolean; to: string[]; reason?: string }> {
   try {
     const [rows] = await pool.query(
       `SELECT l.pid as projectPid,
@@ -614,7 +712,7 @@ async function triggerCustomerEmailForLead(
       [leadId],
     );
     const row = (rows as any[])[0];
-    if (!row) return;
+    if (!row) return { ok: false, to: [], reason: "Lead not found" };
 
     let payload: any = {};
     try {
@@ -623,12 +721,15 @@ async function triggerCustomerEmailForLead(
       payload = {};
     }
 
-    const customerEmail =
-      row.clientEmail ||
-      row.alternateClientEmail ||
-      payload.email ||
-      payload?.form?.email ||
-      null;
+    // To: every client / family / payload email on the lead — never skip any
+    const customerTo = collectLeadClientEmails(
+      {
+        clientEmail: row.clientEmail,
+        alternateClientEmail: row.alternateClientEmail,
+      },
+      payload,
+    );
+    const customerEmail = customerTo[0] || null;
     const customerName =
       payload.customer_name ||
       payload?.form?.customer_name ||
@@ -641,27 +742,34 @@ async function triggerCustomerEmailForLead(
       payload?.form?.designer_name ||
       payload?.form?.designerName ||
       "Designer";
+
+    // CC: designer + all admins + all TDMs + that designer's DM (via lead)
     const mailChainCc = await getMailLoopCcEmails([
       opts?.actorEmail || null,
       row.designerEmail || null,
     ], leadId);
+    // Keep client To addresses out of CC (already on the thread)
+    const toSet = new Set(customerTo.map((e) => e.toLowerCase()));
+    const ccOnly = mailChainCc.filter((e) => !toSet.has(e.toLowerCase()));
+
     const mailChainSubject = buildMailChainSubject(
       row.projectPid || null,
       row.projectName || null,
       customerName,
     );
 
-    if (!customerEmail) return;
+    if (!customerEmail || customerTo.length === 0) {
+      return { ok: false, to: [], reason: "No client email on lead" };
+    }
 
-    // Fire-and-forget; do not block backend response
-    void triggerMailRouteWithLog({
+    const sendPromise = triggerMailRouteWithLog({
       leadId,
       taskName: "customer-email-trigger",
       route: emailRoutePath,
       visibility: "external",
       payload: {
-        to: customerEmail,
-        cc: mailChainCc,
+        to: customerTo.length === 1 ? customerTo[0] : customerTo,
+        cc: ccOnly,
         subject: mailChainSubject,
         customerName,
         designerName,
@@ -672,8 +780,228 @@ async function triggerCustomerEmailForLead(
         ),
       },
     });
+
+    if (opts?.awaitSend) {
+      const sent = await sendPromise;
+      return sent
+        ? { ok: true, to: customerTo }
+        : { ok: false, to: customerTo, reason: "Mail send failed" };
+    }
+
+    // Fire-and-forget for other tasks
+    void sendPromise;
+    return { ok: true, to: customerTo };
   } catch (err) {
     console.error("triggerCustomerEmailForLead error", { leadId, route: emailRoutePath, error: err });
+    return { ok: false, to: [], reason: "Mail trigger error" };
+  }
+}
+
+/** External D1 visit mail — fires after MMT manager/admin assigns executive. Regards = MMT manager. */
+async function sendD1MmtVisitScheduledExternal(
+  leadId: number,
+  actingUser: { id?: number | null; email?: string | null },
+): Promise<{ ok: boolean; reason?: string }> {
+  try {
+    const [rows] = await pool.query(
+      `SELECT a.measurement_date as measurementDate,
+              a.measurement_time as measurementTime,
+              a.assigned_to_user_id as executiveUserId,
+              a.requested_mmt_manager_id as requestedManagerId,
+              u.name as executiveName,
+              u.email as executiveEmail,
+              u.phone as executivePhone,
+              u.mmt_manager_id as executiveManagerId,
+              mgr.name as mmtManagerName,
+              mgr.email as mmtManagerEmail,
+              d.email as designerEmail,
+              l.client_email as clientEmail,
+              l.pid as projectPid,
+              l.project_name as projectName,
+              l.payload
+       FROM lead_d1_assignments a
+       INNER JOIN leads l ON l.id = a.lead_id
+       LEFT JOIN users u ON u.id = a.assigned_to_user_id
+       LEFT JOIN users mgr ON mgr.id = COALESCE(a.requested_mmt_manager_id, u.mmt_manager_id)
+       LEFT JOIN users d ON d.id = l.assigned_designer_id
+       WHERE a.lead_id = ?
+       ORDER BY a.created_at DESC
+       LIMIT 1`,
+      [leadId],
+    );
+    const row = (rows as any[])[0];
+    if (!row) return { ok: false, reason: "No D1 assignment found" };
+    if (!row.executiveUserId) return { ok: false, reason: "No MMT executive assigned yet" };
+
+    let payload: any = {};
+    try {
+      payload = row.payload ? JSON.parse(row.payload) : {};
+    } catch {
+      payload = {};
+    }
+
+    const customerTo = await getLeadClientToEmails(leadId);
+    const customerEmail = customerTo[0] || row.clientEmail || payload.email || null;
+    if (!customerEmail) return { ok: false, reason: "No client email on lead" };
+
+    const customerName =
+      payload.customer_name ||
+      payload?.form?.customer_name ||
+      row.projectName ||
+      "Customer";
+    const projectId = row.projectPid || `HUB-${leadId}`;
+    const visitDate =
+      row.measurementDate instanceof Date
+        ? row.measurementDate.toISOString().split("T")[0]
+        : row.measurementDate || null;
+    const visitTime = row.measurementTime || null;
+    const executiveName = row.executiveName || null;
+    const executiveEmail = row.executiveEmail || null;
+    const executivePhone = row.executivePhone || null;
+    const mmtManagerName = row.mmtManagerName || "MMT Manager";
+    const mmtManagerEmail = row.mmtManagerEmail || null;
+    const designerEmail = row.designerEmail || null;
+    const siteAddress =
+      payload.site_address ||
+      payload?.form?.site_address ||
+      payload?.formData?.site_address ||
+      "Your Site Address";
+
+    const googleStart = formatGoogleDateTime(visitDate, visitTime);
+    if (googleStart) {
+      try {
+        await createGoogleCalendarEventForFirstAvailableUser({
+          userIds: [
+            row.executiveUserId,
+            row.requestedManagerId || row.executiveManagerId,
+            actingUser.id,
+          ],
+          summary: `D1 Site Measurement - ${customerName}`,
+          description: [
+            `D1 site measurement scheduled for ${customerName}.`,
+            executiveName ? `Assigned MMT executive: ${executiveName}` : null,
+            mmtManagerName ? `MMT manager: ${mmtManagerName}` : null,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          startDateTimeIso: googleStart,
+          endDateTimeIso: addHoursToIso(googleStart, 1),
+          attendees: distinctEmails([
+            customerEmail,
+            executiveEmail,
+            mmtManagerEmail,
+            actingUser.email,
+          ]),
+        });
+      } catch (calendarErr) {
+        console.error("D1 MMT Google event create error (non-fatal)", {
+          leadId,
+          error: calendarErr,
+        });
+      }
+    }
+
+    const sent = await triggerMailRouteWithLog({
+      leadId,
+      milestoneIndex: 0,
+      taskName: "D1 for MMT request – executive assigned",
+      route: "/api/email/send-d1-mmt-visit-scheduled",
+      visibility: "external",
+      payload: {
+        to: customerTo.length > 1 ? customerTo : customerEmail,
+        cc: await getMailLoopCcEmails(
+          [actingUser.email, designerEmail, executiveEmail, mmtManagerEmail],
+          leadId,
+        ),
+        customerName,
+        subject: buildMailChainSubject(projectId, row.projectName, customerName),
+        visitDate,
+        visitTime: formatTime12Hour(visitTime) || undefined,
+        executiveName,
+        executivePhone,
+        projectId,
+        siteAddress,
+        // Regards section uses MMT manager (not designer)
+        designerName: mmtManagerName,
+        mmtManagerName,
+        designerEmail: mmtManagerEmail,
+      },
+    });
+
+    if (!sent) {
+      console.error("[D1-MMT] External visit mail failed", { leadId });
+      return { ok: false, reason: "External visit mail failed" };
+    }
+    console.log("[D1-MMT] External visit mail sent", { leadId, to: customerTo });
+    return { ok: true };
+  } catch (err) {
+    console.error("sendD1MmtVisitScheduledExternal error", { leadId, error: err });
+    return { ok: false, reason: "External mail trigger error" };
+  }
+}
+
+/** Internal: notify designer that D1 files are ready in Files Uploaded (same mail-loop subject). */
+async function notifyD1FilesReadyInternal(
+  leadId: number,
+  actingUser: { name?: string | null; email?: string | null },
+  opts?: { fileName?: string | null },
+): Promise<void> {
+  try {
+    const [rows] = await pool.query(
+      `SELECT l.pid as projectPid, l.project_name as projectName, l.payload,
+              d.name as designerName, d.email as designerEmail
+       FROM leads l
+       LEFT JOIN users d ON d.id = l.assigned_designer_id
+       WHERE l.id = ?`,
+      [leadId],
+    );
+    const row = (rows as any[])[0];
+    if (!row) {
+      console.warn("[D1-files] notify skipped: lead not found", { leadId });
+      return;
+    }
+
+    let payload: any = {};
+    try {
+      payload = row.payload ? JSON.parse(row.payload) : {};
+    } catch {
+      payload = {};
+    }
+    const customerName =
+      payload.customer_name ||
+      payload?.form?.customer_name ||
+      payload?.formData?.customer_name ||
+      row.projectName ||
+      "Customer";
+    const projectId = row.projectPid || `HUB-${leadId}`;
+    const designerName = row.designerName || "Designer";
+    const designerEmail = row.designerEmail || null;
+    if (!designerEmail) {
+      console.warn("[D1-files] notify skipped: no designer email", { leadId });
+      return;
+    }
+
+    const cc = await getMailLoopCcEmails([actingUser.email || null, designerEmail], leadId);
+    const sent = await triggerMailRouteWithLog({
+      leadId,
+      milestoneIndex: 0,
+      taskName: "D1 files upload – files ready",
+      route: "/api/email/send-d1-files-ready-internal",
+      visibility: "internal",
+      payload: {
+        to: designerEmail,
+        cc,
+        subject: buildMailChainSubject(projectId, row.projectName, customerName),
+        projectId,
+        customerName,
+        designerName,
+        approvedByName: actingUser.name || "MMT Manager",
+        fileName: opts?.fileName || null,
+      },
+    });
+    console.log("[D1-files] Internal ready mail", { leadId, to: designerEmail, sent });
+  } catch (err) {
+    console.error("[D1-files] notifyD1FilesReadyInternal error", { leadId, error: err });
   }
 }
 
@@ -1036,13 +1364,33 @@ async function initDb() {
       CREATE TABLE IF NOT EXISTS lead_d1_assignments (
         id INT AUTO_INCREMENT PRIMARY KEY,
         lead_id INT NOT NULL,
-        assigned_to_user_id INT NOT NULL,
+        assigned_to_user_id INT NULL,
+        requested_mmt_manager_id INT NULL,
         measurement_date DATE,
         measurement_time VARCHAR(20),
         status VARCHAR(20) NOT NULL DEFAULT 'pending',
         created_at DATETIME NOT NULL
       );
     `);
+    try {
+      await conn.query(
+        "ALTER TABLE lead_d1_assignments MODIFY assigned_to_user_id INT NULL",
+      );
+    } catch {
+      /* column may already allow NULL */
+    }
+    try {
+      const [d1MgrCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_d1_assignments' AND COLUMN_NAME = 'requested_mmt_manager_id'",
+      );
+      if ((d1MgrCol as any[]).length === 0) {
+        await conn.query(
+          "ALTER TABLE lead_d1_assignments ADD COLUMN requested_mmt_manager_id INT NULL",
+        );
+      }
+    } catch {
+      /* ignore */
+    }
 
     await conn.query(`
       CREATE TABLE IF NOT EXISTS lead_d2_assignments (
@@ -3694,14 +4042,36 @@ app.get("/api/google-calendar/all-events", async (req: Request, res: Response) =
   }
 });
 
-// List MMT executives for assignment (e.g. D1 Measurement popup)
-app.get("/api/auth/mmt-executives", async (req: Request, res: Response) => {
+// List MMT managers (designer D1 request assignee dropdown)
+app.get("/api/auth/mmt-managers", async (req: Request, res: Response) => {
   try {
     const user = await getUserFromSession(req);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
     const [rows] = await pool.query(
-      "SELECT id, name, email FROM users WHERE role = 'mmt_executive' ORDER BY name ASC",
+      "SELECT id, name, email FROM users WHERE role = 'mmt_manager' ORDER BY name ASC",
     );
+    return res.json(rows);
+  } catch (err) {
+    console.error("mmt-managers error", err);
+    return res.status(500).json({ message: "Failed to load MMT managers" });
+  }
+});
+
+// List MMT executives for assignment.
+// Default: all executives. Optional ?managerId= scopes to that manager's team.
+app.get("/api/auth/mmt-executives", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const managerIdParam = Number(req.query.managerId);
+    let sql = "SELECT id, name, email, phone FROM users WHERE role = 'mmt_executive'";
+    const params: number[] = [];
+    if (Number.isFinite(managerIdParam) && managerIdParam > 0) {
+      sql += " AND mmt_manager_id = ?";
+      params.push(managerIdParam);
+    }
+    sql += " ORDER BY name ASC";
+    const [rows] = await pool.query(sql, params);
     return res.json(rows);
   } catch (err) {
     console.error("mmt-executives error", err);
@@ -6166,6 +6536,29 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         });
       }
     }
+    if (milestoneIndex === 1 && tNorm === "DQC 1 approval") {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const role = (user.role || "").toLowerCase();
+      if (role !== "dqc_manager" && role !== "dqe" && role !== "admin") {
+        return res.status(403).json({
+          message: "Only DQC Manager, DQE, or Admin can complete DQC 1 approval",
+        });
+      }
+    }
+    if (
+      milestoneIndex === 4 &&
+      (tNorm === "DQC 2 approval" || tNorm === "DQC 2 approval ")
+    ) {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const role = (user.role || "").toLowerCase();
+      if (role !== "dqc_manager" && role !== "dqe" && role !== "admin") {
+        return res.status(403).json({
+          message: "Only DQC Manager, DQE, or Admin can complete DQC 2 approval",
+        });
+      }
+    }
     const actingUser = await getUserFromSession(req);
     if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
 
@@ -6197,14 +6590,17 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
       switch (milestoneIndex) {
         // Milestone 0: D1 SITE MEASUREMENT
         case 0:
+          if (t === "Group Description") {
+            // Sl no 1 – welcome / mail-loop initiate letter on mark as done
+            return "/api/email/send-mail-loop-chain-initiate";
+          }
           if (t === "Mail loop chain 2 initiate") {
-            // Sl no 2 – initiate customer mail loop chain from backend SMTP
-            // Email is triggered directly via /api/leads/:id/mail-loop-chain-initiate endpoint.
-            // Do not fire an additional email on task completion to prevent duplicates.
+            // Sl no 2 – collect client + family member emails only (no mail on complete)
+            return null;
           }
           if (t === "D1 for MMT request") {
-            // Sl no 3 – D1 for MMT request (measurement visit scheduling)
-            return "/api/email/send-d1-mmt-visit-scheduled";
+            // External visit mail fires after MMT manager/admin assigns executive
+            return null;
           }
           break;
 
@@ -7988,6 +8384,31 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             error: err,
           });
         }
+      } else if (emailRoutePath === "/api/email/send-mail-loop-chain-initiate") {
+        // Group Description — await welcome mail so UI can confirm success
+        try {
+          const mailResult = await triggerCustomerEmailForLead(id, emailRoutePath, {
+            actorEmail: actingUser.email || null,
+            awaitSend: true,
+          });
+          return res.status(201).json({
+            ok: true,
+            mailSent: mailResult.ok,
+            mailTo: mailResult.to,
+            mailReason: mailResult.reason || null,
+          });
+        } catch (err) {
+          console.error("complete-task Group Description mail error (non-fatal)", {
+            leadId: id,
+            error: err,
+          });
+          return res.status(201).json({
+            ok: true,
+            mailSent: false,
+            mailTo: [],
+            mailReason: "Mail trigger error",
+          });
+        }
       } else {
         triggerCustomerEmailForLead(id, emailRoutePath, { actorEmail: actingUser.email || null }).catch((err) => {
           console.error("complete-task email trigger error (non-fatal)", {
@@ -8009,6 +8430,8 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
 });
 
 // Trigger mail loop chain initiation mail (SMTP-backed).
+// Prefer completing "Group Description" (fires the same route via complete-task).
+// Kept for manual/admin re-send if needed.
 app.post("/api/leads/:id/mail-loop-chain-initiate", async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
@@ -9558,7 +9981,7 @@ app.post(
         return (insertResult as any).insertId as number;
       };
 
-      const maybeCompleteTask = async () => {
+      const maybeCompleteTask = async (fileName?: string) => {
         if (
           role === "mmt_manager" ||
           role === "admin" ||
@@ -9570,6 +9993,14 @@ app.post(
              ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
             [leadId, uploadMilestoneIndex, uploadTaskName, now],
           );
+          // Manager/admin direct D1 upload → auto-complete + notify designer
+          if (!isD2 && (role === "mmt_manager" || role === "admin")) {
+            void notifyD1FilesReadyInternal(
+              leadId,
+              { name: user?.name, email: user?.email },
+              { fileName: fileName || null },
+            );
+          }
         }
       };
 
@@ -9583,7 +10014,7 @@ app.post(
         for (const file of batchFiles) {
           uploadIds.push(await persistOne(file));
         }
-        await maybeCompleteTask();
+        await maybeCompleteTask(batchFiles[0]?.originalname);
         const fileNames = batchFiles.map((f) => f.originalname);
         await recordD2UploadHistory(fileNames, uploadIds);
         return res.status(201).json(d2UploadResponse(fileNames, uploadIds));
@@ -9602,7 +10033,7 @@ app.post(
 
       console.log("[mmt-upload] received uploadType:", JSON.stringify(uploadType), "| isD2:", isD2, "| role:", role);
       const newUploadId = await persistOne(file);
-      await maybeCompleteTask();
+      await maybeCompleteTask(file.originalname);
 
       const uploaderLabel = isD2 ? user?.name ?? "Team" : user?.name ?? "MMT";
       if (isD2) {
@@ -10089,6 +10520,15 @@ app.post("/api/leads/:leadId/uploads/:uploadId/approve", async (req: Request, re
       details: { kind: "note", noteText: `Upload #${uploadId} approved.` },
     };
     await addLeadHistoryEvent(leadId, approvalEv);
+
+    // D1: notify designer that files are ready (same mail loop)
+    if (!isD2Upload) {
+      void notifyD1FilesReadyInternal(
+        leadId,
+        { name: user.name, email: user.email },
+        { fileName: uploadRow.originalName || null },
+      );
+    }
 
     return res.json({ ok: true });
   } catch (err) {
@@ -11323,7 +11763,7 @@ app.post("/api/leads/:id/dqc-review", async (req: Request, res: Response) => {
     const role = (user.role ?? "").toLowerCase();
     if (role !== "dqc_manager" && role !== "dqe" && role !== "admin")
       return res.status(403).json({ message: "Only DQC Manager, DQE or Admin can submit DQC review" });
-    const { verdict, remarks } = req.body || {};
+    const { verdict, remarks, submissionVariant: bodyVariant } = req.body || {};
     if (!verdict || !Array.isArray(remarks))
       return res.status(400).json({ message: "verdict and remarks array required" });
     // Fetch the latest review before inserting the new one to know if it's DQC 1 or DQC 2
@@ -11339,7 +11779,14 @@ app.post("/api/leads/:id/dqc-review", async (req: Request, res: Response) => {
       [leadId],
     );
     const isDqc1Completed = (dqc1CompleteRows as any[]).length > 0;
-    const isDqc2 = isDqc1Completed || lastVerdict === "pending_dqc2";
+    const variantFromBody =
+      bodyVariant === "dqc1" || bodyVariant === "dqc2" ? bodyVariant : null;
+    const isDqc2 =
+      variantFromBody === "dqc2"
+        ? true
+        : variantFromBody === "dqc1"
+          ? false
+          : isDqc1Completed || lastVerdict === "pending_dqc2";
 
     await pool.query(
       `INSERT INTO lead_dqc_reviews (lead_id, verdict, remarks, created_at, reviewed_by_user_id)
@@ -11347,10 +11794,10 @@ app.post("/api/leads/:id/dqc-review", async (req: Request, res: Response) => {
       [leadId, verdict, JSON.stringify(remarks), new Date(), user.id],
     );
 
-    // Send internal email notification if verdict is rejected or approved_with_changes
+    // Send internal rejection / changes feedback email to assigned designer
     try {
       const [leadRows] = await pool.query(
-        `SELECT l.project_name as projectName, l.payload, l.assigned_designer_id,
+        `SELECT l.pid, l.project_name as projectName, l.payload, l.assigned_designer_id,
                 u.name as designerName, u.email as designerEmail
          FROM leads l
          LEFT JOIN users u ON u.id = l.assigned_designer_id
@@ -11365,11 +11812,16 @@ app.post("/api/leads/:id/dqc-review", async (req: Request, res: Response) => {
         } catch {
           payload = {};
         }
+        const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
         const customerName =
-          payload.customer_name || payload?.form?.customer_name || leadRow.projectName || "Customer";
-        const ecName =
-          payload.experience_center || payload?.form?.experience_center || "";
-        const designerName = leadRow.designerName || "Designer";
+          formData.customer_name ||
+          formData.sales_lead_name ||
+          payload.customer_name ||
+          payload?.form?.customer_name ||
+          leadRow.projectName ||
+          "Customer";
+        const ecName = resolveLeadBranchName(payload);
+        const designerName = leadRow.designerName || formData.designer_name || "Designer";
         const designerEmail = leadRow.designerEmail;
 
         if (designerEmail && (verdict === "rejected" || verdict === "approved_with_changes")) {
@@ -11377,7 +11829,15 @@ app.post("/api/leads/:id/dqc-review", async (req: Request, res: Response) => {
           const baseCc = await getMailLoopCcEmails([designerEmail, user.email], leadId);
           const ccList = distinctEmails(baseCc.filter((e) => e !== designerEmail));
           const submissionVariant = isDqc2 ? "dqc2" : "dqc1";
-          const subject = buildMailChainSubject(leadId, leadRow.projectName, customerName);
+          const projectIdLabel = leadRow.pid || leadRow.projectName || `HUB-${leadId}`;
+          const subject = buildMailChainSubject(projectIdLabel, leadRow.projectName, customerName);
+
+          console.log("[dqc-review] Triggering internal feedback email", {
+            leadId,
+            submissionVariant,
+            verdict,
+            to,
+          });
 
           void triggerMailRouteWithLog({
             leadId,
@@ -11389,15 +11849,24 @@ app.post("/api/leads/:id/dqc-review", async (req: Request, res: Response) => {
               to,
               cc: ccList,
               subject,
-              projectId: leadRow.projectName || String(leadId),
+              projectId: projectIdLabel,
               customerName,
               ecName,
               designerName,
               dqcRepName: user.name || "DQC Team Member",
               verdict,
               submissionVariant,
-              remarks: remarks.map((r: any) => ({ priority: r.priority || "medium", text: r.text || "" })),
+              remarks: remarks.map((r: any) => ({
+                priority: r.priority || "medium",
+                text: r.text || "",
+              })),
             },
+          });
+        } else if (verdict === "rejected" || verdict === "approved_with_changes") {
+          console.warn("[dqc-review] Skipping feedback email — assigned designer has no email", {
+            leadId,
+            verdict,
+            assignedDesignerId: leadRow.assigned_designer_id,
           });
         }
       }
@@ -11480,25 +11949,267 @@ app.post("/api/leads/:id/dqc-review/remarks/:index/resolve", async (req: Request
   }
 });
 
-// Submit D1 measurement request – assigns an MMT executive to the lead (only they will see it)
+// Submit D1 measurement request – designer selects MMT manager + date/time; internal mail to manager.
 app.post("/api/leads/:id/d1-request", async (req: Request, res: Response) => {
   const leadId = Number(req.params.id);
   if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
   try {
     const user = await getUserFromSession(req);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
-    const { measurementExecutiveId, measurementDate, measurementTime } = req.body || {};
-    const execId = Number(measurementExecutiveId);
-    if (!execId) return res.status(400).json({ message: "measurementExecutiveId is required" });
-    await pool.query(
-      `INSERT INTO lead_d1_assignments (lead_id, assigned_to_user_id, measurement_date, measurement_time, status, created_at)
-       VALUES (?, ?, ?, ?, 'pending', ?)`,
-      [leadId, execId, measurementDate || null, measurementTime || null, new Date()],
+
+    const { mmtManagerId, measurementDate, measurementTime } = req.body || {};
+    const managerId = Number(mmtManagerId);
+    if (!managerId) {
+      return res.status(400).json({ message: "mmtManagerId is required" });
+    }
+
+    const [mgrRows] = await pool.query(
+      "SELECT id, name, email FROM users WHERE id = ? AND role = 'mmt_manager'",
+      [managerId],
     );
-    return res.status(201).json({ ok: true });
+    const manager = (mgrRows as any[])[0];
+    if (!manager?.email) {
+      return res.status(400).json({ message: "Invalid MMT manager or manager has no email" });
+    }
+
+    const [leadRows] = await pool.query(
+      `SELECT l.id, l.pid, l.project_name as projectName, l.payload, l.client_email as clientEmail,
+              d.name as designerName, d.email as designerEmail
+       FROM leads l
+       LEFT JOIN users d ON d.id = l.assigned_designer_id
+       WHERE l.id = ?`,
+      [leadId],
+    );
+    const lead = (leadRows as any[])[0];
+    if (!lead) return res.status(404).json({ message: "Lead not found" });
+
+    await pool.query(
+      `INSERT INTO lead_d1_assignments
+        (lead_id, assigned_to_user_id, requested_mmt_manager_id, measurement_date, measurement_time, status, created_at)
+       VALUES (?, NULL, ?, ?, ?, 'awaiting_manager', ?)`,
+      [leadId, managerId, measurementDate || null, measurementTime || null, new Date()],
+    );
+
+    let payload: any = {};
+    try {
+      payload = lead.payload ? JSON.parse(lead.payload) : {};
+    } catch {
+      payload = {};
+    }
+    const formData = payload?.formData || payload?.form || payload || {};
+    const customerName =
+      payload.customer_name ||
+      formData.customer_name ||
+      lead.projectName ||
+      "Customer";
+    const projectId = lead.pid || `HUB-${leadId}`;
+    const ecName =
+      formData.experience_center ||
+      formData.sales_closure_ec ||
+      payload.experience_center ||
+      "—";
+    const designerName = lead.designerName || user.name || "Designer";
+    const siteAddress =
+      formData.site_address || payload.site_address || "—";
+    const visitDate = measurementDate || null;
+    const visitTime = formatTime12Hour(measurementTime) || measurementTime || null;
+
+    const mailSubject = buildMailChainSubject(projectId, lead.projectName, customerName);
+    const ccList = await getMailLoopCcEmails([user.email || null, lead.designerEmail || null], leadId);
+
+    console.log("[D1-MMT] Sending internal manager request mail", {
+      leadId,
+      to: manager.email,
+      managerName: manager.name,
+    });
+
+    const mailSent = await triggerMailRouteWithLog({
+      leadId,
+      milestoneIndex: 0,
+      taskName: "D1 for MMT request – manager notify",
+      route: "/api/email/send-d1-mmt-manager-request-internal",
+      visibility: "internal",
+      payload: {
+        to: manager.email,
+        cc: ccList,
+        subject: mailSubject,
+        projectId,
+        customerName,
+        designerName,
+        mmtManagerName: manager.name,
+        ecName,
+        siteAddress,
+        visitDate,
+        visitTime,
+      },
+    });
+
+    if (!mailSent) {
+      console.error("[D1-MMT] Internal manager request mail FAILED", {
+        leadId,
+        managerId,
+        to: manager.email,
+      });
+      return res.status(502).json({
+        ok: false,
+        saved: true,
+        mailSent: false,
+        message: "Request saved but failed to email MMT manager. Please retry or contact admin.",
+      });
+    }
+
+    console.log("[D1-MMT] Internal manager request mail sent OK", { leadId, to: manager.email });
+    return res.status(201).json({
+      ok: true,
+      saved: true,
+      mailSent: true,
+      mmtManagerName: manager.name,
+    });
   } catch (err) {
     console.error("d1-request error", err);
     return res.status(500).json({ message: "Failed to submit request" });
+  }
+});
+
+// Pending D1 requests awaiting MMT executive assignment (mmt_manager + admin)
+app.get("/api/leads/d1-pending-requests", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user.role || "").toLowerCase();
+    if (role !== "mmt_manager" && role !== "admin") {
+      return res.status(403).json({ message: "Only MMT manager or admin can view pending D1 requests" });
+    }
+
+    let sql = `
+      SELECT a.id as assignmentId,
+             a.lead_id as leadId,
+             a.measurement_date as measurementDate,
+             a.measurement_time as measurementTime,
+             a.status,
+             a.created_at as createdAt,
+             a.requested_mmt_manager_id as mmtManagerId,
+             l.pid,
+             l.project_name as projectName,
+             mgr.name as mmtManagerName,
+             d.name as designerName
+      FROM lead_d1_assignments a
+      INNER JOIN leads l ON l.id = a.lead_id
+      LEFT JOIN users mgr ON mgr.id = a.requested_mmt_manager_id
+      LEFT JOIN users d ON d.id = l.assigned_designer_id
+      WHERE a.status = 'awaiting_manager'
+        AND a.assigned_to_user_id IS NULL`;
+    const params: number[] = [];
+    if (role === "mmt_manager" && user.id) {
+      sql += " AND a.requested_mmt_manager_id = ?";
+      params.push(user.id);
+    }
+    sql += " ORDER BY a.created_at ASC";
+
+    const [rows] = await pool.query(sql, params);
+    const list = (rows as any[]).map((r) => ({
+      ...r,
+      measurementDate:
+        r.measurementDate instanceof Date
+          ? r.measurementDate.toISOString().split("T")[0]
+          : r.measurementDate,
+    }));
+    return res.json(list);
+  } catch (err) {
+    console.error("d1-pending-requests error", err);
+    return res.status(500).json({ message: "Failed to load pending D1 requests" });
+  }
+});
+
+// MMT manager or admin assigns MMT executive → triggers external visit mail on mail loop
+app.post("/api/leads/:id/assign-d1-executive", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user.role || "").toLowerCase();
+    if (role !== "mmt_manager" && role !== "admin") {
+      return res.status(403).json({ message: "Only MMT manager or admin can assign MMT executive" });
+    }
+
+    const executiveId = Number((req.body || {}).measurementExecutiveId);
+    if (!executiveId) {
+      return res.status(400).json({ message: "measurementExecutiveId is required" });
+    }
+
+    const [execRows] = await pool.query(
+      "SELECT id, name, email, phone, mmt_manager_id FROM users WHERE id = ? AND role = 'mmt_executive'",
+      [executiveId],
+    );
+    const executive = (execRows as any[])[0];
+    if (!executive) return res.status(400).json({ message: "Invalid MMT executive" });
+
+    const [assignRows] = await pool.query(
+      `SELECT id, requested_mmt_manager_id, status, assigned_to_user_id
+       FROM lead_d1_assignments
+       WHERE lead_id = ?
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [leadId],
+    );
+    const assignment = (assignRows as any[])[0];
+    if (!assignment) {
+      return res.status(404).json({ message: "No D1 request found for this lead" });
+    }
+    if (String(assignment.status) !== "awaiting_manager") {
+      return res.status(400).json({ message: "This D1 request is not awaiting manager assignment" });
+    }
+
+    if (role === "mmt_manager") {
+      if (Number(assignment.requested_mmt_manager_id) !== Number(user.id)) {
+        return res.status(403).json({ message: "This request was not sent to you" });
+      }
+    }
+
+    await pool.query(
+      `UPDATE lead_d1_assignments
+       SET assigned_to_user_id = ?, status = 'assigned'
+       WHERE id = ?`,
+      [executiveId, assignment.id],
+    );
+
+    console.log("[D1-MMT] Executive assigned", {
+      leadId,
+      assignmentId: assignment.id,
+      executiveId,
+      by: user.id,
+      role,
+    });
+
+    const mailResult = await sendD1MmtVisitScheduledExternal(leadId, {
+      id: user.id,
+      email: user.email || null,
+    });
+
+    if (!mailResult.ok) {
+      console.error("[D1-MMT] External mail after assign failed", {
+        leadId,
+        reason: mailResult.reason,
+      });
+      return res.status(201).json({
+        ok: true,
+        assigned: true,
+        mailSent: false,
+        message: mailResult.reason || "Executive assigned but external mail failed",
+        executiveName: executive.name,
+      });
+    }
+
+    return res.status(201).json({
+      ok: true,
+      assigned: true,
+      mailSent: true,
+      executiveName: executive.name,
+    });
+  } catch (err) {
+    console.error("assign-d1-executive error", err);
+    return res.status(500).json({ message: "Failed to assign MMT executive" });
   }
 });
 
@@ -11814,7 +12525,7 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
                   l.prolance_quote_id as prolanceQuoteId
            FROM leads l
            INNER JOIN lead_d1_assignments a ON a.lead_id = l.id AND a.assigned_to_user_id = ?
-           ORDER BY l.id ASC`,
+           ORDER BY l.id DESC`,
         [userId],
       );
       const list = (rows as any[]).map((r) => ({ ...r, isOnHold: !!r.isOnHold }));
@@ -13285,7 +13996,8 @@ app.post("/api/leads/:id/prolance-quote-snapshots", async (req: Request, res: Re
   }
 });
 
-// Update primary / alternate client email (everyone except designers).
+// Update primary client email and optional family-member email (one).
+// Assigned designer may update (needed for Mail loop chain 2 initiate task).
 app.patch("/api/leads/:id/client-emails", async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
@@ -13305,9 +14017,6 @@ app.patch("/api/leads/:id/client-emails", async (req: Request, res: Response) =>
     const user = await getUserFromSession(req);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
     const role = (user.role ?? "").toLowerCase();
-    if (role === "designer") {
-      return res.status(403).json({ message: "Designers cannot update client emails" });
-    }
 
     const [rows] = await pool.query(
       "SELECT id, assigned_designer_id, client_email as clientEmail, client_email_alt as alternateClientEmail FROM leads WHERE id = ?",
@@ -13315,6 +14024,12 @@ app.patch("/api/leads/:id/client-emails", async (req: Request, res: Response) =>
     );
     const row = (rows as any[])[0];
     if (!row) return res.status(404).json({ message: "Lead not found" });
+
+    if (role === "designer") {
+      if (!user.id || Number(row.assigned_designer_id) !== Number(user.id)) {
+        return res.status(403).json({ message: "Only the assigned designer can update client emails" });
+      }
+    }
 
     if (role === "mmt_executive" && user.id) {
       const [assignRows] = await pool.query(

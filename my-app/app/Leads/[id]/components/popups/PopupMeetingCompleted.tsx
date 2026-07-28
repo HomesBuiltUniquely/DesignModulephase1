@@ -6,6 +6,8 @@ import { getApiBase } from '@/app/lib/apiBase';
 
 const API = getApiBase();
 
+type ShareMomResult = { ok: boolean };
+
 type Props = {
     leadId?: number | null;
     sessionId?: string | null;
@@ -25,7 +27,7 @@ type Props = {
         minutesWithQuote?: string;
         latestQuoteUrl?: string | null;
         latestQuoteId?: number | null;
-    }) => void;
+    }) => Promise<ShareMomResult | void> | ShareMomResult | void;
     /** Progress % saved from the meeting popup — shown read-only so MOM and meeting are in sync */
     initialCompletionPercent?: number;
     /** When true, show 40% payment screenshot upload section (for the "40% collection" task). */
@@ -72,12 +74,16 @@ export default function PopupMeetingCompleted({
     const [attendees, setAttendees] = React.useState(defaultAttendees || 'Customer, Designer');
     const [meetingDate, setMeetingDate] = React.useState(defaultMeetingDate || '');
     const [fileError, setFileError] = React.useState<string | null>(null);
+    const [isSharing, setIsSharing] = React.useState(false);
+    const [toast, setToast] = React.useState<string | null>(null);
     const [latestQuoteUrl, setLatestQuoteUrl] = React.useState<string | null>(null);
     const [latestQuoteId, setLatestQuoteId] = React.useState<number | null>(null);
     const [quoteLoading, setQuoteLoading] = React.useState(false);
     const [quoteError, setQuoteError] = React.useState<string | null>(null);
 
     const hasMomFile = momReferenceFiles.length > 0;
+    const hasMomText = momMinutes.trim().length > 0;
+    const canShare = hasMomFile && hasMomText && !isSharing && !toast;
 
     React.useEffect(() => {
         if (hasMomFile) setFileError(null);
@@ -134,23 +140,45 @@ export default function PopupMeetingCompleted({
         return trimmed ? `${trimmed}\n\n${block}` : block;
     }, [momMinutes, latestQuoteUrl]);
 
-    const handleShareMom = () => {
+    const handleShareMom = async () => {
+        if (isSharing || toast) return;
+        if (!hasMomText) {
+            setFileError('Please enter Minutes of Meeting (MOM) text.');
+            return;
+        }
         if (!hasMomFile) {
             setFileError('Please upload at least one reference file before submitting the MOM.');
             return;
         }
+        if (!onShareMom) return;
         setFileError(null);
         if (latestQuoteUrl && momMinutes !== minutesWithQuoteAttached) {
             setMomMinutes(minutesWithQuoteAttached);
         }
-        onShareMom?.({
-            attendees,
-            meetingDate,
-            completionPercent: initialCompletionPercent ?? 100,
-            minutesWithQuote: minutesWithQuoteAttached,
-            latestQuoteUrl,
-            latestQuoteId,
-        });
+        setIsSharing(true);
+        try {
+            const result = await onShareMom({
+                attendees,
+                meetingDate,
+                completionPercent: initialCompletionPercent ?? 100,
+                minutesWithQuote: minutesWithQuoteAttached,
+                latestQuoteUrl,
+                latestQuoteId,
+            });
+            if (result && result.ok === false) {
+                setFileError('Failed to share MOM. Please try again.');
+                return;
+            }
+            setToast('MOM shared successfully.');
+            setTimeout(() => {
+                setToast(null);
+                onClose();
+            }, 3000);
+        } catch {
+            setFileError('Failed to share MOM. Please try again.');
+        } finally {
+            setIsSharing(false);
+        }
     };
 
     return (
@@ -344,17 +372,37 @@ export default function PopupMeetingCompleted({
             )}
 
             <div className="flex justify-end gap-3">
-                <button type="button" onClick={onClose} className="px-4 py-2 text-gray-700 font-medium hover:bg-gray-100 rounded-lg">Cancel</button>
+                <button
+                    type="button"
+                    onClick={onClose}
+                    disabled={isSharing || !!toast}
+                    className="px-4 py-2 text-gray-700 font-medium hover:bg-gray-100 rounded-lg disabled:opacity-50"
+                >
+                    Cancel
+                </button>
                 <button
                     type="button"
                     onClick={handleShareMom}
-                    disabled={!hasMomFile}
+                    disabled={!canShare}
                     className="px-5 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
-                    title={!hasMomFile ? 'Upload at least one file to submit MOM' : undefined}
+                    title={!hasMomFile ? 'Upload at least one file to submit MOM' : !hasMomText ? 'Enter MOM text to submit' : undefined}
                 >
-                    {show40pUpload ? 'Share MOM & send to finance' : 'Share the MOM'} <span className="pl-2"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="size-6 fill-white"><path strokeLinecap="round" strokeLinejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" /></svg></span>
+                    {isSharing ? 'Sharing…' : show40pUpload ? 'Share MOM & send to finance' : 'Share the MOM'}
+                    {!isSharing && (
+                        <span className="pl-2">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="size-6 fill-white">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" />
+                            </svg>
+                        </span>
+                    )}
                 </button>
             </div>
+
+            {toast && (
+                <div className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-gray-800 text-white text-base font-medium px-8 py-4 rounded-lg shadow-2xl z-[9999] text-center max-w-md">
+                    {toast}
+                </div>
+            )}
         </div>
     );
 }
