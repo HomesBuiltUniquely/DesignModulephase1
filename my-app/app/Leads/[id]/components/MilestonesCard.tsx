@@ -86,6 +86,11 @@ export default function MilestonesCard({
           );
           return;
         }
+        if (body && typeof body === 'object' && (body as { ok?: unknown }).ok === false) {
+          setPaymentSummary(null);
+          setPaymentSummaryError(null);
+          return;
+        }
         setPaymentSummary(mapQuotePaymentSummaryFromApi(body as Record<string, unknown>));
       } catch {
         if (!cancelled) {

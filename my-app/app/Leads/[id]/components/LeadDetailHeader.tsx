@@ -4,6 +4,7 @@ import type { LeadshipTypes } from '@/app/Components/Types/Types';
 import type { ImageType } from '../types';
 import MileStonesArray from '@/app/Components/Types/MileStoneArray';
 import { formatHubPid } from '@/app/lib/formatHubPid';
+import { StartMeetingButton } from '@/app/Components/MeetingWiz/StartMeetingButton';
 
 type Props = {
     project: LeadshipTypes;
@@ -16,6 +17,8 @@ type Props = {
     /** Admin / TDM / DGM: mark project cancelled */
     showCancelButton?: boolean;
     onCancelClick?: () => void;
+    showStartMeeting?: boolean;
+    onStartMeeting?: () => void;
     /** Hide the Overview/BOQ/Payment/Escalation navbar (e.g. for MMT). */
     hideNavTabs?: boolean;
     /** Hide the milestone progress stepper (e.g. for MMT). */
@@ -64,6 +67,8 @@ export default function LeadDetailHeader({
     onLeadSettingsClick,
     showCancelButton,
     onCancelClick,
+    showStartMeeting,
+    onStartMeeting,
 }: Props) {
     const isCancelled = (project.projectStage || '').trim().toLowerCase() === 'cancelled';
     const holdLabel = isCancelled
@@ -88,6 +93,9 @@ export default function LeadDetailHeader({
                     </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-4 xl:gap-6">
+                {showStartMeeting && onStartMeeting ? (
+                    <StartMeetingButton onClick={onStartMeeting} size="md" />
+                ) : null}
                 {!hideProlanceHoldResume && (
                     <>
                     <button

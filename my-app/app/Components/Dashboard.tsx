@@ -18,6 +18,9 @@ import {
 import { openProlanceBrowserForProjectId } from "@/app/lib/prolanceLinks";
 import { formatHubPid } from "@/app/lib/formatHubPid";
 import { Pre10LeadViewModal } from "./Pre10LeadViewModal";
+import { MeetingWizSessionOverlay } from "./MeetingWiz/MeetingWizSessionOverlay";
+import { StartMeetingButton } from "./MeetingWiz/StartMeetingButton";
+import { canShowStartMeetingButton } from "@/app/lib/leadMeetingSchedule";
 import { AddProjectModal } from "./AddProjectModal";
 import { PersonalAppointmentModal } from "./PersonalAppointmentModal";
 import {
@@ -445,6 +448,13 @@ export default function Dashboard() {
     const [getQuoteLeadId, setGetQuoteLeadId] = useState<number | null>(null);
     /** Lead shown in View popup (Pre 10%, 10–20%, 20–60%) */
     const [viewLead, setViewLead] = useState<LeadshipTypes | null>(null);
+    const [meetingWizOpen, setMeetingWizOpen] = useState(false);
+    const [meetingWizLead, setMeetingWizLead] = useState<LeadshipTypes | null>(null);
+
+    const openMeetingWizForLead = (row: LeadshipTypes) => {
+        setMeetingWizLead(row);
+        setMeetingWizOpen(true);
+    };
     const [showFinancePopup, setShowFinancePopup] = useState(false);
     const [showAddProjectModal, setShowAddProjectModal] = useState(false);
     const [showPersonalAppointmentModal, setShowPersonalAppointmentModal] = useState(false);
@@ -1104,8 +1114,15 @@ export default function Dashboard() {
                                                         {row.projectName || "—"}
                                                     </div>
                                                 </td>
-                                                <td className="py-3 px-5 text-sm text-gray-700 whitespace-nowrap" title={timeSlotLabel}>
-                                                    {timeSlotLabel}
+                                                <td className="py-3 px-5 text-sm text-gray-700" title={timeSlotLabel}>
+                                                    <div className="flex flex-col items-start gap-2">
+                                                        <span className="whitespace-nowrap">{timeSlotLabel}</span>
+                                                        {canShowStartMeetingButton(row) ? (
+                                                            <StartMeetingButton
+                                                                onClick={() => openMeetingWizForLead(row)}
+                                                            />
+                                                        ) : null}
+                                                    </div>
                                                 </td>
                                                 {isAdmin && (
                                                     <td className="py-3 px-5 min-w-[200px]">
@@ -1168,13 +1185,20 @@ export default function Dashboard() {
                                                     </td>
                                                 )}
                                                 <td className="py-3 px-5">
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => setViewLead(row)}
-                                                        className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700 shadow-sm hover:bg-gray-50"
-                                                    >
-                                                        View
-                                                    </button>
+                                                    <div className="flex flex-wrap items-center gap-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setViewLead(row)}
+                                                            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700 shadow-sm hover:bg-gray-50"
+                                                        >
+                                                            View
+                                                        </button>
+                                                        {canShowStartMeetingButton(row) ? (
+                                                            <StartMeetingButton
+                                                                onClick={() => openMeetingWizForLead(row)}
+                                                            />
+                                                        ) : null}
+                                                    </div>
                                                 </td>
                                                 <td className="py-3 px-5">
                                                     <button
@@ -1341,6 +1365,11 @@ export default function Dashboard() {
                                                             </button>
                                                         ) : (
                                                             <>
+                                                                {canShowStartMeetingButton(row) ? (
+                                                                    <StartMeetingButton
+                                                                        onClick={() => openMeetingWizForLead(row)}
+                                                                    />
+                                                                ) : null}
                                                                 <button
                                                                     type="button"
                                                                     onClick={() => setViewLead(row)}
@@ -1904,6 +1933,8 @@ export default function Dashboard() {
                 <Pre10LeadViewModal
                     lead={viewLead}
                     timeSlotLabel={formatLeadTimeSlot(viewLead)}
+                    showStartMeeting={canShowStartMeetingButton(viewLead)}
+                    onStartMeeting={() => openMeetingWizForLead(viewLead)}
                     onClose={() => setViewLead(null)}
                 />
             ) : null}
@@ -1935,6 +1966,21 @@ export default function Dashboard() {
                     onDismiss={() => setAppointmentSuccessToast(null)}
                 />
             ) : null}
+            <MeetingWizSessionOverlay
+                open={meetingWizOpen}
+                lead={meetingWizLead}
+                onLeadUpdated={(updated) => {
+                    setMeetingWizLead(updated);
+                    setProjects((prev) =>
+                        prev.map((p) => (p.id === updated.id ? { ...p, ...updated } : p)),
+                    );
+                    setViewLead((prev) => (prev && prev.id === updated.id ? { ...prev, ...updated } : prev));
+                }}
+                onClose={() => {
+                    setMeetingWizOpen(false);
+                    setMeetingWizLead(null);
+                }}
+            />
         </div>
     );
     }

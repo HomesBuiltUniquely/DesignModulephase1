@@ -46,6 +46,9 @@ import {
     readPostGetQuotePreviewRaw,
 } from '@/app/lib/prolanceGetQuotePersistSnapshot';
 import { openProlanceBrowserForProjectId } from '@/app/lib/prolanceLinks';
+import { MeetingWizSessionOverlay } from '@/app/Components/MeetingWiz/MeetingWizSessionOverlay';
+import { canShowStartMeetingButton } from '@/app/lib/leadMeetingSchedule';
+import { getPhaseBucket } from '@/app/lib/leadPhaseBucket';
 
 const API = getApiBase();
 
@@ -176,6 +179,7 @@ export default function ProjectDetailPage() {
     const momFileInputRef = useRef<HTMLInputElement>(null);
     // Progress history: loaded from API and persisted when new events are added (recorded and maintained)
     const [historyEvents, setHistoryEvents] = useState<HistoryEvent[]>([]);
+    const [meetingWizOpen, setMeetingWizOpen] = useState(false);
     const historyLeadIdRef = useRef<number | null>(null);
     const [showHoldModal, setShowHoldModal] = useState(false);
     const [showCancelModal, setShowCancelModal] = useState(false);
@@ -1472,6 +1476,20 @@ export default function ProjectDetailPage() {
         e.target.value = '';
     };
 
+    const rememberScheduledMeetingDate = (meta?: { meetingDate?: string; meetingTime?: string } | null) => {
+        const day = meta?.meetingDate ? String(meta.meetingDate).trim().slice(0, 10) : '';
+        if (!day) return;
+        setProject((prev) =>
+            prev
+                ? {
+                      ...prev,
+                      scheduledMeetingDate: day,
+                      scheduledMeetingSlot: meta?.meetingTime ? String(meta.meetingTime) : prev.scheduledMeetingSlot,
+                  }
+                : prev,
+        );
+    };
+
     const addHistoryEvent = (event: Omit<HistoryEvent, 'id' | 'timestamp'>) => {
         const full: HistoryEvent = {
             ...event,
@@ -1519,6 +1537,9 @@ export default function ProjectDetailPage() {
             details: options?.details,
             meta: options?.meta,
         });
+        if (options?.meta && typeof options.meta === 'object') {
+            rememberScheduledMeetingDate(options.meta as { meetingDate?: string; meetingTime?: string });
+        }
         // persist completion for this lead so refresh keeps it completed
         if (projectId != null) {
             const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -1891,8 +1912,51 @@ export default function ProjectDetailPage() {
                     canGetQuote
                     showLeadSettings={Boolean(project && sessionId)}
                     onLeadSettingsClick={() => setLeadSettingsOpen(true)}
+                    showStartMeeting={
+                        !activeCard &&
+                        !isMmtUser &&
+                        !!project &&
+                        (() => {
+                            const phase = getPhaseBucket(project);
+                            return phase === 'Pre 10%' || phase === '10-20%' || phase === '20-60%';
+                        })() &&
+                        canShowStartMeetingButton(project, historyEvents)
+                    }
+                    onStartMeeting={() => setMeetingWizOpen(true)}
                 />
             )}
+
+            {(() => {
+                // Header hides when a card is maximized — keep Start meeting reachable.
+                if (!activeCard) return null;
+                const phase = project ? getPhaseBucket(project) : null;
+                const canShow =
+                    !isMmtUser &&
+                    !!project &&
+                    (phase === 'Pre 10%' || phase === '10-20%' || phase === '20-60%') &&
+                    canShowStartMeetingButton(project, historyEvents);
+                if (!canShow) return null;
+                return (
+                    <div className="sticky top-0 z-[80] flex justify-end px-4 pt-3 xl:px-6">
+                        <button
+                            type="button"
+                            onClick={() => setMeetingWizOpen(true)}
+                            className="inline-flex items-center justify-center rounded-lg bg-[#2EE86B] px-4 py-2.5 text-sm font-bold text-black shadow-sm transition hover:bg-[#24d45d]"
+                        >
+                            Start meeting
+                        </button>
+                    </div>
+                );
+            })()}
+
+            <MeetingWizSessionOverlay
+                open={meetingWizOpen}
+                lead={project}
+                onLeadUpdated={(updated) => {
+                    setProject((prev) => (prev ? { ...prev, ...updated } : updated));
+                }}
+                onClose={() => setMeetingWizOpen(false)}
+            />
 
             {!activeCard && leadSettingsOpen && project && sessionId && (
                 <div
@@ -2871,6 +2935,7 @@ export default function ProjectDetailPage() {
                                         user: { name: authUser?.name ?? 'Designer', avatar: authUser?.profileImage },
                                         meta: { ...meta },
                                     });
+                                    rememberScheduledMeetingDate(meta);
                                     setDesignUploadFiles([]);
                                 } catch (err) {
                                     console.error('first-cut-design submission failed', err);
@@ -3281,6 +3346,7 @@ export default function ProjectDetailPage() {
                                         user: { name: authUser?.name ?? 'Designer', avatar: authUser?.profileImage },
                                         meta: { ...meta },
                                     });
+                                    rememberScheduledMeetingDate(meta);
                                     setDesignUploadFiles([]);
                                 } catch (err) {
                                     console.error('material-selection schedule failed', err);
@@ -3577,6 +3643,7 @@ export default function ProjectDetailPage() {
                                         user: { name: authUser?.name ?? 'Designer', avatar: authUser?.profileImage },
                                         meta: { ...meta },
                                     });
+                                    rememberScheduledMeetingDate(meta);
                                     setDesignUploadFiles([]);
                                 } catch (err) {
                                     console.error('Submit failed', err);

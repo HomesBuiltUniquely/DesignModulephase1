@@ -274,7 +274,12 @@ async function getCachedOrFreshHubToken(opts?: {
     asString(tokenObj.access_token) || asString(tokenObj.accessToken) || asString(tokenObj.token);
   if (!token || tokenResp.status >= 400) {
     hubTokenCache = null;
-    return { ok: false, message: "Failed to generate Prolance token", status: tokenResp.status || 500 };
+    const detail = prolanceUpstreamErrorMessage(tokenResp.data);
+    const message = detail
+      ? `Failed to generate Prolance token: ${detail}`
+      : `Failed to generate Prolance token (HTTP ${tokenResp.status || 500})`;
+    console.error("[prolance-hub-token]", { status: tokenResp.status, detail: detail || tokenResp.data });
+    return { ok: false, message, status: tokenResp.status || 500 };
   }
 
   const expiresAtMs = Date.now() + ttlFromTokenResponse(tokenObj, DEFAULT_HUB_TOKEN_TTL_MS);
@@ -631,6 +636,21 @@ async function proxiedFetch(params: {
   }
 
   return { status, data };
+}
+
+function prolanceUpstreamErrorMessage(data: unknown): string | null {
+  if (!data || typeof data !== "object") {
+    return typeof data === "string" && data.trim() ? data.trim().slice(0, 400) : null;
+  }
+  const o = data as Record<string, unknown>;
+  return (
+    asString(o.error_description) ||
+    asString(o.errorDescription) ||
+    asString(o.message) ||
+    asString(o.Message) ||
+    asString(o.error) ||
+    null
+  );
 }
 
 function asErrorMessage(err: unknown): string {
@@ -1116,12 +1136,24 @@ async function createProlanceServerSession(): Promise<ProlanceServerSession | { 
     body: { grant_type: "password", username, password },
   });
   if (tokenResp.status < 200 || tokenResp.status >= 300 || !tokenResp.data || typeof tokenResp.data !== "object") {
-    return { error: "Failed to generate Prolance token", status: tokenResp.status || 500 };
+    const detail = prolanceUpstreamErrorMessage(tokenResp.data);
+    return {
+      error: detail
+        ? `Failed to generate Prolance token: ${detail}`
+        : `Failed to generate Prolance token (HTTP ${tokenResp.status || 500})`,
+      status: tokenResp.status || 500,
+    };
   }
   const tokenObj = tokenResp.data as Record<string, unknown>;
   const token =
     asString(tokenObj.access_token) || asString(tokenObj.accessToken) || asString(tokenObj.token);
-  if (!token) return { error: "Failed to generate Prolance token", status: 500 };
+  if (!token) {
+    const detail = prolanceUpstreamErrorMessage(tokenResp.data);
+    return {
+      error: detail ? `Failed to generate Prolance token: ${detail}` : "Failed to generate Prolance token (no access_token in response)",
+      status: 500,
+    };
+  }
 
   const loginID = asString(envTrim("PROLANCE_PARTNER_LOGIN_ID"));
   const partnerPassword = asString(envTrim("PROLANCE_PARTNER_PASSWORD"));
@@ -2359,7 +2391,10 @@ function formatProlancePName(
 
       const breakdown = await resolveLeadMilestonePaymentBreakdown(pool, leadId);
       if (!breakdown) {
-        return res.status(404).json({
+        // Soft empty response — Pre 10% leads often have no quote yet; avoid noisy 404s in the browser.
+        return res.json({
+          ok: false,
+          leadId,
           message: "No Prolance project or quotation found for this lead yet",
         });
       }

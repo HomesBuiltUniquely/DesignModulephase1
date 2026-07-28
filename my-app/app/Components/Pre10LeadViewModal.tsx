@@ -3,10 +3,13 @@
 import { useEffect, type ReactNode } from 'react';
 import type { ConfigScopeRoom, ConfigScopeSummary, LeadshipTypes } from './Types/Types';
 import { formatHubPid } from '@/app/lib/formatHubPid';
+import { StartMeetingButton } from '@/app/Components/MeetingWiz/StartMeetingButton';
 type Props = {
     lead: LeadshipTypes;
     timeSlotLabel: string;
     onClose: () => void;
+    showStartMeeting?: boolean;
+    onStartMeeting?: () => void;
 };
 
 function displayValue(value: string | number | null | undefined): string {
@@ -110,7 +113,13 @@ function RoomsBlock({ rooms, fallbackNames }: { rooms: ConfigScopeRoom[]; fallba
     );
 }
 
-export function Pre10LeadViewModal({ lead, timeSlotLabel, onClose }: Props) {
+export function Pre10LeadViewModal({
+    lead,
+    timeSlotLabel,
+    onClose,
+    showStartMeeting,
+    onStartMeeting,
+}: Props) {
     const projectLabel = formatHubPid(lead.pid, lead.id);
     const customerName =
         lead.intakeCustomerName?.trim() ||
@@ -171,9 +180,6 @@ export function Pre10LeadViewModal({ lead, timeSlotLabel, onClose }: Props) {
                 <div className="space-y-6 overflow-y-auto px-6 py-5">
                     <Section title="Customer">
                         <Field label="Customer name" value={displayValue(customerName)} />
-                        <Field label="Phone" value={displayValue(lead.contactNo)} />
-                        <Field label="Alt phone" value={displayValue(lead.intakeAltPhone)} />
-                        <Field label="Email" value={displayValue(lead.clientEmail)} />
                         <Field label="Pincode" value={displayValue(lead.intakePincode)} />
                         <Field label="Lead source" value={displayValue(lead.intakeLeadSource)} />
                         <Field label="Possession date" value={displayValue(lead.intakePossessionDate)} />
@@ -351,7 +357,10 @@ export function Pre10LeadViewModal({ lead, timeSlotLabel, onClose }: Props) {
                     ) : null}
                 </div>
 
-                <div className="flex shrink-0 justify-end border-t border-gray-100 px-6 py-4">
+                <div className="flex shrink-0 justify-end gap-2 border-t border-gray-100 px-6 py-4">
+                    {showStartMeeting && onStartMeeting ? (
+                        <StartMeetingButton onClick={onStartMeeting} size="md" />
+                    ) : null}
                     <button
                         type="button"
                         onClick={onClose}

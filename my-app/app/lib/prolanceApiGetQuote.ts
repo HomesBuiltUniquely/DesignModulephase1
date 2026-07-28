@@ -412,6 +412,10 @@ export async function runProlanceGetQuoteApiFlow(params: {
                 const msg =
                     (partnerBody && typeof partnerBody === "object" && (partnerBody.message || partnerBody.error)) ||
                     "Failed to login partner / fetch origin session.";
+                // Prefer hub-token detail when partner login failed because token was rejected.
+                if (!String(prolanceToken).trim() && typeof msg === "string" && /token|password|hubapi|credential/i.test(msg)) {
+                    return { ok: false as const, message: String(msg) };
+                }
                 return { ok: false as const, message: String(msg) };
             }
 

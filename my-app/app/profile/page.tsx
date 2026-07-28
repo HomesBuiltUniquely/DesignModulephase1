@@ -150,6 +150,8 @@ export default function ProfilePage() {
         <div className="flex items-center gap-4">
           <h1 className="text-xl font-bold text-gray-900">Profile</h1>
           <a href="/" className="text-sm text-green-600 hover:underline">Dashboard</a>
+          <a href="/profile/experience" className="text-sm text-gray-600 hover:text-gray-900">Experience &amp; stats</a>
+          <a href="/profile/inspiration" className="text-sm text-gray-600 hover:text-gray-900">Portfolio projects</a>
           <a href="/change-password" className="text-sm text-gray-600 hover:text-gray-900">Change password</a>
         </div>
         <div className="flex items-center gap-4">

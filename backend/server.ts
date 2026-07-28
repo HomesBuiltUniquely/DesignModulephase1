@@ -1,4 +1,3 @@
-import "dotenv/config";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
 import mysql from "mysql2/promise";
@@ -27,6 +26,10 @@ import {
 import { registerCrmHubBookingRoutes, notifyHubFinanceReview, getHubBookingSyncForLead, buildFinance10pQueueList, buildCrmSalesClosureQueueRows, buildCrmSalesClosureLeadDetail } from "./routes/crmHubBookingRoutes";
 import { registerIncentivesRoutes } from "./routes/incentivesRoutes";
 
+/**
+ * Load backend/.env before dotenv. Supports `export KEY=value` and quoted values.
+ * Unquoted values keep `#` (needed for passwords like Hub@API#26 — dotenv treats bare `#` as a comment).
+ */
 function loadEnvFile() {
   const envPath = path.join(__dirname, ".env");
   if (!fs.existsSync(envPath)) return;
@@ -42,13 +45,19 @@ function loadEnvFile() {
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
       value = value.slice(1, -1);
     }
-    if (!(key in process.env)) {
-      process.env[key] = value;
-    }
+    // Always apply file values so a truncated dotenv load cannot stick.
+    process.env[key] = value;
   });
 }
 
 loadEnvFile();
+// Fill any remaining keys that dotenv understands; file values already set above win.
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  require("dotenv").config({ path: path.join(__dirname, ".env"), override: false });
+} catch {
+  /* optional */
+}
 
 const app = express();
 const PORT = Number(process.env.PORT || 3001);
@@ -754,6 +763,34 @@ async function initDb() {
       }
     } catch {
       // ignore
+    }
+
+    // Designer Meeting Wizard portfolio fields (experience card + inspiration projects)
+    for (const colSpec of [
+      { name: "designer_title", ddl: "ALTER TABLE users ADD COLUMN designer_title VARCHAR(128) NULL" },
+      { name: "designer_experience", ddl: "ALTER TABLE users ADD COLUMN designer_experience VARCHAR(128) NULL" },
+      { name: "designer_projects", ddl: "ALTER TABLE users ADD COLUMN designer_projects VARCHAR(128) NULL" },
+      { name: "designer_specialty", ddl: "ALTER TABLE users ADD COLUMN designer_specialty VARCHAR(128) NULL" },
+      { name: "designer_quote", ddl: "ALTER TABLE users ADD COLUMN designer_quote VARCHAR(512) NULL" },
+      { name: "designer_sqft", ddl: "ALTER TABLE users ADD COLUMN designer_sqft VARCHAR(64) NULL" },
+      { name: "designer_awards", ddl: "ALTER TABLE users ADD COLUMN designer_awards VARCHAR(64) NULL" },
+      { name: "designer_satisfaction", ddl: "ALTER TABLE users ADD COLUMN designer_satisfaction VARCHAR(64) NULL" },
+      {
+        name: "designer_inspiration_projects",
+        ddl: "ALTER TABLE users ADD COLUMN designer_inspiration_projects LONGTEXT NULL",
+      },
+    ] as const) {
+      try {
+        const [exists] = await conn.query(
+          "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = ?",
+          [colSpec.name],
+        );
+        if ((exists as any[]).length === 0) {
+          await conn.query(colSpec.ddl);
+        }
+      } catch {
+        // ignore
+      }
     }
 
     await conn.query(`
@@ -1617,18 +1654,30 @@ function slotTextFromValue(v: unknown): string | null {
 function extractLeadScheduleFromPayload(payloadInput: unknown): {
   appointmentDate: string | null;
   appointmentSlot: string | null;
+  scheduledMeetingDate: string | null;
+  scheduledMeetingSlot: string | null;
+  designScheduledMeetingUpdatedAt: string | null;
+  meetingWizLastCompleted: { at: string; meetingDate: string } | null;
 } {
+  const emptySchedule = {
+    appointmentDate: null as string | null,
+    appointmentSlot: null as string | null,
+    scheduledMeetingDate: null as string | null,
+    scheduledMeetingSlot: null as string | null,
+    designScheduledMeetingUpdatedAt: null as string | null,
+    meetingWizLastCompleted: null as { at: string; meetingDate: string } | null,
+  };
   let root: Record<string, unknown> = {};
   if (typeof payloadInput === "string") {
     try {
       root = JSON.parse(payloadInput) as Record<string, unknown>;
     } catch {
-      return { appointmentDate: null, appointmentSlot: null };
+      return emptySchedule;
     }
   } else if (payloadInput && typeof payloadInput === "object") {
     root = payloadInput as Record<string, unknown>;
   } else {
-    return { appointmentDate: null, appointmentSlot: null };
+    return emptySchedule;
   }
 
   const formData = (root.formData || root.form_data || root.form || {}) as Record<string, unknown>;
@@ -1681,13 +1730,67 @@ function extractLeadScheduleFromPayload(payloadInput: unknown): {
     slotTextFromValue(fetched.slot) ||
     null;
 
-  return { appointmentDate, appointmentSlot };
+  const designScheduled =
+    root.designScheduledMeeting && typeof root.designScheduledMeeting === "object"
+      ? (root.designScheduledMeeting as Record<string, unknown>)
+      : null;
+  const scheduledMeetingDateRaw = pickTrimmedString(
+    designScheduled?.date,
+    designScheduled?.meetingDate,
+    root.scheduledMeetingDate,
+  );
+  const scheduledMeetingDate = scheduledMeetingDateRaw
+    ? String(scheduledMeetingDateRaw).slice(0, 10)
+    : null;
+  const scheduledMeetingSlot =
+    slotTextFromValue(designScheduled?.time) ||
+    slotTextFromValue(designScheduled?.meetingTime) ||
+    slotTextFromValue(designScheduled?.slot) ||
+    slotTextFromValue(root.scheduledMeetingSlot) ||
+    null;
+
+  const designScheduledMeetingUpdatedAt = pickTrimmedString(
+    designScheduled?.updatedAt,
+    designScheduled?.updated_at,
+  );
+
+  const completedRaw =
+    root.meetingWizLastCompleted && typeof root.meetingWizLastCompleted === "object"
+      ? (root.meetingWizLastCompleted as Record<string, unknown>)
+      : null;
+  const meetingWizLastCompletedAt = pickTrimmedString(completedRaw?.at, completedRaw?.completedAt);
+  const meetingWizLastCompletedMeetingDateRaw = pickTrimmedString(
+    completedRaw?.meetingDate,
+    completedRaw?.forMeetingDate,
+  );
+  const meetingWizLastCompleted =
+    meetingWizLastCompletedAt
+      ? {
+          at: meetingWizLastCompletedAt,
+          meetingDate: meetingWizLastCompletedMeetingDateRaw
+            ? String(meetingWizLastCompletedMeetingDateRaw).slice(0, 10)
+            : String(meetingWizLastCompletedAt).slice(0, 10),
+        }
+      : null;
+
+  return {
+    appointmentDate,
+    appointmentSlot,
+    scheduledMeetingDate,
+    scheduledMeetingSlot,
+    designScheduledMeetingUpdatedAt,
+    meetingWizLastCompleted,
+  };
 }
 
 /** Fields for dashboard View popup (external intake, sales closure, CRM payload). */
 function extractLeadIntakeViewFromPayload(payloadInput: unknown): {
   appointmentDate: string | null;
   appointmentSlot: string | null;
+  scheduledMeetingDate: string | null;
+  scheduledMeetingSlot: string | null;
+  designScheduledMeetingUpdatedAt: string | null;
+  meetingWizLastCompleted: { at: string; meetingDate: string } | null;
   intakeCustomerName: string | null;
   intakeConfiguration: string | null;
   intakeNotes: string | null;
@@ -1882,7 +1985,16 @@ async function getUserFromSession(req: Request) {
   const token = auth?.replace(/^Bearer\s+/i, "");
   if (!token) return null;
   const [rows] = await pool.query(
-    `SELECT u.id, u.email, u.name, u.role, u.profileImage, u.phone, u.branch
+    `SELECT u.id, u.email, u.name, u.role, u.profileImage, u.phone, u.branch,
+            u.designer_title AS designerTitle,
+            u.designer_experience AS designerExperience,
+            u.designer_projects AS designerProjects,
+            u.designer_specialty AS designerSpecialty,
+            u.designer_quote AS designerQuote,
+            u.designer_sqft AS designerSqft,
+            u.designer_awards AS designerAwards,
+            u.designer_satisfaction AS designerSatisfaction,
+            u.designer_inspiration_projects AS designerInspirationProjects
        FROM sessions s
        JOIN users u ON u.id = s.user_id
        WHERE s.id = ?`,
@@ -1890,6 +2002,17 @@ async function getUserFromSession(req: Request) {
   );
   const user = (rows as any[])[0];
   if (!user) return null;
+  let inspirationProjects: unknown[] = [];
+  try {
+    if (typeof user.designerInspirationProjects === "string" && user.designerInspirationProjects.trim()) {
+      const parsed = JSON.parse(user.designerInspirationProjects);
+      if (Array.isArray(parsed)) inspirationProjects = parsed;
+    } else if (Array.isArray(user.designerInspirationProjects)) {
+      inspirationProjects = user.designerInspirationProjects;
+    }
+  } catch {
+    inspirationProjects = [];
+  }
   return {
     id: user.id,
     email: user.email,
@@ -1898,6 +2021,15 @@ async function getUserFromSession(req: Request) {
     profileImage: user.profileImage || null,
     phone: user.phone || "",
     branch: user.branch || null,
+    designerTitle: user.designerTitle || null,
+    designerExperience: user.designerExperience || null,
+    designerProjects: user.designerProjects || null,
+    designerSpecialty: user.designerSpecialty || null,
+    designerQuote: user.designerQuote || null,
+    designerSqft: user.designerSqft || null,
+    designerAwards: user.designerAwards || null,
+    designerSatisfaction: user.designerSatisfaction || null,
+    designerInspirationProjects: inspirationProjects,
   };
 }
 
@@ -3160,6 +3292,94 @@ async function addLeadHistoryEvent(leadId: number, event: any) {
   );
 }
 
+/** Persist latest design-module meeting schedule onto lead payload for dashboard Start Meeting. */
+async function persistLeadDesignScheduledMeeting(
+  leadId: number,
+  opts: {
+    meetingDate?: string | null;
+    meetingTime?: string | null;
+    meetingType?: string | null;
+    meetingMode?: string | null;
+  },
+) {
+  const dateIso =
+    normalizeBlockDateIso(opts.meetingDate) ||
+    (opts.meetingDate ? String(opts.meetingDate).trim().slice(0, 10) : null);
+  if (!dateIso || !/^\d{4}-\d{2}-\d{2}$/.test(dateIso)) return;
+
+  const [rows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [leadId]);
+  const row = (rows as { payload?: string | null }[])[0];
+  if (!row) return;
+
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = row.payload ? (JSON.parse(row.payload) as Record<string, unknown>) : {};
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = {};
+  } catch {
+    payload = {};
+  }
+
+  const timeLabel =
+    (opts.meetingTime && String(opts.meetingTime).trim()) ||
+    (payload.designScheduledMeeting &&
+    typeof payload.designScheduledMeeting === "object"
+      ? String((payload.designScheduledMeeting as Record<string, unknown>).time || "").trim()
+      : "") ||
+    null;
+
+  payload.designScheduledMeeting = {
+    date: dateIso,
+    time: timeLabel,
+    meetingType: opts.meetingType || null,
+    meetingMode: opts.meetingMode || null,
+    updatedAt: new Date().toISOString(),
+  };
+  payload.scheduledMeetingDate = dateIso;
+  if (timeLabel) payload.scheduledMeetingSlot = timeLabel;
+
+  await pool.query("UPDATE leads SET payload = ?, update_at = ? WHERE id = ?", [
+    JSON.stringify(payload),
+    new Date(),
+    leadId,
+  ]);
+}
+
+/** Mark Meeting Wizard session completed so Start Meeting stays hidden until a newer schedule. */
+async function persistLeadMeetingWizCompleted(
+  leadId: number,
+  opts: { completedAt?: string | null; meetingDate?: string | null },
+) {
+  const completedAt =
+    (opts.completedAt && String(opts.completedAt).trim()) || new Date().toISOString();
+  const meetingDate =
+    normalizeBlockDateIso(opts.meetingDate) ||
+    (opts.meetingDate ? String(opts.meetingDate).trim().slice(0, 10) : null) ||
+    completedAt.slice(0, 10);
+
+  const [rows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [leadId]);
+  const row = (rows as { payload?: string | null }[])[0];
+  if (!row) return;
+
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = row.payload ? (JSON.parse(row.payload) as Record<string, unknown>) : {};
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = {};
+  } catch {
+    payload = {};
+  }
+
+  payload.meetingWizLastCompleted = {
+    at: completedAt,
+    meetingDate,
+  };
+
+  await pool.query("UPDATE leads SET payload = ?, update_at = ? WHERE id = ?", [
+    JSON.stringify(payload),
+    new Date(),
+    leadId,
+  ]);
+}
+
 // ----- Auth -----
 
 app.post("/api/auth/login", async (req: Request, res: Response) => {
@@ -3170,12 +3390,32 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
 
   try {
     const [rows] = await pool.query(
-      "SELECT id, email, name, role, profileImage, phone, branch, password FROM users WHERE email = ?",
+      `SELECT id, email, name, role, profileImage, phone, branch, password,
+              designer_title AS designerTitle,
+              designer_experience AS designerExperience,
+              designer_projects AS designerProjects,
+              designer_specialty AS designerSpecialty,
+              designer_quote AS designerQuote,
+              designer_sqft AS designerSqft,
+              designer_awards AS designerAwards,
+              designer_satisfaction AS designerSatisfaction,
+              designer_inspiration_projects AS designerInspirationProjects
+       FROM users WHERE email = ?`,
       [email],
     );
     const userRow = (rows as any[])[0];
     if (!userRow || userRow.password !== password) {
       return res.status(401).json({ message: "Invalid credentials" });
+    }
+
+    let inspirationProjects: unknown[] = [];
+    try {
+      if (typeof userRow.designerInspirationProjects === "string" && userRow.designerInspirationProjects.trim()) {
+        const parsed = JSON.parse(userRow.designerInspirationProjects);
+        if (Array.isArray(parsed)) inspirationProjects = parsed;
+      }
+    } catch {
+      inspirationProjects = [];
     }
 
     const user = {
@@ -3186,6 +3426,15 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
       profileImage: userRow.profileImage || null,
       phone: userRow.phone || "",
       branch: userRow.branch || null,
+      designerTitle: userRow.designerTitle || null,
+      designerExperience: userRow.designerExperience || null,
+      designerProjects: userRow.designerProjects || null,
+      designerSpecialty: userRow.designerSpecialty || null,
+      designerQuote: userRow.designerQuote || null,
+      designerSqft: userRow.designerSqft || null,
+      designerAwards: userRow.designerAwards || null,
+      designerSatisfaction: userRow.designerSatisfaction || null,
+      designerInspirationProjects: inspirationProjects,
     };
 
     const sessionId =
@@ -3486,6 +3735,109 @@ app.put("/api/auth/profile", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("profile update error", err);
     return res.status(500).json({ message: "Failed to update profile" });
+  }
+});
+
+/** Designer Meeting Wizard card: title, experience, projects, specialty, quote */
+app.put("/api/auth/designer-experience", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+
+    const title = String(req.body?.designerTitle ?? req.body?.title ?? "").trim().slice(0, 128);
+    const experience = String(req.body?.designerExperience ?? req.body?.experience ?? "").trim().slice(0, 128);
+    const projects = String(req.body?.designerProjects ?? req.body?.projects ?? "").trim().slice(0, 128);
+    const specialty = String(req.body?.designerSpecialty ?? req.body?.specialty ?? "").trim().slice(0, 128);
+    const quote = String(req.body?.designerQuote ?? req.body?.quote ?? "").trim().slice(0, 512);
+    const sqft = String(req.body?.designerSqft ?? req.body?.sqft ?? "").trim().slice(0, 64);
+    const awards = String(req.body?.designerAwards ?? req.body?.awards ?? "").trim().slice(0, 64);
+    const satisfaction = String(req.body?.designerSatisfaction ?? req.body?.satisfaction ?? "").trim().slice(0, 64);
+
+    await pool.query(
+      `UPDATE users SET
+         designer_title = ?,
+         designer_experience = ?,
+         designer_projects = ?,
+         designer_specialty = ?,
+         designer_quote = ?,
+         designer_sqft = ?,
+         designer_awards = ?,
+         designer_satisfaction = ?
+       WHERE id = ?`,
+      [
+        title || null,
+        experience || null,
+        projects || null,
+        specialty || null,
+        quote || null,
+        sqft || null,
+        awards || null,
+        satisfaction || null,
+        user.id,
+      ],
+    );
+
+    const updated = await getUserFromSession(req);
+    return res.json({ message: "Designer experience updated", user: updated });
+  } catch (err) {
+    console.error("designer-experience update error", err);
+    return res.status(500).json({ message: "Failed to update designer experience" });
+  }
+});
+
+/** Inspiration projects shown / managed by the designer (JSON array). */
+app.put("/api/auth/inspiration-projects", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+
+    const raw = req.body?.projects ?? req.body?.designerInspirationProjects ?? [];
+    if (!Array.isArray(raw)) {
+      return res.status(400).json({ message: "projects must be an array" });
+    }
+
+    const allowedCategories = new Set(["LIVING ROOM", "BEDROOM", "KITCHEN", "OTHER"]);
+    const cleaned = [];
+    for (let index = 0; index < Math.min(raw.length, 24); index++) {
+      const item = raw[index];
+      if (!item || typeof item !== "object") continue;
+      const row = item as Record<string, unknown>;
+      const title = String(row.title ?? "").trim().slice(0, 160);
+      if (!title) continue;
+      const categoryRaw = String(row.category ?? "OTHER").trim().toUpperCase();
+      const category = allowedCategories.has(categoryRaw) ? categoryRaw : "OTHER";
+      let imageUrl: string | null =
+        typeof row.imageUrl === "string" && row.imageUrl.trim() ? row.imageUrl.trim() : null;
+      // Persist data-URL uploads to storage; keep http(s) URLs as-is.
+      if (imageUrl && imageUrl.startsWith("data:image/")) {
+        try {
+          imageUrl = await uploadProfileImage(user.id, imageUrl);
+        } catch (uploadErr) {
+          console.error("inspiration image upload failed", uploadErr);
+          return res.status(500).json({ message: "Failed to upload project image" });
+        }
+      } else if (imageUrl) {
+        imageUrl = imageUrl.slice(0, 2000);
+      }
+      cleaned.push({
+        id: String(row.id ?? `insp-${Date.now()}-${index}`).slice(0, 64),
+        title,
+        description: String(row.description ?? "").trim().slice(0, 1000),
+        category,
+        imageUrl,
+      });
+    }
+
+    await pool.query("UPDATE users SET designer_inspiration_projects = ? WHERE id = ?", [
+      JSON.stringify(cleaned),
+      user.id,
+    ]);
+
+    const updated = await getUserFromSession(req);
+    return res.json({ message: "Inspiration projects updated", user: updated });
+  } catch (err) {
+    console.error("inspiration-projects update error", err);
+    return res.status(500).json({ message: "Failed to update inspiration projects" });
   }
 });
 
@@ -5684,13 +6036,21 @@ app.get("/api/leads/:id/history", async (req: Request, res: Response) => {
       "SELECT event FROM lead_history WHERE lead_id = ? ORDER BY created_at DESC",
       [id],
     );
-    const events = (rows as any[]).map((r) => {
-      try {
-        return JSON.parse(r.event);
-      } catch {
+    const events = (rows as any[])
+      .map((r) => {
+        const raw = r.event;
+        // MySQL JSON columns are already objects via mysql2 — do not JSON.parse them.
+        if (raw && typeof raw === "object") return raw;
+        if (typeof raw === "string" && raw.trim()) {
+          try {
+            return JSON.parse(raw);
+          } catch {
+            return null;
+          }
+        }
         return null;
-      }
-    }).filter(Boolean);
+      })
+      .filter(Boolean);
 
     if (events.length > 0) {
       return res.json(events);
@@ -5737,6 +6097,28 @@ app.post("/api/leads/:id/history", async (req: Request, res: Response) => {
   if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
   try {
     await addLeadHistoryEvent(id, req.body);
+    try {
+      const meta =
+        req.body?.meta && typeof req.body.meta === "object"
+          ? (req.body.meta as Record<string, unknown>)
+          : null;
+      const meetingDate = meta?.meetingDate ?? meta?.signoffDate ?? null;
+      if (meetingDate) {
+        await persistLeadDesignScheduledMeeting(id, {
+          meetingDate: String(meetingDate),
+          meetingTime:
+            meta?.meetingTime != null
+              ? String(meta.meetingTime)
+              : meta?.signoffTime != null
+                ? String(meta.signoffTime)
+                : null,
+          meetingType: req.body?.taskName != null ? String(req.body.taskName) : null,
+          meetingMode: meta?.meetingMode != null ? String(meta.meetingMode) : null,
+        });
+      }
+    } catch (persistErr) {
+      console.error("[history] persist scheduled meeting failed (non-fatal)", persistErr);
+    }
     return res.status(201).json({ ok: true });
   } catch (err) {
     console.error("lead history insert error", err);
@@ -5793,6 +6175,21 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
        ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
       [id, milestoneIndex, taskName, new Date()],
     );
+
+    try {
+      const meetingDate = meta?.meetingDate ?? meta?.signoffDate ?? null;
+      const meetingTime = meta?.meetingTime ?? meta?.signoffTime ?? null;
+      if (meetingDate) {
+        await persistLeadDesignScheduledMeeting(id, {
+          meetingDate: String(meetingDate),
+          meetingTime: meetingTime != null ? String(meetingTime) : null,
+          meetingType: String(taskName),
+          meetingMode: meta?.meetingMode != null ? String(meta.meetingMode) : null,
+        });
+      }
+    } catch (persistErr) {
+      console.error("[complete-task] persist scheduled meeting failed (non-fatal)", persistErr);
+    }
 
     // Fire-and-forget: trigger milestone-specific customer emails where defined
     const emailRoutePath: string | null = (() => {
@@ -9493,6 +9890,17 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       });
     }
 
+    try {
+      await persistLeadDesignScheduledMeeting(leadId, {
+        meetingDate: String(meetingDate),
+        meetingTime: meetingTime != null ? String(meetingTime) : null,
+        meetingType: String(meetingType),
+        meetingMode: meetingMode != null ? String(meetingMode) : null,
+      });
+    } catch (persistErr) {
+      console.error("[schedule-meeting-invite] persist scheduled meeting failed (non-fatal)", persistErr);
+    }
+
     // EC pull-sync: record offline meetings for Design → EC sync
     try {
       const mode = typeof meetingMode === "string" ? meetingMode.trim().toLowerCase() : "";
@@ -11484,6 +11892,10 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
           experienceCenter: r.experienceCenter ?? null,
           appointmentDate: intake.appointmentDate,
           appointmentSlot: intake.appointmentSlot,
+          scheduledMeetingDate: intake.scheduledMeetingDate,
+          scheduledMeetingSlot: intake.scheduledMeetingSlot,
+          designScheduledMeetingUpdatedAt: intake.designScheduledMeetingUpdatedAt,
+          meetingWizLastCompleted: intake.meetingWizLastCompleted,
           intakeCustomerName: intake.intakeCustomerName,
           intakeConfiguration: intake.intakeConfiguration,
           intakeNotes: intake.intakeNotes,
@@ -12268,6 +12680,7 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
     if (!revision) revision = "v1.0 (Latest)";
 
     const { payload: _p, ...rest } = row;
+    const intake = extractLeadIntakeViewFromPayload(row.payload);
     return res.json({
       ...rest,
       isOnHold: !!row.isOnHold,
@@ -12281,6 +12694,29 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
       experienceCenter: experienceCenter ?? null,
       prolanceProjectId: row.prolanceProjectId != null ? Number(row.prolanceProjectId) : null,
       prolanceQuoteId: row.prolanceQuoteId != null ? Number(row.prolanceQuoteId) : null,
+      appointmentDate: intake.appointmentDate,
+      appointmentSlot: intake.appointmentSlot,
+      scheduledMeetingDate: intake.scheduledMeetingDate,
+      scheduledMeetingSlot: intake.scheduledMeetingSlot,
+      designScheduledMeetingUpdatedAt: intake.designScheduledMeetingUpdatedAt,
+      meetingWizLastCompleted: intake.meetingWizLastCompleted,
+      intakeCustomerName: intake.intakeCustomerName,
+      intakeConfiguration: intake.intakeConfiguration,
+      intakeNotes: intake.intakeNotes,
+      intakeBudget: intake.intakeBudget,
+      intakeLanguage: intake.intakeLanguage,
+      intakeBookingType: intake.intakeBookingType,
+      intakePropertyLocation: intake.intakePropertyLocation,
+      intakeMeetingType: intake.intakeMeetingType,
+      floorPlanPublicLink: intake.floorPlanPublicLink,
+      salesExecutive: intake.salesExecutive,
+      intakePincode: intake.pincode,
+      intakeLeadSource: intake.leadSource,
+      intakePossessionDate: intake.possessionDate,
+      intakeAltPhone: intake.altPhone,
+      configScopeSummary: intake.configScopeSummary,
+      experienceSummary: intake.experienceSummary,
+      decisionSummary: intake.decisionSummary,
     });
   } catch (err) {
     console.error("lead detail error", err);
@@ -12383,6 +12819,192 @@ app.post("/api/leads/manual-create", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("manual-create lead error", err);
     return res.status(500).json({ message: "Failed to create lead" });
+  }
+});
+
+/** Meeting Wizard Scope of Work: merge rooms + references into lead payload configurationScope. */
+app.patch("/api/leads/:id/meeting-scope", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+
+  const user = await getUserFromSession(req);
+  const access = await getLeadAccessRowForUser(res, user, id);
+  if (!access.ok) return;
+
+  try {
+    const body = (req.body || {}) as Record<string, unknown>;
+    const rawRooms = Array.isArray(body.selectedRooms) ? body.selectedRooms : [];
+    const rawRefs = Array.isArray(body.references)
+      ? body.references
+      : Array.isArray((body.referenceInspiration as { references?: unknown } | undefined)?.references)
+        ? ((body.referenceInspiration as { references: unknown[] }).references)
+        : [];
+    const aestheticNotes = String(
+      body.aestheticNotes ??
+        (body.referenceInspiration as { aestheticNotes?: unknown } | undefined)?.aestheticNotes ??
+        "",
+    )
+      .trim()
+      .slice(0, 4000);
+
+    const cleanedRooms: Record<string, unknown>[] = [];
+    for (let i = 0; i < Math.min(rawRooms.length, 40); i++) {
+      const item = rawRooms[i];
+      if (!item || typeof item !== "object") continue;
+      const row = item as Record<string, unknown>;
+      const roomName = String(row.roomName ?? row.title ?? "").trim().slice(0, 120);
+      if (!roomName) continue;
+      const unitsRequired = Array.isArray(row.unitsRequired)
+        ? row.unitsRequired
+            .map((u) => String(u ?? "").trim())
+            .filter(Boolean)
+            .slice(0, 40)
+        : typeof row.units === "string"
+          ? String(row.units)
+              .split(",")
+              .map((u) => u.trim())
+              .filter(Boolean)
+              .slice(0, 40)
+          : [];
+      cleanedRooms.push({
+        roomName,
+        theme: String(row.theme ?? "").trim().slice(0, 500) || null,
+        unitsRequired,
+        falseCeilingRequired: Boolean(row.falseCeilingRequired),
+        notes: String(row.notes ?? "").trim().slice(0, 2000) || null,
+      });
+    }
+
+    const cleanedRefs: Record<string, unknown>[] = [];
+    for (let i = 0; i < Math.min(rawRefs.length, 24); i++) {
+      const item = rawRefs[i];
+      if (!item || typeof item !== "object") continue;
+      const row = item as Record<string, unknown>;
+      const fileName = String(row.fileName ?? row.label ?? row.title ?? "Reference")
+        .trim()
+        .slice(0, 160);
+      let viewUrl: string | null =
+        typeof row.viewUrl === "string" && row.viewUrl.trim() ? row.viewUrl.trim() : null;
+      let mimeType =
+        typeof row.mimeType === "string" && row.mimeType.trim()
+          ? row.mimeType.trim().slice(0, 120)
+          : null;
+
+      if (viewUrl && viewUrl.startsWith("data:image/")) {
+        try {
+          viewUrl = await uploadProfileImage(user!.id, viewUrl);
+          mimeType = mimeType || "image/jpeg";
+        } catch (uploadErr) {
+          console.error("meeting-scope reference upload failed", uploadErr);
+          return res.status(500).json({ message: "Failed to upload reference image" });
+        }
+      } else if (viewUrl) {
+        viewUrl = viewUrl.slice(0, 2000);
+      }
+
+      if (!viewUrl && !fileName) continue;
+      cleanedRefs.push({
+        id: String(row.id ?? `ref-${Date.now()}-${i}`).slice(0, 64),
+        fileName: fileName || "Reference",
+        mimeType,
+        viewUrl,
+      });
+    }
+
+    const [payloadRows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [id]);
+    const payloadRow = (payloadRows as { payload?: string | null }[])[0];
+    if (!payloadRow) return res.status(404).json({ message: "Lead not found" });
+
+    let payload: Record<string, unknown> = {};
+    try {
+      payload = payloadRow.payload ? (JSON.parse(payloadRow.payload) as Record<string, unknown>) : {};
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = {};
+    } catch {
+      payload = {};
+    }
+
+    const connection =
+      payload.connection && typeof payload.connection === "object" && !Array.isArray(payload.connection)
+        ? ({ ...(payload.connection as Record<string, unknown>) } as Record<string, unknown>)
+        : {};
+
+    const prevScope =
+      (connection.configurationScope &&
+      typeof connection.configurationScope === "object" &&
+      !Array.isArray(connection.configurationScope)
+        ? { ...(connection.configurationScope as Record<string, unknown>) }
+        : null) ||
+      (payload.configurationScope &&
+      typeof payload.configurationScope === "object" &&
+      !Array.isArray(payload.configurationScope)
+        ? { ...(payload.configurationScope as Record<string, unknown>) }
+        : {});
+
+    const nextScope: Record<string, unknown> = {
+      ...prevScope,
+      selectedRooms: cleanedRooms,
+      selectedRoomNames: cleanedRooms.map((r) => String(r.roomName)),
+      referenceInspiration: {
+        aestheticNotes: aestheticNotes || null,
+        references: cleanedRefs,
+      },
+    };
+
+    connection.configurationScope = nextScope;
+    payload.connection = connection;
+    payload.configurationScope = nextScope;
+    payload.meetingScopeUpdatedAt = new Date().toISOString();
+
+    await pool.query("UPDATE leads SET payload = ?, update_at = ? WHERE id = ?", [
+      JSON.stringify(payload),
+      new Date(),
+      id,
+    ]);
+
+    const intake = extractLeadIntakeViewFromPayload(payload);
+    return res.json({
+      ok: true,
+      configScopeSummary: intake.configScopeSummary,
+      message: "Meeting scope saved",
+    });
+  } catch (err) {
+    console.error("meeting-scope patch error", err);
+    return res.status(500).json({ message: "Failed to save meeting scope" });
+  }
+});
+
+/** Persist Meeting Wizard completion so Start Meeting hides until the next schedule. */
+app.patch("/api/leads/:id/meeting-wiz-completed", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+
+  const user = await getUserFromSession(req);
+  const access = await getLeadAccessRowForUser(res, user, id);
+  if (!access.ok) return;
+
+  try {
+    const body = (req.body || {}) as Record<string, unknown>;
+    const completedAt =
+      typeof body.completedAt === "string" && body.completedAt.trim()
+        ? body.completedAt.trim()
+        : new Date().toISOString();
+    const meetingDate =
+      typeof body.meetingDate === "string" && body.meetingDate.trim()
+        ? body.meetingDate.trim().slice(0, 10)
+        : completedAt.slice(0, 10);
+
+    await persistLeadMeetingWizCompleted(id, { completedAt, meetingDate });
+    const [rows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [id]);
+    const row = (rows as { payload?: string | null }[])[0];
+    const intake = extractLeadIntakeViewFromPayload(row?.payload);
+    return res.json({
+      ok: true,
+      meetingWizLastCompleted: intake.meetingWizLastCompleted,
+      designScheduledMeetingUpdatedAt: intake.designScheduledMeetingUpdatedAt,
+    });
+  } catch (err) {
+    console.error("meeting-wiz-completed patch error", err);
+    return res.status(500).json({ message: "Failed to save meeting completion" });
   }
 });
 

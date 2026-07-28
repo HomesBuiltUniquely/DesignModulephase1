@@ -13,6 +13,21 @@ export type AuthUser = {
   branch?: string | null;
   role: AuthRole;
   profileImage?: string;
+  designerTitle?: string | null;
+  designerExperience?: string | null;
+  designerProjects?: string | null;
+  designerSpecialty?: string | null;
+  designerQuote?: string | null;
+  designerSqft?: string | null;
+  designerAwards?: string | null;
+  designerSatisfaction?: string | null;
+  designerInspirationProjects?: Array<{
+    id: string;
+    title: string;
+    description?: string;
+    category?: string;
+    imageUrl?: string | null;
+  }>;
 };
 
 const STORAGE_KEY = 'design_module_auth';

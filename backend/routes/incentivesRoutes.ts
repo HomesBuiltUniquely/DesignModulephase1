@@ -11,11 +11,10 @@ const INCENTIVE_CYCLE_DAYS = 15;
 const CYCLE_EPOCH_UTC = Date.UTC(2026, 0, 1);
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const MEETING_TASKS = [
-  "First cut design + quotation discussion meeting request",
-  "Material selection meeting + quotation discussion",
-  "Design sign off",
-] as const;
+const MEETING_WIZ_COMPLETED_TASK = "Meeting wizard session completed";
+
+/** Only Meeting Wizard "Meeting Completed" clicks count toward the fortnight meeting gate. */
+const MEETING_TASKS = [MEETING_WIZ_COMPLETED_TASK] as const;
 
 function startOfUtcDay(ms: number): number {
   const d = new Date(ms);
@@ -224,10 +223,32 @@ export function registerIncentivesRoutes(
       const findComp = (leadId: number, taskName: string) =>
         (compsByLead.get(leadId) || []).find((c) => c.taskName === taskName);
 
+      // Meeting gate: count only Meeting Wizard "Meeting Completed" history events in-cycle.
+      const [histRows] = await pool.query(
+        `SELECT lead_id AS leadId, event, created_at AS createdAt
+         FROM lead_history
+         WHERE lead_id IN (${placeholders})
+         ORDER BY created_at DESC`,
+        leadIds,
+      );
       let meetingsCompleted = 0;
-      for (const c of completions) {
-        if (!MEETING_TASKS.includes(c.taskName as (typeof MEETING_TASKS)[number])) continue;
-        const iso = toDateIso(c.completedAt);
+      for (const row of histRows as { leadId: number; event: unknown; createdAt: Date | string }[]) {
+        let ev: Record<string, unknown> | null = null;
+        if (row.event && typeof row.event === "object") {
+          ev = row.event as Record<string, unknown>;
+        } else if (typeof row.event === "string" && row.event.trim()) {
+          try {
+            ev = JSON.parse(row.event) as Record<string, unknown>;
+          } catch {
+            ev = null;
+          }
+        }
+        const taskName = asStr(ev?.taskName);
+        if (!MEETING_TASKS.includes(taskName as (typeof MEETING_TASKS)[number])) continue;
+        const iso =
+          toDateIso(ev?.timestamp) ||
+          toDateIso((ev?.meta as Record<string, unknown> | undefined)?.completedAt) ||
+          toDateIso(row.createdAt);
         if (inRange(iso, startIso, endIso)) meetingsCompleted += 1;
       }
 
