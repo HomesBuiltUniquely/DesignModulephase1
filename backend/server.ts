@@ -11418,9 +11418,19 @@ app.post(
       const user = await getUserFromSession(req);
       if (!user) return res.status(401).json({ message: "Unauthorized" });
       const role = (user?.role ?? "").toLowerCase();
-      const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
+      const allowed = [
+        "designer",
+        "design_manager",
+        "territorial_design_manager",
+        "tdm",
+        "admin",
+        "project_manager",
+        "senior_project_manager",
+      ];
       if (!allowed.includes(role)) {
-        return res.status(403).json({ message: "Not allowed to submit MOM" });
+        return res.status(403).json({
+          message: `Not allowed to submit MOM (role: ${role || "unknown"})`,
+        });
       }
 
       const files = (req as any).files as Express.Multer.File[] | undefined;
@@ -11519,7 +11529,8 @@ app.post(
       });
     } catch (err) {
       console.error("mom-upload error", err);
-      return res.status(500).json({ message: "Failed to save MOM" });
+      const detail = err instanceof Error ? err.message : String(err);
+      return res.status(500).json({ message: `Failed to save MOM: ${detail}` });
     }
   },
 );

@@ -6,7 +6,7 @@ import { getApiBase } from '@/app/lib/apiBase';
 
 const API = getApiBase();
 
-type ShareMomResult = { ok: boolean };
+type ShareMomResult = { ok: boolean; message?: string };
 
 type Props = {
     leadId?: number | null;
@@ -74,6 +74,7 @@ export default function PopupMeetingCompleted({
     const [attendees, setAttendees] = React.useState(defaultAttendees || 'Customer, Designer');
     const [meetingDate, setMeetingDate] = React.useState(defaultMeetingDate || '');
     const [fileError, setFileError] = React.useState<string | null>(null);
+    const [shareError, setShareError] = React.useState<string | null>(null);
     const [isSharing, setIsSharing] = React.useState(false);
     const [toast, setToast] = React.useState<string | null>(null);
     const [latestQuoteUrl, setLatestQuoteUrl] = React.useState<string | null>(null);
@@ -144,14 +145,17 @@ export default function PopupMeetingCompleted({
         if (isSharing || toast) return;
         if (!hasMomText) {
             setFileError('Please enter Minutes of Meeting (MOM) text.');
+            setShareError(null);
             return;
         }
         if (!hasMomFile) {
             setFileError('Please upload at least one reference file before submitting the MOM.');
+            setShareError(null);
             return;
         }
         if (!onShareMom) return;
         setFileError(null);
+        setShareError(null);
         if (latestQuoteUrl && momMinutes !== minutesWithQuoteAttached) {
             setMomMinutes(minutesWithQuoteAttached);
         }
@@ -166,7 +170,7 @@ export default function PopupMeetingCompleted({
                 latestQuoteId,
             });
             if (result && result.ok === false) {
-                setFileError('Failed to share MOM. Please try again.');
+                setShareError(result.message || 'Failed to share MOM. Please try again.');
                 return;
             }
             setToast('MOM shared successfully.');
@@ -174,8 +178,8 @@ export default function PopupMeetingCompleted({
                 setToast(null);
                 onClose();
             }, 3000);
-        } catch {
-            setFileError('Failed to share MOM. Please try again.');
+        } catch (err) {
+            setShareError(err instanceof Error ? err.message : 'Failed to share MOM. Please try again.');
         } finally {
             setIsSharing(false);
         }
@@ -370,6 +374,8 @@ export default function PopupMeetingCompleted({
                     )}
                 </div>
             )}
+
+            {shareError && <p className="mb-3 text-sm font-medium text-red-600">{shareError}</p>}
 
             <div className="flex justify-end gap-3">
                 <button

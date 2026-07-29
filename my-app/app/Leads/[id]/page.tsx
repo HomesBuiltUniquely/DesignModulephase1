@@ -1483,6 +1483,19 @@ export default function ProjectDetailPage() {
         );
     };
 
+    const getMeetingDefaults = (meetingTaskName: string) => {
+        const ev = historyEvents.find((e) => e.taskName === meetingTaskName && (e.meta as any)?.meetingDate);
+        if (!ev) return { date: '', attendees: 'Customer, Designer' };
+        const meta = ev.meta as any;
+        const dateStr = meta.meetingDate
+            ? `${meta.meetingDate}${meta.meetingTime ? ' | ' + meta.meetingTime : ''}`
+            : '';
+        const attendeesStr =
+            meta.attendees ||
+            `${project?.projectName || 'Customer'}, ${authUser?.name || project?.designerName || 'Designer'}`;
+        return { date: dateStr, attendees: attendeesStr };
+    };
+
     const addHistoryEvent = (event: Omit<HistoryEvent, 'id' | 'timestamp'>) => {
         const full: HistoryEvent = {
             ...event,
@@ -3000,21 +3013,28 @@ export default function ProjectDetailPage() {
                                 return ev ? (ev.meta as any).completionPercent : undefined;
                             })()}
                             onShareMom={async (extra) => {
-                                if (!projectId) return { ok: false };
+                                if (!projectId) return { ok: false, message: 'Missing lead id.' };
+                                if (!sessionId) return { ok: false, message: 'Please sign in again to share MOM.' };
                                 const minutesToSave = extra?.minutesWithQuote || momMinutes;
                                 try {
-                                    if (sessionId) {
-                                        const fd = new FormData();
-                                        fd.append('minutes', minutesToSave);
-                                        momReferenceFiles.forEach((f) => fd.append('files', f));
-                                        const res = await fetch(`${API}/api/leads/${projectId}/mom-upload`, {
-                                            method: 'POST',
-                                            headers: {
-                                                Authorization: `Bearer ${sessionId}`,
-                                            },
-                                            body: fd,
-                                        });
-                                        if (!res.ok) return { ok: false };
+                                    const fd = new FormData();
+                                    fd.append('minutes', minutesToSave);
+                                    momReferenceFiles.forEach((f) => fd.append('files', f));
+                                    const res = await fetch(`${API}/api/leads/${projectId}/mom-upload`, {
+                                        method: 'POST',
+                                        headers: {
+                                            Authorization: `Bearer ${sessionId}`,
+                                        },
+                                        body: fd,
+                                    });
+                                    const data = await res.json().catch(() => ({}));
+                                    if (!res.ok) {
+                                        return {
+                                            ok: false,
+                                            message:
+                                                (data as { message?: string })?.message ||
+                                                `MOM upload failed (${res.status})`,
+                                        };
                                     }
                                     recordTaskComplete(1, 'meeting completed', {
                                         description: 'Meeting completed. Minutes of meeting shared.',
@@ -3042,7 +3062,10 @@ export default function ProjectDetailPage() {
                                     return { ok: true };
                                 } catch (err) {
                                     console.error('mom upload failed', err);
-                                    return { ok: false };
+                                    return {
+                                        ok: false,
+                                        message: err instanceof Error ? err.message : 'MOM upload failed.',
+                                    };
                                 }
                             }}
                         />
@@ -3429,25 +3452,31 @@ export default function ProjectDetailPage() {
                                 return ev ? (ev.meta as any).completionPercent : undefined;
                             })()}
                             onShareMom={async (extra) => {
-                                if (!projectId) return { ok: false };
+                                if (!projectId) return { ok: false, message: 'Missing lead id.' };
+                                if (!sessionId) return { ok: false, message: 'Please sign in again to share MOM.' };
                                 const minutesToSave = extra?.minutesWithQuote || momMinutes;
                                 try {
                                     let uploadedAttachments: { filename: string; path: string }[] = [];
-                                    if (sessionId) {
-                                        const fd = new FormData();
-                                        fd.append('minutes', minutesToSave);
-                                        momReferenceFiles.forEach((f) => fd.append('files', f));
-                                        const res = await fetch(`${API}/api/leads/${projectId}/mom-upload`, {
-                                            method: 'POST',
-                                            headers: {
-                                                Authorization: `Bearer ${sessionId}`,
-                                            },
-                                            body: fd,
-                                        });
-                                        if (!res.ok) return { ok: false };
-                                        const data = await res.json();
-                                        uploadedAttachments = data.attachments || [];
+                                    const fd = new FormData();
+                                    fd.append('minutes', minutesToSave);
+                                    momReferenceFiles.forEach((f) => fd.append('files', f));
+                                    const res = await fetch(`${API}/api/leads/${projectId}/mom-upload`, {
+                                        method: 'POST',
+                                        headers: {
+                                            Authorization: `Bearer ${sessionId}`,
+                                        },
+                                        body: fd,
+                                    });
+                                    const data = await res.json().catch(() => ({}));
+                                    if (!res.ok) {
+                                        return {
+                                            ok: false,
+                                            message:
+                                                (data as { message?: string })?.message ||
+                                                `MOM upload failed (${res.status})`,
+                                        };
                                     }
+                                    uploadedAttachments = (data as { attachments?: { filename: string; path: string }[] }).attachments || [];
                                     recordTaskComplete(4, 'Material selection meeting completed', {
                                         description: 'Material selection meeting completed. Minutes of meeting shared.',
                                         meta: {
@@ -3475,7 +3504,10 @@ export default function ProjectDetailPage() {
                                     return { ok: true };
                                 } catch (err) {
                                     console.error('mom upload failed', err);
-                                    return { ok: false };
+                                    return {
+                                        ok: false,
+                                        message: err instanceof Error ? err.message : 'MOM upload failed.',
+                                    };
                                 }
                             }}
                         />
@@ -3788,10 +3820,11 @@ export default function ProjectDetailPage() {
                                 return ev ? (ev.meta as any).completionPercent : undefined;
                             })()}
                             onShareMom={async (extra) => {
-                                if (!projectId) return { ok: false };
+                                if (!projectId) return { ok: false, message: 'Missing lead id.' };
+                                if (!sessionId) return { ok: false, message: 'Please sign in again to share MOM.' };
                                 const minutesToSave = extra?.minutesWithQuote || momMinutes;
                                 try {
-                                    if (sessionId) {
+                                    {
                                         const fd = new FormData();
                                         fd.append('minutes', minutesToSave);
                                         momReferenceFiles.forEach((f) => fd.append('files', f));
@@ -3800,7 +3833,15 @@ export default function ProjectDetailPage() {
                                             headers: { Authorization: `Bearer ${sessionId}` },
                                             body: fd,
                                         });
-                                        if (!res.ok) return { ok: false };
+                                        const data = await res.json().catch(() => ({}));
+                                        if (!res.ok) {
+                                            return {
+                                                ok: false,
+                                                message:
+                                                    (data as { message?: string })?.message ||
+                                                    `MOM upload failed (${res.status})`,
+                                            };
+                                        }
                                     }
                                     recordTaskComplete(5, 'meeting completed', {
                                         description: 'Design sign-off meeting completed. Minutes of meeting shared.',
@@ -3828,7 +3869,10 @@ export default function ProjectDetailPage() {
                                     return { ok: true };
                                 } catch (err) {
                                     console.error('MOM upload failed', err);
-                                    return { ok: false };
+                                    return {
+                                        ok: false,
+                                        message: err instanceof Error ? err.message : 'MOM upload failed.',
+                                    };
                                 }
                             }}
                         />
@@ -3869,10 +3913,11 @@ export default function ProjectDetailPage() {
                                 return ev ? (ev.meta as any).completionPercent : undefined;
                             })()}
                             onShareMom={async (extra) => {
-                                if (!projectId) return { ok: false };
+                                if (!projectId) return { ok: false, message: 'Missing lead id.' };
+                                if (!sessionId) return { ok: false, message: 'Please sign in again to share MOM.' };
                                 const minutesToSave = extra?.minutesWithQuote || momMinutes;
                                 try {
-                                    if (sessionId) {
+                                    {
                                         const fd = new FormData();
                                         fd.append('minutes', minutesToSave);
                                         momReferenceFiles.forEach((f) => fd.append('files', f));
@@ -3883,7 +3928,15 @@ export default function ProjectDetailPage() {
                                             },
                                             body: fd,
                                         });
-                                        if (!res.ok) return { ok: false };
+                                        const data = await res.json().catch(() => ({}));
+                                        if (!res.ok) {
+                                            return {
+                                                ok: false,
+                                                message:
+                                                    (data as { message?: string })?.message ||
+                                                    `MOM upload failed (${res.status})`,
+                                            };
+                                        }
                                     }
                                     recordTaskComplete(6, popupContext.taskName, {
                                         description: 'Cx approval for production MOM shared.',
@@ -3911,7 +3964,10 @@ export default function ProjectDetailPage() {
                                     return { ok: true };
                                 } catch (err) {
                                     console.error('mom upload failed', err);
-                                    return { ok: false };
+                                    return {
+                                        ok: false,
+                                        message: err instanceof Error ? err.message : 'MOM upload failed.',
+                                    };
                                 }
                             }}
                         />
