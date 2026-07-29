@@ -14,6 +14,8 @@ export interface DesignSignoffMeetingScheduledEmailProps {
   meetingMode?: 'online' | 'offline' | string;
   meetingLink?: string;
   branchName?: string;
+  ecAddress?: string;
+  ecMapsUrl?: string;
   designerName?: string;
   attachments?: { filename?: string; name?: string; path?: string; url?: string }[];
 }
@@ -26,6 +28,8 @@ export default function DesignSignoffMeetingScheduledEmail({
   meetingMode = 'online',
   meetingLink = '#',
   branchName = 'HUB Experience Center',
+  ecAddress,
+  ecMapsUrl,
   designerName = 'Your Design Consultant',
   attachments = [],
 }: DesignSignoffMeetingScheduledEmailProps) {
@@ -34,8 +38,10 @@ export default function DesignSignoffMeetingScheduledEmail({
     { label: 'Time', value: meetingTime },
   ];
 
+  const locationLabel = ecAddress || `${branchName} Branch`;
+
   if (meetingMode === 'offline') {
-    meetingDetails.push({ label: 'Location', value: `${branchName} Branch` });
+    meetingDetails.push({ label: 'Location', value: locationLabel });
   } else {
     meetingDetails.push({ label: 'Mode', value: 'Online Meeting' });
   }
@@ -82,9 +88,14 @@ export default function DesignSignoffMeetingScheduledEmail({
           </div>
         ) : (
           <Section className="bg-neutral-nearWhite border border-neutral-lightGrey rounded p-4 my-6 text-center">
-            <Text className="m-0 text-[14px] text-neutral-nearBlack">
-              We look forward to hosting you at our <span className="font-bold">{branchName} Branch</span> for the presentation.
+            <Text className="m-0 text-[14px] text-neutral-nearBlack mb-3">
+              We look forward to hosting you at our <span className="font-bold">{branchName}</span> Experience Center.
             </Text>
+            {ecMapsUrl ? (
+              <div className="text-center">
+                <Button text="OPEN IN GOOGLE MAPS" href={ecMapsUrl} />
+              </div>
+            ) : null}
           </Section>
         )}
 

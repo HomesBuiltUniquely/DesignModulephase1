@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../../auth/AuthContext';
 import { getApiBase } from '@/app/lib/apiBase';
+import FinanceRefundsNavLink from '../../Components/FinanceRefundsNavLink';
 
 type PaymentSubmission = {
   id: string;
@@ -43,6 +44,7 @@ type FinanceLead = {
   paymentSubmissions: PaymentSubmission[];
   paymentSource?: 'crm_hub' | 'manual';
 };
+
 
 type FinanceLeadDetail = FinanceLead & {
   financeApproved?: boolean;
@@ -449,6 +451,7 @@ export default function FinanceSalesClosurePage() {
             >
               10% Payment
             </a>
+            <FinanceRefundsNavLink fromPath="/finance/sales-closure" />
             <button
               type="button"
               onClick={loadLeads}
@@ -632,7 +635,7 @@ export default function FinanceSalesClosurePage() {
 
         {error && <div className="text-sm text-red-600 mt-4">{error}</div>}
 
-        <div className="mt-5 flex gap-2 border-b border-gray-200">
+        <div className="mt-5 flex gap-2 border-b border-gray-200 flex-wrap">
           <button
             type="button"
             onClick={() => setQueueTab('pending')}

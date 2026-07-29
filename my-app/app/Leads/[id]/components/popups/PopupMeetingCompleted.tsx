@@ -2,8 +2,15 @@
 
 import * as React from 'react';
 import type { RefObject } from 'react';
+import { getApiBase } from '@/app/lib/apiBase';
+
+const API = getApiBase();
+
+type ShareMomResult = { ok: boolean };
 
 type Props = {
+    leadId?: number | null;
+    sessionId?: string | null;
     momMinutes: string;
     setMomMinutes: (v: string) => void;
     momReferenceFiles: File[];
@@ -13,7 +20,14 @@ type Props = {
     onMomDrop: (e: React.DragEvent) => void;
     removeMomFile: (index: number) => void;
     onClose: () => void;
-    onShareMom?: (extra?: { attendees: string; meetingDate: string; completionPercent?: number }) => void;
+    onShareMom?: (extra?: {
+        attendees: string;
+        meetingDate: string;
+        completionPercent?: number;
+        minutesWithQuote?: string;
+        latestQuoteUrl?: string | null;
+        latestQuoteId?: number | null;
+    }) => Promise<ShareMomResult | void> | ShareMomResult | void;
     /** Progress % saved from the meeting popup — shown read-only so MOM and meeting are in sync */
     initialCompletionPercent?: number;
     /** When true, show 40% payment screenshot upload section (for the "40% collection" task). */
@@ -33,6 +47,8 @@ type Props = {
  * Meeting completed – Minutes of Meeting (MOM) popup.
  */
 export default function PopupMeetingCompleted({
+    leadId,
+    sessionId,
     momMinutes,
     setMomMinutes,
     momReferenceFiles,
@@ -57,6 +73,113 @@ export default function PopupMeetingCompleted({
 }: Props) {
     const [attendees, setAttendees] = React.useState(defaultAttendees || 'Customer, Designer');
     const [meetingDate, setMeetingDate] = React.useState(defaultMeetingDate || '');
+    const [fileError, setFileError] = React.useState<string | null>(null);
+    const [isSharing, setIsSharing] = React.useState(false);
+    const [toast, setToast] = React.useState<string | null>(null);
+    const [latestQuoteUrl, setLatestQuoteUrl] = React.useState<string | null>(null);
+    const [latestQuoteId, setLatestQuoteId] = React.useState<number | null>(null);
+    const [quoteLoading, setQuoteLoading] = React.useState(false);
+    const [quoteError, setQuoteError] = React.useState<string | null>(null);
+
+    const hasMomFile = momReferenceFiles.length > 0;
+    const hasMomText = momMinutes.trim().length > 0;
+    const canShare = hasMomFile && hasMomText && !isSharing && !toast;
+
+    React.useEffect(() => {
+        if (hasMomFile) setFileError(null);
+    }, [hasMomFile]);
+
+    React.useEffect(() => {
+        if (!leadId || !sessionId) {
+            setLatestQuoteUrl(null);
+            setLatestQuoteId(null);
+            return;
+        }
+        let cancelled = false;
+        setQuoteLoading(true);
+        setQuoteError(null);
+        fetch(`${API}/api/leads/${leadId}/latest-quote-link`, {
+            headers: { Authorization: `Bearer ${sessionId}` },
+        })
+            .then(async (res) => {
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.message || 'Failed to load quotation');
+                return data as {
+                    quoteId?: number | null;
+                    customerQuoteUrl?: string | null;
+                };
+            })
+            .then((data) => {
+                if (cancelled) return;
+                const url = data.customerQuoteUrl || null;
+                const qid = data.quoteId != null ? Number(data.quoteId) : null;
+                setLatestQuoteUrl(url);
+                setLatestQuoteId(qid && qid > 0 ? qid : null);
+                if (!url) setQuoteError('No quotation found for this lead yet. Generate a quote first.');
+            })
+            .catch(() => {
+                if (!cancelled) {
+                    setLatestQuoteUrl(null);
+                    setLatestQuoteId(null);
+                    setQuoteError('Could not load the latest quotation link.');
+                }
+            })
+            .finally(() => {
+                if (!cancelled) setQuoteLoading(false);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [leadId, sessionId]);
+
+    const minutesWithQuoteAttached = React.useMemo(() => {
+        const trimmed = (momMinutes || '').trim();
+        if (!latestQuoteUrl) return trimmed;
+        if (trimmed.includes(latestQuoteUrl)) return trimmed;
+        const block = `Latest quotation link:\n${latestQuoteUrl}`;
+        return trimmed ? `${trimmed}\n\n${block}` : block;
+    }, [momMinutes, latestQuoteUrl]);
+
+    const handleShareMom = async () => {
+        if (isSharing || toast) return;
+        if (!hasMomText) {
+            setFileError('Please enter Minutes of Meeting (MOM) text.');
+            return;
+        }
+        if (!hasMomFile) {
+            setFileError('Please upload at least one reference file before submitting the MOM.');
+            return;
+        }
+        if (!onShareMom) return;
+        setFileError(null);
+        if (latestQuoteUrl && momMinutes !== minutesWithQuoteAttached) {
+            setMomMinutes(minutesWithQuoteAttached);
+        }
+        setIsSharing(true);
+        try {
+            const result = await onShareMom({
+                attendees,
+                meetingDate,
+                completionPercent: initialCompletionPercent ?? 100,
+                minutesWithQuote: minutesWithQuoteAttached,
+                latestQuoteUrl,
+                latestQuoteId,
+            });
+            if (result && result.ok === false) {
+                setFileError('Failed to share MOM. Please try again.');
+                return;
+            }
+            setToast('MOM shared successfully.');
+            setTimeout(() => {
+                setToast(null);
+                onClose();
+            }, 3000);
+        } catch {
+            setFileError('Failed to share MOM. Please try again.');
+        } finally {
+            setIsSharing(false);
+        }
+    };
 
     return (
         <div className="px-6 pb-6 max-w-[640px] mt-6">
@@ -75,13 +198,39 @@ export default function PopupMeetingCompleted({
                     STAGE EXIT LOCK
                 </span>
             </div>
-            {/* Synced progress bar from meeting popup */}
+
+            <div className="mb-6 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3">
+                <div className="flex items-center justify-between gap-2 mb-1">
+                    <p className="text-xs font-bold uppercase tracking-wide text-indigo-800">Latest Quotation</p>
+                    {quoteLoading && <span className="text-xs text-indigo-600">Fetching…</span>}
+                </div>
+                {latestQuoteUrl ? (
+                    <div className="space-y-1">
+                        <p className="text-sm text-indigo-900">
+                            Quote #{latestQuoteId ?? '—'} will be attached automatically in this MOM.
+                        </p>
+                        <a
+                            href={latestQuoteUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-sm font-medium text-indigo-700 underline break-all hover:text-indigo-900"
+                        >
+                            {latestQuoteUrl}
+                        </a>
+                    </div>
+                ) : (
+                    <p className="text-sm text-amber-800">
+                        {quoteError || 'No quotation available yet. Generate a quote so the link can be attached.'}
+                    </p>
+                )}
+            </div>
+
             <div className="mb-6 px-1">
                 <div className="flex items-center justify-between mb-1.5">
                     <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">Design Completion (From Scheduled Meeting)</span>
                     <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
-                        (initialCompletionPercent ?? 100) === 100 
-                            ? 'bg-green-100 text-green-700' 
+                        (initialCompletionPercent ?? 100) === 100
+                            ? 'bg-green-100 text-green-700'
                             : 'bg-blue-100 text-blue-700'
                     }`}>
                         {initialCompletionPercent ?? 100}%
@@ -137,42 +286,55 @@ export default function PopupMeetingCompleted({
                 />
                 <div className="flex items-start gap-2 mt-2 p-3 bg-gray-100 rounded-lg">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5"><path strokeLinecap="round" strokeLinejoin="round" d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z" /></svg>
-                    <p className="text-xs text-gray-600">Please ensure all final decisions and client approvals are documented clearly for audit purposes.</p>
+                    <p className="text-xs text-gray-600">Please ensure all final decisions and client approvals are documented clearly for audit purposes. The latest quotation link is attached automatically on submit.</p>
                 </div>
             </div>
             <div className="mb-6">
-                <h3 className="text-sm font-bold text-gray-800 mb-1">Reference Images / Markups / Screenshots</h3>
-                <p className="text-xs text-gray-500 mb-3">Attach visual proof discussed during the meeting.</p>
-                <input ref={momFileInputRef} type="file" className="hidden" accept=".jpg,.jpeg,.png,.pdf" multiple onChange={onMomFilesSelected} />
-                <div className="flex gap-4 flex-wrap">
-                    <div
-                        onClick={openMomFileUpload}
-                        onDrop={(e) => { e.preventDefault(); onMomDrop(e); }}
-                        onDragOver={(e) => e.preventDefault()}
-                        className="flex-1 min-w-[200px] border-2 border-dashed border-gray-300 rounded-xl bg-gray-50 p-6 flex flex-col items-center justify-center cursor-pointer hover:border-blue-300 hover:bg-gray-100 transition-colors"
-                    >
-                        <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center mb-2">
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-6 h-6 text-blue-600"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5" /></svg>
-                        </div>
-                        <p className="text-sm font-medium text-gray-700">Drag & drop files</p>
-                        <p className="text-xs text-gray-500 mt-0.5">JPG, PNG, PDF up to 10MB</p>
-                    </div>
-                    {[0, 1].map((i) => (
-                        <div key={i} className="w-[120px] h-[100px] border border-gray-300 rounded-xl bg-gray-50 flex flex-col items-center justify-center overflow-hidden">
-                            {momReferenceFiles[i] ? (
-                                <div className="w-full h-full flex flex-col items-center justify-center p-2">
-                                    <p className="text-xs text-gray-600 truncate w-full text-center" title={momReferenceFiles[i].name}>{momReferenceFiles[i].name}</p>
-                                    <button type="button" onClick={() => removeMomFile(i)} className="text-xs text-red-600 mt-1">Remove</button>
-                                </div>
-                            ) : (
-                                <>
-                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1" stroke="currentColor" className="w-8 h-8 text-gray-400"><path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H3.75A1.5 1.5 0 0 0 2.25 6v12a1.5 1.5 0 0 0 1.5 1.5Zm10.5-11.25h.008v.008h-.008V8.25Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" /></svg>
-                                    <span className="text-xs text-gray-500 mt-1">SLOT {i + 1}</span>
-                                </>
-                            )}
-                        </div>
-                    ))}
+                <div className="flex items-center justify-between gap-2 mb-1">
+                    <h3 className="text-sm font-bold text-gray-800">Reference Images / Markups / Screenshots</h3>
+                    <span className="text-xs text-red-600 font-medium">Required</span>
                 </div>
+                <p className="text-xs text-gray-500 mb-3">
+                    Attach at least one file (visual proof). You can upload multiple files. MOM cannot be submitted without a file.
+                </p>
+                <input ref={momFileInputRef} type="file" className="hidden" accept=".jpg,.jpeg,.png,.pdf" multiple onChange={onMomFilesSelected} />
+                <div
+                    onClick={openMomFileUpload}
+                    onDrop={(e) => { e.preventDefault(); onMomDrop(e); setFileError(null); }}
+                    onDragOver={(e) => e.preventDefault()}
+                    className={`border-2 border-dashed rounded-xl bg-gray-50 p-6 flex flex-col items-center justify-center cursor-pointer hover:border-blue-300 hover:bg-gray-100 transition-colors ${
+                        fileError ? 'border-red-400 ring-2 ring-red-200' : 'border-gray-300'
+                    }`}
+                >
+                    <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center mb-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-6 h-6 text-blue-600"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5" /></svg>
+                    </div>
+                    <p className="text-sm font-medium text-gray-700">Drag & drop or click to add files</p>
+                    <p className="text-xs text-gray-500 mt-0.5">JPG, PNG, PDF · multiple files · up to 10MB each</p>
+                </div>
+                {momReferenceFiles.length > 0 && (
+                    <div className="mt-3 space-y-2">
+                        <p className="text-xs font-medium text-gray-600">{momReferenceFiles.length} file{momReferenceFiles.length === 1 ? '' : 's'} attached</p>
+                        {momReferenceFiles.map((file, index) => (
+                            <div key={`${file.name}-${index}`} className="flex items-center justify-between text-sm bg-gray-100 rounded-lg px-3 py-2">
+                                <span className="text-gray-700 truncate flex-1" title={file.name}>{file.name}</span>
+                                <span className="text-xs text-gray-400 mx-2 flex-shrink-0">
+                                    {file.size < 1024 * 1024
+                                        ? `${(file.size / 1024).toFixed(1)} KB`
+                                        : `${(file.size / (1024 * 1024)).toFixed(1)} MB`}
+                                </span>
+                                <button
+                                    type="button"
+                                    onClick={() => removeMomFile(index)}
+                                    className="text-red-600 hover:underline ml-2 flex-shrink-0"
+                                >
+                                    Remove
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                )}
+                {fileError && <p className="text-sm text-red-600 mt-2">{fileError}</p>}
             </div>
             <div className="flex items-start gap-2 mb-6 p-3 bg-blue-50 border border-blue-100 rounded-lg">
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5"><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>
@@ -210,11 +372,37 @@ export default function PopupMeetingCompleted({
             )}
 
             <div className="flex justify-end gap-3">
-                <button type="button" onClick={onClose} className="px-4 py-2 text-gray-700 font-medium hover:bg-gray-100 rounded-lg">Cancel</button>
-                <button type="button" onClick={() => onShareMom?.({ attendees, meetingDate, completionPercent: initialCompletionPercent ?? 100 })} className="px-5 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 flex items-center gap-1">
-                    {show40pUpload ? 'Share MOM & send to finance' : 'Share the MOM'} <span className="pl-2"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="size-6 fill-white"><path strokeLinecap="round" strokeLinejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" /></svg></span>
+                <button
+                    type="button"
+                    onClick={onClose}
+                    disabled={isSharing || !!toast}
+                    className="px-4 py-2 text-gray-700 font-medium hover:bg-gray-100 rounded-lg disabled:opacity-50"
+                >
+                    Cancel
+                </button>
+                <button
+                    type="button"
+                    onClick={handleShareMom}
+                    disabled={!canShare}
+                    className="px-5 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title={!hasMomFile ? 'Upload at least one file to submit MOM' : !hasMomText ? 'Enter MOM text to submit' : undefined}
+                >
+                    {isSharing ? 'Sharing…' : show40pUpload ? 'Share MOM & send to finance' : 'Share the MOM'}
+                    {!isSharing && (
+                        <span className="pl-2">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="size-6 fill-white">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" />
+                            </svg>
+                        </span>
+                    )}
                 </button>
             </div>
+
+            {toast && (
+                <div className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-gray-800 text-white text-base font-medium px-8 py-4 rounded-lg shadow-2xl z-[9999] text-center max-w-md">
+                    {toast}
+                </div>
+            )}
         </div>
     );
 }

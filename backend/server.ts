@@ -1,4 +1,3 @@
-import "dotenv/config";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
 import mysql from "mysql2/promise";
@@ -12,6 +11,12 @@ import { pipeline } from "node:stream/promises";
 import AdmZip from "adm-zip";
 import * as XLSX from "xlsx";
 import { registerCustomerNumberRoutes } from "./routes/customerNumberApi";
+import {
+  registerOfflineMeetingExportRoutes,
+  recordOfflineMeetingExport,
+  ensureOfflineMeetingExportTable,
+  offlineMeetingMilestoneLabel,
+} from "./routes/offlineMeetingExportApi";
 import { registerMsg91InboundRoutes } from "./routes/msg91InboundApi";
 import {
   registerProlanceRoutes,
@@ -19,7 +24,12 @@ import {
   resolveLeadMilestonePaymentBreakdown,
 } from "./routes/prolanceApi";
 import { registerCrmHubBookingRoutes, notifyHubFinanceReview, getHubBookingSyncForLead, buildFinance10pQueueList, buildCrmSalesClosureQueueRows, buildCrmSalesClosureLeadDetail } from "./routes/crmHubBookingRoutes";
+import { registerIncentivesRoutes } from "./routes/incentivesRoutes";
 
+/**
+ * Load backend/.env before dotenv. Supports `export KEY=value` and quoted values.
+ * Unquoted values keep `#` (needed for passwords like Hub@API#26 — dotenv treats bare `#` as a comment).
+ */
 function loadEnvFile() {
   const envPath = path.join(__dirname, ".env");
   if (!fs.existsSync(envPath)) return;
@@ -35,13 +45,19 @@ function loadEnvFile() {
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
       value = value.slice(1, -1);
     }
-    if (!(key in process.env)) {
-      process.env[key] = value;
-    }
+    // Always apply file values so a truncated dotenv load cannot stick.
+    process.env[key] = value;
   });
 }
 
 loadEnvFile();
+// Fill any remaining keys that dotenv understands; file values already set above win.
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  require("dotenv").config({ path: path.join(__dirname, ".env"), override: false });
+} catch {
+  /* optional */
+}
 
 const app = express();
 const PORT = Number(process.env.PORT || 3001);
@@ -130,11 +146,14 @@ app.get("/api/health", (_req, res) => {
 });
 
 // ----- MySQL setup -----
-// Defaults are set from the credentials you provided; you can still override via env vars if needed.
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
+<<<<<<< HEAD
   password: process.env.DB_PASSWORD || "Root@123",
+=======
+  password: process.env.DB_PASSWORD || "root@root",
+>>>>>>> dce23ca86fd131d34a0122a6a18c4709a6e817b6
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -145,14 +164,17 @@ const pool = mysql.createPool({
 
 // Standalone route: /api/customer/:customerNumber (see routes/customerNumberApi.ts)
 registerCustomerNumberRoutes(app, pool);
+registerOfflineMeetingExportRoutes(app, pool);
 // MSG91 inbound webhook + phone lookup (see routes/msg91InboundApi.ts)
 registerMsg91InboundRoutes(app, pool);
 
 // ----- S3 setup for profile images -----
 const S3_REGION = process.env.AWS_REGION || "ap-south-1";
 const S3_BUCKET = process.env.S3_BUCKET_NAME || "your-profile-images-bucket";
-                                                                                                                      
-const s3 = new S3Client({
+
+/** Runtime S3 client. Cast needed: broken @smithy/core installs omit Client.send in types. */
+type AppS3Client = S3Client & { send: (command: unknown) => Promise<any> };
+const s3: AppS3Client = new S3Client({
   region: S3_REGION,
   credentials: process.env.AWS_ACCESS_KEY_ID
     ? {
@@ -160,7 +182,7 @@ const s3 = new S3Client({
       secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || "",
     }
     : undefined,
-});
+}) as AppS3Client;
 
 // ----- Local uploads (MMT zip folders) -----
 const UPLOADS_DIR = path.join(process.cwd(), "uploads");
@@ -449,16 +471,18 @@ function buildPaymentMailChainSubject(
 async function getMailLoopCcEmails(extraEmails: Array<string | null | undefined> = [], leadId?: number): Promise<string[]> {
   const validExtras = extraEmails.filter(Boolean) as string[];
 
+  // Always CC: all admins + all TDMs
   const [teamRows] = await pool.query(
     "SELECT email FROM users WHERE role IN ('admin','territorial_design_manager') AND email IS NOT NULL",
   );
   let teamEmails = (teamRows as { email: string | null }[]).map((r) => r.email || null);
 
+  // Design manager(s) for any designer emails passed in extras
   if (validExtras.length > 0) {
     const [dmRows] = await pool.query(
-      `SELECT dm.email 
-       FROM users u 
-       JOIN users dm ON dm.id = u.design_manager_id 
+      `SELECT dm.email
+       FROM users u
+       JOIN users dm ON dm.id = u.design_manager_id
        WHERE u.email IN (?) AND dm.email IS NOT NULL`,
       [validExtras]
     );
@@ -467,6 +491,22 @@ async function getMailLoopCcEmails(extraEmails: Array<string | null | undefined>
   }
 
   if (leadId) {
+    try {
+      // That lead's assigned designer's design manager (do not skip)
+      const [dmFromLead] = await pool.query(
+        `SELECT dm.email
+         FROM leads l
+         JOIN users d ON d.id = l.assigned_designer_id
+         JOIN users dm ON dm.id = d.design_manager_id
+         WHERE l.id = ? AND dm.email IS NOT NULL`,
+        [leadId],
+      );
+      const leadDm = (dmFromLead as { email: string | null }[])[0]?.email;
+      if (leadDm) teamEmails.push(leadDm);
+    } catch (err) {
+      console.error("Failed to fetch designer DM email for mail loop", err);
+    }
+
     try {
       const [pmRows] = await pool.query(
         `SELECT u.email FROM leads l JOIN users u ON u.id = l.assigned_project_manager_id WHERE l.id = ? AND u.email IS NOT NULL`,
@@ -482,6 +522,56 @@ async function getMailLoopCcEmails(extraEmails: Array<string | null | undefined>
   }
 
   return distinctEmails([...validExtras, ...teamEmails]);
+}
+
+/** Collect every client-side email on the lead — primary, family/alt, payload. Never skip any. */
+function collectLeadClientEmails(
+  row: { clientEmail?: string | null; alternateClientEmail?: string | null },
+  payload?: any,
+): string[] {
+  const p = payload && typeof payload === "object" ? payload : {};
+  const form = p.form && typeof p.form === "object" ? p.form : {};
+  const formData = p.formData && typeof p.formData === "object" ? p.formData : {};
+  return distinctEmails([
+    row.clientEmail,
+    row.alternateClientEmail,
+    p.email,
+    p.clientEmail,
+    p.client_email,
+    p.alternateClientEmail,
+    p.client_email_alt,
+    p.familyEmail,
+    p.family_email,
+    form.email,
+    form.clientEmail,
+    form.client_email,
+    formData.email,
+    formData.clientEmail,
+    formData.client_email,
+  ]);
+}
+
+/** Fresh read of all client emails for a lead (picks up family added in task 2). */
+async function getLeadClientToEmails(leadId: number): Promise<string[]> {
+  try {
+    const [rows] = await pool.query(
+      `SELECT client_email as clientEmail, client_email_alt as alternateClientEmail, payload
+       FROM leads WHERE id = ?`,
+      [leadId],
+    );
+    const row = (rows as any[])[0];
+    if (!row) return [];
+    let payload: any = {};
+    try {
+      payload = row.payload ? JSON.parse(row.payload) : {};
+    } catch {
+      payload = {};
+    }
+    return collectLeadClientEmails(row, payload);
+  } catch (err) {
+    console.error("getLeadClientToEmails error", { leadId, error: err });
+    return [];
+  }
 }
 
 type MailVisibility = "internal" | "external" | "internal+external";
@@ -520,11 +610,39 @@ async function triggerMailRouteWithLog(args: {
   route: string;
   visibility: MailVisibility;
   payload: Record<string, unknown>;
-}): Promise<void> {
+}): Promise<boolean> {
   const toRaw = args.payload.to;
   const ccRaw = args.payload.cc;
-  const to = Array.isArray(toRaw) ? toRaw.map(String) : toRaw ? [String(toRaw)] : [];
-  const cc = Array.isArray(ccRaw) ? ccRaw.map(String) : ccRaw ? [String(ccRaw)] : [];
+  let to = Array.isArray(toRaw) ? toRaw.map(String) : toRaw ? [String(toRaw)] : [];
+  let cc = Array.isArray(ccRaw) ? ccRaw.map(String) : ccRaw ? [String(ccRaw)] : [];
+
+  // Never skip client / family emails on customer-facing mail-loop sends
+  try {
+    const clientEmails = await getLeadClientToEmails(args.leadId);
+    if (clientEmails.length > 0) {
+      const clientSet = new Set(clientEmails.map((e) => e.toLowerCase()));
+      const toLooksLikeCustomer =
+        to.length === 0 || to.some((e) => clientSet.has(String(e).toLowerCase()));
+      if (
+        args.visibility === "external" ||
+        (args.visibility === "internal+external" && toLooksLikeCustomer)
+      ) {
+        to = distinctEmails([...to, ...clientEmails]);
+        const toSet = new Set(to.map((e) => e.toLowerCase()));
+        cc = cc.filter((e) => !toSet.has(String(e).toLowerCase()));
+        args.payload = {
+          ...args.payload,
+          to: to.length === 1 ? to[0] : to,
+          cc,
+        };
+      }
+    }
+  } catch (mergeErr) {
+    console.error("mail-loop client email merge error (non-fatal)", {
+      leadId: args.leadId,
+      error: mergeErr,
+    });
+  }
 
   console.log("[mail-trigger]", {
     leadId: args.leadId,
@@ -554,7 +672,7 @@ async function triggerMailRouteWithLog(args: {
         visibility: args.visibility,
         body,
       });
-      return;
+      return false;
     }
     console.log("[mail-trigger-sent]", {
       leadId: args.leadId,
@@ -564,6 +682,7 @@ async function triggerMailRouteWithLog(args: {
       to,
       cc,
     });
+    return true;
   } catch (error) {
     console.error("[mail-trigger-error]", {
       leadId: args.leadId,
@@ -573,14 +692,15 @@ async function triggerMailRouteWithLog(args: {
       bodyBytes: Buffer.byteLength(bodyStr, "utf8"),
       error,
     });
+    return false;
   }
 }
 
 async function triggerCustomerEmailForLead(
   leadId: number,
   emailRoutePath: string,
-  opts?: { actorEmail?: string | null },
-): Promise<void> {
+  opts?: { actorEmail?: string | null; awaitSend?: boolean },
+): Promise<{ ok: boolean; to: string[]; reason?: string }> {
   try {
     const [rows] = await pool.query(
       `SELECT l.pid as projectPid,
@@ -596,7 +716,7 @@ async function triggerCustomerEmailForLead(
       [leadId],
     );
     const row = (rows as any[])[0];
-    if (!row) return;
+    if (!row) return { ok: false, to: [], reason: "Lead not found" };
 
     let payload: any = {};
     try {
@@ -605,12 +725,15 @@ async function triggerCustomerEmailForLead(
       payload = {};
     }
 
-    const customerEmail =
-      row.clientEmail ||
-      row.alternateClientEmail ||
-      payload.email ||
-      payload?.form?.email ||
-      null;
+    // To: every client / family / payload email on the lead — never skip any
+    const customerTo = collectLeadClientEmails(
+      {
+        clientEmail: row.clientEmail,
+        alternateClientEmail: row.alternateClientEmail,
+      },
+      payload,
+    );
+    const customerEmail = customerTo[0] || null;
     const customerName =
       payload.customer_name ||
       payload?.form?.customer_name ||
@@ -623,27 +746,34 @@ async function triggerCustomerEmailForLead(
       payload?.form?.designer_name ||
       payload?.form?.designerName ||
       "Designer";
+
+    // CC: designer + all admins + all TDMs + that designer's DM (via lead)
     const mailChainCc = await getMailLoopCcEmails([
       opts?.actorEmail || null,
       row.designerEmail || null,
     ], leadId);
+    // Keep client To addresses out of CC (already on the thread)
+    const toSet = new Set(customerTo.map((e) => e.toLowerCase()));
+    const ccOnly = mailChainCc.filter((e) => !toSet.has(e.toLowerCase()));
+
     const mailChainSubject = buildMailChainSubject(
       row.projectPid || null,
       row.projectName || null,
       customerName,
     );
 
-    if (!customerEmail) return;
+    if (!customerEmail || customerTo.length === 0) {
+      return { ok: false, to: [], reason: "No client email on lead" };
+    }
 
-    // Fire-and-forget; do not block backend response
-    void triggerMailRouteWithLog({
+    const sendPromise = triggerMailRouteWithLog({
       leadId,
       taskName: "customer-email-trigger",
       route: emailRoutePath,
       visibility: "external",
       payload: {
-        to: customerEmail,
-        cc: mailChainCc,
+        to: customerTo.length === 1 ? customerTo[0] : customerTo,
+        cc: ccOnly,
         subject: mailChainSubject,
         customerName,
         designerName,
@@ -654,8 +784,228 @@ async function triggerCustomerEmailForLead(
         ),
       },
     });
+
+    if (opts?.awaitSend) {
+      const sent = await sendPromise;
+      return sent
+        ? { ok: true, to: customerTo }
+        : { ok: false, to: customerTo, reason: "Mail send failed" };
+    }
+
+    // Fire-and-forget for other tasks
+    void sendPromise;
+    return { ok: true, to: customerTo };
   } catch (err) {
     console.error("triggerCustomerEmailForLead error", { leadId, route: emailRoutePath, error: err });
+    return { ok: false, to: [], reason: "Mail trigger error" };
+  }
+}
+
+/** External D1 visit mail — fires after MMT manager/admin assigns executive. Regards = MMT manager. */
+async function sendD1MmtVisitScheduledExternal(
+  leadId: number,
+  actingUser: { id?: number | null; email?: string | null },
+): Promise<{ ok: boolean; reason?: string }> {
+  try {
+    const [rows] = await pool.query(
+      `SELECT a.measurement_date as measurementDate,
+              a.measurement_time as measurementTime,
+              a.assigned_to_user_id as executiveUserId,
+              a.requested_mmt_manager_id as requestedManagerId,
+              u.name as executiveName,
+              u.email as executiveEmail,
+              u.phone as executivePhone,
+              u.mmt_manager_id as executiveManagerId,
+              mgr.name as mmtManagerName,
+              mgr.email as mmtManagerEmail,
+              d.email as designerEmail,
+              l.client_email as clientEmail,
+              l.pid as projectPid,
+              l.project_name as projectName,
+              l.payload
+       FROM lead_d1_assignments a
+       INNER JOIN leads l ON l.id = a.lead_id
+       LEFT JOIN users u ON u.id = a.assigned_to_user_id
+       LEFT JOIN users mgr ON mgr.id = COALESCE(a.requested_mmt_manager_id, u.mmt_manager_id)
+       LEFT JOIN users d ON d.id = l.assigned_designer_id
+       WHERE a.lead_id = ?
+       ORDER BY a.created_at DESC
+       LIMIT 1`,
+      [leadId],
+    );
+    const row = (rows as any[])[0];
+    if (!row) return { ok: false, reason: "No D1 assignment found" };
+    if (!row.executiveUserId) return { ok: false, reason: "No MMT executive assigned yet" };
+
+    let payload: any = {};
+    try {
+      payload = row.payload ? JSON.parse(row.payload) : {};
+    } catch {
+      payload = {};
+    }
+
+    const customerTo = await getLeadClientToEmails(leadId);
+    const customerEmail = customerTo[0] || row.clientEmail || payload.email || null;
+    if (!customerEmail) return { ok: false, reason: "No client email on lead" };
+
+    const customerName =
+      payload.customer_name ||
+      payload?.form?.customer_name ||
+      row.projectName ||
+      "Customer";
+    const projectId = row.projectPid || `HUB-${leadId}`;
+    const visitDate =
+      row.measurementDate instanceof Date
+        ? row.measurementDate.toISOString().split("T")[0]
+        : row.measurementDate || null;
+    const visitTime = row.measurementTime || null;
+    const executiveName = row.executiveName || null;
+    const executiveEmail = row.executiveEmail || null;
+    const executivePhone = row.executivePhone || null;
+    const mmtManagerName = row.mmtManagerName || "MMT Manager";
+    const mmtManagerEmail = row.mmtManagerEmail || null;
+    const designerEmail = row.designerEmail || null;
+    const siteAddress =
+      payload.site_address ||
+      payload?.form?.site_address ||
+      payload?.formData?.site_address ||
+      "Your Site Address";
+
+    const googleStart = formatGoogleDateTime(visitDate, visitTime);
+    if (googleStart) {
+      try {
+        await createGoogleCalendarEventForFirstAvailableUser({
+          userIds: [
+            row.executiveUserId,
+            row.requestedManagerId || row.executiveManagerId,
+            actingUser.id,
+          ],
+          summary: `D1 Site Measurement - ${customerName}`,
+          description: [
+            `D1 site measurement scheduled for ${customerName}.`,
+            executiveName ? `Assigned MMT executive: ${executiveName}` : null,
+            mmtManagerName ? `MMT manager: ${mmtManagerName}` : null,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          startDateTimeIso: googleStart,
+          endDateTimeIso: addHoursToIso(googleStart, 1),
+          attendees: distinctEmails([
+            customerEmail,
+            executiveEmail,
+            mmtManagerEmail,
+            actingUser.email,
+          ]),
+        });
+      } catch (calendarErr) {
+        console.error("D1 MMT Google event create error (non-fatal)", {
+          leadId,
+          error: calendarErr,
+        });
+      }
+    }
+
+    const sent = await triggerMailRouteWithLog({
+      leadId,
+      milestoneIndex: 0,
+      taskName: "D1 for MMT request – executive assigned",
+      route: "/api/email/send-d1-mmt-visit-scheduled",
+      visibility: "external",
+      payload: {
+        to: customerTo.length > 1 ? customerTo : customerEmail,
+        cc: await getMailLoopCcEmails(
+          [actingUser.email, designerEmail, executiveEmail, mmtManagerEmail],
+          leadId,
+        ),
+        customerName,
+        subject: buildMailChainSubject(projectId, row.projectName, customerName),
+        visitDate,
+        visitTime: formatTime12Hour(visitTime) || undefined,
+        executiveName,
+        executivePhone,
+        projectId,
+        siteAddress,
+        // Regards section uses MMT manager (not designer)
+        designerName: mmtManagerName,
+        mmtManagerName,
+        designerEmail: mmtManagerEmail,
+      },
+    });
+
+    if (!sent) {
+      console.error("[D1-MMT] External visit mail failed", { leadId });
+      return { ok: false, reason: "External visit mail failed" };
+    }
+    console.log("[D1-MMT] External visit mail sent", { leadId, to: customerTo });
+    return { ok: true };
+  } catch (err) {
+    console.error("sendD1MmtVisitScheduledExternal error", { leadId, error: err });
+    return { ok: false, reason: "External mail trigger error" };
+  }
+}
+
+/** Internal: notify designer that D1 files are ready in Files Uploaded (same mail-loop subject). */
+async function notifyD1FilesReadyInternal(
+  leadId: number,
+  actingUser: { name?: string | null; email?: string | null },
+  opts?: { fileName?: string | null },
+): Promise<void> {
+  try {
+    const [rows] = await pool.query(
+      `SELECT l.pid as projectPid, l.project_name as projectName, l.payload,
+              d.name as designerName, d.email as designerEmail
+       FROM leads l
+       LEFT JOIN users d ON d.id = l.assigned_designer_id
+       WHERE l.id = ?`,
+      [leadId],
+    );
+    const row = (rows as any[])[0];
+    if (!row) {
+      console.warn("[D1-files] notify skipped: lead not found", { leadId });
+      return;
+    }
+
+    let payload: any = {};
+    try {
+      payload = row.payload ? JSON.parse(row.payload) : {};
+    } catch {
+      payload = {};
+    }
+    const customerName =
+      payload.customer_name ||
+      payload?.form?.customer_name ||
+      payload?.formData?.customer_name ||
+      row.projectName ||
+      "Customer";
+    const projectId = row.projectPid || `HUB-${leadId}`;
+    const designerName = row.designerName || "Designer";
+    const designerEmail = row.designerEmail || null;
+    if (!designerEmail) {
+      console.warn("[D1-files] notify skipped: no designer email", { leadId });
+      return;
+    }
+
+    const cc = await getMailLoopCcEmails([actingUser.email || null, designerEmail], leadId);
+    const sent = await triggerMailRouteWithLog({
+      leadId,
+      milestoneIndex: 0,
+      taskName: "D1 files upload – files ready",
+      route: "/api/email/send-d1-files-ready-internal",
+      visibility: "internal",
+      payload: {
+        to: designerEmail,
+        cc,
+        subject: buildMailChainSubject(projectId, row.projectName, customerName),
+        projectId,
+        customerName,
+        designerName,
+        approvedByName: actingUser.name || "MMT Manager",
+        fileName: opts?.fileName || null,
+      },
+    });
+    console.log("[D1-files] Internal ready mail", { leadId, to: designerEmail, sent });
+  } catch (err) {
+    console.error("[D1-files] notifyD1FilesReadyInternal error", { leadId, error: err });
   }
 }
 
@@ -733,6 +1083,47 @@ async function initDb() {
         // ignore
       }
     }
+    // Branch / experience center collected on user create forms (HBR, SJR, JPN, …)
+    try {
+      const [branchCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'branch'",
+      );
+      if ((branchCol as any[]).length === 0) {
+        await conn.query(
+          "ALTER TABLE users ADD COLUMN branch VARCHAR(128) NULL",
+        );
+      }
+    } catch {
+      // ignore
+    }
+
+    // Designer Meeting Wizard portfolio fields (experience card + inspiration projects)
+    for (const colSpec of [
+      { name: "designer_title", ddl: "ALTER TABLE users ADD COLUMN designer_title VARCHAR(128) NULL" },
+      { name: "designer_experience", ddl: "ALTER TABLE users ADD COLUMN designer_experience VARCHAR(128) NULL" },
+      { name: "designer_projects", ddl: "ALTER TABLE users ADD COLUMN designer_projects VARCHAR(128) NULL" },
+      { name: "designer_specialty", ddl: "ALTER TABLE users ADD COLUMN designer_specialty VARCHAR(128) NULL" },
+      { name: "designer_quote", ddl: "ALTER TABLE users ADD COLUMN designer_quote VARCHAR(512) NULL" },
+      { name: "designer_sqft", ddl: "ALTER TABLE users ADD COLUMN designer_sqft VARCHAR(64) NULL" },
+      { name: "designer_awards", ddl: "ALTER TABLE users ADD COLUMN designer_awards VARCHAR(64) NULL" },
+      { name: "designer_satisfaction", ddl: "ALTER TABLE users ADD COLUMN designer_satisfaction VARCHAR(64) NULL" },
+      {
+        name: "designer_inspiration_projects",
+        ddl: "ALTER TABLE users ADD COLUMN designer_inspiration_projects LONGTEXT NULL",
+      },
+    ] as const) {
+      try {
+        const [exists] = await conn.query(
+          "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = ?",
+          [colSpec.name],
+        );
+        if ((exists as any[]).length === 0) {
+          await conn.query(colSpec.ddl);
+        }
+      } catch {
+        // ignore
+      }
+    }
 
     await conn.query(`
       CREATE TABLE IF NOT EXISTS sessions (
@@ -743,6 +1134,7 @@ async function initDb() {
       );
     `);
 
+<<<<<<< HEAD
 await conn.query(`
   CREATE TABLE IF NOT EXISTS google_calendar_connections (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -758,6 +1150,23 @@ await conn.query(`
     FOREIGN KEY (user_id) REFERENCES users(id)
   );
 `);
+=======
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS google_calendar_connections (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL UNIQUE,
+        google_email VARCHAR(255) NOT NULL,
+        access_token TEXT NOT NULL,
+        refresh_token TEXT NULL,
+        expires_at DATETIME NULL,
+        scope TEXT NULL,
+        active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at DATETIME NOT NULL,
+        updated_at DATETIME NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id)
+      );
+    `);
+>>>>>>> dce23ca86fd131d34a0122a6a18c4709a6e817b6
 
     await conn.query(`
       CREATE TABLE IF NOT EXISTS leads (
@@ -977,13 +1386,33 @@ await conn.query(`
       CREATE TABLE IF NOT EXISTS lead_d1_assignments (
         id INT AUTO_INCREMENT PRIMARY KEY,
         lead_id INT NOT NULL,
-        assigned_to_user_id INT NOT NULL,
+        assigned_to_user_id INT NULL,
+        requested_mmt_manager_id INT NULL,
         measurement_date DATE,
         measurement_time VARCHAR(20),
         status VARCHAR(20) NOT NULL DEFAULT 'pending',
         created_at DATETIME NOT NULL
       );
     `);
+    try {
+      await conn.query(
+        "ALTER TABLE lead_d1_assignments MODIFY assigned_to_user_id INT NULL",
+      );
+    } catch {
+      /* column may already allow NULL */
+    }
+    try {
+      const [d1MgrCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_d1_assignments' AND COLUMN_NAME = 'requested_mmt_manager_id'",
+      );
+      if ((d1MgrCol as any[]).length === 0) {
+        await conn.query(
+          "ALTER TABLE lead_d1_assignments ADD COLUMN requested_mmt_manager_id INT NULL",
+        );
+      }
+    } catch {
+      /* ignore */
+    }
 
     await conn.query(`
       CREATE TABLE IF NOT EXISTS lead_d2_assignments (
@@ -1002,6 +1431,13 @@ await conn.query(`
       );
     } catch {
       /* column may already allow NULL */
+    }
+    try {
+      await conn.query(
+        "ALTER TABLE lead_d2_assignments ADD COLUMN requested_spm_id INT NULL",
+      );
+    } catch {
+      /* column may already exist */
     }
 
     await conn.query(`
@@ -1090,6 +1526,8 @@ await conn.query(`
         INDEX idx_pbc_cancelled_at (cancelled_at)
       );
     `);
+
+    await ensureOfflineMeetingExportTable(pool);
 
     try {
       const [seenCol] = await conn.query(
@@ -1516,6 +1954,61 @@ function resolveLeadBranchName(payload: any, explicit?: unknown): string {
   ) || "Experience Center";
 }
 
+type HubBranchCode = "HBR" | "SJR" | "JPN";
+
+const HUB_BRANCH_LOCATIONS: Record<
+  HubBranchCode,
+  { label: string; address: string; mapsUrl: string }
+> = {
+  HBR: {
+    label: "HBR Layout",
+    address:
+      "1st Floor, 6th Cross Rd, 1st Stage, HBR Layout 4th Block, HBR Layout, Bengaluru, Karnataka 560044",
+    mapsUrl:
+      "https://www.google.com/maps/search/?api=1&query=HUB+Interior+HBR+Layout+Bengaluru+560044",
+  },
+  SJR: {
+    label: "Sarjapur",
+    address:
+      "First Floor, No 7,8, JNR Complex, Sarjapur - Marathahalli Rd, Sulikunte, Bengaluru, Karnataka 562125",
+    mapsUrl:
+      "https://www.google.com/maps/search/?api=1&query=HUB+Interior+Sarjapur+JNR+Complex+Sulikunte+Bengaluru+562125",
+  },
+  JPN: {
+    label: "JP Nagar",
+    address:
+      "Safa Heights, 2, Dr Puneeth Rajkumar Rd, JP Nagar 4th Phase, Dollar Layout, Bengaluru, Karnataka 560078",
+    mapsUrl:
+      "https://www.google.com/maps/search/?api=1&query=HUB+Interior+JP+Nagar+Safa+Heights+Bengaluru+560078",
+  },
+};
+
+function resolveHubBranchCode(value: string | null | undefined): HubBranchCode | null {
+  const raw = (value || "").trim().toLowerCase();
+  if (!raw || raw === "experience center" || raw === "experience centre") return null;
+  if (raw === "hbr" || raw.includes("hbr")) return "HBR";
+  if (raw === "sjr" || raw.includes("sarjapur") || raw.includes("sjr")) return "SJR";
+  if (raw === "jpn" || raw.includes("jp nagar") || raw.includes("j.p") || raw.includes("jpn")) {
+    return "JPN";
+  }
+  return null;
+}
+
+function formatHubBranchLocationText(value: string | null | undefined): string {
+  const code = resolveHubBranchCode(value);
+  if (!code) {
+    const name = (value || "").trim() || "Experience Center";
+    return `HUB Interior ${name} Experience Center`;
+  }
+  const loc = HUB_BRANCH_LOCATIONS[code];
+  return `HUB Interior ${loc.label} Experience Center, ${loc.address}`;
+}
+
+function getHubBranchMapsUrl(value: string | null | undefined): string | null {
+  const code = resolveHubBranchCode(value);
+  return code ? HUB_BRANCH_LOCATIONS[code].mapsUrl : null;
+}
+
 function slotTextFromValue(v: unknown): string | null {
   if (v == null) return null;
   if (typeof v === "string" && v.trim()) return v.trim();
@@ -1531,18 +2024,30 @@ function slotTextFromValue(v: unknown): string | null {
 function extractLeadScheduleFromPayload(payloadInput: unknown): {
   appointmentDate: string | null;
   appointmentSlot: string | null;
+  scheduledMeetingDate: string | null;
+  scheduledMeetingSlot: string | null;
+  designScheduledMeetingUpdatedAt: string | null;
+  meetingWizLastCompleted: { at: string; meetingDate: string } | null;
 } {
+  const emptySchedule = {
+    appointmentDate: null as string | null,
+    appointmentSlot: null as string | null,
+    scheduledMeetingDate: null as string | null,
+    scheduledMeetingSlot: null as string | null,
+    designScheduledMeetingUpdatedAt: null as string | null,
+    meetingWizLastCompleted: null as { at: string; meetingDate: string } | null,
+  };
   let root: Record<string, unknown> = {};
   if (typeof payloadInput === "string") {
     try {
       root = JSON.parse(payloadInput) as Record<string, unknown>;
     } catch {
-      return { appointmentDate: null, appointmentSlot: null };
+      return emptySchedule;
     }
   } else if (payloadInput && typeof payloadInput === "object") {
     root = payloadInput as Record<string, unknown>;
   } else {
-    return { appointmentDate: null, appointmentSlot: null };
+    return emptySchedule;
   }
 
   const formData = (root.formData || root.form_data || root.form || {}) as Record<string, unknown>;
@@ -1595,13 +2100,67 @@ function extractLeadScheduleFromPayload(payloadInput: unknown): {
     slotTextFromValue(fetched.slot) ||
     null;
 
-  return { appointmentDate, appointmentSlot };
+  const designScheduled =
+    root.designScheduledMeeting && typeof root.designScheduledMeeting === "object"
+      ? (root.designScheduledMeeting as Record<string, unknown>)
+      : null;
+  const scheduledMeetingDateRaw = pickTrimmedString(
+    designScheduled?.date,
+    designScheduled?.meetingDate,
+    root.scheduledMeetingDate,
+  );
+  const scheduledMeetingDate = scheduledMeetingDateRaw
+    ? String(scheduledMeetingDateRaw).slice(0, 10)
+    : null;
+  const scheduledMeetingSlot =
+    slotTextFromValue(designScheduled?.time) ||
+    slotTextFromValue(designScheduled?.meetingTime) ||
+    slotTextFromValue(designScheduled?.slot) ||
+    slotTextFromValue(root.scheduledMeetingSlot) ||
+    null;
+
+  const designScheduledMeetingUpdatedAt = pickTrimmedString(
+    designScheduled?.updatedAt,
+    designScheduled?.updated_at,
+  );
+
+  const completedRaw =
+    root.meetingWizLastCompleted && typeof root.meetingWizLastCompleted === "object"
+      ? (root.meetingWizLastCompleted as Record<string, unknown>)
+      : null;
+  const meetingWizLastCompletedAt = pickTrimmedString(completedRaw?.at, completedRaw?.completedAt);
+  const meetingWizLastCompletedMeetingDateRaw = pickTrimmedString(
+    completedRaw?.meetingDate,
+    completedRaw?.forMeetingDate,
+  );
+  const meetingWizLastCompleted =
+    meetingWizLastCompletedAt
+      ? {
+          at: meetingWizLastCompletedAt,
+          meetingDate: meetingWizLastCompletedMeetingDateRaw
+            ? String(meetingWizLastCompletedMeetingDateRaw).slice(0, 10)
+            : String(meetingWizLastCompletedAt).slice(0, 10),
+        }
+      : null;
+
+  return {
+    appointmentDate,
+    appointmentSlot,
+    scheduledMeetingDate,
+    scheduledMeetingSlot,
+    designScheduledMeetingUpdatedAt,
+    meetingWizLastCompleted,
+  };
 }
 
 /** Fields for dashboard View popup (external intake, sales closure, CRM payload). */
 function extractLeadIntakeViewFromPayload(payloadInput: unknown): {
   appointmentDate: string | null;
   appointmentSlot: string | null;
+  scheduledMeetingDate: string | null;
+  scheduledMeetingSlot: string | null;
+  designScheduledMeetingUpdatedAt: string | null;
+  meetingWizLastCompleted: { at: string; meetingDate: string } | null;
   intakeCustomerName: string | null;
   intakeConfiguration: string | null;
   intakeNotes: string | null;
@@ -1784,12 +2343,28 @@ function extractLeadIntakeViewFromPayload(payloadInput: unknown): {
   };
 }
 
+function normalizeUserBranch(raw: unknown): string | null {
+  if (raw == null) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+  return s.slice(0, 128);
+}
+
 async function getUserFromSession(req: Request) {
   const auth = req.headers.authorization;
   const token = auth?.replace(/^Bearer\s+/i, "");
   if (!token) return null;
   const [rows] = await pool.query(
-    `SELECT u.id, u.email, u.name, u.role, u.profileImage, u.phone
+    `SELECT u.id, u.email, u.name, u.role, u.profileImage, u.phone, u.branch,
+            u.designer_title AS designerTitle,
+            u.designer_experience AS designerExperience,
+            u.designer_projects AS designerProjects,
+            u.designer_specialty AS designerSpecialty,
+            u.designer_quote AS designerQuote,
+            u.designer_sqft AS designerSqft,
+            u.designer_awards AS designerAwards,
+            u.designer_satisfaction AS designerSatisfaction,
+            u.designer_inspiration_projects AS designerInspirationProjects
        FROM sessions s
        JOIN users u ON u.id = s.user_id
        WHERE s.id = ?`,
@@ -1797,6 +2372,17 @@ async function getUserFromSession(req: Request) {
   );
   const user = (rows as any[])[0];
   if (!user) return null;
+  let inspirationProjects: unknown[] = [];
+  try {
+    if (typeof user.designerInspirationProjects === "string" && user.designerInspirationProjects.trim()) {
+      const parsed = JSON.parse(user.designerInspirationProjects);
+      if (Array.isArray(parsed)) inspirationProjects = parsed;
+    } else if (Array.isArray(user.designerInspirationProjects)) {
+      inspirationProjects = user.designerInspirationProjects;
+    }
+  } catch {
+    inspirationProjects = [];
+  }
   return {
     id: user.id,
     email: user.email,
@@ -1804,6 +2390,16 @@ async function getUserFromSession(req: Request) {
     role: user.role,
     profileImage: user.profileImage || null,
     phone: user.phone || "",
+    branch: user.branch || null,
+    designerTitle: user.designerTitle || null,
+    designerExperience: user.designerExperience || null,
+    designerProjects: user.designerProjects || null,
+    designerSpecialty: user.designerSpecialty || null,
+    designerQuote: user.designerQuote || null,
+    designerSqft: user.designerSqft || null,
+    designerAwards: user.designerAwards || null,
+    designerSatisfaction: user.designerSatisfaction || null,
+    designerInspirationProjects: inspirationProjects,
   };
 }
 
@@ -2883,6 +3479,7 @@ async function createGoogleCalendarEventForUser(args: {
   userId: number;
   summary: string;
   description?: string;
+  location?: string;
   startDateTimeIso: string;
   endDateTimeIso: string;
   attendees?: string[];
@@ -2899,6 +3496,7 @@ async function createGoogleCalendarEventForUser(args: {
     body: JSON.stringify({
       summary: args.summary,
       description: args.description || "",
+      ...(args.location ? { location: args.location } : {}),
       start: { dateTime: args.startDateTimeIso, timeZone: GOOGLE_TIME_ZONE },
       end: { dateTime: args.endDateTimeIso, timeZone: GOOGLE_TIME_ZONE },
       attendees: (args.attendees || []).map((email) => ({ email })),
@@ -2920,6 +3518,7 @@ async function createGoogleCalendarEventForFirstAvailableUser(args: {
   userIds: Array<number | null | undefined>;
   summary: string;
   description?: string;
+  location?: string;
   startDateTimeIso: string;
   endDateTimeIso: string;
   attendees?: string[];
@@ -2933,6 +3532,7 @@ async function createGoogleCalendarEventForFirstAvailableUser(args: {
         userId,
         summary: args.summary,
         description: args.description,
+        location: args.location,
         startDateTimeIso: args.startDateTimeIso,
         endDateTimeIso: args.endDateTimeIso,
         attendees: args.attendees,
@@ -3062,6 +3662,94 @@ async function addLeadHistoryEvent(leadId: number, event: any) {
   );
 }
 
+/** Persist latest design-module meeting schedule onto lead payload for dashboard Start Meeting. */
+async function persistLeadDesignScheduledMeeting(
+  leadId: number,
+  opts: {
+    meetingDate?: string | null;
+    meetingTime?: string | null;
+    meetingType?: string | null;
+    meetingMode?: string | null;
+  },
+) {
+  const dateIso =
+    normalizeBlockDateIso(opts.meetingDate) ||
+    (opts.meetingDate ? String(opts.meetingDate).trim().slice(0, 10) : null);
+  if (!dateIso || !/^\d{4}-\d{2}-\d{2}$/.test(dateIso)) return;
+
+  const [rows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [leadId]);
+  const row = (rows as { payload?: string | null }[])[0];
+  if (!row) return;
+
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = row.payload ? (JSON.parse(row.payload) as Record<string, unknown>) : {};
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = {};
+  } catch {
+    payload = {};
+  }
+
+  const timeLabel =
+    (opts.meetingTime && String(opts.meetingTime).trim()) ||
+    (payload.designScheduledMeeting &&
+    typeof payload.designScheduledMeeting === "object"
+      ? String((payload.designScheduledMeeting as Record<string, unknown>).time || "").trim()
+      : "") ||
+    null;
+
+  payload.designScheduledMeeting = {
+    date: dateIso,
+    time: timeLabel,
+    meetingType: opts.meetingType || null,
+    meetingMode: opts.meetingMode || null,
+    updatedAt: new Date().toISOString(),
+  };
+  payload.scheduledMeetingDate = dateIso;
+  if (timeLabel) payload.scheduledMeetingSlot = timeLabel;
+
+  await pool.query("UPDATE leads SET payload = ?, update_at = ? WHERE id = ?", [
+    JSON.stringify(payload),
+    new Date(),
+    leadId,
+  ]);
+}
+
+/** Mark Meeting Wizard session completed so Start Meeting stays hidden until a newer schedule. */
+async function persistLeadMeetingWizCompleted(
+  leadId: number,
+  opts: { completedAt?: string | null; meetingDate?: string | null },
+) {
+  const completedAt =
+    (opts.completedAt && String(opts.completedAt).trim()) || new Date().toISOString();
+  const meetingDate =
+    normalizeBlockDateIso(opts.meetingDate) ||
+    (opts.meetingDate ? String(opts.meetingDate).trim().slice(0, 10) : null) ||
+    completedAt.slice(0, 10);
+
+  const [rows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [leadId]);
+  const row = (rows as { payload?: string | null }[])[0];
+  if (!row) return;
+
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = row.payload ? (JSON.parse(row.payload) as Record<string, unknown>) : {};
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = {};
+  } catch {
+    payload = {};
+  }
+
+  payload.meetingWizLastCompleted = {
+    at: completedAt,
+    meetingDate,
+  };
+
+  await pool.query("UPDATE leads SET payload = ?, update_at = ? WHERE id = ?", [
+    JSON.stringify(payload),
+    new Date(),
+    leadId,
+  ]);
+}
+
 // ----- Auth -----
 
 app.post("/api/auth/login", async (req: Request, res: Response) => {
@@ -3072,12 +3760,32 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
 
   try {
     const [rows] = await pool.query(
-      "SELECT id, email, name, role, profileImage, phone, password FROM users WHERE email = ?",
+      `SELECT id, email, name, role, profileImage, phone, branch, password,
+              designer_title AS designerTitle,
+              designer_experience AS designerExperience,
+              designer_projects AS designerProjects,
+              designer_specialty AS designerSpecialty,
+              designer_quote AS designerQuote,
+              designer_sqft AS designerSqft,
+              designer_awards AS designerAwards,
+              designer_satisfaction AS designerSatisfaction,
+              designer_inspiration_projects AS designerInspirationProjects
+       FROM users WHERE email = ?`,
       [email],
     );
     const userRow = (rows as any[])[0];
     if (!userRow || userRow.password !== password) {
       return res.status(401).json({ message: "Invalid credentials" });
+    }
+
+    let inspirationProjects: unknown[] = [];
+    try {
+      if (typeof userRow.designerInspirationProjects === "string" && userRow.designerInspirationProjects.trim()) {
+        const parsed = JSON.parse(userRow.designerInspirationProjects);
+        if (Array.isArray(parsed)) inspirationProjects = parsed;
+      }
+    } catch {
+      inspirationProjects = [];
     }
 
     const user = {
@@ -3087,6 +3795,16 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
       role: userRow.role,
       profileImage: userRow.profileImage || null,
       phone: userRow.phone || "",
+      branch: userRow.branch || null,
+      designerTitle: userRow.designerTitle || null,
+      designerExperience: userRow.designerExperience || null,
+      designerProjects: userRow.designerProjects || null,
+      designerSpecialty: userRow.designerSpecialty || null,
+      designerQuote: userRow.designerQuote || null,
+      designerSqft: userRow.designerSqft || null,
+      designerAwards: userRow.designerAwards || null,
+      designerSatisfaction: userRow.designerSatisfaction || null,
+      designerInspirationProjects: inspirationProjects,
     };
 
     const sessionId =
@@ -3346,14 +4064,36 @@ app.get("/api/google-calendar/all-events", async (req: Request, res: Response) =
   }
 });
 
-// List MMT executives for assignment (e.g. D1 Measurement popup)
-app.get("/api/auth/mmt-executives", async (req: Request, res: Response) => {
+// List MMT managers (designer D1 request assignee dropdown)
+app.get("/api/auth/mmt-managers", async (req: Request, res: Response) => {
   try {
     const user = await getUserFromSession(req);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
     const [rows] = await pool.query(
-      "SELECT id, name, email FROM users WHERE role = 'mmt_executive' ORDER BY name ASC",
+      "SELECT id, name, email FROM users WHERE role = 'mmt_manager' ORDER BY name ASC",
     );
+    return res.json(rows);
+  } catch (err) {
+    console.error("mmt-managers error", err);
+    return res.status(500).json({ message: "Failed to load MMT managers" });
+  }
+});
+
+// List MMT executives for assignment.
+// Default: all executives. Optional ?managerId= scopes to that manager's team.
+app.get("/api/auth/mmt-executives", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const managerIdParam = Number(req.query.managerId);
+    let sql = "SELECT id, name, email, phone FROM users WHERE role = 'mmt_executive'";
+    const params: number[] = [];
+    if (Number.isFinite(managerIdParam) && managerIdParam > 0) {
+      sql += " AND mmt_manager_id = ?";
+      params.push(managerIdParam);
+    }
+    sql += " ORDER BY name ASC";
+    const [rows] = await pool.query(sql, params);
     return res.json(rows);
   } catch (err) {
     console.error("mmt-executives error", err);
@@ -3387,6 +4127,109 @@ app.put("/api/auth/profile", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("profile update error", err);
     return res.status(500).json({ message: "Failed to update profile" });
+  }
+});
+
+/** Designer Meeting Wizard card: title, experience, projects, specialty, quote */
+app.put("/api/auth/designer-experience", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+
+    const title = String(req.body?.designerTitle ?? req.body?.title ?? "").trim().slice(0, 128);
+    const experience = String(req.body?.designerExperience ?? req.body?.experience ?? "").trim().slice(0, 128);
+    const projects = String(req.body?.designerProjects ?? req.body?.projects ?? "").trim().slice(0, 128);
+    const specialty = String(req.body?.designerSpecialty ?? req.body?.specialty ?? "").trim().slice(0, 128);
+    const quote = String(req.body?.designerQuote ?? req.body?.quote ?? "").trim().slice(0, 512);
+    const sqft = String(req.body?.designerSqft ?? req.body?.sqft ?? "").trim().slice(0, 64);
+    const awards = String(req.body?.designerAwards ?? req.body?.awards ?? "").trim().slice(0, 64);
+    const satisfaction = String(req.body?.designerSatisfaction ?? req.body?.satisfaction ?? "").trim().slice(0, 64);
+
+    await pool.query(
+      `UPDATE users SET
+         designer_title = ?,
+         designer_experience = ?,
+         designer_projects = ?,
+         designer_specialty = ?,
+         designer_quote = ?,
+         designer_sqft = ?,
+         designer_awards = ?,
+         designer_satisfaction = ?
+       WHERE id = ?`,
+      [
+        title || null,
+        experience || null,
+        projects || null,
+        specialty || null,
+        quote || null,
+        sqft || null,
+        awards || null,
+        satisfaction || null,
+        user.id,
+      ],
+    );
+
+    const updated = await getUserFromSession(req);
+    return res.json({ message: "Designer experience updated", user: updated });
+  } catch (err) {
+    console.error("designer-experience update error", err);
+    return res.status(500).json({ message: "Failed to update designer experience" });
+  }
+});
+
+/** Inspiration projects shown / managed by the designer (JSON array). */
+app.put("/api/auth/inspiration-projects", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+
+    const raw = req.body?.projects ?? req.body?.designerInspirationProjects ?? [];
+    if (!Array.isArray(raw)) {
+      return res.status(400).json({ message: "projects must be an array" });
+    }
+
+    const allowedCategories = new Set(["LIVING ROOM", "BEDROOM", "KITCHEN", "OTHER"]);
+    const cleaned = [];
+    for (let index = 0; index < Math.min(raw.length, 24); index++) {
+      const item = raw[index];
+      if (!item || typeof item !== "object") continue;
+      const row = item as Record<string, unknown>;
+      const title = String(row.title ?? "").trim().slice(0, 160);
+      if (!title) continue;
+      const categoryRaw = String(row.category ?? "OTHER").trim().toUpperCase();
+      const category = allowedCategories.has(categoryRaw) ? categoryRaw : "OTHER";
+      let imageUrl: string | null =
+        typeof row.imageUrl === "string" && row.imageUrl.trim() ? row.imageUrl.trim() : null;
+      // Persist data-URL uploads to storage; keep http(s) URLs as-is.
+      if (imageUrl && imageUrl.startsWith("data:image/")) {
+        try {
+          imageUrl = await uploadProfileImage(user.id, imageUrl);
+        } catch (uploadErr) {
+          console.error("inspiration image upload failed", uploadErr);
+          return res.status(500).json({ message: "Failed to upload project image" });
+        }
+      } else if (imageUrl) {
+        imageUrl = imageUrl.slice(0, 2000);
+      }
+      cleaned.push({
+        id: String(row.id ?? `insp-${Date.now()}-${index}`).slice(0, 64),
+        title,
+        description: String(row.description ?? "").trim().slice(0, 1000),
+        category,
+        imageUrl,
+      });
+    }
+
+    await pool.query("UPDATE users SET designer_inspiration_projects = ? WHERE id = ?", [
+      JSON.stringify(cleaned),
+      user.id,
+    ]);
+
+    const updated = await getUserFromSession(req);
+    return res.json({ message: "Inspiration projects updated", user: updated });
+  } catch (err) {
+    console.error("inspiration-projects update error", err);
+    return res.status(500).json({ message: "Failed to update inspiration projects" });
   }
 });
 
@@ -3506,7 +4349,7 @@ app.all("/api/auth/create-mmt-manager", async (req: Request, res: Response) => {
       return res.status(403).json({ message: "Only admin can create MMT Manager" });
     }
 
-    const { email, password, name, phone } = req.body || {};
+    const { email, password, name, phone, branch } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) {
       return res.status(400).json({ message: "Email must end with @hubinterior.com" });
@@ -3517,10 +4360,11 @@ app.all("/api/auth/create-mmt-manager", async (req: Request, res: Response) => {
 
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
 
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, "mmt_manager", phoneVal || null],
+      "INSERT INTO users (email, password, name, role, phone, branch) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "mmt_manager", phoneVal || null, branchVal],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({
@@ -3553,7 +4397,7 @@ app.all("/api/auth/register-mmt-executive", async (req: Request, res: Response) 
       return res.status(403).json({ message: "Only MMT Manager or Admin can register MMT Executives" });
     }
 
-    const { email, password, name, phone } = req.body || {};
+    const { email, password, name, phone, branch } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) {
       return res.status(400).json({ message: "Email must end with @hubinterior.com" });
@@ -3564,15 +4408,17 @@ app.all("/api/auth/register-mmt-executive", async (req: Request, res: Response) 
 
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
 
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone, mmt_manager_id) VALUES (?, ?, ?, ?, ?, ?)",
+      "INSERT INTO users (email, password, name, role, phone, branch, mmt_manager_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
       [
         normalized,
         String(password),
         displayName,
         "mmt_executive",
         phoneVal || null,
+        branchVal,
         role === "mmt_manager" ? manager.id : null,
       ],
     );
@@ -3604,15 +4450,16 @@ app.all("/api/auth/create-tdm", async (req: Request, res: Response) => {
     if (role !== "admin" && role !== "deputy_general_manager") {
       return res.status(403).json({ message: "Only admin or Deputy General Manager can create TDM" });
     }
-    const { email, password, name, phone } = req.body || {};
+    const { email, password, name, phone, branch } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
     if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, "territorial_design_manager", phoneVal || null],
+      "INSERT INTO users (email, password, name, role, phone, branch) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "territorial_design_manager", phoneVal || null, branchVal],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "territorial_design_manager" } });
@@ -3630,15 +4477,16 @@ app.all("/api/auth/create-deputy-general-manager", async (req: Request, res: Res
     const admin = await getUserFromSession(req);
     if (!admin) return res.status(401).json({ message: "Unauthorized" });
     if (admin.role !== "admin") return res.status(403).json({ message: "Only admin can create Deputy General Manager" });
-    const { email, password, name, phone } = req.body || {};
+    const { email, password, name, phone, branch } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
     if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, "deputy_general_manager", phoneVal || null],
+      "INSERT INTO users (email, password, name, role, phone, branch) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "deputy_general_manager", phoneVal || null, branchVal],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "deputy_general_manager" } });
@@ -3656,15 +4504,16 @@ app.all("/api/auth/create-admin", async (req: Request, res: Response) => {
     const admin = await getUserFromSession(req);
     if (!admin) return res.status(401).json({ message: "Unauthorized" });
     if (admin.role !== "admin") return res.status(403).json({ message: "Only admin can create Admin" });
-    const { email, password, name, phone } = req.body || {};
+    const { email, password, name, phone, branch } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
     if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, "admin", phoneVal || null],
+      "INSERT INTO users (email, password, name, role, phone, branch) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "admin", phoneVal || null, branchVal],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "admin" } });
@@ -3682,15 +4531,16 @@ app.all("/api/auth/create-dqc-manager", async (req: Request, res: Response) => {
     const admin = await getUserFromSession(req);
     if (!admin) return res.status(401).json({ message: "Unauthorized" });
     if (admin.role !== "admin") return res.status(403).json({ message: "Only admin can create DQC Manager" });
-    const { email, password, name, phone } = req.body || {};
+    const { email, password, name, phone, branch } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
     if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, "dqc_manager", phoneVal || null],
+      "INSERT INTO users (email, password, name, role, phone, branch) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "dqc_manager", phoneVal || null, branchVal],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "dqc_manager" } });
@@ -3708,15 +4558,16 @@ app.all("/api/auth/create-escalation-manager", async (req: Request, res: Respons
     const admin = await getUserFromSession(req);
     if (!admin) return res.status(401).json({ message: "Unauthorized" });
     if (admin.role !== "admin") return res.status(403).json({ message: "Only admin can create Escalation Manager" });
-    const { email, password, name, phone } = req.body || {};
+    const { email, password, name, phone, branch } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
     if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, "escalation_manager", phoneVal || null],
+      "INSERT INTO users (email, password, name, role, phone, branch) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "escalation_manager", phoneVal || null, branchVal],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "escalation_manager" } });
@@ -3740,15 +4591,16 @@ app.all("/api/auth/create-project-manager", async (req: Request, res: Response) 
         message: "Only Admin, Territorial Design Manager, or Deputy General Manager can create a Project Manager",
       });
     }
-    const { email, password, name, phone } = req.body || {};
+    const { email, password, name, phone, branch } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
     if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, "project_manager", phoneVal || null],
+      "INSERT INTO users (email, password, name, role, phone, branch) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "project_manager", phoneVal || null, branchVal],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "project_manager" } });
@@ -3768,15 +4620,16 @@ app.all("/api/auth/create-senior-project-manager", async (req: Request, res: Res
     if ((admin.role || "").toLowerCase() !== "admin") {
       return res.status(403).json({ message: "Only admin can create a Senior Project Manager" });
     }
-    const { email, password, name, phone } = req.body || {};
+    const { email, password, name, phone, branch } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
     if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, "senior_project_manager", phoneVal || null],
+      "INSERT INTO users (email, password, name, role, phone, branch) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "senior_project_manager", phoneVal || null, branchVal],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({
@@ -3805,6 +4658,21 @@ app.get("/api/auth/project-managers", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("project-managers list error", err);
     return res.status(500).json({ message: "Failed to load project managers" });
+  }
+});
+
+// List senior project managers (for D2 masking request SPM dropdown)
+app.get("/api/auth/senior-project-managers", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const [rows] = await pool.query(
+      "SELECT id, name, email FROM users WHERE role = 'senior_project_manager' ORDER BY name ASC",
+    );
+    return res.json(rows);
+  } catch (err) {
+    console.error("senior-project-managers list error", err);
+    return res.status(500).json({ message: "Failed to load senior project managers" });
   }
 });
 
@@ -3855,15 +4723,16 @@ app.all("/api/auth/create-finance", async (req: Request, res: Response) => {
     const admin = await getUserFromSession(req);
     if (!admin) return res.status(401).json({ message: "Unauthorized" });
     if (admin.role !== "admin") return res.status(403).json({ message: "Only admin can create Finance" });
-    const { email, password, name, phone } = req.body || {};
+    const { email, password, name, phone, branch } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
     if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, "finance", phoneVal || null],
+      "INSERT INTO users (email, password, name, role, phone, branch) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "finance", phoneVal || null, branchVal],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "finance" } });
@@ -3882,15 +4751,16 @@ app.all("/api/auth/register-dqe", async (req: Request, res: Response) => {
     if (!manager) return res.status(401).json({ message: "Unauthorized" });
     const role = (manager.role || "").toLowerCase();
     if (role !== "dqc_manager" && role !== "admin") return res.status(403).json({ message: "Only DQC Manager or Admin can register DQE" });
-    const { email, password, name, phone } = req.body || {};
+    const { email, password, name, phone, branch } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
     if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone) VALUES (?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, "dqe", phoneVal || null],
+      "INSERT INTO users (email, password, name, role, phone, branch) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "dqe", phoneVal || null, branchVal],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: "dqe" } });
@@ -3909,13 +4779,14 @@ app.all("/api/auth/register", async (req: Request, res: Response) => {
     if (!current) return res.status(401).json({ message: "Unauthorized" });
     const role = (current.role || "").toLowerCase();
     if (role !== "territorial_design_manager" && role !== "deputy_general_manager" && role !== "admin") return res.status(403).json({ message: "Only TDM, Deputy General Manager, or Admin can register designers" });
-    const { email, password, name, phone, role: bodyRole, managerId } = req.body || {};
+    const { email, password, name, phone, branch, role: bodyRole, managerId } = req.body || {};
     const normalized = (email || "").trim().toLowerCase();
     if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
     if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
     const targetRole = bodyRole === "design_manager" ? "design_manager" : "designer";
     const displayName = (name || normalized).trim() || normalized;
     const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
     let designManagerId: number | null = null;
     let territorialDesignManagerId: number | null = null;
     const isTdm = role === "territorial_design_manager";
@@ -3965,8 +4836,8 @@ app.all("/api/auth/register", async (req: Request, res: Response) => {
     }
 
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone, design_manager_id, territorial_design_manager_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, targetRole, phoneVal || null, designManagerId, territorialDesignManagerId],
+      "INSERT INTO users (email, password, name, role, phone, branch, design_manager_id, territorial_design_manager_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, targetRole, phoneVal || null, branchVal, designManagerId, territorialDesignManagerId],
     );
     const insertId = (result as any).insertId;
     return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: targetRole } });
@@ -4607,6 +5478,77 @@ function frontendBase(): string {
   return (process.env.FRONTEND_BASE_URL || "http://localhost:3000").replace(/\/$/, "");
 }
 
+/** Resolve the latest Prolance quote id + share URLs for a Design lead. */
+async function resolveLatestQuoteLinkForLead(leadId: number): Promise<{
+  quoteId: number;
+  customerQuoteUrl: string;
+  internalQuoteUrl: string;
+} | null> {
+  let quoteId: number | null = null;
+
+  // Prefer newest version row (true latest quotation)
+  try {
+    const [verRows] = await pool.query(
+      `SELECT quote_id AS quoteId
+       FROM lead_prolance_quote_versions
+       WHERE lead_id = ?
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+      [leadId],
+    );
+    const ver = (verRows as { quoteId?: number }[])[0];
+    if (ver?.quoteId != null && Number(ver.quoteId) > 0) quoteId = Number(ver.quoteId);
+  } catch {
+    /* ignore */
+  }
+
+  if (quoteId == null || quoteId < 1) {
+    try {
+      const [lr] = await pool.query(
+        `SELECT prolance_quote_id AS prolanceQuoteId FROM leads WHERE id = ? LIMIT 1`,
+        [leadId],
+      );
+      const pq = (lr as { prolanceQuoteId?: number | null }[])[0]?.prolanceQuoteId;
+      if (pq != null && Number(pq) > 0) quoteId = Number(pq);
+    } catch {
+      /* column may be missing on older DBs */
+    }
+  }
+
+  if (quoteId == null || quoteId < 1) {
+    try {
+      const [snapRows] = await pool.query(
+        `SELECT quote_id AS quoteId
+         FROM lead_prolance_quote_snapshots
+         WHERE lead_id = ?
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1`,
+        [leadId],
+      );
+      const snap = (snapRows as { quoteId?: number }[])[0];
+      if (snap?.quoteId != null && Number(snap.quoteId) > 0) quoteId = Number(snap.quoteId);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (quoteId == null || quoteId < 1) return null;
+
+  const base = frontendBase();
+  return {
+    quoteId,
+    customerQuoteUrl: `${base}/quote/${encodeURIComponent(String(quoteId))}`,
+    internalQuoteUrl: `${base}/quote/${encodeURIComponent(String(quoteId))}?internal=1&leadId=${encodeURIComponent(String(leadId))}`,
+  };
+}
+
+function appendLatestQuoteLinkToMinutes(minutes: string, quoteUrl: string): string {
+  const trimmed = (minutes || "").trim();
+  if (trimmed.includes(quoteUrl)) return trimmed;
+  const block = `Latest quotation link:\n${quoteUrl}`;
+  return trimmed ? `${trimmed}\n\n${block}` : block;
+}
+
 function parseFiniteNumber(v: unknown): number | null {
   if (typeof v === "number" && Number.isFinite(v)) return v;
   if (typeof v === "string" && v.trim() && Number.isFinite(Number(v))) return Number(v);
@@ -4691,6 +5633,106 @@ function readDiscountMetaFromSnapshot(snapshotPayload: Record<string, unknown>):
   return { flatDiscountPct, categoryPct, amount };
 }
 
+async function findLeadRowForCrmQuoteLookup(externalLeadId: string): Promise<{
+  id: number;
+  prolanceQuoteId: unknown;
+} | null> {
+  const id = String(externalLeadId || "").trim();
+  if (!id) return null;
+
+  /** Avoid JSON_EXTRACT errors on empty/invalid legacy payload rows. */
+  const SAFE_PAYLOAD_JSON =
+    "CASE WHEN payload IS NULL OR TRIM(CAST(payload AS CHAR)) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END";
+
+  const readProlanceQuoteId = async (leadRowId: number): Promise<unknown> => {
+    try {
+      const [qRows] = await pool.query(
+        `SELECT prolance_quote_id AS prolanceQuoteId FROM leads WHERE id = ? LIMIT 1`,
+        [leadRowId],
+      );
+      return (qRows as any[])[0]?.prolanceQuoteId ?? null;
+    } catch (colErr) {
+      console.error("crm quote link prolance_quote_id read failed", { leadRowId, error: colErr });
+      return null;
+    }
+  };
+
+  const returnLead = async (leadRowId: number) => ({
+    id: Number(leadRowId),
+    prolanceQuoteId: await readProlanceQuoteId(Number(leadRowId)),
+  });
+
+  // 1) Prefer simple pid match (idempotent; does not touch JSON).
+  try {
+    const [byPid] = await pool.query(
+      `SELECT id FROM leads WHERE pid = ? ORDER BY id DESC LIMIT 1`,
+      [id],
+    );
+    const row = (byPid as any[])[0];
+    if (row?.id != null) return returnLead(row.id);
+  } catch (err) {
+    console.error("crm quote link pid lookup failed", { externalLeadId: id, error: err });
+  }
+
+  // 2) CRM sync pattern: pid / lookup as `${leadType}-${crmLeadId}` or `${leadType}#${crmLeadId}`
+  const typed = id.match(/^([a-zA-Z][a-zA-Z0-9_]*)[-#](\d+)$/);
+  if (typed) {
+    const leadType = typed[1];
+    const leadIdNum = Number(typed[2]);
+    if (leadType && Number.isFinite(leadIdNum) && leadIdNum > 0) {
+      try {
+        const [byCrm] = await pool.query(
+          `SELECT id FROM leads
+           WHERE JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.crmLeadType')) = ?
+             AND CAST(JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.crmLeadId')) AS UNSIGNED) = ?
+           ORDER BY id DESC LIMIT 1`,
+          [leadType, leadIdNum],
+        );
+        const row = (byCrm as any[])[0];
+        if (row?.id != null) return returnLead(row.id);
+      } catch (err) {
+        console.error("crm quote link crmLeadType/Id lookup failed", {
+          externalLeadId: id,
+          error: err,
+        });
+      }
+    }
+  }
+
+  // 3) payload.externalReferenceId / fetchedData.externalReferenceId (same as hub upsert matcher)
+  try {
+    const [byRef] = await pool.query(
+      `SELECT id FROM leads
+       WHERE JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.fetchedData.externalReferenceId')) = ?
+          OR JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.externalReferenceId')) = ?
+          OR JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.externalLeadId')) = ?
+          OR JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.leadIdentifier')) = ?
+          OR JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.uniqueId')) = ?
+       ORDER BY id DESC LIMIT 1`,
+      [id, id, id, id, id],
+    );
+    const row = (byRef as any[])[0];
+    if (row?.id != null) return returnLead(row.id);
+  } catch (err) {
+    console.error("crm quote link payload ref lookup failed", { externalLeadId: id, error: err });
+  }
+
+  // 4) Last-resort substring match on payload text (bounded).
+  try {
+    const like = `%"${id.replace(/[%_\\]/g, "\\$&")}"%`;
+    const [byLike] = await pool.query(
+      `SELECT id FROM leads WHERE CAST(payload AS CHAR) LIKE ? ORDER BY id DESC LIMIT 1`,
+      [like],
+    );
+    const row = (byLike as any[])[0];
+    if (row?.id != null) return returnLead(row.id);
+  } catch (err) {
+    console.error("crm quote link payload LIKE lookup failed", { externalLeadId: id, error: err });
+  }
+
+  return null;
+}
+
 async function handleCrmInternalLinkByExternalLeadId(req: Request, res: Response): Promise<void> {
   if (!requireExternalApiKey(req, res, "CRM internal quote link")) return;
   const externalLeadId = String(req.params.externalLeadId || "").trim();
@@ -4700,16 +5742,7 @@ async function handleCrmInternalLinkByExternalLeadId(req: Request, res: Response
   }
 
   try {
-    const [leadRows] = await pool.query(
-      `SELECT id, prolance_quote_id AS prolanceQuoteId, payload
-       FROM leads
-       WHERE pid = ?
-          OR JSON_UNQUOTE(JSON_EXTRACT(payload, '$.externalReferenceId')) = ?
-       ORDER BY id DESC
-       LIMIT 1`,
-      [externalLeadId, externalLeadId],
-    );
-    const lead = (leadRows as any[])[0];
+    const lead = await findLeadRowForCrmQuoteLookup(externalLeadId);
     if (!lead) {
       res.status(404).json({ message: "Lead not found for externalLeadId" });
       return;
@@ -4722,16 +5755,43 @@ async function handleCrmInternalLinkByExternalLeadId(req: Request, res: Response
         : null;
 
     if (quoteId == null || quoteId < 1) {
-      const [snapRows] = await pool.query(
-        `SELECT quote_id AS quoteId
-         FROM lead_prolance_quote_snapshots
-         WHERE lead_id = ?
-         ORDER BY created_at DESC, id DESC
-         LIMIT 1`,
-        [leadId],
-      );
-      const snap = (snapRows as any[])[0];
-      quoteId = snap?.quoteId != null && Number.isFinite(Number(snap.quoteId)) ? Number(snap.quoteId) : null;
+      try {
+        const [snapRows] = await pool.query(
+          `SELECT quote_id AS quoteId
+           FROM lead_prolance_quote_snapshots
+           WHERE lead_id = ?
+           ORDER BY created_at DESC, id DESC
+           LIMIT 1`,
+          [leadId],
+        );
+        const snap = (snapRows as any[])[0];
+        quoteId =
+          snap?.quoteId != null && Number.isFinite(Number(snap.quoteId))
+            ? Number(snap.quoteId)
+            : null;
+      } catch (snapErr) {
+        console.error("crm quote link snapshot lookup failed", { leadId, error: snapErr });
+      }
+    }
+
+    if (quoteId == null || quoteId < 1) {
+      try {
+        const [verRows] = await pool.query(
+          `SELECT quote_id AS quoteId
+           FROM lead_prolance_quote_versions
+           WHERE lead_id = ?
+           ORDER BY created_at DESC, id DESC
+           LIMIT 1`,
+          [leadId],
+        );
+        const ver = (verRows as any[])[0];
+        quoteId =
+          ver?.quoteId != null && Number.isFinite(Number(ver.quoteId))
+            ? Number(ver.quoteId)
+            : null;
+      } catch (verErr) {
+        console.error("crm quote link version lookup failed", { leadId, error: verErr });
+      }
     }
 
     if (quoteId == null || quoteId < 1) {
@@ -5368,13 +6428,21 @@ app.get("/api/leads/:id/history", async (req: Request, res: Response) => {
       "SELECT event FROM lead_history WHERE lead_id = ? ORDER BY created_at DESC",
       [id],
     );
-    const events = (rows as any[]).map((r) => {
-      try {
-        return JSON.parse(r.event);
-      } catch {
+    const events = (rows as any[])
+      .map((r) => {
+        const raw = r.event;
+        // MySQL JSON columns are already objects via mysql2 — do not JSON.parse them.
+        if (raw && typeof raw === "object") return raw;
+        if (typeof raw === "string" && raw.trim()) {
+          try {
+            return JSON.parse(raw);
+          } catch {
+            return null;
+          }
+        }
         return null;
-      }
-    }).filter(Boolean);
+      })
+      .filter(Boolean);
 
     if (events.length > 0) {
       return res.json(events);
@@ -5421,6 +6489,28 @@ app.post("/api/leads/:id/history", async (req: Request, res: Response) => {
   if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
   try {
     await addLeadHistoryEvent(id, req.body);
+    try {
+      const meta =
+        req.body?.meta && typeof req.body.meta === "object"
+          ? (req.body.meta as Record<string, unknown>)
+          : null;
+      const meetingDate = meta?.meetingDate ?? meta?.signoffDate ?? null;
+      if (meetingDate) {
+        await persistLeadDesignScheduledMeeting(id, {
+          meetingDate: String(meetingDate),
+          meetingTime:
+            meta?.meetingTime != null
+              ? String(meta.meetingTime)
+              : meta?.signoffTime != null
+                ? String(meta.signoffTime)
+                : null,
+          meetingType: req.body?.taskName != null ? String(req.body.taskName) : null,
+          meetingMode: meta?.meetingMode != null ? String(meta.meetingMode) : null,
+        });
+      }
+    } catch (persistErr) {
+      console.error("[history] persist scheduled meeting failed (non-fatal)", persistErr);
+    }
     return res.status(201).json({ ok: true });
   } catch (err) {
     console.error("lead history insert error", err);
@@ -5468,6 +6558,29 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         });
       }
     }
+    if (milestoneIndex === 1 && tNorm === "DQC 1 approval") {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const role = (user.role || "").toLowerCase();
+      if (role !== "dqc_manager" && role !== "dqe" && role !== "admin") {
+        return res.status(403).json({
+          message: "Only DQC Manager, DQE, or Admin can complete DQC 1 approval",
+        });
+      }
+    }
+    if (
+      milestoneIndex === 4 &&
+      (tNorm === "DQC 2 approval" || tNorm === "DQC 2 approval ")
+    ) {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const role = (user.role || "").toLowerCase();
+      if (role !== "dqc_manager" && role !== "dqe" && role !== "admin") {
+        return res.status(403).json({
+          message: "Only DQC Manager, DQE, or Admin can complete DQC 2 approval",
+        });
+      }
+    }
     const actingUser = await getUserFromSession(req);
     if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
 
@@ -5478,20 +6591,38 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
       [id, milestoneIndex, taskName, new Date()],
     );
 
+    try {
+      const meetingDate = meta?.meetingDate ?? meta?.signoffDate ?? null;
+      const meetingTime = meta?.meetingTime ?? meta?.signoffTime ?? null;
+      if (meetingDate) {
+        await persistLeadDesignScheduledMeeting(id, {
+          meetingDate: String(meetingDate),
+          meetingTime: meetingTime != null ? String(meetingTime) : null,
+          meetingType: String(taskName),
+          meetingMode: meta?.meetingMode != null ? String(meta.meetingMode) : null,
+        });
+      }
+    } catch (persistErr) {
+      console.error("[complete-task] persist scheduled meeting failed (non-fatal)", persistErr);
+    }
+
     // Fire-and-forget: trigger milestone-specific customer emails where defined
     const emailRoutePath: string | null = (() => {
       const t = String(taskName).trim();
       switch (milestoneIndex) {
         // Milestone 0: D1 SITE MEASUREMENT
         case 0:
+          if (t === "Group Description") {
+            // Sl no 1 – welcome / mail-loop initiate letter on mark as done
+            return "/api/email/send-mail-loop-chain-initiate";
+          }
           if (t === "Mail loop chain 2 initiate") {
-            // Sl no 2 – initiate customer mail loop chain from backend SMTP
-            // Email is triggered directly via /api/leads/:id/mail-loop-chain-initiate endpoint.
-            // Do not fire an additional email on task completion to prevent duplicates.
+            // Sl no 2 – collect client + family member emails only (no mail on complete)
+            return null;
           }
           if (t === "D1 for MMT request") {
-            // Sl no 3 – D1 for MMT request (measurement visit scheduling)
-            return "/api/email/send-d1-mmt-visit-scheduled";
+            // External visit mail fires after MMT manager/admin assigns executive
+            return null;
           }
           break;
 
@@ -7033,6 +8164,8 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             const meetingMode = meta?.meetingMode ?? null;
             const meetingLink = meta?.meetingLink ?? null;
             const ecLocation = meta?.ecLocation ?? meta?.ecAddress ?? ecName;
+            const ecLocationText = formatHubBranchLocationText(ecLocation);
+            const ecMapsUrl = getHubBranchMapsUrl(ecLocation);
             if (meetingDate && meetingTime) {
               const googleStart = formatGoogleDateTime(meetingDate, meetingTime);
 
@@ -7041,7 +8174,8 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   await createGoogleCalendarEventForFirstAvailableUser({
                     userIds: [row.assigned_designer_id, actingUser.id],
                     summary: `Material Selection - ${customerName}`,
-                    description: `Material selection meeting at ${ecLocation || ecName}.`,
+                    description: `Material selection meeting at ${ecLocationText}.`,
+                    location: meetingMode === "offline" ? ecLocationText : undefined,
                     startDateTimeIso: googleStart,
                     endDateTimeIso: addHoursToIso(googleStart, 1),
                     attendees: distinctEmails([customerEmail, row.designerEmail, actingUser.email]),
@@ -7078,6 +8212,8 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                     meetingMode,
                     meetingLink,
                     ecLocation,
+                    ecAddress: ecLocationText,
+                    ecMapsUrl,
                   },
                 });
               }
@@ -7270,6 +8406,31 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             error: err,
           });
         }
+      } else if (emailRoutePath === "/api/email/send-mail-loop-chain-initiate") {
+        // Group Description — await welcome mail so UI can confirm success
+        try {
+          const mailResult = await triggerCustomerEmailForLead(id, emailRoutePath, {
+            actorEmail: actingUser.email || null,
+            awaitSend: true,
+          });
+          return res.status(201).json({
+            ok: true,
+            mailSent: mailResult.ok,
+            mailTo: mailResult.to,
+            mailReason: mailResult.reason || null,
+          });
+        } catch (err) {
+          console.error("complete-task Group Description mail error (non-fatal)", {
+            leadId: id,
+            error: err,
+          });
+          return res.status(201).json({
+            ok: true,
+            mailSent: false,
+            mailTo: [],
+            mailReason: "Mail trigger error",
+          });
+        }
       } else {
         triggerCustomerEmailForLead(id, emailRoutePath, { actorEmail: actingUser.email || null }).catch((err) => {
           console.error("complete-task email trigger error (non-fatal)", {
@@ -7291,6 +8452,8 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
 });
 
 // Trigger mail loop chain initiation mail (SMTP-backed).
+// Prefer completing "Group Description" (fires the same route via complete-task).
+// Kept for manual/admin re-send if needed.
 app.post("/api/leads/:id/mail-loop-chain-initiate", async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
@@ -8840,7 +10003,7 @@ app.post(
         return (insertResult as any).insertId as number;
       };
 
-      const maybeCompleteTask = async () => {
+      const maybeCompleteTask = async (fileName?: string) => {
         if (
           role === "mmt_manager" ||
           role === "admin" ||
@@ -8852,6 +10015,14 @@ app.post(
              ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
             [leadId, uploadMilestoneIndex, uploadTaskName, now],
           );
+          // Manager/admin direct D1 upload → auto-complete + notify designer
+          if (!isD2 && (role === "mmt_manager" || role === "admin")) {
+            void notifyD1FilesReadyInternal(
+              leadId,
+              { name: user?.name, email: user?.email },
+              { fileName: fileName || null },
+            );
+          }
         }
       };
 
@@ -8865,7 +10036,7 @@ app.post(
         for (const file of batchFiles) {
           uploadIds.push(await persistOne(file));
         }
-        await maybeCompleteTask();
+        await maybeCompleteTask(batchFiles[0]?.originalname);
         const fileNames = batchFiles.map((f) => f.originalname);
         await recordD2UploadHistory(fileNames, uploadIds);
         return res.status(201).json(d2UploadResponse(fileNames, uploadIds));
@@ -8884,7 +10055,7 @@ app.post(
 
       console.log("[mmt-upload] received uploadType:", JSON.stringify(uploadType), "| isD2:", isD2, "| role:", role);
       const newUploadId = await persistOne(file);
-      await maybeCompleteTask();
+      await maybeCompleteTask(file.originalname);
 
       const uploaderLabel = isD2 ? user?.name ?? "Team" : user?.name ?? "MMT";
       if (isD2) {
@@ -8999,15 +10170,18 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
     let emailBody: Record<string, unknown> = {};
 
     const resolvedEcLocation = resolveLeadBranchName(payload, ecLocation);
+    const resolvedEcLocationText = formatHubBranchLocationText(resolvedEcLocation);
+    const resolvedEcMapsUrl = getHubBranchMapsUrl(resolvedEcLocation);
 
     console.log("[schedule-meeting] resolvedEcLocation:", resolvedEcLocation, "ecLocation:", ecLocation, "formData.experience_center:", formData.experience_center);
 
     if (meetingType === "dqc2_material_selection") {
       summary = `Material Selection - ${customerName}`;
       description = [
-        `Material selection meeting at ${resolvedEcLocation}.`,
+        `Material selection meeting at ${resolvedEcLocationText}.`,
         meetingMode ? `Mode: ${meetingMode}` : null,
         meetingLink ? `Meeting link: ${meetingLink}` : null,
+        meetingMode === "offline" && resolvedEcMapsUrl ? `Maps: ${resolvedEcMapsUrl}` : null,
       ].filter(Boolean).join("\n");
       emailRoutePath = "/api/email/send-dqc2-material-selection-scheduled";
       emailBody = {
@@ -9023,14 +10197,17 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
         meetingMode,
         meetingLink,
         ecLocation: resolvedEcLocation,
+        ecAddress: resolvedEcLocationText,
+        ecMapsUrl: resolvedEcMapsUrl,
         ...(Array.isArray(attachments) && attachments.length ? { attachments } : {}),
       };
     } else if (meetingType === "design_signoff") {
       summary = `Design Sign-Off - ${customerName}`;
       description = [
-        `Design sign-off meeting at ${resolvedEcLocation}.`,
+        `Design sign-off meeting at ${resolvedEcLocationText}.`,
         meetingMode ? `Mode: ${meetingMode}` : null,
         meetingLink ? `Meeting link: ${meetingLink}` : null,
+        meetingMode === "offline" && resolvedEcMapsUrl ? `Maps: ${resolvedEcMapsUrl}` : null,
       ].filter(Boolean).join("\n");
       emailRoutePath = "/api/email/send-design-signoff-meeting-scheduled";
       emailBody = {
@@ -9046,14 +10223,17 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
         meetingMode,
         meetingLink,
         ecLocation: resolvedEcLocation,
+        ecAddress: resolvedEcLocationText,
+        ecMapsUrl: resolvedEcMapsUrl,
         ...(Array.isArray(attachments) && attachments.length ? { attachments } : {}),
       };
     } else if (meetingType === "dqc1_first_cut") {
       summary = `First Cut Design Discussion - ${customerName}`;
       description = [
-        `First cut design and quotation discussion meeting at ${resolvedEcLocation}.`,
+        `First cut design and quotation discussion meeting at ${resolvedEcLocationText}.`,
         meetingMode ? `Mode: ${meetingMode}` : null,
         meetingLink ? `Meeting link: ${meetingLink}` : null,
+        meetingMode === "offline" && resolvedEcMapsUrl ? `Maps: ${resolvedEcMapsUrl}` : null,
       ].filter(Boolean).join("\n");
       emailRoutePath = "/api/email/send-dqc1-first-cut-design-scheduled";
       emailBody = {
@@ -9069,6 +10249,8 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
         meetingMode,
         meetingLink,
         ecLocation: resolvedEcLocation,
+        ecAddress: resolvedEcLocationText,
+        ecMapsUrl: resolvedEcMapsUrl,
         ...(Array.isArray(attachments) && attachments.length ? { attachments } : {}),
       };
     } else {
@@ -9088,6 +10270,8 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
         userIds: [row.assigned_designer_id, actingUser.id],
         summary,
         description,
+        location:
+          meetingMode === "offline" ? resolvedEcLocationText : undefined,
         startDateTimeIso: eventStart,
         endDateTimeIso: eventEnd,
         attendees: distinctEmails([customerEmail, row.designerEmail, actingUser.email]),
@@ -9157,6 +10341,49 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
         visibility: "external",
         payload: emailBody,
       });
+    }
+
+    try {
+      await persistLeadDesignScheduledMeeting(leadId, {
+        meetingDate: String(meetingDate),
+        meetingTime: meetingTime != null ? String(meetingTime) : null,
+        meetingType: String(meetingType),
+        meetingMode: meetingMode != null ? String(meetingMode) : null,
+      });
+    } catch (persistErr) {
+      console.error("[schedule-meeting-invite] persist scheduled meeting failed (non-fatal)", persistErr);
+    }
+
+    // EC pull-sync: record offline meetings for Design → EC sync
+    try {
+      const mode = typeof meetingMode === "string" ? meetingMode.trim().toLowerCase() : "";
+      if (mode === "offline") {
+        const milestoneName = offlineMeetingMilestoneLabel(meetingType);
+        const startLabel = formatTime12Hour(meetingTime) || String(meetingTime || "");
+        const endLabel = meetingEndTime
+          ? formatTime12Hour(meetingEndTime) || String(meetingEndTime)
+          : null;
+        const timeSlot = endLabel ? `${startLabel} - ${endLabel}` : startLabel;
+        const meetingDateNorm =
+          (typeof meetingDate === "string" && meetingDate.length >= 10
+            ? meetingDate.slice(0, 10)
+            : normalizeBlockDateIso(meetingDate)) || String(meetingDate || "").slice(0, 10);
+
+        const exportId = await recordOfflineMeetingExport(pool, {
+          leadId,
+          clientName: customerName,
+          designerName,
+          milestoneName,
+          meetingDate: meetingDateNorm,
+          timeSlot,
+          branch: resolvedEcLocation || null,
+        });
+        console.log(
+          `[offline-meeting-export] recorded id=${exportId} leadId=${leadId} milestone=${milestoneName}`,
+        );
+      }
+    } catch (exportErr) {
+      console.error("[offline-meeting-export] record failed (non-fatal)", exportErr);
     }
 
     return res.status(201).json({ ok: true });
@@ -9315,6 +10542,15 @@ app.post("/api/leads/:leadId/uploads/:uploadId/approve", async (req: Request, re
       details: { kind: "note", noteText: `Upload #${uploadId} approved.` },
     };
     await addLeadHistoryEvent(leadId, approvalEv);
+
+    // D1: notify designer that files are ready (same mail loop)
+    if (!isD2Upload) {
+      void notifyD1FilesReadyInternal(
+        leadId,
+        { name: user.name, email: user.email },
+        { fileName: uploadRow.originalName || null },
+      );
+    }
 
     return res.json({ ok: true });
   } catch (err) {
@@ -10211,10 +11447,16 @@ app.post(
 
       const files = (req as any).files as Express.Multer.File[] | undefined;
       const minutesRaw = (req.body as any)?.minutes;
-      const minutes = typeof minutesRaw === "string" ? minutesRaw.trim() : "";
+      let minutes = typeof minutesRaw === "string" ? minutesRaw.trim() : "";
 
-      if ((!files || files.length === 0) && !minutes) {
-        return res.status(400).json({ message: "Minutes or at least one file is required" });
+      if (!files || files.length === 0) {
+        return res.status(400).json({ message: "At least one reference file is required to submit MOM" });
+      }
+
+      // Always attach the latest quotation link in the MOM text
+      const latestQuote = await resolveLatestQuoteLinkForLead(leadId);
+      if (latestQuote) {
+        minutes = appendLatestQuoteLinkToMinutes(minutes, latestQuote.customerQuoteUrl);
       }
 
       const now = new Date();
@@ -10260,10 +11502,10 @@ app.post(
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'mom_minutes', ?)`,
           [leadId, user.id, baseName, storedName, storedPath, "text/plain", sizeBytes, now, s3UrlText],
         );
-        // No longer adding minutes file to attachments array as per user request
       }
 
       const attachmentNames = files && files.length > 0 ? files.map((f) => f.originalname) : [];
+      const quoteNote = latestQuote ? ` Latest quotation: ${latestQuote.customerQuoteUrl}` : "";
       const ev = {
         id: `mom-${Date.now()}`,
         type: "mom",
@@ -10271,18 +11513,32 @@ app.post(
         milestoneName: "DQC1",
         timestamp: now.toISOString(),
         description: attachmentNames.length
-          ? `Minutes of Meeting recorded with attachments: ${attachmentNames.join(", ")}`
-          : "Minutes of Meeting recorded",
+          ? `Minutes of Meeting recorded with attachments: ${attachmentNames.join(", ")}.${quoteNote}`
+          : `Minutes of Meeting recorded.${quoteNote}`,
         user: { name: user.name ?? "User" },
         details: {
           kind: "mom",
           hasMinutes: !!minutes,
+          minutes,
           attachments: attachments.map((a) => ({ name: a.filename })),
+          latestQuoteId: latestQuote?.quoteId ?? null,
+          latestQuoteUrl: latestQuote?.customerQuoteUrl ?? null,
         },
       };
       await addLeadHistoryEvent(leadId, ev);
 
-      return res.status(201).json({ ok: true, attachments });
+      return res.status(201).json({
+        ok: true,
+        attachments,
+        minutes,
+        latestQuote: latestQuote
+          ? {
+              quoteId: latestQuote.quoteId,
+              customerQuoteUrl: latestQuote.customerQuoteUrl,
+              internalQuoteUrl: latestQuote.internalQuoteUrl,
+            }
+          : null,
+      });
     } catch (err) {
       console.error("mom-upload error", err);
       return res.status(500).json({ message: "Failed to save MOM" });
@@ -10529,7 +11785,7 @@ app.post("/api/leads/:id/dqc-review", async (req: Request, res: Response) => {
     const role = (user.role ?? "").toLowerCase();
     if (role !== "dqc_manager" && role !== "dqe" && role !== "admin")
       return res.status(403).json({ message: "Only DQC Manager, DQE or Admin can submit DQC review" });
-    const { verdict, remarks } = req.body || {};
+    const { verdict, remarks, submissionVariant: bodyVariant } = req.body || {};
     if (!verdict || !Array.isArray(remarks))
       return res.status(400).json({ message: "verdict and remarks array required" });
     // Fetch the latest review before inserting the new one to know if it's DQC 1 or DQC 2
@@ -10545,7 +11801,14 @@ app.post("/api/leads/:id/dqc-review", async (req: Request, res: Response) => {
       [leadId],
     );
     const isDqc1Completed = (dqc1CompleteRows as any[]).length > 0;
-    const isDqc2 = isDqc1Completed || lastVerdict === "pending_dqc2";
+    const variantFromBody =
+      bodyVariant === "dqc1" || bodyVariant === "dqc2" ? bodyVariant : null;
+    const isDqc2 =
+      variantFromBody === "dqc2"
+        ? true
+        : variantFromBody === "dqc1"
+          ? false
+          : isDqc1Completed || lastVerdict === "pending_dqc2";
 
     await pool.query(
       `INSERT INTO lead_dqc_reviews (lead_id, verdict, remarks, created_at, reviewed_by_user_id)
@@ -10553,10 +11816,10 @@ app.post("/api/leads/:id/dqc-review", async (req: Request, res: Response) => {
       [leadId, verdict, JSON.stringify(remarks), new Date(), user.id],
     );
 
-    // Send internal email notification if verdict is rejected or approved_with_changes
+    // Send internal rejection / changes feedback email to assigned designer
     try {
       const [leadRows] = await pool.query(
-        `SELECT l.project_name as projectName, l.payload, l.assigned_designer_id,
+        `SELECT l.pid, l.project_name as projectName, l.payload, l.assigned_designer_id,
                 u.name as designerName, u.email as designerEmail
          FROM leads l
          LEFT JOIN users u ON u.id = l.assigned_designer_id
@@ -10571,11 +11834,16 @@ app.post("/api/leads/:id/dqc-review", async (req: Request, res: Response) => {
         } catch {
           payload = {};
         }
+        const formData = payload?.formData || payload?.form_data || payload?.form || payload || {};
         const customerName =
-          payload.customer_name || payload?.form?.customer_name || leadRow.projectName || "Customer";
-        const ecName =
-          payload.experience_center || payload?.form?.experience_center || "";
-        const designerName = leadRow.designerName || "Designer";
+          formData.customer_name ||
+          formData.sales_lead_name ||
+          payload.customer_name ||
+          payload?.form?.customer_name ||
+          leadRow.projectName ||
+          "Customer";
+        const ecName = resolveLeadBranchName(payload);
+        const designerName = leadRow.designerName || formData.designer_name || "Designer";
         const designerEmail = leadRow.designerEmail;
 
         if (designerEmail && (verdict === "rejected" || verdict === "approved_with_changes")) {
@@ -10583,7 +11851,15 @@ app.post("/api/leads/:id/dqc-review", async (req: Request, res: Response) => {
           const baseCc = await getMailLoopCcEmails([designerEmail, user.email], leadId);
           const ccList = distinctEmails(baseCc.filter((e) => e !== designerEmail));
           const submissionVariant = isDqc2 ? "dqc2" : "dqc1";
-          const subject = buildMailChainSubject(leadId, leadRow.projectName, customerName);
+          const projectIdLabel = leadRow.pid || leadRow.projectName || `HUB-${leadId}`;
+          const subject = buildMailChainSubject(projectIdLabel, leadRow.projectName, customerName);
+
+          console.log("[dqc-review] Triggering internal feedback email", {
+            leadId,
+            submissionVariant,
+            verdict,
+            to,
+          });
 
           void triggerMailRouteWithLog({
             leadId,
@@ -10595,15 +11871,24 @@ app.post("/api/leads/:id/dqc-review", async (req: Request, res: Response) => {
               to,
               cc: ccList,
               subject,
-              projectId: leadRow.projectName || String(leadId),
+              projectId: projectIdLabel,
               customerName,
               ecName,
               designerName,
               dqcRepName: user.name || "DQC Team Member",
               verdict,
               submissionVariant,
-              remarks: remarks.map((r: any) => ({ priority: r.priority || "medium", text: r.text || "" })),
+              remarks: remarks.map((r: any) => ({
+                priority: r.priority || "medium",
+                text: r.text || "",
+              })),
             },
+          });
+        } else if (verdict === "rejected" || verdict === "approved_with_changes") {
+          console.warn("[dqc-review] Skipping feedback email — assigned designer has no email", {
+            leadId,
+            verdict,
+            assignedDesignerId: leadRow.assigned_designer_id,
           });
         }
       }
@@ -10686,25 +11971,267 @@ app.post("/api/leads/:id/dqc-review/remarks/:index/resolve", async (req: Request
   }
 });
 
-// Submit D1 measurement request – assigns an MMT executive to the lead (only they will see it)
+// Submit D1 measurement request – designer selects MMT manager + date/time; internal mail to manager.
 app.post("/api/leads/:id/d1-request", async (req: Request, res: Response) => {
   const leadId = Number(req.params.id);
   if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
   try {
     const user = await getUserFromSession(req);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
-    const { measurementExecutiveId, measurementDate, measurementTime } = req.body || {};
-    const execId = Number(measurementExecutiveId);
-    if (!execId) return res.status(400).json({ message: "measurementExecutiveId is required" });
-    await pool.query(
-      `INSERT INTO lead_d1_assignments (lead_id, assigned_to_user_id, measurement_date, measurement_time, status, created_at)
-       VALUES (?, ?, ?, ?, 'pending', ?)`,
-      [leadId, execId, measurementDate || null, measurementTime || null, new Date()],
+
+    const { mmtManagerId, measurementDate, measurementTime } = req.body || {};
+    const managerId = Number(mmtManagerId);
+    if (!managerId) {
+      return res.status(400).json({ message: "mmtManagerId is required" });
+    }
+
+    const [mgrRows] = await pool.query(
+      "SELECT id, name, email FROM users WHERE id = ? AND role = 'mmt_manager'",
+      [managerId],
     );
-    return res.status(201).json({ ok: true });
+    const manager = (mgrRows as any[])[0];
+    if (!manager?.email) {
+      return res.status(400).json({ message: "Invalid MMT manager or manager has no email" });
+    }
+
+    const [leadRows] = await pool.query(
+      `SELECT l.id, l.pid, l.project_name as projectName, l.payload, l.client_email as clientEmail,
+              d.name as designerName, d.email as designerEmail
+       FROM leads l
+       LEFT JOIN users d ON d.id = l.assigned_designer_id
+       WHERE l.id = ?`,
+      [leadId],
+    );
+    const lead = (leadRows as any[])[0];
+    if (!lead) return res.status(404).json({ message: "Lead not found" });
+
+    await pool.query(
+      `INSERT INTO lead_d1_assignments
+        (lead_id, assigned_to_user_id, requested_mmt_manager_id, measurement_date, measurement_time, status, created_at)
+       VALUES (?, NULL, ?, ?, ?, 'awaiting_manager', ?)`,
+      [leadId, managerId, measurementDate || null, measurementTime || null, new Date()],
+    );
+
+    let payload: any = {};
+    try {
+      payload = lead.payload ? JSON.parse(lead.payload) : {};
+    } catch {
+      payload = {};
+    }
+    const formData = payload?.formData || payload?.form || payload || {};
+    const customerName =
+      payload.customer_name ||
+      formData.customer_name ||
+      lead.projectName ||
+      "Customer";
+    const projectId = lead.pid || `HUB-${leadId}`;
+    const ecName =
+      formData.experience_center ||
+      formData.sales_closure_ec ||
+      payload.experience_center ||
+      "—";
+    const designerName = lead.designerName || user.name || "Designer";
+    const siteAddress =
+      formData.site_address || payload.site_address || "—";
+    const visitDate = measurementDate || null;
+    const visitTime = formatTime12Hour(measurementTime) || measurementTime || null;
+
+    const mailSubject = buildMailChainSubject(projectId, lead.projectName, customerName);
+    const ccList = await getMailLoopCcEmails([user.email || null, lead.designerEmail || null], leadId);
+
+    console.log("[D1-MMT] Sending internal manager request mail", {
+      leadId,
+      to: manager.email,
+      managerName: manager.name,
+    });
+
+    const mailSent = await triggerMailRouteWithLog({
+      leadId,
+      milestoneIndex: 0,
+      taskName: "D1 for MMT request – manager notify",
+      route: "/api/email/send-d1-mmt-manager-request-internal",
+      visibility: "internal",
+      payload: {
+        to: manager.email,
+        cc: ccList,
+        subject: mailSubject,
+        projectId,
+        customerName,
+        designerName,
+        mmtManagerName: manager.name,
+        ecName,
+        siteAddress,
+        visitDate,
+        visitTime,
+      },
+    });
+
+    if (!mailSent) {
+      console.error("[D1-MMT] Internal manager request mail FAILED", {
+        leadId,
+        managerId,
+        to: manager.email,
+      });
+      return res.status(502).json({
+        ok: false,
+        saved: true,
+        mailSent: false,
+        message: "Request saved but failed to email MMT manager. Please retry or contact admin.",
+      });
+    }
+
+    console.log("[D1-MMT] Internal manager request mail sent OK", { leadId, to: manager.email });
+    return res.status(201).json({
+      ok: true,
+      saved: true,
+      mailSent: true,
+      mmtManagerName: manager.name,
+    });
   } catch (err) {
     console.error("d1-request error", err);
     return res.status(500).json({ message: "Failed to submit request" });
+  }
+});
+
+// Pending D1 requests awaiting MMT executive assignment (mmt_manager + admin)
+app.get("/api/leads/d1-pending-requests", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user.role || "").toLowerCase();
+    if (role !== "mmt_manager" && role !== "admin") {
+      return res.status(403).json({ message: "Only MMT manager or admin can view pending D1 requests" });
+    }
+
+    let sql = `
+      SELECT a.id as assignmentId,
+             a.lead_id as leadId,
+             a.measurement_date as measurementDate,
+             a.measurement_time as measurementTime,
+             a.status,
+             a.created_at as createdAt,
+             a.requested_mmt_manager_id as mmtManagerId,
+             l.pid,
+             l.project_name as projectName,
+             mgr.name as mmtManagerName,
+             d.name as designerName
+      FROM lead_d1_assignments a
+      INNER JOIN leads l ON l.id = a.lead_id
+      LEFT JOIN users mgr ON mgr.id = a.requested_mmt_manager_id
+      LEFT JOIN users d ON d.id = l.assigned_designer_id
+      WHERE a.status = 'awaiting_manager'
+        AND a.assigned_to_user_id IS NULL`;
+    const params: number[] = [];
+    if (role === "mmt_manager" && user.id) {
+      sql += " AND a.requested_mmt_manager_id = ?";
+      params.push(user.id);
+    }
+    sql += " ORDER BY a.created_at ASC";
+
+    const [rows] = await pool.query(sql, params);
+    const list = (rows as any[]).map((r) => ({
+      ...r,
+      measurementDate:
+        r.measurementDate instanceof Date
+          ? r.measurementDate.toISOString().split("T")[0]
+          : r.measurementDate,
+    }));
+    return res.json(list);
+  } catch (err) {
+    console.error("d1-pending-requests error", err);
+    return res.status(500).json({ message: "Failed to load pending D1 requests" });
+  }
+});
+
+// MMT manager or admin assigns MMT executive → triggers external visit mail on mail loop
+app.post("/api/leads/:id/assign-d1-executive", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user.role || "").toLowerCase();
+    if (role !== "mmt_manager" && role !== "admin") {
+      return res.status(403).json({ message: "Only MMT manager or admin can assign MMT executive" });
+    }
+
+    const executiveId = Number((req.body || {}).measurementExecutiveId);
+    if (!executiveId) {
+      return res.status(400).json({ message: "measurementExecutiveId is required" });
+    }
+
+    const [execRows] = await pool.query(
+      "SELECT id, name, email, phone, mmt_manager_id FROM users WHERE id = ? AND role = 'mmt_executive'",
+      [executiveId],
+    );
+    const executive = (execRows as any[])[0];
+    if (!executive) return res.status(400).json({ message: "Invalid MMT executive" });
+
+    const [assignRows] = await pool.query(
+      `SELECT id, requested_mmt_manager_id, status, assigned_to_user_id
+       FROM lead_d1_assignments
+       WHERE lead_id = ?
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [leadId],
+    );
+    const assignment = (assignRows as any[])[0];
+    if (!assignment) {
+      return res.status(404).json({ message: "No D1 request found for this lead" });
+    }
+    if (String(assignment.status) !== "awaiting_manager") {
+      return res.status(400).json({ message: "This D1 request is not awaiting manager assignment" });
+    }
+
+    if (role === "mmt_manager") {
+      if (Number(assignment.requested_mmt_manager_id) !== Number(user.id)) {
+        return res.status(403).json({ message: "This request was not sent to you" });
+      }
+    }
+
+    await pool.query(
+      `UPDATE lead_d1_assignments
+       SET assigned_to_user_id = ?, status = 'assigned'
+       WHERE id = ?`,
+      [executiveId, assignment.id],
+    );
+
+    console.log("[D1-MMT] Executive assigned", {
+      leadId,
+      assignmentId: assignment.id,
+      executiveId,
+      by: user.id,
+      role,
+    });
+
+    const mailResult = await sendD1MmtVisitScheduledExternal(leadId, {
+      id: user.id,
+      email: user.email || null,
+    });
+
+    if (!mailResult.ok) {
+      console.error("[D1-MMT] External mail after assign failed", {
+        leadId,
+        reason: mailResult.reason,
+      });
+      return res.status(201).json({
+        ok: true,
+        assigned: true,
+        mailSent: false,
+        message: mailResult.reason || "Executive assigned but external mail failed",
+        executiveName: executive.name,
+      });
+    }
+
+    return res.status(201).json({
+      ok: true,
+      assigned: true,
+      mailSent: true,
+      executiveName: executive.name,
+    });
+  } catch (err) {
+    console.error("assign-d1-executive error", err);
+    return res.status(500).json({ message: "Failed to assign MMT executive" });
   }
 });
 
@@ -10717,6 +12244,7 @@ app.get("/api/leads/:id/d2-masking-request", async (req: Request, res: Response)
     if (!user) return res.status(401).json({ message: "Unauthorized" });
     const [rows] = await pool.query(
       `SELECT a.id, a.masking_date as maskingDate, a.masking_time as maskingTime, a.status, a.created_at as createdAt,
+              a.requested_spm_id as requestedSpmId,
               l.assigned_project_manager_id as assignedProjectManagerId
        FROM leads l
        LEFT JOIN lead_d2_assignments a ON a.lead_id = l.id
@@ -10729,6 +12257,17 @@ app.get("/api/leads/:id/d2-masking-request", async (req: Request, res: Response)
     if (!row?.id) {
       return res.json({ raised: false });
     }
+    // Repair: if request exists but task completion is missing, mark it complete
+    try {
+      await pool.query(
+        `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+         VALUES (?, 3, 'D2 - masking request raise', ?)
+         ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
+        [leadId, new Date()],
+      );
+    } catch {
+      /* ignore */
+    }
     return res.json({
       raised: true,
       maskingDate: row.maskingDate instanceof Date ? row.maskingDate.toISOString().split("T")[0] : row.maskingDate,
@@ -10736,6 +12275,7 @@ app.get("/api/leads/:id/d2-masking-request", async (req: Request, res: Response)
       status: row.status || "pending",
       createdAt: row.createdAt,
       assignedProjectManagerId: row.assignedProjectManagerId ?? null,
+      requestedSpmId: row.requestedSpmId ?? null,
     });
   } catch (err) {
     console.error("d2-masking-request get error", err);
@@ -10744,7 +12284,8 @@ app.get("/api/leads/:id/d2-masking-request", async (req: Request, res: Response)
 });
 
 // Submit D2 masking request – notifies SPM; SPM assigns PM separately
-app.post("/api/leads/:id/d2-masking-request", async (req: Request, res: Response) => {
+// Supports multipart file uploads (PDFs) alongside form fields
+app.post("/api/leads/:id/d2-masking-request", upload.array("files", 20), async (req: Request, res: Response) => {
   const leadId = Number(req.params.id);
   if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
   try {
@@ -10759,31 +12300,119 @@ app.post("/api/leads/:id/d2-masking-request", async (req: Request, res: Response
         message: "As Senior Project Manager, assign the project manager from this task instead of submitting a new request.",
       });
     }
-    const { maskingDate, maskingTime } = req.body || {};
+    const { maskingDate, maskingTime, requestedSpmId } = req.body || {};
     const [existing] = await pool.query(
-      "SELECT id FROM lead_d2_assignments WHERE lead_id = ? LIMIT 1",
+      "SELECT id, masking_date as maskingDate, masking_time as maskingTime FROM lead_d2_assignments WHERE lead_id = ? LIMIT 1",
       [leadId],
     );
     if ((existing as any[]).length > 0) {
-      return res.status(400).json({ message: "A D2 masking request already exists for this lead" });
+      // Request already raised — still ensure the task is marked complete (repair stuck leads)
+      try {
+        await pool.query(
+          `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+           VALUES (?, 3, 'D2 - masking request raise', ?)
+           ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
+          [leadId, new Date()],
+        );
+      } catch (completeErr) {
+        console.warn("[d2-masking-request] task completion repair skipped", completeErr);
+      }
+      const row = (existing as any[])[0];
+      return res.status(200).json({
+        ok: true,
+        alreadyRaised: true,
+        maskingDate:
+          row.maskingDate instanceof Date
+            ? row.maskingDate.toISOString().split("T")[0]
+            : row.maskingDate || maskingDate || null,
+        maskingTime: row.maskingTime || maskingTime || null,
+      });
     }
+    const spmId = requestedSpmId ? Number(requestedSpmId) : null;
     await pool.query(
-      `INSERT INTO lead_d2_assignments (lead_id, assigned_to_user_id, masking_date, masking_time, status, created_at)
-       VALUES (?, NULL, ?, ?, 'awaiting_spm', ?)`,
-      [leadId, maskingDate || null, maskingTime || null, new Date()],
+      `INSERT INTO lead_d2_assignments (lead_id, assigned_to_user_id, masking_date, masking_time, status, requested_spm_id, created_at)
+       VALUES (?, NULL, ?, ?, 'awaiting_spm', ?, ?)`,
+      [leadId, maskingDate || null, maskingTime || null, spmId, new Date()],
     );
+
+    // Mark task complete immediately so UI shows Completed even if file upload fails later
+    try {
+      await pool.query(
+        `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+         VALUES (?, 3, 'D2 - masking request raise', ?)
+         ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
+        [leadId, new Date()],
+      );
+    } catch (completeErr) {
+      console.warn("[d2-masking-request] task completion insert skipped", completeErr);
+    }
+
+    // Save uploaded files (PDFs / checklists / flyers)
+    const uploadedFiles: { name: string; id: number }[] = [];
+    const files = (req as any).files as Express.Multer.File[] | undefined;
+    if (files && files.length > 0) {
+      const now = new Date();
+      for (const file of files) {
+        try {
+          const s3Url = await uploadLeadFileToS3(leadId, file.path, file.originalname, file.mimetype);
+          const [insertResult] = await pool.query(
+            `INSERT INTO lead_uploads
+             (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'd2_masking_request', ?)`,
+            [
+              leadId,
+              user.id,
+              file.originalname,
+              file.filename,
+              file.path,
+              file.mimetype || "application/pdf",
+              file.size || 0,
+              now,
+              s3Url || null,
+            ],
+          );
+          uploadedFiles.push({ name: file.originalname, id: (insertResult as any).insertId });
+        } catch (fileErr) {
+          console.warn("[d2-masking-request] file persist skipped", file.originalname, fileErr);
+        }
+      }
+    }
+
+    // Look up SPM name for history event
+    let spmLabel = "Senior Project Manager";
+    if (spmId) {
+      const [spmRows] = await pool.query("SELECT name FROM users WHERE id = ? LIMIT 1", [spmId]);
+      const spmRow = (spmRows as any[])[0];
+      if (spmRow?.name) spmLabel = spmRow.name;
+    }
+
+    const fileNote = uploadedFiles.length > 0
+      ? ` with ${uploadedFiles.length} file${uploadedFiles.length === 1 ? "" : "s"} attached`
+      : "";
     const ev = {
       id: `d2-masking-${Date.now()}`,
       type: "note",
       taskName: "D2 - masking request raise",
       milestoneName: "D2 SITE MASKING",
       timestamp: new Date().toISOString(),
-      description: "D2 masking request submitted.",
+      description: `D2 masking request submitted to ${spmLabel}${fileNote}.`,
       user: { name: user.name ?? "System" },
-      details: { kind: "d2_masking_request", maskingDate: maskingDate || null, maskingTime: maskingTime || null },
+      details: {
+        kind: "d2_masking_request",
+        maskingDate: maskingDate || null,
+        maskingTime: maskingTime || null,
+        requestedSpmId: spmId,
+        uploadedFiles: uploadedFiles.map((f) => f.name),
+      },
     };
     await addLeadHistoryEvent(leadId, ev);
-    return res.status(201).json({ ok: true });
+
+    return res.status(201).json({
+      ok: true,
+      maskingDate: maskingDate || null,
+      maskingTime: maskingTime || null,
+      requestedSpmId: spmId,
+    });
   } catch (err) {
     console.error("d2-masking-request error", err);
     return res.status(500).json({ message: "Failed to submit D2 masking request" });
@@ -10856,6 +12485,8 @@ function getCurrentMilestoneProgress(
 app.get("/api/leads/queue", async (req: Request, res: Response) => {
   const now = new Date();
   const queueType = (req.query.type as string) || "d1";
+  // Large JSON — ask nginx not to buffer (avoids ERR_CONTENT_LENGTH_MISMATCH on proxy_temp)
+  res.setHeader("X-Accel-Buffering", "no");
   try {
     try {
       await pool.query(
@@ -10916,7 +12547,7 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
                   l.prolance_quote_id as prolanceQuoteId
            FROM leads l
            INNER JOIN lead_d1_assignments a ON a.lead_id = l.id AND a.assigned_to_user_id = ?
-           ORDER BY l.id ASC`,
+           ORDER BY l.id DESC`,
         [userId],
       );
       const list = (rows as any[]).map((r) => ({ ...r, isOnHold: !!r.isOnHold }));
@@ -10994,6 +12625,10 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
           experienceCenter: r.experienceCenter ?? null,
           appointmentDate: intake.appointmentDate,
           appointmentSlot: intake.appointmentSlot,
+          scheduledMeetingDate: intake.scheduledMeetingDate,
+          scheduledMeetingSlot: intake.scheduledMeetingSlot,
+          designScheduledMeetingUpdatedAt: intake.designScheduledMeetingUpdatedAt,
+          meetingWizLastCompleted: intake.meetingWizLastCompleted,
           intakeCustomerName: intake.intakeCustomerName,
           intakeConfiguration: intake.intakeConfiguration,
           intakeNotes: intake.intakeNotes,
@@ -11778,6 +13413,7 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
     if (!revision) revision = "v1.0 (Latest)";
 
     const { payload: _p, ...rest } = row;
+    const intake = extractLeadIntakeViewFromPayload(row.payload);
     return res.json({
       ...rest,
       isOnHold: !!row.isOnHold,
@@ -11791,6 +13427,29 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
       experienceCenter: experienceCenter ?? null,
       prolanceProjectId: row.prolanceProjectId != null ? Number(row.prolanceProjectId) : null,
       prolanceQuoteId: row.prolanceQuoteId != null ? Number(row.prolanceQuoteId) : null,
+      appointmentDate: intake.appointmentDate,
+      appointmentSlot: intake.appointmentSlot,
+      scheduledMeetingDate: intake.scheduledMeetingDate,
+      scheduledMeetingSlot: intake.scheduledMeetingSlot,
+      designScheduledMeetingUpdatedAt: intake.designScheduledMeetingUpdatedAt,
+      meetingWizLastCompleted: intake.meetingWizLastCompleted,
+      intakeCustomerName: intake.intakeCustomerName,
+      intakeConfiguration: intake.intakeConfiguration,
+      intakeNotes: intake.intakeNotes,
+      intakeBudget: intake.intakeBudget,
+      intakeLanguage: intake.intakeLanguage,
+      intakeBookingType: intake.intakeBookingType,
+      intakePropertyLocation: intake.intakePropertyLocation,
+      intakeMeetingType: intake.intakeMeetingType,
+      floorPlanPublicLink: intake.floorPlanPublicLink,
+      salesExecutive: intake.salesExecutive,
+      intakePincode: intake.pincode,
+      intakeLeadSource: intake.leadSource,
+      intakePossessionDate: intake.possessionDate,
+      intakeAltPhone: intake.altPhone,
+      configScopeSummary: intake.configScopeSummary,
+      experienceSummary: intake.experienceSummary,
+      decisionSummary: intake.decisionSummary,
     });
   } catch (err) {
     console.error("lead detail error", err);
@@ -11893,6 +13552,192 @@ app.post("/api/leads/manual-create", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("manual-create lead error", err);
     return res.status(500).json({ message: "Failed to create lead" });
+  }
+});
+
+/** Meeting Wizard Scope of Work: merge rooms + references into lead payload configurationScope. */
+app.patch("/api/leads/:id/meeting-scope", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+
+  const user = await getUserFromSession(req);
+  const access = await getLeadAccessRowForUser(res, user, id);
+  if (!access.ok) return;
+
+  try {
+    const body = (req.body || {}) as Record<string, unknown>;
+    const rawRooms = Array.isArray(body.selectedRooms) ? body.selectedRooms : [];
+    const rawRefs = Array.isArray(body.references)
+      ? body.references
+      : Array.isArray((body.referenceInspiration as { references?: unknown } | undefined)?.references)
+        ? ((body.referenceInspiration as { references: unknown[] }).references)
+        : [];
+    const aestheticNotes = String(
+      body.aestheticNotes ??
+        (body.referenceInspiration as { aestheticNotes?: unknown } | undefined)?.aestheticNotes ??
+        "",
+    )
+      .trim()
+      .slice(0, 4000);
+
+    const cleanedRooms: Record<string, unknown>[] = [];
+    for (let i = 0; i < Math.min(rawRooms.length, 40); i++) {
+      const item = rawRooms[i];
+      if (!item || typeof item !== "object") continue;
+      const row = item as Record<string, unknown>;
+      const roomName = String(row.roomName ?? row.title ?? "").trim().slice(0, 120);
+      if (!roomName) continue;
+      const unitsRequired = Array.isArray(row.unitsRequired)
+        ? row.unitsRequired
+            .map((u) => String(u ?? "").trim())
+            .filter(Boolean)
+            .slice(0, 40)
+        : typeof row.units === "string"
+          ? String(row.units)
+              .split(",")
+              .map((u) => u.trim())
+              .filter(Boolean)
+              .slice(0, 40)
+          : [];
+      cleanedRooms.push({
+        roomName,
+        theme: String(row.theme ?? "").trim().slice(0, 500) || null,
+        unitsRequired,
+        falseCeilingRequired: Boolean(row.falseCeilingRequired),
+        notes: String(row.notes ?? "").trim().slice(0, 2000) || null,
+      });
+    }
+
+    const cleanedRefs: Record<string, unknown>[] = [];
+    for (let i = 0; i < Math.min(rawRefs.length, 24); i++) {
+      const item = rawRefs[i];
+      if (!item || typeof item !== "object") continue;
+      const row = item as Record<string, unknown>;
+      const fileName = String(row.fileName ?? row.label ?? row.title ?? "Reference")
+        .trim()
+        .slice(0, 160);
+      let viewUrl: string | null =
+        typeof row.viewUrl === "string" && row.viewUrl.trim() ? row.viewUrl.trim() : null;
+      let mimeType =
+        typeof row.mimeType === "string" && row.mimeType.trim()
+          ? row.mimeType.trim().slice(0, 120)
+          : null;
+
+      if (viewUrl && viewUrl.startsWith("data:image/")) {
+        try {
+          viewUrl = await uploadProfileImage(user!.id, viewUrl);
+          mimeType = mimeType || "image/jpeg";
+        } catch (uploadErr) {
+          console.error("meeting-scope reference upload failed", uploadErr);
+          return res.status(500).json({ message: "Failed to upload reference image" });
+        }
+      } else if (viewUrl) {
+        viewUrl = viewUrl.slice(0, 2000);
+      }
+
+      if (!viewUrl && !fileName) continue;
+      cleanedRefs.push({
+        id: String(row.id ?? `ref-${Date.now()}-${i}`).slice(0, 64),
+        fileName: fileName || "Reference",
+        mimeType,
+        viewUrl,
+      });
+    }
+
+    const [payloadRows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [id]);
+    const payloadRow = (payloadRows as { payload?: string | null }[])[0];
+    if (!payloadRow) return res.status(404).json({ message: "Lead not found" });
+
+    let payload: Record<string, unknown> = {};
+    try {
+      payload = payloadRow.payload ? (JSON.parse(payloadRow.payload) as Record<string, unknown>) : {};
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = {};
+    } catch {
+      payload = {};
+    }
+
+    const connection =
+      payload.connection && typeof payload.connection === "object" && !Array.isArray(payload.connection)
+        ? ({ ...(payload.connection as Record<string, unknown>) } as Record<string, unknown>)
+        : {};
+
+    const prevScope =
+      (connection.configurationScope &&
+      typeof connection.configurationScope === "object" &&
+      !Array.isArray(connection.configurationScope)
+        ? { ...(connection.configurationScope as Record<string, unknown>) }
+        : null) ||
+      (payload.configurationScope &&
+      typeof payload.configurationScope === "object" &&
+      !Array.isArray(payload.configurationScope)
+        ? { ...(payload.configurationScope as Record<string, unknown>) }
+        : {});
+
+    const nextScope: Record<string, unknown> = {
+      ...prevScope,
+      selectedRooms: cleanedRooms,
+      selectedRoomNames: cleanedRooms.map((r) => String(r.roomName)),
+      referenceInspiration: {
+        aestheticNotes: aestheticNotes || null,
+        references: cleanedRefs,
+      },
+    };
+
+    connection.configurationScope = nextScope;
+    payload.connection = connection;
+    payload.configurationScope = nextScope;
+    payload.meetingScopeUpdatedAt = new Date().toISOString();
+
+    await pool.query("UPDATE leads SET payload = ?, update_at = ? WHERE id = ?", [
+      JSON.stringify(payload),
+      new Date(),
+      id,
+    ]);
+
+    const intake = extractLeadIntakeViewFromPayload(payload);
+    return res.json({
+      ok: true,
+      configScopeSummary: intake.configScopeSummary,
+      message: "Meeting scope saved",
+    });
+  } catch (err) {
+    console.error("meeting-scope patch error", err);
+    return res.status(500).json({ message: "Failed to save meeting scope" });
+  }
+});
+
+/** Persist Meeting Wizard completion so Start Meeting hides until the next schedule. */
+app.patch("/api/leads/:id/meeting-wiz-completed", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+
+  const user = await getUserFromSession(req);
+  const access = await getLeadAccessRowForUser(res, user, id);
+  if (!access.ok) return;
+
+  try {
+    const body = (req.body || {}) as Record<string, unknown>;
+    const completedAt =
+      typeof body.completedAt === "string" && body.completedAt.trim()
+        ? body.completedAt.trim()
+        : new Date().toISOString();
+    const meetingDate =
+      typeof body.meetingDate === "string" && body.meetingDate.trim()
+        ? body.meetingDate.trim().slice(0, 10)
+        : completedAt.slice(0, 10);
+
+    await persistLeadMeetingWizCompleted(id, { completedAt, meetingDate });
+    const [rows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [id]);
+    const row = (rows as { payload?: string | null }[])[0];
+    const intake = extractLeadIntakeViewFromPayload(row?.payload);
+    return res.json({
+      ok: true,
+      meetingWizLastCompleted: intake.meetingWizLastCompleted,
+      designScheduledMeetingUpdatedAt: intake.designScheduledMeetingUpdatedAt,
+    });
+  } catch (err) {
+    console.error("meeting-wiz-completed patch error", err);
+    return res.status(500).json({ message: "Failed to save meeting completion" });
   }
 });
 
@@ -12020,6 +13865,32 @@ app.patch("/api/leads/:id/prolance-ids", async (req: Request, res: Response) => 
 });
 
 // All Prolance quote revisions saved for this lead (auth + same visibility as lead detail).
+// Latest quotation share link for a lead (used by MOM and other substages)
+app.get("/api/leads/:id/latest-quote-link", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+
+  const user = await getUserFromSession(req);
+  const access = await getLeadAccessRowForUser(res, user, id);
+  if (!access.ok) return;
+
+  try {
+    const latest = await resolveLatestQuoteLinkForLead(id);
+    if (!latest) {
+      return res.json({ ok: true, quoteId: null, customerQuoteUrl: null, internalQuoteUrl: null });
+    }
+    return res.json({
+      ok: true,
+      quoteId: latest.quoteId,
+      customerQuoteUrl: latest.customerQuoteUrl,
+      internalQuoteUrl: latest.internalQuoteUrl,
+    });
+  } catch (err) {
+    console.error("latest-quote-link error", err);
+    return res.status(500).json({ message: "Failed to load latest quotation link" });
+  }
+});
+
 app.get("/api/leads/:id/prolance-quote-versions", async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
@@ -12147,7 +14018,8 @@ app.post("/api/leads/:id/prolance-quote-snapshots", async (req: Request, res: Re
   }
 });
 
-// Update primary / alternate client email (everyone except designers).
+// Update primary client email and optional family-member email (one).
+// Assigned designer may update (needed for Mail loop chain 2 initiate task).
 app.patch("/api/leads/:id/client-emails", async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
@@ -12167,9 +14039,6 @@ app.patch("/api/leads/:id/client-emails", async (req: Request, res: Response) =>
     const user = await getUserFromSession(req);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
     const role = (user.role ?? "").toLowerCase();
-    if (role === "designer") {
-      return res.status(403).json({ message: "Designers cannot update client emails" });
-    }
 
     const [rows] = await pool.query(
       "SELECT id, assigned_designer_id, client_email as clientEmail, client_email_alt as alternateClientEmail FROM leads WHERE id = ?",
@@ -12177,6 +14046,12 @@ app.patch("/api/leads/:id/client-emails", async (req: Request, res: Response) =>
     );
     const row = (rows as any[])[0];
     if (!row) return res.status(404).json({ message: "Lead not found" });
+
+    if (role === "designer") {
+      if (!user.id || Number(row.assigned_designer_id) !== Number(user.id)) {
+        return res.status(403).json({ message: "Only the assigned designer can update client emails" });
+      }
+    }
 
     if (role === "mmt_executive" && user.id) {
       const [assignRows] = await pool.query(
@@ -12421,6 +14296,7 @@ app.post("/api/leads/:id/cancel", async (req: Request, res: Response) => {
 
 registerCrmHubBookingRoutes(app, { pool, getUserFromSession, addLeadHistoryEvent });
 registerProlanceRoutes(app, getUserFromSession, pool);
+registerIncentivesRoutes(app, { pool, getUserFromSession });
 
 // Ensure CORS headers are present on error responses (multer, etc.) so the browser doesn't only show a generic CORS error
 app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {

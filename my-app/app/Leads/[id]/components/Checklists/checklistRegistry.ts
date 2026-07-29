@@ -19,27 +19,15 @@ const checklistRoutes: ChecklistRoute[] = [
     taskName: "First cut design + quotation discussion meeting request",
     key: "first_cut",
   },
-  {
-    milestoneIndex: 4,
-    taskName: "Material selection meeting + quotation discussion",
-    key: "color_selection",
-  },
-  {
-    milestoneIndex: 5,
-    taskName: "Design sign off",
-    key: "design_signoff",
-  },
 ];
 
 export const checklistDefinitions: Record<ChecklistKey, ChecklistDefinition> = {
   first_cut: {
-    title: "FIRST CUT MEETING – 2 HOUR CONTROL CHECKLIST - online",
+    title: "Before First Meeting Checklist",
     sections: meetingChecklist,
     postUrl: `${API}/api/checklist`,
     lastUrl: `${API}/api/checklist/last`,
     successMessage: "Checklist submitted successfully",
-    showBreakdownDividerAtIndex: 1,
-    breakdownDividerTitle: "MEETING STRUCTURE (2 HOURS BREAKDOWN)",
   },
   color_selection: {
     title: "COLOR & MATERIAL SELECTION MEETING CHECKLIST - online",

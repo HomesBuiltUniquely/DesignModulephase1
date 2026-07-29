@@ -79,31 +79,177 @@ function pickNum(...values: unknown[]): number | null {
   return null;
 }
 
+type HubLeadBody = Record<string, unknown>;
+
+type BookingFinanceSyncMode = "FULL_10" | "BUFFER_9_9";
+
+type ResolvedBookingFinance = {
+  mode: BookingFinanceSyncMode;
+  quoteAmount: number | null;
+  tenPercentAmount: number | null;
+  bufferThresholdAmount: number | null;
+  /** Amount credited toward the 10% milestone (excludes finance extra). */
+  amountToward10: number;
+  remainingAmount: number;
+  shortfallAmount: number;
+  extraAmountReceived: number;
+  totalAmountReceived: number;
+  bufferApplied: boolean;
+  financeBufferNote: string;
+};
+
+function roundMoney(n: number): number {
+  return Math.round(n);
+}
+
+/**
+ * Resolve FULL_10 vs BUFFER_9_9 from CRM convert payload.
+ * Accepts explicit bookingApprovalMode, or infers from paid vs 9.9%/10% thresholds.
+ */
+function resolveBookingFinanceSync(body: HubLeadBody): ResolvedBookingFinance {
+  const quoteAmount = pickNum(body.quoteAmount, body.quote_amount, body.quotationTotal, body.quotation_total);
+  const tenPercentAmount =
+    pickNum(body.tenPercentAmount, body.ten_percent_amount) ??
+    (quoteAmount != null && quoteAmount > 0 ? roundMoney(quoteAmount * 0.1) : null);
+  const bufferThresholdAmount =
+    pickNum(body.bufferThresholdAmount, body.buffer_threshold_amount) ??
+    (quoteAmount != null && quoteAmount > 0 ? roundMoney(quoteAmount * 0.099) : null);
+
+  const extraAmountReceived = Math.max(
+    0,
+    pickNum(body.extraAmountReceived, body.extra_amount_received) ?? 0,
+  );
+  const totalAmountReceived = pickNum(body.totalAmountReceived, body.total_amount_received);
+  const rawAmountReceived = pickNum(body.amountReceived, body.amount_received);
+
+  // Prefer explicit toward-10 amount; else derive from total − extra.
+  let amountToward10 =
+    rawAmountReceived ??
+    (totalAmountReceived != null ? Math.max(0, totalAmountReceived - extraAmountReceived) : null);
+  if (amountToward10 == null) amountToward10 = 0;
+
+  const remainingFromBody = pickNum(body.remainingAmount, body.remaining_amount, body.shortfallAmount, body.shortfall_amount);
+  const remainingAmount =
+    remainingFromBody != null
+      ? Math.max(0, remainingFromBody)
+      : tenPercentAmount != null
+        ? Math.max(0, tenPercentAmount - amountToward10)
+        : 0;
+  const shortfallAmount = remainingAmount;
+
+  const modeRaw = pickStr(body.bookingApprovalMode, body.booking_approval_mode).toUpperCase();
+  let mode: BookingFinanceSyncMode | null =
+    modeRaw === "FULL_10" || modeRaw === "BUFFER_9_9" ? (modeRaw as BookingFinanceSyncMode) : null;
+
+  if (!mode) {
+    if (tenPercentAmount != null && amountToward10 >= tenPercentAmount) {
+      mode = "FULL_10";
+    } else if (
+      bufferThresholdAmount != null &&
+      amountToward10 >= bufferThresholdAmount &&
+      (remainingAmount > 0 || (tenPercentAmount != null && amountToward10 < tenPercentAmount))
+    ) {
+      mode = "BUFFER_9_9";
+    } else if (tenPercentAmount != null && amountToward10 >= tenPercentAmount) {
+      mode = "FULL_10";
+    } else if (amountToward10 > 0 && tenPercentAmount == null) {
+      mode = "FULL_10";
+    }
+  }
+
+  if (!mode) {
+    if (bufferThresholdAmount != null && amountToward10 < bufferThresholdAmount) {
+      throw new Error("Paid amount below 9.9% buffer threshold");
+    }
+    if (tenPercentAmount != null && amountToward10 < tenPercentAmount) {
+      throw new Error("Paid amount below 9.9% buffer threshold");
+    }
+    throw new Error("Missing bookingApprovalMode");
+  }
+
+  if (mode === "BUFFER_9_9") {
+    if (bufferThresholdAmount != null && amountToward10 < bufferThresholdAmount) {
+      throw new Error("Paid amount below 9.9% buffer threshold");
+    }
+    if (
+      bufferThresholdAmount == null &&
+      tenPercentAmount != null &&
+      amountToward10 < roundMoney(tenPercentAmount * 0.99)
+    ) {
+      throw new Error("Paid amount below 9.9% buffer threshold");
+    }
+  } else if (mode === "FULL_10") {
+    if (tenPercentAmount != null && amountToward10 < tenPercentAmount) {
+      throw new Error("Full 10% must be received for FULL_10 finance sync");
+    }
+  }
+
+  const totalPaid =
+    totalAmountReceived != null
+      ? Math.max(0, totalAmountReceived)
+      : amountToward10 + extraAmountReceived;
+
+  const financeBufferNote =
+    pickStr(body.financeBufferNote, body.finance_buffer_note) ||
+    (mode === "BUFFER_9_9"
+      ? `Booking allowed from 9.9% buffer. ₹${shortfallAmount.toLocaleString("en-IN")} still due toward 10% for Finance.`
+      : "");
+
+  return {
+    mode,
+    quoteAmount,
+    tenPercentAmount,
+    bufferThresholdAmount,
+    amountToward10,
+    remainingAmount,
+    shortfallAmount,
+    extraAmountReceived,
+    totalAmountReceived: totalPaid,
+    bufferApplied: mode === "BUFFER_9_9" || body.bufferApplied === true || body.buffer_applied === true,
+    financeBufferNote,
+  };
+}
+
 /** Mirror CRM hub sales payment into leads.payload so design milestone math sees it. */
 async function persistHubSalesPaymentToLeadPayload(
   pool: Pool,
   leadId: number,
-  amountReceived: number | null,
-  tenPercentAmount: number | null,
-  quoteAmount: number | null,
+  finance: ResolvedBookingFinance,
 ): Promise<void> {
-  if (amountReceived == null || amountReceived <= 0) return;
+  if (finance.amountToward10 <= 0 && finance.totalAmountReceived <= 0) return;
   const [rows] = await pool.query(`SELECT payload FROM leads WHERE id = ? LIMIT 1`, [leadId]);
   const raw = (rows as { payload?: unknown }[])[0]?.payload;
   const payload = parseLeadPayload(raw);
-  const existing =
-    pickNum(payload.total_paid_cumulative, payload.total_paid_toward_10_percent, payload.amount_paid) ?? 0;
-  const cumulative = Math.max(existing, amountReceived);
-  payload.total_paid_cumulative = cumulative;
-  payload.total_paid_toward_10_percent = cumulative;
-  payload.amount_paid = cumulative;
-  if (tenPercentAmount != null && tenPercentAmount > 0) {
-    payload.ten_percent_target = tenPercentAmount;
-    payload.remaining_for_10_percent = Math.max(0, tenPercentAmount - cumulative);
-    payload.ten_percent_payment_met = cumulative >= tenPercentAmount;
+  const existingToward10 =
+    pickNum(payload.total_paid_toward_10_percent, payload.amount_paid) ?? 0;
+  const existingTotal =
+    pickNum(payload.total_paid_cumulative, payload.total_customer_paid) ?? existingToward10;
+  const toward10 = Math.max(existingToward10, finance.amountToward10);
+  const totalPaid = Math.max(existingTotal, finance.totalAmountReceived);
+  const extra = Math.max(
+    pickNum(payload.extra_amount_received, payload.finance_extra_amount) ?? 0,
+    finance.extraAmountReceived,
+  );
+
+  payload.total_paid_toward_10_percent = toward10;
+  payload.amount_paid = toward10;
+  payload.total_paid_cumulative = totalPaid;
+  payload.total_customer_paid = totalPaid;
+  payload.extra_amount_received = extra;
+  payload.finance_extra_amount = extra;
+  payload.booking_approval_mode = finance.mode;
+  payload.buffer_applied = finance.bufferApplied;
+  payload.buffer_threshold_amount = finance.bufferThresholdAmount;
+  payload.finance_buffer_note = finance.financeBufferNote || null;
+  payload.shortfall_toward_10_percent = finance.shortfallAmount;
+  payload.remaining_for_10_percent = finance.remainingAmount;
+
+  if (finance.tenPercentAmount != null && finance.tenPercentAmount > 0) {
+    payload.ten_percent_target = finance.tenPercentAmount;
+    payload.ten_percent_payment_met = toward10 >= finance.tenPercentAmount;
   }
-  if (quoteAmount != null && quoteAmount > 0) {
-    payload.quotation_total = quoteAmount;
+  if (finance.quoteAmount != null && finance.quoteAmount > 0) {
+    payload.quotation_total = finance.quoteAmount;
   }
   await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
     JSON.stringify(payload),
@@ -284,7 +430,65 @@ async function ensureLeadHubBookingSyncTable(pool: Pool): Promise<void> {
   `);
 }
 
-type HubLeadBody = Record<string, unknown>;
+async function ensureLeadHubBookingRefundTable(pool: Pool): Promise<void> {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS lead_hub_booking_refunds (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      refund_key VARCHAR(96) NOT NULL,
+      lead_id INT NOT NULL,
+      booking_token_record_id VARCHAR(64) NOT NULL,
+      crm_lead_type VARCHAR(32) NULL,
+      crm_lead_id BIGINT NULL,
+      lead_identifier VARCHAR(128) NULL,
+      customer_name VARCHAR(255) NULL,
+      refund_amount DECIMAL(14,2) NOT NULL,
+      amount_toward_ten_refund DECIMAL(14,2) NULL DEFAULT 0,
+      extra_refund_amount DECIMAL(14,2) NULL DEFAULT 0,
+      cancellation_reason TEXT NULL,
+      cancelled_at DATETIME NULL,
+      cancellation_approved_at DATETIME NULL,
+      cancellation_approved_by VARCHAR(255) NULL,
+      refund_scope VARCHAR(32) NULL,
+      status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+      refund_payload MEDIUMTEXT NULL,
+      finance_approved_at DATETIME NULL,
+      finance_approved_by VARCHAR(255) NULL,
+      created_at DATETIME NOT NULL,
+      UNIQUE KEY uq_refund_key (refund_key),
+      KEY idx_refund_lead (lead_id),
+      KEY idx_refund_booking_token (booking_token_record_id),
+      KEY idx_refund_status (status)
+    );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS lead_hub_booking_refund_lines (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      refund_id INT NOT NULL,
+      payment_history_id VARCHAR(64) NOT NULL,
+      amount DECIMAL(14,2) NOT NULL,
+      extra_amount DECIMAL(14,2) NULL DEFAULT 0,
+      proof_refs MEDIUMTEXT NULL,
+      KEY idx_refund_line_refund (refund_id),
+      KEY idx_refund_line_payment (payment_history_id)
+    );
+  `);
+  // Best-effort column upgrades for older installs
+  const alters = [
+    "ALTER TABLE lead_hub_booking_refunds ADD COLUMN lead_identifier VARCHAR(128) NULL",
+    "ALTER TABLE lead_hub_booking_refunds ADD COLUMN customer_name VARCHAR(255) NULL",
+    "ALTER TABLE lead_hub_booking_refunds ADD COLUMN amount_toward_ten_refund DECIMAL(14,2) NULL DEFAULT 0",
+    "ALTER TABLE lead_hub_booking_refunds ADD COLUMN status VARCHAR(32) NOT NULL DEFAULT 'PENDING'",
+    "ALTER TABLE lead_hub_booking_refunds ADD COLUMN finance_approved_at DATETIME NULL",
+    "ALTER TABLE lead_hub_booking_refunds ADD COLUMN finance_approved_by VARCHAR(255) NULL",
+  ];
+  for (const sql of alters) {
+    try {
+      await pool.query(sql);
+    } catch {
+      /* column already exists */
+    }
+  }
+}
 
 /** Avoid JSON_EXTRACT errors when payload is empty or invalid (legacy rows). */
 const SAFE_PAYLOAD_JSON =
@@ -802,9 +1006,17 @@ async function handleConvertBooking(
   pool: Pool,
   body: HubLeadBody,
   addLeadHistoryEvent: RouteDeps["addLeadHistoryEvent"],
-): Promise<{ designLeadId: number; bookingTokenRecordId: string }> {
+): Promise<{
+  designLeadId: number;
+  bookingTokenRecordId: string;
+  financeSyncMode: BookingFinanceSyncMode;
+  shortfallRecorded: number;
+  extraAmountReceived: number;
+}> {
   const bookingTokenRecordId = pickStr(body.bookingTokenRecordId, body.recordId);
   if (!bookingTokenRecordId) throw new Error("bookingTokenRecordId is required");
+
+  const finance = resolveBookingFinanceSync(body);
 
   const leadType = pickStr(body.leadType, body.crmLeadType) || "addlead";
   const leadIdNum = pickNum(body.leadId, body.crmLeadId);
@@ -817,11 +1029,24 @@ async function handleConvertBooking(
   }
 
   const paymentHistoryId = pickStr(body.paymentHistoryId) || null;
-  const amountReceived = pickNum(body.amountReceived, body.amount_received);
-  const tenPercentAmount = pickNum(body.tenPercentAmount, body.ten_percent_amount, body.quoteAmount != null ? Number(body.quoteAmount) * 0.1 : null);
-  const quoteAmount = pickNum(body.quoteAmount, body.quote_amount, body.quotationTotal, body.quotation_total);
+  const amountReceived = finance.amountToward10;
+  const tenPercentAmount = finance.tenPercentAmount;
+  const quoteAmount = finance.quoteAmount;
   const now = new Date();
-  const payloadJson = JSON.stringify(body);
+  const payloadJson = JSON.stringify({
+    ...body,
+    bookingApprovalMode: finance.mode,
+    bufferApplied: finance.bufferApplied,
+    bufferThresholdAmount: finance.bufferThresholdAmount,
+    remainingAmount: finance.remainingAmount,
+    shortfallAmount: finance.shortfallAmount,
+    extraAmountReceived: finance.extraAmountReceived,
+    totalAmountReceived: finance.totalAmountReceived,
+    financeBufferNote: finance.financeBufferNote || undefined,
+    amountReceived: finance.amountToward10,
+    tenPercentAmount: finance.tenPercentAmount,
+    quoteAmount: finance.quoteAmount,
+  });
 
   await pool.query(
     `INSERT INTO lead_hub_booking_sync
@@ -849,13 +1074,7 @@ async function handleConvertBooking(
     ],
   );
 
-  await persistHubSalesPaymentToLeadPayload(
-    pool,
-    designLeadId,
-    amountReceived,
-    tenPercentAmount,
-    quoteAmount,
-  );
+  await persistHubSalesPaymentToLeadPayload(pool, designLeadId, finance);
 
   // Merge Experience / Decision / BookingDone snapshot into lead payload for Design View
   try {
@@ -885,6 +1104,13 @@ async function handleConvertBooking(
         quoteAmount: quoteAmount ?? null,
         tenPercentAmount: tenPercentAmount ?? null,
         amountReceived: amountReceived ?? null,
+        bookingApprovalMode: finance.mode,
+        bufferApplied: finance.bufferApplied,
+        remainingAmount: finance.remainingAmount,
+        shortfallAmount: finance.shortfallAmount,
+        extraAmountReceived: finance.extraAmountReceived,
+        totalAmountReceived: finance.totalAmountReceived,
+        financeBufferNote: finance.financeBufferNote || null,
       },
     };
     await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
@@ -897,7 +1123,16 @@ async function handleConvertBooking(
   }
 
   await importHubPaymentProofs(pool, designLeadId, { ...body, _syncedAt: now });
+  // Buffer converts still enter the finance queue (collection synced) but remain
+  // not approval-ready until shortfall is closed (tenPercentMet gate).
   await markTenPercentCollectionComplete(pool, designLeadId);
+
+  const historyNote =
+    finance.mode === "BUFFER_9_9"
+      ? `CRM Booking & Token synced at 9.9% buffer. Shortfall ₹${finance.shortfallAmount.toLocaleString("en-IN")} toward 10%.`
+      : finance.extraAmountReceived > 0
+        ? `CRM Booking & Token payment synced (full 10% + extra ₹${finance.extraAmountReceived.toLocaleString("en-IN")}).`
+        : "CRM Booking & Token payment synced from Hub";
 
   await addLeadHistoryEvent(designLeadId, {
     id: `hub-payment-sync-${Date.now()}`,
@@ -905,12 +1140,26 @@ async function handleConvertBooking(
     taskName: "10% payment collection",
     milestoneName: "10% PAYMENT",
     timestamp: now.toISOString(),
-    description: "CRM Booking & Token payment synced from Hub",
+    description: historyNote,
     user: { name: "CRM Hub" },
-    details: { kind: "hub_payment_sync", bookingTokenRecordId, paymentHistoryId },
+    details: {
+      kind: "hub_payment_sync",
+      bookingTokenRecordId,
+      paymentHistoryId,
+      financeSyncMode: finance.mode,
+      shortfallAmount: finance.shortfallAmount,
+      extraAmountReceived: finance.extraAmountReceived,
+      bufferApplied: finance.bufferApplied,
+    },
   });
 
-  return { designLeadId, bookingTokenRecordId };
+  return {
+    designLeadId,
+    bookingTokenRecordId,
+    financeSyncMode: finance.mode,
+    shortfallRecorded: finance.shortfallAmount,
+    extraAmountReceived: finance.extraAmountReceived,
+  };
 }
 
 type TaskCompletion = { leadId: number; milestoneIndex: number; taskName: string; completedAt: Date | string };
@@ -1007,10 +1256,20 @@ async function buildFinanceQueueRows(
     const tenPercentTarget =
       pickNum(sync?.tenPercentAmount, paymentPayload.tenPercentAmount, paymentPayload.quoteAmount != null ? Number(paymentPayload.quoteAmount) * 0.1 : null) ?? 0;
     const totalPaid = pickNum(sync?.amountReceived, paymentPayload.amountReceived) ?? 0;
-    const remaining = Math.max(0, tenPercentTarget - totalPaid);
+    const remaining =
+      pickNum(paymentPayload.remainingAmount, paymentPayload.shortfallAmount) ??
+      Math.max(0, tenPercentTarget - totalPaid);
+    const extraAmountReceived = pickNum(paymentPayload.extraAmountReceived, paymentPayload.extra_amount_received) ?? 0;
+    const bookingApprovalMode = pickStr(paymentPayload.bookingApprovalMode, paymentPayload.booking_approval_mode) || null;
+    const bufferApplied =
+      paymentPayload.bufferApplied === true ||
+      paymentPayload.buffer_applied === true ||
+      bookingApprovalMode === "BUFFER_9_9";
 
     let status = "Awaiting 10% payment";
     if (hasApproval) status = "Approved";
+    else if (hasCollection && remaining <= 0) status = "Pending approval";
+    else if (hasCollection && bufferApplied) status = "Buffer convert — shortfall due";
     else if (hasCollection) status = "Pending approval";
 
     const crmLeadType = pickStr(sync?.crmLeadType, payload.crmLeadType);
@@ -1023,11 +1282,15 @@ async function buildFinanceQueueRows(
       totalPaid,
       tenPercentTarget,
       remaining,
+      extraAmountReceived,
+      bookingApprovalMode,
+      bufferApplied,
+      financeBufferNote: pickStr(paymentPayload.financeBufferNote, paymentPayload.finance_buffer_note) || null,
       subs: paymentHistory.length || (hasCollection ? 1 : 0),
       status,
       submittedAt: submittedDate ? submittedDate.toISOString() : null,
       approvedAt: approvalAt ? approvalAt.toISOString() : null,
-      canApprove: hasCollection && !hasApproval,
+      canApprove: hasCollection && !hasApproval && remaining <= 0,
       paymentSource,
       crmRef: crmLeadType && crmLeadId != null ? `${crmLeadType}#${crmLeadId}` : null,
       bookingTokenRecordId: sync?.bookingTokenRecordId ?? null,
@@ -1162,7 +1425,15 @@ async function mapCrmHubRowToSalesClosure(
   const amountPaid = pickNum(sync.amountReceived, paymentPayload.amountReceived) ?? 0;
   const tenPercentTarget =
     pickNum(sync.tenPercentAmount, paymentPayload.tenPercentAmount, paymentPayload.quoteAmount != null ? Number(paymentPayload.quoteAmount) * 0.1 : null) ?? 0;
-  const remaining = Math.max(0, tenPercentTarget - amountPaid);
+  const remaining =
+    pickNum(paymentPayload.remainingAmount, paymentPayload.shortfallAmount) ??
+    Math.max(0, tenPercentTarget - amountPaid);
+  const extraAmountReceived = pickNum(paymentPayload.extraAmountReceived, paymentPayload.extra_amount_received) ?? 0;
+  const bookingApprovalMode = pickStr(paymentPayload.bookingApprovalMode, paymentPayload.booking_approval_mode) || null;
+  const bufferApplied =
+    paymentPayload.bufferApplied === true ||
+    paymentPayload.buffer_applied === true ||
+    bookingApprovalMode === "BUFFER_9_9";
   const tenPercentMet = tenPercentTarget > 0 ? amountPaid >= tenPercentTarget : amountPaid > 0;
   const approvalAt = taskCompletedAt(compList, leadId, 2, "10% payment approval");
   const customerName =
@@ -1189,13 +1460,19 @@ async function mapCrmHubRowToSalesClosure(
       ? "Approved — moved to 10–20%"
       : tenPercentMet
         ? "Ready for approval (10% paid)"
-        : "Awaiting 10% payment",
+        : bufferApplied
+          ? "Buffer convert — shortfall due"
+          : "Awaiting 10% payment",
     paymentReceived: pickStr(paymentPayload.paymentKind) || "—",
     paymentMode: pickStr(paymentPayload.paymentKind) || "—",
     paymentScreenshot: firstUploadId,
     amountPaid,
     tenPercentTarget,
     remainingFor10Percent: approved ? 0 : remaining,
+    extraAmountReceived,
+    bookingApprovalMode,
+    bufferApplied,
+    financeBufferNote: pickStr(paymentPayload.financeBufferNote, paymentPayload.finance_buffer_note) || null,
     paymentPercentOfQuotation: null,
     tenPercentMet: approved ? true : tenPercentMet,
     canApprove: !approved && tenPercentMet && hasCollection,
@@ -1356,6 +1633,485 @@ export async function notifyHubFinanceReview(
   }
 }
 
+type RefundSyncResult = {
+  refundId: string;
+  refundAmount: number;
+  designLeadId: number;
+  bookingTokenRecordId: string;
+  alreadyProcessed?: boolean;
+};
+
+function paymentHistoryEntries(body: HubLeadBody): Record<string, unknown>[] {
+  const raw = body.paymentHistory ?? body.payment_history;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((e) => e && typeof e === "object") as Record<string, unknown>[];
+}
+
+function cancelledPaymentIds(body: HubLeadBody): string[] {
+  const raw = body.cancelledPaymentEntryIds ?? body.cancelled_payment_entry_ids;
+  if (!Array.isArray(raw)) return [];
+  return raw.map((id) => String(id).trim()).filter(Boolean);
+}
+
+function resolveRefundAmounts(body: HubLeadBody): {
+  refundScope: string;
+  refundAmount: number;
+  amountTowardTenRefund: number;
+  extraAmountRefund: number;
+  selectedPayments: Record<string, unknown>[];
+} {
+  const refundScope = (pickStr(body.refundScope, body.refund_scope) || "deal").toLowerCase();
+  const history = paymentHistoryEntries(body);
+  const cancelledIds = cancelledPaymentIds(body);
+
+  let selectedPayments = history;
+  if (refundScope === "payments") {
+    if (cancelledIds.length === 0) {
+      throw new Error("No payments to refund");
+    }
+    const idSet = new Set(cancelledIds);
+    selectedPayments = history.filter((p) => idSet.has(pickStr(p.id, p.paymentHistoryId, p.payment_history_id)));
+    if (selectedPayments.length === 0) {
+      throw new Error("No payments to refund");
+    }
+  }
+
+  const summedSelected = selectedPayments.reduce((sum, p) => sum + (pickNum(p.amount) ?? 0), 0);
+  const summedExtraSelected = selectedPayments.reduce((sum, p) => sum + (pickNum(p.extraAmount, p.extra_amount) ?? 0), 0);
+
+  const explicitRefund = pickNum(body.refundAmount, body.refund_amount);
+  const totalAmountReceived = pickNum(body.totalAmountReceived, body.total_amount_received);
+  const amountReceived = pickNum(body.amountReceived, body.amount_received) ?? 0;
+  const extraReceived = Math.max(0, pickNum(body.extraAmountReceived, body.extra_amount_received) ?? 0);
+
+  let refundAmount =
+    explicitRefund ??
+    (refundScope === "payments" && selectedPayments.length > 0
+      ? summedSelected
+      : totalAmountReceived ?? amountReceived + extraReceived);
+
+  // Never refund shortfall — only what customer paid
+  if (refundAmount == null || !Number.isFinite(refundAmount) || refundAmount <= 0) {
+    throw new Error("No payments to refund");
+  }
+  refundAmount = Math.max(0, refundAmount);
+
+  const amountTowardTenRefund =
+    pickNum(body.amountTowardTenRefund, body.amount_toward_ten_refund) ??
+    (refundScope === "payments"
+      ? Math.max(0, summedSelected - summedExtraSelected)
+      : Math.max(0, amountReceived));
+
+  const extraAmountRefund =
+    pickNum(body.extraAmountRefund, body.extra_amount_refund) ??
+    (refundScope === "payments" ? summedExtraSelected : extraReceived);
+
+  if (refundAmount <= 0) throw new Error("No payments to refund");
+
+  return {
+    refundScope,
+    refundAmount,
+    amountTowardTenRefund: Math.max(0, amountTowardTenRefund),
+    extraAmountRefund: Math.max(0, extraAmountRefund),
+    selectedPayments,
+  };
+}
+
+async function findExistingRefundByBookingToken(
+  pool: Pool,
+  bookingTokenRecordId: string,
+  refundScope: string,
+): Promise<RefundSyncResult | null> {
+  const [rows] = await pool.query(
+    `SELECT refund_key as refundKey, refund_amount as refundAmount, lead_id as leadId,
+            booking_token_record_id as bookingTokenRecordId, status
+     FROM lead_hub_booking_refunds
+     WHERE booking_token_record_id = ?
+       AND LOWER(COALESCE(refund_scope, 'deal')) = ?
+     ORDER BY id DESC LIMIT 1`,
+    [bookingTokenRecordId, refundScope.toLowerCase()],
+  );
+  const row = (rows as {
+    refundKey?: string;
+    refundAmount?: number;
+    leadId?: number;
+    bookingTokenRecordId?: string;
+  }[])[0];
+  if (!row?.refundKey) return null;
+  return {
+    refundId: String(row.refundKey),
+    refundAmount: Number(row.refundAmount) || 0,
+    designLeadId: Number(row.leadId) || 0,
+    bookingTokenRecordId: String(row.bookingTokenRecordId || bookingTokenRecordId),
+    alreadyProcessed: true,
+  };
+}
+
+async function applyFinanceRefundApproval(
+  pool: Pool,
+  refund: {
+    id: number;
+    refundKey: string;
+    leadId: number;
+    refundAmount: number;
+    amountTowardTen: number;
+    extraAmount: number;
+    refundScope: string;
+    refundPayload: unknown;
+  },
+  approvedBy: string,
+  addLeadHistoryEvent: RouteDeps["addLeadHistoryEvent"],
+): Promise<void> {
+  const now = new Date();
+  const body = parseLeadPayload(refund.refundPayload);
+  const refundScope = (refund.refundScope || "deal").toLowerCase();
+
+  await pool.query(
+    `UPDATE lead_hub_booking_refunds
+     SET status = 'APPROVED',
+         finance_approved_at = ?,
+         finance_approved_by = ?
+     WHERE id = ? AND UPPER(COALESCE(status, 'PENDING')) = 'PENDING'`,
+    [now, approvedBy, refund.id],
+  );
+
+  if (refundScope !== "payments") {
+    await pool.query(
+      `DELETE FROM lead_task_completions
+       WHERE lead_id = ?
+         AND milestone_index = 2
+         AND task_name IN ('10% payment collection', '10% payment approval')`,
+      [refund.leadId],
+    );
+  }
+
+  try {
+    const [leadRows] = await pool.query(`SELECT payload FROM leads WHERE id = ? LIMIT 1`, [refund.leadId]);
+    const prev = parseLeadPayload((leadRows as { payload?: unknown }[])[0]?.payload);
+    const prevRefunds = Array.isArray(prev.booking_refunds) ? [...prev.booking_refunds] : [];
+    const refundRecord = {
+      refundId: refund.refundKey,
+      refundAmount: refund.refundAmount,
+      amountTowardTenRefund: refund.amountTowardTen,
+      extraAmountRefund: refund.extraAmount,
+      refundScope,
+      status: "APPROVED",
+      financeApprovedAt: now.toISOString(),
+      financeApprovedBy: approvedBy,
+      syncedAt: now.toISOString(),
+    };
+    const idx = prevRefunds.findIndex(
+      (r) => r && typeof r === "object" && (r as { refundId?: string }).refundId === refund.refundKey,
+    );
+    if (idx >= 0) prevRefunds[idx] = { ...(prevRefunds[idx] as object), ...refundRecord };
+    else prevRefunds.push(refundRecord);
+
+    const merged: Record<string, unknown> = {
+      ...prev,
+      booking_cancelled: refundScope !== "payments" ? true : prev.booking_cancelled === true,
+      booking_refund: refundRecord,
+      booking_refunds: prevRefunds,
+      refund_pending: false,
+    };
+    if (refundScope !== "payments") {
+      merged.ten_percent_payment_met = false;
+      merged.shortfall_toward_10_percent = null;
+      merged.sales_closure_finance_approved = false;
+      merged.total_paid_toward_10_percent = 0;
+      merged.amount_paid = 0;
+      merged.extra_amount_received = 0;
+      merged.finance_extra_amount = 0;
+      merged.total_paid_cumulative = 0;
+      merged.total_customer_paid = 0;
+      merged.remaining_for_10_percent =
+        pickNum(prev.ten_percent_target) ?? prev.remaining_for_10_percent ?? null;
+    } else {
+      const prevToward = pickNum(prev.total_paid_toward_10_percent, prev.amount_paid) ?? 0;
+      const prevExtra = pickNum(prev.extra_amount_received, prev.finance_extra_amount) ?? 0;
+      const nextToward = Math.max(0, prevToward - refund.amountTowardTen);
+      const nextExtra = Math.max(0, prevExtra - refund.extraAmount);
+      merged.total_paid_toward_10_percent = nextToward;
+      merged.amount_paid = nextToward;
+      merged.extra_amount_received = nextExtra;
+      merged.finance_extra_amount = nextExtra;
+      const tenTarget = pickNum(prev.ten_percent_target) ?? 0;
+      merged.ten_percent_payment_met = tenTarget > 0 ? nextToward >= tenTarget : false;
+      merged.remaining_for_10_percent = tenTarget > 0 ? Math.max(0, tenTarget - nextToward) : 0;
+    }
+    await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
+      JSON.stringify(merged),
+      now,
+      refund.leadId,
+    ]);
+  } catch (payloadErr) {
+    console.warn("[crm-hub] refund approve payload merge skipped", payloadErr);
+  }
+
+  await addLeadHistoryEvent(refund.leadId, {
+    id: `hub-refund-approved-${Date.now()}`,
+    type: "note",
+    taskName: "Booking cancellation refund",
+    milestoneName: "10% PAYMENT",
+    timestamp: now.toISOString(),
+    description: `Finance approved refund ₹${refund.refundAmount.toLocaleString("en-IN")} (${refund.refundKey}).`,
+    user: { name: approvedBy },
+    details: {
+      kind: "hub_refund_approved",
+      refundId: refund.refundKey,
+      refundAmount: refund.refundAmount,
+      fromPayload: !!body.eventType,
+    },
+  });
+}
+
+async function handleFinanceRefundSync(
+  pool: Pool,
+  body: HubLeadBody,
+  addLeadHistoryEvent: RouteDeps["addLeadHistoryEvent"],
+): Promise<RefundSyncResult> {
+  const bookingTokenRecordId = pickStr(body.bookingTokenRecordId, body.recordId);
+  if (!bookingTokenRecordId) throw new Error("bookingTokenRecordId is required");
+
+  await ensureLeadHubBookingRefundTable(pool);
+
+  const { refundScope, refundAmount, amountTowardTenRefund, extraAmountRefund, selectedPayments } =
+    resolveRefundAmounts(body);
+
+  // Idempotency: same deal + scope already synced (pending or approved) → return same refundId
+  const existing = await findExistingRefundByBookingToken(pool, bookingTokenRecordId, refundScope);
+  if (existing) {
+    return existing;
+  }
+
+  const leadType = pickStr(body.leadType, body.crmLeadType) || null;
+  const leadIdNum = pickNum(body.leadId, body.crmLeadId);
+  const leadIdentifier = pickStr(body.leadIdentifier, body.externalReferenceId, body.pid) || null;
+  const customerName = pickStr(body.customerName, body.projectName) || null;
+
+  let designLeadId = await resolveDesignLeadIdForHubSync(pool, body);
+  if (!designLeadId) {
+    const [byToken] = await pool.query(
+      `SELECT lead_id as leadId FROM lead_hub_booking_sync WHERE booking_token_record_id = ? LIMIT 1`,
+      [bookingTokenRecordId],
+    );
+    designLeadId = Number((byToken as { leadId?: number }[])[0]?.leadId) || 0;
+  }
+  if (!designLeadId) throw new Error("Design lead not found for refund sync");
+
+  const now = new Date();
+  const cancelledAtRaw = pickStr(body.cancelledAt, body.cancelled_at);
+  const approvedAtRaw = pickStr(body.cancellationApprovedAt, body.cancellation_approved_at);
+  const cancelledAt = cancelledAtRaw ? new Date(cancelledAtRaw) : null;
+  const cancellationApprovedAt = approvedAtRaw ? new Date(approvedAtRaw) : now;
+  const cancellationReason = pickStr(body.cancellationReason, body.cancellation_reason) || null;
+  const cancellationApprovedBy =
+    pickStr(body.cancellationApprovedBy, body.cancellation_approved_by) || "CRM Hub";
+
+  const paymentIdSuffix =
+    refundScope === "payments"
+      ? cancelledPaymentIds(body).slice().sort().join("-").slice(0, 40) || "partial"
+      : "deal";
+  const refundKey =
+    pickStr(body.refundId, body.refund_id) || `ref-${bookingTokenRecordId.slice(0, 8)}-${paymentIdSuffix}`;
+
+  // Double-check by refund_key uniqueness
+  const [byKey] = await pool.query(
+    `SELECT refund_key as refundKey, refund_amount as refundAmount, lead_id as leadId,
+            booking_token_record_id as bookingTokenRecordId
+     FROM lead_hub_booking_refunds WHERE refund_key = ? LIMIT 1`,
+    [refundKey],
+  );
+  const keyHit = (byKey as { refundKey?: string; refundAmount?: number; leadId?: number; bookingTokenRecordId?: string }[])[0];
+  if (keyHit?.refundKey) {
+    return {
+      refundId: String(keyHit.refundKey),
+      refundAmount: Number(keyHit.refundAmount) || refundAmount,
+      designLeadId: Number(keyHit.leadId) || designLeadId,
+      bookingTokenRecordId: String(keyHit.bookingTokenRecordId || bookingTokenRecordId),
+      alreadyProcessed: true,
+    };
+  }
+
+  let refundRowId = 0;
+  try {
+    const [insertResult] = await pool.query(
+      `INSERT INTO lead_hub_booking_refunds
+       (refund_key, lead_id, booking_token_record_id, crm_lead_type, crm_lead_id, lead_identifier, customer_name,
+        refund_amount, amount_toward_ten_refund, extra_refund_amount,
+        cancellation_reason, cancelled_at, cancellation_approved_at, cancellation_approved_by,
+        refund_scope, status, refund_payload, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)`,
+      [
+        refundKey,
+        designLeadId,
+        bookingTokenRecordId,
+        leadType,
+        leadIdNum,
+        leadIdentifier,
+        customerName,
+        refundAmount,
+        amountTowardTenRefund,
+        extraAmountRefund,
+        cancellationReason,
+        cancelledAt && !Number.isNaN(cancelledAt.getTime()) ? cancelledAt : null,
+        cancellationApprovedAt && !Number.isNaN(cancellationApprovedAt.getTime())
+          ? cancellationApprovedAt
+          : now,
+        cancellationApprovedBy,
+        refundScope,
+        JSON.stringify(body),
+        now,
+      ],
+    );
+    refundRowId = Number((insertResult as { insertId?: number })?.insertId) || 0;
+  } catch (err) {
+    const code = (err as { code?: string })?.code;
+    if (code === "ER_DUP_ENTRY") {
+      const again =
+        (await findExistingRefundByBookingToken(pool, bookingTokenRecordId, refundScope)) ||
+        ({
+          refundId: refundKey,
+          refundAmount,
+          designLeadId,
+          bookingTokenRecordId,
+          alreadyProcessed: true,
+        } satisfies RefundSyncResult);
+      return again;
+    }
+    throw err;
+  }
+
+  for (const payment of selectedPayments) {
+    const paymentHistoryId = pickStr(payment.id, payment.paymentHistoryId, payment.payment_history_id) || "unknown";
+    const amount = pickNum(payment.amount) ?? 0;
+    const extraAmount = pickNum(payment.extraAmount, payment.extra_amount) ?? 0;
+    const proofs = Array.isArray(payment.proofs) ? payment.proofs : [];
+    if (refundRowId > 0) {
+      await pool.query(
+        `INSERT INTO lead_hub_booking_refund_lines
+         (refund_id, payment_history_id, amount, extra_amount, proof_refs)
+         VALUES (?, ?, ?, ?, ?)`,
+        [refundRowId, paymentHistoryId, amount, extraAmount, JSON.stringify(proofs)],
+      );
+    }
+  }
+
+  // CRM sync only queues refund for Finance approval — ledger reversal happens on Approve.
+  try {
+    const [leadRows] = await pool.query(`SELECT payload FROM leads WHERE id = ? LIMIT 1`, [designLeadId]);
+    const prev = parseLeadPayload((leadRows as { payload?: unknown }[])[0]?.payload);
+    const prevRefunds = Array.isArray(prev.booking_refunds) ? prev.booking_refunds : [];
+    const refundRecord = {
+      refundId: refundKey,
+      refundAmount,
+      amountTowardTenRefund,
+      extraAmountRefund,
+      cancellationReason,
+      cancelledAt: cancelledAtRaw || null,
+      cancellationApprovedAt: approvedAtRaw || now.toISOString(),
+      cancellationApprovedBy,
+      refundScope,
+      cancelledPaymentEntryIds: cancelledPaymentIds(body),
+      bookingApprovalMode: pickStr(body.bookingApprovalMode) || null,
+      bufferApplied: body.bufferApplied === true,
+      syncedAt: now.toISOString(),
+      status: "PENDING",
+    };
+    const merged: Record<string, unknown> = {
+      ...prev,
+      refund_pending: true,
+      booking_refund: refundRecord,
+      booking_refunds: [...prevRefunds, refundRecord],
+    };
+    await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
+      JSON.stringify(merged),
+      now,
+      designLeadId,
+    ]);
+  } catch (payloadErr) {
+    console.warn("[crm-hub] refund payload merge skipped", payloadErr);
+  }
+
+  await addLeadHistoryEvent(designLeadId, {
+    id: `hub-refund-sync-${Date.now()}`,
+    type: "note",
+    taskName: "Booking cancellation refund",
+    milestoneName: "10% PAYMENT",
+    timestamp: now.toISOString(),
+    description: `CRM cancel approved — refund ₹${refundAmount.toLocaleString("en-IN")} queued for Finance approval (10% ₹${amountTowardTenRefund.toLocaleString("en-IN")}${
+      extraAmountRefund > 0 ? ` + extra ₹${extraAmountRefund.toLocaleString("en-IN")}` : ""
+    }, scope: ${refundScope}).`,
+    user: { name: cancellationApprovedBy },
+    details: {
+      kind: "hub_refund_sync",
+      eventType: pickStr(body.eventType) || "refund_processed",
+      bookingTokenRecordId,
+      refundId: refundKey,
+      refundAmount,
+      amountTowardTenRefund,
+      extraAmountRefund,
+      cancellationReason,
+      refundScope,
+      status: "PENDING",
+      cancelledPaymentEntryIds: cancelledPaymentIds(body),
+    },
+  });
+
+  return {
+    refundId: refundKey,
+    refundAmount,
+    designLeadId,
+    bookingTokenRecordId,
+  };
+}
+
+async function listFinanceRefunds(
+  pool: Pool,
+  filters: { customer?: string; status?: string },
+): Promise<Record<string, unknown>[]> {
+  await ensureLeadHubBookingRefundTable(pool);
+  const [rows] = await pool.query(
+    `SELECT id, refund_key as refundId, lead_id as designLeadId, booking_token_record_id as bookingTokenRecordId,
+            crm_lead_type as crmLeadType, crm_lead_id as crmLeadId, lead_identifier as leadIdentifier,
+            customer_name as customerName, refund_amount as refundAmount,
+            amount_toward_ten_refund as amountTowardTenRefund, extra_refund_amount as extraAmountRefund,
+            cancellation_reason as cancellationReason, cancelled_at as cancelledAt,
+            cancellation_approved_at as cancellationApprovedAt, cancellation_approved_by as cancellationApprovedBy,
+            finance_approved_at as financeApprovedAt, finance_approved_by as financeApprovedBy,
+            refund_scope as refundScope, status, created_at as createdAt
+     FROM lead_hub_booking_refunds
+     ORDER BY id DESC
+     LIMIT 200`,
+  );
+  const customerFilter = (filters.customer || "").trim().toLowerCase();
+  const statusFilter = (filters.status || "").trim().toUpperCase();
+  return (rows as Record<string, unknown>[]).filter((r) => {
+    if (customerFilter) {
+      const name = String(r.customerName || "").toLowerCase();
+      if (!name.includes(customerFilter)) return false;
+    }
+    const st = String(r.status || "PENDING").toUpperCase();
+    if (statusFilter === "PENDING") {
+      return st === "PENDING";
+    }
+    if (statusFilter === "APPROVED" || statusFilter === "HISTORY") {
+      // Legacy PROCESSED rows count as approved history
+      return st === "APPROVED" || st === "PROCESSED";
+    }
+    if (statusFilter && st !== statusFilter) return false;
+    return true;
+  });
+}
+
+async function countPendingFinanceRefunds(pool: Pool): Promise<number> {
+  await ensureLeadHubBookingRefundTable(pool);
+  const [rows] = await pool.query(
+    `SELECT COUNT(*) as cnt FROM lead_hub_booking_refunds
+     WHERE UPPER(COALESCE(status, 'PENDING')) = 'PENDING'`,
+  );
+  return Number((rows as { cnt?: number }[])[0]?.cnt) || 0;
+}
+
 export async function getHubBookingSyncForLead(pool: Pool, leadId: number) {
   const [rows] = await pool.query(
     `SELECT booking_token_record_id as bookingTokenRecordId, payment_history_id as paymentHistoryId
@@ -1370,6 +2126,9 @@ export function registerCrmHubBookingRoutes(app: Express, deps: RouteDeps): void
 
   void ensureLeadHubBookingSyncTable(pool).catch((err) => {
     console.error("[crm-hub] Failed to ensure lead_hub_booking_sync table:", err);
+  });
+  void ensureLeadHubBookingRefundTable(pool).catch((err) => {
+    console.error("[crm-hub] Failed to ensure lead_hub_booking_refunds table:", err);
   });
 
   app.post("/api/hub/crm-lead/upsert", requireHubApiKey, async (req: Request, res: Response) => {
@@ -1405,6 +2164,181 @@ export function registerCrmHubBookingRoutes(app: Express, deps: RouteDeps): void
 
   app.post("/api/hub/crm-lead/convert-booking", requireHubApiKey, convertHandler);
   app.post("/api/hub/booking-token/finance-10p-sync", requireHubApiKey, convertHandler);
+
+  const refundHandler = async (req: Request, res: Response) => {
+    try {
+      const body = (req.body || {}) as HubLeadBody;
+      const result = await handleFinanceRefundSync(pool, body, addLeadHistoryEvent);
+      return res.json({
+        ok: true,
+        refundId: result.refundId,
+        refundAmount: result.refundAmount,
+        designLeadId: result.designLeadId,
+        bookingTokenRecordId: result.bookingTokenRecordId,
+      });
+    } catch (err) {
+      if (isTransientDbError(err)) {
+        console.error("[crm-hub] finance-refund-sync DB connection error:", err);
+        return res.status(503).json({
+          ok: false,
+          message: "Database connection lost. Wait a few seconds and retry refund sync.",
+        });
+      }
+      const msg = err instanceof Error ? err.message : "Finance refund sync failed";
+      console.error("[crm-hub] finance-refund-sync error:", err);
+      // CRM contract: plain { message } on 400
+      return res.status(400).json({ message: msg });
+    }
+  };
+
+  app.post("/api/hub/booking-token/finance-refund-sync", requireHubApiKey, refundHandler);
+  // CRM fallback when primary path 404s
+  app.post("/api/hub/crm-lead/refund-booking", requireHubApiKey, refundHandler);
+
+  app.get("/api/sales-closure/finance-refunds", async (req: Request, res: Response) => {
+    try {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const role = (user.role ?? "").toLowerCase();
+      if (role !== "finance" && role !== "admin") {
+        return res.status(403).json({ message: "Only finance or admin can access refunds" });
+      }
+      const rows = await listFinanceRefunds(pool, {
+        customer: String(req.query.customer || req.query.customerName || ""),
+        status: String(req.query.status || ""),
+      });
+      return res.json(rows);
+    } catch (err) {
+      console.error("[crm-hub] finance-refunds list error:", err);
+      return res.status(500).json({ message: "Failed to load finance refunds" });
+    }
+  });
+
+  app.get("/api/sales-closure/finance-refunds/pending-count", async (req: Request, res: Response) => {
+    try {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const role = (user.role ?? "").toLowerCase();
+      if (role !== "finance" && role !== "admin") {
+        return res.status(403).json({ message: "Only finance or admin can access refunds" });
+      }
+      const count = await countPendingFinanceRefunds(pool);
+      return res.json({ count });
+    } catch (err) {
+      console.error("[crm-hub] finance-refunds pending-count error:", err);
+      return res.status(500).json({ message: "Failed to load pending refund count" });
+    }
+  });
+
+  app.post("/api/sales-closure/finance-refunds/:refundId/approve", async (req: Request, res: Response) => {
+    try {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const role = (user.role ?? "").toLowerCase();
+      if (role !== "finance" && role !== "admin") {
+        return res.status(403).json({ message: "Only finance or admin can approve refunds" });
+      }
+      const refundKey = String(req.params.refundId || "").trim();
+      if (!refundKey) return res.status(400).json({ message: "Invalid refund id" });
+      await ensureLeadHubBookingRefundTable(pool);
+      const [rows] = await pool.query(
+        `SELECT id, refund_key as refundKey, lead_id as leadId, refund_amount as refundAmount,
+                amount_toward_ten_refund as amountTowardTen, extra_refund_amount as extraAmount,
+                refund_scope as refundScope, status, refund_payload as refundPayload
+         FROM lead_hub_booking_refunds WHERE refund_key = ? OR CAST(id AS CHAR) = ? LIMIT 1`,
+        [refundKey, refundKey],
+      );
+      const row = (rows as {
+        id: number;
+        refundKey: string;
+        leadId: number;
+        refundAmount: number;
+        amountTowardTen: number;
+        extraAmount: number;
+        refundScope: string;
+        status: string;
+        refundPayload: unknown;
+      }[])[0];
+      if (!row) return res.status(404).json({ message: "Refund not found" });
+      const st = String(row.status || "").toUpperCase();
+      if (st === "APPROVED" || st === "PROCESSED") {
+        return res.json({
+          ok: true,
+          refundId: row.refundKey,
+          status: "APPROVED",
+          alreadyApproved: true,
+        });
+      }
+      if (st !== "PENDING") {
+        return res.status(400).json({ message: `Refund cannot be approved from status ${row.status}` });
+      }
+      const approvedBy = pickStr(user.name, user.email) || "Finance";
+      await applyFinanceRefundApproval(
+        pool,
+        {
+          id: row.id,
+          refundKey: row.refundKey,
+          leadId: row.leadId,
+          refundAmount: Number(row.refundAmount) || 0,
+          amountTowardTen: Number(row.amountTowardTen) || 0,
+          extraAmount: Number(row.extraAmount) || 0,
+          refundScope: String(row.refundScope || "deal"),
+          refundPayload: row.refundPayload,
+        },
+        approvedBy,
+        addLeadHistoryEvent,
+      );
+      return res.json({ ok: true, refundId: row.refundKey, status: "APPROVED" });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to approve refund";
+      console.error("[crm-hub] finance-refund approve error:", err);
+      return res.status(400).json({ message: msg });
+    }
+  });
+
+  app.get("/api/sales-closure/finance-refunds/:refundId", async (req: Request, res: Response) => {
+    try {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const role = (user.role ?? "").toLowerCase();
+      if (role !== "finance" && role !== "admin") {
+        return res.status(403).json({ message: "Only finance or admin can access refunds" });
+      }
+      const refundKey = String(req.params.refundId || "").trim();
+      if (!refundKey) return res.status(400).json({ message: "Invalid refund id" });
+      await ensureLeadHubBookingRefundTable(pool);
+      const [rows] = await pool.query(
+        `SELECT id, refund_key as refundId, lead_id as designLeadId, booking_token_record_id as bookingTokenRecordId,
+                crm_lead_type as crmLeadType, crm_lead_id as crmLeadId, lead_identifier as leadIdentifier,
+                customer_name as customerName, refund_amount as refundAmount,
+                amount_toward_ten_refund as amountTowardTenRefund, extra_refund_amount as extraAmountRefund,
+                cancellation_reason as cancellationReason, cancelled_at as cancelledAt,
+                cancellation_approved_at as cancellationApprovedAt, cancellation_approved_by as cancellationApprovedBy,
+                finance_approved_at as financeApprovedAt, finance_approved_by as financeApprovedBy,
+                refund_scope as refundScope, status, refund_payload as refundPayload, created_at as createdAt
+         FROM lead_hub_booking_refunds WHERE refund_key = ? OR CAST(id AS CHAR) = ? LIMIT 1`,
+        [refundKey, refundKey],
+      );
+      const refund = (rows as Record<string, unknown>[])[0];
+      if (!refund) return res.status(404).json({ message: "Refund not found" });
+      const [lines] = await pool.query(
+        `SELECT payment_history_id as paymentHistoryId, amount, extra_amount as extraAmount, proof_refs as proofRefs
+         FROM lead_hub_booking_refund_lines WHERE refund_id = ?`,
+        [refund.id],
+      );
+      const payload = parseLeadPayload(refund.refundPayload);
+      delete refund.refundPayload;
+      return res.json({
+        ...refund,
+        paymentLines: lines,
+        paymentHistory: Array.isArray(payload.paymentHistory) ? payload.paymentHistory : [],
+        cancelledPaymentEntryIds: payload.cancelledPaymentEntryIds ?? [],
+      });
+    } catch (err) {
+      console.error("[crm-hub] finance-refund detail error:", err);
+      return res.status(500).json({ message: "Failed to load refund" });
+    }
+  });
 
   app.get("/api/sales-closure/finance-queue", async (req: Request, res: Response) => {
     try {
@@ -1482,6 +2416,14 @@ export function registerCrmHubBookingRoutes(app: Express, deps: RouteDeps): void
             : null,
         amountReceived: sync.amountReceived,
         tenPercentAmount: sync.tenPercentAmount,
+        remainingAmount: payload.remainingAmount ?? payload.shortfallAmount ?? null,
+        shortfallAmount: payload.shortfallAmount ?? payload.remainingAmount ?? null,
+        extraAmountReceived: payload.extraAmountReceived ?? 0,
+        totalAmountReceived: payload.totalAmountReceived ?? null,
+        bookingApprovalMode: payload.bookingApprovalMode ?? null,
+        bufferApplied: payload.bufferApplied === true || payload.bookingApprovalMode === "BUFFER_9_9",
+        bufferThresholdAmount: payload.bufferThresholdAmount ?? null,
+        financeBufferNote: payload.financeBufferNote ?? null,
         syncedAt: sync.syncedAt,
         paymentHistory: enrichedHistory,
         quoteAmount: payload.quoteAmount ?? null,

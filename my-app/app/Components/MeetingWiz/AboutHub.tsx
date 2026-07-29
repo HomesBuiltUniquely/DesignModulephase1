@@ -1,5 +1,7 @@
+"use client";
 
 import Image from "next/image";
+import { MeetingWizDurationBadge } from "./MeetingWizTimer";
 
 type Props = {
   onNext: () => void;
@@ -10,11 +12,7 @@ export default function AboutHub({ onNext, onPrev }: Props) {
   return (
     <main className="min-h-screen w-full bg-[#f0f4f8]">
       <div className="flex items-center justify-between border-b border-gray-200 bg-white px-6 py-3">
-        <div className="flex items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-4 py-2">
-          <div className="h-2 w-2 rounded-full bg-gray-400"></div>
-          <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Duration:</span>
-          <span className="text-sm font-bold text-gray-900">00:27:46</span>
-        </div>
+        <MeetingWizDurationBadge />
         <div className="flex items-center gap-4">
           <button
             onClick={onPrev}
@@ -33,7 +31,7 @@ export default function AboutHub({ onNext, onPrev }: Props) {
       </div>
       <div className="flex flex-col items-center py-4">
         <div className="flex items-center gap-1">
-          {Array.from({ length: 9 }).map((_, i) => (
+          {Array.from({ length: 5 }).map((_, i) => (
             <div
               key={i}
               className={`h-1 rounded-full ${i < 2 ? "w-8 bg-[#2EE86B]" : "w-8 bg-gray-300"}`}
@@ -41,7 +39,7 @@ export default function AboutHub({ onNext, onPrev }: Props) {
           ))}
         </div>
         <span className="mt-1 text-xs font-medium uppercase tracking-widest text-gray-400">
-          Step 2 of 9
+          Step 2 of 5
         </span>
       </div>
 

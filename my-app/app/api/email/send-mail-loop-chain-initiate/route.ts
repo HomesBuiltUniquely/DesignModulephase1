@@ -124,13 +124,19 @@ export function mapLeadPayloadToEmailProps(
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const to = body.to as string | undefined;
+    const to = body.to as string | string[] | undefined;
     const cc = body.cc as string[] | string | undefined;
     const subject = body.subject as string | undefined;
     const customerName = body.customerName as string | undefined;
     const leadPayload = body.leadPayload as Record<string, unknown> | undefined;
 
-    if (!to || !customerName) {
+    const toList = Array.isArray(to)
+      ? to.map((e) => String(e || '').trim()).filter(Boolean)
+      : to
+        ? [String(to).trim()].filter(Boolean)
+        : [];
+
+    if (toList.length === 0 || !customerName) {
       return NextResponse.json(
         { error: 'Missing required fields: to, customerName' },
         { status: 400 },
@@ -142,7 +148,7 @@ export async function POST(request: Request) {
     const html = await render(emailComponent);
 
     const info = await sendMail({
-      to,
+      to: toList.length === 1 ? toList[0] : toList,
       ...(cc ? { cc } : {}),
       subject: subject || 'Welcome to HUB Interior',
       html,

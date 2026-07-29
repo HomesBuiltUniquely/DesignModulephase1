@@ -18,6 +18,7 @@ export async function POST(request: Request) {
     const executivePhone = body.executivePhone as string | undefined;
     const designerName = body.designerName as string | undefined;
     const designerEmail = body.designerEmail as string | undefined;
+    const mmtManagerName = body.mmtManagerName as string | undefined;
     const subject = body.subject as string | undefined;
 
     if (!to || !customerName) {
@@ -34,7 +35,8 @@ export async function POST(request: Request) {
       visitTime,
       executiveName,
       executivePhone,
-      designerName,
+      designerName: mmtManagerName || designerName,
+      mmtManagerName: mmtManagerName || designerName,
     });
 
     const html = await render(emailComponent);

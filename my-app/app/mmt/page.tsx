@@ -19,6 +19,7 @@ export default function MmtUploadsPage() {
     const [uploadingLeadId, setUploadingLeadId] = useState<number | null>(null);
     const fileRef = useRef<HTMLInputElement | null>(null);
     const [targetLeadId, setTargetLeadId] = useState<number | null>(null);
+    const [toast, setToast] = useState<string | null>(null);
 
     const authHeaders = useMemo(() => {
         const headers: Record<string, string> = {};
@@ -38,7 +39,8 @@ export default function MmtUploadsPage() {
                 try { return JSON.parse(text); } catch { return null; }
             })();
             if (!res.ok) throw new Error(data?.message || 'Failed to load leads');
-            setLeads(Array.isArray(data) ? data : []);
+            const list = Array.isArray(data) ? data : [];
+            setLeads([...list].sort((a, b) => Number(b.id) - Number(a.id)));
         } catch (e: any) {
             setError(e?.message || 'Failed to load leads');
         } finally {
@@ -65,6 +67,7 @@ export default function MmtUploadsPage() {
         try {
             const fd = new FormData();
             fd.append('zip', file);
+            fd.append('uploadType', 'd1');
             const res = await fetch(`${getApiBase()}/api/leads/${targetLeadId}/uploads`, {
                 method: 'POST',
                 headers: { ...authHeaders },
@@ -74,9 +77,14 @@ export default function MmtUploadsPage() {
             const data = (() => {
                 try { return JSON.parse(text); } catch { return null; }
             })();
-            if (!res.ok) throw new Error(data?.message || 'Upload failed');
+            if (!res.ok) throw new Error(data?.message || 'File not uploaded. Please try again.');
+            setToast('File uploaded successfully!');
+            setTimeout(() => setToast(null), 3000);
         } catch (e: any) {
-            setError(e?.message || 'Upload failed');
+            const msg = e?.message || 'File not uploaded. Please try again.';
+            setError(msg);
+            setToast(msg);
+            setTimeout(() => setToast(null), 3000);
         } finally {
             setUploadingLeadId(null);
             setTargetLeadId(null);
@@ -155,6 +163,12 @@ export default function MmtUploadsPage() {
                     onChange={onZipSelected}
                 />
             </div>
+
+            {toast && (
+                <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-gray-800 text-white text-base font-medium px-8 py-4 rounded-lg shadow-2xl z-[9999] text-center max-w-md">
+                    {toast}
+                </div>
+            )}
         </div>
     );
 }

@@ -6,6 +6,8 @@ export type ConfigScopeRoomUnit = {
 
 export type ConfigScopeRoom = {
     roomName?: string;
+    /** Short theme / summary line shown on Meeting Wizard Design Scope */
+    theme?: string | null;
     units?: ConfigScopeRoomUnit[];
     unitsRequired?: string[];
     falseCeilingRequired?: boolean;
@@ -95,6 +97,17 @@ export type LeadshipTypes = {
     appointmentDate?: string | null;
     /** CRM / intake appointment slot (from payload) */
     appointmentSlot?: string | null;
+    /** Latest design-module meeting invite date (YYYY-MM-DD) from payload.designScheduledMeeting */
+    scheduledMeetingDate?: string | null;
+    /** Latest design-module meeting invite time / slot label */
+    scheduledMeetingSlot?: string | null;
+    /** When designScheduledMeeting was last written (ISO). Used to re-enable Start Meeting after reschedule. */
+    designScheduledMeetingUpdatedAt?: string | null;
+    /** Set when Meeting Wizard "Meeting Completed" is clicked; hides Start Meeting until a newer schedule. */
+    meetingWizLastCompleted?: {
+        at: string;
+        meetingDate: string;
+    } | null;
     /** External intake customer name (formData.customer_name) */
     intakeCustomerName?: string | null;
     /** External intake configuration (e.g. rawPayload.configuration) */

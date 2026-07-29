@@ -33,6 +33,8 @@ type Props = {
     taskIndex: number,
     taskList: string[],
   ) => TaskStatus;
+  /** Optional role-aware label (e.g. SPM sees "Assign PM") */
+  getTaskLabel?: (milestoneIndex: number, taskName: string) => string;
   leadId?: number | null;
 };
 
@@ -50,6 +52,7 @@ export default function MilestonesCard({
   onOpenTask,
   onVisitChecklist,
   getTaskStatus,
+  getTaskLabel,
   leadId,
 }: Props) {
   const [openMenuFor, setOpenMenuFor] = useState<
@@ -81,6 +84,11 @@ export default function MilestonesCard({
           setPaymentSummaryError(
             typeof body?.message === 'string' ? body.message : 'Could not load quotation totals',
           );
+          return;
+        }
+        if (body && typeof body === 'object' && (body as { ok?: unknown }).ok === false) {
+          setPaymentSummary(null);
+          setPaymentSummaryError(null);
           return;
         }
         setPaymentSummary(mapQuotePaymentSummaryFromApi(body as Record<string, unknown>));
@@ -435,7 +443,7 @@ export default function MilestonesCard({
                               <p
                                 className={`text-sm font-medium truncate ${isNextOrLater ? "text-gray-500" : "text-gray-900"}`}
                               >
-                                {task}
+                                {getTaskLabel ? getTaskLabel(milestoneIndex, task) : task}
                               </p>
                               <p className="text-xs text-gray-500 mt-0.5">
                                 {status.subtitle}

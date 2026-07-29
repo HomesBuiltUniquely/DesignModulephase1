@@ -16,13 +16,18 @@ import {
     storePostGetQuotePreview,
 } from "@/app/lib/prolanceGetQuotePersistSnapshot";
 import { openProlanceBrowserForProjectId } from "@/app/lib/prolanceLinks";
+import { formatHubPid } from "@/app/lib/formatHubPid";
 import { Pre10LeadViewModal } from "./Pre10LeadViewModal";
+import { MeetingWizSessionOverlay } from "./MeetingWiz/MeetingWizSessionOverlay";
+import { StartMeetingButton } from "./MeetingWiz/StartMeetingButton";
+import { canShowStartMeetingButton } from "@/app/lib/leadMeetingSchedule";
 import { AddProjectModal } from "./AddProjectModal";
 import { PersonalAppointmentModal } from "./PersonalAppointmentModal";
 import {
     AppointmentSuccessToast,
     type AppointmentSuccessPayload,
 } from "./AppointmentSuccessToast";
+import { IncentivesNavLink, canShowIncentivesNav } from "./IncentivesNavLink";
 
 // Stage column: Active / Inactive (sales) / Cancelled (TDM admin DGM)
 function getStatusDisplay(stage: string): "Active" | "Inactive" | "Cancelled" {
@@ -154,13 +159,17 @@ const MILESTONE_FILTER_OPTIONS: { value: string; label: string }[] = [
 ];
 
 // Next action from current milestone (Design Phase table)
-function getNextActionFromMilestone(milestoneIndex: number | undefined, milestoneName: string | null | undefined): string {
+function getNextActionFromMilestone(
+    milestoneIndex: number | undefined,
+    milestoneName: string | null | undefined,
+    opts?: { isSpm?: boolean },
+): string {
     if (milestoneIndex !== undefined && milestoneIndex >= 0) {
         const actions: Record<number, string> = {
             0: "Complete D1 tasks",
             1: "Submit for QC",
             2: "Collect 10% payment",
-            3: "Raise D2 masking / Upload D2",
+            3: opts?.isSpm ? "Assign PM" : "Raise D2 masking / Upload D2",
             4: "Submit for QC",
             5: "Request 40% payment",
             6: "Cx approval / Push to prod.",
@@ -172,7 +181,7 @@ function getNextActionFromMilestone(milestoneIndex: number | undefined, mileston
             "D1 SITE MEASUREMENT": "Complete D1 tasks",
             "DQC1": "Submit for QC",
             "10% PAYMENT": "Collect 10% payment",
-            "D2 SITE MASKING": "Raise D2 masking / Upload D2",
+            "D2 SITE MASKING": opts?.isSpm ? "Assign PM" : "Raise D2 masking / Upload D2",
             "DQC2": "Submit for QC",
             "40% PAYMENT": "Request 40% payment",
             "PUSH TO PRODUCTION": "Cx approval / Push to prod.",
@@ -241,6 +250,7 @@ export default function Dashboard() {
     const [uploadingId, setUploadingId] = useState<number | null>(null);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const targetLeadRef = useRef<number | null>(null);
+    const [uploadToast, setUploadToast] = useState<string | null>(null);
 
     const isMmtUser = ["mmt_manager", "mmt_executive"].includes((user?.role || "").toLowerCase());
     const isDesigner = (user?.role || "").toLowerCase() === "designer";
@@ -312,17 +322,61 @@ export default function Dashboard() {
         return () => { cancelled = true; };
     }, [sessionId, isDqcUser]);
 
+    // Branch/designer filters are shown for TDM/DM/admin/etc (not designer/DQC/MMT/finance/SPM).
+    const showBranchDesignerFilters =
+        !isDesigner && !isDqcUser && !isMmtUser && !isFinanceUser && !isSpmUser;
+
     useEffect(() => {
-        if ((!canImportLeads && !isAdmin) || !sessionId) return;
-        fetch(`${API}/api/designers/assignable`, {
-            headers: { Authorization: `Bearer ${sessionId}` },
-        })
-            .then((res) => res.json())
-            .then((rows: AssignableDesigner[]) => {
-                if (Array.isArray(rows)) setAssignableDesigners(rows);
-            })
-            .catch(() => setAssignableDesigners([]));
-    }, [canImportLeads, isAdmin, sessionId]);
+        if (!sessionId) return;
+        // Assign/import + designer filter need the DB designer list (not names scraped from leads).
+        if (!canImportLeads && !isAdmin && !showBranchDesignerFilters) return;
+
+        let cancelled = false;
+        const headers: Record<string, string> = { Authorization: `Bearer ${sessionId}` };
+
+        const loadAssignable = () =>
+            fetch(`${API}/api/designers/assignable`, { headers })
+                .then(async (res) => {
+                    if (!res.ok) return null;
+                    const rows = await res.json();
+                    return Array.isArray(rows) ? (rows as AssignableDesigner[]) : null;
+                })
+                .catch(() => null);
+
+        const loadDesignersFallback = () =>
+            fetch(`${API}/api/designers`, { headers })
+                .then(async (res) => {
+                    const data = await res.json().catch(() => null);
+                    const list = Array.isArray(data)
+                        ? data
+                        : Array.isArray(data?.designers)
+                          ? data.designers
+                          : [];
+                    return list
+                        .filter((d: { id?: number; name?: string; role?: string }) => d?.id != null && d?.name)
+                        .map((d: { id: number; name: string; role?: string }) => ({
+                            id: d.id,
+                            name: String(d.name).trim(),
+                            role: (d.role === "design_manager" ? "design_manager" : "designer") as AssignableDesigner["role"],
+                        }));
+                })
+                .catch(() => [] as AssignableDesigner[]);
+
+        (async () => {
+            let rows: AssignableDesigner[] | null = null;
+            if (canImportLeads || isAdmin) {
+                rows = await loadAssignable();
+            }
+            if (!rows) {
+                rows = await loadDesignersFallback();
+            }
+            if (!cancelled) setAssignableDesigners(rows ?? []);
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [canImportLeads, isAdmin, sessionId, showBranchDesignerFilters]);
 
     const onUploadClick = (e: React.MouseEvent, leadId: number) => {
         e.stopPropagation();
@@ -339,15 +393,20 @@ export default function Dashboard() {
         try {
             const fd = new FormData();
             fd.append("zip", file);
+            fd.append("uploadType", "d1");
             const res = await fetch(`${API}/api/leads/${leadId}/uploads`, {
                 method: "POST",
                 headers: { Authorization: `Bearer ${sessionId}` },
                 body: fd,
             });
             const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data.message || "Upload failed");
+            if (!res.ok) throw new Error(data.message || "File not uploaded. Please try again.");
+            setUploadToast("File uploaded successfully!");
+            setTimeout(() => setUploadToast(null), 3000);
         } catch (err) {
             console.error("Upload error", err);
+            setUploadToast(err instanceof Error ? err.message : "File not uploaded. Please try again.");
+            setTimeout(() => setUploadToast(null), 3000);
         } finally {
             setUploadingId(null);
             targetLeadRef.current = null;
@@ -395,6 +454,13 @@ export default function Dashboard() {
     const [getQuoteLeadId, setGetQuoteLeadId] = useState<number | null>(null);
     /** Lead shown in View popup (Pre 10%, 10–20%, 20–60%) */
     const [viewLead, setViewLead] = useState<LeadshipTypes | null>(null);
+    const [meetingWizOpen, setMeetingWizOpen] = useState(false);
+    const [meetingWizLead, setMeetingWizLead] = useState<LeadshipTypes | null>(null);
+
+    const openMeetingWizForLead = (row: LeadshipTypes) => {
+        setMeetingWizLead(row);
+        setMeetingWizOpen(true);
+    };
     const [showFinancePopup, setShowFinancePopup] = useState(false);
     const [showAddProjectModal, setShowAddProjectModal] = useState(false);
     const [showPersonalAppointmentModal, setShowPersonalAppointmentModal] = useState(false);
@@ -428,44 +494,29 @@ export default function Dashboard() {
           )
         : filteredProjects;
 
-    const showBranchDesignerFilters =
-        !isDesigner && !isDqcUser && !isMmtUser && !isFinanceUser && !isSpmUser;
-
+    // Source of truth: users from DB (/api/designers/assignable or /api/designers).
+    // Do NOT scrape names from lead payloads — that caused duplicates, phantom CRM names,
+    // and missing designers who have no leads in the current queue.
     const designerFilterOptions = useMemo(() => {
-        const idMap = new Map<number, string>(); // id -> name
-        const nameMap = new Map<string, string>(); // lowercaseName -> originalName
-
-        for (const p of projects) {
-            const id = p.assigned_designer_id;
-            const name = (p.designerName || "").trim();
-            if (!name) continue;
-
-            if (id != null) {
-                if (!idMap.has(id)) idMap.set(id, name);
-            } else {
-                const lower = name.toLowerCase();
-                if (!nameMap.has(lower)) nameMap.set(lower, name);
-            }
+        const byId = new Map<number, string>();
+        for (const d of assignableDesigners) {
+            const name = (d.name || "").trim();
+            if (d.id == null || !name) continue;
+            if (!byId.has(d.id)) byId.set(d.id, name);
         }
 
         const options: Array<[string, string]> = [];
         const seenNames = new Set<string>();
-
-        // Prefer real user IDs for designers in the system
-        for (const [id, name] of idMap.entries()) {
+        const sorted = [...byId.entries()].sort((a, b) => a[1].localeCompare(b[1], undefined, { sensitivity: "base" }));
+        for (const [id, name] of sorted) {
+            const key = name.toLowerCase();
+            // Same display name under two user ids → show once (filter still matches by name too).
+            if (seenNames.has(key)) continue;
+            seenNames.add(key);
             options.push([String(id), name]);
-            seenNames.add(name.toLowerCase());
         }
-
-        // Add designers found by name (from CRM intake) who aren't yet matched to a system user
-        for (const [lower, name] of nameMap.entries()) {
-            if (!seenNames.has(lower)) {
-                options.push([`name:${name}`, name]);
-            }
-        }
-
-        return options.sort((a, b) => a[1].localeCompare(b[1]));
-    }, [projects]);
+        return options;
+    }, [assignableDesigners]);
 
     const hasUnassignedInQueue = useMemo(
         () => projects.some((p) => p.assigned_designer_id == null),
@@ -483,16 +534,19 @@ export default function Dashboard() {
         if (designerFilter === "__unassigned__") {
             queueFilterFiltered = queueFilterFiltered.filter((p) => p.assigned_designer_id == null);
         } else if (designerFilter) {
-            if (designerFilter.startsWith("name:")) {
-                const nameToMatch = designerFilter.replace("name:", "").toLowerCase();
-                queueFilterFiltered = queueFilterFiltered.filter(
-                    (p) => (p.designerName || "").trim().toLowerCase() === nameToMatch,
-                );
-            } else {
-                const id = Number(designerFilter);
-                if (!Number.isNaN(id)) {
-                    queueFilterFiltered = queueFilterFiltered.filter((p) => p.assigned_designer_id === id);
-                }
+            const id = Number(designerFilter);
+            const selectedName = Number.isNaN(id)
+                ? ""
+                : (assignableDesigners.find((d) => d.id === id)?.name || "").trim().toLowerCase();
+            if (!Number.isNaN(id)) {
+                queueFilterFiltered = queueFilterFiltered.filter((p) => {
+                    if (p.assigned_designer_id === id) return true;
+                    // Match by display name too (payload-only leads, or another user id with same name)
+                    return (
+                        !!selectedName &&
+                        (p.designerName || "").trim().toLowerCase() === selectedName
+                    );
+                });
             }
         }
     }
@@ -601,7 +655,7 @@ export default function Dashboard() {
                         `Get quote succeeded (quote ${redirectQuoteId}) but saving on the lead failed. Open the quote from the link if needed.`,
                     );
                 } else {
-                    setBulkAssignMessage(`Get quote saved for HUB-${row.pid ?? row.id} (quote ${redirectQuoteId}).`);
+                    setBulkAssignMessage(`Get quote saved for ${formatHubPid(row.pid, row.id)} (quote ${redirectQuoteId}).`);
                 }
                 openInternalQuoteInNewTab(redirectQuoteId, row.id);
             } else {
@@ -704,7 +758,7 @@ export default function Dashboard() {
                     );
                 } else {
                     setBulkAssignMessage(
-                        `Prolance project created (ID ${createdProjectId}) and saved on HUB-${row.pid ?? row.id}.${warnSuffix}`,
+                        `Prolance project created (ID ${createdProjectId}) and saved on ${formatHubPid(row.pid, row.id)}.${warnSuffix}`,
                     );
                 }
             } else {
@@ -1055,7 +1109,7 @@ export default function Dashboard() {
                                                 )}
                                                 <td className="py-3 px-5">
                                                     <div className="flex items-center gap-2">
-                                                        <div className="font-medium text-gray-900">HUB-{row.pid || row.id}</div>
+                                                        <div className="font-medium text-gray-900">{formatHubPid(row.pid, row.id)}</div>
                                                         {row.financeApprovedRaw === "false" && (
                                                             <span className="inline-flex items-center rounded-md bg-red-50 px-2 py-1 text-[10px] font-medium text-red-700 ring-1 ring-inset ring-red-600/10 whitespace-nowrap">
                                                                 Not Approved
@@ -1066,8 +1120,15 @@ export default function Dashboard() {
                                                         {row.projectName || "—"}
                                                     </div>
                                                 </td>
-                                                <td className="py-3 px-5 text-sm text-gray-700 whitespace-nowrap" title={timeSlotLabel}>
-                                                    {timeSlotLabel}
+                                                <td className="py-3 px-5 text-sm text-gray-700" title={timeSlotLabel}>
+                                                    <div className="flex flex-col items-start gap-2">
+                                                        <span className="whitespace-nowrap">{timeSlotLabel}</span>
+                                                        {canShowStartMeetingButton(row) ? (
+                                                            <StartMeetingButton
+                                                                onClick={() => openMeetingWizForLead(row)}
+                                                            />
+                                                        ) : null}
+                                                    </div>
                                                 </td>
                                                 {isAdmin && (
                                                     <td className="py-3 px-5 min-w-[200px]">
@@ -1130,13 +1191,20 @@ export default function Dashboard() {
                                                     </td>
                                                 )}
                                                 <td className="py-3 px-5">
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => setViewLead(row)}
-                                                        className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700 shadow-sm hover:bg-gray-50"
-                                                    >
-                                                        View
-                                                    </button>
+                                                    <div className="flex flex-wrap items-center gap-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setViewLead(row)}
+                                                            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700 shadow-sm hover:bg-gray-50"
+                                                        >
+                                                            View
+                                                        </button>
+                                                        {canShowStartMeetingButton(row) ? (
+                                                            <StartMeetingButton
+                                                                onClick={() => openMeetingWizForLead(row)}
+                                                            />
+                                                        ) : null}
+                                                    </div>
                                                 </td>
                                                 <td className="py-3 px-5">
                                                     <button
@@ -1230,7 +1298,7 @@ export default function Dashboard() {
                                                 )}
                                                 <td className="px-5 py-3">
                                                     <div className="flex items-center gap-2">
-                                                        <div className="font-medium text-gray-900">HUB-{row.pid || row.id}</div>
+                                                        <div className="font-medium text-gray-900">{formatHubPid(row.pid, row.id)}</div>
                                                         {row.financeApprovedRaw === "false" && (
                                                             <span className="inline-flex items-center rounded-md bg-red-50 px-2 py-1 text-[10px] font-medium text-red-700 ring-1 ring-inset ring-red-600/10 whitespace-nowrap">
                                                                 Not Approved
@@ -1279,6 +1347,7 @@ export default function Dashboard() {
                                                           ? getNextActionFromMilestone(
                                                                 row.currentMilestoneIndex,
                                                                 row.currentMilestoneName ?? undefined,
+                                                                { isSpm: isSpmUser },
                                                             )
                                                           : getNextAction(bucket)}
                                                 </td>
@@ -1302,6 +1371,11 @@ export default function Dashboard() {
                                                             </button>
                                                         ) : (
                                                             <>
+                                                                {canShowStartMeetingButton(row) ? (
+                                                                    <StartMeetingButton
+                                                                        onClick={() => openMeetingWizForLead(row)}
+                                                                    />
+                                                                ) : null}
                                                                 <button
                                                                     type="button"
                                                                     onClick={() => setViewLead(row)}
@@ -1469,6 +1543,12 @@ export default function Dashboard() {
                         <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
                         </svg>
                     </button>
+                    {canShowIncentivesNav(user?.role) && (
+                        <IncentivesNavLink
+                            active={false}
+                            className="mb-2 xl:w-66.25"
+                        />
+                    )}
                     {isDropdownOpen && (
                         <div id="workspace-sidebar-panel" className="transition-all duration-200 space-y-1">
                             <button
@@ -1859,6 +1939,8 @@ export default function Dashboard() {
                 <Pre10LeadViewModal
                     lead={viewLead}
                     timeSlotLabel={formatLeadTimeSlot(viewLead)}
+                    showStartMeeting={canShowStartMeetingButton(viewLead)}
+                    onStartMeeting={() => openMeetingWizForLead(viewLead)}
                     onClose={() => setViewLead(null)}
                 />
             ) : null}
@@ -1890,6 +1972,26 @@ export default function Dashboard() {
                     onDismiss={() => setAppointmentSuccessToast(null)}
                 />
             ) : null}
+            <MeetingWizSessionOverlay
+                open={meetingWizOpen}
+                lead={meetingWizLead}
+                onLeadUpdated={(updated) => {
+                    setMeetingWizLead(updated);
+                    setProjects((prev) =>
+                        prev.map((p) => (p.id === updated.id ? { ...p, ...updated } : p)),
+                    );
+                    setViewLead((prev) => (prev && prev.id === updated.id ? { ...prev, ...updated } : prev));
+                }}
+                onClose={() => {
+                    setMeetingWizOpen(false);
+                    setMeetingWizLead(null);
+                }}
+            />
+            {uploadToast && (
+                <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-gray-800 text-white text-base font-medium px-8 py-4 rounded-lg shadow-2xl z-[9999] text-center max-w-md">
+                    {uploadToast}
+                </div>
+            )}
         </div>
     );
     }

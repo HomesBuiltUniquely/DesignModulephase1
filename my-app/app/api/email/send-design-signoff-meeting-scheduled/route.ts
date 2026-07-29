@@ -18,6 +18,8 @@ export async function POST(request: Request) {
     const meetingMode = body.meetingMode as 'online' | 'offline' | undefined;
     const meetingLink = body.meetingLink as string | undefined;
     const ecLocation = body.ecLocation as string | undefined;
+    const ecAddress = body.ecAddress as string | undefined;
+    const ecMapsUrl = body.ecMapsUrl as string | undefined;
     const attachments = body.attachments as { filename: string; path: string }[] | undefined;
 
     if (!to || !customerName) {
@@ -36,6 +38,8 @@ export async function POST(request: Request) {
       meetingMode,
       meetingLink,
       branchName: ecLocation,
+      ecAddress,
+      ecMapsUrl,
       attachments,
     });
 

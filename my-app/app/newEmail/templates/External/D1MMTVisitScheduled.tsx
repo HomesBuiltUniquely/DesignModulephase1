@@ -12,7 +12,9 @@ export interface D1MMTVisitScheduledEmailProps {
   visitTime?: string;
   executiveName?: string;
   executivePhone?: string;
+  /** Shown in regards — MMT manager name */
   designerName?: string;
+  mmtManagerName?: string;
 }
 
 export default function D1MMTVisitScheduledEmail({
@@ -22,8 +24,10 @@ export default function D1MMTVisitScheduledEmail({
   visitTime = '10:00 AM',
   executiveName = '[Executive Name]',
   executivePhone = '[Executive Phone]',
-  designerName = 'Your Design Consultant',
+  designerName = 'MMT Manager',
+  mmtManagerName,
 }: D1MMTVisitScheduledEmailProps) {
+  const regardsName = mmtManagerName || designerName || 'MMT Manager';
   const visitDetails: DetailItem[] = [
     { label: 'Date', value: visitDate },
     { label: 'Time', value: visitTime },
@@ -69,11 +73,11 @@ export default function D1MMTVisitScheduledEmail({
           I hope this schedule works for you. In case of any constraints, please feel free to let me know. Looking forward to our continued collaboration.
         </Text>
 
-        {/* Sign off */}
+        {/* Sign off — MMT manager */}
         <Section className="border-t border-neutral-lightGrey pt-6">
           <Text className="m-0 text-[14px] text-neutral-mediumGrey mb-2">Warm regards,</Text>
-          <Text className="m-0 text-[16px] font-bold text-neutral-nearBlack mb-1">{designerName}</Text>
-          <Text className="m-0 text-[14px] text-neutral-mediumGrey">HUB Interior</Text>
+          <Text className="m-0 text-[16px] font-bold text-neutral-nearBlack mb-1">{regardsName}</Text>
+          <Text className="m-0 text-[14px] text-neutral-mediumGrey">MMT Manager · HUB Interior</Text>
         </Section>
 
       </Section>

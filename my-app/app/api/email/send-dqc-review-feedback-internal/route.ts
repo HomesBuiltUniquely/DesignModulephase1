@@ -20,9 +20,9 @@ export async function POST(request: Request) {
     const remarks = body.remarks as { priority: string; text: string }[] | undefined;
     const projectId = body.projectId as string | undefined;
 
-    if (!to || !customerName || !ecName || !designerName || !dqcRepName || !verdict) {
+    if (!to || !customerName || !designerName || !dqcRepName || !verdict) {
       return NextResponse.json(
-        { error: 'Missing required fields: to, customerName, ecName, designerName, dqcRepName, verdict' },
+        { error: 'Missing required fields: to, customerName, designerName, dqcRepName, verdict' },
         { status: 400 },
       );
     }
@@ -30,7 +30,7 @@ export async function POST(request: Request) {
     const emailComponent = React.createElement(DqcReviewFeedbackInternal, {
       projectId,
       customerName,
-      ecName,
+      ecName: ecName || 'Experience Center',
       designerName,
       dqcRepName,
       verdict,
@@ -42,7 +42,7 @@ export async function POST(request: Request) {
 
     const stageNum = submissionVariant === 'dqc2' ? 'DQC2' : 'DQC1';
     const statusText = verdict === 'rejected' ? 'Rejected' : 'Comments Added';
-    const defaultSubject = `${stageNum} Review Feedback: ${statusText} – ${customerName} – ${ecName}`;
+    const defaultSubject = `${stageNum} Review Feedback: ${statusText} – ${customerName} – ${ecName || 'Experience Center'}`;
 
     const info = await sendMail({
       to,
