@@ -149,11 +149,7 @@ app.get("/api/health", (_req, res) => {
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-<<<<<<< HEAD
   password: process.env.DB_PASSWORD || "Root@123",
-=======
-  password: process.env.DB_PASSWORD || "root@root",
->>>>>>> dce23ca86fd131d34a0122a6a18c4709a6e817b6
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -1134,23 +1130,6 @@ async function initDb() {
       );
     `);
 
-<<<<<<< HEAD
-await conn.query(`
-  CREATE TABLE IF NOT EXISTS google_calendar_connections (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    user_id INT NOT NULL UNIQUE,
-    google_email VARCHAR(255) NOT NULL,
-    access_token TEXT NOT NULL,
-    refresh_token TEXT NULL,
-    expires_at DATETIME NULL,
-    scope TEXT NULL,
-    active TINYINT(1) NOT NULL DEFAULT 1,
-    created_at DATETIME NOT NULL,
-    updated_at DATETIME NOT NULL,
-    FOREIGN KEY (user_id) REFERENCES users(id)
-  );
-`);
-=======
     await conn.query(`
       CREATE TABLE IF NOT EXISTS google_calendar_connections (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -1166,7 +1145,6 @@ await conn.query(`
         FOREIGN KEY (user_id) REFERENCES users(id)
       );
     `);
->>>>>>> dce23ca86fd131d34a0122a6a18c4709a6e817b6
 
     await conn.query(`
       CREATE TABLE IF NOT EXISTS leads (
