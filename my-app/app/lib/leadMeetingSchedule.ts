@@ -145,17 +145,11 @@ function getLatestMeetingWizCompletion(
 /**
  * Start Meeting only while a meeting is scheduled for today and that session
  * has not been completed. After Meeting Completed, hides until a newer meeting is scheduled.
- *
- * TEMP: set FORCE_START_MEETING_FOR_TEST to false when done testing.
  */
-const FORCE_START_MEETING_FOR_TEST = true;
-
 export function canShowStartMeetingButton(
   lead: LeadshipTypes | null | undefined,
   historyEvents?: HistoryEventLike[] | null,
 ): boolean {
-  if (FORCE_START_MEETING_FOR_TEST) return Boolean(lead);
-
   if (!isLeadMeetingScheduledToday(lead, historyEvents)) return false;
 
   const scheduleDay =
