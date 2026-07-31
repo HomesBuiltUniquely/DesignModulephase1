@@ -20,12 +20,13 @@ export const WEIGHTED_CREDIT_PCT = {
   preD1Finance10: 50,
   /**
    * Part 2: post-DQC1 design 10% finance-approved → 25% of the *current* quotation
-   * (quote used for design-module 10% collection).
+   * (same for upsale or downsale).
    */
   postDqc1Design10: 25,
   /**
-   * Part 3: finance-approved 40% payment → 25% of Part 1 quotation + full upsale
-   * (current quote − Part 1 quote).
+   * Part 3: finance-approved 40% payment:
+   * - Upsale (current ≥ Part 1): 25% of Part 1 quote + full upsale (current − Part 1)
+   * - Downsale (current < Part 1): 25% of the *current* quotation
    */
   part3FortyPercent: 25,
 } as const;
@@ -361,13 +362,15 @@ export function buildDayActivitySummary(
  * Weighted incentive revenue from collection milestones.
  *
  * Part 1 (pre-D1): finance approves first 10% → credit 50% of that quotation.
- * Part 2 (post-DQC1): design 10% of current quote (+ revision top-up) finance-approved
- *   → credit 25% of the current quotation.
- * Part 3 (40% payment): finance approves 40% collection → credit
- *   25% of Part 1 quotation + full upsale (current quote − Part 1 quote).
- *   Example: Part 1 quote 10L, now 14L → 2.5L + 4L = 6.5L weighted.
- * Downsale: if current quote falls below Part 1 (e.g. 10L → 6L), deduct 50% of
- *   the downsale (4L → 2L) from gross weighted for that deal.
+ * Part 2 (post-DQC1): design 10% of current quote finance-approved
+ *   → credit 25% of the current quotation (upsale or downsale).
+ * Part 3 (40% payment):
+ *   - Upsale: 25% of Part 1 quotation + full upsale (current − Part 1).
+ *     Example: Part 1 = 10L, now 14L → 2.5L + 4L = 6.5L.
+ *   - Downsale: 25% of the *current* quotation.
+ *     Example: Part 1 = 10L, Part 2 at 8L → +2L; Part 3 at 6L → +1.5L.
+ * Downsale deduction (after Parts 1–3): if final quote is below Part 1
+ *   (e.g. 10L → 6L = 4L downsale), deduct 50% of that downsale (2L) from gross weighted.
  */
 export function computeDownsaleAdjustment(
   quotationAtFinanceApproval: number,
@@ -424,6 +427,8 @@ export function computeWeightedStages(input: {
     (quoteCurrent * COLLECTION_FORTY_PERCENT_PCT) / 100,
   );
   const upsaleAmount = Math.max(0, quoteCurrent - quoteAtApproval);
+  const downsaleAmount = Math.max(0, quoteAtApproval - quoteCurrent);
+  const isDownsale = downsaleAmount > 0;
 
   const part1AmountMet = salesTenRequired > 0 && input.salesTenPercentCollected >= salesTenRequired;
   const part1Cleared = part1AmountMet && input.salesTenPercentFinanceApproved;
@@ -445,15 +450,17 @@ export function computeWeightedStages(input: {
   const part1Weighted = part1Cleared
     ? Math.round((quoteAtApproval * WEIGHTED_CREDIT_PCT.preD1Finance10) / 100)
     : 0;
-  // Part 2: 25% of current quotation (design-module 10% base)
+  // Part 2: always 25% of current quotation (upsale or downsale)
   const part2Weighted = part2Cleared
     ? Math.round((quoteCurrent * WEIGHTED_CREDIT_PCT.postDqc1Design10) / 100)
     : 0;
-  // Part 3: 25% of Part 1 quotation + full upsale vs Part 1 quote
-  const part3BaseWeighted = part3Cleared
-    ? Math.round((quoteAtApproval * WEIGHTED_CREDIT_PCT.part3FortyPercent) / 100)
+  // Part 3: upsale → 25% of Part 1 + full upsale; downsale → 25% of current quote
+  const part3Weighted = part3Cleared
+    ? isDownsale
+      ? Math.round((quoteCurrent * WEIGHTED_CREDIT_PCT.part3FortyPercent) / 100)
+      : Math.round((quoteAtApproval * WEIGHTED_CREDIT_PCT.part3FortyPercent) / 100) +
+        upsaleAmount
     : 0;
-  const part3Weighted = part3Cleared ? part3BaseWeighted + upsaleAmount : 0;
 
   return [
     {
@@ -492,8 +499,8 @@ export function computeWeightedStages(input: {
     },
     {
       stageId: "part3_forty_percent",
-      label: "Part 3 · 40% payment + upsale",
-      quotationValue: quoteAtApproval,
+      label: isDownsale ? "Part 3 · 40% payment (downsale)" : "Part 3 · 40% payment + upsale",
+      quotationValue: isDownsale ? quoteCurrent : quoteAtApproval,
       collectionRequired: fortyPercentOfCurrent,
       revisionTopUp: Math.max(
         0,

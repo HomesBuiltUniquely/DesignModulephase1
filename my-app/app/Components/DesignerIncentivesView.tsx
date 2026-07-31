@@ -516,10 +516,9 @@ function IndividualIncentivesPanel({
               {formatInr(data.weightedBreakdown.part3Weighted)}
             </p>
             <p className="mt-1 text-xs text-gray-600">
-              Finance-approved 40% collection → <strong>25%</strong> of Part 1 quotation + full{' '}
-              <strong>upsale</strong> (current − Part 1). If quote drops below Part 1,{' '}
-              <strong>50%</strong> of downsale is deducted from gross weighted ·{' '}
-              {data.weightedBreakdown.dealsWithPart3} deal(s)
+              Upsale: <strong>25%</strong> of Part 1 + full <strong>upsale</strong>. Downsale:{' '}
+              <strong>25%</strong> of current quote, then <strong>50%</strong> of total downsale is
+              deducted from gross · {data.weightedBreakdown.dealsWithPart3} deal(s)
             </p>
             <p className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-violet-700">
               {selectedPart === 'part3_forty_percent' ? 'Showing leads · click to hide' : 'Click to view leads'}
@@ -856,7 +855,9 @@ function IndividualIncentivesPanel({
                                   : s.stageId === 'post_dqc1_design_10'
                                     ? `${s.label}: collect on current quote${s.revisionTopUp > 0 ? ` (+ top-up ${formatInr(s.revisionTopUp)})` : ''} → finance approve → ${s.weightPct}% of current quote (${formatInr(s.quotationValue)})`
                                     : s.stageId === 'part3_forty_percent'
-                                      ? `${s.label}: finance-approve 40% → ${s.weightPct}% of Part 1 (${formatInr(s.quotationValue)}) + upsale ${formatInr(s.upsaleAmount)} = ${formatInr(s.weightedAmount)}`
+                                      ? s.upsaleAmount > 0
+                                        ? `${s.label}: finance-approve 40% → ${s.weightPct}% of Part 1 (${formatInr(s.quotationValue)}) + upsale ${formatInr(s.upsaleAmount)} = ${formatInr(s.weightedAmount)}`
+                                        : `${s.label}: finance-approve 40% → ${s.weightPct}% of current quote (${formatInr(s.quotationValue)}) = ${formatInr(s.weightedAmount)}`
                                       : `${s.label}: collect ${formatInr(s.collectionRequired)} → finance approve → weight ${s.weightPct}%`
                               }
                               className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
