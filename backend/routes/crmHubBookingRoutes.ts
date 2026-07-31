@@ -1139,9 +1139,6 @@ async function handleConvertBooking(
   }
 
   await importHubPaymentProofs(pool, designLeadId, { ...body, _syncedAt: now });
-  // Buffer converts still enter the finance queue (collection synced) but remain
-  // not approval-ready until shortfall is closed (tenPercentMet gate).
-  await markTenPercentCollectionComplete(pool, designLeadId);
 
   const historyNote =
     finance.mode === "BUFFER_9_9"

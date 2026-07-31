@@ -76,6 +76,8 @@ export type MomDetails = {
     kind: 'mom';
     minutes: string;
     referenceFiles: Array<{ name: string; size?: string }>;
+    latestQuoteUrl?: string | null;
+    latestQuoteId?: number | null;
 };
 
 export type FileUploadDetails = {
