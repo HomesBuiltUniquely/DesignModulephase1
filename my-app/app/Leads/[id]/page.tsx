@@ -1635,24 +1635,27 @@ export default function ProjectDetailPage() {
                         'DQC 1 submission - dwg + quotation',
                         'DQC 1 approval',
                     ];
+                    const dqc1Headers = buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' });
                     dqc1Tasks.forEach((t: string) => {
                         fetch(`${API}/api/leads/${projectId}/complete-task`, {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
+                            headers: dqc1Headers,
                             body: JSON.stringify({ milestoneIndex: 1, taskName: t }),
                         }).catch(() => {});
-                        markTaskComplete(1, t);
                     });
-                    // DQC1: mark only the approval task; other tasks should already be completed manually.
                     fetch(`${API}/api/leads/${projectId}/complete-task`, {
                         method: 'POST',
-                        headers: buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' }),
-                        body: JSON.stringify({
-                            milestoneIndex,
-                            taskName,
-                        }),
-                    }).catch(() => {});
-                    markTaskComplete(milestoneIndex, taskName);
+                        headers: dqc1Headers,
+                        body: JSON.stringify({ milestoneIndex, taskName }),
+                    })
+                        .then(() => refreshCompletions())
+                        .catch(() => {});
+                    // Drop any pre-DQC1 10% task keys (CRM/finance) so UI lands on 10% PAYMENT, not D2.
+                    setCompletedTaskKeys((prev) => {
+                        const next = new Set(prev.filter((k) => !k.startsWith('2-')));
+                        dqc1Tasks.forEach((t) => next.add(taskKey(1, t)));
+                        return Array.from(next);
+                    });
                 }
             }
             if (projectId != null) {

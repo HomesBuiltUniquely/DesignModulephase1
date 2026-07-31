@@ -988,18 +988,34 @@ async function importHubPaymentProofs(
   return proofCount;
 }
 
-async function markTenPercentCollectionComplete(pool: Pool, leadId: number): Promise<void> {
-  const now = new Date();
-  await pool.query(
-    `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
-     VALUES (?, 2, '10% payment collection', ?)
-     ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
-    [leadId, now],
-  );
-  await pool.query(
-    `DELETE FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 2 AND task_name = '10% payment approval'`,
+/** CRM booking token payment approved by finance (pre-DQC1). Not design milestone 2. */
+function readCrmBookingFinanceApproved(payload: Record<string, unknown>): boolean {
+  return payload.crm_booking_finance_approved === true || payload.crm_booking_finance_approved === "true";
+}
+
+/** Includes legacy rows approved via milestone 2 before flow separation (pre-DQC1 only). */
+export async function isCrmBookingFinanceApproved(
+  pool: Pool,
+  leadId: number,
+  payload: Record<string, unknown>,
+): Promise<boolean> {
+  if (readCrmBookingFinanceApproved(payload)) return true;
+  if (await leadHasDqc1Approval(pool, leadId)) return false;
+  const [rows] = await pool.query(
+    `SELECT 1 FROM lead_task_completions
+     WHERE lead_id = ? AND milestone_index = 2 AND task_name = '10% payment approval' LIMIT 1`,
     [leadId],
   );
+  return (rows as unknown[]).length > 0;
+}
+
+export async function leadHasDqc1Approval(pool: Pool, leadId: number): Promise<boolean> {
+  const [rows] = await pool.query(
+    `SELECT 1 FROM lead_task_completions
+     WHERE lead_id = ? AND milestone_index = 1 AND task_name = 'DQC 1 approval' LIMIT 1`,
+    [leadId],
+  );
+  return (rows as unknown[]).length > 0;
 }
 
 async function handleConvertBooking(
@@ -1137,8 +1153,8 @@ async function handleConvertBooking(
   await addLeadHistoryEvent(designLeadId, {
     id: `hub-payment-sync-${Date.now()}`,
     type: "note",
-    taskName: "10% payment collection",
-    milestoneName: "10% PAYMENT",
+    taskName: "CRM Booking Payment Sync",
+    milestoneName: "Pre 10%",
     timestamp: now.toISOString(),
     description: historyNote,
     user: { name: "CRM Hub" },
@@ -1191,25 +1207,9 @@ async function buildFinanceQueueRows(
     syncByLead.set(Number(row.leadId), row);
   }
 
-  const [completions] = await pool.query(
-    `SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName, completed_at as completedAt
-     FROM lead_task_completions
-     WHERE (milestone_index = 1 AND task_name = 'DQC 1 approval')
-        OR (milestone_index = 2 AND task_name IN ('10% payment collection', '10% payment approval'))`,
-  );
-  const compList = completions as TaskCompletion[];
+  if (syncByLead.size === 0) return [];
 
-  const eligibleIds = new Set<number>();
-  for (const id of syncByLead.keys()) eligibleIds.add(id);
-  for (const c of compList) {
-    if (c.taskName === "DQC 1 approval" || c.taskName === "10% payment collection") {
-      eligibleIds.add(c.leadId);
-    }
-  }
-
-  if (eligibleIds.size === 0) return [];
-
-  const ids = Array.from(eligibleIds);
+  const ids = Array.from(syncByLead.keys());
   const placeholders = ids.map(() => "?").join(",");
   const [leadRows] = await pool.query(
     `SELECT id, project_name as projectName, payload FROM leads WHERE id IN (${placeholders})`,
@@ -1225,37 +1225,35 @@ async function buildFinanceQueueRows(
 
   for (const lead of leadRows as { id: number; projectName: string; payload: unknown }[]) {
     const leadId = lead.id;
-    const hasApproval = hasTask(compList, leadId, 2, "10% payment approval");
-    const hasCollection = hasTask(compList, leadId, 2, "10% payment collection");
-    const hasDqc1 = hasTask(compList, leadId, 1, "DQC 1 approval");
     const sync = syncByLead.get(leadId);
-
-    if (tab === "pending" && hasApproval) continue;
-    if (tab === "approved" && !hasApproval) continue;
+    if (!sync) continue;
 
     const payload = parseLeadPayload(lead.payload);
+    const financeApproved = await isCrmBookingFinanceApproved(pool, leadId, payload);
+    if (tab === "pending" && financeApproved) continue;
+    if (tab === "approved" && !financeApproved) continue;
+
     const fetched = (payload.fetchedData || {}) as Record<string, unknown>;
     const customerName =
       pickStr(fetched.customer_name, payload.customer_name, lead.projectName) || lead.projectName || "—";
 
     if (customerFilter && !customerName.toLowerCase().includes(customerFilter)) continue;
 
-    const collectionAt = taskCompletedAt(compList, leadId, 2, "10% payment collection");
-    const approvalAt = taskCompletedAt(compList, leadId, 2, "10% payment approval");
-    const submittedAt = sync?.syncedAt ?? collectionAt;
-    const submittedDate = submittedAt instanceof Date ? submittedAt : submittedAt ? new Date(submittedAt as string) : null;
+    let paymentPayload: Record<string, unknown> = {};
+    if (sync.paymentPayload) {
+      paymentPayload = parseLeadPayload(sync.paymentPayload);
+    }
+    const syncedAt = sync.syncedAt;
+    const submittedDate =
+      syncedAt instanceof Date ? syncedAt : syncedAt ? new Date(syncedAt as string) : null;
 
     if (fromDate && submittedDate && submittedDate < fromDate) continue;
     if (toDate && submittedDate && submittedDate > toDate) continue;
 
-    let paymentPayload: Record<string, unknown> = {};
-    if (sync?.paymentPayload) {
-      paymentPayload = parseLeadPayload(sync.paymentPayload);
-    }
     const paymentHistory = Array.isArray(paymentPayload.paymentHistory) ? paymentPayload.paymentHistory : [];
     const tenPercentTarget =
-      pickNum(sync?.tenPercentAmount, paymentPayload.tenPercentAmount, paymentPayload.quoteAmount != null ? Number(paymentPayload.quoteAmount) * 0.1 : null) ?? 0;
-    const totalPaid = pickNum(sync?.amountReceived, paymentPayload.amountReceived) ?? 0;
+      pickNum(sync.tenPercentAmount, paymentPayload.tenPercentAmount, paymentPayload.quoteAmount != null ? Number(paymentPayload.quoteAmount) * 0.1 : null) ?? 0;
+    const totalPaid = pickNum(sync.amountReceived, paymentPayload.amountReceived) ?? 0;
     const remaining =
       pickNum(paymentPayload.remainingAmount, paymentPayload.shortfallAmount) ??
       Math.max(0, tenPercentTarget - totalPaid);
@@ -1265,16 +1263,23 @@ async function buildFinanceQueueRows(
       paymentPayload.bufferApplied === true ||
       paymentPayload.buffer_applied === true ||
       bookingApprovalMode === "BUFFER_9_9";
+    const tenPercentMet = tenPercentTarget > 0 ? totalPaid >= tenPercentTarget : totalPaid > 0;
+    const hasCollection = totalPaid > 0 || paymentHistory.length > 0;
+
+    const approvedAtRaw = payload.crm_booking_finance_approved_at;
+    const approvedAt =
+      typeof approvedAtRaw === "string" && approvedAtRaw.trim()
+        ? new Date(approvedAtRaw)
+        : null;
 
     let status = "Awaiting 10% payment";
-    if (hasApproval) status = "Approved";
+    if (financeApproved) status = "Approved";
     else if (hasCollection && remaining <= 0) status = "Pending approval";
     else if (hasCollection && bufferApplied) status = "Buffer convert — shortfall due";
     else if (hasCollection) status = "Pending approval";
 
-    const crmLeadType = pickStr(sync?.crmLeadType, payload.crmLeadType);
-    const crmLeadId = pickNum(sync?.crmLeadId, payload.crmLeadId);
-    const paymentSource = sync ? "crm_hub" : "manual";
+    const crmLeadType = pickStr(sync.crmLeadType, payload.crmLeadType);
+    const crmLeadId = pickNum(sync.crmLeadId, payload.crmLeadId);
 
     rows.push({
       id: leadId,
@@ -1289,12 +1294,11 @@ async function buildFinanceQueueRows(
       subs: paymentHistory.length || (hasCollection ? 1 : 0),
       status,
       submittedAt: submittedDate ? submittedDate.toISOString() : null,
-      approvedAt: approvalAt ? approvalAt.toISOString() : null,
-      canApprove: hasCollection && !hasApproval && remaining <= 0,
-      paymentSource,
+      approvedAt: approvedAt && !Number.isNaN(approvedAt.getTime()) ? approvedAt.toISOString() : null,
+      canApprove: !financeApproved && tenPercentMet && remaining <= 0,
+      paymentSource: "crm_hub",
       crmRef: crmLeadType && crmLeadId != null ? `${crmLeadType}#${crmLeadId}` : null,
-      bookingTokenRecordId: sync?.bookingTokenRecordId ?? null,
-      hasDqc1,
+      bookingTokenRecordId: sync.bookingTokenRecordId ?? null,
     });
   }
 
@@ -1405,17 +1409,15 @@ async function loadHubProofUploads(
 
 async function mapCrmHubRowToSalesClosure(
   pool: Pool,
-  lead: { id: number; projectName: string; projectStage?: string },
+  lead: { id: number; projectName: string; projectStage?: string; payload?: unknown },
   sync: Record<string, unknown>,
-  compList: TaskCompletion[],
-  approved: boolean,
+  approvedTab: boolean,
 ): Promise<Record<string, unknown> | null> {
   const leadId = lead.id;
-  const hasApproval = hasTask(compList, leadId, 2, "10% payment approval");
-  const hasCollection = hasTask(compList, leadId, 2, "10% payment collection");
-  if (approved && !hasApproval) return null;
-  if (!approved && hasApproval) return null;
-  if (!approved && !hasCollection) return null;
+  const payload = parseLeadPayload(lead.payload);
+  const financeApproved = await isCrmBookingFinanceApproved(pool, leadId, payload);
+  if (approvedTab && !financeApproved) return null;
+  if (!approvedTab && financeApproved) return null;
 
   const paymentPayload = parseLeadPayload(sync.paymentPayload);
   const hubProofBaseUrl = pickStr(paymentPayload.hubProofBaseUrl, envTrim("HUB_API_BASE_URL"), "http://localhost:8081");
@@ -1435,7 +1437,11 @@ async function mapCrmHubRowToSalesClosure(
     paymentPayload.buffer_applied === true ||
     bookingApprovalMode === "BUFFER_9_9";
   const tenPercentMet = tenPercentTarget > 0 ? amountPaid >= tenPercentTarget : amountPaid > 0;
-  const approvalAt = taskCompletedAt(compList, leadId, 2, "10% payment approval");
+  const approvedAtRaw = payload.crm_booking_finance_approved_at;
+  const approvalAt =
+    typeof approvedAtRaw === "string" && approvedAtRaw.trim()
+      ? new Date(approvedAtRaw)
+      : null;
   const customerName =
     pickStr(paymentPayload.customerName, (paymentPayload.fetchedData as Record<string, unknown>)?.customer_name) ||
     lead.projectName ||
@@ -1454,9 +1460,9 @@ async function mapCrmHubRowToSalesClosure(
     id: leadId,
     projectName: lead.projectName || customerName,
     customerName,
-    projectStage: approved ? "10-20%" : lead.projectStage || "Pre 10%",
-    financeApproved: approved,
-    status: approved
+    projectStage: financeApproved ? "10-20%" : lead.projectStage || "Pre 10%",
+    financeApproved,
+    status: financeApproved
       ? "Approved — moved to 10–20%"
       : tenPercentMet
         ? "Ready for approval (10% paid)"
@@ -1468,16 +1474,16 @@ async function mapCrmHubRowToSalesClosure(
     paymentScreenshot: firstUploadId,
     amountPaid,
     tenPercentTarget,
-    remainingFor10Percent: approved ? 0 : remaining,
+    remainingFor10Percent: financeApproved ? 0 : remaining,
     extraAmountReceived,
     bookingApprovalMode,
     bufferApplied,
     financeBufferNote: pickStr(paymentPayload.financeBufferNote, paymentPayload.finance_buffer_note) || null,
     paymentPercentOfQuotation: null,
-    tenPercentMet: approved ? true : tenPercentMet,
-    canApprove: !approved && tenPercentMet && hasCollection,
+    tenPercentMet: financeApproved ? true : tenPercentMet,
+    canApprove: !financeApproved && tenPercentMet,
     submittedAt: submittedAtIso,
-    approvedAt: approvalAt ? approvalAt.toISOString() : null,
+    approvedAt: approvalAt && !Number.isNaN(approvalAt.getTime()) ? approvalAt.toISOString() : null,
     bookingDate: null,
     submissionCount: submissions.length,
     paymentSubmissions: submissions,
@@ -1507,17 +1513,10 @@ export async function buildCrmSalesClosureQueueRows(
     syncByLead.set(Number(row.leadId), row);
   }
 
-  const [completions] = await pool.query(
-    `SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName, completed_at as completedAt
-     FROM lead_task_completions
-     WHERE milestone_index = 2 AND task_name IN ('10% payment collection', '10% payment approval')`,
-  );
-  const compList = completions as TaskCompletion[];
-
   const ids = Array.from(syncByLead.keys());
   const placeholders = ids.map(() => "?").join(",");
   const [leadRows] = await pool.query(
-    `SELECT id, project_name as projectName, project_stage as projectStage FROM leads WHERE id IN (${placeholders})`,
+    `SELECT id, project_name as projectName, project_stage as projectStage, payload FROM leads WHERE id IN (${placeholders})`,
     ids,
   );
 
@@ -1528,10 +1527,10 @@ export async function buildCrmSalesClosureQueueRows(
   if (toDate) toDate.setHours(23, 59, 59, 999);
 
   const rows: Record<string, unknown>[] = [];
-  for (const lead of leadRows as { id: number; projectName: string; projectStage?: string }[]) {
+  for (const lead of leadRows as { id: number; projectName: string; projectStage?: string; payload?: unknown }[]) {
     const sync = syncByLead.get(lead.id);
     if (!sync) continue;
-    const mapped = await mapCrmHubRowToSalesClosure(pool, lead, sync, compList, approved);
+    const mapped = await mapCrmHubRowToSalesClosure(pool, lead, sync, approved);
     if (!mapped) continue;
 
     if (customerFilter) {
@@ -1574,20 +1573,15 @@ export async function buildCrmSalesClosureLeadDetail(
   if (!sync) return null;
 
   const [leadRows] = await pool.query(
-    `SELECT id, project_name as projectName, project_stage as projectStage FROM leads WHERE id = ? LIMIT 1`,
+    `SELECT id, project_name as projectName, project_stage as projectStage, payload FROM leads WHERE id = ? LIMIT 1`,
     [leadId],
   );
-  const lead = (leadRows as { id: number; projectName: string; projectStage?: string }[])[0];
+  const lead = (leadRows as { id: number; projectName: string; projectStage?: string; payload?: unknown }[])[0];
   if (!lead) return null;
 
-  const [completions] = await pool.query(
-    `SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName, completed_at as completedAt
-     FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 2`,
-    [leadId],
-  );
-  const compList = completions as TaskCompletion[];
-  const hasApproval = hasTask(compList, leadId, 2, "10% payment approval");
-  return mapCrmHubRowToSalesClosure(pool, lead, sync, compList, hasApproval);
+  const payload = parseLeadPayload(lead.payload);
+  const financeApproved = await isCrmBookingFinanceApproved(pool, leadId, payload);
+  return mapCrmHubRowToSalesClosure(pool, lead, sync, financeApproved);
 }
 
 export async function notifyHubFinanceReview(
