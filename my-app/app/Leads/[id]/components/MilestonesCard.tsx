@@ -9,7 +9,7 @@ import MilestonePaymentSummary, { type QuotePaymentSummary } from "./MilestonePa
 import { mapQuotePaymentSummaryFromApi } from "./mapQuotePaymentSummary";
 import { getApiBase } from "@/app/lib/apiBase";
 
-const PAYMENT_MILESTONE_INDICES = new Set([3, 6]);
+const PAYMENT_MILESTONE_INDICES = new Set([2, 5]);
 
 type TaskStatus = {
   icon: "completed" | "current" | "delayed" | "pending";
@@ -353,7 +353,7 @@ export default function MilestonesCard({
                     </div>
                     {PAYMENT_MILESTONE_INDICES.has(milestoneIndex) && (
                       <MilestonePaymentSummary
-                        variant={milestoneIndex === 3 ? '10' : '40'}
+                        variant={milestoneIndex === 2 ? '10' : '40'}
                         summary={paymentSummary}
                         loading={paymentSummaryLoading}
                         error={paymentSummaryError}

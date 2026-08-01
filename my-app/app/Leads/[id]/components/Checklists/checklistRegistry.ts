@@ -15,23 +15,20 @@ type ChecklistRoute = {
 
 const checklistRoutes: ChecklistRoute[] = [
   {
-    milestoneIndex: 2,
+    milestoneIndex: 1,
     taskName: "First cut design + quotation discussion meeting request",
     key: "first_cut",
   },
-<<<<<<< HEAD
   {
-    milestoneIndex: 5,
+    milestoneIndex: 4,
     taskName: "Material selection meeting + quotation discussion",
     key: "color_selection",
   },
   {
-    milestoneIndex: 6,
+    milestoneIndex: 5,
     taskName: "Design sign off",
     key: "design_signoff",
   },
-=======
->>>>>>> origin/main
 ];
 
 export const checklistDefinitions: Record<ChecklistKey, ChecklistDefinition> = {
