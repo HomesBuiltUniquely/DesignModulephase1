@@ -54,12 +54,12 @@ function buildDiscountFields(pick: (key: string) => string, pickNum: (key: strin
 export function mapLeadPayloadToEmailProps(
   customerName: string,
   leadPayload: Record<string, unknown> | undefined,
+  quotationTotal?: string,
 ) {
   const { pd, pick, pickNum } = salesFormSources(leadPayload);
   const { discountLabel, discountValue, discountSubtitle } = buildDiscountFields(pick, pickNum);
 
   const clientFullName = pick('customer_name') || customerName;
-  const dateOfCall = pick('booking_date') || '[Date]';
   const addressCity = pick('site_address') || '[Address, City]';
   const projectType = pick('booking_type') || '[New Home / Renovation]';
   const propertyConfiguration = pick('property_configuration');
@@ -70,7 +70,8 @@ export function mapLeadPayloadToEmailProps(
 
   const orderValue = pickNum('order_value');
   const totalAmount =
-    orderValue != null ? orderValue.toLocaleString('en-IN') : '[Total Amount]';
+    quotationTotal ||
+    (orderValue != null ? orderValue.toLocaleString('en-IN') : '[Total Amount]');
 
   const salesConsultantName = pick('sales_spoc') || '[Name]';
   const branch = pick('experience_center') || '[Branch]';
@@ -82,7 +83,30 @@ export function mapLeadPayloadToEmailProps(
     (scopeFrozen ? `Scope frozen: ${scopeFrozen}` : '') ||
     'Woodwork · Kitchen · Flooring · Civil';
 
-  const bookingReceived = pick('payment_received') || 'Pending';
+  const formData = (pd.formData as Record<string, unknown> | undefined) ?? {};
+  const fData = (pd.fetchedData as Record<string, unknown> | undefined) ?? {};
+  const financeApprovedAt = pick('sales_closure_finance_approved_at') || pick('finance_approved_at') || pick('approved_at');
+  const financeApproved = Boolean(pd.sales_closure_finance_approved || formData.sales_closure_finance_approved || fData.sales_closure_finance_approved || financeApprovedAt);
+
+  let bookingReceived = pick('payment_received') || 'Pending';
+  let dateOfCall = pick('booking_date') || '[Date]';
+
+  if (financeApproved) {
+    bookingReceived = 'Success';
+    if (financeApprovedAt) {
+      try {
+        const d = new Date(financeApprovedAt);
+        if (!isNaN(d.getTime())) {
+          dateOfCall = d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+        } else {
+          dateOfCall = financeApprovedAt.split('T')[0];
+        }
+      } catch {
+        dateOfCall = financeApprovedAt;
+      }
+    }
+  }
+
   const amountPaid = pickNum('amount_paid');
   const timelinePromise = pick('timeline_promise_by_sales');
   const specialOffer = pick('special_offer');
@@ -128,6 +152,7 @@ export async function POST(request: Request) {
     const cc = body.cc as string[] | string | undefined;
     const subject = body.subject as string | undefined;
     const customerName = body.customerName as string | undefined;
+    const quotationTotal = body.quotationTotal as string | undefined;
     const leadPayload = body.leadPayload as Record<string, unknown> | undefined;
 
     const toList = Array.isArray(to)
@@ -143,7 +168,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const emailProps = mapLeadPayloadToEmailProps(customerName, leadPayload);
+    const emailProps = mapLeadPayloadToEmailProps(customerName, leadPayload, quotationTotal);
     const emailComponent = React.createElement(MailLoopChainInitiateEmail, emailProps);
     const html = await render(emailComponent);
 

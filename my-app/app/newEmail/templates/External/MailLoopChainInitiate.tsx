@@ -46,9 +46,6 @@ export default function MailLoopChainInitiateEmail({
   scopeOfWork = 'Woodwork · Kitchen · Flooring · Civil',
   totalAmount = '[Total Amount]',
   salesConsultantInfo = '[Name] · [Branch]',
-  discountLabel = 'Woodwork discount',
-  discountValue = 'N/A',
-  discountSubtitle = 'Applied to full woodwork scope',
   bookingReceived = 'Pending',
   amountPaid = '',
   timelinePromise = '',
@@ -66,18 +63,12 @@ export default function MailLoopChainInitiateEmail({
     ...(possession ? [{ label: 'Possession', value: possession }] : []),
     ...(leadSource ? [{ label: 'Lead source', value: leadSource }] : []),
     { label: 'Scope of work', value: scopeOfWork },
-    { label: 'Project value', value: `₹${totalAmount}` },
+    { label: 'Project value', value: totalAmount.startsWith('₹') || totalAmount === '[Total Amount]' ? totalAmount : `₹${totalAmount}` },
     ...(salesLeadName ? [{ label: 'Sales lead', value: salesLeadName }] : []),
     { label: 'Sales consultant', value: salesConsultantInfo },
   ];
 
   const offerItems = [
-    {
-      label: discountLabel,
-      value: discountValue,
-      subtitle: discountSubtitle,
-      accent: true,
-    },
     ...(timelinePromise
       ? [
           {

@@ -168,9 +168,13 @@ registerMsg91InboundRoutes(app, pool);
 const S3_REGION = process.env.AWS_REGION || "ap-south-1";
 const S3_BUCKET = process.env.S3_BUCKET_NAME || "your-profile-images-bucket";
 
+<<<<<<< HEAD
+const s3 = new S3Client({
+=======
 /** Runtime S3 client. Cast needed: broken @smithy/core installs omit Client.send in types. */
 type AppS3Client = S3Client & { send: (command: unknown) => Promise<any> };
 const s3: AppS3Client = new S3Client({
+>>>>>>> origin/main
   region: S3_REGION,
   credentials: process.env.AWS_ACCESS_KEY_ID
     ? {
@@ -188,7 +192,7 @@ if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 const PROFILE_IMAGES_DIR = path.join(UPLOADS_DIR, "profile-images");
 if (!fs.existsSync(PROFILE_IMAGES_DIR)) fs.mkdirSync(PROFILE_IMAGES_DIR, { recursive: true });
 const API_BASE = process.env.API_BASE_URL || "http://localhost:3001";
-const FRONTEND_BASE = (process.env.FRONTEND_BASE_URL || "http://localhost:3000" || "http://localhost:3002" ).replace(/\/$/, "");
+const FRONTEND_BASE = (process.env.FRONTEND_BASE_URL || "http://localhost:3000" || "http://localhost:3002").replace(/\/$/, "");
 const CRM_CALLBACK_BASE =
   process.env.CRM_CALLBACK_BASE_URL ||
   process.env.CRM_API_BASE_URL ||
@@ -364,7 +368,7 @@ function parseDataUrl(dataUrl: string): { buffer: Buffer; contentType: string; e
     throw new Error("Invalid data URL");
   }
   const contentType = match[1];
-  const base64 = match[2];  
+  const base64 = match[2];
   const buffer = Buffer.from(base64, "base64");
   let ext = "jpg";
   if (contentType === "image/png") ext = "png";
@@ -762,6 +766,9 @@ async function triggerCustomerEmailForLead(
       return { ok: false, to: [], reason: "No client email on lead" };
     }
 
+    const rawOrderValue = payload?.order_value ?? payload?.form?.order_value ?? payload?.formData?.order_value ?? null;
+    const paymentAmounts = await resolveMilestonePaymentAmounts(leadId, 0.1, rawOrderValue);
+
     const sendPromise = triggerMailRouteWithLog({
       leadId,
       taskName: "customer-email-trigger",
@@ -773,6 +780,7 @@ async function triggerCustomerEmailForLead(
         subject: mailChainSubject,
         customerName,
         designerName,
+        quotationTotal: paymentAmounts.quotationTotal,
         leadPayload: sanitizeLeadPayloadForEmail(
           payload && typeof payload === "object" && !Array.isArray(payload)
             ? (payload as Record<string, unknown>)
@@ -5606,7 +5614,7 @@ function readDiscountMetaFromSnapshot(snapshotPayload: Record<string, unknown>):
     parseFiniteNumber(root.hubCategoryDiscountAmount) ??
     (d0
       ? parseFiniteNumber((d0 as Record<string, unknown>).hubFlatDiscountAmount) ??
-        parseFiniteNumber((d0 as Record<string, unknown>).hubCategoryDiscountAmount)
+      parseFiniteNumber((d0 as Record<string, unknown>).hubCategoryDiscountAmount)
       : null);
   return { flatDiscountPct, categoryPct, amount };
 }
@@ -6505,7 +6513,12 @@ app.get("/api/leads/:id/completions", async (req: Request, res: Response) => {
       "SELECT milestone_index as milestoneIndex, task_name as taskName, completed_at as completedAt FROM lead_task_completions WHERE lead_id = ?",
       [id],
     );
-    return res.json(rows);
+    const result = rows as any[];
+    // Auto-complete KT TRANSFER for existing projects that have already started on other milestones.
+    if (result.length > 0 && !result.some((r) => r.milestoneIndex === 7)) {
+      result.push({ milestoneIndex: 7, taskName: "Upload KT files", completedAt: new Date().toISOString() });
+    }
+    return res.json(result);
   } catch (err) {
     console.error("lead completions load error", err);
     return res.status(500).json({ message: "Failed to load completions" });
@@ -8484,7 +8497,12 @@ app.get("/api/leads/:id/completions", async (req: Request, res: Response) => {
       "SELECT milestone_index as milestoneIndex, task_name as taskName FROM lead_task_completions WHERE lead_id = ?",
       [id],
     );
-    return res.json(rows);
+    const result = rows as any[];
+    // Auto-complete KT TRANSFER for existing projects that have already started on other milestones.
+    if (result.length > 0 && !result.some((r) => r.milestoneIndex === 7)) {
+      result.push({ milestoneIndex: 7, taskName: "Upload KT files" });
+    }
+    return res.json(result);
   } catch (err) {
     console.error("lead completions error", err);
     return res.status(500).json({ message: "Failed to load completions" });
@@ -8620,14 +8638,14 @@ app.get("/api/leads/finance-sales-closure-queue", async (req: Request, res: Resp
 
     const conditions: string[] = approved
       ? [
-          `JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.sales_closure_finance_approved')) = 'true'`,
-          hasPaymentEvidence,
-        ]
+        `JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.sales_closure_finance_approved')) = 'true'`,
+        hasPaymentEvidence,
+      ]
       : [
-          `JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.sales_closure_finance_approved')) = 'false'`,
-          `COALESCE(JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.sales_closure_finance_rejected')), 'false') != 'true'`,
-          hasPaymentEvidence,
-        ];
+        `JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.sales_closure_finance_approved')) = 'false'`,
+        `COALESCE(JSON_UNQUOTE(JSON_EXTRACT(${payloadJson}, '$.sales_closure_finance_rejected')), 'false') != 'true'`,
+        hasPaymentEvidence,
+      ];
     const params: unknown[] = [];
 
     const approvedAtExpr = `COALESCE(
@@ -9099,13 +9117,13 @@ app.post(
       };
       await addLeadHistoryEvent(leadId, ev);
       const [rows] = await pool.query(
-        "SELECT 1 FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 2 AND task_name = ?",
+        "SELECT 1 FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 3 AND task_name = ?",
         [leadId, "10% payment collection"]
       );
       if ((rows as any[]).length === 0) {
         await pool.query(
           `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
-           VALUES (?, 2, '10% payment collection', ?)
+           VALUES (?, 3, '10% payment collection', ?)
            ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
           [leadId, now]
         );
@@ -9430,7 +9448,7 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
           const mailChainSubject = buildMailChainSubject(projectId, row.projectName, customerName);
           void triggerMailRouteWithLog({
             leadId,
-            milestoneIndex: 2,
+            milestoneIndex: 3,
             taskName: "10% payment approval",
             route: "/api/email/send-ten-percent-payment-approval",
             visibility: "external",
@@ -9576,7 +9594,7 @@ app.post("/api/leads/:id/reject-10p-payment", async (req: Request, res: Response
       [leadId]
     );
     await pool.query(
-      `DELETE FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 2 AND task_name = '10% payment approval'`,
+      `DELETE FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 3 AND task_name = '10% payment approval'`,
       [leadId]
     );
     const ev = {
@@ -9708,12 +9726,12 @@ app.get("/api/leads/finance-40p-queue", async (req: Request, res: Response) => {
       compList.some(
         (c) =>
           c.leadId === leadId &&
-          c.milestoneIndex === 5 &&
+          c.milestoneIndex === 6 &&
           (c.taskName === "40% collection" ||
             c.taskName === "meeting completed & 40% payment request"),
       );
     const has40pApproval = (leadId: number) =>
-      compList.some((c) => c.leadId === leadId && c.milestoneIndex === 5 && c.taskName === "40% payment approval");
+      compList.some((c) => c.leadId === leadId && c.milestoneIndex === 6 && c.taskName === "40% payment approval");
     const [uploadRows] = await pool.query(
       "SELECT lead_id as leadId FROM lead_uploads WHERE upload_type = 'payment_40p'"
     );
@@ -9791,7 +9809,7 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
     const now = new Date();
     await pool.query(
       `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
-       VALUES (?, 5, '40% payment approval', ?)
+       VALUES (?, 6, '40% payment approval', ?)
        ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
       [leadId, now]
     );
@@ -9927,7 +9945,7 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
         if (customerEmail) {
           void triggerMailRouteWithLog({
             leadId,
-            milestoneIndex: 5,
+            milestoneIndex: 6,
             taskName: "40% payment approval",
             route: "/api/email/send-design-signoff-40pc-payment-approval",
             visibility: "external",
@@ -9951,7 +9969,7 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
         const internalCc = await getMailLoopCcEmails([user.email, row.designerEmail], leadId);
         void triggerMailRouteWithLog({
           leadId,
-          milestoneIndex: 5,
+          milestoneIndex: 6,
           taskName: "40% payment approval - internal",
           route: "/api/email/send-ten-percent-payment-collection-internal", // reuse internal template or specific one
           visibility: "internal",
@@ -10000,6 +10018,7 @@ app.post(
     const batchFiles = uploaded?.files ?? [];
     const uploadType = (req.body?.uploadType as string) || "";
     const isD2 = uploadType === "d2_masking";
+    const isKT = uploadType === "kt_transfer";
 
     try {
       const user = await getUserFromSession(req);
@@ -10010,12 +10029,12 @@ app.post(
       }
 
       const status =
-        (isD2 && canUploadD2FilesRole(role)) || role === "mmt_manager" || role === "admin"
+        isKT || (isD2 && canUploadD2FilesRole(role)) || role === "mmt_manager" || role === "admin"
           ? "approved"
           : "pending";
       const now = new Date();
-      const uploadMilestoneIndex = isD2 ? 3 : 0;
-      const uploadTaskName = isD2 ? "D2 - files upload" : "D1 files upload";
+      const uploadMilestoneIndex = isKT ? 7 : (isD2 ? 3 : 0);
+      const uploadTaskName = isKT ? "Upload KT files" : (isD2 ? "D2 - files upload" : "D1 files upload");
       const uploadedAsRole = isD2 ? resolveD2UploadedAsRole(role, req.body?.uploadedAsRole as string) : null;
       const uploadedAsLabel = uploadedAsRole ? d2UploadRoleLabel(uploadedAsRole) : null;
 
@@ -10120,6 +10139,29 @@ app.post(
         const fileNames = batchFiles.map((f) => f.originalname);
         await recordD2UploadHistory(fileNames, uploadIds);
         return res.status(201).json(d2UploadResponse(fileNames, uploadIds));
+      }
+
+      // KT Transfer: multiple files of any type
+      const isKt = uploadType === "kt_transfer";
+      if (isKt && batchFiles.length > 0) {
+        const uploadIds: number[] = [];
+        for (const file of batchFiles) {
+          uploadIds.push(await persistOne(file));
+        }
+        const uploaderLabel = user?.name ?? "Team";
+        const count = batchFiles.length;
+        const fileNames = batchFiles.map((f) => f.originalname);
+        await addLeadHistoryEvent(leadId, {
+          id: `kt-upload-${Date.now()}`,
+          type: "file_upload",
+          taskName: "Upload KT files",
+          milestoneName: "KT TRANSFER",
+          timestamp: now.toISOString(),
+          description: `KT files uploaded by ${uploaderLabel} (${count} file${count === 1 ? "" : "s"}): ${fileNames.join(", ")}`,
+          user: { name: uploaderLabel },
+          details: { kind: "file_upload", fileNames, count, uploadIds },
+        });
+        return res.status(201).json({ ok: true, count, uploadIds, message: `${count} KT file${count === 1 ? "" : "s"} uploaded successfully.` });
       }
 
       const file = zipFile ?? batchFiles[0];
@@ -12519,6 +12561,7 @@ const MILESTONE_NAMES = [
   "DQC2",
   "40% PAYMENT",
   "PUSH TO PRODUCTION",
+  "KT TRANSFER",
 ];
 const MILESTONE_TASKS: string[][] = [
   ["Group Description", "Mail loop chain 2 initiate", "D1 for MMT request", "D1 files upload"],
@@ -12539,7 +12582,10 @@ const MILESTONE_TASKS: string[][] = [
   ],
   ["Design sign off", "meeting completed", "40% collection", "40% payment approval"],
   ["Cx approval for production", "POC mail"],
+  ["Upload KT files"],
 ];
+
+const MILESTONE_WORKFLOW_ORDER = [7, 0, 1, 2, 3, 4, 5, 6];
 
 function getCurrentMilestoneIndex(
   completions: { milestoneIndex: number; taskName: string }[],
@@ -12547,12 +12593,12 @@ function getCurrentMilestoneIndex(
   const completedSet = new Set(
     completions.map((c) => `${c.milestoneIndex}::${c.taskName}`),
   );
-  for (let i = 0; i < MILESTONE_TASKS.length; i++) {
+  for (const i of MILESTONE_WORKFLOW_ORDER) {
     const tasks = MILESTONE_TASKS[i];
-    const allDone = tasks.every((t) => completedSet.has(`${i}::${t}`));
+    const allDone = tasks?.every((t) => completedSet.has(`${i}::${t}`));
     if (!allDone) return i;
   }
-  return MILESTONE_TASKS.length - 1;
+  return 6; // Final milestone
 }
 
 /** Progress within the current milestone: 0–100 (completed tasks in that milestone / total tasks). */
@@ -12759,7 +12805,11 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
       completionsByLead.set(c.leadId, arr);
     }
     const enrichedList = baseList.map((l: any) => {
-      const comps = completionsByLead.get(l.id) ?? [];
+      let comps = completionsByLead.get(l.id) ?? [];
+      // Auto-complete KT TRANSFER for existing projects that have already started on other milestones.
+      if (comps.length > 0 && !comps.some((r) => r.milestoneIndex === 7)) {
+        comps = [...comps, { milestoneIndex: 7, taskName: "Upload KT files" }];
+      }
       const idx = getCurrentMilestoneIndex(comps);
       const progress = getCurrentMilestoneProgress(comps, idx);
       return {

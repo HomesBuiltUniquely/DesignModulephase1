@@ -31,6 +31,7 @@ import {
     PopupProjectManagerApproval,
     Popup40pCollection,
     PopupFinancePaymentApproval,
+    PopupKtTransfer,
 } from './components';
 import PopupD1FilesWaiting from './components/popups/PopupD1FilesWaiting';
 import { checklistDefinitions, getChecklistKeyForTask } from './components/Checklists/checklistRegistry';
@@ -77,8 +78,8 @@ export default function ProjectDetailPage() {
     // Track which tasks that have checklists have had their checklist completed
     const [completedChecklistKeys, setCompletedChecklistKeys] = useState<string[]>([]);
 
-    const filesCanUpload = currentMilestoneIndex === 3 ? canUploadD2Files : isMmtUser;
-    const filesCanDelete = currentMilestoneIndex === 3 ? canUploadD2Files : isMmtUser;
+    const filesCanUpload = currentMilestoneIndex === 4 ? canUploadD2Files : isMmtUser;
+    const filesCanDelete = currentMilestoneIndex === 4 ? canUploadD2Files : isMmtUser;
 
     const taskKey = (milestoneIndex: number, taskName: string) => `${milestoneIndex}-${taskName}`;
 
@@ -90,20 +91,21 @@ export default function ProjectDetailPage() {
     // Keep highlighted milestone in sync with persisted task completions (handles refresh and new tasks).
     useEffect(() => {
         const milestones = MileStonesArray.MilestonesName;
-        let idx = 0;
+        let activeId = milestones[0].id;
         for (let i = 0; i < milestones.length; i++) {
             const m = milestones[i];
             const allDone = m.taskList.every((t: string) =>
-                completedTaskKeys.includes(taskKey(i, t)),
+                completedTaskKeys.includes(taskKey(m.id, t)),
             );
             if (!allDone) {
-                idx = i;
+                activeId = m.id;
                 break;
             }
-            idx = i + 1;
+            if (i < milestones.length - 1) {
+                activeId = milestones[i + 1].id;
+            }
         }
-        const last = milestones.length - 1;
-        setCurrentMilestoneIndex(Math.min(Math.max(0, idx), last));
+        setCurrentMilestoneIndex(activeId);
     }, [completedTaskKeys]);
 
     // Hydrate completed tasks for this lead from backend so milestone index matches server state
@@ -1218,7 +1220,7 @@ export default function ProjectDetailPage() {
     }, [popupContext?.milestoneIndex, popupContext?.taskName, projectId, sessionId, loadDqcSubmissionFile]);
 
     // When DQC 2 approval popup opens, auto-load DQC 2 submission file for the reviewer panel
-    const isDqc2Approval = popupContext?.milestoneIndex === 4 && (popupContext?.taskName === 'DQC 2 approval' || popupContext?.taskName === 'DQC 2 approval ');
+    const isDqc2Approval = popupContext?.milestoneIndex === 5 && (popupContext?.taskName === 'DQC 2 approval' || popupContext?.taskName === 'DQC 2 approval ');
     useEffect(() => {
         if (!isDqc2Approval || !projectId || !sessionId) return;
         loadDqc2SubmissionFile();
@@ -1323,19 +1325,21 @@ export default function ProjectDetailPage() {
             setTimeout(() => setBlockedTaskMessage(null), 3000);
             return;
         }
+        const targetVisualIndex = MileStonesArray.MilestonesName.findIndex(m => m.id === milestoneIndex);
+        const currentVisualIndex = MileStonesArray.MilestonesName.findIndex(m => m.id === currentMilestoneIndex);
         // Only allow opening tasks for the current or past milestones; next milestones unlock after current is completed
-        if (milestoneIndex > currentMilestoneIndex) {
+        if (targetVisualIndex > currentVisualIndex) {
             setBlockedTaskMessage('Complete the current milestone first.');
             setTimeout(() => setBlockedTaskMessage(null), 3000);
             return;
         }
 
-        const milestone = MileStonesArray.MilestonesName[milestoneIndex];
+        const milestone = MileStonesArray.MilestonesName.find((m) => m.id === milestoneIndex);
         if (!milestone) return;
 
         // If this task has a checklist, force the checklist to be completed before showing the popup.
         const tTrim = taskName.trim();
-        if (milestoneIndex === 4 && tTrim === 'Project manager approval') {
+        if (milestoneIndex === 5 && tTrim === 'Project manager approval') {
             const pmAssigned = project?.assigned_project_manager_id;
             if (!pmAssigned) {
                 setBlockedTaskMessage('A project manager must be assigned by the Senior Project Manager during D2 site masking.');
@@ -1532,7 +1536,7 @@ export default function ProjectDetailPage() {
             setTimeout(() => setBlockedTaskMessage(null), 3000);
             return Promise.resolve({ ok: false });
         }
-        const milestone = MileStonesArray.MilestonesName[milestoneIndex];
+        const milestone = MileStonesArray.MilestonesName.find((m) => m.id === milestoneIndex);
         const milestoneName = milestone?.name ?? `Milestone ${milestoneIndex + 1}`;
         addHistoryEvent({
             type: 'completed',
@@ -1579,10 +1583,10 @@ export default function ProjectDetailPage() {
     const submitDqc1Review = () => {
         // Use DQC1 or DQC2 context: from popup (designer view) or from URL stage (DQC-only view)
         const isDqc2 =
-            (popupContext?.milestoneIndex === 4 &&
+            (popupContext?.milestoneIndex === 5 &&
                 (popupContext.taskName === 'DQC 2 approval' || popupContext.taskName === 'DQC 2 approval ')) ||
             (viewDqc && isDqcUser && dqcStage === 'dqc2');
-        const milestoneIndex = isDqc2 ? 4 : 1;
+        const milestoneIndex = isDqc2 ? 5 : 2;
         const taskName =
             (isDqc2 && popupContext?.taskName) ? popupContext.taskName : 'DQC 1 approval';
         const milestoneName = isDqc2 ? 'DQC2' : 'DQC1';
@@ -1746,6 +1750,12 @@ export default function ProjectDetailPage() {
         const taskName = taskList[taskIndex];
         const key = taskKey(milestoneIndex, taskName);
         const isCompleted = completedTaskKeys.includes(key);
+<<<<<<< HEAD
+        const targetVisualIndex = MileStonesArray.MilestonesName.findIndex(m => m.id === milestoneIndex);
+        const currentVisualIndex = MileStonesArray.MilestonesName.findIndex(m => m.id === currentMilestoneIndex);
+        const isCurrentMilestone = targetVisualIndex === currentVisualIndex;
+        const isPastMilestone = targetVisualIndex < currentVisualIndex;
+=======
         const isCurrentMilestone = milestoneIndex === currentMilestoneIndex;
         const isPastMilestone = milestoneIndex < currentMilestoneIndex;
         const isSpm = (authUser?.role || '').toLowerCase() === 'senior_project_manager';
@@ -1763,6 +1773,7 @@ export default function ProjectDetailPage() {
                 tags: ['CURRENT', 'ACTION'] as const,
             };
         }
+>>>>>>> origin/main
 
         if (isCompleted) return { icon: 'completed' as const, subtitle: 'Completed', tags: ['ON-TIME'] as const };
         if (isPastMilestone) return { icon: 'completed' as const, subtitle: 'Completed', tags: ['ON-TIME'] as const };
@@ -2630,7 +2641,7 @@ export default function ProjectDetailPage() {
                         scrollRef={milestoneCardsScrollRef}
                         onOpenTask={openTaskPopup}
                         onVisitChecklist={(milestoneIndex, taskName) => {
-                            const milestone = MileStonesArray.MilestonesName[milestoneIndex];
+                            const milestone = MileStonesArray.MilestonesName.find((m) => m.id === milestoneIndex);
                             setChecklistContext({ milestoneIndex, milestoneName: milestone?.name ?? '', taskName });
                         }}
                         getTaskStatus={getTaskStatus}
@@ -2669,7 +2680,7 @@ export default function ProjectDetailPage() {
                                     userRole={authUser?.role}
                                     userName={authUser?.name}
                                     canDelete={false}
-                                    uploadType={currentMilestoneIndex === 3 ? 'd2_masking' : undefined}
+                                    uploadType={currentMilestoneIndex === 4 ? 'd2_masking' : undefined}
                                 />
                                 <ChatCard
                                     cardClass={getCardClass('chat', 'xl:rounded-3xl xl:bg-purple-50 xl:row-span-1 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative')}
@@ -2690,7 +2701,7 @@ export default function ProjectDetailPage() {
                                     userRole={authUser?.role}
                                     userName={authUser?.name}
                                     canDelete={filesCanDelete}
-                                    uploadType={currentMilestoneIndex === 3 ? 'd2_masking' : 'd1'}
+                                    uploadType={currentMilestoneIndex === 4 ? 'd2_masking' : currentMilestoneIndex === 0 ? 'kt_transfer' : 'd1'}
                                     onD2UploadComplete={() => {
                                         refreshCompletions();
                                         setUploadsVersion((v) => v + 1);
@@ -2830,6 +2841,16 @@ export default function ProjectDetailPage() {
 
             {popupContext && (
                 <TaskModal context={popupContext} onClose={closePopup}>
+                    {/* ---------- Milestone 7 (visual index 0): KT TRANSFER – File upload & Mark as done ---------- */}
+                    {popupContext.milestoneIndex === 7 && popupContext.taskName === 'Upload KT files' && (
+                        <PopupKtTransfer
+                            leadId={projectId}
+                            sessionId={sessionId}
+                            onMarkComplete={() => { recordTaskComplete(7, 'Upload KT files'); closePopup(); }}
+                            onClose={closePopup}
+                        />
+                    )}
+
                     {/* ---------- Milestone 0: D1 SITE MEASUREMENT – D1 popup only for "D1 for MMT request" ---------- */}
                     {popupContext.milestoneIndex === 0 && popupContext.taskName === 'D1 for MMT request' && (
                         <PopupD1Measurement
@@ -3115,7 +3136,7 @@ export default function ProjectDetailPage() {
                             onSubmit={() => { recordTaskComplete(1, 'DQC 1 submission - dwg + quotation'); closePopup(); }}
                         />
                     )}
-                    {popupContext.milestoneIndex === 2 && popupContext.taskName === '10% payment collection' && projectId != null && (
+                    {popupContext.milestoneIndex === 3 && popupContext.taskName === '10% payment collection' && projectId != null && (
                         <Popup10pPaymentCollection
                             leadId={projectId}
                             apiBase={API}
@@ -3127,7 +3148,7 @@ export default function ProjectDetailPage() {
                             }}
                         />
                     )}
-                    {popupContext.milestoneIndex === 2 && popupContext.taskName === '10% payment approval' && (
+                    {popupContext.milestoneIndex === 3 && popupContext.taskName === '10% payment approval' && (
                         <PopupFinancePaymentApproval
                             leadId={projectId}
                             sessionId={sessionId}
@@ -3230,7 +3251,7 @@ export default function ProjectDetailPage() {
                         )
                     )}
 
-                    {popupContext.milestoneIndex === 3 && popupContext.taskName === 'D2 - masking request raise' && (
+                    {popupContext.milestoneIndex === 4 && popupContext.taskName === 'D2 - masking request raise' && (
                         <PopupD2MaskingRequest
                             leadId={projectId}
                             sessionId={sessionId}
@@ -3240,11 +3261,15 @@ export default function ProjectDetailPage() {
                             onAdminApprove={
                                 (authUser?.role || '').toLowerCase() === 'admin'
                                     ? () => {
-                                          recordTaskComplete(3, 'D2 - masking request raise');
+                                          recordTaskComplete(4, 'D2 - masking request raise');
                                           closePopup();
                                       }
                                     : undefined
                             }
+<<<<<<< HEAD
+                            onSubmit={() => {
+                                recordTaskComplete(4, 'D2 - masking request raise');
+=======
                             onSubmit={(info) => {
                                 const datePart = info?.maskingDate ? String(info.maskingDate) : '';
                                 const timePart = info?.maskingTime ? ` at ${info.maskingTime}` : '';
@@ -3255,6 +3280,7 @@ export default function ProjectDetailPage() {
                                 markTaskComplete(3, 'D2 - masking request raise');
                                 setSuccessToast(message);
                                 window.setTimeout(() => setSuccessToast(null), 4500);
+>>>>>>> origin/main
                                 closePopup();
                                 recordTaskComplete(3, 'D2 - masking request raise', {
                                     description: message,
@@ -3289,7 +3315,7 @@ export default function ProjectDetailPage() {
                             }}
                         />
                     )}
-                    {popupContext.milestoneIndex === 3 && popupContext.taskName === 'D2 - files upload' && (
+                    {popupContext.milestoneIndex === 4 && popupContext.taskName === 'D2 - files upload' && (
                         <PopupMmtFilesUploadApproval
                             leadId={projectId}
                             sessionId={sessionId}
@@ -3297,7 +3323,7 @@ export default function ProjectDetailPage() {
                             uploadType="d2_masking"
                             taskLabel="D2 - files upload"
                             onApproved={() => {
-                                recordTaskComplete(3, 'D2 - files upload');
+                                recordTaskComplete(4, 'D2 - files upload');
                                 setUploadsVersion((v) => v + 1);
                             }}
                             onClose={closePopup}
@@ -3317,12 +3343,12 @@ export default function ProjectDetailPage() {
                             onClose={closePopup}
                         />
                     )}
-                    {popupContext.milestoneIndex === 3 &&
+                    {popupContext.milestoneIndex === 4 &&
                         popupContext.taskName !== 'D2 - masking request raise' &&
                         popupContext.taskName !== 'D2 - files upload' && (
-                        <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(3, popupContext.taskName); closePopup(); }} />
+                        <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(4, popupContext.taskName); closePopup(); }} />
                     )}
-                    {popupContext.milestoneIndex === 4 && popupContext.taskName === 'Material selection meeting + quotation discussion' && (
+                    {popupContext.milestoneIndex === 5 && popupContext.taskName === 'Material selection meeting + quotation discussion' && (
                         <PopupFirstCutDesign
                             designUploadFiles={designUploadFiles}
                             designFileInputRef={designFileInputRef}
@@ -3435,7 +3461,7 @@ export default function ProjectDetailPage() {
                             }}
                         />
                     )}
-                    {popupContext.milestoneIndex === 4 && popupContext.taskName === 'Material selection meeting completed' && (
+                    {popupContext.milestoneIndex === 5 && popupContext.taskName === 'Material selection meeting completed' && (
                         <PopupMeetingCompleted
                             leadId={projectId}
                             sessionId={sessionId}
@@ -3479,8 +3505,12 @@ export default function ProjectDetailPage() {
                                                 `MOM upload failed (${res.status})`,
                                         };
                                     }
+<<<<<<< HEAD
+                                    recordTaskComplete(5, 'Material selection meeting completed', {
+=======
                                     uploadedAttachments = (data as { attachments?: { filename: string; path: string }[] }).attachments || [];
                                     recordTaskComplete(4, 'Material selection meeting completed', {
+>>>>>>> origin/main
                                         description: 'Material selection meeting completed. Minutes of meeting shared.',
                                         meta: {
                                             attachments: uploadedAttachments,
@@ -3515,17 +3545,17 @@ export default function ProjectDetailPage() {
                             }}
                         />
                     )}
-                    {popupContext.milestoneIndex === 4 && popupContext.taskName === 'DQC 2 submission' && (
+                    {popupContext.milestoneIndex === 5 && popupContext.taskName === 'DQC 2 submission' && (
                         <PopupDqcSubmission
                             leadId={projectId}
                             sessionId={sessionId}
                             submissionVariant="dqc2"
                             onClose={closePopup}
                             onSaveDraft={closePopup}
-                            onSubmit={() => { recordTaskComplete(4, 'DQC 2 submission'); closePopup(); }}
+                            onSubmit={() => { recordTaskComplete(5, 'DQC 2 submission'); closePopup(); }}
                         />
                     )}
-                    {popupContext.milestoneIndex === 4 && (popupContext.taskName === 'DQC 2 approval' || popupContext.taskName === 'DQC 2 approval ') && (
+                    {popupContext.milestoneIndex === 5 && (popupContext.taskName === 'DQC 2 approval' || popupContext.taskName === 'DQC 2 approval ') && (
                         isDesigner ? (
                             <PopupDqcDesignerView
                                 onClose={closePopup}
@@ -3617,7 +3647,7 @@ export default function ProjectDetailPage() {
                             </div>
                         )
                     )}
-                    {popupContext.milestoneIndex === 4 && popupContext.taskName === 'Project manager approval' && project && projectId != null && (
+                    {popupContext.milestoneIndex === 5 && popupContext.taskName === 'Project manager approval' && project && projectId != null && (
                         <PopupProjectManagerApproval
                             leadId={projectId}
                             sessionId={sessionId}
@@ -3628,7 +3658,7 @@ export default function ProjectDetailPage() {
                             isSpmApprover={(authUser?.role || '').toLowerCase() === 'senior_project_manager'}
                             onClose={closePopup}
                             onApprove={() => {
-                                recordTaskComplete(4, 'Project manager approval');
+                                recordTaskComplete(5, 'Project manager approval');
                                 closePopup();
                             }}
                             onReject={() => {
@@ -3638,7 +3668,7 @@ export default function ProjectDetailPage() {
                             }}
                         />
                     )}
-                    {popupContext.milestoneIndex === 4 &&
+                    {popupContext.milestoneIndex === 5 &&
                         popupContext.taskName !== 'DQC 2 submission' &&
                         popupContext.taskName !== 'DQC 2 approval' &&
                         popupContext.taskName !== 'DQC 2 approval ' &&
@@ -3646,9 +3676,9 @@ export default function ProjectDetailPage() {
                         popupContext.taskName !== 'Material selection meeting + quotation discussion' &&
                         popupContext.taskName !== 'Material selection meeting completed' &&
                         popupContext.taskName !== 'D2 - files upload' && (
-                        <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(4, popupContext.taskName); closePopup(); }} />
+                        <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(5, popupContext.taskName); closePopup(); }} />
                     )}
-                    {popupContext.milestoneIndex === 5 && popupContext.taskName === 'Design sign off' && (
+                    {popupContext.milestoneIndex === 6 && popupContext.taskName === 'Design sign off' && (
                         <PopupFirstCutDesign
                             designUploadFiles={designUploadFiles}
                             designFileInputRef={designFileInputRef}
@@ -3779,7 +3809,7 @@ export default function ProjectDetailPage() {
                             }}
                         />
                     )}
-                    {popupContext.milestoneIndex === 5 && popupContext.taskName === '40% payment approval' && (
+                    {popupContext.milestoneIndex === 6 && popupContext.taskName === '40% payment approval' && (
                         <PopupFinancePaymentApproval
                             leadId={projectId}
                             sessionId={sessionId}
@@ -3795,14 +3825,14 @@ export default function ProjectDetailPage() {
                             onClose={closePopup}
                         />
                     )}
-                    {popupContext.milestoneIndex === 5 &&
+                    {popupContext.milestoneIndex === 6 &&
                         popupContext.taskName !== 'Design sign off' &&
                         popupContext.taskName !== '40% payment approval' &&
                         popupContext.taskName !== '40% payment collection' &&
                         popupContext.taskName !== 'meeting completed' && (
-                        <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(5, popupContext.taskName); closePopup(); }} />
+                        <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(6, popupContext.taskName); closePopup(); }} />
                     )}
-                    {popupContext.milestoneIndex === 5 && popupContext.taskName === 'meeting completed' && (
+                    {popupContext.milestoneIndex === 6 && popupContext.taskName === 'meeting completed' && (
                         <PopupMeetingCompleted
                             leadId={projectId}
                             sessionId={sessionId}
@@ -3846,7 +3876,7 @@ export default function ProjectDetailPage() {
                                             };
                                         }
                                     }
-                                    recordTaskComplete(5, 'meeting completed', {
+                                    recordTaskComplete(6, 'meeting completed', {
                                         description: 'Design sign-off meeting completed. Minutes of meeting shared.',
                                         details: {
                                             kind: 'mom',
@@ -3880,7 +3910,7 @@ export default function ProjectDetailPage() {
                             }}
                         />
                     )}
-                    {popupContext.milestoneIndex === 5 && popupContext.taskName === '40% collection' && projectId != null && (
+                    {popupContext.milestoneIndex === 6 && popupContext.taskName === '40% collection' && projectId != null && (
                         <Popup40pCollection
                             leadId={projectId}
                             apiBase={API}
@@ -3896,7 +3926,7 @@ export default function ProjectDetailPage() {
                             }}
                         />
                     )}
-                    {popupContext.milestoneIndex === 6 && popupContext.taskName === 'Cx approval for production' && (
+                    {popupContext.milestoneIndex === 7 && popupContext.taskName === 'Cx approval for production' && (
                         <PopupMeetingCompleted
                             leadId={projectId}
                             sessionId={sessionId}
@@ -3941,7 +3971,7 @@ export default function ProjectDetailPage() {
                                             };
                                         }
                                     }
-                                    recordTaskComplete(6, popupContext.taskName, {
+                                    recordTaskComplete(7, popupContext.taskName, {
                                         description: 'Cx approval for production MOM shared.',
                                         details: {
                                             kind: 'mom',
@@ -3975,17 +4005,17 @@ export default function ProjectDetailPage() {
                             }}
                         />
                     )}
-                    {popupContext.milestoneIndex === 6 && (popupContext.taskName === 'POC mail' || popupContext.taskName === 'POC mail & Timeline submission') && (
+                    {popupContext.milestoneIndex === 7 && (popupContext.taskName === 'POC mail' || popupContext.taskName === 'POC mail & Timeline submission') && (
                         <PopupPlaceholder
                             message={popupContext.taskName}
                             onMarkComplete={() => {
-                                recordTaskComplete(6, popupContext.taskName);
+                                recordTaskComplete(7, popupContext.taskName);
                                 closePopup();
                             }}
                         />
                     )}
-                    {popupContext.milestoneIndex === 6 && popupContext.taskName !== 'Cx approval for production' && popupContext.taskName !== 'POC mail' && popupContext.taskName !== 'POC mail & Timeline submission' && (
-                        <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(6, popupContext.taskName); closePopup(); }} />
+                    {popupContext.milestoneIndex === 7 && popupContext.taskName !== 'Cx approval for production' && popupContext.taskName !== 'POC mail' && popupContext.taskName !== 'POC mail & Timeline submission' && popupContext.taskName !== 'Upload KT files' && (
+                        <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(7, popupContext.taskName); closePopup(); }} />
                     )}
                 </TaskModal>
             )}

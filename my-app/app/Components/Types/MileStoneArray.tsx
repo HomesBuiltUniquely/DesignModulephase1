@@ -3,7 +3,15 @@ import { MileStonesTypes } from "./milestones";
 const MileStonesArray: MileStonesTypes = {
   MilestonesName: [
     {
-      id: 1,
+      id: 7,
+      name: "KT TRANSFER",
+      taskList: [
+        "Upload KT files",
+      ],
+      Css: "xl:w-75 xl:mt-8 xl:mx-auto xl:my-10 xl:border-2 xl:border-dashed xl:border-indigo-300 xl:hover:bg-indigo-50 xl:cursor-pointer xl:overflow-y-auto xl:rounded-2xl",
+    },
+    {
+      id: 0,
       name: "D1 SITE MEASUREMENT",
       taskList: [
         "Group Description",
@@ -14,7 +22,7 @@ const MileStonesArray: MileStonesTypes = {
       Css: "xl:w-75 xl:mt-8 xl:mx-auto xl:my-10  xl:border-2 xl:border-dashed xl:border-red-300 xl:hover:bg-blue-50  xl:cursor-pointer xl:overflow-y-auto xl:rounded-2xl",
     },
     {
-      id: 2,
+      id: 1,
       name: "DQC1",
       taskList: [
         "First cut design + quotation discussion meeting request",
@@ -25,19 +33,19 @@ const MileStonesArray: MileStonesTypes = {
       Css: "xl:w-75 xl:mt-6 xl:mx-auto  border-2 border-dashed border-red-300 hover:bg-blue-50  cursor-pointer overflow-y-auto xl:rounded-2xl",
     },
     {
-      id: 3,
+      id: 2,
       name: "10% PAYMENT",
       taskList: ["10% payment collection", "10% payment approval"],
       Css: "xl:w-75  xl:mx-auto xl:mt-20  xl:border-2 xl:border-dashed xl:border-red-300 xl:hover:bg-blue-50  xl:cursor-pointer xl:overflow-y-auto xl:rounded-2xl xl:my-30",
     },
     {
-      id: 4,
+      id: 3,
       name: "D2 SITE MASKING",
       taskList: ["D2 - masking request raise", "D2 - files upload"],
       Css: "xl:w-75 xl:mt-5 xl:mx-auto xl:mt-12  border-2 border-dashed border-red-300 hover:bg-blue-50  cursor-pointer overflow-y-auto xl:rounded-2xl xl:my-20",
     },
     {
-      id: 5,
+      id: 4,
       name: "DQC2",
       taskList: [
         "Material selection meeting + quotation discussion",
@@ -49,7 +57,7 @@ const MileStonesArray: MileStonesTypes = {
       Css: "xl:w-75  xl:mx-auto xl:mt-20  xl:border-2 xl:border-dashed xl:border-red-300 xl:hover:bg-blue-50  xl:cursor-pointer xl:overflow-y-auto xl:rounded-2xl xl:my-30",
     },
     {
-      id: 6,
+      id: 5,
       name: "40% PAYMENT",
       taskList: [
         "Design sign off",
@@ -60,7 +68,7 @@ const MileStonesArray: MileStonesTypes = {
       Css: "xl:w-75  xl:mx-auto xl:mt-20  xl:border-2 xl:border-dashed xl:border-red-300 xl:hover:bg-blue-50  xl:cursor-pointer xl:overflow-y-auto xl:rounded-2xl xl:my-30",
     },
     {
-      id: 7,
+      id: 6,
       name: "PUSH TO PRODUCTION",
       taskList: [
         "Cx approval for production",

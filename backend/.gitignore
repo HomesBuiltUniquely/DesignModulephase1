@@ -1,4 +1,4 @@
-node_modules/
+
 dist/
 uploads/
 credentials/
@@ -6,3 +6,4 @@ credentials/
 env.sh
 *.log
 .bin/
+backend/node_modules/

@@ -20,7 +20,7 @@ export function getPhaseFromMilestone(
   milestoneProgress: number | null | undefined,
 ): string | null {
   if (milestoneIndex === undefined || milestoneIndex < 0) return null;
-  if (milestoneIndex === 0) return 'Pre 10%';
+  if (milestoneIndex === 0 || milestoneIndex === 7) return 'Pre 10%';
   if (milestoneIndex === 6) return '20-60%';
   if (milestoneIndex === 5 && (milestoneProgress ?? 0) >= 100) return '20-60%';
   if (milestoneIndex >= 1 && milestoneIndex <= 5) return '10-20%';
