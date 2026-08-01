@@ -988,18 +988,6 @@ async function importHubPaymentProofs(
   return proofCount;
 }
 
-<<<<<<< HEAD
-async function markTenPercentCollectionComplete(pool: Pool, leadId: number): Promise<void> {
-  const now = new Date();
-  await pool.query(
-    `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
-     VALUES (?, 3, '10% payment collection', ?)
-     ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
-    [leadId, now],
-  );
-  await pool.query(
-    `DELETE FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 3 AND task_name = '10% payment approval'`,
-=======
 /** CRM booking token payment approved by finance (pre-DQC1). Not design milestone 2. */
 function readCrmBookingFinanceApproved(payload: Record<string, unknown>): boolean {
   return payload.crm_booking_finance_approved === true || payload.crm_booking_finance_approved === "true";
@@ -1016,7 +1004,6 @@ export async function isCrmBookingFinanceApproved(
   const [rows] = await pool.query(
     `SELECT 1 FROM lead_task_completions
      WHERE lead_id = ? AND milestone_index = 2 AND task_name = '10% payment approval' LIMIT 1`,
->>>>>>> origin/main
     [leadId],
   );
   return (rows as unknown[]).length > 0;
@@ -1217,17 +1204,7 @@ async function buildFinanceQueueRows(
     syncByLead.set(Number(row.leadId), row);
   }
 
-<<<<<<< HEAD
-  const [completions] = await pool.query(
-    `SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName, completed_at as completedAt
-     FROM lead_task_completions
-     WHERE (milestone_index = 2 AND task_name = 'DQC 1 approval')
-        OR (milestone_index = 3 AND task_name IN ('10% payment collection', '10% payment approval'))`,
-  );
-  const compList = completions as TaskCompletion[];
-=======
   if (syncByLead.size === 0) return [];
->>>>>>> origin/main
 
   const ids = Array.from(syncByLead.keys());
   const placeholders = ids.map(() => "?").join(",");
@@ -1245,12 +1222,6 @@ async function buildFinanceQueueRows(
 
   for (const lead of leadRows as { id: number; projectName: string; payload: unknown }[]) {
     const leadId = lead.id;
-<<<<<<< HEAD
-    const hasApproval = hasTask(compList, leadId, 3, "10% payment approval");
-    const hasCollection = hasTask(compList, leadId, 3, "10% payment collection");
-    const hasDqc1 = hasTask(compList, leadId, 2, "DQC 1 approval");
-=======
->>>>>>> origin/main
     const sync = syncByLead.get(leadId);
     if (!sync) continue;
 
@@ -1265,12 +1236,6 @@ async function buildFinanceQueueRows(
 
     if (customerFilter && !customerName.toLowerCase().includes(customerFilter)) continue;
 
-<<<<<<< HEAD
-    const collectionAt = taskCompletedAt(compList, leadId, 3, "10% payment collection");
-    const approvalAt = taskCompletedAt(compList, leadId, 3, "10% payment approval");
-    const submittedAt = sync?.syncedAt ?? collectionAt;
-    const submittedDate = submittedAt instanceof Date ? submittedAt : submittedAt ? new Date(submittedAt as string) : null;
-=======
     let paymentPayload: Record<string, unknown> = {};
     if (sync.paymentPayload) {
       paymentPayload = parseLeadPayload(sync.paymentPayload);
@@ -1278,7 +1243,6 @@ async function buildFinanceQueueRows(
     const syncedAt = sync.syncedAt;
     const submittedDate =
       syncedAt instanceof Date ? syncedAt : syncedAt ? new Date(syncedAt as string) : null;
->>>>>>> origin/main
 
     if (fromDate && submittedDate && submittedDate < fromDate) continue;
     if (toDate && submittedDate && submittedDate > toDate) continue;
@@ -1362,13 +1326,13 @@ export async function buildFinance10pQueueList(
   const [completions] = await pool.query(
     `SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName
      FROM lead_task_completions
-     WHERE (milestone_index = 2 AND task_name = 'DQC 1 approval')
-        OR (milestone_index = 3 AND task_name IN ('10% payment collection', '10% payment approval'))`,
+     WHERE (milestone_index = 1 AND task_name = 'DQC 1 approval')
+        OR (milestone_index = 2 AND task_name IN ('10% payment collection', '10% payment approval'))`,
   );
   const compList = completions as TaskCompletion[];
-  const hasDqc1 = (leadId: number) => hasTask(compList, leadId, 2, "DQC 1 approval");
-  const hasCollection = (leadId: number) => hasTask(compList, leadId, 3, "10% payment collection");
-  const hasApproval = (leadId: number) => hasTask(compList, leadId, 3, "10% payment approval");
+  const hasDqc1 = (leadId: number) => hasTask(compList, leadId, 1, "DQC 1 approval");
+  const hasCollection = (leadId: number) => hasTask(compList, leadId, 2, "10% payment collection");
+  const hasApproval = (leadId: number) => hasTask(compList, leadId, 2, "10% payment approval");
 
   return (allLeads as { id: number; projectName: string }[])
     .filter((l) => hasDqc1(l.id) && !hasApproval(l.id))
@@ -1447,18 +1411,10 @@ async function mapCrmHubRowToSalesClosure(
   approvedTab: boolean,
 ): Promise<Record<string, unknown> | null> {
   const leadId = lead.id;
-<<<<<<< HEAD
-  const hasApproval = hasTask(compList, leadId, 3, "10% payment approval");
-  const hasCollection = hasTask(compList, leadId, 3, "10% payment collection");
-  if (approved && !hasApproval) return null;
-  if (!approved && hasApproval) return null;
-  if (!approved && !hasCollection) return null;
-=======
   const payload = parseLeadPayload(lead.payload);
   const financeApproved = await isCrmBookingFinanceApproved(pool, leadId, payload);
   if (approvedTab && !financeApproved) return null;
   if (!approvedTab && financeApproved) return null;
->>>>>>> origin/main
 
   const paymentPayload = parseLeadPayload(sync.paymentPayload);
   const hubProofBaseUrl = pickStr(paymentPayload.hubProofBaseUrl, envTrim("HUB_API_BASE_URL"), "http://localhost:8081");
@@ -1478,15 +1434,11 @@ async function mapCrmHubRowToSalesClosure(
     paymentPayload.buffer_applied === true ||
     bookingApprovalMode === "BUFFER_9_9";
   const tenPercentMet = tenPercentTarget > 0 ? amountPaid >= tenPercentTarget : amountPaid > 0;
-<<<<<<< HEAD
-  const approvalAt = taskCompletedAt(compList, leadId, 3, "10% payment approval");
-=======
   const approvedAtRaw = payload.crm_booking_finance_approved_at;
   const approvalAt =
     typeof approvedAtRaw === "string" && approvedAtRaw.trim()
       ? new Date(approvedAtRaw)
       : null;
->>>>>>> origin/main
   const customerName =
     pickStr(paymentPayload.customerName, (paymentPayload.fetchedData as Record<string, unknown>)?.customer_name) ||
     lead.projectName ||
@@ -1558,16 +1510,6 @@ export async function buildCrmSalesClosureQueueRows(
     syncByLead.set(Number(row.leadId), row);
   }
 
-<<<<<<< HEAD
-  const [completions] = await pool.query(
-    `SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName, completed_at as completedAt
-     FROM lead_task_completions
-     WHERE milestone_index = 3 AND task_name IN ('10% payment collection', '10% payment approval')`,
-  );
-  const compList = completions as TaskCompletion[];
-
-=======
->>>>>>> origin/main
   const ids = Array.from(syncByLead.keys());
   const placeholders = ids.map(() => "?").join(",");
   const [leadRows] = await pool.query(
@@ -1634,20 +1576,9 @@ export async function buildCrmSalesClosureLeadDetail(
   const lead = (leadRows as { id: number; projectName: string; projectStage?: string; payload?: unknown }[])[0];
   if (!lead) return null;
 
-<<<<<<< HEAD
-  const [completions] = await pool.query(
-    `SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName, completed_at as completedAt
-     FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 3`,
-    [leadId],
-  );
-  const compList = completions as TaskCompletion[];
-  const hasApproval = hasTask(compList, leadId, 3, "10% payment approval");
-  return mapCrmHubRowToSalesClosure(pool, lead, sync, compList, hasApproval);
-=======
   const payload = parseLeadPayload(lead.payload);
   const financeApproved = await isCrmBookingFinanceApproved(pool, leadId, payload);
   return mapCrmHubRowToSalesClosure(pool, lead, sync, financeApproved);
->>>>>>> origin/main
 }
 
 export async function notifyHubFinanceReview(

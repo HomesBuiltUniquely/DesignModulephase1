@@ -167,14 +167,9 @@ registerMsg91InboundRoutes(app, pool);
 // ----- S3 setup for profile images -----
 const S3_REGION = process.env.AWS_REGION || "ap-south-1";
 const S3_BUCKET = process.env.S3_BUCKET_NAME || "your-profile-images-bucket";
-
-<<<<<<< HEAD
-const s3 = new S3Client({
-=======
 /** Runtime S3 client. Cast needed: broken @smithy/core installs omit Client.send in types. */
 type AppS3Client = S3Client & { send: (command: unknown) => Promise<any> };
 const s3: AppS3Client = new S3Client({
->>>>>>> origin/main
   region: S3_REGION,
   credentials: process.env.AWS_ACCESS_KEY_ID
     ? {
@@ -9117,13 +9112,13 @@ app.post(
       };
       await addLeadHistoryEvent(leadId, ev);
       const [rows] = await pool.query(
-        "SELECT 1 FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 3 AND task_name = ?",
+        "SELECT 1 FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 2 AND task_name = ?",
         [leadId, "10% payment collection"]
       );
       if ((rows as any[]).length === 0) {
         await pool.query(
           `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
-           VALUES (?, 3, '10% payment collection', ?)
+           VALUES (?, 2, '10% payment collection', ?)
            ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
           [leadId, now]
         );
@@ -9594,7 +9589,7 @@ app.post("/api/leads/:id/reject-10p-payment", async (req: Request, res: Response
       [leadId]
     );
     await pool.query(
-      `DELETE FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 3 AND task_name = '10% payment approval'`,
+      `DELETE FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 2 AND task_name = '10% payment approval'`,
       [leadId]
     );
     const ev = {
