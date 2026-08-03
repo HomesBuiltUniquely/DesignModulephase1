@@ -21,6 +21,12 @@ type Props = {
   designerEmail: string;
   designManagerEmail?: string;
   sessionId: string | null;
+  /** Customer's display name for the welcome email greeting */
+  customerName?: string;
+  /** Raw lead payload forwarded to the email template for field mapping */
+  leadPayload?: Record<string, unknown> | null;
+  /** Prolance share link for the latest quotation — included in welcome email when present */
+  quotationLink?: string;
   onEmailsSaved?: (emails: { clientEmail: string | null; alternateClientEmail: string | null }) => void;
   onMarkComplete: () => void;
   onClose: () => void;
@@ -36,6 +42,9 @@ export default function PopupMailLoopChain({
   designerEmail,
   designManagerEmail = '',
   sessionId,
+  customerName = '',
+  leadPayload,
+  quotationLink = '',
   onEmailsSaved,
   onMarkComplete,
   onClose,
@@ -197,6 +206,36 @@ export default function PopupMailLoopChain({
   const handleMarkComplete = async () => {
     const saved = await saveEmails();
     if (!saved) return;
+
+    // Fire-and-forget: send welcome email to client(s) with all CC recipients
+    const toList = [
+      saved.clientEmail,
+      saved.alternateClientEmail,
+    ].filter((e): e is string => Boolean(e?.trim()));
+
+    const ccList: string[] = [
+      designerEmail,
+      ...adminsForLoop.map((m) => m.email),
+      ...tdmForLoop.map((m) => m.email),
+      ...dmForLoop.map((m) => m.email),
+    ].filter((e): e is string => Boolean(e?.trim()));
+
+    if (toList.length > 0) {
+      fetch('/api/email/send-mail-loop-chain-initiate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: toList,
+          ...(ccList.length > 0 ? { cc: ccList } : {}),
+          customerName: customerName || toList[0],
+          leadPayload: leadPayload ?? undefined,
+          ...(quotationLink ? { quotationLink } : {}),
+        }),
+      }).catch(() => {
+        // Fire-and-forget — do not block task completion on email failure
+      });
+    }
+
     onMarkComplete();
     onClose();
   };

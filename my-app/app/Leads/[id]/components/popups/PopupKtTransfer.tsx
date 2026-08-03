@@ -77,8 +77,13 @@ export default function PopupKtTransfer({ leadId, sessionId, onMarkComplete, onC
   return (
     <div className="px-6 pb-6 space-y-5 relative">
       {toast && (
-        <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-[150%] bg-gray-800 text-white text-sm font-medium px-6 py-3 rounded-lg shadow-2xl z-[9999] text-center max-w-sm">
-            {toast}
+        <div className="fixed inset-0 flex items-center justify-center z-[99999] pointer-events-none">
+          <div className="bg-gray-900/95 text-white text-base font-semibold px-8 py-4 rounded-2xl shadow-2xl border border-gray-700 text-center max-w-sm backdrop-blur-sm pointer-events-auto transition-all duration-300 transform scale-100 flex items-center gap-3">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-6 h-6 text-green-400 shrink-0">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+            </svg>
+            <span>{toast}</span>
+          </div>
         </div>
       )}
 

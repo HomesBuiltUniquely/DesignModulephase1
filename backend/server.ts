@@ -149,7 +149,7 @@ app.get("/api/health", (_req, res) => {
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "root@root",
+  password: process.env.DB_PASSWORD || "Root@123",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -776,11 +776,15 @@ async function triggerCustomerEmailForLead(
         customerName,
         designerName,
         quotationTotal: paymentAmounts.quotationTotal,
-        leadPayload: sanitizeLeadPayloadForEmail(
-          payload && typeof payload === "object" && !Array.isArray(payload)
-            ? (payload as Record<string, unknown>)
-            : {},
-        ),
+        leadPayload: {
+          ...sanitizeLeadPayloadForEmail(
+            payload && typeof payload === "object" && !Array.isArray(payload)
+              ? (payload as Record<string, unknown>)
+              : {},
+          ),
+          intakeView: extractLeadIntakeViewFromPayload(payload),
+          experienceCenter: resolveLeadBranchName(payload),
+        },
       },
     });
 
@@ -2117,11 +2121,11 @@ function extractLeadScheduleFromPayload(payloadInput: unknown): {
   const meetingWizLastCompleted =
     meetingWizLastCompletedAt
       ? {
-          at: meetingWizLastCompletedAt,
-          meetingDate: meetingWizLastCompletedMeetingDateRaw
-            ? String(meetingWizLastCompletedMeetingDateRaw).slice(0, 10)
-            : String(meetingWizLastCompletedAt).slice(0, 10),
-        }
+        at: meetingWizLastCompletedAt,
+        meetingDate: meetingWizLastCompletedMeetingDateRaw
+          ? String(meetingWizLastCompletedMeetingDateRaw).slice(0, 10)
+          : String(meetingWizLastCompletedAt).slice(0, 10),
+      }
       : null;
 
   return {
@@ -3673,7 +3677,7 @@ async function persistLeadDesignScheduledMeeting(
   const timeLabel =
     (opts.meetingTime && String(opts.meetingTime).trim()) ||
     (payload.designScheduledMeeting &&
-    typeof payload.designScheduledMeeting === "object"
+      typeof payload.designScheduledMeeting === "object"
       ? String((payload.designScheduledMeeting as Record<string, unknown>).time || "").trim()
       : "") ||
     null;
@@ -11660,10 +11664,10 @@ app.post(
         minutes,
         latestQuote: latestQuote
           ? {
-              quoteId: latestQuote.quoteId,
-              customerQuoteUrl: latestQuote.customerQuoteUrl,
-              internalQuoteUrl: latestQuote.internalQuoteUrl,
-            }
+            quoteId: latestQuote.quoteId,
+            customerQuoteUrl: latestQuote.customerQuoteUrl,
+            internalQuoteUrl: latestQuote.internalQuoteUrl,
+          }
           : null,
       });
     } catch (err) {
@@ -13537,12 +13541,20 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
     let designerName: string | undefined;
     let revision: string | undefined;
     let experienceCenter: string | undefined;
+    let financeApprovedRaw: string | undefined;
+    let financeApprovedAt: string | undefined;
     try {
       const payload = row.payload ? JSON.parse(row.payload) : {};
       const formData = payload.formData || payload.form_data || payload.form || payload || {};
       designerName = formData.designer_name || formData.designerName || undefined;
       revision = formData.revision || (designerName ? "v1.0 (Latest)" : undefined);
       experienceCenter = resolveLeadBranchName(payload);
+      const isApproved = payload.sales_closure_finance_approved === true ||
+                         payload.sales_closure_finance_approved === "true" ||
+                         payload.crm_booking_finance_approved === true ||
+                         payload.crm_booking_finance_approved === "true";
+      financeApprovedRaw = isApproved ? "true" : "false";
+      financeApprovedAt = payload.sales_closure_finance_approved_at || payload.crm_booking_finance_approved_at || undefined;
     } catch {
       // ignore
     }
@@ -13586,6 +13598,9 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
       configScopeSummary: intake.configScopeSummary,
       experienceSummary: intake.experienceSummary,
       decisionSummary: intake.decisionSummary,
+      financeApprovedRaw: financeApprovedRaw || null,
+      financeApprovedAt: financeApprovedAt || null,
+      approvedAt: financeApprovedAt || null,
     });
   } catch (err) {
     console.error("lead detail error", err);
@@ -13710,8 +13725,8 @@ app.patch("/api/leads/:id/meeting-scope", async (req: Request, res: Response) =>
         : [];
     const aestheticNotes = String(
       body.aestheticNotes ??
-        (body.referenceInspiration as { aestheticNotes?: unknown } | undefined)?.aestheticNotes ??
-        "",
+      (body.referenceInspiration as { aestheticNotes?: unknown } | undefined)?.aestheticNotes ??
+      "",
     )
       .trim()
       .slice(0, 4000);
@@ -13725,15 +13740,15 @@ app.patch("/api/leads/:id/meeting-scope", async (req: Request, res: Response) =>
       if (!roomName) continue;
       const unitsRequired = Array.isArray(row.unitsRequired)
         ? row.unitsRequired
-            .map((u) => String(u ?? "").trim())
-            .filter(Boolean)
-            .slice(0, 40)
+          .map((u) => String(u ?? "").trim())
+          .filter(Boolean)
+          .slice(0, 40)
         : typeof row.units === "string"
           ? String(row.units)
-              .split(",")
-              .map((u) => u.trim())
-              .filter(Boolean)
-              .slice(0, 40)
+            .split(",")
+            .map((u) => u.trim())
+            .filter(Boolean)
+            .slice(0, 40)
           : [];
       cleanedRooms.push({
         roomName,
@@ -13799,13 +13814,13 @@ app.patch("/api/leads/:id/meeting-scope", async (req: Request, res: Response) =>
 
     const prevScope =
       (connection.configurationScope &&
-      typeof connection.configurationScope === "object" &&
-      !Array.isArray(connection.configurationScope)
+        typeof connection.configurationScope === "object" &&
+        !Array.isArray(connection.configurationScope)
         ? { ...(connection.configurationScope as Record<string, unknown>) }
         : null) ||
       (payload.configurationScope &&
-      typeof payload.configurationScope === "object" &&
-      !Array.isArray(payload.configurationScope)
+        typeof payload.configurationScope === "object" &&
+        !Array.isArray(payload.configurationScope)
         ? { ...(payload.configurationScope as Record<string, unknown>) }
         : {});
 

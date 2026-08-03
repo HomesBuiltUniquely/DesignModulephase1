@@ -2878,6 +2878,42 @@ export default function ProjectDetailPage() {
                                 ''
                             }
                             sessionId={sessionId}
+                            customerName={
+                                project?.intakeCustomerName?.trim() ||
+                                project?.projectName?.trim() ||
+                                ''
+                            }
+                            leadPayload={{
+                                ...parseLeadPayload((project as any)?.payload),
+                                // Merge top-level project fields that live outside payload
+                                ...(project?.configScopeSummary ? { configScopeSummary: project.configScopeSummary } : {}),
+                                ...(project?.experienceSummary ? { experienceSummary: project.experienceSummary } : {}),
+                                ...(project?.decisionSummary ? { decisionSummary: project.decisionSummary } : {}),
+                                // Direct intake fields as fallbacks
+                                id: projectId ?? undefined,
+                                prolanceQuoteId: project?.prolanceQuoteId ?? undefined,
+                                prolance_quote_id: project?.prolanceQuoteId ?? undefined,
+                                property_location: project?.intakePropertyLocation ?? undefined,
+                                intake_possession_date: project?.intakePossessionDate ?? undefined,
+                                intake_budget: project?.intakeBudget ?? undefined,
+                                sales_executive: project?.salesExecutive ?? undefined,
+                                intake_configuration: project?.intakeConfiguration ?? undefined,
+                                // Finance approval fields — used to set booking status + date
+                                finance_approved_raw: project?.financeApprovedRaw ?? undefined,
+                                approved_at: (project as any)?.approvedAt ?? (project as any)?.financeApprovedAt ?? undefined,
+                                crm_booking_finance_approved: project?.financeApprovedRaw === 'true' ? true : undefined,
+                                crm_booking_finance_approved_at: (project as any)?.approvedAt ?? (project as any)?.financeApprovedAt ?? undefined,
+                            }}
+                            quotationLink={(() => {
+                                const qid =
+                                    prolanceQuoteId ??
+                                    (project?.prolanceQuoteId != null && Number(project.prolanceQuoteId) > 0 ? Number(project.prolanceQuoteId) : null) ??
+                                    extractNumber((latestQuoteResponse as any)?.id) ??
+                                    extractNumber((latestQuoteResponse as any)?.quote_id) ??
+                                    extractNumber((latestQuoteResponse as any)?.quotation_id) ??
+                                    null;
+                                return qid != null ? `${typeof window !== 'undefined' ? window.location.origin : 'https://homesbuiltuniquely.com'}/quote/${Math.trunc(qid)}` : '';
+                            })()}
                             onEmailsSaved={(emails) => {
                                 setProject((prev) => (prev ? { ...prev, ...emails } : prev));
                             }}
