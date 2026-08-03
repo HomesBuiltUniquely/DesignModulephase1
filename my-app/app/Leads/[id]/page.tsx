@@ -1637,15 +1637,17 @@ export default function ProjectDetailPage() {
                         'First cut design + quotation discussion meeting request',
                         'meeting completed',
                         'DQC 1 submission - dwg + quotation',
-                        'DQC 1 approval',
                     ];
                     const dqc1Headers = buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' });
                     dqc1Tasks.forEach((t: string) => {
-                        fetch(`${API}/api/leads/${projectId}/complete-task`, {
-                            method: 'POST',
-                            headers: dqc1Headers,
-                            body: JSON.stringify({ milestoneIndex: 1, taskName: t }),
-                        }).catch(() => {});
+                        const key = taskKey(1, t);
+                        if (!completedTaskKeys.includes(key)) {
+                            fetch(`${API}/api/leads/${projectId}/complete-task`, {
+                                method: 'POST',
+                                headers: dqc1Headers,
+                                body: JSON.stringify({ milestoneIndex: 1, taskName: t }),
+                            }).catch(() => {});
+                        }
                     });
                     fetch(`${API}/api/leads/${projectId}/complete-task`, {
                         method: 'POST',
@@ -1658,6 +1660,7 @@ export default function ProjectDetailPage() {
                     setCompletedTaskKeys((prev) => {
                         const next = new Set(prev.filter((k) => !k.startsWith('2-')));
                         dqc1Tasks.forEach((t) => next.add(taskKey(1, t)));
+                        next.add(taskKey(1, 'DQC 1 approval'));
                         return Array.from(next);
                     });
                 }

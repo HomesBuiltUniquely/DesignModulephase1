@@ -250,6 +250,9 @@ async function persistHubSalesPaymentToLeadPayload(
   }
   if (finance.quoteAmount != null && finance.quoteAmount > 0) {
     payload.quotation_total = finance.quoteAmount;
+    if (!payload.quotation_total_at_sales_closure) {
+      payload.quotation_total_at_sales_closure = finance.quoteAmount;
+    }
   }
   await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
     JSON.stringify(payload),

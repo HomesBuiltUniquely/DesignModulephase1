@@ -1076,7 +1076,7 @@ function normalizeQuotePricingRow(data: unknown): Record<string, unknown> | null
 }
 
 /** Aligns with quote UI total extraction (totalPayableAmount / room sums). */
-function extractTotalPayableAmount(data: unknown): number | null {
+export function extractTotalPayableAmount(data: unknown): number | null {
   const row = normalizeQuotePricingRow(data);
   if (!row) return null;
   const pick = (...keys: string[]): number | null => {

@@ -166,7 +166,11 @@ export default function PopupFirstCutDesign({
       }
       setTimeout(() => {
         setToast(null);
-        onClose?.();
+        if (completionPercent === 100 && onCompleteAndProceed) {
+          onCompleteAndProceed(buildMeta());
+        } else {
+          onClose?.();
+        }
       }, 3000);
     } catch {
       setInviteError("Failed to send invite. Please try again.");

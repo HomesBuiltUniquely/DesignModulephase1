@@ -3,6 +3,7 @@ import type { Pool } from "mysql2/promise";
 import {
   resolveLeadMilestonePaymentBreakdown,
   resolveLeadQuotePaymentSummary,
+  extractTotalPayableAmount,
 } from "./prolanceApi";
 
 type SessionUser = { id: number; name?: string; role?: string; email?: string };
@@ -110,6 +111,118 @@ function pickQuote(
   if (fromPayload && fromPayload > 0) return fromPayload;
   if (tenTarget && tenTarget > 0) return Math.round(tenTarget * 10);
   return 0;
+}
+
+async function resolveFirstQuoteTotal(
+  pool: Pool,
+  leadId: number,
+  payload: Record<string, unknown>,
+): Promise<number | null> {
+  // 1. Check if we already have a frozen value in the payload
+  const frozen = asNum(payload.quotation_total_at_sales_closure);
+  if (frozen && frozen > 0) return frozen;
+
+  // 2. Check lead_hub_booking_sync for CRM-originated leads
+  try {
+    const [syncRows] = await pool.query(
+      `SELECT payment_payload, ten_percent_amount FROM lead_hub_booking_sync WHERE lead_id = ? LIMIT 1`,
+      [leadId]
+    );
+    const sync = (syncRows as any[])[0];
+    if (sync) {
+      let paymentPayload: Record<string, unknown> = {};
+      if (sync.payment_payload) {
+        try {
+          paymentPayload = typeof sync.payment_payload === "string"
+            ? JSON.parse(sync.payment_payload)
+            : sync.payment_payload;
+        } catch {
+          // ignore
+        }
+      }
+      const quoteVal =
+        asNum(paymentPayload.quoteAmount) ||
+        asNum(paymentPayload.quote_amount) ||
+        asNum(paymentPayload.quotationTotal) ||
+        asNum(paymentPayload.quotation_total);
+      if (quoteVal && quoteVal > 0) return quoteVal;
+
+      const tenPct = asNum(sync.ten_percent_amount);
+      if (tenPct && tenPct > 0) return Math.round(tenPct * 10);
+    }
+  } catch (err) {
+    console.error("resolveFirstQuoteTotal sync check error", err);
+  }
+
+  // 3. Check oldest Prolance quote version / snapshot
+  try {
+    const [verRows] = await pool.query(
+      `SELECT quote_id FROM lead_prolance_quote_versions
+       WHERE lead_id = ?
+       ORDER BY created_at ASC, id ASC
+       LIMIT 1`,
+      [leadId]
+    );
+    const firstVer = (verRows as any[])[0];
+    if (firstVer?.quote_id) {
+      const [snapRows] = await pool.query(
+        `SELECT payload_json FROM lead_prolance_quote_snapshots
+         WHERE quote_id = ? LIMIT 1`,
+        [firstVer.quote_id]
+      );
+      const snap = (snapRows as any[])[0];
+      if (snap?.payload_json) {
+        try {
+          const quoteBody = JSON.parse(snap.payload_json);
+          const total = extractTotalPayableAmount(quoteBody);
+          if (total && total > 0) return total;
+        } catch {
+          // ignore
+        }
+      }
+    }
+  } catch (err) {
+    console.error("resolveFirstQuoteTotal versions check error", err);
+  }
+
+  // 4. Check oldest snapshot directly (if version records are missing)
+  try {
+    const [snapRows] = await pool.query(
+      `SELECT payload_json FROM lead_prolance_quote_snapshots
+       WHERE lead_id = ?
+       ORDER BY created_at ASC, id ASC
+       LIMIT 1`,
+      [leadId]
+    );
+    const snap = (snapRows as any[])[0];
+    if (snap?.payload_json) {
+      try {
+        const quoteBody = JSON.parse(snap.payload_json);
+        const total = extractTotalPayableAmount(quoteBody);
+        if (total && total > 0) return total;
+      } catch {
+        // ignore
+      }
+    }
+  } catch (err) {
+    console.error("resolveFirstQuoteTotal oldest snapshot error", err);
+  }
+
+  // 5. Fallback: If we have form or payload quotation_total
+  const form = formDataOf(payload);
+  const payloadQuote =
+    asNum(payload.quotation_total) ||
+    asNum(form.quotation_total) ||
+    asNum(payload.total_quotation) ||
+    asNum(form.total_quotation);
+  if (payloadQuote && payloadQuote > 0) return payloadQuote;
+
+  const tenTarget =
+    asNum(payload.ten_percent_target) ||
+    asNum(form.ten_percent_target);
+  if (tenTarget && tenTarget > 0) return Math.round(tenTarget * 10);
+
+  return null;
 }
 
 export function registerIncentivesRoutes(
@@ -258,9 +371,12 @@ export function registerIncentivesRoutes(
         const payload = parsePayload(lead.payload);
         const form = formDataOf(payload);
 
-        const salesApproved = asBool(payload.sales_closure_finance_approved);
+        const salesApproved =
+          asBool(payload.sales_closure_finance_approved) ||
+          asBool(payload.crm_booking_finance_approved);
         const salesApprovedAt =
           toDateIso(payload.sales_closure_finance_approved_at) ||
+          toDateIso(payload.crm_booking_finance_approved_at) ||
           toDateIso(payload.sales_closure_submitted_at);
 
         const tenComp = findComp(lead.id, "10% payment approval");
@@ -322,17 +438,22 @@ export function registerIncentivesRoutes(
           asNum(form.ten_percent_target) ||
           (breakdownTotal ? Math.round(breakdownTotal * 0.1) : null);
 
+        const firstQuoteTotal = await resolveFirstQuoteTotal(pool, lead.id, payload);
         const quoteCurrent = pickQuote(payload, breakdownTotal, tenTarget);
-        // Freeze Part 1 quote from ten% target when available; else current.
-        const quoteAtPart1 =
-          (tenTarget && tenTarget > 0 ? Math.round(tenTarget * 10) : 0) ||
-          asNum(payload.quotation_total_at_sales_closure) ||
-          quoteCurrent;
+        // Freeze Part 1 quote from first quote total when available; else current.
+        const quoteAtPart1 = firstQuoteTotal || quoteCurrent;
+
+        let twentyTarget = asNum(payload.twenty_percent_target) || asNum(form.twenty_percent_target);
+        if (!twentyTarget && breakdownTotal) {
+           twentyTarget = Math.round(breakdownTotal * 0.2);
+        }
+        const quoteAtPart2 = twentyTarget ? Math.round(twentyTarget * 5) : quoteCurrent;
 
         if (quoteCurrent <= 0 && quoteAtPart1 <= 0) continue;
 
         const q1 = quoteAtPart1 > 0 ? quoteAtPart1 : quoteCurrent;
         const qCur = quoteCurrent > 0 ? quoteCurrent : quoteAtPart1;
+        const q2 = quoteAtPart2 > 0 ? quoteAtPart2 : qCur;
         const salesTenRequired = Math.round((q1 * 10) / 100);
         const twentyCurrent = Math.round((qCur * 20) / 100);
         const sixtyCurrent = Math.round((qCur * 60) / 100);
@@ -355,6 +476,7 @@ export function registerIncentivesRoutes(
           id: String(lead.id),
           customerName: customerNameFrom(payload, lead.projectName),
           quotationAtFinanceApproval: q1,
+          quotationAtPart2: q2,
           quotationCurrent: qCur,
           salesTenPercentCollected: part1Lifetime
             ? Math.max(paid, salesTenRequired)
