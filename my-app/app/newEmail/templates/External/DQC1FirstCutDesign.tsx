@@ -65,7 +65,7 @@ export default function DQC1FirstCutDesignEmail({
           <div className="text-center mt-6 mb-6">
             <Button text="JOIN MEETING" href={meetingLink || '#'} />
             <Text className="m-0 mt-4 text-[13px] text-neutral-mediumGrey">
-              Link invitations will be shared shortly.
+              Join Meeting by clicking the button above.
             </Text>
           </div>
         ) : (

@@ -598,6 +598,9 @@ function sanitizeLeadPayloadForEmail(payload: Record<string, unknown>): Record<s
   return copy;
 }
 
+const mailDeduplicationCache = new Map<string, number>();
+const DEDUPLICATION_WINDOW_MS = 5000;
+
 async function triggerMailRouteWithLog(args: {
   leadId: number;
   milestoneIndex?: number;
@@ -610,6 +613,30 @@ async function triggerMailRouteWithLog(args: {
   const ccRaw = args.payload.cc;
   let to = Array.isArray(toRaw) ? toRaw.map(String) : toRaw ? [String(toRaw)] : [];
   let cc = Array.isArray(ccRaw) ? ccRaw.map(String) : ccRaw ? [String(ccRaw)] : [];
+
+  // Deduplicate triggers within the 5 seconds window
+  const cacheKey = `${args.leadId}:${args.route}:${[...to].sort().join(",")}`;
+  const nowMs = Date.now();
+  const lastSent = mailDeduplicationCache.get(cacheKey);
+  if (lastSent && (nowMs - lastSent) < DEDUPLICATION_WINDOW_MS) {
+    console.log("[mail-trigger-skipped-duplicate]", {
+      leadId: args.leadId,
+      route: args.route,
+      to,
+      timeSinceLastMs: nowMs - lastSent,
+    });
+    return true;
+  }
+  mailDeduplicationCache.set(cacheKey, nowMs);
+
+  // Clean up cache periodically to prevent unbounded memory growth
+  if (mailDeduplicationCache.size > 1000) {
+    for (const [key, val] of mailDeduplicationCache.entries()) {
+      if (nowMs - val > DEDUPLICATION_WINDOW_MS) {
+        mailDeduplicationCache.delete(key);
+      }
+    }
+  }
 
   // Never skip client / family emails on customer-facing mail-loop sends
   try {
@@ -4843,6 +4870,9 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
     payload.sales_closure_finance_rejected = false;
     payload.sales_closure_submitted_at =
       payload.sales_closure_submitted_at || new Date().toISOString();
+    if (payload.quotation_total && !payload.quotation_total_at_sales_closure) {
+      payload.quotation_total_at_sales_closure = parseFiniteNumber(payload.quotation_total);
+    }
     const thisPayment = parseFiniteNumber(payload.amount_paid_this_time) ?? parseFiniteNumber(payload.amount_paid) ?? 0;
     applySalesClosurePaymentTotals(payload, thisPayment, 0);
     if (thisPayment > 0 || payload.payment_screenshot) {
@@ -6681,7 +6711,8 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             return "/api/email/send-mom-color-laminate-selection-confirmation";
           }
           if (t === "DQC 2 submission") {
-            // Sl no 12 – DQC2 submission: internal only (to DQC)
+            // Sl no 12 – DQC2 submission: internal only (to DQC).
+            // Email fires once here when the task is marked complete.
             return "DQC2_SUBMISSION_DUAL";
           }
           if (t === "DQC 2 approval" || t === "DQC 2 approval ") {
@@ -6823,45 +6854,55 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
 
             // 1. Internal email to designer: DQC 1 approved, proceed for masking
             if (sendInternal) {
-              const url = `${FRONTEND_BASE}/api/email/send-ten-percent-payment-internal`;
               const mailChainCc = await getMailLoopCcEmails([actingUser.email, designerEmail], id);
               const mailChainSubject = buildMailChainSubject(projectId, leadRow.projectName, customerName);
-              try {
-                const emailPayload = {
+              void triggerMailRouteWithLog({
+                leadId: id,
+                milestoneIndex: 1,
+                taskName: "DQC 1 approval",
+                route: "/api/email/send-ten-percent-payment-internal",
+                visibility: "internal",
+                payload: {
                   to: designerEmail,
                   cc: mailChainCc,
                   subject: mailChainSubject,
                   customerName,
                   designerName,
                   ecName,
-                };
-                const r = await fetch(url, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: Buffer.from(JSON.stringify(emailPayload), "utf8"),
-                });
-                const text = await r.text();
-                if (!r.ok) {
-                  console.error("10% internal email API error", {
-                    leadId: id,
-                    status: r.status,
-                    body: text,
-                  });
-                } else {
-                  console.log("[DQC1_APPROVAL_DUAL] Internal email sent to designer");
-                }
-              } catch (err) {
-                console.error("10% internal email trigger error", { leadId: id, error: err });
-              }
+                },
+              });
             }
 
             // 2. CX email: 10% payment request with account details
             if (sendCx) {
-              const url = `${FRONTEND_BASE}/api/email/send-ten-percent-payment-request`;
               const mailChainCc = await getMailLoopCcEmails([actingUser.email, designerEmail], id);
               const mailChainSubject = buildMailChainSubject(projectId, leadRow.projectName, customerName);
-              try {
-                const emailPayload = {
+              const attachments = await (async () => {
+                try {
+                  const [ups] = await pool.query(
+                    `SELECT original_name as originalName, s3_url as s3Url, stored_path as storedPath
+                     FROM lead_uploads
+                     WHERE lead_id = ? AND upload_type = 'first_cut_design' AND status = 'approved'
+                     ORDER BY id DESC`,
+                    [id],
+                  );
+                  return ((ups as any[]) || []).map((u) => ({
+                    filename: (u.originalName || "Attachment").toString(),
+                    path: (u.s3Url || u.storedPath || "").toString(),
+                  })).filter(a => a.path);
+                } catch (e) {
+                  console.error("10% fetch attachments error", e);
+                  return [];
+                }
+              })();
+
+              void triggerMailRouteWithLog({
+                leadId: id,
+                milestoneIndex: 1,
+                taskName: "DQC 1 approval",
+                route: "/api/email/send-ten-percent-payment-request",
+                visibility: "internal+external",
+                payload: {
                   to: customerEmail,
                   cc: mailChainCc,
                   subject: mailChainSubject,
@@ -6873,43 +6914,9 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   milestoneTarget,
                   alreadyPaid,
                   designerName: actingUser.name,
-                  attachments: await (async () => {
-                    try {
-                      const [ups] = await pool.query(
-                        `SELECT original_name as originalName, s3_url as s3Url, stored_path as storedPath
-                         FROM lead_uploads
-                         WHERE lead_id = ? AND upload_type = 'first_cut_design' AND status = 'approved'
-                         ORDER BY id DESC`,
-                        [id],
-                      );
-                      return ((ups as any[]) || []).map((u) => ({
-                        filename: (u.originalName || "Attachment").toString(),
-                        path: (u.s3Url || u.storedPath || "").toString(),
-                      })).filter(a => a.path);
-                    } catch (e) {
-                      console.error("10% fetch attachments error", e);
-                      return [];
-                    }
-                  })(),
-                };
-                const r = await fetch(url, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: Buffer.from(JSON.stringify(emailPayload), "utf8"),
-                });
-                const text = await r.text();
-                if (!r.ok) {
-                  console.error("10% CX email API error", {
-                    leadId: id,
-                    status: r.status,
-                    body: text,
-                  });
-                } else {
-                  console.log("[DQC1_APPROVAL_DUAL] CX email sent to customer");
-                }
-              } catch (err) {
-                console.error("10% payment request CX email trigger error", { leadId: id, error: err });
-              }
+                  attachments,
+                },
+              });
             }
           }
         } catch (err) {
@@ -8849,22 +8856,15 @@ app.post("/api/leads/:id/approve-sales-closure", async (req: Request, res: Respo
       });
     }
 
+    payloadObj.sales_closure_finance_approved = true;
+    payloadObj.sales_closure_finance_approved_at = new Date().toISOString();
+    if (payloadObj.quotation_total && !payloadObj.quotation_total_at_sales_closure) {
+      payloadObj.quotation_total_at_sales_closure = parseFiniteNumber(payloadObj.quotation_total);
+    }
+
     await pool.query(
-      `
-      UPDATE leads 
-      SET 
-        project_stage = '10-20%',
-        payload = JSON_SET(
-          CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, 
-          '$.sales_closure_finance_approved', 
-          true,
-          '$.sales_closure_finance_approved_at',
-          ?
-        ),
-        update_at = ?
-      WHERE id = ?
-    `,
-      [new Date().toISOString(), new Date(), leadId],
+      `UPDATE leads SET project_stage = '10-20%', payload = ?, update_at = ? WHERE id = ?`,
+      [JSON.stringify(payloadObj), new Date(), leadId]
     );
 
     // Optional event tracking for lead history
@@ -9001,6 +9001,9 @@ app.put("/api/sales-closure/:id", async (req: Request, res: Response) => {
       sales_closure_finance_rejected: false,
       sales_closure_resubmitted_at: new Date().toISOString(),
     };
+    if (updatedPayload.quotation_total && !updatedPayload.quotation_total_at_sales_closure) {
+      updatedPayload.quotation_total_at_sales_closure = parseFiniteNumber(updatedPayload.quotation_total);
+    }
 
     const previousCumulative = readTotalPaidToward10Percent(existingPayload);
     const thisPayment =
@@ -9278,6 +9281,9 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
       }
       payload.crm_booking_finance_approved = true;
       payload.crm_booking_finance_approved_at = now.toISOString();
+      if (payload.quotation_total && !payload.quotation_total_at_sales_closure) {
+        payload.quotation_total_at_sales_closure = parseFiniteNumber(payload.quotation_total);
+      }
       await pool.query(
         `UPDATE leads SET project_stage = '10-20%', payload = ?, update_at = ? WHERE id = ?`,
         [JSON.stringify(payload), now, leadId],
@@ -9398,12 +9404,24 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
           row.projectName ||
           "Customer";
         const projectId = row.pid || `HUB-${leadId}`;
-        const rawOrderValue = formData.order_value ?? payload.order_value ?? null;
+        const rawOrderValue =
+          formData.order_value ??
+          payload.order_value ??
+          payload.quotation_total ??
+          formData.project_value ??
+          payload.project_value ??
+          null;
         const paymentAmounts = await resolveMilestonePaymentAmounts(leadId, 0.1, rawOrderValue);
-        let amountPaid = paymentAmounts.amountDue;
+        let amountPaid =
+          formData.amount_paid ??
+          payload.amount_paid ??
+          formData.total_paid_toward_10_percent ??
+          payload.total_paid_toward_10_percent ??
+          (paymentAmounts.amountDue ? paymentAmounts.amountDue.replace(/^₹\s*/, "") : undefined);
         if (!amountPaid) {
           amountPaid = orderValueToMilestoneAmount(rawOrderValue, 0.1);
         }
+        const totalProjectValue = paymentAmounts.quotationTotal ?? rawOrderValue ?? undefined;
         const paymentDate = now.toLocaleDateString("en-IN", {
           day: "2-digit",
           month: "short",
@@ -9460,7 +9478,7 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
               amountPaid: amountPaid || undefined,
               paymentDate,
               transactionRef,
-              totalProjectValue: rawOrderValue || undefined,
+              totalProjectValue: totalProjectValue,
               paymentMode,
               ...(attachments ? { attachments } : {}),
             },
@@ -9725,12 +9743,12 @@ app.get("/api/leads/finance-40p-queue", async (req: Request, res: Response) => {
       compList.some(
         (c) =>
           c.leadId === leadId &&
-          c.milestoneIndex === 6 &&
+          c.milestoneIndex === 5 &&
           (c.taskName === "40% collection" ||
             c.taskName === "meeting completed & 40% payment request"),
       );
     const has40pApproval = (leadId: number) =>
-      compList.some((c) => c.leadId === leadId && c.milestoneIndex === 6 && c.taskName === "40% payment approval");
+      compList.some((c) => c.leadId === leadId && c.milestoneIndex === 5 && c.taskName === "40% payment approval");
     const [uploadRows] = await pool.query(
       "SELECT lead_id as leadId FROM lead_uploads WHERE upload_type = 'payment_40p'"
     );
@@ -9808,7 +9826,7 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
     const now = new Date();
     await pool.query(
       `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
-       VALUES (?, 6, '40% payment approval', ?)
+       VALUES (?, 5, '40% payment approval', ?)
        ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
       [leadId, now]
     );
@@ -9902,11 +9920,19 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
           year: "numeric",
         });
 
-        const rawOrderValue = formData.order_value ?? payload.order_value ?? null;
+        const rawOrderValue =
+          formData.order_value ??
+          payload.order_value ??
+          payload.quotation_total ??
+          formData.project_value ??
+          payload.project_value ??
+          null;
         const paymentAmounts = await resolveMilestonePaymentAmounts(leadId, 0.4, rawOrderValue);
         const amountReceived =
           formData.forty_percent_amount ??
           payload?.forty_percent_amount ??
+          formData.total_paid_toward_40_percent ??
+          payload?.total_paid_toward_40_percent ??
           (paymentAmounts.amountDue ? paymentAmounts.amountDue.replace(/^₹\s*/, "") : undefined);
         const totalProjectValue = paymentAmounts.quotationTotal ?? rawOrderValue ?? undefined;
         const transactionRef = projectId ? `${projectId}-40PCT-${Date.now()}` : `40PCT-${Date.now()}`;
@@ -11057,6 +11083,22 @@ async function persistDqc1SubmissionFromMeta(
         ]);
         const subject = buildMailChainSubject(leadId, leadRow.projectName, customerName);
 
+        const attachmentsList: { filename: string; path: string }[] = [];
+        for (let i = 0; i < drawingFiles.length; i++) {
+          const f = drawingFiles[i];
+          const path = drawingS3Urls[i] || f.path;
+          if (path) {
+            attachmentsList.push({ filename: f.originalname, path });
+          }
+        }
+        for (let i = 0; i < quotationFiles.length; i++) {
+          const f = quotationFiles[i];
+          const path = quotationS3Urls[i] || f.path;
+          if (path) {
+            attachmentsList.push({ filename: f.originalname, path });
+          }
+        }
+
         void triggerMailRouteWithLog({
           leadId,
           milestoneIndex: 1,
@@ -11072,26 +11114,10 @@ async function persistDqc1SubmissionFromMeta(
             designerName,
             projectValue: String(projectValue || ""),
             dqcRepName: primaryDqc.name || "DQC Team",
-            ...(drawingS3Urls.some(Boolean) || quotationS3Urls.some(Boolean)
-              ? {
-                attachments: [
-                  ...drawingFiles
-                    .map((f, idx) =>
-                      drawingS3Urls[idx]
-                        ? { filename: f.originalname, path: drawingS3Urls[idx] as string }
-                        : null,
-                    )
-                    .filter((v): v is { filename: string; path: string } => !!v),
-                  ...quotationFiles
-                    .map((f, idx) =>
-                      quotationS3Urls[idx]
-                        ? { filename: f.originalname, path: quotationS3Urls[idx] as string }
-                        : null,
-                    )
-                    .filter((v): v is { filename: string; path: string } => !!v),
-                ],
-              }
-              : {}),
+            projectId: leadRow.pid || `HUB-${leadId}`,
+            drawingFileName: drawingFiles.map((f) => f.originalname).join(", "),
+            quotationFileName: quotationFiles.map((f) => f.originalname).join(", "),
+            ...(attachmentsList.length > 0 ? { attachments: attachmentsList } : {}),
           },
         });
       } else {
@@ -11160,6 +11186,10 @@ async function persistDqc2SubmissionFromMeta(
      VALUES (?, ?, ?, ?, NULL)`,
     [leadId, "pending_dqc2", JSON.stringify([]), now],
   );
+
+  // NOTE: The internal DQC review email (send-dqc2-final-design-submission-internal) is intentionally
+  // NOT sent here. It is sent exclusively via the complete-task → DQC2_SUBMISSION_DUAL handler to
+  // prevent duplicate emails when the designer uploads files and then completes the task.
 }
 
 // ----- DQC 1: browser uploads directly to S3 (bypasses Nginx body limit); then small JSON "complete" calls API -----

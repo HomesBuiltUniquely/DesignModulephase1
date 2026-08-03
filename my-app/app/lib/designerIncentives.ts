@@ -69,6 +69,8 @@ export type DealLedgerRow = {
   dealValue: number;
   /** Quotation when finance approved the first 10% (pre-D1) */
   quotationAtFinanceApproval: number;
+  /** Quotation when finance approved the post-DQC1 design 10% */
+  quotationAtPart2?: number;
   closureTime: "SAME DAY" | "48 HOURS" | "72 HOURS+";
   /** Sum of unlocked weight % (e.g. 50, or 75 if Parts 1+2 cleared) */
   contributionPct: number;
@@ -390,6 +392,7 @@ export function computeDownsaleAdjustment(
 
 export function computeWeightedStages(input: {
   quotationAtFinanceApproval: number;
+  quotationAtPart2?: number;
   quotationCurrent: number;
   /** Amount collected toward the first (sales) 10% */
   salesTenPercentCollected: number;
@@ -415,12 +418,16 @@ export function computeWeightedStages(input: {
 }): WeightedStageCredit[] {
   const quoteAtApproval = Math.max(0, input.quotationAtFinanceApproval);
   const quoteCurrent = Math.max(0, input.quotationCurrent);
+  const quoteAtPart2 = input.quotationAtPart2 != null && input.quotationAtPart2 > 0 ? input.quotationAtPart2 : quoteCurrent;
+  
   const salesTenRequired = Math.round((quoteAtApproval * COLLECTION_MILESTONE_PCT) / 100);
-  const designTenOfCurrent = Math.round((quoteCurrent * COLLECTION_MILESTONE_PCT) / 100);
+  const designTenOfPart2 = Math.round((quoteAtPart2 * COLLECTION_MILESTONE_PCT) / 100);
   const priorTenOfOld = Math.round((quoteAtApproval * COLLECTION_MILESTONE_PCT) / 100);
-  const revisionTopUp = Math.max(0, designTenOfCurrent - priorTenOfOld);
-  // Design 10% milestone: 20% cumulative of current quote
-  const twentyPercentOfCurrent = Math.round((quoteCurrent * 20) / 100);
+  const revisionTopUp = Math.max(0, designTenOfPart2 - priorTenOfOld);
+  
+  // Design 10% milestone: 20% cumulative of Part 2 quote
+  const twentyPercentOfPart2 = Math.round((quoteAtPart2 * 20) / 100);
+  
   // 40% payment milestone: 60% cumulative of current quote
   const sixtyPercentOfCurrent = Math.round((quoteCurrent * 60) / 100);
   const fortyPercentOfCurrent = Math.round(
@@ -435,8 +442,8 @@ export function computeWeightedStages(input: {
 
   const part2AmountMet =
     part1Cleared &&
-    twentyPercentOfCurrent > 0 &&
-    input.cumulativeCollectedTowardDesign10 >= twentyPercentOfCurrent;
+    twentyPercentOfPart2 > 0 &&
+    input.cumulativeCollectedTowardDesign10 >= twentyPercentOfPart2;
   const part2RequestRaised = part2AmountMet;
   const part2Cleared = part2RequestRaised && input.designTenPercentFinanceApproved;
 
@@ -450,9 +457,9 @@ export function computeWeightedStages(input: {
   const part1Weighted = part1Cleared
     ? Math.round((quoteAtApproval * WEIGHTED_CREDIT_PCT.preD1Finance10) / 100)
     : 0;
-  // Part 2: always 25% of current quotation (upsale or downsale)
+  // Part 2: always 25% of Part 2 quotation
   const part2Weighted = part2Cleared
-    ? Math.round((quoteCurrent * WEIGHTED_CREDIT_PCT.postDqc1Design10) / 100)
+    ? Math.round((quoteAtPart2 * WEIGHTED_CREDIT_PCT.postDqc1Design10) / 100)
     : 0;
   // Part 3: upsale → 25% of Part 1 + full upsale; downsale → 25% of current quote
   const part3Weighted = part3Cleared
@@ -480,15 +487,15 @@ export function computeWeightedStages(input: {
     {
       stageId: "post_dqc1_design_10",
       label: "Part 2 · Post-DQC1 design 10%",
-      quotationValue: quoteCurrent,
-      collectionRequired: designTenOfCurrent,
+      quotationValue: quoteAtPart2,
+      collectionRequired: designTenOfPart2,
       revisionTopUp,
       upsaleAmount: 0,
       collectionReceived: Math.max(
         0,
         Math.min(
           input.cumulativeCollectedTowardDesign10 - (part1Cleared ? salesTenRequired : 0),
-          designTenOfCurrent + revisionTopUp,
+          designTenOfPart2 + revisionTopUp,
         ),
       ),
       requestRaised: part2RequestRaised,
@@ -511,7 +518,7 @@ export function computeWeightedStages(input: {
         0,
         Math.min(
           input.cumulativeCollectedTowardFortyPercent -
-            (part2Cleared ? twentyPercentOfCurrent : 0),
+            (part2Cleared ? twentyPercentOfPart2 : 0),
           fortyPercentOfCurrent,
         ),
       ),
@@ -591,6 +598,7 @@ export type IncentiveDealInput = {
   id: string;
   customerName: string;
   quotationAtFinanceApproval: number;
+  quotationAtPart2?: number;
   quotationCurrent: number;
   salesTenPercentCollected: number;
   salesTenPercentFinanceApproved: boolean;
@@ -646,6 +654,7 @@ export function buildIncentivesFromDealInputs(
     .map((d) => {
       const stagesRaw = computeWeightedStages({
         quotationAtFinanceApproval: d.quotationAtFinanceApproval,
+        quotationAtPart2: d.quotationAtPart2,
         quotationCurrent: d.quotationCurrent,
         salesTenPercentCollected: d.salesTenPercentCollected,
         salesTenPercentFinanceApproved: d.salesTenPercentFinanceApproved,
@@ -679,6 +688,7 @@ export function buildIncentivesFromDealInputs(
         initials: initialsFromName(d.customerName),
         dealValue: d.quotationCurrent,
         quotationAtFinanceApproval: d.quotationAtFinanceApproval,
+        quotationAtPart2: d.quotationAtPart2,
         closureTime: d.closureTime || "48 HOURS",
         contributionPct,
         grossWeightedRevenue,

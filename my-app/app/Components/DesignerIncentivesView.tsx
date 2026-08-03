@@ -836,11 +836,14 @@ function IndividualIncentivesPanel({
                     </td>
                     <td className="py-3.5 pr-4">
                       <div className="font-medium text-gray-800">{formatInr(deal.dealValue)}</div>
-                      {deal.dealValue !== deal.quotationAtFinanceApproval ? (
-                        <div className="text-[10px] text-gray-500">
-                          At finance 10%: {formatInr(deal.quotationAtFinanceApproval)}
-                        </div>
-                      ) : null}
+                      <div className="text-[10px] text-gray-500">
+                        {deal.dealValue !== deal.quotationAtFinanceApproval ? (
+                          <div>Part 1: {formatInr(deal.quotationAtFinanceApproval)}</div>
+                        ) : null}
+                        {deal.quotationAtPart2 != null && deal.quotationAtPart2 !== deal.quotationAtFinanceApproval && deal.quotationAtPart2 !== deal.dealValue ? (
+                          <div>Part 2: {formatInr(deal.quotationAtPart2)}</div>
+                        ) : null}
+                      </div>
                     </td>
                     <td className="py-3.5 pr-4">
                       <div className="flex flex-wrap gap-1">
