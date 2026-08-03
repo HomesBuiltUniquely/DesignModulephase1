@@ -24,3 +24,4 @@ export { default as PopupAssignProjectManager } from './popups/PopupAssignProjec
 export { default as PopupProjectManagerApproval } from './popups/PopupProjectManagerApproval';
 export { default as Popup40pCollection } from './popups/Popup40pCollection';
 export { default as PopupFinancePaymentApproval } from './popups/PopupFinancePaymentApproval';
+export { default as PopupKtTransfer } from './popups/PopupKtTransfer';

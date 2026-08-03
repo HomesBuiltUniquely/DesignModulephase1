@@ -122,6 +122,7 @@ function getStatusFromMilestone(
         4: { label: "DQC 2", className: "bg-purple-100 text-purple-800" },
         5: { label: "40% PAYMENT", className: "bg-amber-100 text-amber-800" },
         6: { label: "PUSH TO PROD.", className: "bg-green-100 text-green-800" },
+        7: { label: "KT TRANSFER", className: "bg-teal-100 text-teal-800" },
     };
     if (milestoneIndex !== undefined && milestoneIndex >= 0 && byIndex[milestoneIndex])
         return byIndex[milestoneIndex];
@@ -133,6 +134,7 @@ function getStatusFromMilestone(
         "DQC2": { label: "DQC 2", className: "bg-purple-100 text-purple-800" },
         "40% PAYMENT": { label: "40% PAYMENT", className: "bg-amber-100 text-amber-800" },
         "PUSH TO PRODUCTION": { label: "PUSH TO PROD.", className: "bg-green-100 text-green-800" },
+        "KT TRANSFER": { label: "KT TRANSFER", className: "bg-teal-100 text-teal-800" },
     };
     if (milestoneName && byName[milestoneName]) return byName[milestoneName];
     return { label: "—", className: "bg-gray-100 text-gray-600" };
@@ -149,6 +151,7 @@ function getNextAction(bucket: string): string {
 // Milestone options for the Filter dropdown (Design Phase table)
 const MILESTONE_FILTER_OPTIONS: { value: string; label: string }[] = [
     { value: "", label: "All milestones" },
+    { value: "KT TRANSFER", label: "KT TRANSFER" },
     { value: "D1 SITE MEASUREMENT", label: "D1 SITE MEASUREMENT" },
     { value: "DQC1", label: "DQC1" },
     { value: "10% PAYMENT", label: "10% PAYMENT" },
@@ -173,6 +176,7 @@ function getNextActionFromMilestone(
             4: "Submit for QC",
             5: "Request 40% payment",
             6: "Cx approval / Push to prod.",
+            7: "Complete KT transfer",
         };
         if (actions[milestoneIndex] !== undefined) return actions[milestoneIndex];
     }
@@ -185,6 +189,7 @@ function getNextActionFromMilestone(
             "DQC2": "Submit for QC",
             "40% PAYMENT": "Request 40% payment",
             "PUSH TO PRODUCTION": "Cx approval / Push to prod.",
+            "KT TRANSFER": "Complete KT transfer",
         };
         if (byName[milestoneName]) return byName[milestoneName];
     }

@@ -123,9 +123,7 @@ export default function MilestonesCard({
 
   const milestones = isMaximized
     ? MileStonesArray.MilestonesName
-    : MileStonesArray.MilestonesName.filter(
-        (_, i) => i === currentMilestoneIndex,
-      );
+    : MileStonesArray.MilestonesName.filter((m) => m.id === currentMilestoneIndex);
 
   return (
     <div className={`${cardClass} flex h-full min-h-0 flex-col`}>
@@ -298,9 +296,11 @@ export default function MilestonesCard({
             style={{ scrollbarWidth: "thin" }}
           >
             {milestones.map((milestone, idx) => {
-              const milestoneIndex = isMaximized ? idx : currentMilestoneIndex;
-              const isCurrent = milestoneIndex === currentMilestoneIndex;
-              const isNextOrLater = milestoneIndex > currentMilestoneIndex;
+              const milestoneIndex = milestone.id;
+              const targetVisualIndex = MileStonesArray.MilestonesName.findIndex((m) => m.id === milestoneIndex);
+              const currentVisualIndex = MileStonesArray.MilestonesName.findIndex((m) => m.id === currentMilestoneIndex);
+              const isCurrent = targetVisualIndex === currentVisualIndex;
+              const isNextOrLater = targetVisualIndex > currentVisualIndex;
               const taskList = milestone.taskList;
               const completedCount = taskList.filter(
                 (_, taskIndex) => getTaskStatus(milestoneIndex, taskIndex, taskList).icon === "completed",
@@ -314,10 +314,11 @@ export default function MilestonesCard({
                 "Jan 01 - Jan 15",
                 "Jan 16 - Jan 30",
                 "Feb 01 - Feb 15",
-                "Feb 16 - Feb 28",
                 "Mar 01 - Mar 15",
+                "Mar 16 - Mar 31",
               ];
-              const dateRange = dateRanges[milestoneIndex] ?? "TBD";
+              const displayIndex = milestone.id === 7 ? 0 : milestone.id + 1;
+              const dateRange = dateRanges[displayIndex] ?? "TBD";
               return (
                 <div
                   key={milestone.id}
@@ -328,7 +329,7 @@ export default function MilestonesCard({
                     <span
                       className={`text-xs font-bold uppercase tracking-wide ${isCurrent ? "text-green-900" : isNextOrLater ? "text-gray-400" : "text-gray-500"}`}
                     >
-                      Milestone {String(milestoneIndex + 1).padStart(2, "0")}
+                      Milestone {String(milestone.id === 7 ? 0 : milestone.id + 1).padStart(2, "0")}
                     </span>
                     <span
                       className={`text-xs ml-2 ${isNextOrLater ? "text-green-400" : "text-green-600"}`}

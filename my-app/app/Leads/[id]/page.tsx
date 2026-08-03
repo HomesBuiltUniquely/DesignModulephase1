@@ -31,6 +31,7 @@ import {
     PopupProjectManagerApproval,
     Popup40pCollection,
     PopupFinancePaymentApproval,
+    PopupKtTransfer,
 } from './components';
 import PopupD1FilesWaiting from './components/popups/PopupD1FilesWaiting';
 import { checklistDefinitions, getChecklistKeyForTask } from './components/Checklists/checklistRegistry';
@@ -77,8 +78,8 @@ export default function ProjectDetailPage() {
     // Track which tasks that have checklists have had their checklist completed
     const [completedChecklistKeys, setCompletedChecklistKeys] = useState<string[]>([]);
 
-    const filesCanUpload = currentMilestoneIndex === 3 ? canUploadD2Files : isMmtUser;
-    const filesCanDelete = currentMilestoneIndex === 3 ? canUploadD2Files : isMmtUser;
+    const filesCanUpload = currentMilestoneIndex === 4 ? canUploadD2Files : isMmtUser;
+    const filesCanDelete = currentMilestoneIndex === 4 ? canUploadD2Files : isMmtUser;
 
     const taskKey = (milestoneIndex: number, taskName: string) => `${milestoneIndex}-${taskName}`;
 
@@ -90,20 +91,21 @@ export default function ProjectDetailPage() {
     // Keep highlighted milestone in sync with persisted task completions (handles refresh and new tasks).
     useEffect(() => {
         const milestones = MileStonesArray.MilestonesName;
-        let idx = 0;
+        let activeId = milestones[0].id;
         for (let i = 0; i < milestones.length; i++) {
             const m = milestones[i];
             const allDone = m.taskList.every((t: string) =>
-                completedTaskKeys.includes(taskKey(i, t)),
+                completedTaskKeys.includes(taskKey(m.id, t)),
             );
             if (!allDone) {
-                idx = i;
+                activeId = m.id;
                 break;
             }
-            idx = i + 1;
+            if (i < milestones.length - 1) {
+                activeId = milestones[i + 1].id;
+            }
         }
-        const last = milestones.length - 1;
-        setCurrentMilestoneIndex(Math.min(Math.max(0, idx), last));
+        setCurrentMilestoneIndex(activeId);
     }, [completedTaskKeys]);
 
     // Hydrate completed tasks for this lead from backend so milestone index matches server state
@@ -1323,14 +1325,16 @@ export default function ProjectDetailPage() {
             setTimeout(() => setBlockedTaskMessage(null), 3000);
             return;
         }
+        const targetVisualIndex = MileStonesArray.MilestonesName.findIndex(m => m.id === milestoneIndex);
+        const currentVisualIndex = MileStonesArray.MilestonesName.findIndex(m => m.id === currentMilestoneIndex);
         // Only allow opening tasks for the current or past milestones; next milestones unlock after current is completed
-        if (milestoneIndex > currentMilestoneIndex) {
+        if (targetVisualIndex > currentVisualIndex) {
             setBlockedTaskMessage('Complete the current milestone first.');
             setTimeout(() => setBlockedTaskMessage(null), 3000);
             return;
         }
 
-        const milestone = MileStonesArray.MilestonesName[milestoneIndex];
+        const milestone = MileStonesArray.MilestonesName.find((m) => m.id === milestoneIndex);
         if (!milestone) return;
 
         // If this task has a checklist, force the checklist to be completed before showing the popup.
@@ -1532,7 +1536,7 @@ export default function ProjectDetailPage() {
             setTimeout(() => setBlockedTaskMessage(null), 3000);
             return Promise.resolve({ ok: false });
         }
-        const milestone = MileStonesArray.MilestonesName[milestoneIndex];
+        const milestone = MileStonesArray.MilestonesName.find((m) => m.id === milestoneIndex);
         const milestoneName = milestone?.name ?? `Milestone ${milestoneIndex + 1}`;
         addHistoryEvent({
             type: 'completed',
@@ -1746,8 +1750,10 @@ export default function ProjectDetailPage() {
         const taskName = taskList[taskIndex];
         const key = taskKey(milestoneIndex, taskName);
         const isCompleted = completedTaskKeys.includes(key);
-        const isCurrentMilestone = milestoneIndex === currentMilestoneIndex;
-        const isPastMilestone = milestoneIndex < currentMilestoneIndex;
+        const targetVisualIndex = MileStonesArray.MilestonesName.findIndex(m => m.id === milestoneIndex);
+        const currentVisualIndex = MileStonesArray.MilestonesName.findIndex(m => m.id === currentMilestoneIndex);
+        const isCurrentMilestone = targetVisualIndex === currentVisualIndex;
+        const isPastMilestone = targetVisualIndex < currentVisualIndex;
         const isSpm = (authUser?.role || '').toLowerCase() === 'senior_project_manager';
         const needsSpmAssignPm =
             isSpm &&
@@ -2630,7 +2636,7 @@ export default function ProjectDetailPage() {
                         scrollRef={milestoneCardsScrollRef}
                         onOpenTask={openTaskPopup}
                         onVisitChecklist={(milestoneIndex, taskName) => {
-                            const milestone = MileStonesArray.MilestonesName[milestoneIndex];
+                            const milestone = MileStonesArray.MilestonesName.find((m) => m.id === milestoneIndex);
                             setChecklistContext({ milestoneIndex, milestoneName: milestone?.name ?? '', taskName });
                         }}
                         getTaskStatus={getTaskStatus}
@@ -2669,7 +2675,7 @@ export default function ProjectDetailPage() {
                                     userRole={authUser?.role}
                                     userName={authUser?.name}
                                     canDelete={false}
-                                    uploadType={currentMilestoneIndex === 3 ? 'd2_masking' : undefined}
+                                    uploadType={currentMilestoneIndex === 4 ? 'd2_masking' : undefined}
                                 />
                                 <ChatCard
                                     cardClass={getCardClass('chat', 'xl:rounded-3xl xl:bg-purple-50 xl:row-span-1 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative')}
@@ -2690,7 +2696,7 @@ export default function ProjectDetailPage() {
                                     userRole={authUser?.role}
                                     userName={authUser?.name}
                                     canDelete={filesCanDelete}
-                                    uploadType={currentMilestoneIndex === 3 ? 'd2_masking' : 'd1'}
+                                    uploadType={currentMilestoneIndex === 4 ? 'd2_masking' : currentMilestoneIndex === 0 ? 'kt_transfer' : 'd1'}
                                     onD2UploadComplete={() => {
                                         refreshCompletions();
                                         setUploadsVersion((v) => v + 1);
@@ -2830,6 +2836,16 @@ export default function ProjectDetailPage() {
 
             {popupContext && (
                 <TaskModal context={popupContext} onClose={closePopup}>
+                    {/* ---------- Milestone 7 (visual index 0): KT TRANSFER – File upload & Mark as done ---------- */}
+                    {popupContext.milestoneIndex === 7 && popupContext.taskName === 'Upload KT files' && (
+                        <PopupKtTransfer
+                            leadId={projectId}
+                            sessionId={sessionId}
+                            onMarkComplete={() => { recordTaskComplete(7, 'Upload KT files'); closePopup(); }}
+                            onClose={closePopup}
+                        />
+                    )}
+
                     {/* ---------- Milestone 0: D1 SITE MEASUREMENT – D1 popup only for "D1 for MMT request" ---------- */}
                     {popupContext.milestoneIndex === 0 && popupContext.taskName === 'D1 for MMT request' && (
                         <PopupD1Measurement
@@ -2862,6 +2878,42 @@ export default function ProjectDetailPage() {
                                 ''
                             }
                             sessionId={sessionId}
+                            customerName={
+                                project?.intakeCustomerName?.trim() ||
+                                project?.projectName?.trim() ||
+                                ''
+                            }
+                            leadPayload={{
+                                ...parseLeadPayload((project as any)?.payload),
+                                // Merge top-level project fields that live outside payload
+                                ...(project?.configScopeSummary ? { configScopeSummary: project.configScopeSummary } : {}),
+                                ...(project?.experienceSummary ? { experienceSummary: project.experienceSummary } : {}),
+                                ...(project?.decisionSummary ? { decisionSummary: project.decisionSummary } : {}),
+                                // Direct intake fields as fallbacks
+                                id: projectId ?? undefined,
+                                prolanceQuoteId: project?.prolanceQuoteId ?? undefined,
+                                prolance_quote_id: project?.prolanceQuoteId ?? undefined,
+                                property_location: project?.intakePropertyLocation ?? undefined,
+                                intake_possession_date: project?.intakePossessionDate ?? undefined,
+                                intake_budget: project?.intakeBudget ?? undefined,
+                                sales_executive: project?.salesExecutive ?? undefined,
+                                intake_configuration: project?.intakeConfiguration ?? undefined,
+                                // Finance approval fields — used to set booking status + date
+                                finance_approved_raw: project?.financeApprovedRaw ?? undefined,
+                                approved_at: (project as any)?.approvedAt ?? (project as any)?.financeApprovedAt ?? undefined,
+                                crm_booking_finance_approved: project?.financeApprovedRaw === 'true' ? true : undefined,
+                                crm_booking_finance_approved_at: (project as any)?.approvedAt ?? (project as any)?.financeApprovedAt ?? undefined,
+                            }}
+                            quotationLink={(() => {
+                                const qid =
+                                    prolanceQuoteId ??
+                                    (project?.prolanceQuoteId != null && Number(project.prolanceQuoteId) > 0 ? Number(project.prolanceQuoteId) : null) ??
+                                    extractNumber((latestQuoteResponse as any)?.id) ??
+                                    extractNumber((latestQuoteResponse as any)?.quote_id) ??
+                                    extractNumber((latestQuoteResponse as any)?.quotation_id) ??
+                                    null;
+                                return qid != null ? `${typeof window !== 'undefined' ? window.location.origin : 'https://homesbuiltuniquely.com'}/quote/${Math.trunc(qid)}` : '';
+                            })()}
                             onEmailsSaved={(emails) => {
                                 setProject((prev) => (prev ? { ...prev, ...emails } : prev));
                             }}
@@ -3986,6 +4038,9 @@ export default function ProjectDetailPage() {
                     )}
                     {popupContext.milestoneIndex === 6 && popupContext.taskName !== 'Cx approval for production' && popupContext.taskName !== 'POC mail' && popupContext.taskName !== 'POC mail & Timeline submission' && (
                         <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(6, popupContext.taskName); closePopup(); }} />
+                    )}
+                    {popupContext.milestoneIndex === 7 && popupContext.taskName !== 'Upload KT files' && (
+                        <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(7, popupContext.taskName); closePopup(); }} />
                     )}
                 </TaskModal>
             )}

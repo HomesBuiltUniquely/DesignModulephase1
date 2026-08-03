@@ -3,8 +3,8 @@ import { Section, Row, Column, Text } from '@react-email/components';
 
 export interface OfferCardItem {
   label: string;
-  value: string;
-  subtitle?: string;
+  value: React.ReactNode;
+  subtitle?: React.ReactNode;
   accent?: boolean;
   badge?: React.ReactNode;
 }
