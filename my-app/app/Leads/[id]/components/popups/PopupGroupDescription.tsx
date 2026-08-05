@@ -18,7 +18,7 @@ function formatPhone(phone: string): string {
   return phone || '—';
 }
 
-type TeamMember = { name: string; phone: string };
+type TeamMember = { name: string; phone: string; email?: string };
 
 type TeamPhones = {
   admins: TeamMember[];
@@ -30,6 +30,8 @@ type Props = {
   leadId?: number | null;
   designerPhone: string;
   clientPhone: string;
+  designManagerName?: string;
+  designManagerEmail?: string;
   sessionId: string | null;
   /** Returns API result so popup can show mail-success toast */
   onMarkComplete: () => Promise<{ ok: boolean; mailSent?: boolean; mailTo?: string[] }>;
@@ -44,6 +46,8 @@ export default function PopupGroupDescription({
   leadId,
   designerPhone,
   clientPhone,
+  designManagerName = '',
+  designManagerEmail = '',
   sessionId,
   onMarkComplete,
   onClose,
@@ -86,13 +90,38 @@ export default function PopupGroupDescription({
     } catch (_) {}
   };
 
+  const filterAssignedDM = (members: TeamMember[]) => {
+    const expectedName = (designManagerName || '').trim().toLowerCase();
+    const expectedEmail = (designManagerEmail || '').trim().toLowerCase();
+    if (!expectedName && !expectedEmail) return [];
+
+    const matched = members.filter((m) => {
+      if (expectedEmail && m.email && m.email.trim().toLowerCase() === expectedEmail) return true;
+      if (expectedName) {
+        const mName = (m.name || '').trim().toLowerCase();
+        if (mName && (mName === expectedName || mName.includes(expectedName) || expectedName.includes(mName))) {
+          return true;
+        }
+      }
+      return false;
+    });
+
+    if (matched.length > 0) return matched;
+    if (designManagerName || designManagerEmail) {
+      return [{ name: (designManagerName || designManagerEmail || '').trim(), phone: '' }];
+    }
+    return [];
+  };
+
+  const dmForGroup = filterAssignedDM(teamPhones?.design_managers || []);
+
   const allPhonesWithRole = (): { role: string; name: string; phone: string }[] => {
     const list: { role: string; name: string; phone: string }[] = [];
     if (hasDesigner) list.push({ role: 'Designer', name: 'You', phone: designerPhone });
     if (hasClient) list.push({ role: 'Client', name: 'Client', phone: clientPhone });
     (teamPhones?.admins || []).forEach((m) => { if ((m.phone || '').replace(/\D/g, '').length >= 10) list.push({ role: 'Admin', name: m.name, phone: m.phone }); });
     (teamPhones?.territorial_design_managers || []).forEach((m) => { if ((m.phone || '').replace(/\D/g, '').length >= 10) list.push({ role: 'TDM', name: m.name, phone: m.phone }); });
-    (teamPhones?.design_managers || []).forEach((m) => { if ((m.phone || '').replace(/\D/g, '').length >= 10) list.push({ role: 'DM', name: m.name, phone: m.phone }); });
+    dmForGroup.forEach((m) => { if ((m.phone || '').replace(/\D/g, '').length >= 10) list.push({ role: 'DM', name: m.name, phone: m.phone }); });
     return list;
   };
 
@@ -218,7 +247,7 @@ export default function PopupGroupDescription({
         </div>
         {renderRoleSection('Admin(s)', teamPhones?.admins || [], 'admin')}
         {renderRoleSection('Territorial Design Manager(s)', teamPhones?.territorial_design_managers || [], 'tdm')}
-        {renderRoleSection('Design Manager(s)', teamPhones?.design_managers || [], 'dm')}
+        {renderRoleSection('Design Manager(s)', dmForGroup, 'dm')}
         <div className="pt-2">
           <button
             type="button"
