@@ -2863,6 +2863,18 @@ export default function ProjectDetailPage() {
                             leadId={projectId}
                             designerPhone={authUser?.phone ?? ''}
                             clientPhone={project?.contactNo ?? ''}
+                            designManagerName={
+                                (project as any)?.designManagerName ||
+                                (project as any)?.design_manager_name ||
+                                (project as any)?.designer_lead_name ||
+                                ''
+                            }
+                            designManagerEmail={
+                                (project as any)?.designManagerEmail ||
+                                (project as any)?.design_manager_email ||
+                                (project as any)?.designer_lead_email ||
+                                ''
+                            }
                             sessionId={sessionId}
                             onMarkComplete={() => recordTaskComplete(0, 'Group Description')}
                             onClose={closePopup}
