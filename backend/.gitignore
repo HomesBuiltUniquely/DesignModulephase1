@@ -6,3 +6,4 @@ credentials/
 env.sh
 *.log
 .bin/
+
