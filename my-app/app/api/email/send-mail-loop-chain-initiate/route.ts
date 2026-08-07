@@ -301,10 +301,15 @@ export async function POST(request: Request) {
     const emailComponent = React.createElement(MailLoopChainInitiateEmail, emailProps);
     const html = await render(emailComponent);
 
+    const cleanId = emailProps.projectId ? String(emailProps.projectId).replace(/^HUB-/i, '') : '';
+    const pidText = cleanId ? `HUB-${cleanId}` : '';
+    const name = emailProps.customerName || customerName || 'CUSTOMER';
+    const finalSubject = subject || `${pidText ? pidText + ' , ' : 'HUB '}${name.toUpperCase()} DESIGN JOURNEY`.replace(/\s+/g, ' ').trim();
+
     const info = await sendMail({
       to: toList.length === 1 ? toList[0] : toList,
       ...(cc ? { cc } : {}),
-      subject: subject || 'Welcome to HUB Interior',
+      subject: finalSubject,
       html,
     });
 
