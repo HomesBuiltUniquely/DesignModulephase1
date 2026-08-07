@@ -3,7 +3,10 @@
 import Image from 'next/image';
 import type { QuoteDiscountBreakdownRow } from './quoteDiscountBreakdown';
 import { QuoteBrandLogo } from './QuoteBrandLogo';
-import { QuoteDiscountDetails } from './QuoteDiscountDetails';
+import {
+  QuoteDiscountDetails,
+  type QuoteCategoryDiscountSavePayload,
+} from './QuoteDiscountDetails';
 import { QuoteTermsAndConditions } from './hubQuoteTermsPanel';
 import { inr, QUOTE } from './quoteStyles';
 import type { QuoteRoom } from './quoteTypes';
@@ -51,6 +54,10 @@ type Props = {
   quoteVersionsError: string | null;
   versionFetchId: string;
   internalVersionSuffix: string;
+  discountEditable?: boolean;
+  discountSaving?: boolean;
+  discountSaveError?: string | null;
+  onSaveDiscount?: (payload: QuoteCategoryDiscountSavePayload) => void | Promise<void>;
 };
 
 function LinkIcon() {
@@ -126,6 +133,10 @@ export function QuoteExperienceView(props: Props) {
     quoteVersionsError,
     versionFetchId,
     internalVersionSuffix,
+    discountEditable = false,
+    discountSaving = false,
+    discountSaveError = null,
+    onSaveDiscount,
   } = props;
 
   return (
@@ -316,7 +327,14 @@ export function QuoteExperienceView(props: Props) {
                     {inr(quote.designAndManagementFees ?? 0)}
                   </span>
                 </div>
-                <QuoteDiscountDetails rows={quote.discountBreakdown} totalDiscount={quote.discount} />
+                <QuoteDiscountDetails
+                  rows={quote.discountBreakdown}
+                  totalDiscount={quote.discount}
+                  editable={discountEditable}
+                  saving={discountSaving}
+                  saveError={discountSaveError}
+                  onSave={onSaveDiscount}
+                />
               </div>
 
               <div

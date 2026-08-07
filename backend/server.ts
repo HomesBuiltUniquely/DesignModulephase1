@@ -5618,6 +5618,60 @@ async function resolveMilestonePaymentAmounts(
   };
 }
 
+/** Design-module caps: woodwork 35%, all other work categories 5%. */
+const WOODWORK_MAX_DISCOUNT_PCT = 35;
+const OTHER_CATEGORY_MAX_DISCOUNT_PCT = 5;
+
+function clampQuoteCategoryDiscountPct(key: string, value: unknown): number {
+  const n = parseFiniteNumber(value) ?? 0;
+  const max = key === "woodwork" ? WOODWORK_MAX_DISCOUNT_PCT : OTHER_CATEGORY_MAX_DISCOUNT_PCT;
+  return Math.max(0, Math.min(max, Math.round(n * 100) / 100));
+}
+
+function buildHubCategoryDiscountMeta(
+  categoryPct: Record<string, unknown>,
+  amount: number,
+): Record<string, unknown> {
+  return {
+    hubCategoryDiscountPct: {
+      woodwork: clampQuoteCategoryDiscountPct("woodwork", categoryPct.woodwork),
+      accessories: clampQuoteCategoryDiscountPct("accessories", categoryPct.accessories),
+      constructionHw: clampQuoteCategoryDiscountPct("constructionHw", categoryPct.constructionHw),
+      services: clampQuoteCategoryDiscountPct("services", categoryPct.services),
+    },
+    hubCategoryDiscountAmount: amount,
+    // Category discount wins over flat when designers edit from the module.
+    hubFlatDiscountPct: 0,
+    hubFlatDiscountAmount: 0,
+  };
+}
+
+function applyDiscountMetaToSnapshotPayload(
+  snapshotPayload: Record<string, unknown>,
+  discountMeta: Record<string, unknown>,
+): Record<string, unknown> {
+  const nextPayload: Record<string, unknown> = {
+    ...snapshotPayload,
+    ...discountMeta,
+  };
+  const data = snapshotPayload.data ?? snapshotPayload.Data;
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    nextPayload.data = {
+      ...(data as Record<string, unknown>),
+      ...discountMeta,
+    };
+  } else if (Array.isArray(data) && data[0] && typeof data[0] === "object") {
+    nextPayload.data = [
+      {
+        ...(data[0] as Record<string, unknown>),
+        ...discountMeta,
+      },
+      ...data.slice(1),
+    ];
+  }
+  return nextPayload;
+}
+
 function readDiscountMetaFromSnapshot(snapshotPayload: Record<string, unknown>): {
   flatDiscountPct: number | null;
   categoryPct: unknown;
@@ -5909,19 +5963,7 @@ app.patch("/api/crm/leads/:leadId/quotes/:quoteId/discount", async (req: Request
     if (amount == null || amount < 0) {
       return res.status(400).json({ message: "amount (number) is required" });
     }
-    const clampCategoryPct = (v: unknown): number => {
-      const n = parseFiniteNumber(v) ?? 0;
-      return Math.max(0, Math.min(30, Math.round(n)));
-    };
-    const pctObj = categoryPct as Record<string, unknown>;
-    discountMeta = {
-      hubCategoryDiscountPct: {
-        woodwork: clampCategoryPct(pctObj.woodwork),
-        accessories: clampCategoryPct(pctObj.accessories),
-        constructionHw: clampCategoryPct(pctObj.constructionHw),
-      },
-      hubCategoryDiscountAmount: amount,
-    };
+    discountMeta = buildHubCategoryDiscountMeta(categoryPct as Record<string, unknown>, amount);
   } else {
     return res.status(400).json({ message: "flatDiscountPct (number) or categoryPct (object) is required" });
   }
@@ -5946,25 +5988,7 @@ app.patch("/api/crm/leads/:leadId/quotes/:quoteId/discount", async (req: Request
     })();
 
     // Persist discount metadata without overriding Prolance totals.
-    const nextPayload: Record<string, unknown> = {
-      ...snapshotPayload,
-      ...discountMeta,
-    };
-    const data = snapshotPayload.data ?? snapshotPayload.Data;
-    if (data && typeof data === "object" && !Array.isArray(data)) {
-      nextPayload.data = {
-        ...(data as Record<string, unknown>),
-        ...discountMeta,
-      };
-    } else if (Array.isArray(data) && data[0] && typeof data[0] === "object") {
-      nextPayload.data = [
-        {
-          ...(data[0] as Record<string, unknown>),
-          ...discountMeta,
-        },
-        ...data.slice(1),
-      ];
-    }
+    const nextPayload = applyDiscountMetaToSnapshotPayload(snapshotPayload, discountMeta);
 
     const json = JSON.stringify(nextPayload);
     const [result] = await pool.query(
@@ -14123,6 +14147,72 @@ app.get("/api/leads/prolance-quote-versions/by-quote/:quoteId", async (req: Requ
   } catch (err) {
     console.error("prolance-quote-versions by-quote error", err);
     return res.status(500).json({ message: "Failed to load quote versions" });
+  }
+});
+
+// Design module: designers set per-category discount on a frozen quote snapshot.
+// Caps: woodwork max 35%, accessories / construction hardware / services max 5%.
+app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  const quoteId = Number(req.params.quoteId);
+  if (!Number.isFinite(leadId) || leadId < 1) return res.status(400).json({ message: "Invalid id" });
+  if (!Number.isFinite(quoteId) || quoteId < 1) return res.status(400).json({ message: "Invalid quoteId" });
+
+  const user = await getUserFromSession(req);
+  const access = await getLeadAccessRowForUser(res, user, leadId);
+  if (!access.ok) return;
+
+  const body = (req.body || {}) as Record<string, unknown>;
+  const categoryPct = (body.categoryPct ?? body.hubCategoryDiscountPct) as unknown;
+  const amount = parseFiniteNumber(body.amount ?? body.hubCategoryDiscountAmount);
+  if (!categoryPct || typeof categoryPct !== "object") {
+    return res.status(400).json({ message: "categoryPct (object) is required" });
+  }
+  if (amount == null || amount < 0) {
+    return res.status(400).json({ message: "amount (number) is required" });
+  }
+
+  const discountMeta = buildHubCategoryDiscountMeta(categoryPct as Record<string, unknown>, amount);
+
+  try {
+    const [snapRows] = await pool.query(
+      `SELECT lead_id AS leadId, payload_json AS payloadJson
+       FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
+      [quoteId],
+    );
+    const snap = (snapRows as any[])[0];
+    if (!snap || Number(snap.leadId) !== leadId) {
+      return res.status(404).json({ message: "Quote snapshot not found. Generate the quote from the lead first." });
+    }
+
+    const snapshotPayload: Record<string, unknown> = (() => {
+      try {
+        return snap.payloadJson ? (JSON.parse(String(snap.payloadJson)) as Record<string, unknown>) : {};
+      } catch {
+        return {};
+      }
+    })();
+
+    const nextPayload = applyDiscountMetaToSnapshotPayload(snapshotPayload, discountMeta);
+    const json = JSON.stringify(nextPayload);
+    const [result] = await pool.query(
+      `INSERT INTO lead_prolance_quote_snapshots (lead_id, quote_id, payload_json, created_at)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE payload_json = VALUES(payload_json), created_at = VALUES(created_at)`,
+      [leadId, quoteId, json, new Date()],
+    );
+    const ins = result as mysql.ResultSetHeader;
+    return res.json({
+      ok: true,
+      leadId,
+      quoteId,
+      updated: ins.affectedRows > 0,
+      discount: discountMeta,
+      payload: nextPayload,
+    });
+  } catch (err) {
+    console.error("lead quote discount update error", err);
+    return res.status(500).json({ message: "Failed to update quote discount" });
   }
 });
 

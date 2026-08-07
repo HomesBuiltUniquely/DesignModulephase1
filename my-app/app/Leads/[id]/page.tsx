@@ -38,7 +38,11 @@ import { checklistDefinitions, getChecklistKeyForTask } from './components/Check
 import { buildAuthHeaders, getApiBase } from '@/app/lib/apiBase';
 import { QuoteTermsAndConditions } from '@/app/quote/hubQuoteTermsPanel';
 import { buildQuoteDiscountBreakdown, resolveTotalDiscount } from '@/app/quote/quoteDiscountBreakdown';
-import { QuoteDiscountDetails } from '@/app/quote/QuoteDiscountDetails';
+import {
+    QuoteDiscountDetails,
+    type QuoteCategoryDiscountSavePayload,
+} from '@/app/quote/QuoteDiscountDetails';
+import { applyDiscountMetaToLocalPayload } from '@/app/quote/applyQuoteDiscountLocally';
 import { extractUnitDisplayPrice } from '@/app/quote/quoteLineItems';
 import { createProlanceProjectViaApi } from '@/app/lib/prolanceApiCreateProject';
 import { extractQuoteIdFromBody, runProlanceGetQuoteApiFlow } from '@/app/lib/prolanceApiGetQuote';
@@ -201,6 +205,8 @@ export default function ProjectDetailPage() {
     const [quoteSummaryTab, setQuoteSummaryTab] = useState<'overall' | 'roomwise' | 'terms'>('overall');
     const [expandedQuoteRooms, setExpandedQuoteRooms] = useState<Record<string, boolean>>({});
     const [quoteLinkCopied, setQuoteLinkCopied] = useState(false);
+    const [quoteDiscountSaving, setQuoteDiscountSaving] = useState(false);
+    const [quoteDiscountSaveError, setQuoteDiscountSaveError] = useState<string | null>(null);
     const [prolanceProjectIdSaveBusy, setProlanceProjectIdSaveBusy] = useState(false);
     const [leadSettingsOpen, setLeadSettingsOpen] = useState(false);
     const [holdDate, setHoldDate] = useState<string>('');
@@ -1948,10 +1954,7 @@ export default function ProjectDetailPage() {
                         !activeCard &&
                         !isMmtUser &&
                         !!project &&
-                        (() => {
-                            const phase = getPhaseBucket(project);
-                            return phase === 'Pre 10%' || phase === '10-20%' || phase === '20-60%';
-                        })() &&
+                        getPhaseBucket(project) === 'Pre 10%' &&
                         canShowStartMeetingButton(project, historyEvents)
                     }
                     onStartMeeting={() => setMeetingWizOpen(true)}
@@ -1961,11 +1964,10 @@ export default function ProjectDetailPage() {
             {(() => {
                 // Header hides when a card is maximized — keep Start meeting reachable.
                 if (!activeCard) return null;
-                const phase = project ? getPhaseBucket(project) : null;
                 const canShow =
                     !isMmtUser &&
                     !!project &&
-                    (phase === 'Pre 10%' || phase === '10-20%' || phase === '20-60%') &&
+                    getPhaseBucket(project) === 'Pre 10%' &&
                     canShowStartMeetingButton(project, historyEvents);
                 if (!canShow) return null;
                 return (
@@ -2290,7 +2292,27 @@ export default function ProjectDetailPage() {
                                 extractNumber(view.totals.designAndManagementFees) != null ||
                                 extractNumber(view.totals.discount) != null ||
                                 extractNumber(view.totals.totalPayableAmount) != null;
-                            const displayPayableModal = extractNumber(view.totals.totalPayableAmount);
+                            const quoteRoot =
+                                latestQuoteResponse && typeof latestQuoteResponse === 'object'
+                                    ? (latestQuoteResponse as Record<string, unknown>)
+                                    : {};
+                            const quoteData = quoteRoot.data ?? quoteRoot.Data;
+                            const quoteData0 =
+                                quoteData && typeof quoteData === 'object' && !Array.isArray(quoteData)
+                                    ? (quoteData as Record<string, unknown>)
+                                    : Array.isArray(quoteData) && quoteData[0] && typeof quoteData[0] === 'object'
+                                      ? (quoteData[0] as Record<string, unknown>)
+                                      : null;
+                            const hubCategoryDiscountAmount =
+                                extractNumber(quoteRoot.hubCategoryDiscountAmount) ??
+                                (quoteData0 ? extractNumber(quoteData0.hubCategoryDiscountAmount) : null);
+                            const interiorForPayable = extractNumber(view.totals.interiorProjectAmount);
+                            const feesForPayable = extractNumber(view.totals.designAndManagementFees) ?? 0;
+                            const discountForPayable = extractNumber(view.totals.discount) ?? 0;
+                            const displayPayableModal =
+                                hubCategoryDiscountAmount != null && interiorForPayable != null
+                                    ? Math.max(0, interiorForPayable + feesForPayable - discountForPayable)
+                                    : extractNumber(view.totals.totalPayableAmount);
                             const fullEditorQuoteId =
                                 shareQuoteIdRaw != null && shareQuoteIdRaw >= 1
                                     ? Math.trunc(Number(shareQuoteIdRaw))
@@ -2441,6 +2463,87 @@ export default function ProjectDetailPage() {
                                                             <QuoteDiscountDetails
                                                                 rows={view.totals.discountBreakdown}
                                                                 totalDiscount={view.totals.discount}
+                                                                editable={
+                                                                    Boolean(sessionId) &&
+                                                                    projectId != null &&
+                                                                    fullEditorQuoteId != null
+                                                                }
+                                                                saving={quoteDiscountSaving}
+                                                                saveError={quoteDiscountSaveError}
+                                                                onSave={async (savePayload: QuoteCategoryDiscountSavePayload) => {
+                                                                    if (!sessionId || projectId == null || fullEditorQuoteId == null) return;
+                                                                    setQuoteDiscountSaving(true);
+                                                                    setQuoteDiscountSaveError(null);
+                                                                    try {
+                                                                        const res = await fetch(
+                                                                            `${API}/api/leads/${projectId}/quotes/${fullEditorQuoteId}/discount`,
+                                                                            {
+                                                                                method: 'PATCH',
+                                                                                headers: {
+                                                                                    'Content-Type': 'application/json',
+                                                                                    Authorization: `Bearer ${sessionId}`,
+                                                                                },
+                                                                                credentials: 'include',
+                                                                                body: JSON.stringify({
+                                                                                    categoryPct: savePayload.categoryPct,
+                                                                                    amount: savePayload.amount,
+                                                                                }),
+                                                                            },
+                                                                        );
+                                                                        const txt = await res.text();
+                                                                        let body: unknown = null;
+                                                                        try {
+                                                                            body = txt ? JSON.parse(txt) : null;
+                                                                        } catch {
+                                                                            body = txt;
+                                                                        }
+                                                                        if (!res.ok) {
+                                                                            const msg =
+                                                                                body &&
+                                                                                typeof body === 'object' &&
+                                                                                (body as Record<string, unknown>).message
+                                                                                    ? String((body as Record<string, unknown>).message)
+                                                                                    : `Failed to save discount (HTTP ${res.status})`;
+                                                                            throw new Error(msg);
+                                                                        }
+                                                                        const discountMeta =
+                                                                            body &&
+                                                                            typeof body === 'object' &&
+                                                                            (body as Record<string, unknown>).discount
+                                                                                ? ((body as Record<string, unknown>).discount as Record<string, unknown>)
+                                                                                : {
+                                                                                      hubCategoryDiscountPct: savePayload.categoryPct,
+                                                                                      hubCategoryDiscountAmount: savePayload.amount,
+                                                                                      hubFlatDiscountPct: 0,
+                                                                                      hubFlatDiscountAmount: 0,
+                                                                                  };
+                                                                        const serverPayload =
+                                                                            body &&
+                                                                            typeof body === 'object' &&
+                                                                            (body as Record<string, unknown>).payload
+                                                                                ? ((body as Record<string, unknown>).payload as Record<string, unknown>)
+                                                                                : null;
+                                                                        if (serverPayload) {
+                                                                            setLatestQuoteResponse(serverPayload);
+                                                                        } else if (
+                                                                            latestQuoteResponse &&
+                                                                            typeof latestQuoteResponse === 'object'
+                                                                        ) {
+                                                                            setLatestQuoteResponse(
+                                                                                applyDiscountMetaToLocalPayload(
+                                                                                    latestQuoteResponse as Record<string, unknown>,
+                                                                                    discountMeta,
+                                                                                ),
+                                                                            );
+                                                                        }
+                                                                    } catch (e) {
+                                                                        setQuoteDiscountSaveError(
+                                                                            e instanceof Error ? e.message : 'Failed to save discount',
+                                                                        );
+                                                                    } finally {
+                                                                        setQuoteDiscountSaving(false);
+                                                                    }
+                                                                }}
                                                             />
                                                             <div className="flex justify-between border-t border-gray-200 pt-3">
                                                                 <div>
