@@ -1,7 +1,13 @@
+/*
+  Serve Wulkan from the same origin as the design app to avoid S3 CORS / 403.
+  Place files at:
+    public/fonts/Wulkan-Regular.woff2
+    public/fonts/Wulkan-Bold.woff2
+  Until those exist, headings fall back to Georgia.
+*/
 @font-face {
   font-family: 'Wulkan';
-  src: url('https://hubinterior-quote-2026.s3.ap-south-2.amazonaws.com/fonts/Wulkan-Regular.woff2')
-    format('woff2');
+  src: url('/fonts/Wulkan-Regular.woff2') format('woff2');
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -9,8 +15,7 @@
 
 @font-face {
   font-family: 'Wulkan';
-  src: url('https://hubinterior-quote-2026.s3.ap-south-2.amazonaws.com/fonts/Wulkan-Bold.woff2')
-    format('woff2');
+  src: url('/fonts/Wulkan-Bold.woff2') format('woff2');
   font-weight: 700;
   font-style: normal;
   font-display: swap;

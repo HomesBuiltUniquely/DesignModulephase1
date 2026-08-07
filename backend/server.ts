@@ -14165,6 +14165,10 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
   const body = (req.body || {}) as Record<string, unknown>;
   const categoryPct = (body.categoryPct ?? body.hubCategoryDiscountPct) as unknown;
   const amount = parseFiniteNumber(body.amount ?? body.hubCategoryDiscountAmount);
+  const seedPayload =
+    body.payload != null && typeof body.payload === "object" && !Array.isArray(body.payload)
+      ? (body.payload as Record<string, unknown>)
+      : null;
   if (!categoryPct || typeof categoryPct !== "object") {
     return res.status(400).json({ message: "categoryPct (object) is required" });
   }
@@ -14181,17 +14185,25 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       [quoteId],
     );
     const snap = (snapRows as any[])[0];
-    if (!snap || Number(snap.leadId) !== leadId) {
-      return res.status(404).json({ message: "Quote snapshot not found. Generate the quote from the lead first." });
-    }
 
-    const snapshotPayload: Record<string, unknown> = (() => {
+    let snapshotPayload: Record<string, unknown> | null = null;
+    if (snap && Number(snap.leadId) === leadId) {
       try {
-        return snap.payloadJson ? (JSON.parse(String(snap.payloadJson)) as Record<string, unknown>) : {};
+        snapshotPayload = snap.payloadJson
+          ? (JSON.parse(String(snap.payloadJson)) as Record<string, unknown>)
+          : {};
       } catch {
-        return {};
+        snapshotPayload = {};
       }
-    })();
+    } else if (seedPayload) {
+      // First discount save can create the snapshot from the quote currently open in the UI.
+      snapshotPayload = seedPayload;
+    } else {
+      return res.status(404).json({
+        message:
+          "Quote snapshot not found. Open Get Quote once, or retry Save discount from the lead quote preview.",
+      });
+    }
 
     const nextPayload = applyDiscountMetaToSnapshotPayload(snapshotPayload, discountMeta);
     const json = JSON.stringify(nextPayload);

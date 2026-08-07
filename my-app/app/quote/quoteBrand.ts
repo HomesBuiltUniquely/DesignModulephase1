@@ -16,8 +16,8 @@ export const QUOTE_FONTS = {
   heading: theme.fonts.heading,
 } as const;
 
+/** Prefer same-origin copies under /public/fonts (avoids S3 CORS / private-object 403). */
 export const WULKAN_FONT_FILES = {
-  regular:
-    'https://hubinterior-quote-2026.s3.ap-south-2.amazonaws.com/fonts/Wulkan-Regular.woff2',
-  bold: 'https://hubinterior-quote-2026.s3.ap-south-2.amazonaws.com/fonts/Wulkan-Bold.woff2',
+  regular: '/fonts/Wulkan-Regular.woff2',
+  bold: '/fonts/Wulkan-Bold.woff2',
 } as const;

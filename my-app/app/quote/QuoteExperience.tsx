@@ -554,6 +554,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           body: JSON.stringify({
             categoryPct: savePayload.categoryPct,
             amount: savePayload.amount,
+            payload: payload ?? undefined,
           }),
         },
       );
@@ -568,7 +569,9 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
         const msg =
           body && typeof body === 'object' && (body as Record<string, unknown>).message
             ? String((body as Record<string, unknown>).message)
-            : `Failed to save discount (HTTP ${res.status})`;
+            : res.status === 404
+              ? 'Discount API not found on server. Deploy the latest backend, then retry.'
+              : `Failed to save discount (HTTP ${res.status})`;
         throw new Error(msg);
       }
       const discountMeta =
