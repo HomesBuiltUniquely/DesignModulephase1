@@ -437,6 +437,17 @@ export function computeWeightedStages(input: {
   const downsaleAmount = Math.max(0, quoteAtApproval - quoteCurrent);
   const isDownsale = downsaleAmount > 0;
 
+  // New drop threshold checks:
+  const part2Drop = quoteAtApproval - quoteAtPart2;
+  const part2DropPct = quoteAtApproval > 0 ? part2Drop / quoteAtApproval : 0;
+
+  const part3Drop = quoteAtPart2 - quoteCurrent;
+  const part3DropPct = quoteAtPart2 > 0 ? part3Drop / quoteAtPart2 : 0;
+
+  // Base quotations for weighted calculations based on the 20% rule:
+  const part2BaseQuote = part2DropPct >= 0.20 ? quoteAtPart2 : quoteAtApproval;
+  const part3BaseQuote = part3DropPct >= 0.20 ? quoteCurrent : quoteAtPart2;
+
   const part1AmountMet = salesTenRequired > 0 && input.salesTenPercentCollected >= salesTenRequired;
   const part1Cleared = part1AmountMet && input.salesTenPercentFinanceApproved;
 
@@ -457,14 +468,14 @@ export function computeWeightedStages(input: {
   const part1Weighted = part1Cleared
     ? Math.round((quoteAtApproval * WEIGHTED_CREDIT_PCT.preD1Finance10) / 100)
     : 0;
-  // Part 2: always 25% of Part 2 quotation
+  // Part 2: 25% of part2BaseQuote
   const part2Weighted = part2Cleared
-    ? Math.round((quoteAtPart2 * WEIGHTED_CREDIT_PCT.postDqc1Design10) / 100)
+    ? Math.round((part2BaseQuote * WEIGHTED_CREDIT_PCT.postDqc1Design10) / 100)
     : 0;
-  // Part 3: upsale → 25% of Part 1 + full upsale; downsale → 25% of current quote
+  // Part 3: upsale → 25% of Part 1 + full upsale; downsale → 25% of part3BaseQuote
   const part3Weighted = part3Cleared
-    ? isDownsale
-      ? Math.round((quoteCurrent * WEIGHTED_CREDIT_PCT.part3FortyPercent) / 100)
+    ? (quoteCurrent < quoteAtApproval) // Net downsale vs Part 1
+      ? Math.round((part3BaseQuote * WEIGHTED_CREDIT_PCT.part3FortyPercent) / 100)
       : Math.round((quoteAtApproval * WEIGHTED_CREDIT_PCT.part3FortyPercent) / 100) +
         upsaleAmount
     : 0;
@@ -487,7 +498,7 @@ export function computeWeightedStages(input: {
     {
       stageId: "post_dqc1_design_10",
       label: "Part 2 · Post-DQC1 design 10%",
-      quotationValue: quoteAtPart2,
+      quotationValue: part2BaseQuote,
       collectionRequired: designTenOfPart2,
       revisionTopUp,
       upsaleAmount: 0,
@@ -507,7 +518,7 @@ export function computeWeightedStages(input: {
     {
       stageId: "part3_forty_percent",
       label: isDownsale ? "Part 3 · 40% payment (downsale)" : "Part 3 · 40% payment + upsale",
-      quotationValue: isDownsale ? quoteCurrent : quoteAtApproval,
+      quotationValue: (quoteCurrent < quoteAtApproval) ? part3BaseQuote : quoteAtApproval,
       collectionRequired: fortyPercentOfCurrent,
       revisionTopUp: Math.max(
         0,
