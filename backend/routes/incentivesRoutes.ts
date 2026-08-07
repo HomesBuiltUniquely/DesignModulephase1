@@ -8,36 +8,67 @@ import {
 
 type SessionUser = { id: number; name?: string; role?: string; email?: string };
 
-const INCENTIVE_CYCLE_DAYS = 15;
-const CYCLE_EPOCH_UTC = Date.UTC(2026, 0, 1);
-const DAY_MS = 24 * 60 * 60 * 1000;
+const FORTNIGHT_EPOCH_YEAR = 2026;
 
 const MEETING_WIZ_COMPLETED_TASK = "Meeting wizard session completed";
 
 /** Only Meeting Wizard "Meeting Completed" clicks count toward the fortnight meeting gate. */
 const MEETING_TASKS = [MEETING_WIZ_COMPLETED_TASK] as const;
 
-function startOfUtcDay(ms: number): number {
-  const d = new Date(ms);
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+function getIstYmd(date: Date = new Date()): { year: number; month: number; day: number } {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value || 0);
+  return { year: get("year"), month: get("month") - 1, day: get("day") };
 }
 
-function toIsoUtcDay(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 10);
+function daysInMonth(year: number, monthIndex: number): number {
+  return new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
+}
+
+function isoFromYmd(year: number, monthIndex: number, day: number): string {
+  return `${year}-${String(monthIndex + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function fortnightBounds(
+  year: number,
+  monthIndex: number,
+  half: 0 | 1,
+): { startDay: number; endDay: number } {
+  if (half === 0) return { startDay: 1, endDay: 15 };
+  return { startDay: 16, endDay: daysInMonth(year, monthIndex) };
+}
+
+function cycleIndexFromYmd(year: number, monthIndex: number, day: number): number {
+  const monthsSinceEpoch = (year - FORTNIGHT_EPOCH_YEAR) * 12 + monthIndex;
+  const half = day <= 15 ? 0 : 1;
+  return Math.max(0, monthsSinceEpoch * 2 + half);
 }
 
 function cycleRange(cycleIndex: number): { startIso: string; endIso: string } {
   const idx = Math.max(0, Math.floor(cycleIndex));
-  const cycleMs = INCENTIVE_CYCLE_DAYS * DAY_MS;
-  const start = CYCLE_EPOCH_UTC + idx * cycleMs;
-  const end = start + cycleMs - DAY_MS;
-  return { startIso: toIsoUtcDay(start), endIso: toIsoUtcDay(end) };
+  const monthsSinceEpoch = Math.floor(idx / 2);
+  const half = (idx % 2) as 0 | 1;
+  const year = FORTNIGHT_EPOCH_YEAR + Math.floor(monthsSinceEpoch / 12);
+  const monthIndex = monthsSinceEpoch % 12;
+  const { startDay, endDay } = fortnightBounds(year, monthIndex, half);
+  return {
+    startIso: isoFromYmd(year, monthIndex, startDay),
+    endIso: isoFromYmd(year, monthIndex, endDay),
+  };
 }
 
 function getCurrentCycleIndex(now = new Date()): number {
-  const nowUtc = startOfUtcDay(now.getTime());
-  const elapsed = Math.max(0, nowUtc - CYCLE_EPOCH_UTC);
-  return Math.floor(elapsed / (INCENTIVE_CYCLE_DAYS * DAY_MS));
+  const { year, month, day } = getIstYmd(now);
+  return cycleIndexFromYmd(year, month, day);
+}
+
+function toIsoUtcDay(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
 }
 
 function parsePayload(raw: unknown): Record<string, unknown> {

@@ -370,7 +370,7 @@ function IndividualIncentivesPanel({
             <p className="mt-1 text-sm text-gray-600">
               {data.meetingsEligible
                 ? 'Meeting gate cleared — incentives are unlocked for this fortnight.'
-                : `Complete at least ${data.meetingsRequired} meetings in this 15-day cycle to unlock incentives.`}
+                : `Complete at least ${data.meetingsRequired} meetings in this fortnight to unlock incentives.`}
             </p>
           </div>
           <span
@@ -398,7 +398,7 @@ function IndividualIncentivesPanel({
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6">
         <MetricCard
-          label="Total Target (15 days)"
+          label="Total Target (fortnight)"
           value={formatInr(data.totalTarget)}
         />
         <MetricCard
@@ -973,7 +973,7 @@ function TeamIncentivesPanel({
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6">
         <MetricCard label="Team Size" value={String(team.memberCount)} />
         <MetricCard
-          label="Combined Target (15 days)"
+          label="Combined Target (fortnight)"
           value={formatInr(team.totalTarget)}
         />
         <MetricCard label="Weighted Revenue" value={formatInr(team.revenueAchieved)} />
@@ -1312,7 +1312,7 @@ export default function DesignerIncentivesView() {
           <div>
             <h1 className="text-2xl font-bold tracking-tight text-gray-900">Performance Incentives</h1>
             <p className="mt-1 text-sm text-gray-500">
-              ₹30L target every 15 days · resets automatically at cycle end
+              ₹15L per fortnight (1–15 / 16–month end) · ₹30L per month
               {isManager ? ` · ${scopeLabel}` : null}
             </p>
           </div>
@@ -1375,7 +1375,7 @@ export default function DesignerIncentivesView() {
         <div className="flex flex-wrap items-end gap-3 rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
           <label className="flex min-w-[220px] flex-1 flex-col gap-1 text-sm text-gray-600">
             <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-              Fortnight (15 days)
+              Fortnight (1–15 / 16–end)
             </span>
             <select
               className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"

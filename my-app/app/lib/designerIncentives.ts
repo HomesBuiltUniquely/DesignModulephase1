@@ -1,4 +1,4 @@
-/** Designer incentives — ₹30L target per 15-day cycle (resets automatically). */
+/** Designer incentives — ₹15L per calendar fortnight (1–15 / 16–month end); ₹30L per month. */
 
 export type IncentiveSlab = {
   targetPct: number;
@@ -147,7 +147,7 @@ export type DesignerIncentivesData = {
   designerId: number;
   designerName: string;
   totalTarget: number;
-  /** Weighted revenue (not raw collection) toward the ₹30L target */
+  /** Weighted revenue (not raw collection) toward the ₹15L fortnight target */
   revenueAchieved: number;
   revenueDeltaPct: number;
   achievementPct: number;
@@ -206,20 +206,23 @@ export type IncentiveMember = {
   role: string;
 };
 
-/** Per-designer target for each 15-day cycle */
-export const INCENTIVE_CYCLE_TARGET = 30_00_000;
+/** Per-designer target for each calendar fortnight (1–15 or 16–month end) */
+export const INCENTIVE_CYCLE_TARGET = 15_00_000;
+/** Monthly target = 2 fortnights */
+export const INCENTIVE_MONTHLY_TARGET = 30_00_000;
+/** Typical first-half length; second half is 13–16 days depending on the month */
 export const INCENTIVE_CYCLE_DAYS = 15;
 /** Designers must complete at least this many meetings in the fortnight to unlock incentives */
 export const MIN_MEETINGS_PER_FORTNIGHT = 3;
 
-/** Anchor so cycles are consistent across users (IST-friendly UTC midnight of 1 Jan 2026). */
-const CYCLE_EPOCH_UTC = Date.UTC(2026, 0, 1);
+/** Calendar fortnights start from Jan 2026 H1 (1–15) as cycleIndex 0. */
+const FORTNIGHT_EPOCH_YEAR = 2026;
 
 const SLAB_DEFS: { targetPct: number; incentivePct: number }[] = [
   { targetPct: 40, incentivePct: 0.25 },
-  { targetPct: 50, incentivePct: 0.45 },
-  { targetPct: 60, incentivePct: 0.55 },
-  { targetPct: 80, incentivePct: 0.75 },
+  { targetPct: 60, incentivePct: 0.35 },
+  { targetPct: 80, incentivePct: 0.45 },
+  { targetPct: 90, incentivePct: 0.75 },
   { targetPct: 100, incentivePct: 1.0 },
 ];
 
@@ -237,9 +240,54 @@ function buildSlabsForTarget(totalTarget: number): IncentiveSlab[] {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-function startOfUtcDay(ms: number): number {
-  const d = new Date(ms);
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+function getIstYmd(date: Date = new Date()): { year: number; month: number; day: number } {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value || 0);
+  return { year: get("year"), month: get("month") - 1, day: get("day") };
+}
+
+function daysInMonth(year: number, monthIndex: number): number {
+  return new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
+}
+
+function isoFromYmd(year: number, monthIndex: number, day: number): string {
+  return `${year}-${String(monthIndex + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function fortnightBounds(
+  year: number,
+  monthIndex: number,
+  half: 0 | 1,
+): { startDay: number; endDay: number } {
+  if (half === 0) return { startDay: 1, endDay: 15 };
+  return { startDay: 16, endDay: daysInMonth(year, monthIndex) };
+}
+
+function cycleIndexFromYmd(year: number, monthIndex: number, day: number): number {
+  const monthsSinceEpoch = (year - FORTNIGHT_EPOCH_YEAR) * 12 + monthIndex;
+  const half = day <= 15 ? 0 : 1;
+  return Math.max(0, monthsSinceEpoch * 2 + half);
+}
+
+function ymdFromCycleIndex(cycleIndex: number): {
+  year: number;
+  monthIndex: number;
+  half: 0 | 1;
+  startDay: number;
+  endDay: number;
+} {
+  const idx = Math.max(0, Math.floor(cycleIndex));
+  const monthsSinceEpoch = Math.floor(idx / 2);
+  const half = (idx % 2) as 0 | 1;
+  const year = FORTNIGHT_EPOCH_YEAR + Math.floor(monthsSinceEpoch / 12);
+  const monthIndex = monthsSinceEpoch % 12;
+  const { startDay, endDay } = fortnightBounds(year, monthIndex, half);
+  return { year, monthIndex, half, startDay, endDay };
 }
 
 function fmtIn(ms: number): string {
@@ -247,7 +295,7 @@ function fmtIn(ms: number): string {
     day: "2-digit",
     month: "short",
     year: "numeric",
-    timeZone: "Asia/Kolkata",
+    timeZone: "UTC",
   });
 }
 
@@ -255,45 +303,55 @@ function toIsoUtcDay(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
+function msFromIsoDay(iso: string): number {
+  return Date.parse(`${iso}T00:00:00.000Z`);
+}
+
 export function getCurrentCycleIndex(now: Date = new Date()): number {
-  const cycleMs = INCENTIVE_CYCLE_DAYS * DAY_MS;
-  const nowUtc = startOfUtcDay(now.getTime());
-  const elapsed = Math.max(0, nowUtc - CYCLE_EPOCH_UTC);
-  return Math.floor(elapsed / cycleMs);
+  const { year, month, day } = getIstYmd(now);
+  return cycleIndexFromYmd(year, month, day);
 }
 
 export function getIncentiveCycleByIndex(
   cycleIndex: number,
   now: Date = new Date(),
 ): IncentiveCycleInfo {
-  const idx = Math.max(0, Math.floor(cycleIndex));
-  const cycleMs = INCENTIVE_CYCLE_DAYS * DAY_MS;
-  const cycleStartMs = CYCLE_EPOCH_UTC + idx * cycleMs;
-  const cycleEndMs = cycleStartMs + cycleMs;
-  const nowUtc = startOfUtcDay(now.getTime());
+  const { year, monthIndex, startDay, endDay } = ymdFromCycleIndex(cycleIndex);
+  const startIso = isoFromYmd(year, monthIndex, startDay);
+  const endIso = isoFromYmd(year, monthIndex, endDay);
+  const cycleDays = endDay - startDay + 1;
+  const startMs = msFromIsoDay(startIso);
+  const endMs = msFromIsoDay(endIso);
   const currentIndex = getCurrentCycleIndex(now);
-  const isCurrent = idx === currentIndex;
-  const daysElapsed = isCurrent
-    ? Math.min(INCENTIVE_CYCLE_DAYS, Math.floor((nowUtc - cycleStartMs) / DAY_MS) + 1)
-    : idx < currentIndex
-      ? INCENTIVE_CYCLE_DAYS
-      : 0;
-  const daysRemaining = isCurrent
-    ? Math.max(0, Math.ceil((cycleEndMs - now.getTime()) / DAY_MS))
-    : idx > currentIndex
-      ? INCENTIVE_CYCLE_DAYS
-      : 0;
+  const isCurrent = cycleIndex === currentIndex;
+  const today = getIstYmd(now);
+  const todayIso = isoFromYmd(today.year, today.month, today.day);
+  const todayMs = msFromIsoDay(todayIso);
+
+  let daysElapsed = 0;
+  let daysRemaining = 0;
+  if (isCurrent) {
+    daysElapsed = Math.min(cycleDays, Math.floor((todayMs - startMs) / DAY_MS) + 1);
+    daysRemaining = Math.max(0, Math.floor((endMs - todayMs) / DAY_MS) + 1);
+  } else if (cycleIndex < currentIndex) {
+    daysElapsed = cycleDays;
+    daysRemaining = 0;
+  } else {
+    daysElapsed = 0;
+    daysRemaining = cycleDays;
+  }
+
   return {
     totalTarget: INCENTIVE_CYCLE_TARGET,
-    cycleDays: INCENTIVE_CYCLE_DAYS,
-    cycleIndex: idx,
-    cycleStart: fmtIn(cycleStartMs),
-    cycleEnd: fmtIn(cycleEndMs - DAY_MS),
-    startIso: toIsoUtcDay(cycleStartMs),
-    endIso: toIsoUtcDay(cycleEndMs - DAY_MS),
+    cycleDays,
+    cycleIndex: Math.max(0, Math.floor(cycleIndex)),
+    cycleStart: fmtIn(startMs),
+    cycleEnd: fmtIn(endMs),
+    startIso,
+    endIso,
     daysElapsed,
     daysRemaining,
-    cycleLabel: `${fmtIn(cycleStartMs)} – ${fmtIn(cycleEndMs - DAY_MS)}`,
+    cycleLabel: `${fmtIn(startMs)} – ${fmtIn(endMs)}`,
     isCurrent,
   };
 }
@@ -313,9 +371,10 @@ export function listFortnightOptions(
     const cycleIndex = current - i;
     if (cycleIndex < 0) break;
     const c = getIncentiveCycleByIndex(cycleIndex, now);
+    const halfLabel = Number(c.startIso.slice(8, 10)) <= 15 ? "1–15" : "16–end";
     options.push({
       cycleIndex: c.cycleIndex,
-      label: c.isCurrent ? `Current · ${c.cycleLabel}` : c.cycleLabel,
+      label: c.isCurrent ? `Current · ${halfLabel} · ${c.cycleLabel}` : `${halfLabel} · ${c.cycleLabel}`,
       startIso: c.startIso,
       endIso: c.endIso,
       isCurrent: c.isCurrent,
@@ -325,10 +384,11 @@ export function listFortnightOptions(
 }
 
 export function listDatesInCycle(cycle: IncentiveCycleInfo): string[] {
-  const start = Date.parse(`${cycle.startIso}T00:00:00.000Z`);
+  const start = msFromIsoDay(cycle.startIso);
+  const end = msFromIsoDay(cycle.endIso);
   const dates: string[] = [];
-  for (let i = 0; i < INCENTIVE_CYCLE_DAYS; i++) {
-    dates.push(toIsoUtcDay(start + i * DAY_MS));
+  for (let t = start; t <= end; t += DAY_MS) {
+    dates.push(toIsoUtcDay(t));
   }
   return dates;
 }
@@ -633,9 +693,9 @@ function initialsFromName(name: string): string {
 
 function pickSlab(achievementPct: number): number {
   if (achievementPct >= 100) return 100;
+  if (achievementPct >= 90) return 90;
   if (achievementPct >= 80) return 80;
   if (achievementPct >= 60) return 60;
-  if (achievementPct >= 50) return 50;
   if (achievementPct >= 40) return 40;
   return 0;
 }
@@ -773,8 +833,8 @@ export function buildIncentivesFromDealInputs(
 }
 
 /**
- * Deterministic demo incentives for a selected 15-day cycle.
- * Target is always ₹30L; progress is driven by weighted collection milestones
+ * Deterministic demo incentives for a selected calendar fortnight.
+ * Target is ₹15L per fortnight (₹30L/month); progress is driven by weighted collection milestones
  * (Parts 1–3) until a real API exists.
  */
 export function buildDemoIncentivesForDesigner(
