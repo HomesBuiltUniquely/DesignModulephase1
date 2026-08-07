@@ -1,5 +1,6 @@
 import type { LeadshipTypes } from '@/app/Components/Types/Types';
 import { MEETING_WIZ_COMPLETED_TASK } from '@/app/lib/meetingWizIncentive';
+import { getPhaseBucket } from '@/app/lib/leadPhaseBucket';
 
 /** Normalize various date strings to YYYY-MM-DD (local calendar day). */
 export function parseMeetingDateToIsoDay(raw: string | null | undefined): string | null {
@@ -143,13 +144,16 @@ function getLatestMeetingWizCompletion(
 }
 
 /**
- * Start Meeting only while a meeting is scheduled for today and that session
- * has not been completed. After Meeting Completed, hides until a newer meeting is scheduled.
+ * Start Meeting only for Pre 10% leads, while a meeting is scheduled for today
+ * and that session has not been completed. After Meeting Completed, hides until
+ * a newer meeting is scheduled.
  */
 export function canShowStartMeetingButton(
   lead: LeadshipTypes | null | undefined,
   historyEvents?: HistoryEventLike[] | null,
 ): boolean {
+  if (!lead || getPhaseBucket(lead) !== 'Pre 10%') return false;
+
   if (!isLeadMeetingScheduledToday(lead, historyEvents)) return false;
 
   const scheduleDay =

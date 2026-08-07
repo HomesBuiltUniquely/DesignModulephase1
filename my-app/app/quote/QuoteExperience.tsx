@@ -3,8 +3,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { getApiBase } from '@/app/lib/apiBase';
 import { useSearchParams } from 'next/navigation';
+import { useAuth } from '@/app/auth/AuthContext';
 import { extractQuoteIdFromBody } from '@/app/lib/prolanceApiGetQuote';
 import { QuoteExperienceView } from '@/app/quote/QuoteExperienceView';
+import type { QuoteCategoryDiscountSavePayload } from '@/app/quote/QuoteDiscountDetails';
 import {
   buildQuoteDiscountBreakdown,
   resolveTotalDiscount,
@@ -12,6 +14,7 @@ import {
 } from '@/app/quote/quoteDiscountBreakdown';
 import type { QuoteRoom } from '@/app/quote/quoteTypes';
 import { extractLineItemPrice, extractUnitDisplayPrice, mergeQuoteLineItemArrays } from '@/app/quote/quoteLineItems';
+import { applyDiscountMetaToLocalPayload } from '@/app/quote/applyQuoteDiscountLocally';
 
 const API = getApiBase();
 
@@ -239,7 +242,8 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
   const pickedTotalPrice = asNum(pick('totalPrice'));
   const pickedFeesExplicit = asNum(pick('designAndManagementFees'));
   const discount = asNum(pick('discount', 'discountAmount'));
-  const disc = discount || 0;
+  const hubCategoryAmount = asNum(pick('hubCategoryDiscountAmount'));
+  const disc = (hubCategoryAmount != null && hubCategoryAmount >= 0 ? hubCategoryAmount : discount) || 0;
 
   let interiorProjectAmount: number | null;
   let totalPayableAmount: number | null;
@@ -249,6 +253,7 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
     const tolerance = Math.max(500, sumRoomTotals * 0.02);
     const apiPayable = pickedPayable;
     const apiPlausible =
+      hubCategoryAmount == null &&
       apiPayable != null &&
       apiPayable >= sumRoomTotals - disc - tolerance &&
       (Math.abs(apiPayable - sumRoomTotals) <= tolerance || apiPayable >= sumRoomTotals - disc);
@@ -260,12 +265,17 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
     }
   } else if (rooms.length > 0) {
     interiorProjectAmount = pickedInterior ?? pickedTotalPrice ?? null;
-    totalPayableAmount = pickedPayable ?? pickedTotalPrice ?? interiorProjectAmount;
+    totalPayableAmount =
+      hubCategoryAmount != null && interiorProjectAmount != null
+        ? Math.max(0, interiorProjectAmount + (pickedFeesExplicit ?? 0) - hubCategoryAmount)
+        : pickedPayable ?? pickedTotalPrice ?? interiorProjectAmount;
   } else {
     interiorProjectAmount =
       pickedInterior ?? pickedTotalPrice ?? (sumRoomTotals > 0 ? sumRoomTotals : null);
     totalPayableAmount =
-      pickedPayable ?? pickedTotalPrice ?? (sumRoomTotals > 0 ? sumRoomTotals : null);
+      hubCategoryAmount != null && interiorProjectAmount != null
+        ? Math.max(0, interiorProjectAmount + (pickedFeesExplicit ?? 0) - hubCategoryAmount)
+        : pickedPayable ?? pickedTotalPrice ?? (sumRoomTotals > 0 ? sumRoomTotals : null);
   }
 
   const designAndManagementFees =
@@ -315,7 +325,10 @@ export type QuoteExperienceProps = {
 
 export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: QuoteExperienceProps) {
   const searchParams = useSearchParams();
+  const { sessionId } = useAuth();
   const isInternalMode = searchParams.get('internal') === '1';
+  const leadIdParam = searchParams.get('leadId');
+  const leadIdNum = leadIdParam && /^\d+$/.test(leadIdParam) ? Number(leadIdParam) : null;
 
   const inlinePayload =
     preloadedPayload != null && typeof preloadedPayload === 'object' ? preloadedPayload : null;
@@ -333,6 +346,8 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
   const [quoteVersions, setQuoteVersions] = useState<QuoteVersionRow[]>([]);
   const [quoteVersionsLoading, setQuoteVersionsLoading] = useState(false);
   const [quoteVersionsError, setQuoteVersionsError] = useState<string | null>(null);
+  const [discountSaving, setDiscountSaving] = useState(false);
+  const [discountSaveError, setDiscountSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     if (preloadedPayload !== undefined) return;
@@ -519,6 +534,68 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     (quote.customerName !== '-' ? quote.customerName.split(/\s+/)[0] : '') ||
     'Customer';
 
+  const discountEditable =
+    isInternalMode && leadIdNum != null && leadIdNum > 0 && Boolean(sessionId) && Boolean(versionFetchId);
+
+  const handleSaveDiscount = async (savePayload: QuoteCategoryDiscountSavePayload) => {
+    if (!sessionId || leadIdNum == null || !versionFetchId) return;
+    setDiscountSaving(true);
+    setDiscountSaveError(null);
+    try {
+      const res = await fetch(
+        `${API}/api/leads/${leadIdNum}/quotes/${encodeURIComponent(versionFetchId)}/discount`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${sessionId}`,
+          },
+          credentials: 'include',
+          body: JSON.stringify({
+            categoryPct: savePayload.categoryPct,
+            amount: savePayload.amount,
+          }),
+        },
+      );
+      const txt = await res.text();
+      let body: unknown = null;
+      try {
+        body = txt ? JSON.parse(txt) : null;
+      } catch {
+        body = txt;
+      }
+      if (!res.ok) {
+        const msg =
+          body && typeof body === 'object' && (body as Record<string, unknown>).message
+            ? String((body as Record<string, unknown>).message)
+            : `Failed to save discount (HTTP ${res.status})`;
+        throw new Error(msg);
+      }
+      const discountMeta =
+        body && typeof body === 'object' && (body as Record<string, unknown>).discount
+          ? ((body as Record<string, unknown>).discount as Record<string, unknown>)
+          : {
+              hubCategoryDiscountPct: savePayload.categoryPct,
+              hubCategoryDiscountAmount: savePayload.amount,
+              hubFlatDiscountPct: 0,
+              hubFlatDiscountAmount: 0,
+            };
+      const serverPayload =
+        body && typeof body === 'object' && (body as Record<string, unknown>).payload
+          ? ((body as Record<string, unknown>).payload as Record<string, unknown>)
+          : null;
+      if (serverPayload) {
+        setPayload(serverPayload);
+      } else if (payload) {
+        setPayload(applyDiscountMetaToLocalPayload(payload, discountMeta));
+      }
+    } catch (e) {
+      setDiscountSaveError(e instanceof Error ? e.message : 'Failed to save discount');
+    } finally {
+      setDiscountSaving(false);
+    }
+  };
+
   return (
     <QuoteExperienceView
       quote={quote}
@@ -541,6 +618,10 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       quoteVersionsError={quoteVersionsError}
       versionFetchId={versionFetchId}
       internalVersionSuffix={internalVersionSuffix}
+      discountEditable={discountEditable}
+      discountSaving={discountSaving}
+      discountSaveError={discountSaveError}
+      onSaveDiscount={discountEditable ? handleSaveDiscount : undefined}
     />
   );
 }
