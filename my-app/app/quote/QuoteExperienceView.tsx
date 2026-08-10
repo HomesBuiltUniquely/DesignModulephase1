@@ -57,6 +57,7 @@ type Props = {
   discountEditable?: boolean;
   discountSaving?: boolean;
   discountSaveError?: string | null;
+  additionalDiscount?: number | null;
   onSaveDiscount?: (payload: QuoteCategoryDiscountSavePayload) => void | Promise<void>;
 };
 
@@ -136,6 +137,7 @@ export function QuoteExperienceView(props: Props) {
     discountEditable = false,
     discountSaving = false,
     discountSaveError = null,
+    additionalDiscount = null,
     onSaveDiscount,
   } = props;
 
@@ -330,6 +332,7 @@ export function QuoteExperienceView(props: Props) {
                 <QuoteDiscountDetails
                   rows={quote.discountBreakdown}
                   totalDiscount={quote.discount}
+                  additionalDiscount={additionalDiscount}
                   editable={discountEditable}
                   saving={discountSaving}
                   saveError={discountSaveError}

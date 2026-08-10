@@ -5631,7 +5631,9 @@ function clampQuoteCategoryDiscountPct(key: string, value: unknown): number {
 function buildHubCategoryDiscountMeta(
   categoryPct: Record<string, unknown>,
   amount: number,
+  additionalDiscountAmount: number = 0,
 ): Record<string, unknown> {
+  const additional = Math.max(0, Math.round(additionalDiscountAmount));
   return {
     hubCategoryDiscountPct: {
       woodwork: clampQuoteCategoryDiscountPct("woodwork", categoryPct.woodwork),
@@ -5640,7 +5642,9 @@ function buildHubCategoryDiscountMeta(
       services: clampQuoteCategoryDiscountPct("services", categoryPct.services),
     },
     hubCategoryDiscountAmount: amount,
-    // Category discount wins over flat when designers edit from the module.
+    /** Flat rupee discount on top of category % discounts (not a percentage). */
+    hubAdditionalDiscountAmount: additional,
+    // Category discount wins over flat-% when designers edit from the module.
     hubFlatDiscountPct: 0,
     hubFlatDiscountAmount: 0,
   };
@@ -5963,7 +5967,16 @@ app.patch("/api/crm/leads/:leadId/quotes/:quoteId/discount", async (req: Request
     if (amount == null || amount < 0) {
       return res.status(400).json({ message: "amount (number) is required" });
     }
-    discountMeta = buildHubCategoryDiscountMeta(categoryPct as Record<string, unknown>, amount);
+    const additionalDiscount =
+      parseFiniteNumber(body.additionalDiscount ?? body.hubAdditionalDiscountAmount) ?? 0;
+    if (additionalDiscount < 0) {
+      return res.status(400).json({ message: "additionalDiscount must be >= 0" });
+    }
+    discountMeta = buildHubCategoryDiscountMeta(
+      categoryPct as Record<string, unknown>,
+      amount,
+      additionalDiscount,
+    );
   } else {
     return res.status(400).json({ message: "flatDiscountPct (number) or categoryPct (object) is required" });
   }
@@ -14165,6 +14178,8 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
   const body = (req.body || {}) as Record<string, unknown>;
   const categoryPct = (body.categoryPct ?? body.hubCategoryDiscountPct) as unknown;
   const amount = parseFiniteNumber(body.amount ?? body.hubCategoryDiscountAmount);
+  const additionalDiscount =
+    parseFiniteNumber(body.additionalDiscount ?? body.hubAdditionalDiscountAmount) ?? 0;
   const seedPayload =
     body.payload != null && typeof body.payload === "object" && !Array.isArray(body.payload)
       ? (body.payload as Record<string, unknown>)
@@ -14175,8 +14190,15 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
   if (amount == null || amount < 0) {
     return res.status(400).json({ message: "amount (number) is required" });
   }
+  if (additionalDiscount < 0) {
+    return res.status(400).json({ message: "additionalDiscount must be >= 0" });
+  }
 
-  const discountMeta = buildHubCategoryDiscountMeta(categoryPct as Record<string, unknown>, amount);
+  const discountMeta = buildHubCategoryDiscountMeta(
+    categoryPct as Record<string, unknown>,
+    amount,
+    additionalDiscount,
+  );
 
   try {
     const [snapRows] = await pool.query(

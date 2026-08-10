@@ -17,12 +17,17 @@ export type QuoteCategoryDiscountSavePayload = {
     constructionHw: number;
     services: number;
   };
+  /** Sum of category % discounts (rupees). */
   amount: number;
+  /** Extra flat discount in rupees (not %). */
+  additionalDiscount: number;
 };
 
 type Props = {
   rows: QuoteDiscountBreakdownRow[];
   totalDiscount: number | null;
+  /** Saved additional flat discount in rupees (from quote snapshot). */
+  additionalDiscount?: number | null;
   /** When set, designers can edit per-category % (woodwork ≤35%, others ≤5%). */
   editable?: boolean;
   saving?: boolean;
@@ -46,6 +51,18 @@ function pctFromRows(rows: QuoteDiscountBreakdownRow[]): Record<(typeof EDITABLE
   return out;
 }
 
+function clampRupeeAmount(value: unknown): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.round(n);
+}
+
+function additionalFromRows(rows: QuoteDiscountBreakdownRow[], fallback: number | null | undefined): number {
+  const row = rows.find((r) => r.key === 'additionalDiscount');
+  if (row?.discountAmount != null) return clampRupeeAmount(row.discountAmount);
+  return clampRupeeAmount(fallback ?? 0);
+}
+
 function previewRow(
   row: QuoteDiscountBreakdownRow,
   draftPct: number,
@@ -63,31 +80,48 @@ function previewRow(
 export function QuoteDiscountDetails({
   rows,
   totalDiscount,
+  additionalDiscount = null,
   editable = false,
   saving = false,
   saveError = null,
   onSave,
 }: Props) {
   const [draftPct, setDraftPct] = useState(() => pctFromRows(rows));
+  const [draftAdditional, setDraftAdditional] = useState(() =>
+    additionalFromRows(rows, additionalDiscount),
+  );
   const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
-    if (!dirty) setDraftPct(pctFromRows(rows));
-  }, [rows, dirty]);
+    if (!dirty) {
+      setDraftPct(pctFromRows(rows));
+      setDraftAdditional(additionalFromRows(rows, additionalDiscount));
+    }
+  }, [rows, additionalDiscount, dirty]);
 
   const granularRows = rows.filter((r) => r.alwaysShow);
-  const extraRows = rows.filter((r) => !r.alwaysShow);
+  const extraRows = rows.filter(
+    (r) => !r.alwaysShow && r.key !== 'additionalDiscount',
+  );
+  const savedAdditionalRow = rows.find((r) => r.key === 'additionalDiscount');
 
-  const previewTotal = useMemo(() => {
-    if (!editable) return totalDiscount ?? 0;
+  const categoryTotal = useMemo(() => {
     return EDITABLE_KEYS.reduce((sum, key) => {
       const row = rows.find((r) => r.key === key);
       if (!row) return sum;
-      return sum + previewRow(row, draftPct[key]).discountAmount;
+      if (editable) return sum + previewRow(row, draftPct[key]).discountAmount;
+      return sum + (row.discountAmount ?? 0);
     }, 0);
-  }, [editable, rows, draftPct, totalDiscount]);
+  }, [editable, rows, draftPct]);
 
-  if (!rows.length && totalDiscount == null) return null;
+  const previewTotal = useMemo(() => {
+    if (!editable) return totalDiscount ?? categoryTotal + (savedAdditionalRow?.discountAmount ?? 0);
+    return categoryTotal + draftAdditional;
+  }, [editable, totalDiscount, categoryTotal, draftAdditional, savedAdditionalRow]);
+
+  if (!rows.length && totalDiscount == null && !(additionalDiscount != null && additionalDiscount > 0)) {
+    return null;
+  }
 
   const handlePctChange = (key: (typeof EDITABLE_KEYS)[number], raw: string) => {
     const n = Number(raw);
@@ -95,6 +129,11 @@ export function QuoteDiscountDetails({
       ...prev,
       [key]: clampDiscountPctForCategory(key, Number.isFinite(n) ? n : 0),
     }));
+    setDirty(true);
+  };
+
+  const handleAdditionalChange = (raw: string) => {
+    setDraftAdditional(clampRupeeAmount(raw === '' ? 0 : Number(raw)));
     setDirty(true);
   };
 
@@ -113,9 +152,13 @@ export function QuoteDiscountDetails({
         services: draftPct.services,
       },
       amount,
+      additionalDiscount: draftAdditional,
     });
     setDirty(false);
   };
+
+  const showAdditionalReadOnly =
+    !editable && (savedAdditionalRow?.discountAmount ?? additionalDiscount ?? 0) > 0;
 
   return (
     <div className="space-y-3 border-t border-[#ece6df] pt-4">
@@ -188,6 +231,40 @@ export function QuoteDiscountDetails({
           </span>
         </div>
       ))}
+
+      {editable || showAdditionalReadOnly ? (
+        <div className="rounded-lg border border-[#ece6df] bg-[#faf8f5] px-4 py-3 text-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <span className="font-semibold text-[#2a1d14]">Additional Discount</span>
+              {editable ? (
+                <p className="text-[11px]" style={{ color: QUOTE.muted }}>
+                  Flat amount in ₹ (not %)
+                </p>
+              ) : null}
+            </div>
+            {editable ? (
+              <label className="flex items-center gap-1 font-semibold tabular-nums" style={{ color: QUOTE.red }}>
+                <span>₹</span>
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={draftAdditional}
+                  disabled={saving}
+                  onChange={(e) => handleAdditionalChange(e.target.value)}
+                  className="w-28 rounded border border-[#e5ddd4] bg-white px-2 py-1 text-right text-sm font-semibold text-[#c1272d] outline-none focus:border-[#c1272d]"
+                  aria-label="Additional discount in rupees"
+                />
+              </label>
+            ) : (
+              <span className="font-semibold tabular-nums" style={{ color: QUOTE.red }}>
+                - {inrFull(savedAdditionalRow?.discountAmount ?? additionalDiscount ?? 0)}
+              </span>
+            )}
+          </div>
+        </div>
+      ) : null}
 
       <div className="flex justify-between text-sm">
         <span style={{ color: QUOTE.muted }}>Discount</span>

@@ -265,6 +265,19 @@ export function buildQuoteDiscountBreakdown(
     });
   }
 
+  const additionalDiscount = asNum(quoteObj.hubAdditionalDiscountAmount);
+  if (additionalDiscount != null && additionalDiscount > 0) {
+    rows.push({
+      key: 'additionalDiscount',
+      label: 'Additional Discount',
+      price: null,
+      discountedPrice: null,
+      discountPct: null,
+      discountAmount: additionalDiscount,
+      factor: null,
+    });
+  }
+
   return rows;
 }
 
@@ -279,7 +292,10 @@ export function resolveTotalDiscount(
   payableAmount: number | null,
 ): number | null {
   const hubCategoryAmount = asNum(quoteObj.hubCategoryDiscountAmount);
-  if (hubCategoryAmount != null && hubCategoryAmount > 0) return hubCategoryAmount;
+  const hubAdditionalAmount = Math.max(0, asNum(quoteObj.hubAdditionalDiscountAmount) ?? 0);
+  if (hubCategoryAmount != null || hubAdditionalAmount > 0) {
+    return Math.max(0, (hubCategoryAmount ?? 0) + hubAdditionalAmount);
+  }
 
   const fromBreakdown = sumDiscountBreakdownAmounts(breakdownRows);
   if (fromBreakdown > 0) return fromBreakdown;

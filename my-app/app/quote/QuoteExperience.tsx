@@ -243,7 +243,12 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
   const pickedFeesExplicit = asNum(pick('designAndManagementFees'));
   const discount = asNum(pick('discount', 'discountAmount'));
   const hubCategoryAmount = asNum(pick('hubCategoryDiscountAmount'));
-  const disc = (hubCategoryAmount != null && hubCategoryAmount >= 0 ? hubCategoryAmount : discount) || 0;
+  const hubAdditionalAmount = Math.max(0, asNum(pick('hubAdditionalDiscountAmount')) ?? 0);
+  const hubTotalDiscount =
+    hubCategoryAmount != null || hubAdditionalAmount > 0
+      ? Math.max(0, (hubCategoryAmount ?? 0) + hubAdditionalAmount)
+      : null;
+  const disc = (hubTotalDiscount != null ? hubTotalDiscount : discount) || 0;
 
   let interiorProjectAmount: number | null;
   let totalPayableAmount: number | null;
@@ -253,7 +258,7 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
     const tolerance = Math.max(500, sumRoomTotals * 0.02);
     const apiPayable = pickedPayable;
     const apiPlausible =
-      hubCategoryAmount == null &&
+      hubTotalDiscount == null &&
       apiPayable != null &&
       apiPayable >= sumRoomTotals - disc - tolerance &&
       (Math.abs(apiPayable - sumRoomTotals) <= tolerance || apiPayable >= sumRoomTotals - disc);
@@ -266,15 +271,15 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
   } else if (rooms.length > 0) {
     interiorProjectAmount = pickedInterior ?? pickedTotalPrice ?? null;
     totalPayableAmount =
-      hubCategoryAmount != null && interiorProjectAmount != null
-        ? Math.max(0, interiorProjectAmount + (pickedFeesExplicit ?? 0) - hubCategoryAmount)
+      hubTotalDiscount != null && interiorProjectAmount != null
+        ? Math.max(0, interiorProjectAmount + (pickedFeesExplicit ?? 0) - hubTotalDiscount)
         : pickedPayable ?? pickedTotalPrice ?? interiorProjectAmount;
   } else {
     interiorProjectAmount =
       pickedInterior ?? pickedTotalPrice ?? (sumRoomTotals > 0 ? sumRoomTotals : null);
     totalPayableAmount =
-      hubCategoryAmount != null && interiorProjectAmount != null
-        ? Math.max(0, interiorProjectAmount + (pickedFeesExplicit ?? 0) - hubCategoryAmount)
+      hubTotalDiscount != null && interiorProjectAmount != null
+        ? Math.max(0, interiorProjectAmount + (pickedFeesExplicit ?? 0) - hubTotalDiscount)
         : pickedPayable ?? pickedTotalPrice ?? (sumRoomTotals > 0 ? sumRoomTotals : null);
   }
 
@@ -554,6 +559,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           body: JSON.stringify({
             categoryPct: savePayload.categoryPct,
             amount: savePayload.amount,
+            additionalDiscount: savePayload.additionalDiscount,
             payload: payload ?? undefined,
           }),
         },
@@ -580,6 +586,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           : {
               hubCategoryDiscountPct: savePayload.categoryPct,
               hubCategoryDiscountAmount: savePayload.amount,
+              hubAdditionalDiscountAmount: savePayload.additionalDiscount,
               hubFlatDiscountPct: 0,
               hubFlatDiscountAmount: 0,
             };
@@ -624,6 +631,21 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       discountEditable={discountEditable}
       discountSaving={discountSaving}
       discountSaveError={discountSaveError}
+      additionalDiscount={(() => {
+        if (!payload || typeof payload !== 'object') return null;
+        const root = payload as Record<string, unknown>;
+        const data = root.data ?? root.Data;
+        const d0 =
+          data && typeof data === 'object' && !Array.isArray(data)
+            ? (data as Record<string, unknown>)
+            : Array.isArray(data) && data[0] && typeof data[0] === 'object'
+              ? (data[0] as Record<string, unknown>)
+              : null;
+        const n =
+          asNum(root.hubAdditionalDiscountAmount) ??
+          (d0 ? asNum(d0.hubAdditionalDiscountAmount) : null);
+        return n;
+      })()}
       onSaveDiscount={discountEditable ? handleSaveDiscount : undefined}
     />
   );

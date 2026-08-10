@@ -982,6 +982,7 @@ function applyHubDiscountOverlay(
     "hubFlatDiscountAmount",
     "hubCategoryDiscountPct",
     "hubCategoryDiscountAmount",
+    "hubAdditionalDiscountAmount",
   ] as const;
   for (const k of keys) {
     if (snapshot[k] != null) overlay[k] = snapshot[k];

@@ -2306,11 +2306,16 @@ export default function ProjectDetailPage() {
                             const hubCategoryDiscountAmount =
                                 extractNumber(quoteRoot.hubCategoryDiscountAmount) ??
                                 (quoteData0 ? extractNumber(quoteData0.hubCategoryDiscountAmount) : null);
+                            const hubAdditionalDiscountAmount =
+                                extractNumber(quoteRoot.hubAdditionalDiscountAmount) ??
+                                (quoteData0 ? extractNumber(quoteData0.hubAdditionalDiscountAmount) : null) ??
+                                0;
                             const interiorForPayable = extractNumber(view.totals.interiorProjectAmount);
                             const feesForPayable = extractNumber(view.totals.designAndManagementFees) ?? 0;
                             const discountForPayable = extractNumber(view.totals.discount) ?? 0;
                             const displayPayableModal =
-                                hubCategoryDiscountAmount != null && interiorForPayable != null
+                                (hubCategoryDiscountAmount != null || hubAdditionalDiscountAmount > 0) &&
+                                interiorForPayable != null
                                     ? Math.max(0, interiorForPayable + feesForPayable - discountForPayable)
                                     : extractNumber(view.totals.totalPayableAmount);
                             const fullEditorQuoteId =
@@ -2463,6 +2468,7 @@ export default function ProjectDetailPage() {
                                                             <QuoteDiscountDetails
                                                                 rows={view.totals.discountBreakdown}
                                                                 totalDiscount={view.totals.discount}
+                                                                additionalDiscount={hubAdditionalDiscountAmount}
                                                                 editable={
                                                                     Boolean(sessionId) &&
                                                                     projectId != null &&
@@ -2487,6 +2493,7 @@ export default function ProjectDetailPage() {
                                                                                 body: JSON.stringify({
                                                                                     categoryPct: savePayload.categoryPct,
                                                                                     amount: savePayload.amount,
+                                                                                    additionalDiscount: savePayload.additionalDiscount,
                                                                                     payload:
                                                                                         latestQuoteResponse &&
                                                                                         typeof latestQuoteResponse === 'object'
@@ -2521,6 +2528,7 @@ export default function ProjectDetailPage() {
                                                                                 : {
                                                                                       hubCategoryDiscountPct: savePayload.categoryPct,
                                                                                       hubCategoryDiscountAmount: savePayload.amount,
+                                                                                      hubAdditionalDiscountAmount: savePayload.additionalDiscount,
                                                                                       hubFlatDiscountPct: 0,
                                                                                       hubFlatDiscountAmount: 0,
                                                                                   };
