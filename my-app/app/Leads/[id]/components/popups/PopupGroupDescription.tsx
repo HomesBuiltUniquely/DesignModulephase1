@@ -235,7 +235,7 @@ export default function PopupGroupDescription({
               <button
                 type="button"
                 onClick={openWhatsAppWithClient}
-                className="px-3 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 flex items-center gap-1.5"
+                className="px-3 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-medium hover:bg-[#EF0101] flex items-center gap-1.5"
               >
                 Open WhatsApp
               </button>
@@ -253,7 +253,7 @@ export default function PopupGroupDescription({
             type="button"
             onClick={copyAllNumbers}
             disabled={allPhonesWithRole().length === 0}
-            className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-4 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-medium hover:bg-[#EF0101] disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {copiedId === 'all' ? 'Copied all numbers' : 'Copy all numbers (for WhatsApp group)'}
           </button>
@@ -266,7 +266,7 @@ export default function PopupGroupDescription({
           type="button"
           onClick={handleMarkDone}
           disabled={isSubmitting || !leadId}
-          className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="px-4 py-2 bg-[#EF0101] text-white text-sm font-medium rounded-lg hover:bg-[#EF0101] disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {isSubmitting ? 'Sending…' : 'Mark as done'}
         </button>

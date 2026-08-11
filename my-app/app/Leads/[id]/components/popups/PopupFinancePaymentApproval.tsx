@@ -134,7 +134,7 @@ export default function PopupFinancePaymentApproval({
                                 <span
                                     className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${
                                         u.status === 'approved'
-                                            ? 'bg-green-100 text-green-800'
+                                            ? 'bg-[#DDCDC1]/40 text-[#32261C]'
                                             : 'bg-amber-100 text-amber-800'
                                     }`}
                                 >
@@ -147,7 +147,7 @@ export default function PopupFinancePaymentApproval({
             </div>
 
             {!loading && pending.length === 0 && approved.length > 0 ? (
-                <p className="mt-2 text-xs text-green-700">Payment screenshots already approved.</p>
+                <p className="mt-2 text-xs text-[#32261C]">Payment screenshots already approved.</p>
             ) : null}
 
             <div className="mt-5 flex flex-wrap justify-end gap-2">
@@ -162,7 +162,7 @@ export default function PopupFinancePaymentApproval({
                     type="button"
                     onClick={() => void onApprove()}
                     disabled={approving || !leadId}
-                    className="rounded-lg bg-green-700 px-4 py-2 text-sm font-semibold text-white hover:bg-green-800 disabled:opacity-60"
+                    className="rounded-lg bg-[#EF0101] px-4 py-2 text-sm font-semibold text-white hover:bg-[#EF0101]/90 disabled:opacity-60"
                 >
                     {approving ? 'Approving…' : 'Approve payment'}
                 </button>

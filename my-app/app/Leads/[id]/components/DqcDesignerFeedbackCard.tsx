@@ -95,7 +95,7 @@ export default function DqcDesignerFeedbackCard({ leadId, sessionId, cardClass =
               key={index}
               className={`rounded-lg border p-3 text-sm border-l-4 ${
                 r.resolved
-                  ? 'border-l-green-500 bg-green-50/50'
+                  ? 'border-l-[#EF0101] bg-[#DDCDC1]/20/50'
                   : r.priority === 'high'
                     ? 'border-l-red-500 bg-red-50/30'
                     : r.priority === 'medium'
@@ -112,7 +112,7 @@ export default function DqcDesignerFeedbackCard({ leadId, sessionId, cardClass =
                   {r.priority === 'high' ? 'High Priority' : r.priority === 'medium' ? 'Medium Priority' : 'Low Priority'}
                 </span>
                 {r.resolved ? (
-                  <span className="text-xs font-medium text-green-700 flex items-center gap-1">
+                  <span className="text-xs font-medium text-[#32261C] flex items-center gap-1">
                     ✓ Solved
                   </span>
                 ) : (
@@ -120,7 +120,7 @@ export default function DqcDesignerFeedbackCard({ leadId, sessionId, cardClass =
                     type="button"
                     disabled={resolvingIndex === index}
                     onClick={() => markSolved(index)}
-                    className="text-xs font-semibold text-green-700 hover:text-green-800 hover:underline disabled:opacity-60"
+                    className="text-xs font-semibold text-[#32261C] hover:text-[#32261C] hover:underline disabled:opacity-60"
                   >
                     {resolvingIndex === index ? 'Saving…' : 'Mark as solved'}
                   </button>

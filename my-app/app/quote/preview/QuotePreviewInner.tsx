@@ -64,7 +64,7 @@ export function QuotePreviewInner() {
   }
   if (payload === null) {
     return (
-      <div className="min-h-screen bg-[#f5f5f8] p-6 text-rose-700">
+      <div className="min-h-screen bg-[#f5f5f8] p-6 text-[#EF0101]">
         Quotation preview is missing or expired. Run <strong>Get quote</strong> again from the dashboard.
       </div>
     );

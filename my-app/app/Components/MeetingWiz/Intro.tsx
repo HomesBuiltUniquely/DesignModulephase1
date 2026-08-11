@@ -133,7 +133,7 @@ export default function Intro({ onNext, onPrev, lead }: Props) {
           </button>
           <button
             onClick={onNext}
-            className="rounded-md bg-[#2EE86B] px-6 py-2 text-sm font-semibold text-black transition hover:bg-[#24d45d]"
+            className="rounded-md bg-[#EF0101] px-6 py-2 text-sm font-semibold text-white transition hover:bg-[#EF0101]/90"
           >
             Next Phase
           </button>
@@ -147,7 +147,7 @@ export default function Intro({ onNext, onPrev, lead }: Props) {
           {Array.from({ length: 5 }).map((_, i) => (
             <div
               key={i}
-              className={`h-1 rounded-full w-8 ${i < 1 ? "bg-[#2EE86B]" : "bg-gray-300"}`}
+              className={`h-1 rounded-full w-8 ${i < 1 ? "bg-[#EF0101]" : "bg-gray-300"}`}
             />
           ))}
         </div>
@@ -460,7 +460,7 @@ export default function Intro({ onNext, onPrev, lead }: Props) {
 
         <button
           onClick={onNext}
-          className="inline-flex items-center gap-3 rounded-lg bg-[#2EE86B] px-6 py-3 text-sm font-bold uppercase tracking-wider text-black transition hover:bg-[#24d45d]"
+          className="inline-flex items-center gap-3 rounded-lg bg-[#EF0101] px-6 py-3 text-sm font-bold uppercase tracking-wider text-white transition hover:bg-[#EF0101]/90"
         >
           Next: About Hub
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#000" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">

@@ -238,16 +238,16 @@ export default function PopupDqcSubmission({
             onDragOver={(e) => { e.preventDefault(); setDrawingDrag(true); }}
             onDragLeave={() => setDrawingDrag(false)}
             onDrop={handleDrawingDrop}
-            className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${drawingDrag ? 'border-blue-400 bg-blue-50/50' : 'border-gray-300 bg-gray-50/50 hover:border-gray-400'}`}
+            className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${drawingDrag ? 'border-[#00B0ED] bg-[#00B0ED]/10/50' : 'border-gray-300 bg-gray-50/50 hover:border-gray-400'}`}
           >
             <div className="flex flex-col items-center gap-2">
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-12 h-12 text-sky-400">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-12 h-12 text-[#00B0ED]">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m.75 12 3 3m0 0 3-3m-3 3v-6m-1.5-9H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
               </svg>
               <p className="font-semibold text-gray-700">Drag and drop drawing files here</p>
               <p className="text-sm text-gray-500">Upload final drawing files for DQC verification</p>
               {drawingFiles.length > 0 && (
-                <p className="text-sm text-green-700 font-medium text-left w-full">
+                <p className="text-sm text-[#32261C] font-medium text-left w-full">
                   {drawingFiles.map((f) => f.name).join(', ')}
                 </p>
               )}
@@ -280,16 +280,16 @@ export default function PopupDqcSubmission({
             onDragOver={(e) => { e.preventDefault(); setQuotationDrag(true); }}
             onDragLeave={() => setQuotationDrag(false)}
             onDrop={handleQuotationDrop}
-            className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${quotationDrag ? 'border-blue-400 bg-blue-50/50' : 'border-gray-300 bg-gray-50/50 hover:border-gray-400'}`}
+            className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${quotationDrag ? 'border-[#00B0ED] bg-[#00B0ED]/10/50' : 'border-gray-300 bg-gray-50/50 hover:border-gray-400'}`}
           >
             <div className="flex flex-col items-center gap-2">
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-12 h-12 text-sky-400">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-12 h-12 text-[#00B0ED]">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
               </svg>
               <p className="font-semibold text-gray-700">Drag and drop quotation files here</p>
               <p className="text-sm text-gray-500">Upload final quotation files aligned with design</p>
               {quotationFiles.length > 0 && (
-                <p className="text-sm text-green-700 font-medium text-left w-full">
+                <p className="text-sm text-[#32261C] font-medium text-left w-full">
                   {quotationFiles.map((f) => f.name).join(', ')}
                 </p>
               )}
@@ -316,13 +316,13 @@ export default function PopupDqcSubmission({
           <p className="text-sm text-red-600 px-2">{submitError}</p>
         )}
         {/* DQC Review Process info */}
-        <div className="flex gap-3 p-4 rounded-lg bg-sky-50 border border-sky-100">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5 text-sky-600 shrink-0 mt-0.5">
+        <div className="flex gap-3 p-4 rounded-lg bg-[#00B0ED]/10 border border-[#00B0ED]/20">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5 text-[#00B0ED] shrink-0 mt-0.5">
             <path strokeLinecap="round" strokeLinejoin="round" d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z" />
           </svg>
           <div>
-            <p className="font-semibold text-sky-800 text-sm">Files go to DQC</p>
-            <p className="text-sm text-sky-700 mt-0.5">
+            <p className="font-semibold text-[#00B0ED] text-sm">Files go to DQC</p>
+            <p className="text-sm text-[#00B0ED] mt-0.5">
               Uploaded files are sent to DQC. They will review and resolve (approve or request changes). You can see their feedback and re-upload if needed. The project will not move to the next phase until DQC approves.
             </p>
           </div>
@@ -342,7 +342,7 @@ export default function PopupDqcSubmission({
           type="button"
           onClick={handleSubmit}
           disabled={!canSubmit || submitting}
-          className="px-4 py-2.5 rounded-lg bg-blue-600 text-white font-medium text-sm hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed"
+          className="px-4 py-2.5 rounded-lg bg-[#00B0ED] text-white font-medium text-sm hover:bg-[#00B0ED]/90 disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {submitting ? 'Submitting…' : 'Submit the DQC'}
         </button>

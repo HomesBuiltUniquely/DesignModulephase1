@@ -127,11 +127,11 @@ export default function MeetingSlotTimeline({
                 type="button"
                 disabled={disabled || !available}
                 onClick={() => available && onSelectStartMin(m)}
-                className={`absolute right-0 -translate-y-1/2 whitespace-nowrap rounded px-1.5 py-1 text-[12px] font-semibold leading-none transition ${
+                className={`absolute right-0 -translate-y-1/2 whitespace-nowrap rounded-md px-2 py-1 text-[12px] font-semibold leading-none transition-all duration-200 ${
                   isSelected
-                    ? "bg-emerald-600 text-white"
+                    ? "bg-[#EF0101] text-white shadow-md scale-105"
                     : available
-                      ? "text-emerald-700 hover:bg-emerald-50"
+                      ? "text-[#32261C] hover:bg-[#DDCDC1]/30 hover:scale-105"
                       : "cursor-not-allowed text-gray-300"
                 }`}
                 style={{ top: (m - HUB_MEETING_TIMELINE_START_MIN) * PX_PER_MIN }}
@@ -144,13 +144,13 @@ export default function MeetingSlotTimeline({
 
         {/* Timeline grid */}
         <div
-          className="relative min-w-[280px] flex-1 rounded-xl border border-gray-200 bg-gray-50"
+          className="relative min-w-[280px] flex-1 rounded-xl border border-[#DDCDC1] bg-white shadow-sm"
           style={{ height: timelineHeight }}
         >
           {hourMarks.map((m) => (
             <div
               key={`line-${m}`}
-              className="pointer-events-none absolute left-0 right-0 border-t border-dashed border-gray-200"
+              className="pointer-events-none absolute left-0 right-0 border-t border-dashed border-[#DDCDC1]"
               style={{ top: (m - HUB_MEETING_TIMELINE_START_MIN) * PX_PER_MIN }}
             />
           ))}
@@ -161,7 +161,7 @@ export default function MeetingSlotTimeline({
             return (
               <div
                 key={block.id}
-                className="absolute left-0 box-border flex items-center gap-2 border border-gray-300 bg-gray-100 px-3 py-2"
+                className="absolute left-0 box-border flex items-center gap-2 border border-[#DDCDC1] bg-[#F1F2F6] px-3 py-2"
                 style={{ top, height: Math.max(height, 48), width: "100%" }}
               >
                 <span className="shrink-0 text-gray-400" aria-hidden>
@@ -177,9 +177,33 @@ export default function MeetingSlotTimeline({
             );
           })}
 
+          {startOptions.map((m) => {
+            const available = isHubMeetingStartAvailable(m, bookedBlocks, durationMin, meetingDate);
+            if (!available) return null;
+            return (
+              <div
+                key={`hover-container-${m}`}
+                className="group absolute left-0 z-10 w-full cursor-pointer"
+                style={{
+                  top: (m - HUB_MEETING_TIMELINE_START_MIN) * PX_PER_MIN,
+                  height: 30 * PX_PER_MIN,
+                }}
+                onClick={() => !disabled && onSelectStartMin(m)}
+              >
+                <div
+                  className="pointer-events-none absolute left-0 w-full rounded-md border-2 border-transparent transition-all duration-200 group-hover:border-[#EF0101]/40 group-hover:bg-[#EF0101]/5 group-hover:shadow-sm"
+                  style={{
+                    top: 0,
+                    height: Math.max(durationMin * PX_PER_MIN, 48),
+                  }}
+                />
+              </div>
+            );
+          })}
+
           {selectedStartMin !== null && selectedEndMin !== null ? (
             <div
-              className="absolute left-0 box-border overflow-hidden border-2 border-emerald-500 bg-emerald-50 px-3 py-2 shadow-[inset_4px_0_0_#16a34a]"
+              className="pointer-events-none absolute left-0 z-20 box-border overflow-hidden rounded-md border-2 border-[#EF0101] bg-[#EF0101]/10 px-3 py-2 shadow-md shadow-[#EF0101]/10 transition-all duration-300 animate-in zoom-in-95 fade-in"
               style={{
                 top: (selectedStartMin - HUB_MEETING_TIMELINE_START_MIN) * PX_PER_MIN,
                 height: Math.max((selectedEndMin - selectedStartMin) * PX_PER_MIN, 52),
@@ -188,14 +212,14 @@ export default function MeetingSlotTimeline({
             >
               <div className="flex h-full w-full flex-col justify-center gap-1">
                 <div className="flex items-center gap-1.5">
-                  <span className="rounded bg-emerald-600 px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-white">
+                  <span className="rounded bg-[#EF0101] px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-white shadow-sm">
                     SELECTED
                   </span>
-                  <span className="text-emerald-600" aria-hidden>
+                  <span className="text-[#32261C]" aria-hidden>
                     ✓
                   </span>
                 </div>
-                <p className="text-xs font-semibold text-emerald-800">
+                <p className="text-xs font-semibold text-[#32261C]">
                   {formatHubTimeRange(selectedStartMin, selectedEndMin)} ({durationMin} mins)
                 </p>
               </div>

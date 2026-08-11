@@ -126,16 +126,16 @@ export default function Popup40pCollection({ leadId, apiBase, sessionId, onSucce
                 onClick={openFileDialog}
                 onDrop={onDrop}
                 onDragOver={onDragOver}
-                className="w-full max-w-[540px] border-2 border-dashed border-gray-300 rounded-xl bg-gray-50 p-8 flex flex-col items-center justify-center min-h-[180px] cursor-pointer hover:border-green-300 hover:bg-gray-100 transition-colors"
+                className="w-full max-w-[540px] border-2 border-dashed border-gray-300 rounded-xl bg-gray-50 p-8 flex flex-col items-center justify-center min-h-[180px] cursor-pointer hover:border-[#DDCDC1] hover:bg-gray-100 transition-colors"
             >
-                <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center mb-2">
+                <div className="w-12 h-12 rounded-full bg-[#DDCDC1]/40 flex items-center justify-center mb-2">
                     <svg
                         xmlns="http://www.w3.org/2000/svg"
                         fill="none"
                         viewBox="0 0 24 24"
                         strokeWidth="1.5"
                         stroke="currentColor"
-                        className="w-6 h-6 text-green-600"
+                        className="w-6 h-6 text-[#32261C]"
                     >
                         <path
                             strokeLinecap="round"
@@ -174,7 +174,7 @@ export default function Popup40pCollection({ leadId, apiBase, sessionId, onSucce
                     type="button"
                     onClick={onSubmit}
                     disabled={uploading || files.length === 0}
-                    className="px-5 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="px-5 py-2 bg-[#00B0ED] text-white font-medium rounded-lg hover:bg-[#00B0ED]/90 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                     {uploading ? 'Uploading…' : 'Submit to finance'}
                 </button>

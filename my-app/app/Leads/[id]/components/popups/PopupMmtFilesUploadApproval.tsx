@@ -147,7 +147,7 @@ export default function PopupMmtFilesUploadApproval({
                                 <span
                                     className={`text-xs font-semibold px-2 py-0.5 rounded ${
                                         u.status === 'approved'
-                                            ? 'bg-green-100 text-green-800'
+                                            ? 'bg-[#DDCDC1]/40 text-[#32261C]'
                                             : 'bg-amber-100 text-amber-800'
                                     }`}
                                 >
@@ -158,7 +158,7 @@ export default function PopupMmtFilesUploadApproval({
                                         type="button"
                                         onClick={() => void onApprove(u.id)}
                                         disabled={approvingId === u.id}
-                                        className="px-3 py-1.5 rounded-lg bg-green-600 text-white text-xs font-semibold hover:bg-green-700 disabled:opacity-60"
+                                        className="px-3 py-1.5 rounded-lg bg-[#EF0101] text-white text-xs font-semibold hover:bg-[#EF0101] disabled:opacity-60"
                                     >
                                         {approvingId === u.id ? 'Approving…' : 'Approve'}
                                     </button>
@@ -170,7 +170,7 @@ export default function PopupMmtFilesUploadApproval({
             )}
 
             {pending.length === 0 && approved.length > 0 && (
-                <p className="text-sm text-green-800">All uploads are approved. This task can stay marked complete.</p>
+                <p className="text-sm text-[#32261C]">All uploads are approved. This task can stay marked complete.</p>
             )}
 
             <div className="flex flex-wrap gap-2 pt-2">

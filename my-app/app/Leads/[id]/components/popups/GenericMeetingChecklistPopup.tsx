@@ -119,10 +119,10 @@ export default function GenericMeetingChecklistPopup({
   };
 
   return (
-    <div className="px-6 pb-6 max-w-[640px] mt-6 bg-purple-50 text-green-950">
+    <div className="px-6 pb-6 max-w-[640px] mt-6 bg-[#F1F2F6] text-[#32261C]">
       <div className="flex items-start justify-between gap-4 mb-6">
         <div>
-          <h2 className="text-xl font-bold text-green-950">
+          <h2 className="text-xl font-bold text-[#32261C]">
             {definition.title}
           </h2>
         </div>
@@ -136,14 +136,14 @@ export default function GenericMeetingChecklistPopup({
             <div key={idx}>
               {definition.showBreakdownDividerAtIndex === idx &&
                 definition.breakdownDividerTitle && (
-                  <div className="mb-6 pb-4 border-b-2 border-green-950">
-                    <h3 className="text-lg font-bold text-green-950">
+                  <div className="mb-6 pb-4 border-b-2 border-[#EF0101]">
+                    <h3 className="text-lg font-bold text-[#32261C]">
                       {definition.breakdownDividerTitle}
                     </h3>
                   </div>
                 )}
               <div className="border rounded-lg p-4">
-                <h3 className="font-semibold mb-2 text-green-950">
+                <h3 className="font-semibold mb-2 text-[#32261C]">
                   {section.title}
                 </h3>
                 {reqs.length === 0 ? (
@@ -158,13 +158,13 @@ export default function GenericMeetingChecklistPopup({
                           onChange={() => toggleItem(idx, req)}
                           className="mr-2"
                         />
-                        <span className="text-sm text-green-950">{req}</span>
+                        <span className="text-sm text-[#32261C]">{req}</span>
                       </li>
                     ))}
                   </ul>
                 )}
                 {section.note && (
-                  <p className="mt-2 text-xs text-green-900 italic">
+                  <p className="mt-2 text-xs text-[#32261C] italic">
                     {section.note}
                   </p>
                 )}
@@ -179,7 +179,7 @@ export default function GenericMeetingChecklistPopup({
           <button
             onClick={handleSubmit}
             disabled={isSubmitting}
-            className="px-5 py-2 rounded-lg bg-purple-50 text-green-950 hover:bg-slate-900 hover:border hover:border-purple-50 hover:text-purple-50 transition font-bold"
+            className="px-5 py-2 rounded-lg bg-[#F1F2F6] text-[#32261C] hover:bg-slate-900 hover:border hover:border-white/30 hover:text-white transition font-bold"
           >
             {isSubmitting ? "Submitting..." : "Submit"}
           </button>

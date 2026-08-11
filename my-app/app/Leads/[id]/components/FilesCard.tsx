@@ -277,7 +277,7 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
                             type="button"
                             onClick={onPickZip}
                             disabled={!leadId || uploading}
-                            className="px-4 py-2 rounded-lg bg-green-700 text-white text-sm font-semibold hover:bg-green-800 disabled:opacity-60"
+                            className="px-4 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-semibold hover:bg-[#EF0101]/90 disabled:opacity-60"
                         >
                             {uploading ? 'Uploading…' : isD2Upload ? 'Upload PDFs' : 'Upload ZIP'}
                         </button>
@@ -294,14 +294,14 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
 
                 {error && <div className="flex-shrink-0 text-sm text-red-600 mb-3">{error}</div>}
                 {uploadSuccess && (
-                    <div className="flex-shrink-0 text-sm text-green-800 bg-green-50 border border-green-200 rounded-lg px-3 py-2 mb-3">
+                    <div className="flex-shrink-0 text-sm text-[#32261C] bg-[#DDCDC1]/20 border border-[#DDCDC1] rounded-lg px-3 py-2 mb-3">
                         {uploadSuccess}
                     </div>
                 )}
 
                 <div className="flex flex-shrink-0 items-center justify-between mb-2">
                     <div className="text-sm font-semibold text-gray-900">Uploaded files</div>
-                    <button type="button" onClick={loadUploads} disabled={!leadId || loading} className="text-sm text-green-800 hover:underline disabled:opacity-60">
+                    <button type="button" onClick={loadUploads} disabled={!leadId || loading} className="text-sm text-[#32261C] hover:underline disabled:opacity-60">
                         {loading ? 'Loading…' : 'Refresh'}
                     </button>
                 </div>
@@ -320,7 +320,7 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
                                         <div className="flex items-center gap-2 min-w-0">
                                             <span className="text-sm font-medium text-gray-900 truncate block min-w-0" title={u.originalName}>{u.originalName}</span>
                                             {u.status && (
-                                                <span className={`shrink-0 px-2 py-0.5 rounded text-xs font-medium ${u.status === 'approved' ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}`}>
+                                                <span className={`shrink-0 px-2 py-0.5 rounded text-xs font-medium ${u.status === 'approved' ? 'bg-[#DDCDC1]/40 text-[#32261C]' : 'bg-amber-100 text-amber-800'}`}>
                                                     {u.status === 'approved' ? 'Approved' : 'Pending'}
                                                 </span>
                                             )}
@@ -339,7 +339,7 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
                                                 type="button"
                                                 onClick={() => onApprove(u.id)}
                                                 disabled={approvingId === u.id}
-                                                className="text-sm px-3 py-1.5 rounded-lg bg-green-600 text-white font-semibold hover:bg-green-700 disabled:opacity-60"
+                                                className="text-sm px-3 py-1.5 rounded-lg bg-[#EF0101] text-white font-semibold hover:bg-[#EF0101] disabled:opacity-60"
                                             >
                                                 {approvingId === u.id ? 'Approving…' : 'Approve'}
                                             </button>
@@ -347,12 +347,12 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
                                         <button
                                             type="button"
                                             onClick={() => toggleContents(u.id)}
-                                            className="text-sm text-green-800 font-semibold hover:underline"
+                                            className="text-sm text-[#32261C] font-semibold hover:underline"
                                         >
                                             {expandedId === u.id ? 'Hide' : isPdf ? 'Preview' : 'View contents'}
                                         </button>
                                         <a
-                                            className="text-sm text-green-800 font-semibold hover:underline"
+                                            className="text-sm text-[#32261C] font-semibold hover:underline"
                                             href={`${API}/api/leads/${leadId}/uploads/${u.id}/download`}
                                             target="_blank"
                                             rel="noreferrer"
@@ -386,7 +386,7 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
                                                             <button
                                                                 type="button"
                                                                 onClick={() => openFileInApp(u.id, f.path)}
-                                                                className="text-green-800 font-medium hover:underline shrink-0"
+                                                                className="text-[#32261C] font-medium hover:underline shrink-0"
                                                             >
                                                                 Open
                                                             </button>
@@ -455,7 +455,7 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
                                                 <a
                                                     href={filePreview.blobUrl}
                                                     download={filePreview.name}
-                                                    className="text-green-700 font-semibold hover:underline"
+                                                    className="text-[#32261C] font-semibold hover:underline"
                                                 >
                                                     Download file
                                                 </a>

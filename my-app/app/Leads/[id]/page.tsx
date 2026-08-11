@@ -55,6 +55,7 @@ import { openProlanceBrowserForProjectId } from '@/app/lib/prolanceLinks';
 import { MeetingWizSessionOverlay } from '@/app/Components/MeetingWiz/MeetingWizSessionOverlay';
 import { canShowStartMeetingButton } from '@/app/lib/leadMeetingSchedule';
 import { getPhaseBucket } from '@/app/lib/leadPhaseBucket';
+import CustomDatePicker from '@/app/Components/ui/CustomDatePicker';
 
 const API = getApiBase();
 
@@ -1822,7 +1823,7 @@ export default function ProjectDetailPage() {
                         <span className="text-gray-600 font-medium">Stage:</span>
                         <span className="font-bold text-gray-900">{project.projectStage || 'Active'}</span>
                         {dqcStage && (
-                            <span className="px-2.5 py-0.5 rounded bg-blue-100 text-blue-800 text-sm font-semibold">
+                            <span className="px-2.5 py-0.5 rounded bg-[#00B0ED]/15 text-[#00B0ED] text-sm font-semibold">
                                 {dqcStage === 'dqc2' ? 'DQC 2 Approval' : 'DQC 1 Approval'}
                             </span>
                         )}
@@ -1975,7 +1976,7 @@ export default function ProjectDetailPage() {
                         <button
                             type="button"
                             onClick={() => setMeetingWizOpen(true)}
-                            className="inline-flex items-center justify-center rounded-lg bg-[#2EE86B] px-4 py-2.5 text-sm font-bold text-black shadow-sm transition hover:bg-[#24d45d]"
+                            className="inline-flex items-center justify-center rounded-lg bg-[#32261C] px-4 py-2.5 text-sm font-bold text-white shadow-sm transition-all duration-200 hover:bg-[#32261C]/90 hover:shadow-md"
                         >
                             Start meeting
                         </button>
@@ -2033,7 +2034,7 @@ export default function ProjectDetailPage() {
                                         value={manualQuoteProjectId}
                                         onChange={(e) => setManualQuoteProjectId(e.target.value)}
                                         placeholder="e.g. 50726"
-                                        className="w-full rounded-md border border-slate-500 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 outline-none focus:border-purple-400"
+                                        className="w-full rounded-md border border-slate-500 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 outline-none focus:border-[#EF0101]/60"
                                         disabled={prolanceProjectIdSaveBusy}
                                     />
                                     <div className="flex flex-wrap gap-2">
@@ -2065,7 +2066,7 @@ export default function ProjectDetailPage() {
                                                     setProlanceProjectIdSaveBusy(false);
                                                 }
                                             }}
-                                            className="rounded-md border border-emerald-500/70 bg-emerald-600/20 px-4 py-2 text-sm font-semibold text-emerald-100 hover:bg-emerald-600/30 disabled:cursor-not-allowed disabled:opacity-40"
+                                            className="rounded-md border border-[#EF0101]/70 bg-[#EF0101]/20 px-4 py-2 text-sm font-semibold text-emerald-100 hover:bg-[#EF0101]/30 disabled:cursor-not-allowed disabled:opacity-40"
                                         >
                                             {prolanceProjectIdSaveBusy ? 'Saving…' : 'Save to lead'}
                                         </button>
@@ -2137,7 +2138,7 @@ export default function ProjectDetailPage() {
             )}
             {successToast && (
                 <div
-                    className="fixed top-4 left-1/2 -translate-x-1/2 z-[100] max-w-md px-5 py-3 bg-emerald-600 text-white text-sm font-medium rounded-xl shadow-xl"
+                    className="fixed top-4 left-1/2 -translate-x-1/2 z-[100] max-w-md px-5 py-3 bg-[#EF0101] text-white text-sm font-medium rounded-xl shadow-xl"
                     role="status"
                     aria-live="polite"
                 >
@@ -2197,7 +2198,7 @@ export default function ProjectDetailPage() {
                                     setProlanceProjectId(parsed);
                                     await triggerProlanceGetQuote(parsed);
                                 }}
-                                className="px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40"
+                                className="px-4 py-2 rounded-lg bg-[#EF0101] text-white hover:bg-[#EF0101] disabled:opacity-40"
                             >
                                 {getQuoteBusy ? 'Triggering...' : 'Get Quote'}
                             </button>
@@ -2228,7 +2229,7 @@ export default function ProjectDetailPage() {
                                 <button
                                     type="button"
                                     onClick={() => setShowQuotePreviewModal(false)}
-                                    className="rounded-md bg-rose-500 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-600"
+                                    className="rounded-md bg-[#EF0101] px-4 py-2 text-sm font-semibold text-white hover:bg-[#EF0101]"
                                 >
                                     Close
                                 </button>
@@ -2337,7 +2338,7 @@ export default function ProjectDetailPage() {
                                                     onClick={() =>
                                                         openInternalQuoteInNewTab(fullEditorQuoteId, projectId)
                                                     }
-                                                    className="rounded-md border border-teal-300 bg-teal-50 px-3 py-1 text-xs font-semibold text-teal-800 hover:bg-teal-100"
+                                                    className="rounded-md border border-[#DDCDC1] bg-[#DDCDC1]/20 px-3 py-1 text-xs font-semibold text-[#32261C] hover:bg-[#DDCDC1]/30"
                                                 >
                                                     Open full quote (versions)
                                                 </button>
@@ -2355,7 +2356,7 @@ export default function ProjectDetailPage() {
                                                             setTimeout(() => setBlockedTaskMessage(null), 2500);
                                                         }
                                                     }}
-                                                    className="rounded-md border border-indigo-300 px-3 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50"
+                                                    className="rounded-md border border-[#EF0101]/50 px-3 py-1 text-xs font-semibold text-[#32261C] hover:bg-[#DDCDC1]/20"
                                                 >
                                                     {quoteLinkCopied ? 'Link Copied' : 'Copy Share Link'}
                                                 </button>
@@ -2392,21 +2393,21 @@ export default function ProjectDetailPage() {
                                             <button
                                                 type="button"
                                                 onClick={() => setQuoteSummaryTab('overall')}
-                                                className={`rounded-lg py-2 text-sm font-semibold ${quoteSummaryTab === 'overall' ? 'bg-rose-500 text-white' : 'text-gray-700'}`}
+                                                className={`rounded-lg py-2 text-sm font-semibold ${quoteSummaryTab === 'overall' ? 'bg-[#EF0101] text-white' : 'text-gray-700'}`}
                                             >
                                                 Overall Summary
                                             </button>
                                             <button
                                                 type="button"
                                                 onClick={() => setQuoteSummaryTab('roomwise')}
-                                                className={`rounded-lg py-2 text-sm font-semibold ${quoteSummaryTab === 'roomwise' ? 'bg-rose-500 text-white' : 'text-gray-700'}`}
+                                                className={`rounded-lg py-2 text-sm font-semibold ${quoteSummaryTab === 'roomwise' ? 'bg-[#EF0101] text-white' : 'text-gray-700'}`}
                                             >
                                                 Room Wise Summary
                                             </button>
                                             <button
                                                 type="button"
                                                 onClick={() => setQuoteSummaryTab('terms')}
-                                                className={`rounded-lg py-2 text-sm font-semibold ${quoteSummaryTab === 'terms' ? 'bg-rose-500 text-white' : 'text-gray-700'}`}
+                                                className={`rounded-lg py-2 text-sm font-semibold ${quoteSummaryTab === 'terms' ? 'bg-[#EF0101] text-white' : 'text-gray-700'}`}
                                             >
                                                 Terms and Condition
                                             </button>
@@ -2432,14 +2433,14 @@ export default function ProjectDetailPage() {
                                                     view.lineItems.map((item, idx) => (
                                                         <div key={`${item.name}-${idx}`} className="grid grid-cols-12 items-center border-t border-gray-100 py-4 text-sm">
                                                             <div className="col-span-8 flex items-center gap-3">
-                                                                <span className="h-6 w-2 rounded-full bg-violet-400" />
+                                                                <span className="h-6 w-2 rounded-full bg-[#EF0101]/70" />
                                                                 <span className="font-semibold text-gray-800">{item.name}</span>
                                                             </div>
                                                             <div className="col-span-4 text-right">
                                                                 {item.amount != null &&
                                                                     item.discountedAmount != null &&
                                                                     item.amount > item.discountedAmount && (
-                                                                        <span className="mr-2 text-xs text-rose-400 line-through">
+                                                                        <span className="mr-2 text-xs text-[#EF0101]/70 line-through">
                                                                             {formatCurrency(item.amount)}
                                                                         </span>
                                                                     )}
@@ -2623,7 +2624,7 @@ export default function ProjectDetailPage() {
                                                                         <p className="text-xs text-gray-500">Room Total</p>
                                                                         <p className="text-xl font-bold text-gray-900">{formatCurrency(curP)}</p>
                                                                         {oldP != null && (
-                                                                            <p className="text-xs text-rose-400 line-through">{formatCurrency(oldP)}</p>
+                                                                            <p className="text-xs text-[#EF0101]/70 line-through">{formatCurrency(oldP)}</p>
                                                                         )}
                                                                     </div>
                                                                 </div>
@@ -2640,7 +2641,7 @@ export default function ProjectDetailPage() {
                                                                     ].map(([label, value]) => (
                                                                         <div key={`${opt.optionID}-${label}`} className="rounded-lg bg-gray-50 p-2">
                                                                             <p className="text-[10px] uppercase tracking-wide text-gray-500">{label}</p>
-                                                                            <p className={`mt-1 text-sm font-semibold ${label === 'Savings' ? 'text-emerald-700' : 'text-gray-900'}`}>
+                                                                            <p className={`mt-1 text-sm font-semibold ${label === 'Savings' ? 'text-[#32261C]' : 'text-gray-900'}`}>
                                                                                 {formatCurrency(value)}
                                                                             </p>
                                                                         </div>
@@ -2656,13 +2657,13 @@ export default function ProjectDetailPage() {
                                                                                     !prev[`${opt.qoid ?? idx}-${opt.optionID ?? idx}`],
                                                                             }))
                                                                         }
-                                                                        className="text-sm font-semibold text-indigo-700 hover:text-indigo-900"
+                                                                        className="text-sm font-semibold text-[#32261C] hover:text-[#32261C]"
                                                                     >
                                                                         {expandedQuoteRooms[`${opt.qoid ?? idx}-${opt.optionID ?? idx}`] ? 'Read less' : 'Read more'}
                                                                     </button>
                                                                 </div>
                                                                 {expandedQuoteRooms[`${opt.qoid ?? idx}-${opt.optionID ?? idx}`] && (
-                                                                    <div className="mt-3 space-y-3 rounded-lg border border-indigo-100 bg-indigo-50/40 p-3">
+                                                                    <div className="mt-3 space-y-3 rounded-lg border border-[#DDCDC1] bg-[#DDCDC1]/20/40 p-3">
                                                                         {opt.roomRev ? (
                                                                             <p className="text-xs text-gray-600">
                                                                                 <span className="font-semibold text-gray-800">Room Revision:</span> {opt.roomRev}
@@ -2748,7 +2749,7 @@ export default function ProjectDetailPage() {
                 
                 {!isMmtUser && (
                     <MilestonesCard
-                        cardClass={getCardClass('milestones', 'xl:col-span-3 xl:bg-purple-50 xl:h-[70vh] xl:min-h-0 xl:overflow-hidden xl:rounded-3xl relative xl:pt-6 xl:pb-6 xl:px-4 min-h-0 max-h-[min(88dvh,920px)]')}
+                        cardClass={getCardClass('milestones', 'xl:col-span-3 xl:bg-[#F1F2F6] xl:h-[70vh] xl:min-h-0 xl:overflow-hidden xl:rounded-3xl relative xl:pt-6 xl:pb-6 xl:px-4 min-h-0 max-h-[min(88dvh,920px)]')}
                         isMaximized={activeCard === 'milestones'}
                         currentMilestoneIndex={currentMilestoneIndex}
                         onToggleMaximize={() => toggleMaximize('milestones')}
@@ -2768,7 +2769,7 @@ export default function ProjectDetailPage() {
 
                 {!isMmtUser && (
                     <HistoryCard
-                        cardClass={getCardClass('history', 'xl:col-span-2 xl:bg-purple-50 xl:h-[70vh] xl:text-center xl:font-bold xl:pt-8 xl:rounded-3xl text-gray-400 relative')}
+                        cardClass={getCardClass('history', 'xl:col-span-2 xl:bg-[#F1F2F6] xl:h-[70vh] xl:text-center xl:font-bold xl:pt-8 xl:rounded-3xl text-gray-400 relative')}
                         onToggleMaximize={() => toggleMaximize('history')}
                         isMaximized={activeCard === 'history'}
                         historyEvents={historyEvents}
@@ -2787,7 +2788,7 @@ export default function ProjectDetailPage() {
                             <div className="xl:flex-1 xl:min-h-0 xl:grid xl:grid-rows-2 xl:gap-4">
                                 <FilesCard
                                     key={`files-${uploadsVersion}`}
-                                    cardClass={getCardClass('files', 'xl:rounded-3xl xl:bg-purple-50 xl:row-span-1 xl:min-h-0 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative xl:flex xl:flex-col')}
+                                    cardClass={getCardClass('files', 'xl:rounded-3xl xl:bg-[#F1F2F6] xl:row-span-1 xl:min-h-0 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative xl:flex xl:flex-col')}
                                     onToggleMaximize={() => toggleMaximize('files')}
                                     isMaximized={activeCard === 'files'}
                                     leadId={projectId}
@@ -2799,7 +2800,7 @@ export default function ProjectDetailPage() {
                                     uploadType={currentMilestoneIndex === 4 ? 'd2_masking' : undefined}
                                 />
                                 <ChatCard
-                                    cardClass={getCardClass('chat', 'xl:rounded-3xl xl:bg-purple-50 xl:row-span-1 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative')}
+                                    cardClass={getCardClass('chat', 'xl:rounded-3xl xl:bg-[#F1F2F6] xl:row-span-1 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative')}
                                     onToggleMaximize={() => toggleMaximize('chat')}
                                     isMaximized={activeCard === 'chat'}
                                 />
@@ -2808,7 +2809,7 @@ export default function ProjectDetailPage() {
                             <>
                                 <FilesCard
                                     key={`files-${uploadsVersion}`}
-                                    cardClass={getCardClass('files', isMmtUser ? 'xl:rounded-3xl xl:bg-purple-50 xl:h-full xl:min-h-0 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative xl:flex xl:flex-col' : 'xl:rounded-3xl xl:bg-purple-50 xl:row-span-1 xl:min-h-0 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative xl:flex xl:flex-col')}
+                                    cardClass={getCardClass('files', isMmtUser ? 'xl:rounded-3xl xl:bg-[#F1F2F6] xl:h-full xl:min-h-0 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative xl:flex xl:flex-col' : 'xl:rounded-3xl xl:bg-[#F1F2F6] xl:row-span-1 xl:min-h-0 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative xl:flex xl:flex-col')}
                                     onToggleMaximize={() => toggleMaximize('files')}
                                     isMaximized={activeCard === 'files'}
                                     leadId={projectId}
@@ -2829,7 +2830,7 @@ export default function ProjectDetailPage() {
                                 />
                                 {!isMmtUser && !isDesigner && (
                                     <ChatCard
-                                        cardClass={getCardClass('chat', 'xl:rounded-3xl xl:bg-purple-50 xl:row-span-1 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative')}
+                                        cardClass={getCardClass('chat', 'xl:rounded-3xl xl:bg-[#F1F2F6] xl:row-span-1 xl:text-center xl:font-bold xl:pt-8 text-gray-400 relative')}
                                         onToggleMaximize={() => toggleMaximize('chat')}
                                         isMaximized={activeCard === 'chat'}
                                     />
@@ -2842,8 +2843,8 @@ export default function ProjectDetailPage() {
             </main>
 
             {showCancelModal && (
-                <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/60">
-                    <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md space-y-4">
+                <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/60 animate-backdropFadeIn">
+                    <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md space-y-4 animate-modalPopIn">
                         <h2 className="text-lg font-semibold text-gray-900">Mark project as cancelled?</h2>
                         <p className="text-sm text-gray-600">
                             This moves the project to the <strong>Cancelled</strong> queue on the dashboard. Hold will be cleared. This action is intended for Admin, TDM, or Deputy General Manager only.
@@ -2896,17 +2897,15 @@ export default function ProjectDetailPage() {
             )}
 
             {showHoldModal && (
-                <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/60">
-                    <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md space-y-4">
+                <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/60 animate-backdropFadeIn">
+                    <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md space-y-4 animate-modalPopIn">
                         <h2 className="text-lg font-semibold text-gray-900">Put project on hold</h2>
                         <p className="text-sm text-gray-600">
                             Select a date when this project should automatically resume.
                         </p>
-                        <input
-                            type="date"
-                            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-700"
+                        <CustomDatePicker
                             value={holdDate}
-                            onChange={(e) => setHoldDate(e.target.value)}
+                            onChange={(date) => setHoldDate(date)}
                         />
                         <div className="flex justify-end gap-3 pt-2">
                             <button
@@ -2921,7 +2920,7 @@ export default function ProjectDetailPage() {
                             </button>
                             <button
                                 type="button"
-                                className="px-4 py-2 rounded-lg bg-green-700 text-white text-sm font-semibold hover:bg-green-800 disabled:opacity-60"
+                                className="px-4 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-semibold hover:bg-[#EF0101]/90 disabled:opacity-60"
                                 disabled={!holdDate}
                                 onClick={async () => {
                                     if (!projectId || !holdDate) return;

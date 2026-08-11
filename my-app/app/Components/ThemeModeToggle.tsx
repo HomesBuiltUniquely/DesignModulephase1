@@ -29,7 +29,7 @@ export default function ThemeModeToggle({ className = '' }: { className?: string
     <button
       type="button"
       onClick={toggle}
-      className={`rounded-md border border-blue-600 px-3 py-1.5 text-xs font-semibold text-gray-800 hover:bg-gray-50 ${className}`}
+      className={`rounded-md border border-[#00B0ED] px-3 py-1.5 text-xs font-semibold text-[#32261C] hover:bg-[#DDCDC1]/20 ${className}`}
       title="Toggle light/dark mode"
     >
       {mode === 'dark' ? 'Light Mode' : 'Dark Mode'}

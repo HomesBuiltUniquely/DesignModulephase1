@@ -3,6 +3,8 @@
 import { useMemo, useState } from "react";
 import MeetingSlotPickerModal from "@/app/Leads/[id]/components/popups/MeetingSlotPickerModal";
 import { buildAuthHeaders } from "@/app/lib/apiBase";
+import CustomDatePicker from "@/app/Components/ui/CustomDatePicker";
+import CustomSelect from "@/app/Components/ui/CustomSelect";
 import {
   buildHubMeetingDateTimeIso,
   formatHubTimeRange,
@@ -30,7 +32,7 @@ const DURATION_OPTIONS = [30, 60, 90] as const;
 
 const fieldLabelClass = "block text-sm font-semibold text-gray-800 mb-1.5";
 const inputClass =
-  "w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-900 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20";
+  "w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-900 outline-none focus:border-[#EF0101] focus:ring-2 focus:ring-emerald-500/20";
 
 function todayIso(): string {
   const d = new Date();
@@ -188,9 +190,9 @@ export function PersonalAppointmentModal({
 
   return (
     <>
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 animate-backdropFadeIn">
         <div
-          className="flex w-full max-w-md flex-col overflow-hidden rounded-xl bg-white shadow-xl"
+          className="flex w-full max-w-md flex-col rounded-xl bg-white shadow-xl animate-modalPopIn"
           role="dialog"
           aria-labelledby="personal-appointment-title"
         >
@@ -227,7 +229,7 @@ export function PersonalAppointmentModal({
                   onClick={() => handleModeChange("partial")}
                   className={`flex-1 rounded-lg border py-2.5 text-sm font-medium transition-colors ${
                     !isFullDay
-                      ? "border-emerald-600 bg-emerald-50 text-emerald-800"
+                      ? "border-[#EF0101] bg-[#DDCDC1]/20 text-[#32261C]"
                       : "border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
                   }`}
                 >
@@ -238,7 +240,7 @@ export function PersonalAppointmentModal({
                   onClick={() => handleModeChange("full_day")}
                   className={`flex-1 rounded-lg border py-2.5 text-sm font-medium transition-colors ${
                     isFullDay
-                      ? "border-emerald-600 bg-emerald-50 text-emerald-800"
+                      ? "border-[#EF0101] bg-[#DDCDC1]/20 text-[#32261C]"
                       : "border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
                   }`}
                 >
@@ -251,13 +253,11 @@ export function PersonalAppointmentModal({
               <span className={fieldLabelClass}>
                 Date <span className="text-red-500">*</span>
               </span>
-              <input
-                type="date"
+              <CustomDatePicker
                 min={todayIso()}
-                className={inputClass}
                 value={meetingDate}
-                onChange={(e) => {
-                  setMeetingDate(e.target.value);
+                onChange={(date) => {
+                  setMeetingDate(date);
                   setSelectedStartMin(null);
                 }}
               />
@@ -280,7 +280,7 @@ export function PersonalAppointmentModal({
                         }}
                         className={`flex-1 rounded-lg border py-2.5 text-sm font-medium transition-colors ${
                           durationMin === d
-                            ? "border-emerald-600 bg-emerald-50 text-emerald-800"
+                            ? "border-[#EF0101] bg-[#DDCDC1]/20 text-[#32261C]"
                             : "border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
                         }`}
                       >
@@ -306,7 +306,7 @@ export function PersonalAppointmentModal({
                       <button
                         type="button"
                         onClick={() => setSlotPickerOpen(true)}
-                        className="shrink-0 text-xs font-semibold text-blue-600 hover:underline"
+                        className="shrink-0 text-xs font-semibold text-[#00B0ED] hover:underline"
                       >
                         Change
                       </button>
@@ -333,17 +333,11 @@ export function PersonalAppointmentModal({
               <span className={fieldLabelClass}>
                 Reason <span className="text-red-500">*</span>
               </span>
-              <select
-                className={inputClass}
+              <CustomSelect
                 value={reasonPreset}
-                onChange={(e) => handleReasonPresetChange(e.target.value as PersonalBlockReasonPreset)}
-              >
-                {PERSONAL_BLOCK_REASON_PRESETS.map((p) => (
-                  <option key={p} value={p}>
-                    {p}
-                  </option>
-                ))}
-              </select>
+                onChange={(val) => handleReasonPresetChange(val as PersonalBlockReasonPreset)}
+                options={PERSONAL_BLOCK_REASON_PRESETS.map((p) => ({ value: p, label: p }))}
+              />
 
               {isOtherReason && (
                 <label className="mt-3 block">
@@ -371,7 +365,7 @@ export function PersonalAppointmentModal({
             ) : null}
           </div>
 
-          <div className="flex justify-end gap-3 border-t border-gray-200 bg-gray-50 px-6 py-4">
+          <div className="flex justify-end gap-3 border-t border-gray-200 bg-gray-50 px-6 py-4 rounded-b-xl">
             <button
               type="button"
               onClick={onClose}
@@ -384,7 +378,7 @@ export function PersonalAppointmentModal({
               type="button"
               disabled={!canSubmit}
               onClick={handleSubmit}
-              className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-lg bg-[#EF0101] px-4 py-2 text-sm font-semibold text-white hover:bg-[#EF0101] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {submitting
                 ? isFullDay

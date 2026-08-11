@@ -13,6 +13,7 @@ import type {
   LeadshipTypes,
 } from "@/app/Components/Types/Types";
 import { MeetingWizDurationBadge } from "./MeetingWizTimer";
+import CustomSelect from "@/app/Components/ui/CustomSelect";
 
 const ROOM_OPTIONS = [
   "Living Room",
@@ -440,7 +441,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
           {Array.from({ length: 5 }).map((_, i) => (
             <div
               key={i}
-              className={`h-1 rounded-full w-8 ${i < 4 ? "bg-[#2EE86B]" : "bg-gray-300"}`}
+              className={`h-1 rounded-full w-8 ${i < 4 ? "bg-[#EF0101]" : "bg-gray-300"}`}
             />
           ))}
         </div>
@@ -551,26 +552,12 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
                     >
                       {palette.icon}
                     </div>
-                    <select
+                    <CustomSelect
                       value={room.roomName}
-                      onChange={(e) => updateRoom(room.id, { roomName: e.target.value })}
-                      style={{
-                        flex: 1,
-                        border: "1px solid #e5e7eb",
-                        borderRadius: "6px",
-                        padding: "6px 10px",
-                        fontSize: "13px",
-                        fontWeight: 700,
-                        color: "#111827",
-                        background: "#fff",
-                      }}
-                    >
-                      {ROOM_OPTIONS.map((opt) => (
-                        <option key={opt} value={opt}>
-                          {opt}
-                        </option>
-                      ))}
-                    </select>
+                      onChange={(val) => updateRoom(room.id, { roomName: val })}
+                      options={ROOM_OPTIONS.map((opt) => ({ value: opt, label: opt }))}
+                      className="flex-1"
+                    />
                   </div>
                   <button
                     type="button"
@@ -653,23 +640,13 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
           })}
 
           <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" }}>
-            <select
-              value={addRoomChoice}
-              onChange={(e) => setAddRoomChoice(e.target.value)}
-              style={{
-                border: "1px solid #e5e7eb",
-                borderRadius: "6px",
-                padding: "8px 10px",
-                fontSize: "12px",
-                background: "#fff",
-              }}
-            >
-              {ROOM_OPTIONS.map((opt) => (
-                <option key={opt} value={opt}>
-                  {opt}
-                </option>
-              ))}
-            </select>
+            <div className="w-32">
+              <CustomSelect
+                value={addRoomChoice}
+                onChange={(val) => setAddRoomChoice(val)}
+                options={ROOM_OPTIONS.map((opt) => ({ value: opt, label: opt }))}
+              />
+            </div>
             <button
               type="button"
               onClick={addRoom}
@@ -874,7 +851,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
               display: "inline-flex",
               alignItems: "center",
               gap: "9px",
-              backgroundColor: "#2EE86B",
+              backgroundColor: "#EF0101",
               border: "none",
               borderRadius: "8px",
               padding: "14px 36px",
@@ -937,7 +914,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
             width: "10px",
             height: "10px",
             borderRadius: "9999px",
-            backgroundColor: "#2EE86B",
+            backgroundColor: "#EF0101",
           }}
         />
         <button
@@ -946,7 +923,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
             display: "inline-flex",
             alignItems: "center",
             gap: "8px",
-            backgroundColor: "#2EE86B",
+            backgroundColor: "#EF0101",
             border: "none",
             borderRadius: "6px",
             padding: "10px 20px",

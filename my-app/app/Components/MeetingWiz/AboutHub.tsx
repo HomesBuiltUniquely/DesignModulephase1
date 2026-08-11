@@ -22,7 +22,7 @@ export default function AboutHub({ onNext, onPrev }: Props) {
           </button>
           <button
             onClick={onNext}
-            className="rounded-md bg-[#2EE86B] px-6 py-2 text-sm font-semibold text-black transition hover:bg-[#24d45d]"
+            className="rounded-md bg-[#EF0101] px-6 py-2 text-sm font-semibold text-white transition hover:bg-[#EF0101]/90"
           >
             Next Phase
           </button>
@@ -34,7 +34,7 @@ export default function AboutHub({ onNext, onPrev }: Props) {
           {Array.from({ length: 5 }).map((_, i) => (
             <div
               key={i}
-              className={`h-1 rounded-full ${i < 2 ? "w-8 bg-[#2EE86B]" : "w-8 bg-gray-300"}`}
+              className={`h-1 rounded-full ${i < 2 ? "w-8 bg-[#EF0101]" : "w-8 bg-gray-300"}`}
             />
           ))}
         </div>
@@ -80,7 +80,7 @@ export default function AboutHub({ onNext, onPrev }: Props) {
                 their dream homes. Our presentation covers our end-to-end design
                 process and portfolio highlights.
               </p>
-              <button className="w-full rounded-full bg-[#2EE86B] px-6 py-3 text-sm font-bold text-black transition hover:bg-[#24d45d]">
+              <button className="w-full rounded-full bg-[#EF0101] px-6 py-3 text-sm font-bold text-white transition hover:bg-[#EF0101]/90">
                 Launch Company Profile (PPT)
               </button>
             </div>
@@ -90,8 +90,8 @@ export default function AboutHub({ onNext, onPrev }: Props) {
         {/* Info Cards */}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <div className="rounded-2xl bg-white p-6 shadow-sm">
-            <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-full bg-green-50">
-              <svg className="h-5 w-5 text-[#2EE86B]" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-full bg-[#DDCDC1]/20">
+              <svg className="h-5 w-5 text-[#EF0101]" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                 <circle cx="12" cy="12" r="10" />
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4" />
               </svg>
@@ -103,8 +103,8 @@ export default function AboutHub({ onNext, onPrev }: Props) {
           </div>
 
           <div className="rounded-2xl bg-white p-6 shadow-sm">
-            <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-full bg-green-50">
-              <svg className="h-5 w-5 text-[#2EE86B]" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-full bg-[#DDCDC1]/20">
+              <svg className="h-5 w-5 text-[#EF0101]" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 2L8 12l4 2 4-2-4-10z" />
                 <path strokeLinecap="round" strokeLinejoin="round" d="M8 12l-4 8M16 12l4 8" />
               </svg>
@@ -116,8 +116,8 @@ export default function AboutHub({ onNext, onPrev }: Props) {
           </div>
 
           <div className="rounded-2xl bg-white p-6 shadow-sm">
-            <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-full bg-green-50">
-              <svg className="h-5 w-5 text-[#2EE86B]" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-full bg-[#DDCDC1]/20">
+              <svg className="h-5 w-5 text-[#EF0101]" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z" />
               </svg>
             </div>

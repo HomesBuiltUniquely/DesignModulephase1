@@ -28,8 +28,8 @@ export default function ReviewPage() {
     <div className="p-6 max-w-4xl mx-auto space-y-6">
       <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-green-100">
-            <svg className="h-5 w-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#DDCDC1]/40">
+            <svg className="h-5 w-5 text-[#32261C]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
             </svg>
           </div>
@@ -60,7 +60,7 @@ export default function ReviewPage() {
       <div className="flex gap-3 flex-wrap">
         <button
           onClick={() => router.push("/")}
-          className="px-5 py-2 rounded-lg bg-green-600 text-white font-medium hover:bg-green-700"
+          className="px-5 py-2 rounded-lg bg-[#EF0101] text-white font-medium hover:bg-[#EF0101]"
         >
           Go to Dashboard
         </button>

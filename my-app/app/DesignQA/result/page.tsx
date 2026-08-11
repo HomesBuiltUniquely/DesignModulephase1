@@ -36,7 +36,7 @@ export default function DesignQAResultPage() {
     if (!submitted) {
         return (
             <div className="bg-white min-h-screen flex flex-col items-center justify-center p-4 sm:p-6 md:p-8">
-                <div className="w-full max-w-lg mx-auto bg-[#f1f2f6] rounded-3xl border-2 border-green-900 shadow-xl overflow-hidden p-6 sm:p-8 md:p-10 text-center">
+                <div className="w-full max-w-lg mx-auto bg-[#f1f2f6] rounded-3xl border-2 border-[#EF0101] shadow-xl overflow-hidden p-6 sm:p-8 md:p-10 text-center">
                     <h1 className="text-xl sm:text-2xl md:text-3xl font-bold text-gray-800 mb-3 sm:mb-4">
                         Complete the questionnaire
                     </h1>
@@ -45,7 +45,7 @@ export default function DesignQAResultPage() {
                     </p>
                     <Link
                         href="/DesignQA"
-                        className="inline-block px-5 py-2.5 sm:px-6 sm:py-3 rounded-xl bg-green-800 text-white font-semibold text-sm sm:text-base hover:bg-green-700 transition-colors"
+                        className="inline-block px-5 py-2.5 sm:px-6 sm:py-3 rounded-xl bg-[#EF0101]/90 text-white font-semibold text-sm sm:text-base hover:bg-[#EF0101] transition-colors"
                     >
                         Start questionnaire
                     </Link>
@@ -62,7 +62,7 @@ export default function DesignQAResultPage() {
             <div className="w-full max-w-[200px] sm:max-w-[240px] mb-4 sm:mb-6">
                 <img src="/LOGOHOWs.png" alt="Logo" className="w-full" />
             </div>
-            <div className="w-full max-w-2xl mx-auto bg-[#f1f2f6] rounded-3xl border-2 border-green-900 shadow-xl overflow-hidden flex flex-col items-center justify-center py-10 sm:py-12 md:py-16 px-6 sm:px-8">
+            <div className="w-full max-w-2xl mx-auto bg-[#f1f2f6] rounded-3xl border-2 border-[#EF0101] shadow-xl overflow-hidden flex flex-col items-center justify-center py-10 sm:py-12 md:py-16 px-6 sm:px-8">
                 <h1 className="text-xl sm:text-2xl md:text-3xl font-bold text-gray-800 text-center mb-3 sm:mb-4">
                     You have completed the questionnaire
                 </h1>
@@ -71,7 +71,7 @@ export default function DesignQAResultPage() {
                 </p>
                 <Link
                     href="/DesignQA"
-                    className="inline-block px-5 py-2.5 sm:px-6 sm:py-3 rounded-xl bg-green-800 text-white font-semibold text-sm sm:text-base hover:bg-green-700 transition-colors"
+                    className="inline-block px-5 py-2.5 sm:px-6 sm:py-3 rounded-xl bg-[#EF0101]/90 text-white font-semibold text-sm sm:text-base hover:bg-[#EF0101] transition-colors"
                 >
                     Back to home
                 </Link>

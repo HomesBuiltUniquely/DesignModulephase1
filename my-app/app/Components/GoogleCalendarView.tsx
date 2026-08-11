@@ -220,7 +220,7 @@ function EventDetailsPopover({
       >
         <div className="flex items-start justify-between border-b border-gray-100 px-6 py-5">
           <div className="flex items-start gap-4">
-            <span className="mt-1 h-4 w-4 rounded-full bg-[#1a73e8]" />
+            <span className="mt-1 h-4 w-4 rounded-full bg-[#EF0101]" />
             <div>
               <h3 className="text-[30px] font-normal text-[#1f1f1f]">{event.summary || 'Untitled event'}</h3>
               <p className="mt-1 text-[15px] text-[#444746]">
@@ -279,7 +279,7 @@ function EventDetailsPopover({
                 href={event.htmlLink}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex items-center rounded-full border border-[#dadce0] px-4 py-2 text-sm font-medium text-[#1a73e8] transition hover:bg-[#e8f0fe]"
+                className="inline-flex items-center rounded-full border border-[#dadce0] px-4 py-2 text-sm font-medium text-[#EF0101] transition hover:bg-[#EF0101]/10"
               >
                 Open in HUB Calendar
               </a>
@@ -440,7 +440,7 @@ export default function GoogleCalendarView() {
       <div className="flex flex-col xl:flex-row">
         <aside className="w-full border-b border-[#dadce0] bg-white px-4 py-5 xl:min-h-[calc(100vh-56px)] xl:w-[300px] xl:border-b-0 xl:border-r">
           <div className="flex items-center gap-3 px-2">
-            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#e8f0fe] text-xl font-semibold text-[#1a73e8]">20</div>
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#EF0101]/10 text-xl font-semibold text-[#EF0101]">20</div>
             <div>
               <h1 className="text-[34px] font-normal leading-none">HUB Calendar</h1>
               <p className="mt-1 text-sm text-[#5f6368]">
@@ -462,7 +462,7 @@ export default function GoogleCalendarView() {
               <button
                 type="button"
                 onClick={handleConnect}
-                className="inline-flex flex-1 items-center justify-center rounded-full bg-[#0b57d0] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-[#0842a0]"
+                className="inline-flex flex-1 items-center justify-center rounded-full bg-[#EF0101] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-[#EF0101]/90"
               >
                 {status.connected ? 'Reconnect' : 'Connect HUB'}
               </button>
@@ -523,9 +523,9 @@ export default function GoogleCalendarView() {
                     onClick={() => setCurrentDate(day)}
                     className={`mx-auto flex h-9 w-9 items-center justify-center rounded-full text-sm transition ${
                       isSelected
-                        ? 'bg-[#c2e7ff] font-semibold text-[#001d35]'
+                        ? 'bg-[#EF0101]/20 font-semibold text-[#EF0101]'
                         : isToday
-                          ? 'bg-[#1a73e8] font-semibold text-white'
+                          ? 'bg-[#EF0101] font-semibold text-white'
                           : inMonth
                             ? 'text-[#1f1f1f] hover:bg-[#f1f3f4]'
                             : 'text-[#9aa0a6] hover:bg-[#f1f3f4]'
@@ -551,7 +551,7 @@ export default function GoogleCalendarView() {
                   >
                     <p className="truncate text-sm font-medium text-[#1f1f1f]">{event.summary || 'Untitled event'}</p>
                     <p className="mt-1 text-xs text-[#5f6368]">{formatDateTime(event.start)}</p>
-                    {canSeeOwnerLabels && event.ownerName ? <p className="mt-1 text-xs text-[#0b57d0]">{event.ownerName}</p> : null}
+                    {canSeeOwnerLabels && event.ownerName ? <p className="mt-1 text-xs text-[#EF0101]">{event.ownerName}</p> : null}
                   </button>
                 ))
               ) : (
@@ -625,13 +625,13 @@ export default function GoogleCalendarView() {
                   const isToday = isSameDay(day, new Date());
                   return (
                     <div key={day.toISOString()} className="border-r border-[#dadce0] px-4 py-3 last:border-r-0">
-                      <p className={`text-center text-[12px] font-semibold tracking-[0.08em] ${isToday ? 'text-[#1a73e8]' : 'text-[#5f6368]'}`}>
+                      <p className={`text-center text-[12px] font-semibold tracking-[0.08em] ${isToday ? 'text-[#EF0101]' : 'text-[#5f6368]'}`}>
                         {formatDayHeader(day)}
                       </p>
                       <div className="mt-2 flex items-center justify-center">
                         <span
                           className={`flex h-[54px] w-[54px] items-center justify-center rounded-full text-[34px] font-normal leading-none ${
-                            isToday ? 'bg-[#1a73e8] text-white shadow-[0_1px_2px_rgba(26,115,232,0.35)]' : 'text-[#1f1f1f]'
+                            isToday ? 'bg-[#EF0101] text-white shadow-sm' : 'text-[#1f1f1f]'
                           }`}
                         >
                           {day.getDate()}
@@ -665,8 +665,8 @@ export default function GoogleCalendarView() {
 
                           {showCurrentTime ? (
                             <div className="pointer-events-none absolute left-0 right-0 z-20" style={{ top: `${currentTimeOffset}px` }}>
-                              <div className="absolute -left-[8px] top-[-6px] h-3.5 w-3.5 rounded-full bg-[#d93025]" />
-                              <div className="h-[2px] w-full bg-[#d93025]" />
+                              <div className="absolute -left-[8px] top-[-6px] h-3.5 w-3.5 rounded-full bg-[#EF0101]" />
+                              <div className="h-[2px] w-full bg-[#EF0101]" />
                             </div>
                           ) : null}
 
@@ -679,7 +679,7 @@ export default function GoogleCalendarView() {
                                 key={`${event.ownerEmail || 'owner'}-${event.id}-${event.dayIndex}-${event.column}`}
                                 type="button"
                                 onClick={() => setSelectedEvent(event)}
-                                className="absolute z-10 overflow-hidden rounded-2xl border border-[#1a73e8] bg-[#e8f0fe] px-2 py-1.5 text-left text-[#0b57d0] shadow-sm transition hover:bg-[#d2e3fc]"
+                                className="absolute z-10 overflow-hidden rounded-2xl border border-[#EF0101]/30 bg-[#EF0101]/5 px-2 py-1.5 text-left shadow-sm transition hover:bg-[#EF0101]/10"
                                 style={{
                                   top: `${event.top}px`,
                                   left,
@@ -688,11 +688,11 @@ export default function GoogleCalendarView() {
                                 }}
                                 title={event.summary}
                               >
-                                <p className="truncate text-[13px] font-medium leading-4">{event.summary || 'Untitled event'}</p>
-                                <p className="mt-1 truncate text-xs leading-4 text-[#174ea6]">
+                                <p className="truncate text-[13px] font-semibold text-[#EF0101] leading-4">{event.summary || 'Untitled event'}</p>
+                                <p className="mt-1 truncate text-xs leading-4 text-[#32261C]">
                                   {formatTime(event.startDate)} - {formatTime(event.endDate)}
                                 </p>
-                                {canSeeOwnerLabels && event.ownerName ? <p className="mt-1 truncate text-[11px] text-[#1967d2]">{event.ownerName}</p> : null}
+                                {canSeeOwnerLabels && event.ownerName ? <p className="mt-1 truncate text-[11px] text-[#32261C]">{event.ownerName}</p> : null}
                               </button>
                             );
                           })}

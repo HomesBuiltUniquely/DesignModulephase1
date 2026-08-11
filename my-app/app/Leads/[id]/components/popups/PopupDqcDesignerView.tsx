@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 
 import { getApiBase } from '@/app/lib/apiBase';
+import CustomSelect from '@/app/Components/ui/CustomSelect';
 const API = getApiBase();
 
 const Dqc1PdfViewer = dynamic<{
@@ -196,22 +197,20 @@ export default function PopupDqcDesignerView({
           <div className="px-4 py-2 border-b border-gray-200 bg-white flex items-center gap-2 flex-wrap">
             <span className="text-sm font-medium text-gray-700">PDF under review</span>
             {submissionFiles.length > 1 && (
-              <select
-                value={selectedFileId ?? submissionFiles[0].id}
-                onChange={(e) => {
-                  const id = Number(e.target.value);
-                  const file = submissionFiles.find((f) => f.id === id);
-                  if (!file) return;
-                  setSelectedFileId(id);
-                  setPdfLoading(true);
-                  loadFileBlob(file);
-                }}
-                className="px-2 py-1 rounded border border-gray-300 text-sm max-w-[220px]"
-              >
-                {submissionFiles.map((f) => (
-                  <option key={f.id} value={f.id}>{f.originalName}</option>
-                ))}
-              </select>
+              <div className="w-[220px]">
+                <CustomSelect
+                  value={String(selectedFileId ?? submissionFiles[0].id)}
+                  onChange={(val) => {
+                    const id = Number(val);
+                    const file = submissionFiles.find((f) => f.id === id);
+                    if (!file) return;
+                    setSelectedFileId(id);
+                    setPdfLoading(true);
+                    loadFileBlob(file);
+                  }}
+                  options={submissionFiles.map((f) => ({ value: String(f.id), label: f.originalName }))}
+                />
+              </div>
             )}
             <span className="text-xs text-gray-500">
               Page {pdfPageNumber} of {pdfNumPages || 1}
@@ -264,7 +263,7 @@ export default function PopupDqcDesignerView({
                       <div
                         key={index}
                         className={`absolute z-10 w-8 h-8 rounded-full text-white flex items-center justify-center text-sm font-bold border-2 border-white shadow transition-all ${
-                          highlightedRemarkIndex === index ? 'bg-blue-800 ring-4 ring-blue-400 scale-110' : 'bg-blue-600'
+                          highlightedRemarkIndex === index ? 'bg-blue-800 ring-4 ring-[#00B0ED] scale-110' : 'bg-[#00B0ED]'
                         }`}
                         style={{
                           left: `${r.xPct ?? 0}%`,
@@ -332,12 +331,12 @@ export default function PopupDqcDesignerView({
                     onClick={hasPosition ? () => goToComment(index) : undefined}
                     onKeyDown={hasPosition ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goToComment(index); } } : undefined}
                     className={`rounded-lg border p-3 text-sm border-l-4 ${
-                      hasPosition ? 'cursor-pointer hover:ring-2 hover:ring-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400' : ''
+                      hasPosition ? 'cursor-pointer hover:ring-2 hover:ring-[#00B0ED] focus:outline-none focus:ring-2 focus:ring-[#00B0ED]' : ''
                     } ${
-                      isHighlighted ? 'ring-2 ring-blue-500 bg-blue-50/50' : ''
+                      isHighlighted ? 'ring-2 ring-[#00B0ED] bg-[#00B0ED]/10/50' : ''
                     } ${
                       r.resolved
-                        ? 'border-l-green-500 bg-green-50/50'
+                        ? 'border-l-[#EF0101] bg-[#DDCDC1]/20/50'
                         : r.priority === 'high'
                           ? 'border-l-red-500 bg-red-50/30'
                           : r.priority === 'medium'
@@ -355,13 +354,13 @@ export default function PopupDqcDesignerView({
                         {r.priority === 'high' ? 'High' : r.priority === 'medium' ? 'Medium' : 'Low'}
                       </span>
                       {r.resolved ? (
-                        <span className="text-xs font-medium text-green-700">✓ Solved</span>
+                        <span className="text-xs font-medium text-[#32261C]">✓ Solved</span>
                       ) : (
                         <button
                           type="button"
                           disabled={resolvingIndex === index}
                           onClick={(e) => { e.stopPropagation(); markSolved(index); }}
-                          className="text-xs font-semibold text-green-700 hover:text-green-800 hover:underline disabled:opacity-60"
+                          className="text-xs font-semibold text-[#32261C] hover:text-[#32261C] hover:underline disabled:opacity-60"
                         >
                           {resolvingIndex === index ? 'Saving…' : 'Mark as solved'}
                         </button>
@@ -369,7 +368,7 @@ export default function PopupDqcDesignerView({
                     </div>
                     <p className="text-gray-700 mt-1">{r.text}</p>
                     {hasPosition && (
-                      <p className="text-xs text-blue-600 mt-2">Click to view on PDF (page {r.page ?? 1})</p>
+                      <p className="text-xs text-[#00B0ED] mt-2">Click to view on PDF (page {r.page ?? 1})</p>
                     )}
                   </div>
                   );
@@ -380,7 +379,7 @@ export default function PopupDqcDesignerView({
                 <button
                   type="button"
                   onClick={onEditResubmit}
-                  className="px-5 py-2.5 rounded-lg bg-blue-600 text-white font-semibold text-sm hover:bg-blue-700 flex items-center gap-2"
+                  className="px-5 py-2.5 rounded-lg bg-[#00B0ED] text-white font-semibold text-sm hover:bg-[#00B0ED]/90 flex items-center gap-2"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
                     <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125" />

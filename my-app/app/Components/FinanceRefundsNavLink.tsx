@@ -65,8 +65,8 @@ export default function FinanceRefundsNavLink({
       <span
         className={
           variant === 'nav'
-            ? 'ml-1 inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-rose-600 px-1.5 py-0.5 text-[10px] font-bold text-white'
-            : 'ml-1.5 inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-white/95 px-1.5 py-0.5 text-[11px] font-bold text-rose-800'
+            ? 'ml-1 inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-[#EF0101] px-1.5 py-0.5 text-[10px] font-bold text-white'
+            : 'ml-1.5 inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-white/95 px-1.5 py-0.5 text-[11px] font-bold text-[#EF0101]'
         }
         title={`${pendingCount} pending refund approval${pendingCount === 1 ? '' : 's'}`}
       >
@@ -88,7 +88,7 @@ export default function FinanceRefundsNavLink({
       href={href}
       className={
         className ||
-        'px-4 py-2 rounded-lg bg-rose-700 text-white text-sm font-semibold hover:bg-rose-800 inline-flex items-center'
+        'px-4 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-semibold hover:bg-[#EF0101]/90 inline-flex items-center'
       }
     >
       Refunds
