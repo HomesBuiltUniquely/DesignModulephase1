@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HUB Company Profile</title>
+
+  <!-- All scripts served locally — no CDN -->
+  <script src="/pptx-lib/jquery.min.js"></script>
+  <script src="/pptx-lib/jszip.min.js"></script>
+  <script src="/pptx-lib/filereader.js"></script>
+  <script src="/pptx-lib/d3.min.js"></script>
+  <script src="/pptx-lib/nv.d3.min.js"></script>
+  <script src="/pptx-lib/dingbat.js"></script>
+  <script src="/pptx-lib/pptxjs.js"></script>
+  <script src="/pptx-lib/divs2slides.js"></script>
+
+  <link rel="stylesheet" href="/pptx-lib/normalize.min.css" />
+  <link rel="stylesheet" href="/pptx-lib/pptxjs.css" />
+  <link rel="stylesheet" href="/pptx-lib/nv.d3.min.css" />
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%; height: 100%;
+      background: #f0f2f7;           /* ← bright clean background */
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      color: #111827;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Loading ── */
+    #loading {
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 16px; flex: 1; background: #f0f2f7;
+    }
+    .spinner {
+      width: 48px; height: 48px;
+      border: 3px solid rgba(239,1,1,0.15);
+      border-top-color: #EF0101;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #loadingMsg { font-size: 13px; color: #6b7280; letter-spacing: .02em; }
+
+    /* ── Error ── */
+    #errorBox {
+      display: none; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 14px; padding: 60px 30px;
+      text-align: center; flex: 1; background: #f0f2f7;
+    }
+    #errorBox .icon { font-size: 40px; }
+    #errorBox h3    { font-size: 16px; font-weight: 700; color: #111827; }
+    #errorBox p     { font-size: 12px; color: #6b7280; max-width: 340px; line-height: 1.7; }
+    #errorBox a     {
+      padding: 9px 24px; background: #EF0101; color: #fff;
+      text-decoration: none; border-radius: 8px;
+      font-size: 13px; font-weight: 700;
+      transition: background .2s;
+    }
+    #errorBox a:hover { background: #cc0000; }
+
+    /* ── Slide area ── */
+    #slideArea {
+      display: none;
+      flex: 1;
+      overflow: auto;
+      position: relative;
+      background: #f0f2f7;
+      align-items: center;
+      justify-content: center;
+    }
+    #pptxOutput {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* Force divs2slides wrappers to fill + center the slide */
+    #all_slides_warpper,
+    .slides,
+    .divs2slides-content,
+    .divs2slides-bg {
+      width: 100% !important;
+      height: 100% !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      background: #f0f2f7 !important;
+    }
+
+    /* The actual slide box — centered, with shadow */
+    .slide {
+      position: relative !important;
+      top: auto !important;
+      left: auto !important;
+      margin: auto !important;
+      box-shadow: 0 8px 40px rgba(0,0,0,0.15) !important;
+      border-radius: 6px !important;
+      overflow: hidden !important;
+      flex-shrink: 0 !important;
+    }
+
+    /* ── Hide divs2slides native toolbar — keep in DOM so events fire ── */
+    .slides-toolbar {
+      opacity: 0 !important;
+      pointer-events: none !important;
+      position: absolute !important;
+      top: -9999px !important;
+      left: -9999px !important;
+    }
+
+    /* ── Custom Bottom Control Bar ── */
+    #ctrlBar {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      height: 56px;
+      background: #1e1e2e;
+      border-top: 1px solid rgba(255,255,255,0.08);
+      box-shadow: 0 -4px 20px rgba(0,0,0,0.2);
+      flex-shrink: 0;
+      position: relative;
+      padding: 0 16px;
+    }
+
+    /* Centre group */
+    .ctrl-center {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    /* Slide counter pill */
+    #myCounter {
+      font-size: 13px;
+      font-weight: 600;
+      color: rgba(255,255,255,0.85);
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 20px;
+      padding: 4px 14px;
+      min-width: 72px;
+      text-align: center;
+      letter-spacing: .03em;
+      user-select: none;
+    }
+
+    /* Icon buttons */
+    .c-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 38px; height: 38px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.15);
+      background: rgba(255,255,255,0.08);
+      color: rgba(255,255,255,0.8);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      text-decoration: none;
+      flex-shrink: 0;
+    }
+    .c-btn:hover:not([disabled]):not(.disabled) {
+      background: #EF0101;
+      border-color: #EF0101;
+      color: #ffffff;
+      transform: scale(1.08);
+      box-shadow: 0 4px 14px rgba(239,1,1,0.35);
+    }
+    .c-btn[disabled], .c-btn.disabled {
+      opacity: 0.25;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+    .c-btn svg { display: block; }
+
+    /* Positioned buttons */
+    #dlBtn { position: absolute; left: 16px; }
+    #fsBtn { position: absolute; right: 16px; }
+  </style>
+</head>
+<body>
+
+<!-- Loading -->
+<div id="loading">
+  <div class="spinner"></div>
+  <p id="loadingMsg">Initialising renderer…</p>
+</div>
+
+<!-- Error -->
+<div id="errorBox">
+  <div class="icon">⚠️</div>
+  <h3>Could not load the presentation</h3>
+  <p id="errorMsg">An error occurred.</p>
+  <a href="/hub-profile.pptx" download>⬇ Download PPT</a>
+</div>
+
+<!-- Slide render area -->
+<div id="slideArea">
+  <div id="pptxOutput"></div>
+</div>
+
+<!-- ── Bottom Control Bar ── -->
+<div id="ctrlBar">
+
+  <!-- Download — left -->
+  <a id="dlBtn" class="c-btn" href="/hub-profile.pptx" download title="Download PPT">
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+      <polyline points="7 10 12 15 17 10"/>
+      <line x1="12" y1="15" x2="12" y2="3"/>
+    </svg>
+  </a>
+
+  <!-- Centre: Prev · Counter · Next -->
+  <div class="ctrl-center">
+
+    <button id="myPrev" class="c-btn" title="Previous slide" onclick="navSlide(37)" disabled>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="15 18 9 12 15 6"/>
+      </svg>
+    </button>
+
+    <span id="myCounter">— / —</span>
+
+    <button id="myNext" class="c-btn" title="Next slide" onclick="navSlide(39)">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="9 18 15 12 9 6"/>
+      </svg>
+    </button>
+
+  </div>
+
+  <!-- Fullscreen — right -->
+  <button id="fsBtn" class="c-btn" title="Fullscreen" onclick="toggleFs()">
+    <svg id="fsExpand" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8 3H5a2 2 0 00-2 2v3"/>
+      <path d="M21 8V5a2 2 0 00-2-2h-3"/>
+      <path d="M3 16v3a2 2 0 002 2h3"/>
+      <path d="M16 21h3a2 2 0 002-2v-3"/>
+    </svg>
+    <svg id="fsCompress" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none">
+      <path d="M8 3v3a2 2 0 01-2 2H3"/>
+      <path d="M21 8h-3a2 2 0 01-2-2V3"/>
+      <path d="M3 16h3a2 2 0 012 2v3"/>
+      <path d="M16 21v-3a2 2 0 012-2h3"/>
+    </svg>
+  </button>
+
+</div>
+
+<script>
+  var totalSlides = 0;
+
+  /* ── Navigate: dispatch real keydown event with correct keyCode ──
+     divs2slides listens on $(document) for keyCode 37 (left) / 39 (right)
+     and calls prevSlide() / nextSlide() internally.                        */
+  function navSlide(keyCode) {
+    var e = jQuery.Event('keydown');
+    e.keyCode = keyCode;
+    e.which   = keyCode;
+    $(document).trigger(e);
+    setTimeout(syncCounter, 120);
+  }
+
+  /* ── Sync our counter from divs2slides's #slides-slide-num ── */
+  function syncCounter() {
+    var txt     = $('#slides-slide-num').text().trim();
+    var current = parseInt(txt, 10) || 1;
+    if (!totalSlides) return;
+    document.getElementById('myCounter').textContent = current + ' / ' + totalSlides;
+    document.getElementById('myPrev').disabled = (current <= 1);
+    document.getElementById('myNext').disabled = (current >= totalSlides);
+  }
+
+  /* ── Fullscreen toggle ── */
+  function toggleFs() {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(function(){});
+    } else {
+      document.exitFullscreen().catch(function(){});
+    }
+  }
+  document.addEventListener('fullscreenchange', function() {
+    var fs = !!document.fullscreenElement;
+    document.getElementById('fsExpand').style.display   = fs ? 'none' : '';
+    document.getElementById('fsCompress').style.display = fs ? '' : 'none';
+    document.getElementById('fsBtn').title = fs ? 'Exit fullscreen' : 'Fullscreen';
+  });
+
+  /* ── Error / msg helpers ── */
+  function setMsg(t) { var el = document.getElementById('loadingMsg'); if(el) el.textContent = t; }
+  function showError(msg) {
+    document.getElementById('loading').style.display   = 'none';
+    document.getElementById('slideArea').style.display = 'none';
+    document.getElementById('ctrlBar').style.display   = 'none';
+    document.getElementById('errorMsg').textContent    = msg;
+    document.getElementById('errorBox').style.display  = 'flex';
+  }
+
+  /* ── Init pptxjs ── */
+  function initViewer() {
+    if (typeof jQuery === 'undefined')              { showError('jQuery failed to load.'); return; }
+    if (typeof jQuery.fn.pptxToHtml !== 'function') { showError('pptxjs failed to load.'); return; }
+
+    setMsg('Rendering slides…');
+
+    try {
+      jQuery('#pptxOutput').pptxToHtml({
+        pptxFileUrl      : '/hub-profile.pptx',
+        slidesScale      : '100%',
+        slideMode        : true,
+        keyBoardShortCut : true,   /* ← MUST be true so divs2slides binds keyDown handler */
+        mediaProcess     : false,
+        themeProcess     : true,
+        jsZipV2          : false,
+        slideModeConfig  : {
+          first             : 2,
+          nav               : true,          /* ← nav buttons must exist in DOM */
+          navTxtColor       : 'white',
+          showPlayPauseBtn  : false,
+          keyBoardShortCut  : true,          /* ← also true here */
+          showSlideNum      : true,          /* ← #slides-slide-num must exist */
+          showTotalSlideNum : true,
+          autoSlide         : false,
+          loop              : false,
+          background        : '#ffffff',
+          transition        : 'default',
+          transitionTime    : 0.3
+        }
+      });
+    } catch(e) {
+      showError('Renderer exception: ' + e.message);
+      return;
+    }
+
+    /* Poll until divs2slides has created #slides-slide-num and .slides-nav */
+    var attempts = 0;
+    var poll = setInterval(function() {
+      attempts++;
+      var slideNumEl = document.getElementById('slides-slide-num');
+      var navBtns    = document.querySelectorAll('.slides-nav');
+
+      if (slideNumEl && navBtns.length >= 1) {
+        clearInterval(poll);
+
+        /* Count slides */
+        totalSlides = document.querySelectorAll('#pptxOutput .slide').length || 0;
+
+        /* Reveal UI */
+        document.getElementById('loading').style.display   = 'none';
+        document.getElementById('slideArea').style.display = 'flex';
+        document.getElementById('ctrlBar').style.display   = 'flex';
+
+        syncCounter();
+        /* Keep counter live */
+        setInterval(syncCounter, 300);
+
+      } else if (attempts > 250) {
+        clearInterval(poll);
+        showError('Rendering timed out. The file may be too large or unsupported.');
+      } else if (attempts % 15 === 0) {
+        setMsg('Still rendering… (' + Math.round(attempts * 200 / 1000) + 's)');
+      }
+    }, 200);
+  }
+
+  /* ── Entry point ── */
+  window.addEventListener('load', function() {
+    setMsg('Checking file…');
+    fetch('/hub-profile.pptx', { method: 'HEAD' })
+      .then(function(res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        initViewer();
+      })
+      .catch(function(err) {
+        showError('Cannot reach /hub-profile.pptx — ' + err.message);
+      });
+  });
+</script>
+</body>
+</html>

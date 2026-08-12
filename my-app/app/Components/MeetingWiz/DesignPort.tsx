@@ -91,28 +91,28 @@ export default function DesignPort({ onPrev, onNext }: Props) {
         </span>
       </div>
 
-      <div className="mx-auto max-w-4xl px-6 pb-28">
-        <h1 className="mb-1 text-3xl font-extrabold text-gray-900">3. Designer portfolio</h1>
-        <p className="mb-6 text-sm text-gray-500 max-w-lg">
+      <div className="flex-1 px-8 md:px-12 py-10 max-w-7xl mx-auto w-full box-border pb-28">
+        <h1 className="text-4xl font-extrabold text-[#111827] mb-2 leading-tight">3. Designer Portfolio</h1>
+        <p className="mb-10 text-sm text-gray-500 max-w-2xl">
           A curated selection of spaces that define our craft, blending architectural precision with human-centric aesthetics.
         </p>
 
-        <div className="mb-6 flex flex-wrap gap-8">
+        <div className="mb-10 flex flex-wrap gap-12 bg-white rounded-2xl border border-gray-100 p-8 shadow-sm">
           {stats.map((stat) => (
-            <div key={stat.label}>
-              <p className="text-2xl font-extrabold text-gray-900">{stat.value}</p>
-              <p className="whitespace-pre-line text-[10px] font-semibold uppercase tracking-widest text-gray-400">{stat.label}</p>
+            <div key={stat.label} className="group">
+              <p className="text-3xl font-extrabold text-[#111827] mb-1">{stat.value}</p>
+              <p className="whitespace-pre-line text-[10px] font-bold uppercase tracking-widest text-gray-400 group-hover:text-gray-600 transition-colors">{stat.label}</p>
             </div>
           ))}
         </div>
 
-        <div className="mb-6 flex items-center gap-2 flex-wrap">
+        <div className="mb-8 flex items-center gap-3 flex-wrap">
           {TABS.map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
-              className={`rounded-full px-4 py-2 text-xs font-semibold uppercase tracking-wider transition ${
-                activeTab === tab ? "bg-gray-900 text-white" : "text-gray-400 hover:text-gray-700"
+              className={`rounded-full px-5 py-2.5 text-xs font-bold uppercase tracking-wider transition-all duration-300 ${
+                activeTab === tab ? "bg-[#111827] text-white shadow-md hover:-translate-y-0.5" : "bg-white text-gray-500 border border-gray-200 hover:border-gray-300 hover:text-gray-800 hover:shadow-sm"
               }`}
             >
               {tab}
@@ -121,33 +121,38 @@ export default function DesignPort({ onPrev, onNext }: Props) {
         </div>
 
         {filtered.length === 0 ? (
-          <p className="text-sm text-gray-500 py-8 text-center">
-            No projects in this category yet. Add them under Profile → Portfolio projects.
-          </p>
+          <div className="bg-white rounded-2xl border border-gray-100 p-12 text-center shadow-sm">
+            <p className="text-sm font-medium text-gray-500">
+              No projects in this category yet. Add them under Profile → Portfolio projects.
+            </p>
+          </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
             {filtered.map((img, idx) => (
-              <div key={`${img.src}-${idx}`} className="relative h-48 overflow-hidden rounded-xl bg-gray-100">
+              <div key={`${img.src}-${idx}`} className="relative h-64 overflow-hidden rounded-2xl bg-gray-100 shadow-sm transition-all duration-500 hover:shadow-xl hover:-translate-y-1 group">
                 {/* next/image needs known remote domains; profile uploads may be S3/API URLs */}
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={img.src}
                   alt={img.alt}
-                  className="h-full w-full object-cover transition duration-300 hover:scale-105"
+                  className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-110"
                 />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-end p-6">
+                   <p className="text-white font-bold text-sm tracking-wide drop-shadow-md">{img.alt}</p>
+                </div>
               </div>
             ))}
           </div>
         )}
       </div>
 
-      <div className="fixed bottom-6 left-1/2 -translate-x-1/2">
+      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-10">
         <button
           onClick={() => onNext()}
-          className="flex items-center gap-3 rounded-full bg-[#EF0101] px-8 py-4 text-sm font-bold uppercase tracking-widest text-white shadow-lg transition hover:bg-[#EF0101]/90"
+          className="flex items-center gap-3 rounded-full bg-[#EF0101] px-8 py-4 text-sm font-bold uppercase tracking-widest text-white shadow-lg shadow-red-500/20 transition-all duration-300 hover:bg-[#CC0000] hover:shadow-xl hover:-translate-y-0.5"
         >
           Next: Scope of Project
-          <span className="flex h-7 w-7 items-center justify-center rounded-full bg-gray-900 text-white">→</span>
+          <span className="flex h-7 w-7 items-center justify-center rounded-full bg-white/20 text-white">→</span>
         </button>
       </div>
     </main>
