@@ -1069,11 +1069,11 @@ export default function Dashboard() {
                 <div className="bg-white rounded-xl border border-gray-200 shadow-sm min-w-0">
                     <div className="overflow-x-auto rounded-t-xl">
                         {pre10TabActive ? (
-                            <table className="w-full min-w-[760px]">
+                            <table className="w-full min-w-[700px] table-auto">
                                 <thead>
-                                    <tr className="bg-gray-900 text-white text-left text-sm font-semibold">
+                                    <tr className="bg-gray-900 text-white text-left text-xs sm:text-sm font-semibold">
                                         {canImportLeads && (
-                                            <th className="py-3 px-3">
+                                            <th className="py-3 px-2 w-[3%]">
                                                 <input
                                                     type="checkbox"
                                                     checked={
@@ -1084,12 +1084,12 @@ export default function Dashboard() {
                                                 />
                                             </th>
                                         )}
-                                        <th className="py-3 px-5">ID / Project Name</th>
-                                        <th className="py-3 px-5">Time slot</th>
-                                        {isAdmin && <th className="py-3 px-5">Assignee</th>}
-                                        <th className="py-3 px-5">View</th>
-                                        <th className="py-3 px-5">Create project</th>
-                                        <th className="py-3 px-5">Get quote</th>
+                                        <th className="py-3 px-2 w-[22%]">ID / Project Name</th>
+                                        <th className="py-3 px-2 w-[18%]">Time slot</th>
+                                        {isAdmin && <th className="py-3 px-2 w-[22%]">Assignee</th>}
+                                        <th className="py-3 px-2 w-[10%]">View</th>
+                                        <th className="py-3 px-2 w-[13%]">Create project</th>
+                                        <th className="py-3 px-2 w-[12%]">Get quote</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -1105,7 +1105,7 @@ export default function Dashboard() {
                                         return (
                                             <tr key={row.id} className="border-b border-gray-100 hover:bg-gray-50">
                                                 {canImportLeads && (
-                                                    <td className="py-3 px-3">
+                                                    <td className="py-3 px-2">
                                                         <input
                                                             type="checkbox"
                                                             checked={selectedLeadIds.includes(row.id)}
@@ -1113,21 +1113,21 @@ export default function Dashboard() {
                                                         />
                                                     </td>
                                                 )}
-                                                <td className="py-3 px-5">
-                                                    <div className="flex items-center gap-2">
-                                                        <div className="font-medium text-gray-900">{formatHubPid(row.pid, row.id)}</div>
+                                                <td className="py-3 px-2">
+                                                    <div className="flex items-center gap-1.5">
+                                                        <div className="font-medium text-xs text-gray-900">{formatHubPid(row.pid, row.id)}</div>
                                                         {row.financeApprovedRaw === "false" && (
-                                                            <span className="inline-flex items-center rounded-md bg-red-50 px-2 py-1 text-[10px] font-medium text-red-700 ring-1 ring-inset ring-red-600/10 whitespace-nowrap">
+                                                            <span className="inline-flex items-center rounded bg-red-50 px-1.5 py-0.5 text-[9px] font-medium text-red-700 ring-1 ring-inset ring-red-600/10 whitespace-nowrap">
                                                                 Not Approved
                                                             </span>
                                                         )}
                                                     </div>
-                                                    <div className="text-sm text-gray-600 truncate max-w-[200px]" title={row.projectName}>
+                                                    <div className="text-xs text-gray-600 truncate max-w-[220px]" title={row.projectName}>
                                                         {row.projectName || "—"}
                                                     </div>
                                                 </td>
-                                                <td className="py-3 px-5 text-sm text-gray-700" title={timeSlotLabel}>
-                                                    <div className="flex flex-col items-start gap-2">
+                                                <td className="py-3 px-2 text-xs text-gray-700" title={timeSlotLabel}>
+                                                    <div className="flex flex-col items-start gap-1">
                                                         <span className="whitespace-nowrap">{timeSlotLabel}</span>
                                                         {canShowStartMeetingButton(row) ? (
                                                             <StartMeetingButton
@@ -1137,13 +1137,13 @@ export default function Dashboard() {
                                                     </div>
                                                 </td>
                                                 {isAdmin && (
-                                                    <td className="py-3 px-5 min-w-[200px]">
-                                                        <div className="flex flex-col gap-2">
-                                                            <div className="flex items-center gap-2">
-                                                                <div className="flex items-center gap-1.5">
+                                                    <td className="py-3 px-2 min-w-[160px]">
+                                                        <div className="flex flex-col gap-1.5">
+                                                            <div className="flex items-center gap-1.5">
+                                                                <div className="flex items-center gap-1">
                                                                     {designerNameTrim ? (
                                                                         <div
-                                                                            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#00B0ED]/15 text-xs font-semibold text-[#00B0ED] shadow-sm"
+                                                                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#00B0ED]/15 text-[10px] font-semibold text-[#00B0ED] shadow-sm"
                                                                             title={designerNameTrim}
                                                                         >
                                                                             {getInitials(designerNameTrim)}
@@ -1151,7 +1151,7 @@ export default function Dashboard() {
                                                                     ) : null}
                                                                     {pmName ? (
                                                                         <div
-                                                                            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#DDCDC1]/40 text-xs font-semibold text-[#32261C] shadow-sm"
+                                                                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#DDCDC1]/40 text-[10px] font-semibold text-[#32261C] shadow-sm"
                                                                             title={`PM: ${pmName}`}
                                                                         >
                                                                             {getInitials(pmName)}
@@ -1159,13 +1159,13 @@ export default function Dashboard() {
                                                                     ) : null}
                                                                 </div>
                                                                 <span
-                                                                    className="max-w-[120px] truncate text-xs text-gray-600"
+                                                                    className="max-w-[120px] truncate text-[11px] text-gray-600"
                                                                     title={designerLabel}
                                                                 >
                                                                     {designerLabel}
                                                                 </span>
                                                             </div>
-                                                            <div className="flex flex-wrap items-center gap-1.5">
+                                                            <div className="flex flex-wrap items-center gap-1">
                                                                 <CustomSelect
                                                                     id={`pre10-assign-${row.id}`}
                                                                     value={singleAssignByLead[row.id] ? String(singleAssignByLead[row.id]) : String(row.assigned_designer_id ?? "")}
@@ -1177,13 +1177,13 @@ export default function Dashboard() {
                                                                     }
                                                                     options={assignableDesigners.map((d) => ({ value: String(d.id), label: d.name }))}
                                                                     placeholder="Designer…"
-                                                                    className="max-w-[140px]"
+                                                                    className="max-w-[110px]"
                                                                 />
                                                                 <button
                                                                     type="button"
                                                                     onClick={() => assignSingleLead(row.id)}
                                                                     disabled={singleAssignLoadingLeadId === row.id}
-                                                                    className="rounded bg-[#EF0101] px-2 py-1 text-xs font-semibold text-white hover:bg-[#EF0101] disabled:opacity-60"
+                                                                    className="rounded bg-[#EF0101] px-1.5 py-0.5 text-[10px] font-semibold text-white hover:bg-[#EF0101] disabled:opacity-60"
                                                                 >
                                                                     {singleAssignLoadingLeadId === row.id ? "…" : "Assign"}
                                                                 </button>
@@ -1191,12 +1191,12 @@ export default function Dashboard() {
                                                         </div>
                                                     </td>
                                                 )}
-                                                <td className="py-3 px-5">
-                                                    <div className="flex flex-wrap items-center gap-2">
+                                                <td className="py-3 px-2">
+                                                    <div className="flex flex-wrap items-center gap-1">
                                                         <button
                                                             type="button"
                                                             onClick={() => setViewLead(row)}
-                                                            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700 shadow-sm hover:bg-gray-50"
+                                                            className="rounded border border-gray-300 bg-white px-2 py-1 text-[11px] font-semibold text-gray-700 shadow-sm hover:bg-gray-50 whitespace-nowrap"
                                                         >
                                                             View
                                                         </button>
@@ -1207,7 +1207,7 @@ export default function Dashboard() {
                                                         ) : null}
                                                     </div>
                                                 </td>
-                                                <td className="py-3 px-5">
+                                                <td className="py-3 px-2">
                                                     <button
                                                         type="button"
                                                         disabled={!sessionId || prolanceRowBusy}
@@ -1217,7 +1217,7 @@ export default function Dashboard() {
                                                                 ? "Open this project in Prolance (browser)"
                                                                 : "Create Prolance project via Hub API and save ID on this lead"
                                                         }
-                                                        className="rounded-lg border border-[#EF0101] bg-white px-3 py-2 text-xs font-semibold text-[#EF0101] shadow-sm hover:bg-[#DDCDC1]/20 disabled:cursor-not-allowed disabled:opacity-50"
+                                                        className="rounded border border-[#EF0101] bg-white px-2 py-1 text-[11px] font-semibold text-[#EF0101] shadow-sm hover:bg-[#DDCDC1]/20 disabled:cursor-not-allowed disabled:opacity-50"
                                                     >
                                                         {prolanceRowBusy
                                                             ? "Creating…"
@@ -1226,12 +1226,12 @@ export default function Dashboard() {
                                                               : "Create project"}
                                                     </button>
                                                 </td>
-                                                <td className="py-3 px-5">
+                                                <td className="py-3 px-2">
                                                     <button
                                                         type="button"
                                                         disabled={!sessionId || getQuoteRowBusy}
                                                         onClick={() => void runGetQuoteForDashboardLead(row)}
-                                                        className="w-full min-w-[7rem] rounded-lg bg-[#EF0101] px-3 py-2 text-sm font-bold text-white shadow-sm hover:bg-[#EF0101]/90 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50 transition-all duration-200 sm:w-auto"
+                                                        className="w-full min-w-[5.5rem] rounded bg-[#EF0101] px-2 py-1 text-[11px] font-bold text-white shadow-sm hover:bg-[#EF0101]/90 disabled:cursor-not-allowed disabled:opacity-50 transition-all duration-200"
                                                     >
                                                         {getQuoteRowBusy ? "Working…" : "Get quote"}
                                                     </button>
@@ -1242,11 +1242,11 @@ export default function Dashboard() {
                                 </tbody>
                             </table>
                         ) : (
-                            <table className="w-full min-w-[920px]">
+                            <table className="w-full table-auto">
                                 <thead>
-                                    <tr className="bg-gray-900 text-left text-sm font-semibold text-white">
+                                    <tr className="bg-gray-900 text-left text-xs sm:text-sm font-semibold text-white">
                                         {canImportLeads && (
-                                            <th className="px-3 py-3">
+                                            <th className="px-2 py-3 w-[3%]">
                                                 <input
                                                     type="checkbox"
                                                     checked={
@@ -1257,14 +1257,14 @@ export default function Dashboard() {
                                                 />
                                             </th>
                                         )}
-                                        <th className="px-5 py-3">ID / Project Name</th>
-                                        <th className="px-5 py-3">Designer</th>
-                                        <th className="px-5 py-3">Milestone</th>
-                                        <th className="px-5 py-3">Progress %</th>
-                                        <th className="px-5 py-3">Last Update</th>
-                                        <th className="px-5 py-3">Next Action</th>
-                                        <th className="px-5 py-3">Status</th>
-                                        <th className="px-5 py-3">Actions</th>
+                                        <th className="px-2 py-3 w-[20%]">ID / Project Name</th>
+                                        <th className="px-2 py-3 w-[12%]">Designer</th>
+                                        <th className="px-2 py-3 w-[13%]">Milestone</th>
+                                        <th className="px-2 py-3 w-[10%]">Progress %</th>
+                                        <th className="px-2 py-3 w-[11%]">Last Update</th>
+                                        <th className="px-2 py-3 w-[18%]">Next Action</th>
+                                        <th className="px-2 py-3 w-[10%]">Status</th>
+                                        <th className="px-2 py-3 w-[6%]">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -1289,7 +1289,7 @@ export default function Dashboard() {
                                                 onClick={isPre10 ? undefined : () => handleRouter(row)}
                                             >
                                                 {canImportLeads && (
-                                                    <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+                                                    <td className="px-2 py-3" onClick={(e) => e.stopPropagation()}>
                                                         <input
                                                             type="checkbox"
                                                             checked={selectedLeadIds.includes(row.id)}
@@ -1297,52 +1297,64 @@ export default function Dashboard() {
                                                         />
                                                     </td>
                                                 )}
-                                                <td className="px-5 py-3">
-                                                    <div className="flex items-center gap-2">
-                                                        <div className="font-medium text-gray-900">{formatHubPid(row.pid, row.id)}</div>
+                                                <td className="px-2 py-3">
+                                                    <div className="flex items-center gap-1.5">
+                                                        <div className="font-medium text-xs text-gray-900">{formatHubPid(row.pid, row.id)}</div>
                                                         {row.financeApprovedRaw === "false" && (
-                                                            <span className="inline-flex items-center rounded-md bg-red-50 px-2 py-1 text-[10px] font-medium text-red-700 ring-1 ring-inset ring-red-600/10 whitespace-nowrap">
+                                                            <span className="inline-flex items-center rounded bg-red-50 px-1.5 py-0.5 text-[9px] font-medium text-red-700 ring-1 ring-inset ring-red-600/10 whitespace-nowrap">
                                                                 Not Approved
                                                             </span>
                                                         )}
                                                     </div>
-                                                    <div className="text-sm text-gray-600 truncate max-w-[180px]" title={row.projectName}>
+                                                    <div className="text-xs text-gray-600 truncate max-w-[220px]" title={row.projectName}>
                                                         {row.projectName || "—"}
                                                     </div>
                                                 </td>
-                                                <td className="px-5 py-3">
-                                                    <div className="flex items-center gap-2">
-                                                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#00B0ED]/15 text-xs font-semibold text-[#00B0ED]">
+                                                <td className="px-2 py-3">
+                                                    <div className="flex items-center gap-1.5">
+                                                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#00B0ED]/15 text-[10px] font-semibold text-[#00B0ED]">
                                                             {getInitials(designerName)}
                                                         </div>
-                                                        <span className="max-w-[100px] truncate text-sm text-gray-700" title={designerName}>
+                                                        <span className="max-w-[120px] truncate text-xs text-gray-700" title={designerName}>
                                                             {designerName}
                                                         </span>
                                                     </div>
                                                 </td>
-                                                <td className="px-5 py-3 text-sm text-gray-700">
+                                                <td className="px-2 py-3 text-xs text-gray-700 max-w-[160px] truncate" title={isPre10 ? "—" : row.currentMilestoneName ?? bucket}>
                                                     {isPre10 ? "—" : row.currentMilestoneName ?? bucket}
                                                 </td>
-                                                <td className="px-5 py-3">
+                                                <td className="px-2 py-3">
                                                     {isPre10 ? (
-                                                        <span className="text-sm text-gray-400">—</span>
+                                                        <span className="text-xs text-gray-400">—</span>
                                                     ) : (
-                                                        <div className="flex items-center gap-2">
-                                                            <div className="h-2 w-20 overflow-hidden rounded-full bg-gray-200">
+                                                        <div className="flex items-center gap-1.5">
+                                                            <div className="h-1.5 w-12 overflow-hidden rounded-full bg-gray-200">
                                                                 <div
                                                                     className="h-full rounded-full bg-[#00B0ED] transition-all"
                                                                     style={{ width: `${progress}%` }}
                                                                 />
                                                             </div>
-                                                            <span className="text-xs font-medium text-gray-600">{progress}%</span>
+                                                            <span className="text-[11px] font-medium text-gray-600">{progress}%</span>
                                                         </div>
                                                     )}
                                                 </td>
-                                                <td className="px-5 py-3 whitespace-nowrap text-sm text-gray-600">
-                                                    {formatDateTime(row.updateAt)}
+                                                <td className="px-2 py-3">
+                                                    {(() => {
+                                                        const dt = formatDateTime(row.updateAt);
+                                                        if (!dt) return "—";
+                                                        const parts = dt.split(" ");
+                                                        const datePart = parts[0];
+                                                        const timePart = parts.slice(1).join(" ");
+                                                        return (
+                                                            <div className="flex flex-col text-[11px] leading-tight">
+                                                                <span className="font-medium text-gray-700">{datePart}</span>
+                                                                <span className="text-gray-500">{timePart}</span>
+                                                            </div>
+                                                        );
+                                                    })()}
                                                 </td>
-                                                <td className="px-5 py-3 text-sm text-gray-700">
-                                                    {isPre10
+                                                {(() => {
+                                                    const nextActionVal = isPre10
                                                         ? "—"
                                                         : row.currentMilestoneIndex != null || row.currentMilestoneName
                                                           ? getNextActionFromMilestone(
@@ -1350,29 +1362,34 @@ export default function Dashboard() {
                                                                 row.currentMilestoneName ?? undefined,
                                                                 { isSpm: isSpmUser },
                                                             )
-                                                          : getNextAction(bucket)}
-                                                </td>
-                                                <td className="px-5 py-3">
+                                                          : getNextAction(bucket);
+                                                    return (
+                                                        <td className="px-2 py-3 text-xs text-gray-700 max-w-[180px] truncate" title={nextActionVal}>
+                                                            {nextActionVal}
+                                                        </td>
+                                                    );
+                                                })()}
+                                                <td className="px-2 py-3">
                                                     <span
-                                                        className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${statusInfo.className}`}
+                                                        className={`inline-block rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${statusInfo.className}`}
                                                     >
                                                         {statusInfo.label}
                                                     </span>
                                                 </td>
-                                                <td className="px-5 py-3" onClick={(e) => e.stopPropagation()}>
-                                                    <div className="flex flex-wrap items-center gap-2">
+                                                <td className="px-2 py-3" onClick={(e) => e.stopPropagation()}>
+                                                    <div className="flex flex-wrap items-center gap-1.5">
                                                         {isPre10 ? (
                                                             <button
                                                                 type="button"
                                                                 disabled={!sessionId || getQuoteLeadId === row.id}
                                                                 onClick={() => void runGetQuoteForDashboardLead(row)}
-                                                                className="rounded-lg bg-[#EF0101] px-3 py-2 text-xs font-bold text-white shadow-sm hover:bg-[#EF0101]/90 hover:shadow-md transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50"
+                                                                className="rounded bg-[#EF0101] px-2 py-1 text-[11px] font-bold text-white shadow-sm hover:bg-[#EF0101]/90 transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50"
                                                             >
                                                                 {getQuoteLeadId === row.id ? "Working…" : "Get quote"}
                                                             </button>
                                                         ) : (
-                                                            <div className="flex flex-col gap-2">
-                                                                <div className="flex items-center gap-2">
+                                                            <div className="flex flex-col gap-1.5">
+                                                                <div className="flex items-center gap-1.5">
                                                                     {canShowStartMeetingButton(row) ? (
                                                                         <StartMeetingButton
                                                                             onClick={() => openMeetingWizForLead(row)}
@@ -1381,24 +1398,24 @@ export default function Dashboard() {
                                                                     <button
                                                                         type="button"
                                                                         onClick={() => setViewLead(row)}
-                                                                        className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700 shadow-sm hover:bg-gray-50 whitespace-nowrap"
+                                                                        className="rounded border border-gray-300 bg-white px-2 py-1 text-[11px] font-semibold text-gray-700 shadow-sm hover:bg-gray-50 whitespace-nowrap"
                                                                     >
                                                                         View
                                                                     </button>
                                                                     <button
                                                                         type="button"
                                                                         onClick={() => handleRouter(row)}
-                                                                        className="rounded-lg bg-[#DDCDC1] px-3 py-2 text-xs font-bold text-[#32261C] shadow-sm hover:bg-[#DDCDC1]/80 transition-colors flex items-center gap-1.5 whitespace-nowrap"
+                                                                        className="rounded bg-[#DDCDC1] px-2 py-1 text-[11px] font-bold text-[#32261C] shadow-sm hover:bg-[#DDCDC1]/80 transition-colors flex items-center gap-1 whitespace-nowrap"
                                                                     >
                                                                         View Project
-                                                                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
+                                                                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3">
                                                                             <path fillRule="evenodd" d="M2 8a.75.75 0 0 1 .75-.75h8.69L8.22 4.03a.75.75 0 0 1 1.06-1.06l4.5 4.5a.75.75 0 0 1 0 1.06l-4.5 4.5a.75.75 0 0 1-1.06-1.06l3.22-3.22H2.75A.75.75 0 0 1 2 8Z" clipRule="evenodd" />
                                                                         </svg>
                                                                     </button>
                                                                 </div>
                                                                 {canImportLeads && (
-                                                                    <div className="flex items-center gap-2">
-                                                                        <div className="w-[140px]">
+                                                                    <div className="flex items-center gap-1">
+                                                                        <div className="w-[110px]">
                                                                             <CustomSelect
                                                                                 value={singleAssignByLead[row.id] ? String(singleAssignByLead[row.id]) : String(row.assigned_designer_id ?? "")}
                                                                                 onChange={(val) =>
@@ -1415,7 +1432,7 @@ export default function Dashboard() {
                                                                             type="button"
                                                                             onClick={() => assignSingleLead(row.id)}
                                                                             disabled={singleAssignLoadingLeadId === row.id}
-                                                                            className="rounded-lg bg-[#EF0101] px-3 py-2 text-xs font-bold text-white shadow-sm hover:bg-[#EF0101]/90 disabled:opacity-60"
+                                                                            className="rounded bg-[#EF0101] px-2 py-1 text-[11px] font-bold text-white shadow-sm hover:bg-[#EF0101]/90 disabled:opacity-60"
                                                                         >
                                                                             {singleAssignLoadingLeadId === row.id ? "..." : "Assign"}
                                                                         </button>
@@ -1513,8 +1530,8 @@ export default function Dashboard() {
     return (
         <div>
             <main className="">
-                <div className="xl:grid xl:grid-cols-5 xl:gap-4">
-                    <div className=" xl:grid-cols-1 xl:h-screen border-r border-gray-300 xl:pt-4 xl:pl-2">
+                <div className="xl:flex xl:gap-4">
+                    <div className="xl:w-64 xl:shrink-0 xl:sticky xl:top-[57px] xl:h-[calc(100vh-57px)] xl:overflow-y-auto border-r border-gray-300 xl:pt-4 xl:pr-2">
 
                     {!isDqcUser && !isSpmUser && (
                         <>
@@ -1523,10 +1540,10 @@ export default function Dashboard() {
                         id="workspace-sidebar-trigger"
                         aria-expanded={isDropdownOpen}
                         aria-controls="workspace-sidebar-panel"
-                        className="flex w-full items-center justify-between gap-2 mb-1 rounded-lg py-3 pl-2 pr-2 text-left cursor-pointer hover:bg-gray-100 transition-colors xl:mb-2 xl:py-4 xl:pr-2"
+                        className="flex w-full items-center justify-between gap-2 mb-1 rounded-lg py-3 pl-4 pr-2 text-left cursor-pointer hover:bg-gray-100 transition-colors xl:mb-2 xl:py-4"
                         onClick={toggleDropdown}
                     >
-                        <span className="text-base font-bold text-[#32261C] xl:text-lg xl:pl-2 xl:pt-0">My WorkSpace</span>
+                        <span className="text-base font-bold text-[#32261C] xl:text-lg xl:pl-4 xl:pt-0">My WorkSpace</span>
                         <svg
                             xmlns="http://www.w3.org/2000/svg"
                             fill="none"
@@ -1542,7 +1559,7 @@ export default function Dashboard() {
                     {canShowIncentivesNav(user?.role) && (
                         <IncentivesNavLink
                             active={false}
-                            className="mb-2 xl:w-66.25"
+                            className="mb-2 xl:w-full"
                         />
                     )}
                     {isDropdownOpen && (
@@ -1551,7 +1568,7 @@ export default function Dashboard() {
                                 type="button"
                                 aria-expanded={designPhasesOpen}
                                 aria-controls="workspace-design-phases"
-                                className="flex w-full items-center justify-between gap-2 rounded-lg py-2 pl-2 pr-2 text-left cursor-pointer hover:bg-gray-100 transition-colors xl:pl-2"
+                                className="flex w-full items-center justify-between gap-2 rounded-lg py-2 pl-4 pr-2 text-left cursor-pointer hover:bg-gray-100 transition-colors"
                                 onClick={() => setDesignPhasesOpen((o) => !o)}
                             >
                                 <span className="text-xs font-bold text-[#32261C]/60 uppercase tracking-widest">Design Phases</span>
@@ -1581,7 +1598,7 @@ export default function Dashboard() {
                                                     handleSelection(type);
                                                 }
                                             }}
-                                            className={`p-3 cursor-pointer font-semibold text-sm text-left w-full transition-all duration-200 xl:p-4 xl:inline-block xl:w-66.25 rounded-r-lg ${
+                                            className={`p-3 pl-4 cursor-pointer font-semibold text-sm text-left w-full transition-all duration-200 xl:p-4 xl:pl-4 xl:block xl:w-full rounded-r-lg ${
                                                 isSelected === type
                                                     ? 'border-l-4 border-l-[#EF0101] bg-[#DDCDC1]/40 text-[#32261C] font-bold shadow-sm'
                                                     : 'border-l-4 border-l-transparent text-gray-600 hover:border-l-[#EF0101]/40 hover:bg-[#F1F2F6] hover:text-[#32261C]'
@@ -1596,7 +1613,7 @@ export default function Dashboard() {
                                 type="button"
                                 aria-expanded={projectStatusOpen}
                                 aria-controls="workspace-project-status"
-                                className="flex w-full items-center justify-between gap-2 rounded-lg py-2 pl-2 pr-2 text-left cursor-pointer hover:bg-gray-100 transition-colors mt-2 xl:pl-2"
+                                className="flex w-full items-center justify-between gap-2 rounded-lg py-2 pl-4 pr-2 text-left cursor-pointer hover:bg-gray-100 transition-colors mt-2"
                                 onClick={() => setProjectStatusOpen((o) => !o)}
                             >
                                 <span className="text-xs font-bold text-[#32261C]/60 uppercase tracking-widest">Project status</span>
@@ -1626,7 +1643,7 @@ export default function Dashboard() {
                                                     handleStatusSelection(status);
                                                 }
                                             }}
-                                            className={`p-3 cursor-pointer font-semibold text-sm text-left w-full transition-all duration-200 xl:p-4 xl:inline-block xl:w-66.25 rounded-r-lg ${
+                                            className={`p-3 pl-4 cursor-pointer font-semibold text-sm text-left w-full transition-all duration-200 xl:p-4 xl:pl-4 xl:block xl:w-full rounded-r-lg ${
                                                 statusSelected === status
                                                     ? 'border-l-4 border-l-[#EF0101] bg-[#DDCDC1]/40 text-[#32261C] font-bold shadow-sm'
                                                     : 'border-l-4 border-l-transparent text-gray-600 hover:border-l-[#EF0101]/40 hover:bg-[#F1F2F6] hover:text-[#32261C]'
@@ -1642,10 +1659,10 @@ export default function Dashboard() {
                         </>
                     )}
                     {isDqcUser && (
-                        <div className="xl:text-lg xl:font-semibold xl:pl-2 xl:pt-4">DQC Queue</div>
+                        <div className="xl:text-lg xl:font-semibold xl:pl-4 xl:pt-4">DQC Queue</div>
                     )}
                     </div>
-                    <div className="xl:col-span-4 min-w-0 flex-1 w-full overflow-auto">
+                    <div className="min-w-0 flex-1 w-full overflow-auto">
                         {!isDqcUser && !isMmtUser ? (
                             <div className="p-4 xl:p-6 pb-32 xl:pb-32 space-y-6 max-w-[1600px]">
                                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">

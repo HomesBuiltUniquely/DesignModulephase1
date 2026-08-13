@@ -71,6 +71,8 @@ function buildAllowedOrigins(): string[] {
   const defaults = [
     "https://design.hubinterior.com",
     "https://www.design.hubinterior.com",
+    "http://design.hubinterior.com",
+    "http://www.design.hubinterior.com",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:3002",

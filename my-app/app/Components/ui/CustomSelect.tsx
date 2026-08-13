@@ -44,7 +44,11 @@ export default function CustomSelect({
 }: CustomSelectProps) {
   const [open, setOpen] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState<number>(-1);
-  const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
+  const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({
+    position: "absolute",
+    opacity: 0,
+    pointerEvents: "none",
+  });
   const containerRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -77,6 +81,8 @@ export default function CustomSelect({
           left: rect.left + window.scrollX,
           width: rect.width,
           minWidth: 160,
+          opacity: 1,
+          pointerEvents: "auto",
         });
       }
     };
@@ -89,11 +95,24 @@ export default function CustomSelect({
     };
   }, [open]);
 
-  // Scroll highlighted item into view
+  // Scroll highlighted item into view locally without causing window scroll
   useEffect(() => {
     if (open && highlightedIndex >= 0 && listRef.current) {
-      const items = listRef.current.querySelectorAll("[data-option]");
-      items[highlightedIndex]?.scrollIntoView({ block: "nearest" });
+      const listEl = listRef.current;
+      const items = listEl.querySelectorAll("[data-option]");
+      const itemEl = items[highlightedIndex] as HTMLElement;
+      if (itemEl) {
+        const containerTop = listEl.scrollTop;
+        const containerBottom = containerTop + listEl.clientHeight;
+        const elemTop = itemEl.offsetTop;
+        const elemBottom = elemTop + itemEl.offsetHeight;
+
+        if (elemTop < containerTop) {
+          listEl.scrollTop = elemTop;
+        } else if (elemBottom > containerBottom) {
+          listEl.scrollTop = elemBottom - listEl.clientHeight;
+        }
+      }
     }
   }, [highlightedIndex, open]);
 
