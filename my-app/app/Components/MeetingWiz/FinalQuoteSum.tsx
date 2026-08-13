@@ -267,7 +267,7 @@ export default function FinalQuoteSum({
   };
 
   return (
-    <main className="min-h-screen w-full bg-[#f0f4f8]" style={{ fontFamily: "Arial, Helvetica, sans-serif", display: "flex", flexDirection: "column" }}>
+    <main className="min-h-screen w-full bg-[#f0f4f8]" style={{ display: "flex", flexDirection: "column" }}>
       <div className="flex items-center justify-between border-b border-gray-200 bg-white px-6 py-3">
         <div className="flex flex-col items-start gap-0 text-left">
           <span className="font-mono text-xs font-semibold uppercase tracking-widest text-[#10b981] tabular-nums">

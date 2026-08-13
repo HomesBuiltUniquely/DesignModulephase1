@@ -1,8 +1,32 @@
 @import "tailwindcss";
 
+/* ══════════════════════════════════════════════════════
+   WULKAN — local heading font
+   Place Wulkan-Regular.woff2 & Wulkan-Bold.woff2
+   in /public/fonts/ to activate. Falls back to Georgia.
+   ══════════════════════════════════════════════════════ */
+@font-face {
+  font-family: 'Wulkan';
+  src: url('/fonts/Wulkan-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Wulkan';
+  src: url('/fonts/Wulkan-Bold.woff2') format('woff2');
+  font-weight: 700 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
+
+  /* ── Typography ─────────────────────────────── */
+  --font-heading: var(--font-wulkan, 'Wulkan'), Georgia, serif;
+  --font-body:    var(--font-manrope, 'Manrope'), Arial, sans-serif;
 
   /* ── Brand Palette ─────────────────────────── */
   --brand-primary:   #EF0101;   /* Red       — buttons, active states     */
@@ -26,8 +50,8 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans:    var(--font-body);
+  --font-heading: var(--font-heading);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -40,8 +64,13 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-body);
   transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* ── Headings: Wulkan everywhere ── */
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-heading);
 }
 
 /* ══════════════════════════════════════════════════════

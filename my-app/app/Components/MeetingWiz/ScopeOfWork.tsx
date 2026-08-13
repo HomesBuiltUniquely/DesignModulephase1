@@ -413,7 +413,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
   return (
     <main
       className="min-h-screen w-full bg-[#f0f4f8]"
-      style={{ fontFamily: "Arial, Helvetica, sans-serif", display: "flex", flexDirection: "column" }}
+      style={{ display: "flex", flexDirection: "column" }}
     >
       <div className="flex items-center justify-between border-b border-gray-200 bg-white px-6 py-3">
         <MeetingWizDurationBadge />
