@@ -414,7 +414,7 @@ div.fixed[class*="z-["] {
   [class*="text-gray-700"] { color: #e1e6eb !important; }
   [class*="text-gray-600"] { color: #aab4c2 !important; }
   [class*="text-gray-500"] { color: #8a96a7 !important; }
-  [class*="text-gray-400"] { color: #697586 !important; }
+  [class*="text-gray-400"] { color: #93a0b2 !important; }
 
   /* Border colors */
   [class*="border-gray-100"] { border-color: #14171e !important; }
@@ -514,5 +514,40 @@ div.fixed[class*="z-["] {
   [class*="hover:bg-[#f1f3f4]"]:hover {
     background-color: var(--hover-bg) !important;
   }
+
+  .text-\[\#111827\], [class*="text-[#111827]"] {
+    color: var(--brand-dark) !important;
+  }
+  .bg-\[\#f0f4f8\], [class*="bg-[#f0f4f8]"],
+  .bg-\[\#f7f9fc\], [class*="bg-[#f7f9fc]"] {
+    background-color: var(--brand-surface) !important;
+  }
+}
+
+/* Meeting wizard — readable text, visible hover, themed inputs */
+.meeting-wiz {
+  color: var(--foreground);
+}
+.meeting-wiz button:not(:disabled) {
+  cursor: pointer;
+}
+.meeting-wiz button:disabled {
+  cursor: not-allowed;
+}
+.meeting-wiz input:not([type="checkbox"]):not([type="radio"]),
+.meeting-wiz textarea,
+.meeting-wiz select {
+  background-color: var(--input-bg);
+  color: var(--foreground);
+  caret-color: var(--brand-primary);
+}
+.meeting-wiz input::placeholder,
+.meeting-wiz textarea::placeholder {
+  color: var(--foreground);
+  opacity: 0.45;
+}
+.meeting-wiz ::selection {
+  background: color-mix(in srgb, var(--brand-primary) 32%, transparent);
+  color: var(--foreground);
 }
 
