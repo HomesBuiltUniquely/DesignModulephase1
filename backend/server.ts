@@ -616,8 +616,13 @@ async function triggerMailRouteWithLog(args: {
   let to = Array.isArray(toRaw) ? toRaw.map(String) : toRaw ? [String(toRaw)] : [];
   let cc = Array.isArray(ccRaw) ? ccRaw.map(String) : ccRaw ? [String(ccRaw)] : [];
 
-  // Deduplicate triggers within the 5 seconds window
-  const cacheKey = `${args.leadId}:${args.route}:${[...to].sort().join(",")}`;
+  // Deduplicate triggers within the 5 seconds window.
+  // Mail-loop initiate is keyed by lead+route only so parallel complete-task
+  // calls with slightly different To lists cannot send twice.
+  const cacheKey =
+    args.route === "/api/email/send-mail-loop-chain-initiate"
+      ? `${args.leadId}:${args.route}`
+      : `${args.leadId}:${args.route}:${[...to].sort().join(",")}`;
   const nowMs = Date.now();
   const lastSent = mailDeduplicationCache.get(cacheKey);
   if (lastSent && (nowMs - lastSent) < DEDUPLICATION_WINDOW_MS) {
@@ -6655,12 +6660,14 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
       isFirstDqc1Approval = (priorDqc1Rows as unknown[]).length === 0;
     }
 
-    await pool.query(
+    const [completionWrite] = await pool.query(
       `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
        VALUES (?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
       [id, milestoneIndex, taskName, new Date()],
     );
+    // MySQL: 1 = inserted (first complete), 2 = updated existing row. Never re-send mail on re-mark.
+    const isFirstCompletion = Number((completionWrite as { affectedRows?: number })?.affectedRows) === 1;
 
     try {
       const meetingDate = meta?.meetingDate ?? meta?.signoffDate ?? null;
@@ -6800,7 +6807,14 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
       return null;
     })();
 
-    if (emailRoutePath) {
+    if (emailRoutePath && !isFirstCompletion) {
+      console.log("[complete-task] Email skipped (task already completed):", {
+        leadId: id,
+        milestoneIndex,
+        taskName,
+        emailRoutePath,
+      });
+    } else if (emailRoutePath) {
       console.log("[complete-task] Email trigger:", { leadId: id, milestoneIndex, taskName, emailRoutePath });
       // DQC 1 approval: fire BOTH internal (to designer) and CX (10% payment request)
       if (emailRoutePath === "DQC1_APPROVAL_DUAL") {

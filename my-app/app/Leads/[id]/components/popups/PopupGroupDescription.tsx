@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 import { getApiBase } from '@/app/lib/apiBase';
 const API = getApiBase();
@@ -55,6 +55,7 @@ export default function PopupGroupDescription({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [teamPhones, setTeamPhones] = useState<TeamPhones | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   const [toast, setToast] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const designerDigits = (designerPhone || '').replace(/\D/g, '');
@@ -137,13 +138,15 @@ export default function PopupGroupDescription({
   };
 
   const handleMarkDone = async () => {
-    if (isSubmitting || !leadId) return;
+    if (submittingRef.current || isSubmitting || !leadId) return;
+    submittingRef.current = true;
     setIsSubmitting(true);
     setError(null);
     try {
       const result = await onMarkComplete();
       if (!result?.ok) {
         setError('Could not complete task. Please retry.');
+        submittingRef.current = false;
         return;
       }
       if (result.mailSent) {
@@ -157,6 +160,7 @@ export default function PopupGroupDescription({
       }, 3000);
     } catch {
       setError('Could not complete task. Please retry.');
+      submittingRef.current = false;
     } finally {
       setIsSubmitting(false);
     }

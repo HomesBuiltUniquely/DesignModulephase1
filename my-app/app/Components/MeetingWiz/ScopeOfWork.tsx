@@ -12,8 +12,17 @@ import type {
   ConfigScopeSummary,
   LeadshipTypes,
 } from "@/app/Components/Types/Types";
-import { MeetingWizDurationBadge } from "./MeetingWizTimer";
 import CustomSelect from "@/app/Components/ui/CustomSelect";
+import {
+  MeetingWizShell,
+  MeetingWizStepDots,
+  MeetingWizTopBar,
+  mwCard,
+  mwCta,
+  mwDarkBtn,
+  mwH1,
+  mwMuted,
+} from "./MeetingWizChrome";
 
 const ROOM_OPTIONS = [
   "Living Room",
@@ -30,11 +39,11 @@ const ROOM_OPTIONS = [
 ] as const;
 
 const ROOM_PALETTE = [
-  { icon: "🌿", iconBg: "#f0fdf4" },
-  { icon: "🟡", iconBg: "#fefce8" },
-  { icon: "🛋️", iconBg: "#eff6ff" },
-  { icon: "🍳", iconBg: "#fff7ed" },
-  { icon: "🛏️", iconBg: "#faf5ff" },
+  { icon: "🌿", iconBg: "color-mix(in srgb, var(--brand-secondary) 70%, var(--card-bg))" },
+  { icon: "🟡", iconBg: "color-mix(in srgb, var(--brand-yellow) 28%, var(--card-bg))" },
+  { icon: "🛋️", iconBg: "color-mix(in srgb, var(--brand-blue) 18%, var(--card-bg))" },
+  { icon: "🍳", iconBg: "color-mix(in srgb, var(--brand-primary) 12%, var(--card-bg))" },
+  { icon: "🛏️", iconBg: "color-mix(in srgb, var(--brand-secondary) 85%, var(--card-bg))" },
 ];
 
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
@@ -411,59 +420,36 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
   };
 
   return (
-    <main
-      className="min-h-screen w-full bg-[#f0f4f8]"
-      style={{ display: "flex", flexDirection: "column" }}
-    >
-      <div className="flex items-center justify-between border-b border-gray-200 bg-white px-6 py-3">
-        <MeetingWizDurationBadge />
-        <div className="flex items-center gap-4">
-          <button
-            onClick={onPrev}
-            className="text-sm font-medium text-gray-500 transition hover:text-gray-700"
-          >
-            Previous
-          </button>
+    <MeetingWizShell className="flex flex-col">
+      <MeetingWizTopBar
+        onPrev={onPrev}
+        hideNext
+        extra={
           <button
             type="button"
             onClick={() => void handleSaveDraft()}
             disabled={saveBusy}
-            className="rounded-md bg-slate-950 px-6 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-900 disabled:opacity-60"
+            className={mwDarkBtn}
           >
             {saveBusy ? "Saving…" : "Save Draft"}
           </button>
-          <button className="text-xl font-light text-gray-500 transition hover:text-gray-800">×</button>
-        </div>
-      </div>
-
-      <div className="flex flex-col items-center py-4">
-        <div className="flex items-center gap-1">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <div
-              key={i}
-              className={`h-1 rounded-full w-8 ${i < 4 ? "bg-[#EF0101]" : "bg-gray-300"}`}
-            />
-          ))}
-        </div>
-        <span className="mt-1 text-xs font-medium uppercase tracking-widest text-gray-400">
-          Step 4 of 5
-        </span>
-      </div>
+        }
+      />
+      <MeetingWizStepDots current={4} />
 
       <div className="flex-1 px-8 md:px-12 py-10 max-w-7xl mx-auto w-full box-border pb-28">
-        <h1 className="text-4xl font-extrabold text-[#111827] mb-2 leading-tight">
+        <h1 className={mwH1}>
           4. Scope of Work Summary
         </h1>
-        <p className="mb-10 text-sm text-gray-500 max-w-2xl">
+        <p className={`${mwMuted} mb-10 max-w-2xl`}>
           Add rooms from the client discussion, then capture any designs they have in mind. Use Save Draft
           to store this on the lead.
         </p>
         {saveMessage ? (
           <p
+            className="mb-4 text-xs"
             style={{
-              fontSize: "12px",
-              margin: "0 0 16px",
-              color: saveMessage.type === "error" ? "#b91c1c" : "#166534",
+              color: saveMessage.type === "error" ? "var(--brand-primary)" : "var(--brand-blue)",
             }}
           >
             {saveMessage.text}
@@ -471,30 +457,30 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
         ) : null}
 
         {/* Design Scope */}
-        <div className="bg-white rounded-2xl border border-gray-100 p-8 mb-6 shadow-sm transition-all duration-300 hover:shadow-md">
+        <div className={`${mwCard} mb-6 p-8`}>
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "18px" }}>
             <div
               style={{
                 width: "30px",
                 height: "30px",
                 borderRadius: "7px",
-                backgroundColor: "#111827",
+                backgroundColor: "var(--brand-dark)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 flexShrink: 0,
               }}
             >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--card-bg)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
                 <polyline points="9 22 9 12 15 12 15 22" />
               </svg>
             </div>
-            <span style={{ fontSize: "14px", fontWeight: 700, color: "#111827" }}>Design Scope</span>
+            <span style={{ fontSize: "14px", fontWeight: 700, color: "var(--brand-dark)" }}>Design Scope</span>
           </div>
 
           {!rooms.length ? (
-            <p style={{ fontSize: "13px", color: "#6b7280", margin: "0 0 14px", lineHeight: 1.55 }}>
+            <p style={{ fontSize: "13px", color: "color-mix(in srgb, var(--foreground) 65%, transparent)", margin: "0 0 14px", lineHeight: 1.55 }}>
               No rooms yet. Add kitchen, bedroom, living room, and other areas discussed with the client.
             </p>
           ) : null}
@@ -505,7 +491,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
               <div
                 key={room.id}
                 style={{
-                  border: "1px solid #e5e7eb",
+                  border: "1px solid var(--border-color)",
                   borderRadius: "10px",
                   padding: "16px 18px",
                   marginBottom: "12px",
@@ -548,7 +534,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
                     onClick={() => removeRoom(room.id)}
                     style={{
                       fontSize: "12px",
-                      color: "#dc2626",
+                      color: "var(--brand-primary)",
                       background: "none",
                       border: "none",
                       cursor: "pointer",
@@ -566,7 +552,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
                     placeholder="Custom room name"
                     style={{
                       width: "100%",
-                      border: "1px solid #e5e7eb",
+                      border: "1px solid var(--border-color)",
                       borderRadius: "6px",
                       padding: "8px 10px",
                       fontSize: "13px",
@@ -598,7 +584,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
                     alignItems: "center",
                     gap: "8px",
                     fontSize: "12px",
-                    color: "#374151",
+                    color: "var(--foreground)",
                     marginBottom: "10px",
                     cursor: "pointer",
                   }}
@@ -634,14 +620,15 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
             <button
               type="button"
               onClick={addRoom}
+              className="transition hover:border-[var(--brand-primary)] hover:text-[var(--brand-primary)]"
               style={{
-                border: "1px dashed #d1d5db",
+                border: "1px dashed var(--border-color)",
                 borderRadius: "8px",
                 padding: "8px 14px",
                 fontSize: "12px",
                 fontWeight: 600,
-                color: "#374151",
-                background: "#fafafa",
+                color: "var(--brand-dark)",
+                background: "var(--hover-bg)",
                 cursor: "pointer",
               }}
             >
@@ -651,14 +638,14 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
         </div>
 
         {/* Reference & Inspiration */}
-        <div className="bg-white rounded-2xl border border-gray-100 p-8 mb-10 shadow-sm transition-all duration-300 hover:shadow-md">
+        <div className={`${mwCard} mb-10 p-8`}>
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "12px" }}>
             <div
               style={{
                 width: "30px",
                 height: "30px",
                 borderRadius: "7px",
-                backgroundColor: "#fefce8",
+                backgroundColor: "color-mix(in srgb, var(--brand-yellow) 28%, var(--card-bg))",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
@@ -668,11 +655,11 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
             >
               ✨
             </div>
-            <span style={{ fontSize: "14px", fontWeight: 700, color: "#111827" }}>
+            <span style={{ fontSize: "14px", fontWeight: 700, color: "var(--brand-dark)" }}>
               Reference &amp; Inspiration
             </span>
           </div>
-          <p style={{ fontSize: "12px", color: "#6b7280", margin: "0 0 14px", lineHeight: 1.5 }}>
+          <p style={{ fontSize: "12px", color: "color-mix(in srgb, var(--foreground) 62%, transparent)", margin: "0 0 14px", lineHeight: 1.5 }}>
             If the client has designs in mind, upload photos or mood boards from this meeting.
           </p>
 
@@ -687,8 +674,8 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
                     borderRadius: "8px",
                     overflow: "hidden",
                     flexShrink: 0,
-                    border: "1px solid #e5e7eb",
-                    background: "#fafafa",
+                    border: "1px solid var(--border-color)",
+                    background: "var(--hover-bg)",
                   }}
                 >
                   {showImage ? (
@@ -709,7 +696,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
                         justifyContent: "center",
                         padding: "8px",
                         fontSize: "11px",
-                        color: "#6b7280",
+                        color: "color-mix(in srgb, var(--foreground) 62%, transparent)",
                         textAlign: "center",
                       }}
                     >
@@ -728,7 +715,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
                       }
                       style={{
                         width: "100%",
-                        border: "1px solid #e5e7eb",
+                        border: "1px solid var(--border-color)",
                         borderRadius: "4px",
                         padding: "4px 6px",
                         fontSize: "11px",
@@ -741,7 +728,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
                       onClick={() => removeReference(ref.id)}
                       style={{
                         fontSize: "11px",
-                        color: "#dc2626",
+                        color: "var(--brand-primary)",
                         background: "none",
                         border: "none",
                         cursor: "pointer",
@@ -762,7 +749,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
                 width: "100px",
                 height: "120px",
                 borderRadius: "8px",
-                border: "1.5px dashed #d1d5db",
+                border: "1.5px dashed var(--border-color)",
                 display: "flex",
                 flexDirection: "column",
                 alignItems: "center",
@@ -770,14 +757,14 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
                 gap: "8px",
                 cursor: "pointer",
                 flexShrink: 0,
-                backgroundColor: "#fafafa",
+                backgroundColor: "var(--hover-bg)",
               }}
             >
-              <span style={{ fontSize: "22px", color: "#9ca3af", lineHeight: 1 }}>+</span>
+              <span style={{ fontSize: "22px", color: "color-mix(in srgb, var(--foreground) 50%, transparent)", lineHeight: 1 }}>+</span>
               <span
                 style={{
                   fontSize: "10px",
-                  color: "#9ca3af",
+                  color: "color-mix(in srgb, var(--foreground) 50%, transparent)",
                   fontWeight: 600,
                   textTransform: "uppercase",
                   letterSpacing: "0.05em",
@@ -798,7 +785,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
             />
           </div>
 
-          <div style={{ borderTop: "1px solid #f3f4f6", paddingTop: "14px" }}>
+          <div style={{ borderTop: "1px solid var(--border-color)", paddingTop: "14px" }}>
             <p style={labelStyle}>Aesthetic notes</p>
             <textarea
               value={aestheticNotes}
@@ -815,7 +802,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
             type="button"
             onClick={() => void handleCreateProject()}
             disabled={createBusy}
-            className={`inline-flex items-center gap-3 bg-[#EF0101] border-none rounded-full px-8 py-4 text-sm font-bold text-white uppercase tracking-wider transition-all duration-300 shadow-lg shadow-red-500/20 hover:bg-[#CC0000] hover:shadow-xl hover:-translate-y-0.5 ${createBusy ? "opacity-75 cursor-not-allowed" : "cursor-pointer"}`}
+            className={`${mwCta} ${createBusy ? "opacity-75 cursor-not-allowed" : ""}`}
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z" />
@@ -832,7 +819,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
                 maxWidth: "520px",
                 textAlign: "center",
                 fontSize: "12px",
-                color: createMessage.toLowerCase().includes("fail") ? "#b91c1c" : "#166534",
+                color: createMessage.toLowerCase().includes("fail") ? "var(--brand-primary)" : "var(--brand-blue)",
                 lineHeight: 1.5,
               }}
             >
@@ -840,7 +827,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
             </p>
           ) : null}
           {!lead ? (
-            <p style={{ margin: 0, fontSize: "11px", color: "#9ca3af", textAlign: "center" }}>
+            <p style={{ margin: 0, fontSize: "11px", color: "color-mix(in srgb, var(--foreground) 50%, transparent)", textAlign: "center" }}>
               Start this meeting from a lead row to create the Prolance project for that lead.
             </p>
           ) : null}
@@ -850,13 +837,13 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
       <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-10">
         <button
           onClick={onNext}
-          className="flex items-center gap-3 rounded-full bg-[#EF0101] px-8 py-4 text-sm font-bold uppercase tracking-widest text-white shadow-lg shadow-red-500/20 transition-all duration-300 hover:bg-[#CC0000] hover:shadow-xl hover:-translate-y-0.5"
+          className={mwCta}
         >
           Next: Get Quote
           <span className="flex h-7 w-7 items-center justify-center rounded-full bg-white/20 text-white">→</span>
         </button>
       </div>
-    </main>
+    </MeetingWizShell>
   );
 }
 
@@ -864,7 +851,7 @@ const labelStyle: CSSProperties = {
   display: "block",
   fontSize: "9.5px",
   fontWeight: 700,
-  color: "#9ca3af",
+  color: "color-mix(in srgb, var(--foreground) 50%, transparent)",
   textTransform: "uppercase",
   letterSpacing: "0.08em",
   margin: "0 0 6px",
@@ -872,11 +859,12 @@ const labelStyle: CSSProperties = {
 
 const inputStyle: CSSProperties = {
   width: "100%",
-  border: "1px solid #e5e7eb",
+  border: "1px solid var(--border-color)",
   borderRadius: "6px",
   padding: "8px 10px",
   fontSize: "13px",
-  color: "#111827",
+  color: "var(--brand-dark)",
+  backgroundColor: "var(--input-bg)",
   marginBottom: "10px",
   boxSizing: "border-box",
 };
