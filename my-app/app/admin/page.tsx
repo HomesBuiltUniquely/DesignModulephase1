@@ -88,7 +88,7 @@ export default function AdminPanelPage() {
       <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <h1 className="text-xl font-bold text-gray-900">Admin Panel</h1>
-          <a href="/" className="text-sm text-green-600 hover:underline">Dashboard</a>
+          <a href="/" className="text-sm text-[#32261C] hover:underline">Dashboard</a>
         </div>
         <div className="flex items-center gap-4">
           <a href="/change-password" className="text-sm text-gray-600 hover:text-gray-900">Change password</a>
@@ -109,11 +109,11 @@ export default function AdminPanelPage() {
             <a
               key={action.href}
               href={action.href}
-              className="block p-6 bg-white rounded-2xl border border-gray-200 shadow-sm hover:border-green-300 hover:shadow-md transition-all"
+              className="block p-6 bg-white rounded-2xl border border-gray-200 shadow-sm hover:border-[#DDCDC1] hover:shadow-md transition-all"
             >
               <h2 className="font-semibold text-gray-900">{action.title}</h2>
               <p className="text-sm text-gray-500 mt-2">{action.description}</p>
-              <span className="inline-block mt-4 px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700">
+              <span className="inline-block mt-4 px-4 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-medium hover:bg-[#EF0101]">
                 {action.label}
               </span>
             </a>

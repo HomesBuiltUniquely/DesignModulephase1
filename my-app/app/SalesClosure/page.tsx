@@ -6,7 +6,7 @@ export default function SalesCloser() {
   return (
     <div>
       <Header />
-      <Suspense fallback={<div className="min-h-screen bg-purple-50 flex items-center justify-center text-green-950">Loading form…</div>}>
+      <Suspense fallback={<div className="min-h-screen bg-[#F1F2F6] flex items-center justify-center text-[#32261C]">Loading form…</div>}>
         <SalesClosureForm />
       </Suspense>
     </div>

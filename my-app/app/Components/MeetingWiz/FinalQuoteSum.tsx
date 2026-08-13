@@ -267,7 +267,7 @@ export default function FinalQuoteSum({
   };
 
   return (
-    <main className="min-h-screen w-full bg-[#f0f4f8]" style={{ fontFamily: "Arial, Helvetica, sans-serif", display: "flex", flexDirection: "column" }}>
+    <main className="min-h-screen w-full bg-[#f0f4f8]" style={{ display: "flex", flexDirection: "column" }}>
       <div className="flex items-center justify-between border-b border-gray-200 bg-white px-6 py-3">
         <div className="flex flex-col items-start gap-0 text-left">
           <span className="font-mono text-xs font-semibold uppercase tracking-widest text-[#10b981] tabular-nums">
@@ -296,43 +296,14 @@ export default function FinalQuoteSum({
         </div>
       </div>
 
-      <div className="flex-1 mx-auto max-w-4xl px-6 pb-28 w-full box-border">
-        <div style={{ display: "flex", justifyContent: "center", marginBottom: "25px" }}>
-          <div
-            style={{
-              width: "48px",
-              height: "48px",
-              borderRadius: "10px",
-              backgroundColor: "#d1fae5",
-            }}
-          />
-        </div>
+      <div className="flex-1 px-8 md:px-12 py-10 max-w-7xl mx-auto w-full box-border pb-28">
 
-        <h1
-          style={{
-            fontSize: "30px",
-            fontWeight: 800,
-            color: "#111827",
-            textAlign: "center",
-            margin: "0 0 10px",
-            lineHeight: 1.1,
-          }}
-        >
+
+        <h1 className="text-4xl font-extrabold text-[#111827] mb-4 leading-tight text-center">
           5. Final Quote &amp; Summary
         </h1>
 
-        <p
-          style={{
-            fontSize: "13.5px",
-            color: "#6b7280",
-            textAlign: "center",
-            margin: "0 0 16px",
-            lineHeight: 1.6,
-            maxWidth: "420px",
-            marginLeft: "auto",
-            marginRight: "auto",
-          }}
-        >
+        <p className="mb-10 text-sm text-gray-500 max-w-2xl mx-auto text-center">
           Thank you,{" "}
           <strong style={{ color: "#111827", fontWeight: 700 }}>
             {info.customerName}
@@ -374,14 +345,7 @@ export default function FinalQuoteSum({
             marginBottom: "16px",
           }}
         >
-          <div
-            style={{
-              backgroundColor: "#ffffff",
-              borderRadius: "12px",
-              border: "1px solid #e5e7eb",
-              padding: "20px 22px 18px",
-            }}
-          >
+          <div className="bg-white rounded-2xl border border-gray-100 p-8 shadow-sm transition-all duration-300 hover:shadow-md">
             <p
               style={{
                 fontSize: "10px",
@@ -499,18 +463,7 @@ export default function FinalQuoteSum({
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-            <div
-              style={{
-                backgroundColor: "#ffffff",
-                borderRadius: "12px",
-                border: "1px solid #e5e7eb",
-                padding: "18px 16px",
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                gap: "8px",
-              }}
-            >
+            <div className="bg-white rounded-2xl border border-gray-100 p-6 flex flex-col items-center gap-2 shadow-sm transition-all duration-300 hover:shadow-md">
               <p
                 style={{
                   fontSize: "9.5px",
@@ -575,16 +528,7 @@ export default function FinalQuoteSum({
               </div>
             </div>
 
-            <div
-              style={{
-                backgroundColor: "#111827",
-                borderRadius: "12px",
-                padding: "16px 14px",
-                display: "flex",
-                flexDirection: "column",
-                gap: "10px",
-              }}
-            >
+            <div className="bg-[#111827] rounded-2xl p-6 flex flex-col gap-3 shadow-sm transition-all duration-300 hover:shadow-md">
               <p
                 style={{
                   fontSize: "9.5px",
@@ -618,7 +562,7 @@ export default function FinalQuoteSum({
                     width: "26px",
                     height: "26px",
                     borderRadius: "6px",
-                    backgroundColor: "#2EE86B",
+                    backgroundColor: "#EF0101",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
@@ -657,7 +601,7 @@ export default function FinalQuoteSum({
                     width: "26px",
                     height: "26px",
                     borderRadius: "6px",
-                    backgroundColor: "#2EE86B",
+                    backgroundColor: "#EF0101",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
@@ -736,24 +680,7 @@ export default function FinalQuoteSum({
           type="button"
           onClick={() => void handleMeetingCompleted()}
           disabled={busy || done}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: "10px",
-            width: "100%",
-            backgroundColor: done ? "#86efac" : "#2EE86B",
-            border: "none",
-            borderRadius: "10px",
-            padding: "18px 32px",
-            fontSize: "14px",
-            fontWeight: 800,
-            color: "#000000",
-            cursor: busy || done ? "not-allowed" : "pointer",
-            letterSpacing: "0.1em",
-            textTransform: "uppercase",
-            opacity: busy ? 0.75 : 1,
-          }}
+          className={`flex items-center justify-center gap-3 w-full border-none rounded-2xl p-5 text-sm font-bold uppercase tracking-widest transition-all duration-300 ${done ? "bg-[#fca5a5] text-white cursor-not-allowed" : "bg-[#EF0101] text-white cursor-pointer shadow-lg shadow-red-500/20 hover:bg-[#CC0000] hover:shadow-xl hover:-translate-y-0.5"} ${busy ? "opacity-75 cursor-not-allowed" : ""}`}
         >
           {busy ? "Saving…" : done ? "Meeting Recorded" : "Meeting Completed"}
           <span style={{ fontSize: "18px" }}>🚀</span>

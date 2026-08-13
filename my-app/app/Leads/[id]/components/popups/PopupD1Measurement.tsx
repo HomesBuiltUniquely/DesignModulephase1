@@ -3,6 +3,9 @@
 import { useState, useEffect } from 'react';
 
 import { getApiBase } from '@/app/lib/apiBase';
+import CustomDatePicker from '@/app/Components/ui/CustomDatePicker';
+import CustomTimePicker from '@/app/Components/ui/CustomTimePicker';
+import CustomSelect from '@/app/Components/ui/CustomSelect';
 const API = getApiBase();
 
 type MmtManager = { id: number; name: string; email: string };
@@ -103,11 +106,11 @@ export default function PopupD1Measurement({ leadId, sessionId, onSubmit, onClos
             <div className="flex items-center justify-between gap-2 px-6 py-2">
                 <div>
                     <div className="font-bold text-sm">Measurement Date</div>
-                    <input type="date" className="w-[250px] border border-gray-300 rounded-md p-2 mt-2" value={measurementDate} onChange={(e) => setMeasurementDate(e.target.value)} />
+                    <CustomDatePicker className="w-[250px] mt-2" value={measurementDate} onChange={(date) => setMeasurementDate(date)} />
                 </div>
                 <div>
                     <div className="font-bold text-sm">Measurement Time</div>
-                    <input type="time" className="w-[250px] border border-gray-300 rounded-md p-2 mt-2" value={measurementTime} onChange={(e) => setMeasurementTime(e.target.value)} />
+                    <CustomTimePicker className="w-[250px] mt-2" value={measurementTime} onChange={(val) => setMeasurementTime(val)} />
                 </div>
             </div>
             <div className="text-[12px] text-gray-400 px-6">Select a future date only</div>
@@ -126,24 +129,20 @@ export default function PopupD1Measurement({ leadId, sessionId, onSubmit, onClos
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="size-4 text-gray-400 shrink-0">
                             <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
                         </svg>
-                        <select
+                        <CustomSelect
                             value={selectedId}
-                            onChange={(e) => setSelectedId(e.target.value)}
-                            className="flex-1 min-w-0 text-[14px] text-gray-600 font-bold bg-transparent border-none focus:ring-0 focus:outline-none cursor-pointer"
-                        >
-                            <option value="">Select MMT Manager</option>
-                            {managers.map((m) => (
-                                <option key={m.id} value={m.id}>
-                                    {m.name}
-                                </option>
-                            ))}
-                        </select>
+                            onChange={(val) => setSelectedId(val)}
+                            options={managers.map((m) => ({ value: String(m.id), label: m.name }))}
+                            placeholder="Select MMT Manager"
+                            className="flex-1"
+                            size="md"
+                        />
                         {selected && (
-                            <span className="bg-green-500 rounded-full w-[8px] h-[8px] shrink-0" title="Selected" />
+                            <span className="bg-[#EF0101]/80 rounded-full w-[8px] h-[8px] shrink-0 ml-2" title="Selected" />
                         )}
                     </div>
                     <div className="flex items-center shrink-0">
-                        <div className="bg-green-50 rounded-md px-3 py-1.5 h-[32px] text-green-600 text-sm font-bold text-center flex items-center">
+                        <div className="bg-[#DDCDC1]/20 rounded-md px-3 py-1.5 h-[32px] text-[#32261C] text-sm font-bold text-center flex items-center">
                             {loaded && managers.length === 0 ? 'None available' : 'Available'}
                         </div>
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="size-4 ml-2 text-gray-500">
@@ -167,7 +166,7 @@ export default function PopupD1Measurement({ leadId, sessionId, onSubmit, onClos
                 {submitError && <p className="text-sm text-red-600 px-6 mt-2">{submitError}</p>}
                 <div className="bg-gray-100 w-full h-[80px] rounded-b-2xl">
                     <div className="h-[1px] bg-gray-200 w-full mt-10" />
-                    <button type="button" onClick={handleSubmit} disabled={submitting || !selectedId || !!toast} className="mt-5 ml-98 bg-blue-500 rounded-md w-[150px] py-1.5 h-[36px] text-white text-sm font-bold text-center items-end disabled:opacity-60">
+                    <button type="button" onClick={handleSubmit} disabled={submitting || !selectedId || !!toast} className="mt-5 ml-98 bg-[#00B0ED] rounded-md w-[150px] py-1.5 h-[36px] text-white text-sm font-bold text-center items-end disabled:opacity-60">
                         {submitting ? 'Submitting…' : 'Submit Request'}
                     </button>
                 </div>

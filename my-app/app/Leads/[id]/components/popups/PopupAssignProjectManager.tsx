@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import CustomSelect from '@/app/Components/ui/CustomSelect';
 
 type PmRow = { id: number; name: string; email: string };
 
@@ -106,21 +107,18 @@ export default function PopupAssignProjectManager({
                 <p className="text-sm text-amber-700">No project managers found. Create one from the admin hub first.</p>
             )}
             {list.length > 0 && (
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Project manager
-                    <select
-                        className="mt-1 block w-full max-w-md rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                <div className="mb-2">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Project manager
+                    </label>
+                    <CustomSelect
                         value={selectedId}
-                        onChange={(e) => setSelectedId(e.target.value)}
-                    >
-                        <option value="">— Select —</option>
-                        {list.map((pm) => (
-                            <option key={pm.id} value={String(pm.id)}>
-                                {pm.name} ({pm.email})
-                            </option>
-                        ))}
-                    </select>
-                </label>
+                        onChange={(val) => setSelectedId(val)}
+                        options={list.map((pm) => ({ value: String(pm.id), label: `${pm.name} (${pm.email})` }))}
+                        placeholder="— Select —"
+                        className="w-full max-w-md"
+                    />
+                </div>
             )}
             <div className="mt-6 flex justify-end">
                 <button

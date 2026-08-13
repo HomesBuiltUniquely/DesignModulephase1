@@ -1,8 +1,40 @@
 @import "tailwindcss";
 
+/* ══════════════════════════════════════════════════════
+   WULKAN — local heading font
+   Place Wulkan-Regular.woff2 & Wulkan-Bold.woff2
+   in /public/fonts/ to activate. Falls back to Georgia.
+   ══════════════════════════════════════════════════════ */
+@font-face {
+  font-family: 'Wulkan';
+  src: url('/fonts/Wulkan-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Wulkan';
+  src: url('/fonts/Wulkan-Bold.woff2') format('woff2');
+  font-weight: 700 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
+
+  /* ── Typography ─────────────────────────────── */
+  --font-heading: var(--font-wulkan, 'Wulkan'), Georgia, serif;
+  --font-body:    var(--font-manrope, 'Manrope'), Arial, sans-serif;
+
+  /* ── Brand Palette ─────────────────────────── */
+  --brand-primary:   #EF0101;   /* Red       — buttons, active states     */
+  --brand-dark:      #32261C;   /* Dark Brown— headings, labels, text     */
+  --brand-secondary: #DDCDC1;   /* Warm Beige— hover tints, card bg      */
+  --brand-surface:   #F1F2F6;   /* Off-white — page backgrounds           */
+  --brand-blue:      #00B0ED;   /* Sky Blue  — info, progress, links      */
+  --brand-yellow:    #EBD457;   /* Gold      — highlights, positive KPIs  */
 }
 
 :root[data-theme="light"] {
@@ -18,8 +50,8 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans:    var(--font-body);
+  --font-heading: var(--font-heading);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -32,6 +64,235 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-body);
   transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* ── Headings: Wulkan everywhere ── */
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-heading);
+}
+
+/* ══════════════════════════════════════════════════════
+   CUSTOM SELECT — brand-styled native selects
+   Replaces boring browser default with brand chevron,
+   hover/focus states, and smooth transitions.
+   ══════════════════════════════════════════════════════ */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='%2332261C'%3E%3Cpath fill-rule='evenodd' d='M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z' clip-rule='evenodd'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.6rem center;
+  background-size: 1.1rem;
+  padding-right: 2.2rem;
+  border: 1.5px solid #DDCDC1;
+  border-radius: 0.5rem;
+  color: #32261C;
+  background-color: #fff;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+select:hover:not(:disabled) {
+  border-color: rgba(239, 1, 1, 0.55);
+}
+
+select:focus {
+  border-color: #EF0101;
+  box-shadow: 0 0 0 3px rgba(239, 1, 1, 0.08);
+  outline: none;
+}
+
+select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background-color: #F1F2F6;
+}
+
+/* ══════════════════════════════════════════════════════
+   DATE / TIME INPUTS — brand themed
+   Calendar & clock icons tinted brand red.
+   ══════════════════════════════════════════════════════ */
+input[type="date"],
+input[type="time"],
+input[type="datetime-local"] {
+  border: 1.5px solid #DDCDC1;
+  border-radius: 0.5rem;
+  color: #32261C;
+  background-color: #fff;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  font-family: inherit;
+}
+
+input[type="date"]:hover:not(:disabled),
+input[type="time"]:hover:not(:disabled),
+input[type="datetime-local"]:hover:not(:disabled) {
+  border-color: rgba(239, 1, 1, 0.55);
+}
+
+input[type="date"]:focus,
+input[type="time"]:focus,
+input[type="datetime-local"]:focus {
+  border-color: #EF0101;
+  box-shadow: 0 0 0 3px rgba(239, 1, 1, 0.08);
+  outline: none;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.55;
+  filter: invert(10%) sepia(85%) saturate(6000%) hue-rotate(0deg) brightness(100%) contrast(110%);
+  transition: opacity 0.15s ease;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator:hover,
+input[type="time"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+}
+
+/* ══════════════════════════════════════════════════════
+   TEXT INPUTS, TEXTAREAS — smooth focus transitions
+   ══════════════════════════════════════════════════════ */
+input[type="text"],
+input[type="email"],
+input[type="number"],
+input[type="tel"],
+input[type="search"],
+input[type="password"],
+input[type="url"],
+textarea {
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+input[type="text"]:focus,
+input[type="email"]:focus,
+input[type="number"]:focus,
+input[type="tel"]:focus,
+input[type="search"]:focus,
+input[type="password"]:focus,
+input[type="url"]:focus,
+textarea:focus {
+  outline: none;
+}
+
+/* ══════════════════════════════════════════════════════
+   BUTTONS — global press micro-animation
+   Every button in the app gets a satisfying press effect.
+   ══════════════════════════════════════════════════════ */
+button:not(:disabled) {
+  transition:
+    transform 0.1s ease,
+    box-shadow 0.15s ease,
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+button:not(:disabled):active {
+  transform: scale(0.96);
+}
+
+/* ══════════════════════════════════════════════════════
+   CHECKBOX & RADIO — brand accent color
+   ══════════════════════════════════════════════════════ */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: #EF0101;
+  cursor: pointer;
+}
+
+/* ══════════════════════════════════════════════════════
+   CUSTOM SELECT DROPDOWN ANIMATION
+   Used by CustomSelect.tsx component
+   ══════════════════════════════════════════════════════ */
+@keyframes customSelectSlideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scaleY(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scaleY(1);
+  }
+}
+
+/* Dropdown scrollbar */
+.custom-select-dropdown::-webkit-scrollbar { width: 4px; }
+.custom-select-dropdown::-webkit-scrollbar-track { background: #F1F2F6; }
+.custom-select-dropdown::-webkit-scrollbar-thumb { background: #DDCDC1; border-radius: 99px; }
+.custom-select-dropdown::-webkit-scrollbar-thumb:hover { background: #EF0101; }
+
+/* ══════════════════════════════════════════════════════
+   GLOBAL SCROLLBAR — subtle brand scrollbar everywhere
+   ══════════════════════════════════════════════════════ */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #F1F2F6; }
+::-webkit-scrollbar-thumb { background: #DDCDC1; border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: #32261C; }
+
+/* ══════════════════════════════════════════════════════
+   CARD HOVER LIFT — add to any card for depth
+   ══════════════════════════════════════════════════════ */
+.card-hover {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(50, 38, 28, 0.1);
+}
+
+/* ══════════════════════════════════════════════════════
+   FADE-IN ANIMATION — for modals and dropdowns
+   ══════════════════════════════════════════════════════ */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fadeInUp {
+  animation: fadeInUp 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* ══════════════════════════════════════════════════════
+   MODAL POP-IN ANIMATIONS
+   ══════════════════════════════════════════════════════ */
+@keyframes backdropFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modalPopIn {
+  from { opacity: 0; transform: scale(0.95) translateY(10px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.animate-backdropFadeIn {
+  animation: backdropFadeIn 0.2s ease forwards;
+}
+
+.animate-modalPopIn {
+  animation: modalPopIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Auto-animate any modal that has fixed positioning (except specific excluded ones) */
+div.fixed.inset-0 > div,
+div.fixed[class*="z-["] > div {
+  animation: modalPopIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+div.fixed.inset-0,
+div.fixed[class*="z-["] {
+  animation: backdropFadeIn 0.2s ease forwards;
+}
+
+/* Hide scrollbar for elements with .no-scrollbar */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
 }

@@ -13,7 +13,7 @@ export default function PopupPlaceholder({ message = 'Add your popup content her
         <div className="px-6 pb-6">
             <p className="mb-4">{message}</p>
             {onMarkComplete && (
-                <button type="button" onClick={onMarkComplete} className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700">
+                <button type="button" onClick={onMarkComplete} className="px-4 py-2 bg-[#EF0101] text-white text-sm font-medium rounded-lg hover:bg-[#EF0101]">
                     Mark as done
                 </button>
             )}

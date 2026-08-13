@@ -95,15 +95,15 @@ export default function PopupProlance({ open, onClose, sessionId, leadPid }: Pro
       aria-labelledby="prolance-title"
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-xl border border-purple-200 bg-slate-900 text-purple-100 shadow-xl">
-        <div className="flex items-center justify-between border-b border-purple-800/80 px-4 py-3">
+      <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-xl border border-[#DDCDC1] bg-slate-900 text-white shadow-xl">
+        <div className="flex items-center justify-between border-b border-[#EF0101]/60/80 px-4 py-3">
           <h2 id="prolance-title" className="text-lg font-bold text-white">
-            Prolance <span className="text-purple-300 font-normal text-sm">(PID {leadPid})</span>
+            Prolance <span className="text-[#DDCDC1] font-normal text-sm">(PID {leadPid})</span>
           </h2>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md px-2 py-1 text-sm text-purple-200 hover:bg-purple-900/50"
+            className="rounded-md px-2 py-1 text-sm text-[#DDCDC1] hover:bg-[#EF0101]/80/50"
           >
             Close
           </button>
@@ -127,7 +127,7 @@ export default function PopupProlance({ open, onClose, sessionId, leadPid }: Pro
                   }
                 })
               }
-              className="rounded-md border border-purple-500/60 px-3 py-1.5 font-medium text-white hover:bg-purple-900/40 disabled:opacity-40"
+              className="rounded-md border border-white/300/60 px-3 py-1.5 font-medium text-white hover:bg-[#EF0101]/80/40 disabled:opacity-40"
             >
               Check config
             </button>
@@ -146,7 +146,7 @@ export default function PopupProlance({ open, onClose, sessionId, leadPid }: Pro
                   if (tok) setPlToken(tok);
                 })
               }
-              className="rounded-md border border-green-700/80 px-3 py-1.5 font-medium text-green-100 hover:bg-green-900/30 disabled:opacity-40"
+              className="rounded-md border border-[#EF0101]/80 px-3 py-1.5 font-medium text-green-100 hover:bg-[#EF0101]/30 disabled:opacity-40"
             >
               Get API token
             </button>
@@ -155,13 +155,13 @@ export default function PopupProlance({ open, onClose, sessionId, leadPid }: Pro
             <p className="text-xs text-amber-200">Server reports PROLANCE_BASE_URL is not set. Ask ops to configure it.</p>
           )}
 
-          <div className="grid grid-cols-1 gap-2 border border-purple-800/40 rounded-lg p-3">
-            <p className="text-xs font-semibold text-purple-200">Token (grant_type=password)</p>
+          <div className="grid grid-cols-1 gap-2 border border-[#EF0101]/60/40 rounded-lg p-3">
+            <p className="text-xs font-semibold text-[#DDCDC1]">Token (grant_type=password)</p>
             <input
               placeholder="API username"
               value={tokenUsername}
               onChange={(e) => setTokenUsername(e.target.value)}
-              className="rounded border border-purple-700/80 bg-slate-950 px-2 py-1.5 text-xs"
+              className="rounded border border-[#EF0101]/80/80 bg-slate-950 px-2 py-1.5 text-xs"
               autoComplete="off"
             />
             <input
@@ -169,47 +169,47 @@ export default function PopupProlance({ open, onClose, sessionId, leadPid }: Pro
               type="password"
               value={tokenPassword}
               onChange={(e) => setTokenPassword(e.target.value)}
-              className="rounded border border-purple-700/80 bg-slate-950 px-2 py-1.5 text-xs"
+              className="rounded border border-[#EF0101]/80/80 bg-slate-950 px-2 py-1.5 text-xs"
               autoComplete="off"
             />
-            <p className="text-[11px] text-purple-300">
+            <p className="text-[11px] text-[#DDCDC1]">
               Your Prolance API Key (OriginAPIKey) is handled server-side; you don’t need to paste it here.
             </p>
           </div>
 
           <label className="block">
-            <span className="text-xs text-purple-300">X-Prolance-Token (paste or use Get API token)</span>
+            <span className="text-xs text-[#DDCDC1]">X-Prolance-Token (paste or use Get API token)</span>
             <input
               value={plToken}
               onChange={(e) => setPlToken(e.target.value)}
-              className="mt-1 w-full rounded border border-purple-700/80 bg-slate-950 px-2 py-1.5 text-xs text-white"
+              className="mt-1 w-full rounded border border-[#EF0101]/80/80 bg-slate-950 px-2 py-1.5 text-xs text-white"
               autoComplete="off"
             />
           </label>
           <label className="block">
-            <span className="text-xs text-purple-300">Origin session (optional, overrides server default)</span>
+            <span className="text-xs text-[#DDCDC1]">Origin session (optional, overrides server default)</span>
             <input
               value={originSession}
               onChange={(e) => setOriginSession(e.target.value)}
-              className="mt-1 w-full rounded border border-purple-700/80 bg-slate-950 px-2 py-1.5 text-xs text-white"
+              className="mt-1 w-full rounded border border-[#EF0101]/80/80 bg-slate-950 px-2 py-1.5 text-xs text-white"
               autoComplete="off"
             />
           </label>
 
-          <div className="grid grid-cols-1 gap-2 border-t border-purple-800/60 pt-3">
-            <p className="text-xs font-semibold text-purple-200">Partner login</p>
+          <div className="grid grid-cols-1 gap-2 border-t border-[#EF0101]/60/60 pt-3">
+            <p className="text-xs font-semibold text-[#DDCDC1]">Partner login</p>
             <input
               placeholder="Login ID"
               value={loginID}
               onChange={(e) => setLoginID(e.target.value)}
-              className="rounded border border-purple-700/80 bg-slate-950 px-2 py-1.5 text-xs"
+              className="rounded border border-[#EF0101]/80/80 bg-slate-950 px-2 py-1.5 text-xs"
             />
             <input
               placeholder="Password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="rounded border border-purple-700/80 bg-slate-950 px-2 py-1.5 text-xs"
+              className="rounded border border-[#EF0101]/80/80 bg-slate-950 px-2 py-1.5 text-xs"
             />
             <button
               type="button"
@@ -226,19 +226,19 @@ export default function PopupProlance({ open, onClose, sessionId, leadPid }: Pro
                   if (tok) setPlToken(tok);
                 })
               }
-              className="rounded-md bg-purple-700 px-3 py-2 font-medium text-white hover:bg-purple-600 disabled:opacity-40"
+              className="rounded-md bg-[#EF0101] px-3 py-2 font-medium text-white hover:bg-[#EF0101] disabled:opacity-40"
             >
               Partner login
             </button>
           </div>
 
-          <div className="grid grid-cols-1 gap-2 border-t border-purple-800/60 pt-3">
-            <p className="text-xs font-semibold text-purple-200">Projects &amp; rooms</p>
+          <div className="grid grid-cols-1 gap-2 border-t border-[#EF0101]/60/60 pt-3">
+            <p className="text-xs font-semibold text-[#DDCDC1]">Projects &amp; rooms</p>
             <input
               placeholder="Partner ID"
               value={partnerId}
               onChange={(e) => setPartnerId(e.target.value)}
-              className="rounded border border-purple-700/80 bg-slate-950 px-2 py-1.5 text-xs"
+              className="rounded border border-[#EF0101]/80/80 bg-slate-950 px-2 py-1.5 text-xs"
             />
             <button
               type="button"
@@ -252,7 +252,7 @@ export default function PopupProlance({ open, onClose, sessionId, leadPid }: Pro
                   await parseJson(res);
                 })
               }
-              className="rounded-md border border-purple-500/60 px-3 py-1.5 text-left hover:bg-purple-900/40 disabled:opacity-40"
+              className="rounded-md border border-white/300/60 px-3 py-1.5 text-left hover:bg-[#EF0101]/80/40 disabled:opacity-40"
             >
               List projects
             </button>
@@ -260,7 +260,7 @@ export default function PopupProlance({ open, onClose, sessionId, leadPid }: Pro
               placeholder="Project ID (for quotes)"
               value={projectId}
               onChange={(e) => setProjectId(e.target.value)}
-              className="rounded border border-purple-700/80 bg-slate-950 px-2 py-1.5 text-xs"
+              className="rounded border border-[#EF0101]/80/80 bg-slate-950 px-2 py-1.5 text-xs"
             />
             <button
               type="button"
@@ -274,7 +274,7 @@ export default function PopupProlance({ open, onClose, sessionId, leadPid }: Pro
                   await parseJson(res);
                 })
               }
-              className="rounded-md border border-purple-500/60 px-3 py-1.5 text-left hover:bg-purple-900/40 disabled:opacity-40"
+              className="rounded-md border border-white/300/60 px-3 py-1.5 text-left hover:bg-[#EF0101]/80/40 disabled:opacity-40"
             >
               Room quotes
             </button>
@@ -282,7 +282,7 @@ export default function PopupProlance({ open, onClose, sessionId, leadPid }: Pro
               placeholder="Option ID (hardware / BOQ)"
               value={optionId}
               onChange={(e) => setOptionId(e.target.value)}
-              className="rounded border border-purple-700/80 bg-slate-950 px-2 py-1.5 text-xs"
+              className="rounded border border-[#EF0101]/80/80 bg-slate-950 px-2 py-1.5 text-xs"
             />
             <div className="flex flex-wrap gap-2">
               {(
@@ -310,7 +310,7 @@ export default function PopupProlance({ open, onClose, sessionId, leadPid }: Pro
                       await parseJson(res);
                     })
                   }
-                  className="rounded border border-purple-600/50 px-2 py-1 text-xs hover:bg-purple-900/40 disabled:opacity-40"
+                  className="rounded border border-[#EF0101]/50 px-2 py-1 text-xs hover:bg-[#EF0101]/80/40 disabled:opacity-40"
                 >
                   {label}
                 </button>
@@ -319,8 +319,8 @@ export default function PopupProlance({ open, onClose, sessionId, leadPid }: Pro
           </div>
 
           {(lastStatus !== null || lastBody) && (
-            <div className="border-t border-purple-800/60 pt-3">
-              <p className="text-xs text-purple-300">
+            <div className="border-t border-[#EF0101]/60/60 pt-3">
+              <p className="text-xs text-[#DDCDC1]">
                 Last response{lastStatus !== null ? ` (HTTP ${lastStatus})` : ''}
               </p>
               <pre className="mt-1 max-h-52 overflow-auto rounded bg-slate-950 p-2 text-[11px] leading-relaxed text-green-100/90">

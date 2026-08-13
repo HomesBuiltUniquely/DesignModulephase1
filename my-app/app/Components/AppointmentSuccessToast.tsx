@@ -37,7 +37,7 @@ export function AppointmentSuccessToast({ payload, onDismiss }: Props) {
       role="status"
       aria-live="polite"
     >
-      <div className="pointer-events-auto w-full max-w-sm rounded-xl border border-emerald-200 bg-white p-4 shadow-2xl ring-1 ring-emerald-100">
+      <div className="pointer-events-auto w-full max-w-sm rounded-xl border border-[#DDCDC1] bg-white p-4 shadow-2xl ring-1 ring-emerald-100">
         <div className="flex items-start gap-3">
           <span className="text-2xl leading-none" aria-hidden>
             🎉

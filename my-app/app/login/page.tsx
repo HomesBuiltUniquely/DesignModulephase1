@@ -217,7 +217,7 @@ export default function LoginPage() {
           </div>
           <p className="text-gray-500 text-sm mt-8 text-center">
             Not a member?{" "}
-            <span className="text-green-600 font-medium">
+            <span className="text-[#32261C] font-medium">
               Contact your Admin or TDM for access
             </span>
           </p>

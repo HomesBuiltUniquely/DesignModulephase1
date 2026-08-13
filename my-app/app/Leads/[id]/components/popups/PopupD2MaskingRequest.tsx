@@ -3,6 +3,9 @@
 import { useState, useEffect, useRef } from 'react';
 
 import { getApiBase } from '@/app/lib/apiBase';
+import CustomDatePicker from '@/app/Components/ui/CustomDatePicker';
+import CustomTimePicker from '@/app/Components/ui/CustomTimePicker';
+import CustomSelect from '@/app/Components/ui/CustomSelect';
 const API = getApiBase();
 
 type PmRow = { id: number; name: string; email: string };
@@ -115,7 +118,7 @@ function ReminderModal({ onConfirm, onCancel }: { onConfirm: () => void; onCance
                     <button
                         type="button"
                         onClick={onConfirm}
-                        className="px-5 py-2 text-sm font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 shadow-sm transition-colors"
+                        className="px-5 py-2 text-sm font-semibold text-white bg-[#00B0ED] rounded-lg hover:bg-[#00B0ED]/90 shadow-sm transition-colors"
                     >
                         I Have My Checklist — Submit
                     </button>
@@ -329,11 +332,11 @@ export default function PopupD2MaskingRequest({
 
             {loaded && requestRaised && (
                 <div className="px-6 py-3 mt-2">
-                    <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
-                        <p className="text-sm font-semibold text-emerald-900">
+                    <div className="rounded-xl border border-[#DDCDC1] bg-[#DDCDC1]/20 px-4 py-3">
+                        <p className="text-sm font-semibold text-[#32261C]">
                             D2 Site Masking scheduled
                         </p>
-                        <p className="text-sm text-emerald-800 mt-1">
+                        <p className="text-sm text-[#32261C] mt-1">
                             {existing?.maskingDate || '—'}
                             {existing?.maskingTime ? ` at ${existing.maskingTime}` : ''}
                         </p>
@@ -347,20 +350,18 @@ export default function PopupD2MaskingRequest({
                     <div className="flex items-center justify-between gap-2 px-6 py-2">
                         <div>
                             <div className="font-bold text-sm">Masking Date</div>
-                            <input
-                                type="date"
-                                className="w-[250px] border border-gray-300 rounded-md p-2 mt-2"
+                            <CustomDatePicker
+                                className="w-[250px] mt-2"
                                 value={maskingDate}
-                                onChange={(e) => setMaskingDate(e.target.value)}
+                                onChange={(date) => setMaskingDate(date)}
                             />
                         </div>
                         <div>
                             <div className="font-bold text-sm">Masking Time</div>
-                            <input
-                                type="time"
-                                className="w-[250px] border border-gray-300 rounded-md p-2 mt-2"
+                            <CustomTimePicker
+                                className="w-[250px] mt-2"
                                 value={maskingTime}
-                                onChange={(e) => setMaskingTime(e.target.value)}
+                                onChange={(val) => setMaskingTime(val)}
                             />
                         </div>
                     </div>
@@ -370,18 +371,15 @@ export default function PopupD2MaskingRequest({
                     <div className="px-6 mt-4">
                         <label className="block text-sm font-bold text-gray-700">
                             Request to Senior Project Manager
-                            <select
-                                className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-normal"
-                                value={selectedSpmId}
-                                onChange={(e) => setSelectedSpmId(e.target.value)}
-                            >
-                                <option value="">— Select SPM —</option>
-                                {spmList.map((spm) => (
-                                    <option key={spm.id} value={String(spm.id)}>
-                                        {spm.name} ({spm.email})
-                                    </option>
-                                ))}
-                            </select>
+                            <div className="mt-1">
+                                <CustomSelect
+                                    value={selectedSpmId}
+                                    onChange={(val) => setSelectedSpmId(val)}
+                                    options={spmList.map((spm) => ({ value: String(spm.id), label: `${spm.name} (${spm.email})` }))}
+                                    placeholder="— Select SPM —"
+                                    className="w-full"
+                                />
+                            </div>
                         </label>
                         {spmList.length === 0 && (
                             <p className="text-xs text-amber-600 mt-1">No Senior Project Managers found in the system.</p>
@@ -392,7 +390,7 @@ export default function PopupD2MaskingRequest({
                     <div className="px-6 mt-4">
                         <div className="font-bold text-sm mb-2">Attach Files (PDFs, Checklists, Flyers)</div>
                         <div
-                            className="border-2 border-dashed border-gray-300 rounded-xl p-4 text-center cursor-pointer hover:border-blue-400 hover:bg-blue-50/30 transition-colors"
+                            className="border-2 border-dashed border-gray-300 rounded-xl p-4 text-center cursor-pointer hover:border-[#00B0ED] hover:bg-[#00B0ED]/10/30 transition-colors"
                             onClick={() => fileInputRef.current?.click()}
                         >
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-8 h-8 mx-auto text-gray-400 mb-2">
@@ -453,7 +451,7 @@ export default function PopupD2MaskingRequest({
                             type="button"
                             onClick={handleSubmitClick}
                             disabled={submitting || !selectedSpmId}
-                            className="mt-5 ml-98 bg-blue-500 rounded-md w-[150px] py-1.5 h-[36px] text-white text-sm font-bold text-center items-end disabled:opacity-60"
+                            className="mt-5 ml-98 bg-[#00B0ED] rounded-md w-[150px] py-1.5 h-[36px] text-white text-sm font-bold text-center items-end disabled:opacity-60"
                         >
                             {submitting ? 'Submitting…' : 'Submit Request'}
                         </button>
@@ -484,26 +482,23 @@ export default function PopupD2MaskingRequest({
                     ) : (
                         <label className="block text-sm font-medium text-gray-700">
                             Project manager
-                            <select
-                                className="mt-1 block w-full max-w-md rounded-lg border border-gray-300 px-3 py-2 text-sm"
-                                value={selectedPmId}
-                                onChange={(e) => {
-                                    setSelectedPmId(e.target.value);
-                                    setPmSuccess(null);
-                                }}
-                            >
-                                <option value="">— Select —</option>
-                                {pmList.map((pm) => (
-                                    <option key={pm.id} value={String(pm.id)}>
-                                        {pm.name} ({pm.email})
-                                    </option>
-                                ))}
-                            </select>
+                            <div className="mt-1">
+                                <CustomSelect
+                                    value={selectedPmId}
+                                    onChange={(val) => {
+                                        setSelectedPmId(val);
+                                        setPmSuccess(null);
+                                    }}
+                                    options={pmList.map((pm) => ({ value: String(pm.id), label: `${pm.name} (${pm.email})` }))}
+                                    placeholder="— Select —"
+                                    className="w-full max-w-md"
+                                />
+                            </div>
                         </label>
                     )}
                     {pmError && <p className="text-sm text-red-600">{pmError}</p>}
                     {pmSuccess && (
-                        <p className="text-sm text-green-800 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+                        <p className="text-sm text-[#32261C] bg-[#DDCDC1]/20 border border-[#DDCDC1] rounded-lg px-3 py-2">
                             {pmSuccess}
                         </p>
                     )}
@@ -511,7 +506,7 @@ export default function PopupD2MaskingRequest({
                         type="button"
                         onClick={handleAssignPm}
                         disabled={pmSaving || !selectedPmId}
-                        className="px-6 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                        className="px-6 py-2 bg-[#00B0ED] text-white text-sm font-medium rounded-lg hover:bg-[#00B0ED]/90 disabled:opacity-50"
                     >
                         {pmSaving ? 'Saving…' : currentPmId ? 'Update assignment' : 'Assign project manager'}
                     </button>

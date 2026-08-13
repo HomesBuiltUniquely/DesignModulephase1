@@ -13,6 +13,7 @@ import {
   PaymentReceived,
   PaymentMode,
 } from "./Enums";
+import CustomSelect from "@/app/Components/ui/CustomSelect";
 
 function getTodayDateValue() {
   return new Date().toISOString().split("T")[0];
@@ -673,12 +674,12 @@ export default function SalesClosureForm() {
   }
 
   return (
-    <main className="min-h-screen bg-purple-50 p-6">
+    <main className="min-h-screen bg-[#F1F2F6] p-6">
       {/* CRM Lead ID search bar — above the form, for re-submission after rejection */}
       <div className="mx-auto max-w-6xl mb-4">
-        <div className="bg-white rounded-2xl border border-dashed border-green-950 px-5 py-4 flex flex-col sm:flex-row sm:items-center gap-3">
+        <div className="bg-white rounded-2xl border border-dashed border-[#EF0101] px-5 py-4 flex flex-col sm:flex-row sm:items-center gap-3">
           <div className="flex-1">
-            <p className="text-sm font-semibold text-green-950 mb-0.5">
+            <p className="text-sm font-semibold text-[#32261C] mb-0.5">
               Re-submitting after payment rejection?
             </p>
             <p className="text-xs text-gray-500">
@@ -688,7 +689,7 @@ export default function SalesClosureForm() {
           </div>
           <div className="flex gap-2 items-center flex-shrink-0">
             <input
-              className="border rounded-lg px-3 py-2 text-green-950 text-sm w-40 focus:outline-none focus:ring-2 focus:ring-green-950"
+              className="border rounded-lg px-3 py-2 text-[#32261C] text-sm w-40 focus:outline-none focus:ring-2 focus:ring-[#EF0101]"
               type="text"
               placeholder="Lead ID"
               value={leadIdInput}
@@ -706,7 +707,7 @@ export default function SalesClosureForm() {
               type="button"
               onClick={handleFetchLead}
               disabled={fetchingLead || !leadIdInput}
-              className="px-4 py-2 rounded-lg bg-green-950 text-white text-sm font-semibold hover:bg-green-800 disabled:opacity-60"
+              className="px-4 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-semibold hover:bg-[#EF0101]/90 disabled:opacity-60"
             >
               {fetchingLead ? "Fetching…" : "Fetch Lead"}
             </button>
@@ -717,7 +718,7 @@ export default function SalesClosureForm() {
             </p>
           )}
           {isEditMode && (
-            <p className="text-green-700 text-xs font-medium sm:ml-2">
+            <p className="text-[#32261C] text-xs font-medium sm:ml-2">
               ✓ Lead loaded — only payment fields are editable.
             </p>
           )}
@@ -730,19 +731,19 @@ export default function SalesClosureForm() {
           <aside className="col-span-12 lg:col-span-5 border-r p-6 lg:sticky lg:top-0 lg:h-screen overflow-y-auto">
             {/* Sales Detail */}
             <div
-              className="p-4 rounded-2xl border border-2 border-gray-300 mb-4 bg-purple-50"
+              className="p-4 rounded-2xl border border-2 border-gray-300 mb-4 bg-[#F1F2F6]"
               style={isEditMode ? { opacity: 0.6, pointerEvents: "none" } : {}}
             >
-              <h2 className="text-lg font-semibold mb-3 text-green-950">
+              <h2 className="text-lg font-semibold mb-3 text-[#32261C]">
                 Sales Details
               </h2>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm text-green-950 font-medium mb-1 ">
+                  <label className="block text-sm text-[#32261C] font-medium mb-1 ">
                     Sales Mail Id
                   </label>
                   <input
-                    className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
+                    className="w-full border rounded-lg p-2 text-[#32261C] focus:outline-none focus:ring-2 focus:ring-[#EF0101]"
                     type="email"
                     value={form.sales_email}
                     onChange={(e) =>
@@ -754,11 +755,11 @@ export default function SalesClosureForm() {
                   )}
                 </div>
                 <div>
-                  <label className="block text-sm text-green-950 font-medium mb-1">
+                  <label className="block text-sm text-[#32261C] font-medium mb-1">
                     Date & Time
                   </label>
                   <input
-                    className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
+                    className="w-full border rounded-lg p-2 text-[#32261C] focus:outline-none focus:ring-2 focus:ring-[#EF0101]"
                     type="text"
                     readOnly
                     value={currentDateTime}
@@ -767,8 +768,8 @@ export default function SalesClosureForm() {
               </div>
             </div>
             {/* Customer Detail */}
-            <div className="p-4 rounded-2xl border border-2 border-gray-300 bg-purple-50">
-              <h2 className="text-lg font-semibold mb-3 text-green-950">
+            <div className="p-4 rounded-2xl border border-2 border-gray-300 bg-[#F1F2F6]">
+              <h2 className="text-lg font-semibold mb-3 text-[#32261C]">
                 Customer Details
               </h2>
 
@@ -778,11 +779,11 @@ export default function SalesClosureForm() {
                 }
               >
                 <div className=" mb-2">
-                  <label className="block text-sm font-medium mb-1 text-green-950">
+                  <label className="block text-sm font-medium mb-1 text-[#32261C]">
                     CustomerName
                   </label>
                   <input
-                    className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                    className="w-full border rounded-lg p-2 text-[#32261C] focus:outline-none focus:ring-2 focus:ring-[#EF0101] disabled:bg-gray-100 disabled:cursor-not-allowed"
                     type="text"
                     value={form.customer_name}
                     disabled={isEditMode}
@@ -798,11 +799,11 @@ export default function SalesClosureForm() {
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-2">
                   <div>
-                    <label className="block text-sm text-green-950 font-medium mb-1">
+                    <label className="block text-sm text-[#32261C] font-medium mb-1">
                       ContactNo.
                     </label>
                     <input
-                      className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                      className="w-full border rounded-lg p-2 text-[#32261C] focus:outline-none focus:ring-2 focus:ring-[#EF0101] disabled:bg-gray-100 disabled:cursor-not-allowed"
                       type="tel"
                       inputMode="numeric"
                       value={form.co_no}
@@ -820,11 +821,11 @@ export default function SalesClosureForm() {
                     )}
                   </div>
                   <div>
-                    <label className="block text-sm text-green-950 font-medium mb-1">
+                    <label className="block text-sm text-[#32261C] font-medium mb-1">
                       Email
                     </label>
                     <input
-                      className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                      className="w-full border rounded-lg p-2 text-[#32261C] focus:outline-none focus:ring-2 focus:ring-[#EF0101] disabled:bg-gray-100 disabled:cursor-not-allowed"
                       type="email"
                       value={form.email}
                       disabled={isEditMode}
@@ -837,11 +838,11 @@ export default function SalesClosureForm() {
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-2">
                   <div>
-                    <label className="block text-sm text-green-950 font-medium mb-1">
+                    <label className="block text-sm text-[#32261C] font-medium mb-1">
                       Possession
                     </label>
                     <input
-                      className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                      className="w-full border rounded-lg p-2 text-[#32261C] focus:outline-none focus:ring-2 focus:ring-[#EF0101] disabled:bg-gray-100 disabled:cursor-not-allowed"
                       type="text"
                       value={form.possession}
                       disabled={isEditMode}
@@ -856,11 +857,11 @@ export default function SalesClosureForm() {
                     )}
                   </div>
                   <div>
-                    <label className="block text-sm text-green-950 font-medium mb-1">
+                    <label className="block text-sm text-[#32261C] font-medium mb-1">
                       Lead Source
                     </label>
                     <input
-                      className="w-full border rounded-lg p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                      className="w-full border rounded-lg p-2 text-[#32261C] focus:outline-none focus:ring-2 focus:ring-[#EF0101] disabled:bg-gray-100 disabled:cursor-not-allowed"
                       type="text"
                       value={form.lead_source}
                       disabled={isEditMode}
@@ -877,21 +878,21 @@ export default function SalesClosureForm() {
             <form className="space-y-5">
               {/* Customer Info */}
               <div
-                className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-purple-50"
+                className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-[#F1F2F6]"
                 style={
                   isEditMode ? { opacity: 0.6, pointerEvents: "none" } : {}
                 }
               >
-                <h2 className="text-lg text-green-950 font-semibold mb-3">
+                <h2 className="text-lg text-[#32261C] font-semibold mb-3">
                   Customer Info
                 </h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-2">
                   <div>
-                    <label className="block text-sm text-green-950 font-medium mb-1">
+                    <label className="block text-sm text-[#32261C] font-medium mb-1">
                       Property Configuration
                     </label>
                     <input
-                      className="w-full border p-2.5 rounded-lg text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                      className="w-full border p-2.5 rounded-lg text-[#32261C] focus:outline-none focus:ring-2 focus:ring-[#EF0101] disabled:bg-gray-100 disabled:cursor-not-allowed"
                       type="text"
                       value={form.property_configuration}
 
@@ -907,24 +908,16 @@ export default function SalesClosureForm() {
                   </div>
 
                   <div>
-                    <label className="block text-sm text-green-950 font-medium mb-1">
+                    <label className="block text-sm text-[#32261C] font-medium mb-1">
                       Experience Center
                     </label>
-                    <select
-                      value={form.experience_center}
-                      onChange={(e) =>
-                        updateFields("experience_center", e.target.value)
-                      }
-                      className="w-full border p-2.5 rounded-lg text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                      required
-                    >
-                      <option value="">Select Experience Center</option>
-                      {experienceCenterOptions.map((b) => (
-                        <option key={b} value={b}>
-                          {b}
-                        </option>
-                      ))}
-                    </select>
+                    <CustomSelect
+                      value={form.experience_center || ''}
+                      onChange={(val) => updateFields("experience_center", val)}
+                      options={experienceCenterOptions.map((b) => ({ value: b, label: b }))}
+                      placeholder="Select Experience Center"
+                      className="w-full"
+                    />
                     {errors.experience_center && (
                       <p className="text-red-500 text-sm">
                         {errors.experience_center}
@@ -933,13 +926,13 @@ export default function SalesClosureForm() {
                   </div>
                 </div>
                 <div>
-                  <label className="block text-sm text-green-950 font-medium mb-1">
+                  <label className="block text-sm text-[#32261C] font-medium mb-1">
                     Site Address
                   </label>
                   <textarea
                     rows={2}
                     placeholder="Enter Addres..."
-                    className="w-full border border-gray-300 rounded p-2 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
+                    className="w-full border border-gray-300 rounded p-2 text-[#32261C] focus:outline-none focus:ring-2 focus:ring-[#EF0101]"
                     value={form.site_address}
                     onChange={(e) =>
                       updateFields("site_address", e.target.value)
@@ -954,36 +947,26 @@ export default function SalesClosureForm() {
               </div>
               {/* Booking Details */}
               <div
-                className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-purple-50"
+                className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-[#F1F2F6]"
                 style={
                   isEditMode ? { opacity: 0.6, pointerEvents: "none" } : {}
                 }
               >
-                <h2 className="text-lg text-green-950 font-semibold mb-3">
+                <h2 className="text-lg text-[#32261C] font-semibold mb-3">
                   Booking Details
                 </h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-2">
                   <div>
-                    <label className="block text-sm text-green-950 font-medium mb-1">
+                    <label className="block text-sm text-[#32261C] font-medium mb-1">
                       Booking Type
                     </label>
-                    <select
-                      className="w-full border p-2.5 rounded-lg text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                      value={form.booking_type}
-                      onChange={(e) =>
-                        updateFields(
-                          "booking_type",
-                          e.target.value as BookingType,
-                        )
-                      }
-                    >
-                      <option value="">Select Type</option>
-                      {Object.values(BookingType).map((type) => (
-                        <option key={type} value={type}>
-                          {type}
-                        </option>
-                      ))}
-                    </select>
+                    <CustomSelect
+                      value={form.booking_type || ''}
+                      onChange={(val) => updateFields("booking_type", val as BookingType)}
+                      options={Object.values(BookingType).map((type) => ({ value: type, label: type }))}
+                      placeholder="Select Type"
+                      className="w-full"
+                    />
                     {errors.booking_type && (
                       <p className="text-red-500 text-sm">
                         {errors.booking_type}
@@ -991,12 +974,12 @@ export default function SalesClosureForm() {
                     )}
                   </div>
                   <div>
-                    <label className="block text-sm text-green-950 font-medium mb-1">
+                    <label className="block text-sm text-[#32261C] font-medium mb-1">
                       Is this Spot Booking Order?
                     </label>
                     <div className="mt-2">
                       <input
-                        className="w-5 h-5 border rounded-lg text-green-950 focus:ring-green-950"
+                        className="w-5 h-5 border rounded-lg text-[#32261C] focus:ring-[#EF0101]"
                         type="checkbox"
                         checked={form.spot_booking}
                         onChange={(e) =>
@@ -1009,24 +992,23 @@ export default function SalesClosureForm() {
               </div>
               {/* TEAM ASSIGNMENT */}
               <div
-                className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-purple-50"
+                className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-[#F1F2F6]"
                 style={
                   isEditMode ? { opacity: 0.6, pointerEvents: "none" } : {}
                 }
               >
-                <h2 className="text-lg text-green-950 font-semibold mb-3">
+                <h2 className="text-lg text-[#32261C] font-semibold mb-3">
                   Team Assignment
                 </h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-2">
                   <div>
-                    <label className="block text-sm text-green-950 font-medium mb-1">
+                    <label className="block text-sm text-[#32261C] font-medium mb-1">
                       Designer Name
                     </label>
-                    <select
-                      className="w-full border p-2.5 rounded-lg text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                      value={form.designer_name}
-                      onChange={(e) => {
-                        const name = e.target.value;
+                    <CustomSelect
+                      value={form.designer_name || ''}
+                      onChange={(val) => {
+                        const name = val;
                         updateFields("designer_name", name);
                         const match = designers.find(
                           (d) =>
@@ -1040,14 +1022,10 @@ export default function SalesClosureForm() {
                           updateFields("designer_lead", "");
                         }
                       }}
-                    >
-                      <option value="">Select Designer</option>
-                      {designerName.map((name) => (
-                        <option key={name} value={name}>
-                          {name}
-                        </option>
-                      ))}
-                    </select>
+                      options={designerName.map((name) => ({ value: name, label: name }))}
+                      placeholder="Select Designer"
+                      className="w-full"
+                    />
                     {errors.designer_name && (
                       <p className="text-red-500 text-sm">
                         {errors.designer_name}
@@ -1055,23 +1033,16 @@ export default function SalesClosureForm() {
                     )}
                   </div>
                   <div>
-                    <label className="block text-sm text-green-950 font-medium mb-1">
+                    <label className="block text-sm text-[#32261C] font-medium mb-1">
                       Design Manager
                     </label>
-                    <select
-                      className="w-full border p-2.5 rounded-lg text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                      value={form.designer_lead}
-                      onChange={(e) =>
-                        updateFields("designer_lead", e.target.value)
-                      }
-                    >
-                      <option value="">Select Design Manager</option>
-                      {designerLeadName.map((lead) => (
-                        <option key={lead} value={lead}>
-                          {lead}
-                        </option>
-                      ))}
-                    </select>
+                    <CustomSelect
+                      value={form.designer_lead || ''}
+                      onChange={(val) => updateFields("designer_lead", val)}
+                      options={designerLeadName.map((lead) => ({ value: lead, label: lead }))}
+                      placeholder="Select Design Manager"
+                      className="w-full"
+                    />
                     {errors.designer_lead && (
                       <p className="text-red-500 text-sm">
                         {errors.designer_lead}
@@ -1082,15 +1053,14 @@ export default function SalesClosureForm() {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm text-green-950 font-medium mb-1">
+                    <label className="block text-sm text-[#32261C] font-medium mb-1">
                       Sales Lead Name
                     </label>
-                    <select
-                      className="w-full border p-2.5 rounded-lg text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950 disabled:bg-gray-100 disabled:cursor-not-allowed"
-                      value={form.sales_lead_name}
+                    <CustomSelect
+                      value={form.sales_lead_name || ''}
                       disabled={isEditMode}
-                      onChange={(e) => {
-                        const selectedName = e.target.value;
+                      onChange={(val) => {
+                        const selectedName = val;
                         updateFields("sales_lead_name", selectedName);
                         // Capture email for rejection CC
                         const match = salesManagers.find(
@@ -1098,14 +1068,10 @@ export default function SalesClosureForm() {
                         );
                         setSalesLeadEmail(match?.email || "");
                       }}
-                    >
-                      <option value="">Select Sales Lead</option>
-                      {salesLeadNameOptions.map((name) => (
-                        <option key={name} value={name}>
-                          {name}
-                        </option>
-                      ))}
-                    </select>
+                      options={salesLeadNameOptions.map((name) => ({ value: name, label: name }))}
+                      placeholder="Select Sales Lead"
+                      className="w-full"
+                    />
                     {errors.sales_lead_name && (
                       <p className="text-red-500 text-sm">
                         {errors.sales_lead_name}
@@ -1113,15 +1079,14 @@ export default function SalesClosureForm() {
                     )}
                   </div>
                   <div>
-                    <label className="block text-sm text-green-950 font-medium mb-1">
+                    <label className="block text-sm text-[#32261C] font-medium mb-1">
                       Sales SPOC
                     </label>
-                    <select
-                      className="w-full border p-2.5 rounded-lg text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950 disabled:bg-gray-100 disabled:cursor-not-allowed"
-                      value={form.sales_spoc}
+                    <CustomSelect
+                      value={form.sales_spoc || ''}
                       disabled={isEditMode}
-                      onChange={(e) => {
-                        const selectedName = e.target.value;
+                      onChange={(val) => {
+                        const selectedName = val;
                         updateFields("sales_spoc", selectedName);
                         // Capture email for rejection CC
                         const match = salesAdmins.find(
@@ -1129,14 +1094,10 @@ export default function SalesClosureForm() {
                         );
                         setSalesSpocEmail(match?.email || "");
                       }}
-                    >
-                      <option value="">Select Sales SPOC</option>
-                      {salesSpocOptions.map((name) => (
-                        <option key={name} value={name}>
-                          {name}
-                        </option>
-                      ))}
-                    </select>
+                      options={salesSpocOptions.map((name) => ({ value: name, label: name }))}
+                      placeholder="Select Sales SPOC"
+                      className="w-full"
+                    />
                     {errors.sales_spoc && (
                       <p className="text-red-500 text-sm">
                         {errors.sales_spoc}
@@ -1146,12 +1107,12 @@ export default function SalesClosureForm() {
                 </div>
               </div>
               {/* PAYMENT DETAILS */}
-              <div className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-purple-50">
-                <h2 className="text-lg text-green-950 font-semibold mb-3">
+              <div className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-[#F1F2F6]">
+                <h2 className="text-lg text-[#32261C] font-semibold mb-3">
                   Payment Details
                 </h2>
-                <div className="rounded-xl border border-green-900/20 bg-white px-4 py-3 space-y-1">
-                  <p className="text-sm font-medium text-green-950">
+                <div className="rounded-xl border border-[#EF0101]/20 bg-white px-4 py-3 space-y-1">
+                  <p className="text-sm font-medium text-[#32261C]">
                     10% payment amount (from latest quotation)
                   </p>
                   {quotePaymentLoading && (
@@ -1163,7 +1124,7 @@ export default function SalesClosureForm() {
                     quotePaymentSummary &&
                     paymentStats && (
                       <>
-                        <p className="text-2xl font-semibold text-green-950">
+                        <p className="text-2xl font-semibold text-[#32261C]">
                           {formatInr(quotePaymentSummary.tenPercentAmount)}
                         </p>
                         <p className="text-xs text-gray-600">
@@ -1175,9 +1136,9 @@ export default function SalesClosureForm() {
                               ? ` · Quote #${quotePaymentSummary.quoteId}`
                               : ""}
                         </p>
-                        <div className="mt-3 pt-3 border-t border-green-900/15 space-y-1.5">
+                        <div className="mt-3 pt-3 border-t border-[#EF0101]/15 space-y-1.5">
                           {previouslyPaid > 0 && (
-                            <p className="text-sm text-green-950">
+                            <p className="text-sm text-[#32261C]">
                               <span className="font-medium">
                                 Already paid (recorded):
                               </span>{" "}
@@ -1185,13 +1146,13 @@ export default function SalesClosureForm() {
                             </p>
                           )}
                           {thisPayment > 0 && (
-                            <p className="text-sm text-green-950">
+                            <p className="text-sm text-[#32261C]">
                               <span className="font-medium">This payment:</span>{" "}
                               {formatInr(thisPayment)}
                             </p>
                           )}
                           {(previouslyPaid > 0 || thisPayment > 0) && (
-                            <p className="text-sm text-green-950">
+                            <p className="text-sm text-[#32261C]">
                               <span className="font-medium">
                                 Total toward 10%:
                               </span>{" "}
@@ -1199,7 +1160,7 @@ export default function SalesClosureForm() {
                             </p>
                           )}
                           {paymentStats.tenPercentMet ? (
-                            <p className="text-sm font-semibold text-teal-800">
+                            <p className="text-sm font-semibold text-[#32261C]">
                               10% complete — no balance remaining
                             </p>
                           ) : (
@@ -1237,7 +1198,7 @@ export default function SalesClosureForm() {
                   )}
                 </div>
                 <div>
-                  <label className="block text-sm font-medium mb-1 text-green-950">
+                  <label className="block text-sm font-medium mb-1 text-[#32261C]">
                     This payment (₹)
                   </label>
                   {previouslyPaid > 0 && (
@@ -1250,7 +1211,7 @@ export default function SalesClosureForm() {
                     type="text"
                     inputMode="decimal"
                     placeholder="Enter amount for this payment"
-                    className="w-full border border-gray-300 rounded-lg p-2.5 text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
+                    className="w-full border border-gray-300 rounded-lg p-2.5 text-[#32261C] focus:outline-none focus:ring-2 focus:ring-[#EF0101]"
                     value={amountPaidInput}
                     onChange={(e) => {
                       const raw = e.target.value;
@@ -1282,7 +1243,7 @@ export default function SalesClosureForm() {
                     </p>
                   )}
                   {paymentStats && thisPayment > 0 && (
-                    <div className="mt-3 rounded-lg border border-teal-200 bg-teal-50/80 px-3 py-2.5 text-sm text-green-950 space-y-1">
+                    <div className="mt-3 rounded-lg border border-[#DDCDC1] bg-[#DDCDC1]/20/80 px-3 py-2.5 text-sm text-[#32261C] space-y-1">
                       <p>
                         After this payment, total toward 10%:{" "}
                         <span className="font-semibold">
@@ -1306,27 +1267,17 @@ export default function SalesClosureForm() {
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-2">
                   <div>
-                    <label className="block text-sm font-medium mb-1 text-green-950">
+                    <label className="block text-sm font-medium mb-1 text-[#32261C]">
                       Payment Received
                     </label>
-                    <select
-                      className="w-full border p-2.5 rounded-lg text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950 disabled:bg-gray-100 disabled:cursor-not-allowed"
-                      value={form.payment_received}
+                    <CustomSelect
+                      value={form.payment_received || ''}
                       disabled={!!quotePaymentSummary}
-                      onChange={(e) =>
-                        updateFields(
-                          "payment_received",
-                          e.target.value as PaymentReceived,
-                        )
-                      }
-                    >
-                      <option value="">Select</option>
-                      {Object.values(PaymentReceived).map((type) => (
-                        <option key={type} value={type}>
-                          {type}
-                        </option>
-                      ))}
-                    </select>
+                      onChange={(val) => updateFields("payment_received", val as PaymentReceived)}
+                      options={Object.values(PaymentReceived).map((type) => ({ value: type, label: type }))}
+                      placeholder="Select"
+                      className="w-full"
+                    />
                     {quotePaymentSummary && (
                       <p className="text-xs text-gray-500 mt-1">
                         Auto-set: TOKEN if below 10% of quotation, FULL_10% when
@@ -1360,26 +1311,16 @@ export default function SalesClosureForm() {
                     </div>
                   </div> */}
                   <div>
-                    <label className="block text-sm text-green-950 font-medium mb-1">
+                    <label className="block text-sm text-[#32261C] font-medium mb-1">
                       Mode of Payment
                     </label>
-                    <select
-                      className="w-full border p-2.5 rounded-lg text-green-950 focus:outline-none focus:ring-2 focus:ring-green-950"
-                      value={form.mode_of_payment}
-                      onChange={(e) =>
-                        updateFields(
-                          "mode_of_payment",
-                          e.target.value as PaymentMode,
-                        )
-                      }
-                    >
-                      <option value="">Select</option>
-                      {Object.values(PaymentMode).map((p) => (
-                        <option key={p} value={p}>
-                          {p}
-                        </option>
-                      ))}
-                    </select>
+                    <CustomSelect
+                      value={form.mode_of_payment || ''}
+                      onChange={(val) => updateFields("mode_of_payment", val as PaymentMode)}
+                      options={Object.values(PaymentMode).map((p) => ({ value: p, label: p }))}
+                      placeholder="Select"
+                      className="w-full"
+                    />
                     {errors.mode_of_payment && (
                       <p className="text-red-500 text-sm">
                         {errors.mode_of_payment}
@@ -1388,7 +1329,7 @@ export default function SalesClosureForm() {
                   </div>
                 </div>
                 <div>
-                  <label className="block text-sm text-green-950 font-medium mb-1">
+                  <label className="block text-sm text-[#32261C] font-medium mb-1">
                     Payment Screenshot Upload
                   </label>
 
@@ -1414,8 +1355,8 @@ export default function SalesClosureForm() {
       file:mr-4 file:py-2 file:px-4
       file:rounded-lg file:border-0
       file:text-sm file:font-medium
-      file:bg-gray-100 file:text-green-950
-      hover:file:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-green-950"
+      file:bg-gray-100 file:text-[#32261C]
+      hover:file:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-[#EF0101]"
                   />
                   {errors.payment_screenshot && (
                     <p className="text-red-500 text-sm">
@@ -1426,23 +1367,23 @@ export default function SalesClosureForm() {
               </div>
               {/* PROJECT STATUS CONTROL */}
               <div
-                className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-purple-50"
+                className="p-4 rounded-2xl border border-2 border-gray-300 space-y-4 bg-[#F1F2F6]"
                 style={
                   isEditMode ? { opacity: 0.6, pointerEvents: "none" } : {}
                 }
               >
-                <h2 className="text-lg text-green-950 font-semibold mb-3">
+                <h2 className="text-lg text-[#32261C] font-semibold mb-3">
                   Project status control
                 </h2>
                 <div>
-                  <label className="block text-sm text-green-950 font-medium text-gray-700 mb-2">
+                  <label className="block text-sm text-[#32261C] font-medium text-gray-700 mb-2">
                     Status of Project (System Controlled)
                   </label>
                   <input
                     type="text"
                     value={form.status_of_project}
                     readOnly
-                    className="w-full border border-green-950 rounded-lg p-2 bg-purple-50 cursor-not-allowed"
+                    className="w-full border border-[#EF0101] rounded-lg p-2 bg-[#F1F2F6] cursor-not-allowed"
                   />
                   {errors.status_of_project && (
                     <p className="text-red-500 text-sm">
@@ -1453,25 +1394,25 @@ export default function SalesClosureForm() {
               </div>
               {/* Special Declaration(VERY IMPORTANT) */}
               <div
-                className="border border-2 border-gray-300 rounded-2xl p-4 space-y-4 bg-purple-50"
+                className="border border-2 border-gray-300 rounded-2xl p-4 space-y-4 bg-[#F1F2F6]"
                 style={
                   isEditMode ? { opacity: 0.6, pointerEvents: "none" } : {}
                 }
               >
                 {/* Section Title */}
-                <h2 className="text-lg font-semibold text-green-950">
+                <h2 className="text-lg font-semibold text-[#32261C]">
                   Special Declaration
                 </h2>
 
                 {/* Special Offer */}
                 <div>
-                  <label className="block text-sm font-medium text-green-950 mb-2">
+                  <label className="block text-sm font-medium text-[#32261C] mb-2">
                     Any special offer given with approval? Mention clearly.
                   </label>
                   <textarea
                     rows={3}
                     placeholder="Enter details if any..."
-                    className="w-full border border-gray-300 rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-green-950 "
+                    className="w-full border border-gray-300 rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-[#EF0101] "
                     value={form.special_offer}
                     onChange={(e) =>
                       updateFields("special_offer", e.target.value)
@@ -1486,13 +1427,13 @@ export default function SalesClosureForm() {
 
                 {/* Custom Commitments */}
                 <div>
-                  <label className="block text-sm font-medium text-green-950 mb-2">
+                  <label className="block text-sm font-medium text-[#32261C] mb-2">
                     Any custom commitments made to customer?
                   </label>
                   <textarea
                     rows={3}
                     placeholder="Mention any commitments..."
-                    className="w-full border border-gray-300 rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-green-950 text-green-950"
+                    className="w-full border border-gray-300 rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-[#EF0101] text-[#32261C]"
                     value={form.custom_commitments}
                     onChange={(e) =>
                       updateFields("custom_commitments", e.target.value)
@@ -1507,13 +1448,13 @@ export default function SalesClosureForm() {
 
                 {/* Timeline Promised */}
                 <div>
-                  <label className="block text-sm font-medium text-green-950 mb-2">
+                  <label className="block text-sm font-medium text-[#32261C] mb-2">
                     Timeline promised by sales?
                   </label>
                   <input
                     type="text"
                     placeholder="Enter timeline (e.g., 30 Days)"
-                    className="w-full border border-gray-300 rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-green-950 text-green-950"
+                    className="w-full border border-gray-300 rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-[#EF0101] text-[#32261C]"
                     value={form.timeline_promise_by_sales}
                     onChange={(e) =>
                       updateFields("timeline_promise_by_sales", e.target.value)
@@ -1528,7 +1469,7 @@ export default function SalesClosureForm() {
 
                 {/* Scope Frozen */}
                 <div>
-                  <label className="block text-sm font-medium text-green-950 mb-2">
+                  <label className="block text-sm font-medium text-[#32261C] mb-2">
                     Is scope frozen and signed off?
                   </label>
 
@@ -1541,9 +1482,9 @@ export default function SalesClosureForm() {
                         value={form.scope_frozen}
                         checked={form.scope_frozen === "YES"}
                         onChange={() => updateFields("scope_frozen", "YES")}
-                        className="w-4 h-4 accent-green-700"
+                        className="w-4 h-4 accent-[#EF0101]"
                       />
-                      <span className="text-sm text-green-950">Yes</span>
+                      <span className="text-sm text-[#32261C]">Yes</span>
                     </label>
 
                     {/* NO */}
@@ -1554,9 +1495,9 @@ export default function SalesClosureForm() {
                         value={form.scope_frozen}
                         checked={form.scope_frozen === "NO"}
                         onChange={() => updateFields("scope_frozen", "NO")}
-                        className="w-4 h-4 accent-green-700"
+                        className="w-4 h-4 accent-[#EF0101]"
                       />
-                      <span className="text-sm text-green-950">No</span>
+                      <span className="text-sm text-[#32261C]">No</span>
                     </label>
                   </div>
                 </div>
@@ -1564,7 +1505,7 @@ export default function SalesClosureForm() {
                 {/* Approval Proof Upload */}
                 {form.special_offer.trim() !== "" && (
                   <div>
-                    <label className="block text-sm font-medium text-green-950 mb-2">
+                    <label className="block text-sm font-medium text-[#32261C] mb-2">
                       Upload Approval Proof (Mandatory)
                     </label>
 
@@ -1589,11 +1530,11 @@ export default function SalesClosureForm() {
       file:mr-4 file:py-2 file:px-4
       file:rounded-lg file:border-0
       file:text-sm file:font-medium
-      file:bg-gray-100 file:text-green-950
-      hover:file:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-green-950"
+      file:bg-gray-100 file:text-[#32261C]
+      hover:file:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-[#EF0101]"
                     />
 
-                    <p className="mt-2 text-xs text-green-950">
+                    <p className="mt-2 text-xs text-[#32261C]">
                       Upload official approval document.
                     </p>
                     {errors.approval_proof && (
@@ -1612,7 +1553,7 @@ export default function SalesClosureForm() {
           <button
             type="button"
             onClick={handleCancel}
-            className="px-5 py-2 rounded-lg border border-purple-50 text-purple-50 font-bold hover:bg-purple-50 hover:text-green-950 transition"
+            className="px-5 py-2 rounded-lg border border-white/30 text-white font-bold hover:bg-[#F1F2F6] hover:text-[#32261C] transition"
           >
             Cancel
           </button>
@@ -1621,7 +1562,7 @@ export default function SalesClosureForm() {
           <button
             onClick={handleSubmit}
             type="submit"
-            className="px-5 py-2 rounded-lg bg-purple-50 text-green-950 hover:bg-slate-900 hover:border hover:border-purple-50 hover:text-purple-50 transition font-bold"
+            className="px-5 py-2 rounded-lg bg-[#F1F2F6] text-[#32261C] hover:bg-slate-900 hover:border hover:border-white/30 hover:text-white transition font-bold"
           >
             {isEditMode ? "Update" : "Submit"}
           </button>

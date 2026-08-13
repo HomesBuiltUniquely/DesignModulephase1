@@ -48,7 +48,7 @@ export default function PersonalAppointmentsView() {
           <button
             type="button"
             onClick={() => setShowBookModal(true)}
-            className="inline-flex items-center rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700"
+            className="inline-flex items-center rounded-lg bg-[#EF0101] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#EF0101]"
           >
             Book appointment
           </button>

@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import CustomDatePicker from '@/app/Components/ui/CustomDatePicker';
+import CustomSelect from '@/app/Components/ui/CustomSelect';
 
 type FormState = {
   projectId: string;
@@ -207,54 +209,33 @@ export default function ProjectFile() {
                       <span className="mb-1.5 block text-sm font-medium text-[#353a5b]">
                         Estimate value <span className="text-red-500">*</span>
                       </span>
-                      <select
+                      <CustomSelect
                         value={form.estimateValue}
-                        onChange={(e) => setField("estimateValue", e.target.value)}
-                        required
-                        className="w-full rounded-lg border border-[#d8dcef] bg-white px-3 py-2.5 text-[#1f2544] outline-none transition focus:border-[#6e67f6] focus:ring-2 focus:ring-[#d8d4ff]"
-                      >
-                        <option value="" disabled>
-                          Choose
-                        </option>
-                        {estimateOptions.map((option) => (
-                          <option key={option} value={option}>
-                            {option}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(val) => setField("estimateValue", val)}
+                        options={estimateOptions.map((option) => ({ value: option, label: option }))}
+                        placeholder="Choose"
+                      />
                     </label>
 
                     <label className="block">
                       <span className="mb-1.5 block text-sm font-medium text-[#353a5b]">
                         Project configuration <span className="text-red-500">*</span>
                       </span>
-                      <select
+                      <CustomSelect
                         value={form.projectConfiguration}
-                        onChange={(e) => setField("projectConfiguration", e.target.value)}
-                        required
-                        className="w-full rounded-lg border border-[#d8dcef] bg-white px-3 py-2.5 text-[#1f2544] outline-none transition focus:border-[#6e67f6] focus:ring-2 focus:ring-[#d8d4ff]"
-                      >
-                        <option value="" disabled>
-                          Choose
-                        </option>
-                        {configurationOptions.map((option) => (
-                          <option key={option} value={option}>
-                            {option}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(val) => setField("projectConfiguration", val)}
+                        options={configurationOptions.map((option) => ({ value: option, label: option }))}
+                        placeholder="Choose"
+                      />
                     </label>
 
                     <label className="block">
                       <span className="mb-1.5 block text-sm font-medium text-[#353a5b]">
                         Design Approval Date <span className="text-red-500">*</span>
                       </span>
-                      <input
-                        type="date"
+                      <CustomDatePicker
                         value={form.designApprovalDate}
-                        onChange={(e) => setField("designApprovalDate", e.target.value)}
-                        required
-                        className="w-full rounded-lg border border-[#d8dcef] bg-white px-3 py-2.5 text-[#1f2544] outline-none transition focus:border-[#6e67f6] focus:ring-2 focus:ring-[#d8d4ff]"
+                        onChange={(date) => setField("designApprovalDate", date)}
                       />
                     </label>
                   </div>

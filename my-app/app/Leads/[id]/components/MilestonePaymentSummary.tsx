@@ -38,9 +38,9 @@ function formatInr(amount: number): string {
 export default function MilestonePaymentSummary({ variant, summary, loading, error }: Props) {
   if (loading) {
     return (
-      <div className="mb-3 flex-shrink-0 rounded-xl border border-blue-100 bg-blue-50/60 px-3 py-2.5">
-        <p className="text-[11px] font-semibold uppercase tracking-wide text-blue-800">Payment summary</p>
-        <p className="mt-1 text-xs text-blue-700">Loading latest quotation…</p>
+      <div className="mb-3 flex-shrink-0 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Payment summary</p>
+        <p className="mt-1 text-xs text-gray-400">Loading latest quotation…</p>
       </div>
     );
   }
@@ -117,23 +117,23 @@ export default function MilestonePaymentSummary({ variant, summary, loading, err
   const fullyCollected = amountToCollect <= 0;
 
   return (
-    <div className="mb-3 flex-shrink-0 rounded-xl border border-blue-100 bg-gradient-to-br from-blue-50 to-white px-3 py-2.5 shadow-sm">
+    <div className="mb-3 flex-shrink-0 rounded-xl border border-[#DDCDC1] bg-white px-3 py-2.5 shadow-sm">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <p className="text-[11px] font-bold uppercase tracking-wide text-blue-900">Payment summary</p>
+        <p className="text-[11px] font-bold uppercase tracking-wide text-[#32261C]">Payment summary</p>
         {summary.quoteNum ? (
-          <span className="text-[10px] font-medium text-blue-700">{summary.quoteNum}</span>
+          <span className="text-[10px] font-bold text-[#EF0101]">{summary.quoteNum}</span>
         ) : summary.quoteId ? (
-          <span className="text-[10px] font-medium text-blue-700">Quote #{summary.quoteId}</span>
+          <span className="text-[10px] font-bold text-[#EF0101]">Quote #{summary.quoteId}</span>
         ) : null}
       </div>
       {isTen && (
-        <p className="mb-2 text-[10px] leading-snug text-blue-800 bg-blue-50 border border-blue-100 rounded px-2 py-1">
+        <p className="mb-2 text-[10px] leading-snug text-[#32261C] bg-[#DDCDC1]/20 border border-[#DDCDC1] rounded px-2 py-1">
           Sales collected 10% at closure. Design module 10% payment brings the customer to 20% of the latest
           quotation.
         </p>
       )}
       {!isTen && (
-        <p className="mb-2 text-[10px] leading-snug text-blue-800 bg-blue-50 border border-blue-100 rounded px-2 py-1">
+        <p className="mb-2 text-[10px] leading-snug text-[#32261C] bg-[#DDCDC1]/20 border border-[#DDCDC1] rounded px-2 py-1">
           Design module 40% payment brings the customer to 60% cumulative of the latest quotation.
         </p>
       )}
@@ -149,7 +149,7 @@ export default function MilestonePaymentSummary({ variant, summary, loading, err
             <span className={row.muted ? 'text-gray-500' : 'text-gray-600'}>{row.label}</span>
             <span
               className={`font-semibold tabular-nums ${
-                row.highlight ? 'text-blue-900 text-sm' : row.muted ? 'text-gray-500' : 'text-gray-900'
+                row.highlight ? 'text-[#32261C] text-sm' : row.muted ? 'text-gray-500' : 'text-gray-900'
               }`}
             >
               {row.value}
@@ -158,7 +158,7 @@ export default function MilestonePaymentSummary({ variant, summary, loading, err
         ))}
       </div>
       {fullyCollected && (
-        <p className="mt-2 text-[10px] font-medium text-green-700">
+        <p className="mt-2 text-[10px] font-medium text-[#32261C]">
           {cumulativePctLabel} cumulative target is already met from prior payments.
         </p>
       )}

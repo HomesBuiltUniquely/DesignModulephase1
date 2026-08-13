@@ -131,6 +131,13 @@ export default function DashboardGuard() {
       <Dashboard />
     );
 
+  const navLinkClass = (path: string) =>
+    `group relative px-1 py-1 text-sm font-semibold transition-colors duration-200 ${
+      pathname === path
+        ? 'text-[#EF0101]'
+        : 'text-gray-500 hover:text-[#32261C]'
+    }`;
+
   const showIncentivesSideRail =
     canAccessIncentives &&
     (pathname === '/incentives' ||
@@ -139,17 +146,15 @@ export default function DashboardGuard() {
 
   return (
     <div>
-      <header className="bg-white border-b border-gray-200 px-4 py-2 flex items-center justify-between">
-        <div className="flex flex-wrap items-center gap-3">
-          <a href="/" className="text-green-700 font-semibold">Dashboard</a>
+      <header className="sticky top-0 z-50 bg-white/90 backdrop-blur-sm border-b border-gray-200 px-6 py-2.5 flex items-center justify-between shadow-sm transition-all">
+        <div className="flex flex-wrap items-center gap-5">
+          <a href="/" className={navLinkClass('/')}>
+            Dashboard
+          </a>
           {canAccessCalendar && (
             <a
               href="/google-calendar"
-              className={`text-sm ${
-                pathname === '/google-calendar'
-                  ? 'text-green-700 font-semibold'
-                  : 'text-gray-600 hover:text-gray-900'
-              }`}
+              className={navLinkClass('/google-calendar')}
             >
               HUB Calendar
             </a>
@@ -157,37 +162,38 @@ export default function DashboardGuard() {
           {canAccessIncentives && (
             <IncentivesNavLink
               active={pathname === '/incentives'}
-              className="mb-0 py-1.5 xl:w-auto"
+              variant="nav"
+              className={navLinkClass('/incentives')}
             />
           )}
           {((user.role === 'territorial_design_manager' || user.role === 'deputy_general_manager') || user.role === 'dqc_manager' || user.role === 'mmt_manager' || user.role === 'mmt_executive' || user.role === 'finance' || user.role === 'admin' || user.role === 'senior_project_manager' || user.role === 'project_manager') && (
             <>
-              {(user.role === 'territorial_design_manager' || user.role === 'deputy_general_manager') && <a href="/tdm/register" className="text-gray-600 hover:text-gray-900 text-sm">Register DM / Designer</a>}
-              {user.role === 'deputy_general_manager' && <a href="/admin/create-tdm" className="text-gray-600 hover:text-gray-900 text-sm">Create TDM</a>}
-              {user.role === 'dqc_manager' && <a href="/dqc-manager/register" className="text-gray-600 hover:text-gray-900 text-sm">Register DQE</a>}
+              {(user.role === 'territorial_design_manager' || user.role === 'deputy_general_manager') && <a href="/tdm/register" className={navLinkClass('/tdm/register')}>Register DM / Designer</a>}
+              {user.role === 'deputy_general_manager' && <a href="/admin/create-tdm" className={navLinkClass('/admin/create-tdm')}>Create TDM</a>}
+              {user.role === 'dqc_manager' && <a href="/dqc-manager/register" className={navLinkClass('/dqc-manager/register')}>Register DQE</a>}
               {(user.role === 'finance' || user.role === 'admin') && (
                 <>
-                  <a href="/finance" className="text-gray-600 hover:text-gray-900 text-sm">10% Payment</a>
-                  <FinanceRefundsNavLink variant="nav" />
-                  <a href="/finance/sales-closure" className="text-gray-600 hover:text-gray-900 text-sm">Sales Closure</a>
-                  <a href="/finance/40" className="text-gray-600 hover:text-gray-900 text-sm">40% Payment</a>
+                  <a href="/finance" className={navLinkClass('/finance')}>10% Payment</a>
+                  <FinanceRefundsNavLink variant="nav" className={navLinkClass('/finance/refunds')} />
+                  <a href="/finance/sales-closure" className={navLinkClass('/finance/sales-closure')}>Sales Closure</a>
+                  <a href="/finance/40" className={navLinkClass('/finance/40')}>40% Payment</a>
                 </>
               )}
               {user.role === 'mmt_manager' && (
                 <>
-                  <a href="/mmt-manager/register" className="text-gray-600 hover:text-gray-900 text-sm">Register MMT Executive</a>
-                  <a href="/mmt-manager/d1-requests" className="text-gray-600 hover:text-gray-900 text-sm">D1 Requests</a>
-                  <a href="/mmt" className="text-gray-600 hover:text-gray-900 text-sm">D1 Uploads</a>
+                  <a href="/mmt-manager/register" className={navLinkClass('/mmt-manager/register')}>Register MMT Executive</a>
+                  <a href="/mmt-manager/d1-requests" className={navLinkClass('/mmt-manager/d1-requests')}>D1 Requests</a>
+                  <a href="/mmt" className={navLinkClass('/mmt')}>D1 Uploads</a>
                 </>
               )}
               {user.role === 'admin' && (
-                <a href="/mmt-manager/d1-requests" className="text-gray-600 hover:text-gray-900 text-sm">D1 Requests</a>
+                <a href="/mmt-manager/d1-requests" className={navLinkClass('/mmt-manager/d1-requests')}>D1 Requests</a>
               )}
               {user.role === 'mmt_executive' && (
-                <a href="/mmt" className="text-gray-600 hover:text-gray-900 text-sm">D1 Uploads</a>
+                <a href="/mmt" className={navLinkClass('/mmt')}>D1 Uploads</a>
               )}
               {(user.role === 'senior_project_manager' || user.role === 'project_manager' || user.role === 'admin') && (
-                <a href="/d2-uploads" className="text-gray-600 hover:text-gray-900 text-sm">D2 Uploads</a>
+                <a href="/d2-uploads" className={navLinkClass('/d2-uploads')}>D2 Uploads</a>
               )}
             </>
           )}
@@ -199,7 +205,7 @@ export default function DashboardGuard() {
               type="button"
               onClick={() => setShowAppointmentModal(true)}
               title="Block personal time on your calendar"
-              className="hidden sm:inline-flex px-3 py-2 rounded-lg border border-emerald-600 text-emerald-700 text-sm font-medium hover:bg-emerald-50"
+              className="hidden sm:inline-flex px-3 py-2 rounded-lg border border-[#EF0101] text-[#32261C] text-sm font-medium hover:bg-[#DDCDC1]/20"
             >
               Appointment
             </button>
@@ -208,7 +214,11 @@ export default function DashboardGuard() {
             <button
               type="button"
               onClick={() => setSettingsOpen((o) => !o)}
-              className="relative flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100"
+              className={`relative flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-bold transition-colors duration-200 ${
+                settingsOpen
+                  ? 'bg-gray-100 text-[#32261C]'
+                  : 'text-gray-500 hover:bg-gray-50 hover:text-[#32261C]'
+              }`}
               aria-expanded={settingsOpen}
               aria-haspopup="true"
             >
@@ -250,7 +260,7 @@ export default function DashboardGuard() {
                 {canAccessIncentives && (
                   <a
                     href="/incentives"
-                    className="block px-4 py-2 text-sm text-emerald-700 font-semibold hover:bg-emerald-50"
+                    className="block px-4 py-2 text-sm text-[#32261C] font-semibold hover:bg-[#DDCDC1]/20"
                     onClick={() => setSettingsOpen(false)}
                   >
                     Incentives
@@ -279,7 +289,7 @@ export default function DashboardGuard() {
             </div>
             <span className="text-sm text-gray-600">{user.name} ({user.role.replace(/_/g, ' ')})</span>
           </div>
-          <button type="button" onClick={() => logout().then(() => router.replace('/login'))} className="text-sm text-red-600 hover:underline">Logout</button>
+          <button type="button" onClick={() => logout().then(() => router.replace('/login'))} className="text-sm font-semibold text-red-500 hover:text-red-700 transition-colors">Logout</button>
         </div>
       </header>
       <main>

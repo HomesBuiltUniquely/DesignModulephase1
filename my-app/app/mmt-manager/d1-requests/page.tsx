@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../../auth/AuthContext';
 import { getApiBase } from '@/app/lib/apiBase';
+import CustomSelect from '@/app/Components/ui/CustomSelect';
 
 const API = getApiBase();
 
@@ -158,32 +159,27 @@ export default function D1PendingRequestsPage() {
                 {isAdmin && (
                   <a
                     href={`/Leads/${row.leadId}`}
-                    className="text-xs text-blue-600 hover:underline mt-1 inline-block"
+                    className="text-xs text-[#00B0ED] hover:underline mt-1 inline-block"
                   >
                     Open lead
                   </a>
                 )}
               </div>
               <div className="flex flex-wrap items-center gap-2 shrink-0">
-                <select
-                  className="rounded-lg border border-gray-300 px-3 py-2 text-sm min-w-[12rem]"
+                <CustomSelect
+                  className="min-w-[12rem]"
                   value={selected[row.leadId] || ''}
-                  onChange={(e) =>
-                    setSelected((prev) => ({ ...prev, [row.leadId]: e.target.value }))
+                  onChange={(val) =>
+                    setSelected((prev) => ({ ...prev, [row.leadId]: val }))
                   }
-                >
-                  <option value="">Select executive</option>
-                  {executives.map((ex) => (
-                    <option key={ex.id} value={String(ex.id)}>
-                      {ex.name}
-                    </option>
-                  ))}
-                </select>
+                  options={executives.map((ex) => ({ value: String(ex.id), label: ex.name }))}
+                  placeholder="Select executive"
+                />
                 <button
                   type="button"
                   disabled={assigningId === row.leadId || !selected[row.leadId]}
                   onClick={() => onAssign(row)}
-                  className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-semibold hover:bg-green-700 disabled:opacity-50"
+                  className="px-4 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-semibold hover:bg-[#EF0101] disabled:opacity-50"
                 >
                   {assigningId === row.leadId ? 'Assigning…' : 'Assign'}
                 </button>

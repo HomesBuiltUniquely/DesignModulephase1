@@ -133,7 +133,7 @@ export default function Intro({ onNext, onPrev, lead }: Props) {
           </button>
           <button
             onClick={onNext}
-            className="rounded-md bg-[#2EE86B] px-6 py-2 text-sm font-semibold text-black transition hover:bg-[#24d45d]"
+            className="rounded-md bg-[#EF0101] px-6 py-2 text-sm font-semibold text-white transition hover:bg-[#EF0101]/90"
           >
             Next Phase
           </button>
@@ -147,7 +147,7 @@ export default function Intro({ onNext, onPrev, lead }: Props) {
           {Array.from({ length: 5 }).map((_, i) => (
             <div
               key={i}
-              className={`h-1 rounded-full w-8 ${i < 1 ? "bg-[#2EE86B]" : "bg-gray-300"}`}
+              className={`h-1 rounded-full w-8 ${i < 1 ? "bg-[#EF0101]" : "bg-gray-300"}`}
             />
           ))}
         </div>
@@ -157,124 +157,55 @@ export default function Intro({ onNext, onPrev, lead }: Props) {
       </div>
 
       {/* ── Page Body ── */}
-      <div
-        style={{
-          flex: 1,
-          padding: "0 32px 40px",
-          maxWidth: "900px",
-          margin: "0 auto",
-          width: "100%",
-          boxSizing: "border-box",
-        }}
-      >
-        <h1
-          style={{ fontSize: "30px", fontWeight: 800, color: "#111827", margin: "0 0 4px", lineHeight: 1.1 }}
-        >
+      <div className="flex-1 px-8 md:px-12 py-10 max-w-7xl mx-auto w-full box-border">
+        <h1 className="text-4xl font-extrabold text-[#111827] mb-2 leading-tight">
           1. Introduction
         </h1>
-        <p style={{ fontSize: "13px", color: "#6b7280", margin: "0 0 24px" }}>
+        <p className="text-sm text-gray-500 mb-10">
           Personal check-in and project phase overview
           {info.phase !== "—" ? ` · ${info.phase}` : ""}.
         </p>
 
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1fr 250px",
-            gap: "18px",
-            marginBottom: "18px",
-          }}
-        >
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mb-8">
           {/* Welcome card */}
-          <div
-            style={{
-              backgroundColor: "#ffffff",
-              borderRadius: "12px",
-              border: "1px solid #e5e7eb",
-              padding: "28px 28px 26px",
-            }}
-          >
-            <h2
-              style={{
-                fontSize: "28px",
-                fontWeight: 800,
-                color: "#111827",
-                lineHeight: 1.2,
-                margin: "0 0 14px",
-              }}
-            >
+          <div className="lg:col-span-8 bg-white rounded-2xl border border-gray-100 p-8 shadow-sm transition-all duration-300 hover:shadow-lg hover:-translate-y-1">
+            <h2 className="text-3xl font-extrabold text-[#111827] leading-tight mb-4">
               Welcome,
               <br />
-              {info.customerName}
+              <span className="text-[#EF0101]">{info.customerName}</span>
             </h2>
-            <p
-              style={{
-                fontSize: "13.5px",
-                color: "#6b7280",
-                lineHeight: 1.65,
-                margin: "0 0 28px",
-              }}
-            >
+            <p className="text-sm text-gray-600 leading-relaxed mb-8 max-w-2xl">
               We&apos;re excited to begin the design journey for your{" "}
-              <strong style={{ color: "#111827", fontWeight: 700 }}>
+              <strong className="text-[#111827] font-bold">
                 {info.projectName}
               </strong>{" "}
               project. Today, we&apos;ll align on your vision, explore concepts,
               and establish the roadmap for your dream home.
             </p>
 
-            <div style={{ display: "flex", gap: "28px", flexWrap: "wrap" }}>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-6">
               {metaRows.map((m) => (
-                <div key={m.label} style={{ minWidth: "120px" }}>
-                  <div
-                    style={{
-                      fontSize: "10px",
-                      fontWeight: 600,
-                      color: "#9ca3af",
-                      textTransform: "uppercase",
-                      letterSpacing: "0.07em",
-                      marginBottom: "4px",
-                    }}
-                  >
+                <div key={m.label} className="group">
+                  <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1 transition-colors group-hover:text-gray-600">
                     {m.label}
                   </div>
-                  <div
-                    style={{ fontSize: "14px", fontWeight: 700, color: "#111827" }}
-                  >
+                  <div className="text-sm font-bold text-[#111827]">
                     {m.value}
                   </div>
                 </div>
               ))}
             </div>
 
-            <div
-              style={{
-                marginTop: "20px",
-                paddingTop: "16px",
-                borderTop: "1px solid #f3f4f6",
-                display: "flex",
-                gap: "28px",
-                flexWrap: "wrap",
-              }}
-            >
+            <div className="mt-8 pt-6 border-t border-gray-100 flex flex-wrap gap-8">
               {[
                 { label: "Experience Center", value: info.experienceCenter },
                 { label: "Meeting date", value: info.meetingDate },
               ].map((m) => (
-                <div key={m.label} style={{ minWidth: "120px" }}>
-                  <div
-                    style={{
-                      fontSize: "10px",
-                      fontWeight: 600,
-                      color: "#9ca3af",
-                      textTransform: "uppercase",
-                      letterSpacing: "0.07em",
-                      marginBottom: "4px",
-                    }}
-                  >
+                <div key={m.label}>
+                  <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">
                     {m.label}
                   </div>
-                  <div style={{ fontSize: "13px", fontWeight: 600, color: "#374151" }}>
+                  <div className="text-sm font-bold text-gray-800">
                     {m.value}
                   </div>
                 </div>
@@ -283,41 +214,19 @@ export default function Intro({ onNext, onPrev, lead }: Props) {
           </div>
 
           {/* Advisor card */}
-          <div
-            style={{
-              backgroundColor: "#ffffff",
-              borderRadius: "12px",
-              border: "1px solid #e5e7eb",
-              padding: "24px 20px",
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: "10px",
-            }}
-          >
+          <div className="lg:col-span-4 bg-white rounded-2xl border border-gray-100 p-8 flex flex-col items-center shadow-sm transition-all duration-300 hover:shadow-lg hover:-translate-y-1">
             <DesignerAvatar name={designerName} imageUrl={user?.profileImage} />
 
-            <div style={{ textAlign: "center" }}>
-              <div
-                style={{ fontSize: "15px", fontWeight: 700, color: "#111827", marginBottom: "2px" }}
-              >
+            <div className="text-center mt-4 mb-6">
+              <div className="text-lg font-bold text-[#111827] mb-1">
                 {designerName}
               </div>
-              <div style={{ fontSize: "11px", color: "#6b7280", fontWeight: 500 }}>
+              <div className="text-xs text-gray-500 font-medium">
                 {designerTitle}
               </div>
             </div>
 
-            <div
-              style={{
-                width: "100%",
-                borderTop: "1px solid #f3f4f6",
-                paddingTop: "12px",
-                display: "flex",
-                flexDirection: "column",
-                gap: "9px",
-              }}
-            >
+            <div className="w-full border-t border-gray-100 pt-5 flex flex-col gap-3">
               {[
                 { label: "Experience", value: experienceLabel },
                 { label: "Projects", value: projectsLabel },
@@ -325,22 +234,13 @@ export default function Intro({ onNext, onPrev, lead }: Props) {
               ].map((s) => (
                 <div
                   key={s.label}
-                  style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}
+                  className="flex justify-between items-center gap-2"
                 >
-                  <span style={{ fontSize: "11px", color: "#9ca3af", fontWeight: 500 }}>
+                  <span className="text-xs text-gray-400 font-medium">
                     {s.label}
                   </span>
                   <span
-                    style={{
-                      fontSize: "12px",
-                      fontWeight: 700,
-                      color: "#111827",
-                      textAlign: "right",
-                      maxWidth: "140px",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
+                    className="text-sm font-bold text-[#111827] text-right truncate max-w-[150px]"
                     title={s.value}
                   >
                     {s.value}
@@ -349,16 +249,7 @@ export default function Intro({ onNext, onPrev, lead }: Props) {
               ))}
             </div>
             {quoteLabel ? (
-              <p
-                style={{
-                  fontSize: "11px",
-                  color: "#9ca3af",
-                  fontStyle: "italic",
-                  textAlign: "center",
-                  margin: "4px 0 0",
-                  lineHeight: 1.5,
-                }}
-              >
+              <p className="text-xs text-gray-400 italic text-center mt-4 leading-relaxed">
                 &ldquo;{quoteLabel}&rdquo;
               </p>
             ) : null}
@@ -366,108 +257,58 @@ export default function Intro({ onNext, onPrev, lead }: Props) {
         </div>
 
         {/* ── Meeting Agenda card ── */}
-        <div
-          style={{
-            backgroundColor: "#ffffff",
-            borderRadius: "12px",
-            border: "1px solid #e5e7eb",
-            padding: "22px 28px 8px",
-            marginBottom: "32px",
-          }}
-        >
-          <div
-            style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px" }}
-          >
-            <div
-              style={{
-                width: "30px",
-                height: "30px",
-                borderRadius: "7px",
-                backgroundColor: "#fff7ed",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                flexShrink: 0,
-              }}
-            >
-              <svg
-                width="15"
-                height="15"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="#f97316"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
+        <div className="bg-white rounded-2xl border border-gray-100 p-8 shadow-sm transition-all duration-300 hover:shadow-md mb-10">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="w-10 h-10 rounded-xl bg-orange-50 flex items-center justify-center shrink-0">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#f97316" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
                 <line x1="16" y1="2" x2="16" y2="6" />
                 <line x1="8" y1="2" x2="8" y2="6" />
                 <line x1="3" y1="10" x2="21" y2="10" />
               </svg>
             </div>
-            <span style={{ fontSize: "15px", fontWeight: 700, color: "#111827" }}>
+            <span className="text-lg font-bold text-[#111827]">
               Meeting Agenda
             </span>
           </div>
 
-          {agendaItems.map((item, i) => (
-            <div
-              key={i}
-              style={{
-                display: "flex",
-                alignItems: "flex-start",
-                justifyContent: "space-between",
-                padding: "13px 0",
-                borderBottom: i < agendaItems.length - 1 ? "1px solid #f3f4f6" : "none",
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "flex-start", gap: "12px" }}>
-                <div
-                  style={{
-                    width: "17px",
-                    height: "17px",
-                    borderRadius: "9999px",
-                    border: "1.5px solid #d1d5db",
-                    flexShrink: 0,
-                    marginTop: "2px",
-                  }}
-                />
-                <div>
-                  <div
-                    style={{ fontSize: "13.5px", fontWeight: 600, color: "#111827", marginBottom: "3px" }}
-                  >
-                    {item.title}
-                  </div>
-                  <div style={{ fontSize: "12px", color: "#9ca3af" }}>{item.description}</div>
-                </div>
-              </div>
-              <span
-                style={{
-                  fontSize: "12px",
-                  fontWeight: 500,
-                  color: "#6b7280",
-                  whiteSpace: "nowrap",
-                  marginLeft: "20px",
-                  marginTop: "2px",
-                }}
+          <div className="flex flex-col">
+            {agendaItems.map((item, i) => (
+              <div
+                key={i}
+                className={`flex items-start justify-between py-4 ${
+                  i < agendaItems.length - 1 ? "border-b border-gray-100" : ""
+                } group`}
               >
-                {item.time}
-              </span>
-            </div>
-          ))}
+                <div className="flex items-start gap-4">
+                  <div className="w-5 h-5 rounded-full border-2 border-gray-200 mt-0.5 shrink-0 transition-colors group-hover:border-[#EF0101]" />
+                  <div>
+                    <div className="text-sm font-bold text-[#111827] mb-1 transition-colors group-hover:text-[#EF0101]">
+                      {item.title}
+                    </div>
+                    <div className="text-xs text-gray-500">{item.description}</div>
+                  </div>
+                </div>
+                <span className="text-xs font-semibold text-gray-500 whitespace-nowrap ml-4 mt-1 bg-gray-50 px-2.5 py-1 rounded-md">
+                  {item.time}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
 
-        <button
-          onClick={onNext}
-          className="inline-flex items-center gap-3 rounded-lg bg-[#2EE86B] px-6 py-3 text-sm font-bold uppercase tracking-wider text-black transition hover:bg-[#24d45d]"
-        >
-          Next: About Hub
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#000" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <line x1="5" y1="12" x2="19" y2="12" />
-            <polyline points="12 5 19 12 12 19" />
-          </svg>
-        </button>
+        <div className="flex justify-center">
+          <button
+            onClick={onNext}
+            className="inline-flex items-center gap-3 rounded-full bg-[#EF0101] px-10 py-4 text-sm font-bold uppercase tracking-wider text-white shadow-lg shadow-red-500/20 transition-all duration-300 hover:bg-[#CC0000] hover:shadow-xl hover:-translate-y-0.5"
+          >
+            Next: About Hub
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="5" y1="12" x2="19" y2="12" />
+              <polyline points="12 5 19 12 12 19" />
+            </svg>
+          </button>
+        </div>
       </div>
     </main>
   );

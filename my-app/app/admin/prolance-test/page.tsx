@@ -150,7 +150,7 @@ export default function ProlanceTestPage() {
       <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <h1 className="text-xl font-bold text-gray-900">Admin — Prolance Test API</h1>
-          <a href="/" className="text-sm text-green-600 hover:underline">Dashboard</a>
+          <a href="/" className="text-sm text-[#32261C] hover:underline">Dashboard</a>
           <a href="/admin" className="text-sm text-gray-600 hover:text-gray-900">Admin Panel</a>
         </div>
         <div className="flex items-center gap-4">
@@ -186,7 +186,7 @@ export default function ProlanceTestPage() {
                 const t = (data && typeof data === 'object' ? (data as any).access_token : null);
                 if (typeof t === 'string') setToken(t);
               })}
-              className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm disabled:opacity-60"
+              className="px-3 py-2 rounded-lg bg-[#00B0ED] text-white text-sm disabled:opacity-60"
             >
               Generate Token
             </button>
@@ -205,7 +205,7 @@ export default function ProlanceTestPage() {
                 if (typeof s === 'string') setSessionRef(s);
                 if (typeof p === 'number' || typeof p === 'string') setPartnerId(String(p));
               })}
-              className="px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm disabled:opacity-60"
+              className="px-3 py-2 rounded-lg bg-[#EF0101] text-white text-sm disabled:opacity-60"
             >
               Partner Login
             </button>
@@ -279,7 +279,7 @@ export default function ProlanceTestPage() {
                 });
                 await parse(res);
               })}
-              className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-sm disabled:opacity-60"
+              className="px-3 py-2 rounded-lg bg-[#EF0101] text-white text-sm disabled:opacity-60"
             >
               Get Projects
             </button>
@@ -313,7 +313,7 @@ export default function ProlanceTestPage() {
                   quote,
                 });
               })}
-              className="px-3 py-2 rounded-lg bg-purple-600 text-white text-sm disabled:opacity-60"
+              className="px-3 py-2 rounded-lg bg-[#EF0101] text-white text-sm disabled:opacity-60"
             >
               Create Project
             </button>
@@ -334,7 +334,7 @@ export default function ProlanceTestPage() {
                   });
                   await parse(quoteRes);
                 })}
-                className="px-3 py-2 rounded-lg bg-sky-600 text-white text-sm disabled:opacity-60"
+                className="px-3 py-2 rounded-lg bg-[#00B0ED] text-white text-sm disabled:opacity-60"
               >
                 Get Quote
               </button>
@@ -342,7 +342,7 @@ export default function ProlanceTestPage() {
           </div>
         </div>
 
-        <div className="bg-black text-green-200 rounded-xl p-4">
+        <div className="bg-black text-[#DDCDC1] rounded-xl p-4">
           <p className="text-xs mb-2">Last response{lastStatus ? ` (HTTP ${lastStatus})` : ''}</p>
           <pre className="text-xs whitespace-pre-wrap">{lastBody || '—'}</pre>
         </div>
