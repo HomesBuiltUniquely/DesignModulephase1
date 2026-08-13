@@ -1086,7 +1086,7 @@ export default function Dashboard() {
                                         )}
                                         <th className="py-3 px-2 w-[22%]">ID / Project Name</th>
                                         <th className="py-3 px-2 w-[18%]">Time slot</th>
-                                        {isAdmin && <th className="py-3 px-2 w-[22%]">Assignee</th>}
+                                        {canImportLeads && <th className="py-3 px-2 w-[22%]">Assignee</th>}
                                         <th className="py-3 px-2 w-[10%]">View</th>
                                         <th className="py-3 px-2 w-[13%]">Create project</th>
                                         <th className="py-3 px-2 w-[12%]">Get quote</th>
@@ -1136,7 +1136,7 @@ export default function Dashboard() {
                                                         ) : null}
                                                     </div>
                                                 </td>
-                                                {isAdmin && (
+                                                {canImportLeads && (
                                                     <td className="py-3 px-2 min-w-[160px]">
                                                         <div className="flex flex-col gap-1.5">
                                                             <div className="flex items-center gap-1.5">
