@@ -95,7 +95,7 @@ export default function DqcDesignerFeedbackCard({ leadId, sessionId, cardClass =
               key={index}
               className={`rounded-lg border p-3 text-sm border-l-4 ${
                 r.resolved
-                  ? 'border-l-[#EF0101] bg-[#DDCDC1]/20/50'
+                  ? 'border-l-[#EF0101] bg-[#DDCDC1]/20'
                   : r.priority === 'high'
                     ? 'border-l-red-500 bg-red-50/30'
                     : r.priority === 'medium'

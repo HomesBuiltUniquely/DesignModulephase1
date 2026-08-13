@@ -333,10 +333,10 @@ export default function PopupDqcDesignerView({
                     className={`rounded-lg border p-3 text-sm border-l-4 ${
                       hasPosition ? 'cursor-pointer hover:ring-2 hover:ring-[#00B0ED] focus:outline-none focus:ring-2 focus:ring-[#00B0ED]' : ''
                     } ${
-                      isHighlighted ? 'ring-2 ring-[#00B0ED] bg-[#00B0ED]/10/50' : ''
+                      isHighlighted ? 'ring-2 ring-[#00B0ED] bg-[#00B0ED]/10' : ''
                     } ${
                       r.resolved
-                        ? 'border-l-[#EF0101] bg-[#DDCDC1]/20/50'
+                        ? 'border-l-[#EF0101] bg-[#DDCDC1]/20'
                         : r.priority === 'high'
                           ? 'border-l-red-500 bg-red-50/30'
                           : r.priority === 'medium'

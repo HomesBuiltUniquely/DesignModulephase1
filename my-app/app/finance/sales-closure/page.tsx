@@ -464,7 +464,7 @@ export default function FinanceSalesClosurePage() {
           </div>
         </div>
 
-        <div className="mt-5 p-4 rounded-xl border border-[#DDCDC1] bg-[#DDCDC1]/20/50">
+        <div className="mt-5 p-4 rounded-xl border border-[#DDCDC1] bg-[#DDCDC1]/20">
           <h2 className="text-sm font-bold text-gray-900 mb-2">Fetch lead — finance history</h2>
           <div className="flex flex-wrap gap-2 items-center">
             <input

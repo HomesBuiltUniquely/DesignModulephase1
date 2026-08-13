@@ -38,21 +38,21 @@ const WEIGHTED_PART_META: Record<
     short: 'Part 1',
     title: 'Part 1 · Pre-D1 finance 10%',
     accent: 'text-[#32261C]',
-    ring: 'border-[#DDCDC1] bg-[#DDCDC1]/20/50 hover:border-emerald-300',
+    ring: 'border-[#DDCDC1] bg-[#DDCDC1]/20 hover:border-emerald-300',
     selected: 'border-[#EF0101] ring-2 ring-emerald-200 bg-[#DDCDC1]/20',
   },
   post_dqc1_design_10: {
     short: 'Part 2',
     title: 'Part 2 · Post-DQC1 design 10%',
     accent: 'text-[#00B0ED]',
-    ring: 'border-[#00B0ED]/20 bg-[#00B0ED]/10/50 hover:border-[#00B0ED]/50',
+    ring: 'border-[#00B0ED]/20 bg-[#00B0ED]/10 hover:border-[#00B0ED]/50',
     selected: 'border-[#00B0ED] ring-2 ring-[#00B0ED]/20 bg-[#00B0ED]/10',
   },
   part3_forty_percent: {
     short: 'Part 3',
     title: 'Part 3 · 40% payment + upsale',
     accent: 'text-[#32261C]',
-    ring: 'border-[#DDCDC1] bg-[#DDCDC1]/20/50 hover:border-[#EF0101]/50',
+    ring: 'border-[#DDCDC1] bg-[#DDCDC1]/20 hover:border-[#EF0101]/50',
     selected: 'border-[#EF0101] ring-2 ring-[#EF0101]/20 bg-[#DDCDC1]/20',
   },
 };
@@ -331,7 +331,7 @@ function IndividualIncentivesPanel({
       </div>
 
       {dayActivity ? (
-        <section className="rounded-xl border border-[#DDCDC1] bg-[#DDCDC1]/20/60 p-4 shadow-sm">
+        <section className="rounded-xl border border-[#DDCDC1] bg-[#DDCDC1]/20 p-4 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold uppercase tracking-wide text-[#32261C]">
               Activity on {dayActivity.dateLabel}
@@ -378,7 +378,7 @@ function IndividualIncentivesPanel({
           <span
             className={`rounded-full px-3 py-1.5 text-[11px] font-bold uppercase tracking-wide ${
               data.meetingsEligible
-                ? 'bg-[#DDCDC1]/200 text-white'
+                ? 'bg-emerald-500 text-white'
                 : 'bg-amber-500 text-white'
             }`}
           >
@@ -387,7 +387,7 @@ function IndividualIncentivesPanel({
         </div>
         <div className="mt-3 h-2 rounded-full bg-white/80">
           <div
-            className={`h-2 rounded-full ${data.meetingsEligible ? 'bg-[#DDCDC1]/200' : 'bg-amber-400'}`}
+            className={`h-2 rounded-full ${data.meetingsEligible ? 'bg-emerald-500' : 'bg-amber-400'}`}
             style={{
               width: `${Math.min(
                 100,
@@ -634,14 +634,14 @@ function IndividualIncentivesPanel({
                     <tr
                       key={slab.targetPct}
                       className={
-                        active ? 'bg-[#DDCDC1]/20/80 text-gray-900' : 'border-b border-gray-50 text-gray-700'
+                        active ? 'bg-[#DDCDC1]/20 text-gray-900' : 'border-b border-gray-50 text-gray-700'
                       }
                     >
                       <td className="py-3 pr-3 font-semibold">
                         <span className="inline-flex items-center gap-2">
                           {slab.targetPct}%
                           {active ? (
-                            <span className="rounded-full bg-[#DDCDC1]/200 px-2 py-0.5 text-[10px] font-bold uppercase text-white">
+                            <span className="rounded-full bg-[#DDCDC1]/20 px-2 py-0.5 text-[10px] font-bold uppercase text-white">
                               Active
                             </span>
                           ) : reached ? (
@@ -1308,7 +1308,7 @@ export default function DesignerIncentivesView() {
   };
 
   return (
-    <div className="min-h-[calc(100vh-3.5rem)] bg-slate-50">
+    <div className="min-h-[calc(100vh-3.5rem)] bg-[#F1F2F6]">
       <div className="mx-auto max-w-7xl space-y-5 px-4 py-6 sm:px-6 lg:px-8">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>

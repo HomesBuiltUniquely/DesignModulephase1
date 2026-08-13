@@ -28,7 +28,22 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function() {
+                try {
+                  const saved = localStorage.getItem('design-module-theme');
+                  const theme = saved === 'dark' ? 'dark' : 'light';
+                  document.documentElement.setAttribute('data-theme', theme);
+                } catch (e) {}
+              })();
+            `,
+          }}
+        />
+      </head>
       <body className={`${manrope.variable} antialiased`}>
         <AuthProvider>
           {children}

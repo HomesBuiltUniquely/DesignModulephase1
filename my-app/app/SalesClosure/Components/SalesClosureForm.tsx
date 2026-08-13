@@ -1243,7 +1243,7 @@ export default function SalesClosureForm() {
                     </p>
                   )}
                   {paymentStats && thisPayment > 0 && (
-                    <div className="mt-3 rounded-lg border border-[#DDCDC1] bg-[#DDCDC1]/20/80 px-3 py-2.5 text-sm text-[#32261C] space-y-1">
+                    <div className="mt-3 rounded-lg border border-[#DDCDC1] bg-[#DDCDC1]/20 px-3 py-2.5 text-sm text-[#32261C] space-y-1">
                       <p>
                         After this payment, total toward 10%:{" "}
                         <span className="font-semibold">

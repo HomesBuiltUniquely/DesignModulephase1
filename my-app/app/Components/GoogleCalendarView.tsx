@@ -222,8 +222,8 @@ function EventDetailsPopover({
           <div className="flex items-start gap-4">
             <span className="mt-1 h-4 w-4 rounded-full bg-[#EF0101]" />
             <div>
-              <h3 className="text-[30px] font-normal text-[#1f1f1f]">{event.summary || 'Untitled event'}</h3>
-              <p className="mt-1 text-[15px] text-[#444746]">
+              <h3 className="text-[30px] font-normal text-gray-900">{event.summary || 'Untitled event'}</h3>
+              <p className="mt-1 text-[15px] text-gray-700">
                 {formatDateTime(event.start)} {event.end ? `- ${formatTime(new Date(event.end))}` : ''}
               </p>
             </div>
@@ -240,35 +240,35 @@ function EventDetailsPopover({
           </button>
         </div>
 
-        <div className="space-y-5 px-6 py-6 text-[15px] text-[#3c4043]">
+        <div className="space-y-5 px-6 py-6 text-[15px] text-gray-800">
           <div className="grid gap-4 sm:grid-cols-[28px_1fr]">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="mt-0.5 h-6 w-6 text-[#5f6368]">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="mt-0.5 h-6 w-6 text-gray-600">
               <path d="M19 4h-1V2h-2v2H8V2H6v2H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2Zm0 15H5V10h14v9Z" />
             </svg>
             <div>
               <p>{formatDateTime(event.start)}</p>
-              <p className="text-[#5f6368]">{event.end ? `Ends ${formatDateTime(event.end)}` : 'No end time provided'}</p>
+              <p className="text-gray-600">{event.end ? `Ends ${formatDateTime(event.end)}` : 'No end time provided'}</p>
             </div>
           </div>
 
           <div className="grid gap-4 sm:grid-cols-[28px_1fr]">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="mt-0.5 h-6 w-6 text-[#5f6368]">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="mt-0.5 h-6 w-6 text-gray-600">
               <path d="M12 12c2.7 0 8 1.34 8 4v2H4v-2c0-2.66 5.3-4 8-4Zm0-2a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z" />
             </svg>
             <div>
-              <p className="font-medium text-[#1f1f1f]">{event.ownerName || 'Calendar owner'}</p>
-              <p className="text-[#5f6368]">{event.connectedGoogleEmail || event.ownerEmail || 'No owner email'}</p>
+              <p className="font-medium text-gray-900">{event.ownerName || 'Calendar owner'}</p>
+              <p className="text-gray-600">{event.connectedGoogleEmail || event.ownerEmail || 'No owner email'}</p>
             </div>
           </div>
 
           {(event.location || event.description) && (
             <div className="grid gap-4 sm:grid-cols-[28px_1fr]">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="mt-0.5 h-6 w-6 text-[#5f6368]">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="mt-0.5 h-6 w-6 text-gray-600">
                 <path d="M21 5v14H3V5h18Zm0-2H3a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h18a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2Zm-2 12H5v-2h14v2Zm0-4H5V9h14v2Z" />
               </svg>
               <div className="space-y-2">
                 {event.location ? <p>{event.location}</p> : null}
-                {event.description ? <p className="whitespace-pre-wrap text-[#5f6368]">{event.description}</p> : null}
+                {event.description ? <p className="whitespace-pre-wrap text-gray-600">{event.description}</p> : null}
               </div>
             </div>
           )}
@@ -279,7 +279,7 @@ function EventDetailsPopover({
                 href={event.htmlLink}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex items-center rounded-full border border-[#dadce0] px-4 py-2 text-sm font-medium text-[#EF0101] transition hover:bg-[#EF0101]/10"
+                className="inline-flex items-center rounded-full border border-gray-200 px-4 py-2 text-sm font-medium text-[#EF0101] transition hover:bg-[#EF0101]/10"
               >
                 Open in HUB Calendar
               </a>
@@ -436,14 +436,14 @@ export default function GoogleCalendarView() {
   }, [currentDate, currentTime, weekStart]);
 
   return (
-    <div className="min-h-[calc(100vh-56px)] bg-[#f8fafd] text-[#1f1f1f]">
+    <div className="min-h-[calc(100vh-56px)] bg-slate-50 text-gray-900">
       <div className="flex flex-col xl:flex-row">
-        <aside className="w-full border-b border-[#dadce0] bg-white px-4 py-5 xl:min-h-[calc(100vh-56px)] xl:w-[300px] xl:border-b-0 xl:border-r">
+        <aside className="w-full border-b border-gray-200 bg-white px-4 py-5 xl:min-h-[calc(100vh-56px)] xl:w-[300px] xl:border-b-0 xl:border-r">
           <div className="flex items-center gap-3 px-2">
             <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#EF0101]/10 text-xl font-semibold text-[#EF0101]">20</div>
             <div>
               <h1 className="text-[34px] font-normal leading-none">HUB Calendar</h1>
-              <p className="mt-1 text-sm text-[#5f6368]">
+              <p className="mt-1 text-sm text-gray-600">
                 {role === 'admin'
                   ? 'Admin view of all connected calendars'
                   : role === 'deputy_general_manager'
@@ -457,7 +457,7 @@ export default function GoogleCalendarView() {
             </div>
           </div>
 
-          <div className="mt-6 rounded-2xl border border-[#dadce0] bg-white p-4 shadow-sm">
+          <div className="mt-6 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
@@ -470,35 +470,35 @@ export default function GoogleCalendarView() {
                 <button
                   type="button"
                   onClick={handleDisconnect}
-                  className="inline-flex items-center justify-center rounded-full border border-[#dadce0] px-4 py-2.5 text-sm font-medium text-[#1f1f1f] transition hover:bg-[#f1f3f4]"
+                  className="inline-flex items-center justify-center rounded-full border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-900 transition hover:bg-gray-100"
                 >
                   Disconnect
                 </button>
               ) : null}
             </div>
             <div className="mt-4 space-y-1 text-sm">
-              <p className="font-medium text-[#1f1f1f]">{status.connected ? 'Connected' : 'Not connected'}</p>
-              <p className="text-[#5f6368]">{status.connected ? status.googleEmail || 'Unknown account' : 'Connect once to sync calendar events.'}</p>
+              <p className="font-medium text-gray-900">{status.connected ? 'Connected' : 'Not connected'}</p>
+              <p className="text-gray-600">{status.connected ? status.googleEmail || 'Unknown account' : 'Connect once to sync calendar events.'}</p>
               {!status.configured ? <p className="text-[#b3261e]">Backend HUB Calendar credentials are missing in `backend/.env`.</p> : null}
             </div>
           </div>
 
-          <div className="mt-6 rounded-[28px] bg-white px-4 py-5 shadow-sm ring-1 ring-[#dadce0]">
+          <div className="mt-6 rounded-[28px] bg-white px-4 py-5 shadow-sm ring-1 ring-gray-200">
             <div className="mb-4 flex items-center justify-between px-2">
               <button
                 type="button"
                 onClick={() => setCurrentDate((prev) => addDays(prev, -30))}
-                className="rounded-full p-2 text-[#5f6368] transition hover:bg-[#f1f3f4]"
+                className="rounded-full p-2 text-gray-600 transition hover:bg-gray-100"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
                   <path d="m15.41 16.59-4.58-4.59 4.58-4.59L14 6l-6 6 6 6z" />
                 </svg>
               </button>
-              <p className="text-[15px] font-medium text-[#3c4043]">{formatMiniMonthLabel(currentDate)}</p>
+              <p className="text-[15px] font-medium text-gray-800">{formatMiniMonthLabel(currentDate)}</p>
               <button
                 type="button"
                 onClick={() => setCurrentDate((prev) => addDays(prev, 30))}
-                className="rounded-full p-2 text-[#5f6368] transition hover:bg-[#f1f3f4]"
+                className="rounded-full p-2 text-gray-600 transition hover:bg-gray-100"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
                   <path d="M8.59 16.59 13.17 12 8.59 7.41 10 6l6 6-6 6z" />
@@ -506,7 +506,7 @@ export default function GoogleCalendarView() {
               </button>
             </div>
 
-            <div className="grid grid-cols-7 gap-y-2 text-center text-xs text-[#5f6368]">
+            <div className="grid grid-cols-7 gap-y-2 text-center text-xs text-gray-600">
               {WEEKDAY_LABELS.map((label) => (
                 <div key={label} className="font-medium">
                   {label[0]}
@@ -527,8 +527,8 @@ export default function GoogleCalendarView() {
                         : isToday
                           ? 'bg-[#EF0101] font-semibold text-white'
                           : inMonth
-                            ? 'text-[#1f1f1f] hover:bg-[#f1f3f4]'
-                            : 'text-[#9aa0a6] hover:bg-[#f1f3f4]'
+                            ? 'text-gray-900 hover:bg-gray-100'
+                            : 'text-[#9aa0a6] hover:bg-gray-100'
                     }`}
                   >
                     {day.getDate()}
@@ -538,8 +538,8 @@ export default function GoogleCalendarView() {
             </div>
           </div>
 
-          <div className="mt-6 rounded-[28px] bg-white px-4 py-5 shadow-sm ring-1 ring-[#dadce0]">
-            <p className="text-[15px] font-medium text-[#3c4043]">{canSeeOwnerLabels ? 'Visible events this week' : 'Meet with...'}</p>
+          <div className="mt-6 rounded-[28px] bg-white px-4 py-5 shadow-sm ring-1 ring-gray-200">
+            <p className="text-[15px] font-medium text-gray-800">{canSeeOwnerLabels ? 'Visible events this week' : 'Meet with...'}</p>
             <div className="mt-4 space-y-3">
               {sidebarEvents.length ? (
                 sidebarEvents.map((event) => (
@@ -547,28 +547,28 @@ export default function GoogleCalendarView() {
                     key={`sidebar-${event.ownerEmail || 'owner'}-${event.id}`}
                     type="button"
                     onClick={() => setSelectedEvent(event)}
-                    className="w-full rounded-2xl border border-[#dadce0] px-4 py-3 text-left transition hover:bg-[#f8fafd]"
+                    className="w-full rounded-2xl border border-gray-200 px-4 py-3 text-left transition hover:bg-slate-50"
                   >
-                    <p className="truncate text-sm font-medium text-[#1f1f1f]">{event.summary || 'Untitled event'}</p>
-                    <p className="mt-1 text-xs text-[#5f6368]">{formatDateTime(event.start)}</p>
+                    <p className="truncate text-sm font-medium text-gray-900">{event.summary || 'Untitled event'}</p>
+                    <p className="mt-1 text-xs text-gray-600">{formatDateTime(event.start)}</p>
                     {canSeeOwnerLabels && event.ownerName ? <p className="mt-1 text-xs text-[#EF0101]">{event.ownerName}</p> : null}
                   </button>
                 ))
               ) : (
-                <p className="text-sm text-[#5f6368]">No events scheduled for this week yet.</p>
+                <p className="text-sm text-gray-600">No events scheduled for this week yet.</p>
               )}
             </div>
           </div>
         </aside>
 
         <section className="min-w-0 flex-1">
-          <div className="border-b border-[#dadce0] bg-white px-4 py-4 xl:px-8">
+          <div className="border-b border-gray-200 bg-white px-4 py-4 xl:px-8">
             <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
               <div className="flex flex-wrap items-center gap-3">
                 <button
                   type="button"
                   onClick={() => setCurrentDate(startOfDay(new Date()))}
-                  className="rounded-full border border-[#dadce0] px-6 py-2.5 text-[15px] font-medium text-[#1f1f1f] transition hover:bg-[#f1f3f4]"
+                  className="rounded-full border border-gray-200 px-6 py-2.5 text-[15px] font-medium text-gray-900 transition hover:bg-gray-100"
                 >
                   Today
                 </button>
@@ -576,7 +576,7 @@ export default function GoogleCalendarView() {
                   <button
                     type="button"
                     onClick={() => setCurrentDate((prev) => addDays(prev, -7))}
-                    className="rounded-full p-2 text-[#5f6368] transition hover:bg-[#f1f3f4]"
+                    className="rounded-full p-2 text-gray-600 transition hover:bg-gray-100"
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-6 w-6">
                       <path d="m15.41 16.59-4.58-4.59 4.58-4.59L14 6l-6 6 6 6z" />
@@ -585,25 +585,25 @@ export default function GoogleCalendarView() {
                   <button
                     type="button"
                     onClick={() => setCurrentDate((prev) => addDays(prev, 7))}
-                    className="rounded-full p-2 text-[#5f6368] transition hover:bg-[#f1f3f4]"
+                    className="rounded-full p-2 text-gray-600 transition hover:bg-gray-100"
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-6 w-6">
                       <path d="M8.59 16.59 13.17 12 8.59 7.41 10 6l6 6-6 6z" />
                     </svg>
                   </button>
                 </div>
-                <h2 className="text-[34px] font-normal text-[#1f1f1f]">{formatMonthLabel(currentDate)}</h2>
+                <h2 className="text-[34px] font-normal text-gray-900">{formatMonthLabel(currentDate)}</h2>
               </div>
 
               <div className="flex flex-wrap items-center gap-3">
                 <button
                   type="button"
                   onClick={() => loadEvents(weekStart)}
-                  className="rounded-full border border-[#dadce0] px-5 py-2.5 text-sm font-medium text-[#1f1f1f] transition hover:bg-[#f1f3f4]"
+                  className="rounded-full border border-gray-200 px-5 py-2.5 text-sm font-medium text-gray-900 transition hover:bg-gray-100"
                 >
                   {loading ? 'Refreshing...' : 'Refresh'}
                 </button>
-                <div className="rounded-full border border-[#dadce0] px-5 py-2.5 text-sm font-medium text-[#1f1f1f]">Week</div>
+                <div className="rounded-full border border-gray-200 px-5 py-2.5 text-sm font-medium text-gray-900">Week</div>
               </div>
             </div>
             {message ? (
@@ -617,21 +617,21 @@ export default function GoogleCalendarView() {
             ) : null}
           </div>
 
-          <div className="overflow-x-auto bg-[#f8fafd] px-4 py-5 xl:px-8">
-            <div className="min-w-[980px] overflow-hidden rounded-[32px] bg-white shadow-sm ring-1 ring-[#dadce0]">
-              <div className="grid grid-cols-[96px_repeat(7,minmax(0,1fr))] border-b border-[#dadce0]">
-                <div className="border-r border-[#dadce0] bg-white px-4 py-5 text-right text-sm text-[#5f6368]">GMT+05:30</div>
+          <div className="overflow-x-auto bg-slate-50 px-4 py-5 xl:px-8">
+            <div className="min-w-[980px] overflow-hidden rounded-[32px] bg-white shadow-sm ring-1 ring-gray-200">
+              <div className="grid grid-cols-[96px_repeat(7,minmax(0,1fr))] border-b border-gray-200">
+                <div className="border-r border-gray-200 bg-white px-4 py-5 text-right text-sm text-gray-600">GMT+05:30</div>
                 {weekDays.map((day) => {
                   const isToday = isSameDay(day, new Date());
                   return (
-                    <div key={day.toISOString()} className="border-r border-[#dadce0] px-4 py-3 last:border-r-0">
-                      <p className={`text-center text-[12px] font-semibold tracking-[0.08em] ${isToday ? 'text-[#EF0101]' : 'text-[#5f6368]'}`}>
+                    <div key={day.toISOString()} className="border-r border-gray-200 px-4 py-3 last:border-r-0">
+                      <p className={`text-center text-[12px] font-semibold tracking-[0.08em] ${isToday ? 'text-[#EF0101]' : 'text-gray-600'}`}>
                         {formatDayHeader(day)}
                       </p>
                       <div className="mt-2 flex items-center justify-center">
                         <span
                           className={`flex h-[54px] w-[54px] items-center justify-center rounded-full text-[34px] font-normal leading-none ${
-                            isToday ? 'bg-[#EF0101] text-white shadow-sm' : 'text-[#1f1f1f]'
+                            isToday ? 'bg-[#EF0101] text-white shadow-sm' : 'text-gray-900'
                           }`}
                         >
                           {day.getDate()}
@@ -644,9 +644,9 @@ export default function GoogleCalendarView() {
 
               <div ref={scrollAreaRef} className="max-h-[calc(100vh-220px)] overflow-y-auto">
                 <div className="grid grid-cols-[96px_1fr]">
-                  <div className="border-r border-[#dadce0] bg-white">
+                  <div className="border-r border-gray-200 bg-white">
                     {HOURS.map((hour) => (
-                      <div key={hour} className="relative h-[56px] border-b border-[#edf0f2] px-4 text-right text-sm text-[#5f6368]">
+                      <div key={hour} className="relative h-[56px] border-b border-gray-100 px-4 text-right text-sm text-gray-600">
                         <span className="-translate-y-3 absolute right-4 top-0 bg-white px-1">{formatTime(new Date(2026, 0, 1, hour, 0, 0, 0))}</span>
                       </div>
                     ))}
@@ -658,9 +658,9 @@ export default function GoogleCalendarView() {
                       const showCurrentTime = dayIndex === todayIndex && currentTimeOffset >= 0 && currentTimeOffset <= HOURS.length * HOUR_HEIGHT;
 
                       return (
-                        <div key={`grid-${day.toISOString()}`} className="relative border-r border-[#dadce0] last:border-r-0" style={{ height: `${HOURS.length * HOUR_HEIGHT}px` }}>
+                        <div key={`grid-${day.toISOString()}`} className="relative border-r border-gray-200 last:border-r-0" style={{ height: `${HOURS.length * HOUR_HEIGHT}px` }}>
                           {HOURS.map((hour) => (
-                            <div key={`${day.toISOString()}-${hour}`} className="h-[56px] border-b border-[#edf0f2]" />
+                            <div key={`${day.toISOString()}-${hour}`} className="h-[56px] border-b border-gray-100" />
                           ))}
 
                           {showCurrentTime ? (

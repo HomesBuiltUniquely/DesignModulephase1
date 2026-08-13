@@ -2663,7 +2663,7 @@ export default function ProjectDetailPage() {
                                                                     </button>
                                                                 </div>
                                                                 {expandedQuoteRooms[`${opt.qoid ?? idx}-${opt.optionID ?? idx}`] && (
-                                                                    <div className="mt-3 space-y-3 rounded-lg border border-[#DDCDC1] bg-[#DDCDC1]/20/40 p-3">
+                                                                    <div className="mt-3 space-y-3 rounded-lg border border-[#DDCDC1] bg-[#DDCDC1]/20 p-3">
                                                                         {opt.roomRev ? (
                                                                             <p className="text-xs text-gray-600">
                                                                                 <span className="font-semibold text-gray-800">Room Revision:</span> {opt.roomRev}
