@@ -1665,140 +1665,182 @@ export default function Dashboard() {
                     <div className="min-w-0 flex-1 w-full overflow-auto">
                         {!isDqcUser && !isMmtUser ? (
                             <div className="p-4 xl:p-6 pb-32 xl:pb-32 space-y-6 max-w-[1600px]">
-                                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                                    <div>
-                                        <h1 className="text-xl xl:text-2xl font-bold text-gray-900">
-                                            {isSpmUser ? "D2 Site Masking Queue" : "Design Phase Projects"}
-                                        </h1>
-                                        <p className="text-sm text-gray-500 mt-0.5">
-                                            {isSpmUser
-                                                ? "Leads where a D2 masking request has been raised — assign PM and manage D2 files."
-                                                : "Projects between 10% and 60% progress."}
-                                        </p>
-                                    </div>
-                                    <div className="flex flex-wrap items-center gap-3">
-                                        <input
-                                            type="search"
-                                            placeholder="Search projects..."
-                                            value={searchQuery}
-                                            onChange={(e) => setSearchQuery(e.target.value)}
-                                            className="px-3 py-2 border border-gray-300 rounded-lg text-sm w-full sm:w-48 focus:ring-2 focus:ring-[#00B0ED] focus:border-[#00B0ED]"
-                                        />
-                                        {showBranchDesignerFilters && (
-                                            <>
-                                                <CustomSelect
-                                                    value={branchFilter}
-                                                    onChange={(v) => setBranchFilter(v)}
-                                                    placeholder="All branches"
-                                                    minWidth="8rem"
-                                                    options={[
-                                                        { value: "", label: "All branches" },
-                                                        ...BRANCH_OPTIONS.map((b) => ({ value: b, label: b })),
-                                                    ]}
-                                                />
-                                                <CustomSelect
-                                                    value={designerFilter}
-                                                    onChange={(v) => setDesignerFilter(v)}
-                                                    placeholder="All designers"
-                                                    minWidth="10rem"
-                                                    options={[
-                                                        { value: "", label: "All designers" },
-                                                        ...(hasUnassignedInQueue ? [{ value: "__unassigned__", label: "Unassigned" }] : []),
-                                                        ...designerFilterOptions.map(([id, name]) => ({ value: String(id), label: name as string })),
-                                                    ]}
-                                                />
-                                            </>
-                                        )}
-                                        <div className="relative" ref={filterDropdownRef}>
-                                            <button
-                                                type="button"
-                                                onClick={() => setFilterDropdownOpen((o) => !o)}
-                                                className={`px-4 py-2 rounded-lg border text-sm font-medium flex items-center gap-2 transition-all duration-200 ${
-                                                    filterDropdownOpen || milestoneFilter
-                                                        ? 'border-[#EF0101] bg-[#EF0101] text-white shadow-md'
-                                                        : 'border-[#DDCDC1] bg-white text-[#32261C] hover:border-[#EF0101]/60'
-                                                }`}
-                                            >
-                                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
-                                                    <path d="M14 2a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v1.5a1 1 0 0 0 .293.707L6 8v5.5a.5.5 0 0 0 .777.416l3-2A.5.5 0 0 0 10 11.5V8l3.707-3.793A1 1 0 0 0 14 3.5V2Z" />
-                                                </svg>
-                                                <span>Filter</span>
-                                                {milestoneFilter ? (
-                                                    <span className="font-semibold truncate max-w-[120px]" title={MILESTONE_FILTER_OPTIONS.find((o) => o.value === milestoneFilter)?.label}>
-                                                        · {MILESTONE_FILTER_OPTIONS.find((o) => o.value === milestoneFilter)?.label}
-                                                    </span>
-                                                ) : null}
-                                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className={`w-3.5 h-3.5 transition-transform duration-200 ${filterDropdownOpen ? 'rotate-180' : ''}`}>
-                                                    <path fillRule="evenodd" d="M4.22 6.22a.75.75 0 0 1 1.06 0L8 8.94l2.72-2.72a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
-                                                </svg>
-                                            </button>
-                                            {filterDropdownOpen && (
-                                                <div
-                                                    className="absolute right-0 top-full mt-1 z-50 min-w-[200px] py-1 bg-white border border-[#DDCDC1] rounded-xl shadow-xl max-h-64 overflow-y-auto custom-select-dropdown"
-                                                    style={{ animation: 'customSelectSlideDown 0.18s cubic-bezier(0.16,1,0.3,1) forwards', transformOrigin: 'top' }}
+                                <div className="flex flex-col gap-4">
+                                    {/* Row 1: Title and Action Buttons */}
+                                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                                        <div>
+                                            <h1 className="text-xl xl:text-2xl font-bold text-gray-900">
+                                                {isSpmUser ? "D2 Site Masking Queue" : "Design Phase Projects"}
+                                            </h1>
+                                            <p className="text-sm text-gray-500 mt-0.5">
+                                                {isSpmUser
+                                                    ? "Leads where a D2 masking request has been raised — assign PM and manage D2 files."
+                                                    : "Projects between 10% and 60% progress."}
+                                            </p>
+                                        </div>
+                                        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                                            {canBookPersonalAppointment && isDesigner && (
+                                                <button
+                                                    type="button"
+                                                    disabled={!sessionId}
+                                                    onClick={() => setShowPersonalAppointmentModal(true)}
+                                                    title="Block personal time on your calendar"
+                                                    className="inline-flex px-4 py-2 rounded-lg border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 text-sm font-semibold transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50"
                                                 >
-                                                    <p className="px-3.5 py-2 text-[10px] font-bold uppercase tracking-widest text-[#32261C]/40 border-b border-[#DDCDC1]/60">By milestone</p>
-                                                    {MILESTONE_FILTER_OPTIONS.map((opt) => (
-                                                        <button
-                                                            key={opt.value || "all"}
-                                                            type="button"
-                                                            onClick={() => {
-                                                                setMilestoneFilter(opt.value);
-                                                                setFilterDropdownOpen(false);
-                                                            }}
-                                                            className={`w-full text-left px-3.5 py-2.5 text-sm flex items-center gap-2 transition-colors duration-100 ${
-                                                                opt.value === milestoneFilter
-                                                                    ? "bg-[#EF0101] text-white font-semibold"
-                                                                    : "text-[#32261C] hover:bg-[#F1F2F6]"
-                                                            }`}
-                                                        >
-                                                            <span className={`w-4 h-4 flex-shrink-0 ${opt.value === milestoneFilter ? 'opacity-100' : 'opacity-0'}`}>
-                                                                <svg viewBox="0 0 16 16" fill="currentColor"><path fillRule="evenodd" d="M12.416 3.376a.75.75 0 0 1 .208 1.04l-5 7.5a.75.75 0 0 1-1.154.114l-3-3a.75.75 0 0 1 1.06-1.06l2.353 2.353 4.493-6.74a.75.75 0 0 1 1.04-.207Z" clipRule="evenodd" /></svg>
-                                                            </span>
-                                                            {opt.label}
-                                                        </button>
-                                                    ))}
-                    </div>
+                                                    Appointment
+                                                </button>
+                                            )}
+                                            {canImportLeads && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setShowImportPanel((v) => !v)}
+                                                    className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border text-sm font-semibold transition-all duration-200 ${
+                                                        showImportPanel
+                                                            ? "bg-[#272c36] border-slate-700 text-white"
+                                                            : "border-gray-300 text-gray-700 bg-white hover:bg-gray-50"
+                                                    }`}
+                                                >
+                                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor" className="w-4 h-4">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 16.5V9.75m0 0 3 3m-3-3-3 3M6.75 19.5a4.5 4.5 0 0 1-1.41-8.775 5.25 5.25 0 0 1 10.233-2.33 3 3 0 0 1 3.758 3.848A3.752 3.752 0 0 1 18 19.5H6.75Z" />
+                                                    </svg>
+                                                    {showImportPanel ? "Close Import" : "Import Excel"}
+                                                </button>
+                                            )}
+                                            {!isSpmUser && (
+                                                <button
+                                                    type="button"
+                                                    disabled={!sessionId}
+                                                    onClick={handleAddProjectClick}
+                                                    title="Fill a form to create a Prolance project and add it to Pre 10%"
+                                                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-bold hover:bg-[#EF0101]/90 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50 transition-all duration-200"
+                                                >
+                                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-4 h-4">
+                                                        <path d="M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z" />
+                                                    </svg>
+                                                    Add Project
+                                                </button>
                                             )}
                                         </div>
-                                        {!isSpmUser && (
-                                        <button
-                                            type="button"
-                                            disabled={!sessionId}
-                                            onClick={handleAddProjectClick}
-                                            title="Fill a form to create a Prolance project and add it to Pre 10%"
-                                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-bold hover:bg-[#EF0101]/90 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50 transition-all duration-200"
-                                        >
-                                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-4 h-4">
-                                                <path d="M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z" />
-                                            </svg>
-                                            Add Project
-                                        </button>
-                                        )}
-                                        {canBookPersonalAppointment && isDesigner && (
-                                        <button
-                                            type="button"
-                                            disabled={!sessionId}
-                                            onClick={() => setShowPersonalAppointmentModal(true)}
-                                            title="Block personal time on your calendar"
-                                            className="hidden xl:inline-flex px-4 py-2 rounded-lg border border-[#EF0101] text-[#32261C] text-sm font-medium hover:bg-[#DDCDC1]/20 disabled:cursor-not-allowed disabled:opacity-50"
-                                        >
-                                            Appointment
-                                        </button>
-                                        )}
-                                        {canImportLeads && (
+                                    </div>
+
+                                    {/* Row 2: Filter Toolbar */}
+                                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 bg-[#F1F2F6]/50 p-3 rounded-2xl border border-gray-200">
+                                        <div className="flex flex-wrap items-center gap-2.5">
+                                            {/* Search input with leading icon */}
+                                            <div className="relative w-full md:w-60">
+                                                <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor" className="w-4 h-4 text-gray-400">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.602 10.602Z" />
+                                                    </svg>
+                                                </span>
+                                                <input
+                                                    type="search"
+                                                    placeholder="Search projects..."
+                                                    value={searchQuery}
+                                                    onChange={(e) => setSearchQuery(e.target.value)}
+                                                    className="pl-9 pr-3 py-2 border border-gray-300 rounded-xl text-sm w-full bg-white focus:outline-none focus:ring-2 focus:ring-[#00B0ED]/30 focus:border-[#00B0ED] transition-all duration-150"
+                                                />
+                                            </div>
+
+                                            {showBranchDesignerFilters && (
+                                                <>
+                                                    <CustomSelect
+                                                        value={branchFilter}
+                                                        onChange={(v) => setBranchFilter(v)}
+                                                        placeholder="All branches"
+                                                        minWidth="9rem"
+                                                        options={[
+                                                            { value: "", label: "All branches" },
+                                                            ...BRANCH_OPTIONS.map((b) => ({ value: b, label: b })),
+                                                        ]}
+                                                    />
+                                                    <CustomSelect
+                                                        value={designerFilter}
+                                                        onChange={(v) => setDesignerFilter(v)}
+                                                        placeholder="All designers"
+                                                        minWidth="11rem"
+                                                        options={[
+                                                            { value: "", label: "All designers" },
+                                                            ...(hasUnassignedInQueue ? [{ value: "__unassigned__", label: "Unassigned" }] : []),
+                                                            ...designerFilterOptions.map(([id, name]) => ({ value: String(id), label: name as string })),
+                                                        ]}
+                                                    />
+                                                </>
+                                            )}
+
+                                            <div className="relative" ref={filterDropdownRef}>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setFilterDropdownOpen((o) => !o)}
+                                                    className={`px-4 py-2 rounded-xl border text-sm font-medium flex items-center gap-2 transition-all duration-200 ${
+                                                        filterDropdownOpen || milestoneFilter
+                                                            ? 'border-[#EF0101] bg-[#EF0101] text-white shadow-md'
+                                                            : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
+                                                    }`}
+                                                >
+                                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
+                                                        <path d="M14 2a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v1.5a1 1 0 0 0 .293.707L6 8v5.5a.5.5 0 0 0 .777.416l3-2A.5.5 0 0 0 10 11.5V8l3.707-3.793A1 1 0 0 0 14 3.5V2Z" />
+                                                    </svg>
+                                                    <span>Milestone</span>
+                                                    {milestoneFilter ? (
+                                                        <span className="font-semibold truncate max-w-[120px]" title={MILESTONE_FILTER_OPTIONS.find((o) => o.value === milestoneFilter)?.label}>
+                                                            · {MILESTONE_FILTER_OPTIONS.find((o) => o.value === milestoneFilter)?.label}
+                                                        </span>
+                                                    ) : null}
+                                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className={`w-3.5 h-3.5 transition-transform duration-200 ${filterDropdownOpen ? 'rotate-180' : ''}`}>
+                                                        <path fillRule="evenodd" d="M4.22 6.22a.75.75 0 0 1 1.06 0L8 8.94l2.72-2.72a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+                                                    </svg>
+                                                </button>
+                                                {filterDropdownOpen && (
+                                                    <div
+                                                        className="absolute left-0 md:right-0 md:left-auto top-full mt-1.5 z-50 min-w-[220px] py-1 bg-white border border-gray-200 rounded-xl shadow-xl max-h-64 overflow-y-auto custom-select-dropdown"
+                                                        style={{ animation: 'customSelectSlideDown 0.18s cubic-bezier(0.16,1,0.3,1) forwards', transformOrigin: 'top' }}
+                                                    >
+                                                        <p className="px-3.5 py-2 text-[10px] font-bold uppercase tracking-widest text-[#32261C]/40 border-b border-gray-100">By milestone</p>
+                                                        {MILESTONE_FILTER_OPTIONS.map((opt) => (
+                                                            <button
+                                                                key={opt.value || "all"}
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    setMilestoneFilter(opt.value);
+                                                                    setFilterDropdownOpen(false);
+                                                                }}
+                                                                className={`w-full text-left px-3.5 py-2.5 text-sm flex items-center gap-2 transition-colors duration-100 ${
+                                                                    opt.value === milestoneFilter
+                                                                        ? "bg-[#EF0101] text-white font-semibold"
+                                                                        : "text-[#32261C] hover:bg-[#F1F2F6]"
+                                                                }`}
+                                                            >
+                                                                <span className={`w-4 h-4 flex-shrink-0 ${opt.value === milestoneFilter ? 'opacity-100' : 'opacity-0'}`}>
+                                                                    <svg viewBox="0 0 16 16" fill="currentColor"><path fillRule="evenodd" d="M12.416 3.376a.75.75 0 0 1 .208 1.04l-5 7.5a.75.75 0 0 1-1.154.114l-3-3a.75.75 0 0 1 1.06-1.06l2.353 2.353 4.493-6.74a.75.75 0 0 1 1.04-.207Z" clipRule="evenodd" /></svg>
+                                                                </span>
+                                                                {opt.label}
+                                                            </button>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        {/* Reset Filters Option */}
+                                        {(searchQuery || branchFilter || designerFilter || milestoneFilter) && (
                                             <button
                                                 type="button"
-                                                onClick={() => setShowImportPanel((v) => !v)}
-                                                className="px-4 py-2 rounded-lg border border-[#EF0101]/50 text-[#32261C] text-sm font-medium hover:bg-[#DDCDC1]/20"
+                                                onClick={() => {
+                                                    setSearchQuery("");
+                                                    setBranchFilter("");
+                                                    setDesignerFilter("");
+                                                    setMilestoneFilter("");
+                                                }}
+                                                className="text-xs font-bold text-[#EF0101] hover:text-[#EF0101]/85 shrink-0 px-2.5 py-1.5 hover:bg-[#EF0101]/5 rounded-lg transition-all duration-200"
                                             >
-                                                {showImportPanel ? "Close Import" : "Import Excel"}
+                                                Clear all filters
                                             </button>
                                         )}
                                     </div>
                                 </div>
                                 {canImportLeads && showImportPanel && (
-                                    <div className="rounded-xl border border-[#DDCDC1] bg-[#DDCDC1]/20/30 p-4">
+                                    <div className="rounded-xl border border-[#DDCDC1] bg-[#DDCDC1]/20 p-4">
                                         <p className="text-sm font-semibold text-[#32261C]">Import Leads from Excel</p>
                                         <p className="mt-1 text-xs text-[#32261C]">
                                             Upload Excel, map headers to lead fields, then import.
@@ -1862,7 +1904,7 @@ export default function Dashboard() {
                     </div>
                                 )}
                                 {canImportLeads && (
-                                    <div className="rounded-xl border border-[#DDCDC1] bg-[#DDCDC1]/20/30 p-4 space-y-3">
+                                    <div className="rounded-xl border border-[#DDCDC1] bg-[#DDCDC1]/20 p-4 space-y-3">
                                         <p className="text-sm font-semibold text-[#32261C]">Lead Reassignment</p>
                                         <div className="flex flex-wrap items-center gap-3">
                                             <CustomSelect
