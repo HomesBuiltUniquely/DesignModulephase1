@@ -302,7 +302,13 @@ export default function GoogleCalendarView() {
   const [selectedEvent, setSelectedEvent] = useState<CalendarEventItem | null>(null);
   const [currentDate, setCurrentDate] = useState(() => startOfDay(new Date()));
   const [currentTime, setCurrentTime] = useState(() => new Date());
+  const [showMiniCalendar, setShowMiniCalendar] = useState(false);
+  const [showAgenda, setShowAgenda] = useState(false);
+  const [showAccountMenu, setShowAccountMenu] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement | null>(null);
+  const miniCalendarRef = useRef<HTMLDivElement | null>(null);
+  const agendaRef = useRef<HTMLDivElement | null>(null);
+  const accountMenuRef = useRef<HTMLDivElement | null>(null);
 
   const role = (user?.role || '').toLowerCase();
   const canSeeAllEvents = role === 'admin' || role === 'deputy_general_manager';
@@ -327,16 +333,30 @@ export default function GoogleCalendarView() {
     const minutes = currentTime.getHours() * 60 + currentTime.getMinutes();
     return (minutes / 60) * HOUR_HEIGHT;
   }, [currentTime]);
-  const sidebarEvents = useMemo(() => {
+  const weekEvents = useMemo(() => {
     return [...events]
       .map((event) => {
         const parsed = getEventDates(event);
         return parsed ? { ...event, sortTime: parsed.startDate.getTime() } : null;
       })
       .filter((event): event is CalendarEventItem & { sortTime: number } => Boolean(event))
-      .sort((a, b) => a.sortTime - b.sortTime)
-      .slice(0, 6);
+      .sort((a, b) => a.sortTime - b.sortTime);
   }, [events]);
+
+  const roleDescription =
+    role === 'admin'
+      ? 'All connected calendars'
+      : role === 'deputy_general_manager'
+        ? 'All connected calendars'
+        : role === 'territorial_design_manager'
+          ? 'Your events plus your design team'
+          : role === 'design_manager'
+            ? 'Your events plus designers under you'
+            : 'Your events in one place';
+
+  const shiftMonth = (delta: number) => {
+    setCurrentDate((prev) => new Date(prev.getFullYear(), prev.getMonth() + delta, 1));
+  };
 
   const loadStatus = async () => {
     if (!sessionId) return;
@@ -435,276 +455,349 @@ export default function GoogleCalendarView() {
     container.scrollTo({ top, behavior: 'smooth' });
   }, [currentDate, currentTime, weekStart]);
 
+  useEffect(() => {
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (miniCalendarRef.current && !miniCalendarRef.current.contains(target)) {
+        setShowMiniCalendar(false);
+      }
+      if (agendaRef.current && !agendaRef.current.contains(target)) {
+        setShowAgenda(false);
+      }
+      if (accountMenuRef.current && !accountMenuRef.current.contains(target)) {
+        setShowAccountMenu(false);
+      }
+    };
+
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, []);
+
   return (
-    <div className="min-h-[calc(100vh-56px)] bg-slate-50 text-gray-900">
-      <div className="flex flex-col xl:flex-row">
-        <aside className="w-full border-b border-gray-200 bg-white px-4 py-5 xl:min-h-[calc(100vh-56px)] xl:w-[300px] xl:border-b-0 xl:border-r">
-          <div className="flex items-center gap-3 px-2">
-            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#EF0101]/10 text-xl font-semibold text-[#EF0101]">20</div>
-            <div>
-              <h1 className="text-[34px] font-normal leading-none">HUB Calendar</h1>
-              <p className="mt-1 text-sm text-gray-600">
-                {role === 'admin'
-                  ? 'Admin view of all connected calendars'
-                  : role === 'deputy_general_manager'
-                    ? 'Deputy General Manager view of all connected calendars'
-                  : role === 'territorial_design_manager'
-                    ? 'Your events plus the calendars in your design team tree'
-                    : role === 'design_manager'
-                      ? 'Your events plus all designer events under you'
-                      : 'Your HUB Calendar events in one place'}
-              </p>
+    <div className="flex h-[calc(100vh-56px)] flex-col bg-white text-gray-900">
+      <div className="shrink-0 border-b border-gray-200 bg-white px-4 py-3 lg:px-6">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
+            <div className="min-w-0">
+              <h1 className="text-xl font-semibold leading-tight text-gray-900 lg:text-2xl">HUB Calendar</h1>
+              <p className="truncate text-xs text-gray-500">{roleDescription}</p>
             </div>
-          </div>
-
-          <div className="mt-6 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-            <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setCurrentDate(startOfDay(new Date()))}
+              className="rounded-lg border border-gray-200 px-3.5 py-1.5 text-sm font-medium text-gray-800 transition hover:bg-gray-50"
+            >
+              Today
+            </button>
+            <div className="flex items-center">
               <button
                 type="button"
-                onClick={handleConnect}
-                className="inline-flex flex-1 items-center justify-center rounded-full bg-[#EF0101] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-[#EF0101]/90"
-              >
-                {status.connected ? 'Reconnect' : 'Connect HUB'}
-              </button>
-              {status.connected ? (
-                <button
-                  type="button"
-                  onClick={handleDisconnect}
-                  className="inline-flex items-center justify-center rounded-full border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-900 transition hover:bg-gray-100"
-                >
-                  Disconnect
-                </button>
-              ) : null}
-            </div>
-            <div className="mt-4 space-y-1 text-sm">
-              <p className="font-medium text-gray-900">{status.connected ? 'Connected' : 'Not connected'}</p>
-              <p className="text-gray-600">{status.connected ? status.googleEmail || 'Unknown account' : 'Connect once to sync calendar events.'}</p>
-              {!status.configured ? <p className="text-[#b3261e]">Backend HUB Calendar credentials are missing in `backend/.env`.</p> : null}
-            </div>
-          </div>
-
-          <div className="mt-6 rounded-[28px] bg-white px-4 py-5 shadow-sm ring-1 ring-gray-200">
-            <div className="mb-4 flex items-center justify-between px-2">
-              <button
-                type="button"
-                onClick={() => setCurrentDate((prev) => addDays(prev, -30))}
-                className="rounded-full p-2 text-gray-600 transition hover:bg-gray-100"
+                onClick={() => setCurrentDate((prev) => addDays(prev, -7))}
+                className="rounded-full p-1.5 text-gray-600 transition hover:bg-gray-100"
+                aria-label="Previous week"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
                   <path d="m15.41 16.59-4.58-4.59 4.58-4.59L14 6l-6 6 6 6z" />
                 </svg>
               </button>
-              <p className="text-[15px] font-medium text-gray-800">{formatMiniMonthLabel(currentDate)}</p>
               <button
                 type="button"
-                onClick={() => setCurrentDate((prev) => addDays(prev, 30))}
-                className="rounded-full p-2 text-gray-600 transition hover:bg-gray-100"
+                onClick={() => setCurrentDate((prev) => addDays(prev, 7))}
+                className="rounded-full p-1.5 text-gray-600 transition hover:bg-gray-100"
+                aria-label="Next week"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
                   <path d="M8.59 16.59 13.17 12 8.59 7.41 10 6l6 6-6 6z" />
                 </svg>
               </button>
             </div>
-
-            <div className="grid grid-cols-7 gap-y-2 text-center text-xs text-gray-600">
-              {WEEKDAY_LABELS.map((label) => (
-                <div key={label} className="font-medium">
-                  {label[0]}
-                </div>
-              ))}
-              {miniCalendarDays.map((day) => {
-                const inMonth = day.getMonth() === currentDate.getMonth();
-                const isToday = isSameDay(day, new Date());
-                const isSelected = isSameDay(day, currentDate);
-                return (
-                  <button
-                    key={day.toISOString()}
-                    type="button"
-                    onClick={() => setCurrentDate(day)}
-                    className={`mx-auto flex h-9 w-9 items-center justify-center rounded-full text-sm transition ${
-                      isSelected
-                        ? 'bg-[#EF0101]/20 font-semibold text-[#EF0101]'
-                        : isToday
-                          ? 'bg-[#EF0101] font-semibold text-white'
-                          : inMonth
-                            ? 'text-gray-900 hover:bg-gray-100'
-                            : 'text-[#9aa0a6] hover:bg-gray-100'
-                    }`}
-                  >
-                    {day.getDate()}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="mt-6 rounded-[28px] bg-white px-4 py-5 shadow-sm ring-1 ring-gray-200">
-            <p className="text-[15px] font-medium text-gray-800">{canSeeOwnerLabels ? 'Visible events this week' : 'Meet with...'}</p>
-            <div className="mt-4 space-y-3">
-              {sidebarEvents.length ? (
-                sidebarEvents.map((event) => (
-                  <button
-                    key={`sidebar-${event.ownerEmail || 'owner'}-${event.id}`}
-                    type="button"
-                    onClick={() => setSelectedEvent(event)}
-                    className="w-full rounded-2xl border border-gray-200 px-4 py-3 text-left transition hover:bg-slate-50"
-                  >
-                    <p className="truncate text-sm font-medium text-gray-900">{event.summary || 'Untitled event'}</p>
-                    <p className="mt-1 text-xs text-gray-600">{formatDateTime(event.start)}</p>
-                    {canSeeOwnerLabels && event.ownerName ? <p className="mt-1 text-xs text-[#EF0101]">{event.ownerName}</p> : null}
-                  </button>
-                ))
-              ) : (
-                <p className="text-sm text-gray-600">No events scheduled for this week yet.</p>
-              )}
-            </div>
-          </div>
-        </aside>
-
-        <section className="min-w-0 flex-1">
-          <div className="border-b border-gray-200 bg-white px-4 py-4 xl:px-8">
-            <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-              <div className="flex flex-wrap items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => setCurrentDate(startOfDay(new Date()))}
-                  className="rounded-full border border-gray-200 px-6 py-2.5 text-[15px] font-medium text-gray-900 transition hover:bg-gray-100"
-                >
-                  Today
-                </button>
-                <div className="flex items-center">
-                  <button
-                    type="button"
-                    onClick={() => setCurrentDate((prev) => addDays(prev, -7))}
-                    className="rounded-full p-2 text-gray-600 transition hover:bg-gray-100"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-6 w-6">
-                      <path d="m15.41 16.59-4.58-4.59 4.58-4.59L14 6l-6 6 6 6z" />
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCurrentDate((prev) => addDays(prev, 7))}
-                    className="rounded-full p-2 text-gray-600 transition hover:bg-gray-100"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-6 w-6">
-                      <path d="M8.59 16.59 13.17 12 8.59 7.41 10 6l6 6-6 6z" />
-                    </svg>
-                  </button>
-                </div>
-                <h2 className="text-[34px] font-normal text-gray-900">{formatMonthLabel(currentDate)}</h2>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => loadEvents(weekStart)}
-                  className="rounded-full border border-gray-200 px-5 py-2.5 text-sm font-medium text-gray-900 transition hover:bg-gray-100"
-                >
-                  {loading ? 'Refreshing...' : 'Refresh'}
-                </button>
-                <div className="rounded-full border border-gray-200 px-5 py-2.5 text-sm font-medium text-gray-900">Week</div>
-              </div>
-            </div>
-            {message ? (
-              <div
-                className={`mt-4 rounded-2xl px-4 py-3 text-sm ${
-                  message.type === 'success' ? 'bg-[#e6f4ea] text-[#137333]' : 'bg-[#fce8e6] text-[#b3261e]'
-                }`}
+            <div className="relative" ref={miniCalendarRef}>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowMiniCalendar((open) => !open);
+                  setShowAgenda(false);
+                  setShowAccountMenu(false);
+                }}
+                className="inline-flex items-center gap-2 rounded-lg px-2 py-1 text-left transition hover:bg-gray-50"
               >
-                {message.text}
-              </div>
-            ) : null}
-          </div>
-
-          <div className="overflow-x-auto bg-slate-50 px-4 py-5 xl:px-8">
-            <div className="min-w-[980px] overflow-hidden rounded-[32px] bg-white shadow-sm ring-1 ring-gray-200">
-              <div className="grid grid-cols-[96px_repeat(7,minmax(0,1fr))] border-b border-gray-200">
-                <div className="border-r border-gray-200 bg-white px-4 py-5 text-right text-sm text-gray-600">GMT+05:30</div>
-                {weekDays.map((day) => {
-                  const isToday = isSameDay(day, new Date());
-                  return (
-                    <div key={day.toISOString()} className="border-r border-gray-200 px-4 py-3 last:border-r-0">
-                      <p className={`text-center text-[12px] font-semibold tracking-[0.08em] ${isToday ? 'text-[#EF0101]' : 'text-gray-600'}`}>
-                        {formatDayHeader(day)}
-                      </p>
-                      <div className="mt-2 flex items-center justify-center">
-                        <span
-                          className={`flex h-[54px] w-[54px] items-center justify-center rounded-full text-[34px] font-normal leading-none ${
-                            isToday ? 'bg-[#EF0101] text-white shadow-sm' : 'text-gray-900'
+                <h2 className="text-lg font-medium text-gray-900 lg:text-xl">{formatMonthLabel(currentDate)}</h2>
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className={`h-4 w-4 text-gray-500 transition ${showMiniCalendar ? 'rotate-180' : ''}`}>
+                  <path d="M7 10l5 5 5-5z" />
+                </svg>
+              </button>
+              {showMiniCalendar ? (
+                <div className="absolute left-0 top-full z-30 mt-2 w-[300px] rounded-2xl border border-gray-200 bg-white p-4 shadow-xl">
+                  <div className="mb-3 flex items-center justify-between">
+                    <button type="button" onClick={() => shiftMonth(-1)} className="rounded-full p-2 text-gray-600 transition hover:bg-gray-100" aria-label="Previous month">
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+                        <path d="m15.41 16.59-4.58-4.59 4.58-4.59L14 6l-6 6 6 6z" />
+                      </svg>
+                    </button>
+                    <p className="text-sm font-medium text-gray-800">{formatMiniMonthLabel(currentDate)}</p>
+                    <button type="button" onClick={() => shiftMonth(1)} className="rounded-full p-2 text-gray-600 transition hover:bg-gray-100" aria-label="Next month">
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+                        <path d="M8.59 16.59 13.17 12 8.59 7.41 10 6l6 6-6 6z" />
+                      </svg>
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-7 gap-y-1 text-center text-xs text-gray-500">
+                    {WEEKDAY_LABELS.map((label) => (
+                      <div key={label} className="font-medium">
+                        {label[0]}
+                      </div>
+                    ))}
+                    {miniCalendarDays.map((day) => {
+                      const inMonth = day.getMonth() === currentDate.getMonth();
+                      const isToday = isSameDay(day, new Date());
+                      const isSelected = isSameDay(day, currentDate);
+                      return (
+                        <button
+                          key={day.toISOString()}
+                          type="button"
+                          onClick={() => {
+                            setCurrentDate(day);
+                            setShowMiniCalendar(false);
+                          }}
+                          className={`mx-auto flex h-9 w-9 items-center justify-center rounded-full text-sm transition ${
+                            isSelected
+                              ? 'bg-[#EF0101]/15 font-semibold text-[#EF0101]'
+                              : isToday
+                                ? 'bg-[#EF0101] font-semibold text-white'
+                                : inMonth
+                                  ? 'text-gray-900 hover:bg-gray-100'
+                                  : 'text-gray-400 hover:bg-gray-100'
                           }`}
                         >
                           {day.getDate()}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              <div ref={scrollAreaRef} className="max-h-[calc(100vh-220px)] overflow-y-auto">
-                <div className="grid grid-cols-[96px_1fr]">
-                  <div className="border-r border-gray-200 bg-white">
-                    {HOURS.map((hour) => (
-                      <div key={hour} className="relative h-[56px] border-b border-gray-100 px-4 text-right text-sm text-gray-600">
-                        <span className="-translate-y-3 absolute right-4 top-0 bg-white px-1">{formatTime(new Date(2026, 0, 1, hour, 0, 0, 0))}</span>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="grid grid-cols-7">
-                    {weekDays.map((day, dayIndex) => {
-                      const dayEvents = positionedEvents.filter((event) => event.dayIndex === dayIndex);
-                      const showCurrentTime = dayIndex === todayIndex && currentTimeOffset >= 0 && currentTimeOffset <= HOURS.length * HOUR_HEIGHT;
-
-                      return (
-                        <div key={`grid-${day.toISOString()}`} className="relative border-r border-gray-200 last:border-r-0" style={{ height: `${HOURS.length * HOUR_HEIGHT}px` }}>
-                          {HOURS.map((hour) => (
-                            <div key={`${day.toISOString()}-${hour}`} className="h-[56px] border-b border-gray-100" />
-                          ))}
-
-                          {showCurrentTime ? (
-                            <div className="pointer-events-none absolute left-0 right-0 z-20" style={{ top: `${currentTimeOffset}px` }}>
-                              <div className="absolute -left-[8px] top-[-6px] h-3.5 w-3.5 rounded-full bg-[#EF0101]" />
-                              <div className="h-[2px] w-full bg-[#EF0101]" />
-                            </div>
-                          ) : null}
-
-                          {dayEvents.map((event) => {
-                            const gap = 8;
-                            const width = `calc(${100 / event.totalColumns}% - ${gap}px)`;
-                            const left = `calc(${(100 / event.totalColumns) * event.column}% + ${gap / 2}px)`;
-                            return (
-                              <button
-                                key={`${event.ownerEmail || 'owner'}-${event.id}-${event.dayIndex}-${event.column}`}
-                                type="button"
-                                onClick={() => setSelectedEvent(event)}
-                                className="absolute z-10 overflow-hidden rounded-2xl border border-[#EF0101]/30 bg-[#EF0101]/5 px-2 py-1.5 text-left shadow-sm transition hover:bg-[#EF0101]/10"
-                                style={{
-                                  top: `${event.top}px`,
-                                  left,
-                                  width,
-                                  height: `${event.height}px`,
-                                }}
-                                title={event.summary}
-                              >
-                                <p className="truncate text-[13px] font-semibold text-[#EF0101] leading-4">{event.summary || 'Untitled event'}</p>
-                                <p className="mt-1 truncate text-xs leading-4 text-[#32261C]">
-                                  {formatTime(event.startDate)} - {formatTime(event.endDate)}
-                                </p>
-                                {canSeeOwnerLabels && event.ownerName ? <p className="mt-1 truncate text-[11px] text-[#32261C]">{event.ownerName}</p> : null}
-                              </button>
-                            );
-                          })}
-                        </div>
+                        </button>
                       );
                     })}
                   </div>
                 </div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative" ref={agendaRef}>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAgenda((open) => !open);
+                  setShowMiniCalendar(false);
+                  setShowAccountMenu(false);
+                }}
+                className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-800 transition hover:bg-gray-50"
+              >
+                Agenda
+                <span className="rounded-full bg-gray-100 px-1.5 py-0.5 text-xs text-gray-600">{weekEvents.length}</span>
+              </button>
+              {showAgenda ? (
+                <div className="absolute right-0 top-full z-30 mt-2 w-[340px] max-w-[90vw] overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-xl">
+                  <div className="border-b border-gray-100 px-4 py-3">
+                    <p className="text-sm font-semibold text-gray-900">{canSeeOwnerLabels ? 'Events this week' : 'Your week'}</p>
+                    <p className="text-xs text-gray-500">Tap an event to open details</p>
+                  </div>
+                  <div className="max-h-[360px] space-y-2 overflow-y-auto p-3">
+                    {weekEvents.length ? (
+                      weekEvents.map((event) => (
+                        <button
+                          key={`agenda-${event.ownerEmail || 'owner'}-${event.id}`}
+                          type="button"
+                          onClick={() => {
+                            setSelectedEvent(event);
+                            setShowAgenda(false);
+                          }}
+                          className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-left transition hover:bg-gray-50"
+                        >
+                          <p className="truncate text-sm font-medium text-gray-900">{event.summary || 'Untitled event'}</p>
+                          <p className="mt-0.5 text-xs text-gray-500">{formatDateTime(event.start)}</p>
+                          {canSeeOwnerLabels && event.ownerName ? <p className="mt-0.5 text-xs text-[#EF0101]">{event.ownerName}</p> : null}
+                        </button>
+                      ))
+                    ) : (
+                      <p className="px-1 py-6 text-center text-sm text-gray-500">No events scheduled for this week yet.</p>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => loadEvents(weekStart)}
+              className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-800 transition hover:bg-gray-50"
+            >
+              {loading ? 'Refreshing...' : 'Refresh'}
+            </button>
+            <span className="rounded-lg bg-gray-100 px-3 py-1.5 text-sm font-medium text-gray-700">Week</span>
+
+            {!status.connected ? (
+              <button
+                type="button"
+                onClick={handleConnect}
+                className="rounded-lg bg-[#EF0101] px-3.5 py-1.5 text-sm font-medium text-white transition hover:bg-[#EF0101]/90"
+              >
+                Connect calendar
+              </button>
+            ) : (
+              <div className="relative" ref={accountMenuRef}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAccountMenu((open) => !open);
+                    setShowMiniCalendar(false);
+                    setShowAgenda(false);
+                  }}
+                  className="inline-flex max-w-[260px] items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 text-sm transition hover:bg-gray-50"
+                >
+                  <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
+                  <span className="truncate text-gray-800">{status.googleEmail || 'Connected'}</span>
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4 shrink-0 text-gray-500">
+                    <path d="M7 10l5 5 5-5z" />
+                  </svg>
+                </button>
+                {showAccountMenu ? (
+                  <div className="absolute right-0 top-full z-30 mt-2 w-64 overflow-hidden rounded-xl border border-gray-200 bg-white p-2 shadow-xl">
+                    <p className="px-2 py-1.5 text-xs text-gray-500">Connected account</p>
+                    <p className="truncate px-2 pb-2 text-sm font-medium text-gray-900">{status.googleEmail || 'Unknown account'}</p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAccountMenu(false);
+                        handleConnect();
+                      }}
+                      className="w-full rounded-lg px-3 py-2 text-left text-sm text-gray-800 transition hover:bg-gray-50"
+                    >
+                      Reconnect
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAccountMenu(false);
+                        handleDisconnect();
+                      }}
+                      className="w-full rounded-lg px-3 py-2 text-left text-sm text-[#b3261e] transition hover:bg-red-50"
+                    >
+                      Disconnect
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            )}
+          </div>
+        </div>
+        {message ? (
+          <div
+            className={`mt-3 rounded-xl px-4 py-2.5 text-sm ${
+              message.type === 'success' ? 'bg-[#e6f4ea] text-[#137333]' : 'bg-[#fce8e6] text-[#b3261e]'
+            }`}
+          >
+            {message.text}
+          </div>
+        ) : null}
+        {!status.configured ? (
+          <p className="mt-3 text-sm text-[#b3261e]">Backend HUB Calendar credentials are missing in `backend/.env`.</p>
+        ) : null}
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-x-auto">
+        <div className="flex h-full min-w-[980px] flex-col">
+          <div className="grid shrink-0 grid-cols-[72px_repeat(7,minmax(0,1fr))] border-b border-gray-200">
+            <div className="px-2 py-3 text-right text-[11px] text-gray-400">GMT+05:30</div>
+            {weekDays.map((day) => {
+              const isToday = isSameDay(day, new Date());
+              const isSelected = isSameDay(day, currentDate);
+              return (
+                <button
+                  key={day.toISOString()}
+                  type="button"
+                  onClick={() => setCurrentDate(day)}
+                  className="border-l border-gray-100 px-2 py-2 transition hover:bg-gray-50"
+                >
+                  <p className={`text-center text-[11px] font-semibold tracking-[0.08em] ${isToday ? 'text-[#EF0101]' : 'text-gray-500'}`}>
+                    {formatDayHeader(day)}
+                  </p>
+                  <div className="mt-1 flex items-center justify-center">
+                    <span
+                      className={`flex h-9 w-9 items-center justify-center rounded-full text-lg leading-none ${
+                        isToday
+                          ? 'bg-[#EF0101] font-semibold text-white'
+                          : isSelected
+                            ? 'bg-[#EF0101]/10 font-medium text-[#EF0101]'
+                            : 'text-gray-900'
+                      }`}
+                    >
+                      {day.getDate()}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          <div ref={scrollAreaRef} className="min-h-0 flex-1 overflow-y-auto">
+            <div className="grid grid-cols-[72px_1fr]">
+              <div className="border-r border-gray-100 bg-white">
+                {HOURS.map((hour) => (
+                  <div key={hour} className="relative h-[56px] border-b border-gray-100 px-2 text-right text-xs text-gray-400">
+                    <span className="absolute right-2 top-0 -translate-y-2 bg-white px-1">{formatTime(new Date(2026, 0, 1, hour, 0, 0, 0))}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-7">
+                {weekDays.map((day, dayIndex) => {
+                  const dayEvents = positionedEvents.filter((event) => event.dayIndex === dayIndex);
+                  const showCurrentTime = dayIndex === todayIndex && currentTimeOffset >= 0 && currentTimeOffset <= HOURS.length * HOUR_HEIGHT;
+
+                  return (
+                    <div key={`grid-${day.toISOString()}`} className="relative border-l border-gray-100" style={{ height: `${HOURS.length * HOUR_HEIGHT}px` }}>
+                      {HOURS.map((hour) => (
+                        <div key={`${day.toISOString()}-${hour}`} className="h-[56px] border-b border-gray-100" />
+                      ))}
+
+                      {showCurrentTime ? (
+                        <div className="pointer-events-none absolute left-0 right-0 z-20" style={{ top: `${currentTimeOffset}px` }}>
+                          <div className="absolute -left-[6px] top-[-5px] h-3 w-3 rounded-full bg-[#EF0101]" />
+                          <div className="h-[2px] w-full bg-[#EF0101]" />
+                        </div>
+                      ) : null}
+
+                      {dayEvents.map((event) => {
+                        const gap = 6;
+                        const width = `calc(${100 / event.totalColumns}% - ${gap}px)`;
+                        const left = `calc(${(100 / event.totalColumns) * event.column}% + ${gap / 2}px)`;
+                        return (
+                          <button
+                            key={`${event.ownerEmail || 'owner'}-${event.id}-${event.dayIndex}-${event.column}`}
+                            type="button"
+                            onClick={() => setSelectedEvent(event)}
+                            className="absolute z-10 overflow-hidden rounded-lg border border-[#EF0101]/25 bg-[#EF0101]/10 px-2 py-1 text-left transition hover:bg-[#EF0101]/15"
+                            style={{
+                              top: `${event.top}px`,
+                              left,
+                              width,
+                              height: `${event.height}px`,
+                            }}
+                            title={event.summary}
+                          >
+                            <p className="truncate text-[12px] font-semibold leading-4 text-[#EF0101]">{event.summary || 'Untitled event'}</p>
+                            <p className="mt-0.5 truncate text-[11px] leading-4 text-[#32261C]">
+                              {formatTime(event.startDate)} - {formatTime(event.endDate)}
+                            </p>
+                            {canSeeOwnerLabels && event.ownerName ? <p className="mt-0.5 truncate text-[11px] text-[#32261C]">{event.ownerName}</p> : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
-        </section>
+        </div>
       </div>
 
       <EventDetailsPopover event={selectedEvent} onClose={() => setSelectedEvent(null)} />
