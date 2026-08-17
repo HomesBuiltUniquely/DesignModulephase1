@@ -143,16 +143,21 @@ function getLatestMeetingWizCompletion(
   return best;
 }
 
+/** Temporary: show Start Meeting on every Pre 10% lead (skip today/completion gates). */
+const START_MEETING_ALWAYS_FOR_PRE10 = true;
+
 /**
- * Start Meeting only for Pre 10% leads, while a meeting is scheduled for today
- * and that session has not been completed. After Meeting Completed, hides until
- * a newer meeting is scheduled.
+ * Start Meeting for Pre 10% leads.
+ * When START_MEETING_ALWAYS_FOR_PRE10 is true, any Pre 10% lead qualifies.
+ * Otherwise: meeting scheduled for today and session not yet completed.
  */
 export function canShowStartMeetingButton(
   lead: LeadshipTypes | null | undefined,
   historyEvents?: HistoryEventLike[] | null,
 ): boolean {
   if (!lead || getPhaseBucket(lead) !== 'Pre 10%') return false;
+
+  if (START_MEETING_ALWAYS_FOR_PRE10) return true;
 
   if (!isLeadMeetingScheduledToday(lead, historyEvents)) return false;
 
@@ -165,7 +170,6 @@ export function canShowStartMeetingButton(
   if (!completed) return true;
 
   const scheduleUpdatedAt = getScheduleUpdatedAt(lead);
-  // A meeting scheduled/rescheduled after completion unlocks Start Meeting again.
   if (scheduleUpdatedAt && scheduleUpdatedAt > completed.at) {
     return true;
   }
@@ -174,7 +178,6 @@ export function canShowStartMeetingButton(
     return false;
   }
 
-  // Fallback: completed on the same calendar day as today's schedule.
   const completedDay = parseMeetingDateToIsoDay(completed.at);
   if (completedDay === scheduleDay) return false;
 
