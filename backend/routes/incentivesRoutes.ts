@@ -310,10 +310,10 @@ export function registerIncentivesRoutes(
       const { startIso, endIso } = cycleRange(cycleIndex);
 
       const [designerRows] = await pool.query(
-        `SELECT id, name, role FROM users WHERE id = ? LIMIT 1`,
+        `SELECT id, name, role, sub_role AS subRole FROM users WHERE id = ? LIMIT 1`,
         [designerId],
       );
-      const designer = (designerRows as { id: number; name: string; role: string }[])[0];
+      const designer = (designerRows as { id: number; name: string; role: string; subRole: string | null }[])[0];
       if (!designer) return res.status(404).json({ message: "Designer not found" });
 
       const [leadRows] = await pool.query(
@@ -530,7 +530,7 @@ export function registerIncentivesRoutes(
       }
 
       return res.json({
-        designer: { id: designer.id, name: designer.name, role: designer.role },
+        designer: { id: designer.id, name: designer.name, role: designer.role, subRole: designer.subRole || null },
         cycleIndex,
         startIso,
         endIso,
@@ -561,13 +561,13 @@ export function registerIncentivesRoutes(
           ? Number(cycleIndexRaw)
           : getCurrentCycleIndex();
 
-      let designers: { id: number; name: string; role: string }[] = [];
+      let designers: { id: number; name: string; role: string; subRole: string | null }[] = [];
       if (role === "design_manager") {
         const [rows] = await pool.query(
-          `SELECT id, name, role FROM users
+          `SELECT id, name, role, sub_role AS subRole FROM users
            WHERE role = 'design_manager' AND id = ?
            UNION
-           SELECT id, name, role FROM users
+           SELECT id, name, role, sub_role AS subRole FROM users
            WHERE role = 'designer' AND design_manager_id = ?
            ORDER BY name ASC`,
           [user.id, user.id],
@@ -575,7 +575,7 @@ export function registerIncentivesRoutes(
         designers = rows as typeof designers;
       } else {
         const [rows] = await pool.query(
-          `SELECT id, name, role FROM users
+          `SELECT id, name, role, sub_role AS subRole FROM users
            WHERE role IN ('designer', 'design_manager')
            ORDER BY name ASC`,
         );
