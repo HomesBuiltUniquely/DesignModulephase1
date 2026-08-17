@@ -12,6 +12,7 @@ import {
   filterDealsByDate,
   formatInr,
   formatInrCompact,
+  formatTargetLakhs,
   getCurrentCycleIndex,
   getIncentiveCycleByIndex,
   listFortnightOptions,
@@ -1014,7 +1015,10 @@ function TeamIncentivesPanel({
                   <tr key={row.designerId} className="border-b border-gray-50 last:border-0">
                     <td className="py-3.5 pr-4">
                       <div className="font-medium text-gray-900">{row.designerName}</div>
-                      <div className="text-xs capitalize text-gray-500">{row.role.replace(/_/g, ' ')}</div>
+                      <div className="text-xs text-gray-500">
+                        {row.subRole ? `${row.subRole} · ` : ''}
+                        {row.role.replace(/_/g, ' ')}
+                      </div>
                     </td>
                     <td className="py-3.5 pr-4 text-gray-800">{formatInr(row.totalTarget)}</td>
                     <td className="py-3.5 pr-4 text-gray-800">{formatInr(row.revenueAchieved)}</td>
@@ -1119,7 +1123,13 @@ export default function DesignerIncentivesView() {
       const body = await res.json();
       const deals = (Array.isArray(body?.deals) ? body.deals : []) as IncentiveDealInput[];
       const meetingsCompleted = Number(body?.meetingsCompleted) || 0;
-      return buildIncentivesFromDealInputs(member, cycle, deals, meetingsCompleted);
+      const resolvedMember: IncentiveMember = {
+        id: Number(body?.designer?.id) || member.id,
+        name: String(body?.designer?.name || member.name),
+        role: String(body?.designer?.role || member.role),
+        subRole: body?.designer?.subRole ?? body?.designer?.sub_role ?? member.subRole ?? null,
+      };
+      return buildIncentivesFromDealInputs(resolvedMember, cycle, deals, meetingsCompleted);
     },
     [apiBase, cycle, cycleIndex, sessionId],
   );
@@ -1127,7 +1137,12 @@ export default function DesignerIncentivesView() {
   const loadMembers = useCallback(async () => {
     if (!user) return;
     if (isDesignerOnly) {
-      const self: IncentiveMember = { id: user.id, name: user.name, role: user.role };
+      const self: IncentiveMember = {
+        id: user.id,
+        name: user.name,
+        role: user.role,
+        subRole: user.subRole ?? null,
+      };
       setMembers([self]);
       setSelectedId(user.id);
       return;
@@ -1144,13 +1159,20 @@ export default function DesignerIncentivesView() {
       });
       if (assignableRes.ok) {
         const data = await assignableRes.json();
-        const raw = (data?.designers || data || []) as { id: number; name: string; role?: string }[];
+        const raw = (data?.designers || data || []) as {
+          id: number;
+          name: string;
+          role?: string;
+          subRole?: string | null;
+          sub_role?: string | null;
+        }[];
         list = raw
           .filter((d) => Number.isFinite(Number(d.id)))
           .map((d) => ({
             id: Number(d.id),
             name: String(d.name || 'Designer'),
             role: String(d.role || 'designer'),
+            subRole: d.subRole ?? d.sub_role ?? null,
           }));
       }
       if (list.length === 0) {
@@ -1160,13 +1182,20 @@ export default function DesignerIncentivesView() {
         });
         if (designersRes.ok) {
           const data = await designersRes.json();
-          const raw = (data?.designers || []) as { id: number; name: string; role?: string }[];
+          const raw = (data?.designers || []) as {
+            id: number;
+            name: string;
+            role?: string;
+            subRole?: string | null;
+            sub_role?: string | null;
+          }[];
           list = raw
             .filter((d) => Number.isFinite(Number(d.id)))
             .map((d) => ({
               id: Number(d.id),
               name: String(d.name || 'Designer'),
               role: String(d.role || 'designer'),
+              subRole: d.subRole ?? d.sub_role ?? null,
             }));
         }
       }
@@ -1206,7 +1235,12 @@ export default function DesignerIncentivesView() {
       const member =
         selectedMember ||
         (user
-          ? ({ id: user.id, name: user.name, role: user.role } as IncentiveMember)
+          ? ({
+              id: user.id,
+              name: user.name,
+              role: user.role,
+              subRole: user.subRole ?? null,
+            } as IncentiveMember)
           : null);
       if (!member) {
         setIndividualData(null);
@@ -1253,6 +1287,7 @@ export default function DesignerIncentivesView() {
             designerId: d.designerId,
             designerName: d.designerName,
             role: m.role,
+            subRole: d.subRole,
             totalTarget: d.totalTarget,
             revenueAchieved: d.revenueAchieved,
             achievementPct: d.achievementPct,
@@ -1314,7 +1349,9 @@ export default function DesignerIncentivesView() {
           <div>
             <h1 className="text-2xl font-bold tracking-tight text-gray-900">Performance Incentives</h1>
             <p className="mt-1 text-sm text-gray-500">
-              ₹15L per fortnight (1–15 / 16–month end) · ₹30L per month
+              {viewMode === 'individual' && individualData
+                ? `${individualData.subRole || 'ID'} target ${formatTargetLakhs(individualData.totalTarget)} this fortnight (${formatTargetLakhs(individualData.monthlyTarget)} / month)`
+                : 'Fortnight target is half of the monthly sub-role target (JID ₹25L · ID ₹30L · SID ₹35L · PD ₹38L)'}
               {isManager ? ` · ${scopeLabel}` : null}
             </p>
           </div>

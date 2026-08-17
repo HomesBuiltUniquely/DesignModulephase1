@@ -397,9 +397,7 @@ export default function DashboardGuard() {
 
   const showIncentivesSideRail =
     canAccessIncentives &&
-    (pathname === '/incentives' ||
-      pathname === '/google-calendar' ||
-      pathname === '/personal-appointments');
+    (pathname === '/incentives' || pathname === '/personal-appointments');
 
   return (
     <div>

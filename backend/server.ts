@@ -1133,6 +1133,19 @@ async function initDb() {
     } catch {
       // ignore
     }
+    // Optional sub-role under the primary role (e.g. senior designer)
+    try {
+      const [subRoleCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'sub_role'",
+      );
+      if ((subRoleCol as any[]).length === 0) {
+        await conn.query(
+          "ALTER TABLE users ADD COLUMN sub_role VARCHAR(50) NULL",
+        );
+      }
+    } catch {
+      // ignore
+    }
 
     // Designer Meeting Wizard portfolio fields (experience card + inspiration projects)
     for (const colSpec of [
@@ -2375,6 +2388,7 @@ async function getUserFromSession(req: Request) {
   if (!token) return null;
   const [rows] = await pool.query(
     `SELECT u.id, u.email, u.name, u.role, u.profileImage, u.phone, u.branch,
+            u.sub_role AS subRole,
             u.designer_title AS designerTitle,
             u.designer_experience AS designerExperience,
             u.designer_projects AS designerProjects,
@@ -2410,6 +2424,7 @@ async function getUserFromSession(req: Request) {
     profileImage: user.profileImage || null,
     phone: user.phone || "",
     branch: user.branch || null,
+    subRole: user.subRole || null,
     designerTitle: user.designerTitle || null,
     designerExperience: user.designerExperience || null,
     designerProjects: user.designerProjects || null,
@@ -3780,6 +3795,7 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
   try {
     const [rows] = await pool.query(
       `SELECT id, email, name, role, profileImage, phone, branch, password,
+              sub_role AS subRole,
               designer_title AS designerTitle,
               designer_experience AS designerExperience,
               designer_projects AS designerProjects,
@@ -3815,6 +3831,7 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
       profileImage: userRow.profileImage || null,
       phone: userRow.phone || "",
       branch: userRow.branch || null,
+      subRole: userRow.subRole || null,
       designerTitle: userRow.designerTitle || null,
       designerExperience: userRow.designerExperience || null,
       designerProjects: userRow.designerProjects || null,
@@ -13070,6 +13087,7 @@ app.get("/api/designers", async (req: Request, res: Response) => {
                         u.name,
                         u.email,
                         u.role,
+                        u.sub_role AS subRole,
                         COALESCE(m.name, '') as leadName
                  FROM users u
                  LEFT JOIN users m ON u.design_manager_id = m.id
@@ -13107,11 +13125,11 @@ app.get("/api/designers/assignable", async (req: Request, res: Response) => {
 
     if (role === "design_manager") {
       const [rows] = await pool.query(
-        `SELECT id, name, role
+        `SELECT id, name, role, sub_role AS subRole
          FROM users
          WHERE role = 'design_manager' AND id = ?
          UNION
-         SELECT id, name, role
+         SELECT id, name, role, sub_role AS subRole
          FROM users
          WHERE role = 'designer' AND design_manager_id = ?
          ORDER BY name ASC`,
@@ -13121,7 +13139,7 @@ app.get("/api/designers/assignable", async (req: Request, res: Response) => {
     }
 
     const [rows] = await pool.query(
-      `SELECT id, name, role
+      `SELECT id, name, role, sub_role AS subRole
        FROM users
        WHERE role IN ('designer', 'design_manager')
        ORDER BY name ASC`,
