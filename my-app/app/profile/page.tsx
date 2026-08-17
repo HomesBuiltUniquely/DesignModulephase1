@@ -149,7 +149,7 @@ export default function ProfilePage() {
       <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <h1 className="text-xl font-bold text-gray-900">Profile</h1>
-          <a href="/" className="text-sm text-green-600 hover:underline">Dashboard</a>
+          <a href="/" className="text-sm text-[#32261C] hover:underline">Dashboard</a>
           <a href="/profile/experience" className="text-sm text-gray-600 hover:text-gray-900">Experience &amp; stats</a>
           <a href="/profile/inspiration" className="text-sm text-gray-600 hover:text-gray-900">Portfolio projects</a>
           <a href="/change-password" className="text-sm text-gray-600 hover:text-gray-900">Change password</a>
@@ -179,7 +179,7 @@ export default function ProfilePage() {
               </div>
               {message && (
                 <div
-                  className={`w-full p-3 rounded-lg text-sm ${message.type === 'success' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-700'}`}
+                  className={`w-full p-3 rounded-lg text-sm ${message.type === 'success' ? 'bg-[#DDCDC1]/20 text-[#32261C]' : 'bg-red-50 text-red-700'}`}
                 >
                   {message.text}
                 </div>
@@ -196,7 +196,7 @@ export default function ProfilePage() {
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={submitting}
-                className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-60"
+                className="px-4 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-medium hover:bg-[#EF0101] disabled:opacity-60"
               >
                 {submitting ? 'Uploading…' : 'Choose photo'}
               </button>
@@ -208,7 +208,7 @@ export default function ProfilePage() {
           <form onSubmit={handleProfileSubmit} className="space-y-4">
             {message && (
               <div
-                className={`p-3 rounded-lg text-sm ${message.type === 'success' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-700'}`}
+                className={`p-3 rounded-lg text-sm ${message.type === 'success' ? 'bg-[#DDCDC1]/20 text-[#32261C]' : 'bg-red-50 text-red-700'}`}
               >
                 {message.text}
               </div>
@@ -261,7 +261,7 @@ export default function ProfilePage() {
             <button
               type="submit"
               disabled={submitting}
-              className="w-full py-2.5 rounded-lg bg-green-600 text-white font-medium hover:bg-green-700 disabled:opacity-60"
+              className="w-full py-2.5 rounded-lg bg-[#EF0101] text-white font-medium hover:bg-[#EF0101] disabled:opacity-60"
             >
               {submitting ? 'Saving…' : 'Save details'}
             </button>

@@ -8,6 +8,7 @@ import {
   isPersonalAppointmentRow,
   minutesToHubTimeLabel,
 } from "@/lib/hub-meeting-schedule";
+import CustomSelect from "@/app/Components/ui/CustomSelect";
 
 type ViewableUser = { id: number; name: string; role: string };
 
@@ -246,14 +247,14 @@ export function AppointmentHistoryPanel({
     <div
       className={
         isPage
-          ? "rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden"
-          : "hidden xl:block rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden"
+          ? "rounded-xl border border-gray-200 bg-white shadow-sm"
+          : "hidden xl:block rounded-xl border border-gray-200 bg-white shadow-sm"
       }
     >
       <button
         type="button"
         onClick={() => setExpanded((e) => !e)}
-        className="w-full flex items-center justify-between px-5 py-3 bg-gray-50 border-b border-gray-200 text-left"
+        className={`w-full flex items-center justify-between px-5 py-3 bg-gray-50 border-b border-gray-200 text-left rounded-t-xl ${!expanded ? "rounded-b-xl border-b-0" : ""}`}
       >
         <div>
           <h3 className="text-sm font-bold text-gray-900">{panelTitle}</h3>
@@ -267,24 +268,21 @@ export function AppointmentHistoryPanel({
       </button>
 
       {(isPage || expanded) && (
-        <div className={`p-4 space-y-3 ${isPage ? "" : "max-h-[320px] overflow-y-auto"}`}>
+        <div className={`p-4 space-y-3 ${isPage ? "" : ""}`}>
           {canPickTeamMember && viewableUsers.length > 0 && (
             <label className="block">
               <span className="text-xs font-semibold text-gray-600 uppercase tracking-wide">
                 {viewableUsers.length > 1 ? "Team member" : "Viewing"}
               </span>
-              <select
-                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+              <CustomSelect
                 value={selectedName}
-                onChange={(e) => setSelectedName(e.target.value)}
-              >
-                <option value={ALL_TEAM_MEMBERS}>All team members</option>
-                {viewableUsers.map((u) => (
-                  <option key={u.id} value={u.name}>
-                    {u.name} ({roleLabel(u.role)})
-                  </option>
-                ))}
-              </select>
+                onChange={(val) => setSelectedName(val)}
+                options={[
+                  { value: ALL_TEAM_MEMBERS, label: "All team members" },
+                  ...viewableUsers.map((u) => ({ value: u.name, label: `${u.name} (${roleLabel(u.role)})` }))
+                ]}
+                placeholder="All team members"
+              />
             </label>
           )}
 
@@ -348,7 +346,7 @@ export function AppointmentHistoryPanel({
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
                         {isAllTeamView && row.designerName ? (
-                          <p className="text-xs font-semibold text-emerald-800 mb-0.5">{row.designerName}</p>
+                          <p className="text-xs font-semibold text-[#32261C] mb-0.5">{row.designerName}</p>
                         ) : null}
                         <p className="text-sm font-medium text-gray-900 truncate">
                           {row.description || "Personal block"}
@@ -381,7 +379,7 @@ export function AppointmentHistoryPanel({
                         <button
                           type="button"
                           onClick={() => setDetail(row)}
-                          className="text-xs font-semibold text-blue-600 hover:underline"
+                          className="text-xs font-semibold text-[#00B0ED] hover:underline"
                         >
                           Details
                         </button>

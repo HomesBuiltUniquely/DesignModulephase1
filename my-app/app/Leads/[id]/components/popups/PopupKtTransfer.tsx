@@ -79,7 +79,7 @@ export default function PopupKtTransfer({ leadId, sessionId, onMarkComplete, onC
       {toast && (
         <div className="fixed inset-0 flex items-center justify-center z-[99999] pointer-events-none">
           <div className="bg-gray-900/95 text-white text-base font-semibold px-8 py-4 rounded-2xl shadow-2xl border border-gray-700 text-center max-w-sm backdrop-blur-sm pointer-events-auto transition-all duration-300 transform scale-100 flex items-center gap-3">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-6 h-6 text-green-400 shrink-0">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-6 h-6 text-[#32261C]/70 shrink-0">
               <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
             </svg>
             <span>{toast}</span>
@@ -88,17 +88,17 @@ export default function PopupKtTransfer({ leadId, sessionId, onMarkComplete, onC
       )}
 
       {/* Purpose banner */}
-      <div className="rounded-xl bg-indigo-50 border border-indigo-100 px-4 py-4">
+      <div className="rounded-xl bg-[#DDCDC1]/20 border border-[#DDCDC1] px-4 py-4">
         <div className="flex items-center gap-3 mb-2">
-          <span className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-indigo-100 text-indigo-700">
+          <span className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-[#DDCDC1]/40 text-[#32261C]">
             {/* Handshake-style icon */}
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.8" stroke="currentColor" className="w-5 h-5">
               <path strokeLinecap="round" strokeLinejoin="round" d="M15.59 14.37a6 6 0 0 1-5.84 7.38v-4.8m5.84-2.58a14.98 14.98 0 0 0 6.16-12.12A14.98 14.98 0 0 0 9.631 8.41m5.96 5.96a14.926 14.926 0 0 1-5.841 2.58m-.119-8.54a6 6 0 0 0-7.381 5.84h4.8m2.581-5.84a14.927 14.927 0 0 0-2.58 5.84m2.699 2.7c-.103.021-.207.041-.311.06a15.09 15.09 0 0 1-2.448-2.448 14.9 14.9 0 0 1 .06-.312m-2.24 2.39a4.493 4.493 0 0 0-1.757 4.306 4.493 4.493 0 0 0 4.306-1.758M16.5 9a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Z" />
             </svg>
           </span>
-          <h3 className="text-base font-semibold text-indigo-900">Knowledge Transfer (KT)</h3>
+          <h3 className="text-base font-semibold text-[#32261C]">Knowledge Transfer (KT)</h3>
         </div>
-        <p className="text-sm text-indigo-800 leading-relaxed">
+        <p className="text-sm text-[#32261C] leading-relaxed">
           This milestone is for other designers. If this project is assigned to another designer, they can see the KT of the project.
         </p>
       </div>
@@ -115,7 +115,7 @@ export default function PopupKtTransfer({ leadId, sessionId, onMarkComplete, onC
           type="button"
           onClick={onPickFiles}
           disabled={uploading || done || !leadId}
-          className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition flex items-center justify-center gap-2"
+          className="px-4 py-2 rounded-lg bg-[#00B0ED] text-white text-sm font-medium hover:bg-[#00B0ED]/90 disabled:opacity-50 disabled:cursor-not-allowed transition flex items-center justify-center gap-2"
         >
           {uploading ? 'Uploading...' : 'Upload KT Files'}
         </button>
@@ -124,7 +124,7 @@ export default function PopupKtTransfer({ leadId, sessionId, onMarkComplete, onC
 
       {/* Success flash */}
       {done && (
-        <div className="rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800 font-medium text-center">
+        <div className="rounded-lg bg-[#DDCDC1]/20 border border-[#DDCDC1] px-4 py-3 text-sm text-[#32261C] font-medium text-center">
           ✅ KT marked as done. Great handover!
         </div>
       )}
@@ -135,7 +135,7 @@ export default function PopupKtTransfer({ leadId, sessionId, onMarkComplete, onC
           type="button"
           onClick={handleMark}
           disabled={submitting || done || !leadId}
-          className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition"
+          className="px-4 py-2 bg-[#EF0101] text-white text-sm font-medium rounded-lg hover:bg-[#EF0101] disabled:opacity-50 disabled:cursor-not-allowed transition"
         >
           {done ? 'Done ✓' : submitting ? 'Marking…' : 'Mark KT as Done'}
         </button>

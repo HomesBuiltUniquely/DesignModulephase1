@@ -34,11 +34,11 @@ function formatRelativeTime(iso: string): string {
 function eventTypeBadge(type: HistoryEventType): { label: string; className: string } {
     if (!type) return { label: 'EVENT', className: 'bg-gray-100 text-gray-700' };
     switch (type) {
-        case 'completed': return { label: 'COMPLETED', className: 'bg-green-100 text-green-800' };
+        case 'completed': return { label: 'COMPLETED', className: 'bg-[#DDCDC1]/40 text-[#32261C]' };
         case 'delayed': return { label: 'DELAYED', className: 'bg-red-100 text-red-800' };
-        case 'note': return { label: 'NOTE ADDED', className: 'bg-blue-100 text-blue-800' };
+        case 'note': return { label: 'NOTE ADDED', className: 'bg-[#00B0ED]/15 text-[#00B0ED]' };
         case 'owner_change': return { label: 'OWNER CHANGED', className: 'bg-gray-200 text-gray-800' };
-        case 'file_upload': return { label: 'FILE UPLOADED', className: 'bg-purple-100 text-purple-800' };
+        case 'file_upload': return { label: 'FILE UPLOADED', className: 'bg-[#DDCDC1]/40 text-[#32261C]' };
         default: return { label: String(type).toUpperCase(), className: 'bg-gray-100 text-gray-700' };
     }
 }
@@ -47,15 +47,15 @@ function EventIcon({ type }: { type: HistoryEventType }) {
     const base = 'w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0';
     switch (type) {
         case 'completed':
-            return <div className={`${base} bg-green-100 text-green-700`}>✓</div>;
+            return <div className={`${base} bg-[#DDCDC1]/40 text-[#32261C]`}>✓</div>;
         case 'delayed':
             return <div className={`${base} bg-red-100 text-red-700`}>⚠</div>;
         case 'note':
-            return <div className={`${base} bg-blue-100 text-blue-700`}>💬</div>;
+            return <div className={`${base} bg-[#00B0ED]/15 text-[#00B0ED]`}>💬</div>;
         case 'owner_change':
             return <div className={`${base} bg-gray-200 text-gray-700`}>👥</div>;
         case 'file_upload':
-            return <div className={`${base} bg-purple-100 text-purple-700`}>📄</div>;
+            return <div className={`${base} bg-[#DDCDC1]/40 text-[#32261C]`}>📄</div>;
         default:
             return <div className={`${base} bg-gray-100 text-gray-600`}>•</div>;
     }
@@ -110,10 +110,10 @@ export default function HistoryCard({
                         {historyEvents.length === 0 ? (
                             <p className="text-gray-500 text-sm py-6 text-center">No action done yet.</p>
                         ) : (
-                            historyEvents.slice(0, 5).map((ev) => {
+                            historyEvents.slice(0, 5).map((ev, index) => {
                                 const badge = eventTypeBadge(ev.type);
                                 return (
-                                    <div key={ev.id} className="flex gap-2 items-start p-2 rounded-2xl bg-white/80 border border-gray-100">
+                                    <div key={`${ev.id}-${index}`} className="flex gap-2 items-start p-2 rounded-2xl bg-white/80 border border-gray-100">
                                         <EventIcon type={ev.type} />
                                         <div className="flex-1 min-w-0">
                                             <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${badge.className}`}>
@@ -150,11 +150,11 @@ export default function HistoryCard({
                         {historyEvents.length === 0 ? (
                             <p className="text-gray-500 text-sm py-8 text-center">No action done yet. Complete milestone tasks to see activity here.</p>
                         ) : (
-                        historyEvents.map((ev) => {
+                        historyEvents.map((ev, index) => {
                             const badge = eventTypeBadge(ev.type);
                             const showViewDetails = (ev.type === 'completed' || ev.type === 'file_upload' || ev.type === 'note') && ev.details;
                             return (
-                                <div key={ev.id} className="flex gap-3 p-4 bg-white rounded-xl border border-gray-200 shadow-sm">
+                                <div key={`${ev.id}-${index}`} className="flex gap-3 p-4 bg-white rounded-xl border border-gray-200 shadow-sm">
                                     <EventIcon type={ev.type} />
                                     <div className="flex-1 min-w-0">
                                         <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${badge.className}`}>
@@ -162,7 +162,7 @@ export default function HistoryCard({
                                         </span>
                                         <p className="mt-2 text-gray-700 text-sm">{ev.description}</p>
                                         {ev.type === 'note' && ev.details && ev.details.kind === 'note' && (
-                                            <div className="mt-2 p-2 bg-blue-50 border border-blue-200 rounded text-sm text-gray-700 italic">
+                                            <div className="mt-2 p-2 bg-[#00B0ED]/10 border border-[#00B0ED]/30 rounded text-sm text-gray-700 italic">
                                                 &ldquo;{(ev.details as { noteText: string }).noteText}&rdquo;
                                             </div>
                                         )}
@@ -171,14 +171,14 @@ export default function HistoryCard({
                                                 <span>📄</span>
                                                 <span>{(ev.details as { fileName: string; size?: string; status?: string }).fileName}</span>
                                                 {(ev.details as { size?: string }).size && <span>{(ev.details as { size: string }).size}</span>}
-                                                {(ev.details as { status?: string }).status && <span className="text-green-600">{(ev.details as { status: string }).status}</span>}
+                                                {(ev.details as { status?: string }).status && <span className="text-[#32261C]">{(ev.details as { status: string }).status}</span>}
                                             </div>
                                         )}
                                         {showViewDetails && (
                                             <button
                                                 type="button"
                                                 onClick={() => onViewTaskDetails(ev)}
-                                                className="mt-2 text-blue-600 hover:underline text-sm font-medium"
+                                                className="mt-2 text-[#00B0ED] hover:underline text-sm font-medium"
                                             >
                                                 View Task Details →
                                             </button>
@@ -200,13 +200,13 @@ export default function HistoryCard({
                         )}
                     </div>
 
-                    <div className="mt-4 p-4 bg-green-800 text-white rounded-xl flex flex-wrap items-center justify-between gap-4 flex-shrink-0">
+                    <div className="mt-4 p-4 bg-[#EF0101]/90 text-white rounded-xl flex flex-wrap items-center justify-between gap-4 flex-shrink-0">
                         <div>
                             <p className="font-semibold">Current Milestone Status</p>
                             <p className="text-2xl font-bold mt-1">{progressPct}% OVERALL PROGRESS</p>
                             <p className="text-sm opacity-90 mt-1">You have {pendingTasks} pending tasks and {overdueItems} overdue items.</p>
                         </div>
-                        <button type="button" className="px-4 py-2 bg-white text-green-800 font-medium rounded-lg hover:bg-green-50">
+                        <button type="button" className="px-4 py-2 bg-white text-[#32261C] font-medium rounded-lg hover:bg-[#DDCDC1]/20">
                             Generate Report
                         </button>
                     </div>

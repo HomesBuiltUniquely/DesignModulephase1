@@ -27,7 +27,7 @@ function DetailsContent({ details }: { details: HistoryEventDetails }) {
                     <li><span className="font-medium text-gray-500">Date:</span> {details.date}</li>
                     <li><span className="font-medium text-gray-500">Time:</span> {details.time}</li>
                     {details.assignedExecutive && <li><span className="font-medium text-gray-500">Assigned executive:</span> {details.assignedExecutive}</li>}
-                    <li className="pt-2 text-green-800 font-medium">Request submitted.</li>
+                    <li className="pt-2 text-[#32261C] font-medium">Request submitted.</li>
                 </ul>
             );
         case 'd2_masking':
@@ -37,7 +37,7 @@ function DetailsContent({ details }: { details: HistoryEventDetails }) {
                     <li><span className="font-medium text-gray-500">Time:</span> {details.time}</li>
                     <li><span className="font-medium text-gray-500">Masking executive:</span> {details.maskingExecutive}</li>
                     {details.assignedExecutive && <li><span className="font-medium text-gray-500">Assigned executive:</span> {details.assignedExecutive}</li>}
-                    <li className="pt-2 text-green-800 font-medium">Masking request submitted.</li>
+                    <li className="pt-2 text-[#32261C] font-medium">Masking request submitted.</li>
                 </ul>
             );
         case 'dqc_review':
@@ -55,7 +55,7 @@ function DetailsContent({ details }: { details: HistoryEventDetails }) {
                             </ul>
                         </div>
                     )}
-                    <p className="pt-2 text-green-800 font-medium">Review submitted.</p>
+                    <p className="pt-2 text-[#32261C] font-medium">Review submitted.</p>
                 </div>
             );
         case 'mom':
@@ -75,7 +75,7 @@ function DetailsContent({ details }: { details: HistoryEventDetails }) {
                             </ul>
                         </div>
                     )}
-                    <p className="pt-2 text-green-800 font-medium">MOM shared.</p>
+                    <p className="pt-2 text-[#32261C] font-medium">MOM shared.</p>
                 </div>
             );
         case 'file_upload':
@@ -88,7 +88,7 @@ function DetailsContent({ details }: { details: HistoryEventDetails }) {
             );
         case 'note':
             return (
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-gray-700 italic">&ldquo;{details.noteText}&rdquo;</div>
+                <div className="bg-[#00B0ED]/10 border border-[#00B0ED]/30 rounded-lg p-3 text-gray-700 italic">&ldquo;{details.noteText}&rdquo;</div>
             );
         default:
             return null;

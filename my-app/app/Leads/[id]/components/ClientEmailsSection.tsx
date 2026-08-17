@@ -189,7 +189,7 @@ export default function ClientEmailsSection({
                                     onChange={(e) => setPrimary(e.target.value)}
                                     placeholder="client@example.com"
                                     autoComplete="email"
-                                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-[#00B0ED] focus:ring-2 focus:ring-[#00B0ED]/20 outline-none"
                                 />
                             </label>
                             <label className="block text-left">
@@ -200,7 +200,7 @@ export default function ClientEmailsSection({
                                     onChange={(e) => setAlternate(e.target.value)}
                                     placeholder="Optional"
                                     autoComplete="email"
-                                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-[#00B0ED] focus:ring-2 focus:ring-[#00B0ED]/20 outline-none"
                                 />
                             </label>
                             {message && <p className="text-sm font-medium text-red-600">{message}</p>}
@@ -218,7 +218,7 @@ export default function ClientEmailsSection({
                                 type="button"
                                 onClick={save}
                                 disabled={saving}
-                                className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
+                                className="px-4 py-2 rounded-lg bg-[#00B0ED] text-white text-sm font-semibold hover:bg-[#00B0ED]/90 disabled:opacity-50"
                             >
                                 {saving ? 'Saving…' : 'Apply'}
                             </button>

@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useAuth } from '../../auth/AuthContext';
 import { BRANCH_OPTIONS } from '../../constants/branches';
+import CustomSelect from '@/app/Components/ui/CustomSelect';
 
 import { getApiBase } from '@/app/lib/apiBase';
 const API = getApiBase();
@@ -70,7 +71,7 @@ export default function AdminCreateAdminPage() {
       <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <h1 className="text-xl font-bold text-gray-900">Admin — Create Admin</h1>
-          <a href="/" className="text-sm text-green-600 hover:underline">Dashboard</a>
+          <a href="/" className="text-sm text-[#32261C] hover:underline">Dashboard</a>
           <a href="/admin" className="text-sm text-gray-600 hover:text-gray-900">Admin Panel</a>
         </div>
         <div className="flex items-center gap-4">
@@ -90,7 +91,7 @@ export default function AdminCreateAdminPage() {
           <p className="text-gray-600 text-sm mb-4">Only an existing Admin can create another Admin. The new Admin will have full access to the Admin Panel. Email must end with @hubinterior.com.</p>
           <form onSubmit={handleSubmit} className="space-y-4">
             {message && (
-              <div className={`p-3 rounded-lg text-sm ${message.type === 'success' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-700'}`}>
+              <div className={`p-3 rounded-lg text-sm ${message.type === 'success' ? 'bg-[#DDCDC1]/20 text-[#32261C]' : 'bg-red-50 text-red-700'}`}>
                 {message.text}
               </div>
             )}
@@ -128,9 +129,12 @@ export default function AdminCreateAdminPage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Branch</label>
-              <select value={branch} onChange={(e) => setBranch(e.target.value)} className="w-full border border-gray-300 rounded-lg px-4 py-2.5 bg-white" required>
-                {BRANCH_OPTIONS.map((b) => <option key={b} value={b}>{b}</option>)}
-              </select>
+              <CustomSelect
+                value={branch}
+                onChange={(val) => setBranch(val)}
+                options={BRANCH_OPTIONS.map((b) => ({ value: b, label: b }))}
+                placeholder="Select branch"
+              />
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
@@ -146,7 +150,7 @@ export default function AdminCreateAdminPage() {
             <button
               type="submit"
               disabled={submitting}
-              className="w-full py-2.5 rounded-lg bg-green-600 text-white font-medium hover:bg-green-700 disabled:opacity-60"
+              className="w-full py-2.5 rounded-lg bg-[#EF0101] text-white font-medium hover:bg-[#EF0101] disabled:opacity-60"
             >
               {submitting ? 'Creating…' : 'Create Admin'}
             </button>

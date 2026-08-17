@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 import { getApiBase } from '@/app/lib/apiBase';
 const API = getApiBase();
@@ -55,6 +55,7 @@ export default function PopupGroupDescription({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [teamPhones, setTeamPhones] = useState<TeamPhones | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   const [toast, setToast] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const designerDigits = (designerPhone || '').replace(/\D/g, '');
@@ -137,13 +138,15 @@ export default function PopupGroupDescription({
   };
 
   const handleMarkDone = async () => {
-    if (isSubmitting || !leadId) return;
+    if (submittingRef.current || isSubmitting || !leadId) return;
+    submittingRef.current = true;
     setIsSubmitting(true);
     setError(null);
     try {
       const result = await onMarkComplete();
       if (!result?.ok) {
         setError('Could not complete task. Please retry.');
+        submittingRef.current = false;
         return;
       }
       if (result.mailSent) {
@@ -157,6 +160,7 @@ export default function PopupGroupDescription({
       }, 3000);
     } catch {
       setError('Could not complete task. Please retry.');
+      submittingRef.current = false;
     } finally {
       setIsSubmitting(false);
     }
@@ -235,7 +239,7 @@ export default function PopupGroupDescription({
               <button
                 type="button"
                 onClick={openWhatsAppWithClient}
-                className="px-3 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 flex items-center gap-1.5"
+                className="px-3 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-medium hover:bg-[#EF0101] flex items-center gap-1.5"
               >
                 Open WhatsApp
               </button>
@@ -253,7 +257,7 @@ export default function PopupGroupDescription({
             type="button"
             onClick={copyAllNumbers}
             disabled={allPhonesWithRole().length === 0}
-            className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-4 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-medium hover:bg-[#EF0101] disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {copiedId === 'all' ? 'Copied all numbers' : 'Copy all numbers (for WhatsApp group)'}
           </button>
@@ -266,7 +270,7 @@ export default function PopupGroupDescription({
           type="button"
           onClick={handleMarkDone}
           disabled={isSubmitting || !leadId}
-          className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="px-4 py-2 bg-[#EF0101] text-white text-sm font-medium rounded-lg hover:bg-[#EF0101] disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {isSubmitting ? 'Sending…' : 'Mark as done'}
         </button>

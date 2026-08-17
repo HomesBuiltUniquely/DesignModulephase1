@@ -144,7 +144,7 @@ export default function MmtUploadsPage() {
                                             type="button"
                                             onClick={() => onUploadClick(l.id)}
                                             disabled={!sessionId || busy}
-                                            className="px-3 py-2 rounded-lg bg-green-700 text-white text-sm font-semibold hover:bg-green-800 disabled:opacity-60"
+                                            className="px-3 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-semibold hover:bg-[#EF0101]/90 disabled:opacity-60"
                                         >
                                             {busy ? 'Uploading…' : 'Upload ZIP'}
                                         </button>

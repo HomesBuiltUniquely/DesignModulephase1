@@ -1,37 +1,553 @@
 @import "tailwindcss";
 
+/* ══════════════════════════════════════════════════════
+   WULKAN — local heading font
+   Place Wulkan-Regular.woff2 & Wulkan-Bold.woff2
+   in /public/fonts/ to activate. Falls back to Georgia.
+   ══════════════════════════════════════════════════════ */
+@font-face {
+  font-family: 'Wulkan';
+  src: url('/fonts/Wulkan-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Wulkan';
+  src: url('/fonts/Wulkan-Bold.woff2') format('woff2');
+  font-weight: 700 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
+
+  /* ── Typography ─────────────────────────────── */
+  --font-heading: var(--font-wulkan, 'Wulkan'), Georgia, serif;
+  --font-body:    var(--font-manrope, 'Manrope'), Arial, sans-serif;
+
+  /* ── Brand Palette ─────────────────────────── */
+  --brand-primary:   #EF0101;   /* Red       — buttons, active states     */
+  --brand-dark:      #32261C;   /* Dark Brown— headings, labels, text     */
+  --brand-secondary: #DDCDC1;   /* Warm Beige— hover tints, card bg      */
+  --brand-surface:   #F1F2F6;   /* Off-white — page backgrounds           */
+  --brand-blue:      #00B0ED;   /* Sky Blue  — info, progress, links      */
+  --brand-yellow:    #EBD457;   /* Gold      — highlights, positive KPIs  */
+  
+  --card-bg:         #ffffff;
+  --border-color:    #DDCDC1;
+  --input-bg:        #ffffff;
+  --hover-bg:        rgba(221, 205, 193, 0.2);
 }
 
 :root[data-theme="light"] {
   --background: #ffffff;
   --foreground: #171717;
+  
+  --brand-primary:   #EF0101;
+  --brand-dark:      #32261C;
+  --brand-secondary: #DDCDC1;
+  --brand-surface:   #F1F2F6;
+  --brand-blue:      #00B0ED;
+  --brand-yellow:    #EBD457;
+
+  --card-bg:         #ffffff;
+  --border-color:    #DDCDC1;
+  --input-bg:        #ffffff;
+  --hover-bg:        rgba(221, 205, 193, 0.2);
 }
 
 :root[data-theme="dark"] {
-  --background: #0f1115;
-  --foreground: #e8ecf3;
+  --background: #0d0e11;       /* Deep warm dark brown-black background */
+  --foreground: #eef1f6;       /* Soft champagne cream text */
+
+  --brand-primary:   #e05a5a;   /* Soft, eye-friendly rose-red/coral */
+  --brand-dark:      #eef1f6;   /* Champagne cream text */
+  --brand-secondary: #272c36;   /* Warm dark brown/slate */
+  --brand-surface:   #14171e;   /* Lighter section background */
+  --brand-blue:      #569cd6;   /* Soft, muted VS Code style sky blue */
+  --brand-yellow:    #f5df6d;   /* Bright gold */
+
+  --card-bg:         #14171e;   /* Elevate cards */
+  --border-color:    #222731;   /* Muted dark borders */
+  --input-bg:        #0f1115;   /* Form inputs */
+  --hover-bg:        #1d212b;   /* Selected / Hover list row */
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  --font-sans:    var(--font-body);
+  --font-heading: var(--font-heading);
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-brand-primary: var(--brand-primary);
+  --color-brand-dark: var(--brand-dark);
+  --color-brand-secondary: var(--brand-secondary);
+  --color-brand-surface: var(--brand-surface);
+  --color-brand-blue: var(--brand-blue);
+  --color-brand-yellow: var(--brand-yellow);
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-body);
   transition: background-color 0.2s ease, color 0.2s ease;
 }
+
+/* ── Headings: Wulkan everywhere ── */
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-heading);
+}
+
+/* ══════════════════════════════════════════════════════
+   CUSTOM SELECT — brand-styled native selects
+   Replaces boring browser default with brand chevron,
+   hover/focus states, and smooth transitions.
+   ══════════════════════════════════════════════════════ */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='%2332261C'%3E%3Cpath fill-rule='evenodd' d='M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z' clip-rule='evenodd'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.6rem center;
+  background-size: 1.1rem;
+  padding-right: 2.2rem;
+  border: 1.5px solid var(--border-color);
+  border-radius: 0.5rem;
+  color: var(--foreground);
+  background-color: var(--input-bg);
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+select:hover:not(:disabled) {
+  border-color: rgba(239, 1, 1, 0.55);
+}
+
+select:focus {
+  border-color: var(--brand-primary);
+  box-shadow: 0 0 0 3px rgba(239, 1, 1, 0.08);
+  outline: none;
+}
+
+select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background-color: var(--brand-surface);
+}
+
+/* ══════════════════════════════════════════════════════
+   DATE / TIME INPUTS — brand themed
+   Calendar & clock icons tinted brand red.
+   ══════════════════════════════════════════════════════ */
+input[type="date"],
+input[type="time"],
+input[type="datetime-local"] {
+  border: 1.5px solid var(--border-color);
+  border-radius: 0.5rem;
+  color: var(--foreground);
+  background-color: var(--input-bg);
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  font-family: inherit;
+}
+
+input[type="date"]:hover:not(:disabled),
+input[type="time"]:hover:not(:disabled),
+input[type="datetime-local"]:hover:not(:disabled) {
+  border-color: rgba(239, 1, 1, 0.55);
+}
+
+input[type="date"]:focus,
+input[type="time"]:focus,
+input[type="datetime-local"]:focus {
+  border-color: #EF0101;
+  box-shadow: 0 0 0 3px rgba(239, 1, 1, 0.08);
+  outline: none;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.55;
+  filter: invert(10%) sepia(85%) saturate(6000%) hue-rotate(0deg) brightness(100%) contrast(110%);
+  transition: opacity 0.15s ease;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator:hover,
+input[type="time"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+}
+
+/* ══════════════════════════════════════════════════════
+   TEXT INPUTS, TEXTAREAS — smooth focus transitions
+   ══════════════════════════════════════════════════════ */
+input[type="text"],
+input[type="email"],
+input[type="number"],
+input[type="tel"],
+input[type="search"],
+input[type="password"],
+input[type="url"],
+textarea {
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+input[type="text"]:focus,
+input[type="email"]:focus,
+input[type="number"]:focus,
+input[type="tel"]:focus,
+input[type="search"]:focus,
+input[type="password"]:focus,
+input[type="url"]:focus,
+textarea:focus {
+  outline: none;
+}
+
+/* ══════════════════════════════════════════════════════
+   BUTTONS — global press micro-animation
+   Every button in the app gets a satisfying press effect.
+   ══════════════════════════════════════════════════════ */
+button:not(:disabled) {
+  transition:
+    transform 0.1s ease,
+    box-shadow 0.15s ease,
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+button:not(:disabled):active {
+  transform: scale(0.96);
+}
+
+/* ══════════════════════════════════════════════════════
+   CHECKBOX & RADIO — brand accent color
+   ══════════════════════════════════════════════════════ */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: #EF0101;
+  cursor: pointer;
+}
+
+/* ══════════════════════════════════════════════════════
+   CUSTOM SELECT DROPDOWN ANIMATION
+   Used by CustomSelect.tsx component
+   ══════════════════════════════════════════════════════ */
+@keyframes customSelectSlideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scaleY(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scaleY(1);
+  }
+}
+
+/* Dropdown scrollbar */
+.custom-select-dropdown::-webkit-scrollbar { width: 4px; }
+.custom-select-dropdown::-webkit-scrollbar-track { background: #F1F2F6; }
+.custom-select-dropdown::-webkit-scrollbar-thumb { background: #DDCDC1; border-radius: 99px; }
+.custom-select-dropdown::-webkit-scrollbar-thumb:hover { background: #EF0101; }
+
+/* ══════════════════════════════════════════════════════
+   GLOBAL SCROLLBAR — subtle brand scrollbar everywhere
+   ══════════════════════════════════════════════════════ */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #F1F2F6; }
+::-webkit-scrollbar-thumb { background: #DDCDC1; border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: #32261C; }
+
+/* ══════════════════════════════════════════════════════
+   CARD HOVER LIFT — add to any card for depth
+   ══════════════════════════════════════════════════════ */
+.card-hover {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(50, 38, 28, 0.1);
+}
+
+/* ══════════════════════════════════════════════════════
+   FADE-IN ANIMATION — for modals and dropdowns
+   ══════════════════════════════════════════════════════ */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fadeInUp {
+  animation: fadeInUp 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* ══════════════════════════════════════════════════════
+   MODAL POP-IN ANIMATIONS
+   ══════════════════════════════════════════════════════ */
+@keyframes backdropFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modalPopIn {
+  from { opacity: 0; transform: scale(0.95) translateY(10px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.animate-backdropFadeIn {
+  animation: backdropFadeIn 0.2s ease forwards;
+}
+
+.animate-modalPopIn {
+  animation: modalPopIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Auto-animate any modal that has fixed positioning (except specific excluded ones) */
+div.fixed.inset-0 > div,
+div.fixed[class*="z-["] > div {
+  animation: modalPopIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+div.fixed.inset-0,
+div.fixed[class*="z-["] {
+  animation: backdropFadeIn 0.2s ease forwards;
+}
+
+/* Hide scrollbar for elements with .no-scrollbar */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
+}
+
+/* ══════════════════════════════════════════════════════
+   DARK THEME OVERRIDES FOR HARDCODED CLASSES
+   This maps light-theme hardcoded color classes to
+   elegant dark mode alternatives.
+   ══════════════════════════════════════════════════════ */
+[data-theme="dark"] {
+  /* Brand color overrides */
+  .text-\[\#32261C\] { color: var(--foreground) !important; }
+  .text-\[\#32261C\]\/40 { color: rgba(238, 241, 246, 0.4) !important; }
+  .text-\[\#32261C\]\/50 { color: rgba(238, 241, 246, 0.5) !important; }
+  .text-\[\#32261C\]\/60 { color: rgba(238, 241, 246, 0.6) !important; }
+  .text-\[\#32261C\]\/70 { color: rgba(238, 241, 246, 0.7) !important; }
+  
+  .bg-\[\#32261C\] { background-color: var(--brand-secondary) !important; }
+  .border-\[\#32261C\] { border-color: var(--border-color) !important; }
+  
+  .border-\[\#DDCDC1\] { border-color: var(--border-color) !important; }
+  .border-\[\#DDCDC1\]\/80 { border-color: rgba(34, 39, 49, 0.8) !important; }
+  .border-\[\#DDCDC1\]\/60 { border-color: rgba(34, 39, 49, 0.6) !important; }
+  .border-\[\#DDCDC1\]\/20 { border-color: rgba(34, 39, 49, 0.2) !important; }
+  
+  .bg-\[\#DDCDC1\] { background-color: var(--brand-secondary) !important; }
+  .text-\[\#DDCDC1\] { color: #b0b8c6 !important; }
+  
+  .bg-\[\#DDCDC1\]\/20 { background-color: rgba(39, 44, 54, 0.4) !important; }
+  .bg-\[\#DDCDC1\]\/30 { background-color: rgba(39, 44, 54, 0.7) !important; }
+  .bg-\[\#DDCDC1\]\/30:hover { background-color: rgba(39, 44, 54, 0.9) !important; }
+  .bg-\[\#DDCDC1\]\/40 { background-color: rgba(39, 44, 54, 0.6) !important; }
+  .bg-\[\#DDCDC1\]\/50 { background-color: rgba(39, 44, 54, 0.7) !important; }
+
+  .bg-\[\#F1F2F6\] { background-color: var(--background) !important; }
+
+  /* Red accent overrides */
+  .text-\[\#EF0101\] { color: var(--brand-primary) !important; }
+  .bg-\[\#EF0101\] { background-color: var(--brand-primary) !important; }
+  .border-\[\#EF0101\] { border-color: var(--brand-primary) !important; }
+  .bg-\[\#EF0101\]\/5 { background-color: rgba(224, 90, 90, 0.05) !important; }
+  .border-\[\#EF0101\]\/20 { border-color: rgba(224, 90, 90, 0.2) !important; }
+  .bg-\[\#EF0101\]\/10 { background-color: rgba(224, 90, 90, 0.1) !important; }
+  
+  /* Blue and yellow accent overrides */
+  .bg-\[\#00B0ED\] { background-color: var(--brand-blue) !important; }
+  .text-\[\#00B0ED\] { color: var(--brand-blue) !important; }
+  .bg-\[\#00B0ED\]\/15 { background-color: rgba(86, 156, 214, 0.15) !important; }
+  .bg-\[\#00B0ED\]\/10 { background-color: rgba(86, 156, 214, 0.1) !important; }
+
+  /* White and Gray backgrounds (covers base, responsive and opacity classes) */
+  .bg-white, [class*="bg-white"] {
+    background-color: var(--card-bg) !important;
+  }
+  .bg-white\/90, .bg-white\/95, [class*="bg-white/90"], [class*="bg-white/95"] {
+    background-color: rgba(13, 14, 17, 0.95) !important;
+  }
+  .bg-white\/50, .bg-white\/70, .bg-white\/80, .bg-white\/85, [class*="bg-white/50"], [class*="bg-white/70"], [class*="bg-white/80"], [class*="bg-white/85"] {
+    background-color: var(--hover-bg) !important;
+  }
+  
+  .bg-gray-50, [class*="bg-gray-50"] {
+    background-color: #0f1115 !important;
+  }
+  .bg-slate-50, [class*="bg-slate-50"] {
+    background-color: var(--background) !important;
+  }
+  .bg-gray-50\/50, .bg-gray-50\/80, .bg-gray-100\/50, .bg-gray-100\/80, [class*="bg-gray-50/50"], [class*="bg-gray-50/80"], [class*="bg-gray-100/50"], [class*="bg-gray-100/80"] {
+    background-color: var(--hover-bg) !important;
+  }
+  
+  .bg-gray-100, [class*="bg-gray-100"] {
+    background-color: #181c24 !important;
+  }
+  .bg-gray-200, [class*="bg-gray-200"] {
+    background-color: #222731 !important;
+  }
+  .bg-gray-300, [class*="bg-gray-300"] {
+    background-color: #2b313d !important;
+  }
+  
+  .bg-\[\#F1F2F6\], [class*="bg-[#F1F2F6]"] {
+    background-color: var(--brand-surface) !important;
+  }
+  
+  /* Text colors */
+  .text-black, [class*="text-black"] { color: var(--foreground) !important; }
+  [class*="text-gray-900"] { color: #fcfcfd !important; }
+  [class*="text-gray-800"] { color: #f3f5f8 !important; }
+  [class*="text-gray-700"] { color: #e1e6eb !important; }
+  [class*="text-gray-600"] { color: #aab4c2 !important; }
+  [class*="text-gray-500"] { color: #8a96a7 !important; }
+  [class*="text-gray-400"] { color: #93a0b2 !important; }
+
+  /* Border colors */
+  [class*="border-gray-100"] { border-color: #14171e !important; }
+  [class*="border-gray-200"] { border-color: var(--border-color) !important; }
+  [class*="border-gray-300"] { border-color: #2d3442 !important; }
+  
+  /* Hover effects */
+  [class*="hover:bg-gray-50"]:hover { background-color: var(--hover-bg) !important; }
+  [class*="hover:bg-gray-100"]:hover { background-color: var(--hover-bg) !important; }
+  [class*="hover:bg-gray-50/50"]:hover { background-color: var(--hover-bg) !important; }
+  [class*="hover:bg-gray-50/80"]:hover { background-color: var(--hover-bg) !important; }
+  [class*="hover:bg-gray-100/80"]:hover { background-color: var(--hover-bg) !important; }
+  [class*="hover:bg-[#F1F2F6]"]:hover { background-color: var(--hover-bg) !important; }
+  [class*="hover:bg-[#DDCDC1]/20"]:hover { background-color: var(--hover-bg) !important; }
+  [class*="hover:text-[#32261C]"]:hover { color: var(--foreground) !important; }
+  
+  /* Table row borders and dividers */
+  .divide-y > :not([hidden]) ~ :not([hidden]) {
+    border-color: var(--border-color) !important;
+  }
+
+  /* Specific overrides for buttons & other details */
+  button.bg-white {
+    background-color: var(--card-bg) !important;
+    border-color: var(--border-color) !important;
+    color: var(--foreground) !important;
+  }
+  
+  button.bg-white:hover {
+    background-color: var(--hover-bg) !important;
+  }
+
+  /* Custom Select SVG Arrow override for Dark Mode */
+  select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='%23eef1f6'%3E%3Cpath fill-rule='evenodd' d='M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z' clip-rule='evenodd'/%3E%3C/svg%3E") !important;
+  }
+
+  /* Date/time indicators and general forms */
+  input:not([type="checkbox"]):not([type="radio"]),
+  textarea {
+    background-color: var(--input-bg) !important;
+    color: var(--foreground) !important;
+    border-color: var(--border-color) !important;
+  }
+
+  input:not([type="checkbox"]):not([type="radio"]):focus,
+  textarea:focus,
+  select:focus {
+    border-color: var(--brand-primary) !important;
+    box-shadow: 0 0 0 3px rgba(255, 43, 43, 0.15) !important;
+  }
+
+  /* Native scrollbars in dark mode */
+  ::-webkit-scrollbar-track {
+    background: var(--background) !important;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #2b313d !important;
+    border-color: var(--background) !important;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3f4859 !important;
+  }
+
+  /* Header styles */
+  header.bg-white\/90 {
+    background-color: rgba(13, 14, 17, 0.9) !important;
+    border-color: var(--border-color) !important;
+  }
+
+  /* Google Calendar specific dark overrides */
+  .bg-\[\#f8fafd\], [class*="bg-[#f8fafd]"] {
+    background-color: var(--background) !important;
+  }
+  .border-\[\#dadce0\], [class*="border-[#dadce0]"] {
+    border-color: var(--border-color) !important;
+  }
+  .border-\[\#edf0f2\], [class*="border-[#edf0f2]"] {
+    border-color: var(--border-color) !important;
+  }
+  .ring-\[\#dadce0\], [class*="ring-[#dadce0]"] {
+    --tw-ring-color: var(--border-color) !important;
+    border-color: var(--border-color) !important;
+  }
+  .text-\[\#1f1f1f\], [class*="text-[#1f1f1f]"] {
+    color: var(--foreground) !important;
+  }
+  .text-\[\#3c4043\], [class*="text-[#3c4043]"] {
+    color: #e1e6eb !important;
+  }
+  .text-\[\#5f6368\], [class*="text-[#5f6368]"] {
+    color: #aab4c2 !important;
+  }
+  .text-\[\#444746\], [class*="text-[#444746]"] {
+    color: #e1e6eb !important;
+  }
+  [class*="hover:bg-[#f1f3f4]"]:hover {
+    background-color: var(--hover-bg) !important;
+  }
+
+  .text-\[\#111827\], [class*="text-[#111827]"] {
+    color: var(--brand-dark) !important;
+  }
+  .bg-\[\#f0f4f8\], [class*="bg-[#f0f4f8]"],
+  .bg-\[\#f7f9fc\], [class*="bg-[#f7f9fc]"] {
+    background-color: var(--brand-surface) !important;
+  }
+}
+
+/* Meeting wizard — readable text, visible hover, themed inputs */
+.meeting-wiz {
+  color: var(--foreground);
+}
+.meeting-wiz button:not(:disabled) {
+  cursor: pointer;
+}
+.meeting-wiz button:disabled {
+  cursor: not-allowed;
+}
+.meeting-wiz input:not([type="checkbox"]):not([type="radio"]),
+.meeting-wiz textarea,
+.meeting-wiz select {
+  background-color: var(--input-bg);
+  color: var(--foreground);
+  caret-color: var(--brand-primary);
+}
+.meeting-wiz input::placeholder,
+.meeting-wiz textarea::placeholder {
+  color: var(--foreground);
+  opacity: 0.45;
+}
+.meeting-wiz ::selection {
+  background: color-mix(in srgb, var(--brand-primary) 32%, transparent);
+  color: var(--foreground);
+}
+

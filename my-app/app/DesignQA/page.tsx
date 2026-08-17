@@ -316,13 +316,13 @@ function DesignQAFormContent({ linkIdentifiers }: { linkIdentifiers: LinkIdentif
                     <p className="text-base sm:text-lg xl:text-xl text-black font-bold mb-2 sm:mb-3">Define your space</p>
                     <div className="h-1.5 sm:h-2 bg-gray-200 rounded-full overflow-hidden">
                         <div
-                            className="h-full bg-green-700 transition-all duration-300"
+                            className="h-full bg-[#EF0101] transition-all duration-300"
                             style={{ width: `${(currentStep / TOTAL_STEPS) * 100}%` }}
                         />
                     </div>
                 </div>
 
-                <div className="w-full max-w-2xl xl:max-w-none bg-[#f1f2f6] rounded-2xl sm:rounded-3xl xl:rounded-4xl border-2 sm:border-[3px] border-green-900 shadow-xl xl:shadow-2xl overflow-hidden flex flex-col max-h-[75vh] sm:max-h-[80vh] xl:max-h-[85vh]">
+                <div className="w-full max-w-2xl xl:max-w-none bg-[#f1f2f6] rounded-2xl sm:rounded-3xl xl:rounded-4xl border-2 sm:border-[3px] border-[#EF0101] shadow-xl xl:shadow-2xl overflow-hidden flex flex-col max-h-[75vh] sm:max-h-[80vh] xl:max-h-[85vh]">
                     <h1 className="text-black text-base sm:text-lg xl:text-xl 2xl:text-2xl font-bold text-center pt-3 pb-1 sm:pt-4 sm:pb-2 flex-shrink-0 px-3 sm:px-4">
                         {currentQuestion}
                     </h1>
@@ -346,11 +346,11 @@ function DesignQAFormContent({ linkIdentifiers }: { linkIdentifiers: LinkIdentif
                                             submitting ? 'cursor-not-allowed opacity-70' : 'cursor-pointer'
                                         } ${
                                             isSelected
-                                                ? 'border-green-600 bg-green-50 ring-2 ring-green-600 ring-offset-1 sm:ring-offset-2'
+                                                ? 'border-[#EF0101] bg-[#DDCDC1]/20 ring-2 ring-green-600 ring-offset-1 sm:ring-offset-2'
                                                 : 'border-gray-200 bg-white hover:border-green-400 hover:bg-gray-50'
                                         }`}
                                     >
-                                        <span className={`shrink-0 w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center font-bold text-xs sm:text-sm ${isSelected ? 'bg-green-600 text-white' : 'bg-gray-200 text-gray-700'}`}>
+                                        <span className={`shrink-0 w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center font-bold text-xs sm:text-sm ${isSelected ? 'bg-[#EF0101] text-white' : 'bg-gray-200 text-gray-700'}`}>
                                             {letter}
                                         </span>
                                         <p className="text-black font-medium text-xs sm:text-sm xl:text-base">{label}</p>
@@ -376,7 +376,7 @@ function DesignQAFormContent({ linkIdentifiers }: { linkIdentifiers: LinkIdentif
                                         }`}
                                     >
                                         <div className={`overflow-hidden rounded-2xl sm:rounded-3xl border-2 sm:border-[3px] transition-all duration-300 w-full ${
-                                            isSelected ? 'border-green-600 shadow-lg' : 'border-transparent group-hover:border-blue-500 group-hover:shadow-lg'
+                                            isSelected ? 'border-[#EF0101] shadow-lg' : 'border-transparent group-hover:border-[#00B0ED] group-hover:shadow-lg'
                                         }`}>
                                             <img
                                                 src={image.src}
@@ -384,7 +384,7 @@ function DesignQAFormContent({ linkIdentifiers }: { linkIdentifiers: LinkIdentif
                                                 className="w-full h-36 sm:h-44 md:h-52 xl:h-56 2xl:h-72 object-cover transition-transform duration-500 group-hover:scale-110"
                                             />
                                         </div>
-                                        <p className="w-[85%] bg-white py-1.5 px-1.5 sm:py-2 sm:px-2 rounded-lg sm:rounded-xl text-black font-bold text-[10px] sm:text-xs xl:text-sm shadow-lg border-b border-green-900 absolute -bottom-2 sm:-bottom-3 transition-all duration-300 group-hover:opacity-100">
+                                        <p className="w-[85%] bg-white py-1.5 px-1.5 sm:py-2 sm:px-2 rounded-lg sm:rounded-xl text-black font-bold text-[10px] sm:text-xs xl:text-sm shadow-lg border-b border-[#EF0101] absolute -bottom-2 sm:-bottom-3 transition-all duration-300 group-hover:opacity-100">
                                             {OPTION_LETTERS[index]}
                                         </p>
                                     </div>

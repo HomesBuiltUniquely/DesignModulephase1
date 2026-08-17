@@ -190,7 +190,7 @@ export default function PopupMeetingCompleted({
             <div className="flex items-start justify-between gap-4 mb-6">
                 <div>
                     <div className="flex items-center gap-2 mb-1">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-6 h-6 text-blue-500">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-6 h-6 text-[#00B0ED]">
                             <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
                         </svg>
                         <h2 className="text-xl font-bold text-gray-900">Minutes of Meeting (MOM)</h2>
@@ -203,21 +203,21 @@ export default function PopupMeetingCompleted({
                 </span>
             </div>
 
-            <div className="mb-6 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3">
+            <div className="mb-6 rounded-xl border border-[#DDCDC1] bg-[#DDCDC1]/20 px-4 py-3">
                 <div className="flex items-center justify-between gap-2 mb-1">
-                    <p className="text-xs font-bold uppercase tracking-wide text-indigo-800">Latest Quotation</p>
-                    {quoteLoading && <span className="text-xs text-indigo-600">Fetching…</span>}
+                    <p className="text-xs font-bold uppercase tracking-wide text-[#32261C]">Latest Quotation</p>
+                    {quoteLoading && <span className="text-xs text-[#32261C]">Fetching…</span>}
                 </div>
                 {latestQuoteUrl ? (
                     <div className="space-y-1">
-                        <p className="text-sm text-indigo-900">
+                        <p className="text-sm text-[#32261C]">
                             Quote #{latestQuoteId ?? '—'} will be attached automatically in this MOM.
                         </p>
                         <a
                             href={latestQuoteUrl}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-sm font-medium text-indigo-700 underline break-all hover:text-indigo-900"
+                            className="text-sm font-medium text-[#32261C] underline break-all hover:text-[#32261C]"
                         >
                             {latestQuoteUrl}
                         </a>
@@ -234,8 +234,8 @@ export default function PopupMeetingCompleted({
                     <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">Design Completion (From Scheduled Meeting)</span>
                     <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
                         (initialCompletionPercent ?? 100) === 100
-                            ? 'bg-green-100 text-green-700'
-                            : 'bg-blue-100 text-blue-700'
+                            ? 'bg-[#DDCDC1]/40 text-[#32261C]'
+                            : 'bg-[#00B0ED]/15 text-[#00B0ED]'
                     }`}>
                         {initialCompletionPercent ?? 100}%
                     </span>
@@ -243,7 +243,7 @@ export default function PopupMeetingCompleted({
                 <div className="w-full h-2.5 rounded-full bg-gray-200 overflow-hidden">
                     <div
                         className={`h-2.5 rounded-full transition-all duration-500 ${
-                            (initialCompletionPercent ?? 100) === 100 ? 'bg-green-500' : 'bg-blue-500'
+                            (initialCompletionPercent ?? 100) === 100 ? 'bg-[#EF0101]/80' : 'bg-[#00B0ED]'
                         }`}
                         style={{ width: `${initialCompletionPercent ?? 100}%` }}
                     />
@@ -268,7 +268,7 @@ export default function PopupMeetingCompleted({
                     rows={6}
                 />
                 <div className="flex items-start gap-2 mt-2 p-3 bg-gray-100 rounded-lg">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5"><path strokeLinecap="round" strokeLinejoin="round" d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z" /></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-5 h-5 text-[#00B0ED] flex-shrink-0 mt-0.5"><path strokeLinecap="round" strokeLinejoin="round" d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z" /></svg>
                     <p className="text-xs text-gray-600">Please ensure all final decisions and client approvals are documented clearly for audit purposes. The latest quotation link is attached automatically on submit.</p>
                 </div>
             </div>
@@ -285,12 +285,12 @@ export default function PopupMeetingCompleted({
                     onClick={openMomFileUpload}
                     onDrop={(e) => { e.preventDefault(); onMomDrop(e); setFileError(null); }}
                     onDragOver={(e) => e.preventDefault()}
-                    className={`border-2 border-dashed rounded-xl bg-gray-50 p-6 flex flex-col items-center justify-center cursor-pointer hover:border-blue-300 hover:bg-gray-100 transition-colors ${
+                    className={`border-2 border-dashed rounded-xl bg-gray-50 p-6 flex flex-col items-center justify-center cursor-pointer hover:border-[#00B0ED]/50 hover:bg-gray-100 transition-colors ${
                         fileError ? 'border-red-400 ring-2 ring-red-200' : 'border-gray-300'
                     }`}
                 >
-                    <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center mb-2">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-6 h-6 text-blue-600"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5" /></svg>
+                    <div className="w-12 h-12 rounded-full bg-[#00B0ED]/15 flex items-center justify-center mb-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-6 h-6 text-[#00B0ED]"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5" /></svg>
                     </div>
                     <p className="text-sm font-medium text-gray-700">Drag & drop or click to add files</p>
                     <p className="text-xs text-gray-500 mt-0.5">JPG, PNG, PDF · multiple files · up to 10MB each</p>
@@ -319,8 +319,8 @@ export default function PopupMeetingCompleted({
                 )}
                 {fileError && <p className="text-sm text-red-600 mt-2">{fileError}</p>}
             </div>
-            <div className="flex items-start gap-2 mb-6 p-3 bg-blue-50 border border-blue-100 rounded-lg">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5"><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>
+            <div className="flex items-start gap-2 mb-6 p-3 bg-[#00B0ED]/10 border border-[#00B0ED]/20 rounded-lg">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5 text-[#00B0ED] flex-shrink-0 mt-0.5"><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>
                 <p className="text-xs text-gray-700"><strong>LEGAL DISCLAIMER:</strong> THIS MOM WILL BE TREATED AS OFFICIAL DESIGN DISCUSSION RECORD AND WILL BE USED AS THE PRIMARY REFERENCE FOR DISPUTE RESOLUTION OR STAGE SIGN-OFFS.</p>
             </div>
 
@@ -333,10 +333,10 @@ export default function PopupMeetingCompleted({
                         onClick={() => openPayment40pUpload('image/*,.pdf,application/pdf')}
                         onDrop={(e) => { e.preventDefault(); onPayment40pDrop?.(e); }}
                         onDragOver={(e) => { e.preventDefault(); onPayment40pDragOver?.(e); }}
-                        className="flex-1 min-w-[200px] border-2 border-dashed border-gray-300 rounded-xl bg-gray-50 p-6 flex flex-col items-center justify-center cursor-pointer hover:border-green-300 hover:bg-gray-100 transition-colors"
+                        className="flex-1 min-w-[200px] border-2 border-dashed border-gray-300 rounded-xl bg-gray-50 p-6 flex flex-col items-center justify-center cursor-pointer hover:border-[#DDCDC1] hover:bg-gray-100 transition-colors"
                     >
-                        <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center mb-2">
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-6 h-6 text-green-600"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5" /></svg>
+                        <div className="w-12 h-12 rounded-full bg-[#DDCDC1]/40 flex items-center justify-center mb-2">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="w-6 h-6 text-[#32261C]"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5" /></svg>
                         </div>
                         <p className="text-sm font-medium text-gray-700">Drag & drop or click to add payment screenshots</p>
                         <p className="text-xs text-gray-500 mt-0.5">Images or PDF</p>
@@ -369,7 +369,7 @@ export default function PopupMeetingCompleted({
                     type="button"
                     onClick={handleShareMom}
                     disabled={!canShare}
-                    className="px-5 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="px-5 py-2 bg-[#00B0ED] text-white font-medium rounded-lg hover:bg-[#00B0ED]/90 flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
                     title={!hasMomFile ? 'Upload at least one file to submit MOM' : !hasMomText ? 'Enter MOM text to submit' : undefined}
                 >
                     {isSharing ? 'Sharing…' : show40pUpload ? 'Share MOM & send to finance' : 'Share the MOM'}

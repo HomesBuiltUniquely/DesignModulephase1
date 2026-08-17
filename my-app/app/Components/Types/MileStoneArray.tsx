@@ -8,7 +8,7 @@ const MileStonesArray: MileStonesTypes = {
       taskList: [
         "Upload KT files",
       ],
-      Css: "xl:w-75 xl:mt-8 xl:mx-auto xl:my-10 xl:border-2 xl:border-dashed xl:border-indigo-300 xl:hover:bg-indigo-50 xl:cursor-pointer xl:overflow-y-auto xl:rounded-2xl",
+      Css: "xl:w-75 xl:mt-8 xl:mx-auto xl:my-10 xl:border-2 xl:border-dashed xl:border-[#EF0101]/50 xl:hover:bg-[#DDCDC1]/20 xl:cursor-pointer xl:overflow-y-auto xl:rounded-2xl",
     },
     {
       id: 0,

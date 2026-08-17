@@ -206,36 +206,6 @@ export default function PopupMailLoopChain({
   const handleMarkComplete = async () => {
     const saved = await saveEmails();
     if (!saved) return;
-
-    // Fire-and-forget: send welcome email to client(s) with all CC recipients
-    const toList = [
-      saved.clientEmail,
-      saved.alternateClientEmail,
-    ].filter((e): e is string => Boolean(e?.trim()));
-
-    const ccList: string[] = [
-      designerEmail,
-      ...adminsForLoop.map((m) => m.email),
-      ...tdmForLoop.map((m) => m.email),
-      ...dmForLoop.map((m) => m.email),
-    ].filter((e): e is string => Boolean(e?.trim()));
-
-    if (toList.length > 0) {
-      fetch('/api/email/send-mail-loop-chain-initiate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          to: toList,
-          ...(ccList.length > 0 ? { cc: ccList } : {}),
-          customerName: customerName || toList[0],
-          leadPayload: leadPayload ?? undefined,
-          ...(quotationLink ? { quotationLink } : {}),
-        }),
-      }).catch(() => {
-        // Fire-and-forget — do not block task completion on email failure
-      });
-    }
-
     onMarkComplete();
     onClose();
   };
@@ -309,7 +279,7 @@ export default function PopupMailLoopChain({
             onChange={(e) => setPrimary(e.target.value)}
             placeholder="client@example.com"
             autoComplete="email"
-            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-900 focus:border-green-500 focus:ring-2 focus:ring-green-500/20 outline-none"
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-900 focus:border-[#EF0101] focus:ring-2 focus:ring-[#EF0101]/20 outline-none"
           />
         </label>
         <label className="block">
@@ -322,7 +292,7 @@ export default function PopupMailLoopChain({
             onChange={(e) => setFamilyEmail(e.target.value)}
             placeholder="family@example.com"
             autoComplete="email"
-            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-900 focus:border-green-500 focus:ring-2 focus:ring-green-500/20 outline-none"
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-900 focus:border-[#EF0101] focus:ring-2 focus:ring-[#EF0101]/20 outline-none"
           />
         </label>
         {message && <p className="text-sm font-medium text-red-600">{message}</p>}
@@ -333,7 +303,7 @@ export default function PopupMailLoopChain({
           type="button"
           onClick={handleSave}
           disabled={saving || !sessionId || !leadId || !!toast}
-          className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="px-4 py-2 bg-[#00B0ED] text-white text-sm font-medium rounded-lg hover:bg-[#00B0ED]/90 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {saving ? 'Saving…' : 'Save emails'}
         </button>
@@ -341,7 +311,7 @@ export default function PopupMailLoopChain({
           type="button"
           onClick={handleMarkComplete}
           disabled={saving || !sessionId || !leadId}
-          className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="px-4 py-2 bg-[#EF0101] text-white text-sm font-medium rounded-lg hover:bg-[#EF0101] disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {saving ? 'Saving…' : 'Mark as done'}
         </button>

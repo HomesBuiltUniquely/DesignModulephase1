@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { buildAuthHeaders } from "@/app/lib/apiBase";
 import type { FullDayRequestStatus } from "@/lib/hub-meeting-schedule";
 import { canCancelFullDayBlockDate } from "@/lib/hub-meeting-schedule";
+import CustomSelect from "@/app/Components/ui/CustomSelect";
 
 type FullDayRequest = {
   id: number;
@@ -66,7 +67,7 @@ function statusBadgeClass(status: FullDayRequestStatus): string {
     case "pending":
       return "bg-amber-100 text-amber-800";
     case "approved":
-      return "bg-emerald-100 text-emerald-800";
+      return "bg-[#DDCDC1]/40 text-[#32261C]";
     case "rejected":
       return "bg-red-100 text-red-800";
     case "cancelled":
@@ -377,18 +378,17 @@ export function FullDayLeaveApprovalPanel({
             </div>
 
             {isManagerView && teamMembers.length > 1 ? (
-              <select
-                className="rounded-lg border border-amber-200 bg-white px-2 py-1.5 text-xs text-amber-950"
-                value={filterDesigner}
-                onChange={(e) => setFilterDesigner(e.target.value)}
-              >
-                <option value="all">All team members</option>
-                {teamMembers.map((m) => (
-                  <option key={m.id} value={m.name}>
-                    {m.name} ({roleLabel(m.role)})
-                  </option>
-                ))}
-              </select>
+              <div className="w-48">
+                <CustomSelect
+                  value={filterDesigner}
+                  onChange={(val) => setFilterDesigner(val)}
+                  options={[
+                    { value: "all", label: "All team members" },
+                    ...teamMembers.map((m) => ({ value: m.name, label: `${m.name} (${roleLabel(m.role)})` }))
+                  ]}
+                  placeholder="All team members"
+                />
+              </div>
             ) : null}
           </div>
 
@@ -550,7 +550,7 @@ function RequestCard({
               type="button"
               disabled={actionId === row.id}
               onClick={onApprove}
-              className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+              className="rounded-md bg-[#EF0101] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#EF0101] disabled:opacity-50"
             >
               Approve
             </button>

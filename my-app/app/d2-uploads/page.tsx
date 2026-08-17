@@ -162,7 +162,7 @@ export default function D2UploadsPage() {
 
                 {error && <div className="text-sm text-red-600 mt-4">{error}</div>}
                 {success && (
-                    <div className="text-sm text-green-800 bg-green-50 border border-green-200 rounded-lg px-3 py-2 mt-4">
+                    <div className="text-sm text-[#32261C] bg-[#DDCDC1]/20 border border-[#DDCDC1] rounded-lg px-3 py-2 mt-4">
                         {success}
                     </div>
                 )}
@@ -190,7 +190,7 @@ export default function D2UploadsPage() {
                                             type="button"
                                             onClick={() => onUploadClick(l.id)}
                                             disabled={!sessionId || busy}
-                                            className="px-3 py-2 rounded-lg bg-green-700 text-white text-sm font-semibold hover:bg-green-800 disabled:opacity-60"
+                                            className="px-3 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-semibold hover:bg-[#EF0101]/90 disabled:opacity-60"
                                         >
                                             {busy ? 'Uploading…' : 'Upload PDFs'}
                                         </button>

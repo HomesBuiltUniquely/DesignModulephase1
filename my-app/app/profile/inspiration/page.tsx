@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../../auth/AuthContext';
 import { getApiBase } from '@/app/lib/apiBase';
+import CustomSelect from '@/app/Components/ui/CustomSelect';
 
 const API = getApiBase();
 const MAX_SIZE_BYTES = 2 * 1024 * 1024; // 2MB
@@ -156,7 +157,7 @@ export default function InspirationProjectsPage() {
           <Link href="/profile/experience" className="text-sm text-gray-600 hover:text-gray-900">
             Experience
           </Link>
-          <Link href="/" className="text-sm text-green-600 hover:underline">
+          <Link href="/" className="text-sm text-[#32261C] hover:underline">
             Dashboard
           </Link>
         </div>
@@ -182,7 +183,7 @@ export default function InspirationProjectsPage() {
           {message ? (
             <div
               className={`p-3 rounded-lg text-sm ${
-                message.type === 'success' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-700'
+                message.type === 'success' ? 'bg-[#DDCDC1]/20 text-[#32261C]' : 'bg-red-50 text-red-700'
               }`}
             >
               {message.text}
@@ -216,17 +217,12 @@ export default function InspirationProjectsPage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
-                <select
+                <CustomSelect
                   value={project.category}
-                  onChange={(e) => updateRow(project.id, { category: e.target.value as Category })}
-                  className="w-full border border-gray-300 rounded-lg px-4 py-2.5 bg-white"
-                >
-                  {CATEGORIES.map((cat) => (
-                    <option key={cat} value={cat}>
-                      {cat}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(val) => updateRow(project.id, { category: val as Category })}
+                  options={CATEGORIES.map((cat) => ({ value: cat, label: cat }))}
+                  placeholder="Select Category"
+                />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Description / notes</label>
@@ -306,7 +302,7 @@ export default function InspirationProjectsPage() {
             <button
               type="submit"
               disabled={submitting}
-              className="px-4 py-2.5 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-60"
+              className="px-4 py-2.5 rounded-lg bg-[#EF0101] text-white text-sm font-medium hover:bg-[#EF0101] disabled:opacity-60"
             >
               {submitting ? 'Saving…' : 'Save portfolio projects'}
             </button>

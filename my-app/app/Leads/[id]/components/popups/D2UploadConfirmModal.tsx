@@ -83,7 +83,7 @@ export default function D2UploadConfirmModal({
                     </fieldset>
                 ) : null}
 
-                <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-900">
+                <div className="rounded-lg border border-[#DDCDC1] bg-[#DDCDC1]/20 px-3 py-2 text-sm text-[#32261C]">
                     This will be recorded as uploaded by{' '}
                     <strong>{userName || 'You'}</strong> ({attributionLabel}).
                 </div>
@@ -101,7 +101,7 @@ export default function D2UploadConfirmModal({
                         type="button"
                         onClick={() => onConfirm(attributionRole)}
                         disabled={uploading}
-                        className="px-4 py-2 text-sm bg-green-700 text-white font-semibold rounded-lg hover:bg-green-800 disabled:opacity-60"
+                        className="px-4 py-2 text-sm bg-[#EF0101] text-white font-semibold rounded-lg hover:bg-[#EF0101]/90 disabled:opacity-60"
                     >
                         {uploading ? 'Uploading…' : 'Confirm upload'}
                     </button>

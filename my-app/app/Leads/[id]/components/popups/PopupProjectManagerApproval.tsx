@@ -95,7 +95,7 @@ export default function PopupProjectManagerApproval({
                         type="button"
                         onClick={onApprove}
                         disabled={submitting}
-                        className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-60"
+                        className="px-4 py-2 bg-[#EF0101] text-white text-sm font-medium rounded-lg hover:bg-[#EF0101] disabled:opacity-60"
                     >
                         Approve and continue
                     </button>

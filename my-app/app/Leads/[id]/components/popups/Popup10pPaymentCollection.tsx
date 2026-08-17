@@ -130,19 +130,19 @@ export default function Popup10pPaymentCollection({
           onChange={onFileChange}
         />
         <div
-          className="w-full max-w-[540px] border-2 border-dashed border-gray-300 rounded-xl bg-white p-8 flex flex-col items-center justify-center min-h-[180px] cursor-pointer hover:border-blue-400 hover:bg-blue-50/30 transition-colors"
+          className="w-full max-w-[540px] border-2 border-dashed border-gray-300 rounded-xl bg-white p-8 flex flex-col items-center justify-center min-h-[180px] cursor-pointer hover:border-[#00B0ED] hover:bg-[#00B0ED]/10/30 transition-colors"
           onClick={openFileDialog}
           onDrop={onDrop}
           onDragOver={onDragOver}
         >
-          <div className="w-14 h-14 rounded-full border-2 border-blue-200 bg-blue-50 flex items-center justify-center mb-4">
+          <div className="w-14 h-14 rounded-full border-2 border-[#00B0ED]/30 bg-[#00B0ED]/10 flex items-center justify-center mb-4">
             <svg
               xmlns="http://www.w3.org/2000/svg"
               fill="none"
               viewBox="0 0 24 24"
               strokeWidth="1.5"
               stroke="currentColor"
-              className="w-7 h-7 text-blue-600"
+              className="w-7 h-7 text-[#00B0ED]"
             >
               <path
                 strokeLinecap="round"
@@ -189,7 +189,7 @@ export default function Popup10pPaymentCollection({
             type="button"
             onClick={onSubmit}
             disabled={uploading || files.length === 0}
-            className="px-4 py-2 bg-green-600 text-white text-sm font-semibold rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-4 py-2 bg-[#EF0101] text-white text-sm font-semibold rounded-lg hover:bg-[#EF0101] disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {uploading ? "Uploading…" : "Submit to finance"}
           </button>
