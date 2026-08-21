@@ -16,6 +16,7 @@ import {
 } from './AppointmentSuccessToast';
 import { IncentivesNavLink, IncentivesSideRail, canShowIncentivesNav } from './IncentivesNavLink';
 import FinanceRefundsNavLink from './FinanceRefundsNavLink';
+import NotificationBell from './notifications/NotificationBell';
 
 export default function DashboardGuard() {
   const router = useRouter();
@@ -423,6 +424,7 @@ export default function DashboardGuard() {
           )}
         </div>
         <div className="flex items-center gap-3">
+          {sessionId ? <NotificationBell sessionId={sessionId} /> : null}
           <ThemeModeToggle />
           {isDesignManager && sessionId && user ? (
             <button

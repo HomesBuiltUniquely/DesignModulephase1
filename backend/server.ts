@@ -25,6 +25,8 @@ import {
 } from "./routes/prolanceApi";
 import { registerCrmHubBookingRoutes, notifyHubFinanceReview, getHubBookingSyncForLead, buildFinance10pQueueList, buildCrmSalesClosureQueueRows, buildCrmSalesClosureLeadDetail, leadHasDqc1Approval, isCrmBookingFinanceApproved } from "./routes/crmHubBookingRoutes";
 import { registerIncentivesRoutes } from "./routes/incentivesRoutes";
+import { createDesignNotifyBridge } from "./lib/designNotifyBridge";
+import { registerDesignNotificationRoutes } from "./routes/designNotificationRoutes";
 
 /**
  * Load backend/.env before dotenv. Supports `export KEY=value` and quoted values.
@@ -159,6 +161,8 @@ const pool = mysql.createPool({
   keepAliveInitialDelay: 0,
   connectTimeout: 60000,
 });
+
+const designNotify = createDesignNotifyBridge(pool);
 
 // Standalone route: /api/customer/:customerNumber (see routes/customerNumberApi.ts)
 registerCustomerNumberRoutes(app, pool);
@@ -1540,6 +1544,26 @@ async function initDb() {
         INDEX idx_full_day_designer_date (designer_id, block_date),
         INDEX idx_full_day_status (status),
         INDEX idx_full_day_block_date (block_date)
+      );
+    `);
+
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS design_notifications (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        project_id VARCHAR(100) NOT NULL,
+        lead_id INT NULL,
+        lead_name VARCHAR(255) NOT NULL,
+        designer_id INT NULL,
+        notification_type VARCHAR(30) NOT NULL,
+        notification_action VARCHAR(30) NOT NULL,
+        payload JSON NOT NULL,
+        idempotency_key VARCHAR(255) NOT NULL UNIQUE,
+        go_response_raw JSON NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_dn_created (created_at DESC),
+        INDEX idx_dn_designer (designer_id),
+        INDEX idx_dn_project (project_id),
+        INDEX idx_dn_type (notification_type, notification_action)
       );
     `);
 
@@ -5016,6 +5040,23 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
       console.error("D1 email trigger error (non-fatal)", emailErr);
     }
 
+    // Payment request for Finance (Sales Closure queue — same label as CRM booking 10%)
+    if (payload) {
+      const scAmount =
+        parseFiniteNumber(payload.amount_paid_this_time) ??
+        parseFiniteNumber(payload.amount_paid) ??
+        0;
+      if (scAmount > 0 || payload.payment_screenshot) {
+        void designNotify.notifyPaymentRequest(insertId, "SALES_CLOSURE", {
+          payment_type: "SALES_CLOSURE",
+          amount: scAmount || readTotalPaidToward10Percent(payload) || null,
+          upload_name:
+            typeof payload.payment_screenshot === "string" ? payload.payment_screenshot : undefined,
+          milestone_context: "SALES_CLOSURE",
+        });
+      }
+    }
+
     res.status(201).json({
       success: true,
       message: "Sales closure received",
@@ -5472,10 +5513,12 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
         assignedDesignerId,
       ],
     );
+    const newLeadId = Number((result as { insertId?: number }).insertId);
+    if (newLeadId) void designNotify.notifyLeadPre10(newLeadId);
 
     return res.status(201).json({
       ok: true,
-      leadId: (result as any)?.insertId ?? null,
+      leadId: newLeadId || null,
       created: true,
       projectName,
       projectStage: "Pre 10%",
@@ -8532,6 +8575,25 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
       }
     }
 
+    if (isFirstCompletion) {
+      const [allCompRows] = await pool.query(
+        `SELECT milestone_index as milestoneIndex, task_name as taskName
+         FROM lead_task_completions WHERE lead_id = ?`,
+        [id],
+      );
+      const allComps = allCompRows as { milestoneIndex: number; taskName: string }[];
+      if (isMilestoneFullyComplete(allComps, milestoneIndex)) {
+        void designNotify.notifyMilestone(
+          id,
+          MILESTONE_NAMES[milestoneIndex] ?? `Milestone ${milestoneIndex}`,
+          milestoneIndex,
+        );
+        if (milestoneIndex === 6) {
+          void designNotify.notifyP2p(id, actingUser.name);
+        }
+      }
+    }
+
     return res.status(201).json({ ok: true });
   } catch (err) {
     console.error("complete-task error", err);
@@ -8949,6 +9011,15 @@ app.post("/api/leads/:id/approve-sales-closure", async (req: Request, res: Respo
       details: { kind: "note", noteText: "Sales Closure payment screenshot approved." },
     });
 
+    void designNotify.notifyLead1020(leadId, "SALES_CLOSURE_APPROVED");
+    void designNotify.notifyPaymentStatus(leadId, "PAYMENT_STATUS_APPROVED", {
+      decision_type: "SALES_CLOSURE",
+      payment_type: "SALES_CLOSURE",
+      milestone_context: "SALES_CLOSURE",
+      approver_name: user.name || "Finance",
+      actor_name: user.name || "Finance",
+    }, "sales_closure");
+
     return res.json({ success: true, message: "Sales closure approved successfully" });
   } catch (err) {
     console.error("approve-sales-closure error", err);
@@ -9035,6 +9106,15 @@ app.post("/api/leads/:id/reject-sales-closure", async (req: Request, res: Respon
       user: { name: user.name || "Finance" },
       details: { kind: "note", noteText: "Sales Closure payment screenshot rejected. Notification sent to sales." },
     });
+
+    void designNotify.notifyPaymentStatus(leadId, "PAYMENT_STATUS_REJECTED", {
+      decision_type: "SALES_CLOSURE",
+      payment_type: "SALES_CLOSURE",
+      milestone_context: "SALES_CLOSURE",
+      approver_name: user.name || "Finance",
+      actor_name: user.name || "Finance",
+      rejection_reason: String((req.body || {}).reason || "").trim() || undefined,
+    }, "sales_closure_reject");
 
     return res.json({ success: true, message: "Sales closure rejected and sales person notified" });
   } catch (err) {
@@ -9125,6 +9205,15 @@ app.put("/api/sales-closure/:id", async (req: Request, res: Response) => {
       await notifyCrmSalesClosureStatus(updatedPayload);
     } catch (callbackErr) {
       console.error("[sales-closure-callback] update callback failed", callbackErr);
+    }
+
+    if (thisPayment > 0 || screenshot) {
+      void designNotify.notifyPaymentRequest(leadId, "SALES_CLOSURE", {
+        payment_type: "SALES_CLOSURE",
+        amount: thisPayment || readTotalPaidToward10Percent(updatedPayload) || null,
+        upload_name: screenshot || undefined,
+        milestone_context: "SALES_CLOSURE",
+      });
     }
 
     return res.json({ success: true, message: "Sales closure updated and sent back for finance approval" });
@@ -9245,6 +9334,12 @@ app.post(
       } catch (mailErr) {
         console.error("10p payment upload notification error (non-fatal)", mailErr);
       }
+
+      void designNotify.notifyPaymentRequest(leadId, "MILESTONE_10_PERCENT", {
+        payment_type: "MILESTONE_10_PERCENT",
+        milestone_context: "DESIGN_MILESTONE_10",
+        upload_name: files.map((f) => f.originalname).join(", "),
+      });
 
       return res.status(201).json({ ok: true });
     } catch (err) {
@@ -9369,6 +9464,15 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
         details: { kind: "note", noteText: "CRM pre-DQC1 payment approved." },
       });
       void notifyHubFinanceReview(pool, leadId, "APPROVED", user.name ?? "Finance", null);
+      void designNotify.notifyLead1020(leadId, "CRM_BOOKING_APPROVED");
+      // CRM booking 10% → same as Sales Closure on finance side
+      void designNotify.notifyPaymentStatus(leadId, "PAYMENT_STATUS_APPROVED", {
+        decision_type: "SALES_CLOSURE",
+        payment_type: "SALES_CLOSURE",
+        milestone_context: "CRM_BOOKING",
+        approver_name: user.name ?? "Finance",
+        actor_name: user.name ?? "Finance",
+      }, "crm_booking");
       return res.status(201).json({ ok: true, path: "crm_booking" });
     }
 
@@ -9403,6 +9507,14 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
       details: { kind: "note", noteText: "10% payment approved. Lead moves to next stage." },
     };
     await addLeadHistoryEvent(leadId, ev);
+
+    void designNotify.notifyPaymentStatus(leadId, "PAYMENT_STATUS_APPROVED", {
+      decision_type: "PAYMENT",
+      payment_type: "MILESTONE_10_PERCENT",
+      milestone_context: "DESIGN_MILESTONE_10",
+      approver_name: user.name ?? "Finance",
+      actor_name: user.name ?? "Finance",
+    }, "design_milestone_10");
 
     // Sync latest quote milestone targets into lead payload after finance approval.
     try {
@@ -9673,6 +9785,14 @@ app.post("/api/leads/:id/reject-10p-payment", async (req: Request, res: Response
         details: { kind: "note", noteText: reason || "CRM booking payment rejected." },
       });
       void notifyHubFinanceReview(pool, leadId, "REJECTED", user.name ?? "Finance", reason);
+      void designNotify.notifyPaymentStatus(leadId, "PAYMENT_STATUS_REJECTED", {
+        decision_type: "SALES_CLOSURE",
+        payment_type: "SALES_CLOSURE",
+        milestone_context: "CRM_BOOKING",
+        approver_name: user.name ?? "Finance",
+        actor_name: user.name ?? "Finance",
+        rejection_reason: reason || undefined,
+      }, "crm_booking_reject");
       return res.json({ ok: true, path: "crm_booking" });
     }
 
@@ -9695,6 +9815,14 @@ app.post("/api/leads/:id/reject-10p-payment", async (req: Request, res: Response
       details: { kind: "note", noteText: reason || "10% payment rejected." },
     };
     await addLeadHistoryEvent(leadId, ev);
+    void designNotify.notifyPaymentStatus(leadId, "PAYMENT_STATUS_REJECTED", {
+      decision_type: "PAYMENT",
+      payment_type: "MILESTONE_10_PERCENT",
+      milestone_context: "DESIGN_MILESTONE_10",
+      approver_name: user.name ?? "Finance",
+      actor_name: user.name ?? "Finance",
+      rejection_reason: reason || undefined,
+    }, "design_milestone_10_reject");
     return res.json({ ok: true, path: "design_10p" });
   } catch (err) {
     console.error("reject-10p-payment error", err);
@@ -9783,6 +9911,12 @@ app.post(
       } catch (mailErr) {
         console.error("40p payment upload notification error (non-fatal)", mailErr);
       }
+
+      void designNotify.notifyPaymentRequest(leadId, "MILESTONE_40_PERCENT", {
+        payment_type: "MILESTONE_40_PERCENT",
+        milestone_context: "DESIGN_MILESTONE_40",
+        upload_name: files.map((f) => f.originalname).join(", "),
+      });
 
       return res.status(201).json({ ok: true });
     } catch (err) {
@@ -10081,6 +10215,15 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
     } catch (e) {
       console.error("40% payment approval email prepare error (non-fatal)", e);
     }
+
+    void designNotify.notifyPaymentStatus(leadId, "PAYMENT_STATUS_APPROVED", {
+      decision_type: "PAYMENT",
+      payment_type: "MILESTONE_40_PERCENT",
+      milestone_context: "DESIGN_MILESTONE_40",
+      approver_name: user.name ?? "Finance",
+      actor_name: user.name ?? "Finance",
+    }, "design_milestone_40");
+
     return res.status(201).json({ ok: true });
   } catch (err) {
     console.error("approve-40p-payment error", err);
@@ -10216,6 +10359,19 @@ app.post(
               { name: user?.name, email: user?.email },
               { fileName: fileName || null },
             );
+            void designNotify.notifyMmtDocReady(leadId, {
+              mmt_scope: "SITE_MEASUREMENT",
+              kind: "d1_files_ready",
+              via: "DIRECT",
+              file_name: fileName || null,
+            });
+          } else if (isD2) {
+            void designNotify.notifyMmtDocReady(leadId, {
+              mmt_scope: "D2_MASKING",
+              kind: "d2_files_ready",
+              via: "DIRECT",
+              file_name: fileName || null,
+            });
           }
         }
       };
@@ -10603,6 +10759,21 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       console.error("[offline-meeting-export] record failed (non-fatal)", exportErr);
     }
 
+    void designNotify.notifyMeeting(leadId, {
+      meeting_type: String(meetingType || ""),
+      mod: meetingMode != null ? String(meetingMode) : undefined,
+      slot: {
+        date: String(meetingDate || "").slice(0, 10),
+        time_slot: (() => {
+          const startLabel = formatTime12Hour(meetingTime) || String(meetingTime || "");
+          const endLabel = meetingEndTime
+            ? formatTime12Hour(meetingEndTime) || String(meetingEndTime)
+            : "";
+          return endLabel ? `${startLabel} - ${endLabel}` : startLabel;
+        })(),
+      },
+    });
+
     return res.status(201).json({ ok: true });
   } catch (err) {
     console.error("schedule-meeting-invite error", err);
@@ -10767,6 +10938,19 @@ app.post("/api/leads/:leadId/uploads/:uploadId/approve", async (req: Request, re
         { name: user.name, email: user.email },
         { fileName: uploadRow.originalName || null },
       );
+      void designNotify.notifyMmtDocReady(leadId, {
+        mmt_scope: "SITE_MEASUREMENT",
+        kind: "d1_files_ready",
+        via: "APPROVED",
+        file_name: uploadRow.originalName || null,
+      });
+    } else {
+      void designNotify.notifyMmtDocReady(leadId, {
+        mmt_scope: "D2_MASKING",
+        kind: "d2_files_ready",
+        via: "APPROVED",
+        file_name: uploadRow.originalName || null,
+      });
     }
 
     return res.json({ ok: true });
@@ -11204,6 +11388,8 @@ async function persistDqc1SubmissionFromMeta(
       error: err,
     });
   }
+
+  void designNotify.notifyDqcRequest(leadId, "DQC_ROUND_1", Date.now());
 }
 
 /** DQC 2: DB + history + pending_dqc2 row (multipart or S3-direct). */
@@ -11256,6 +11442,8 @@ async function persistDqc2SubmissionFromMeta(
      VALUES (?, ?, ?, ?, NULL)`,
     [leadId, "pending_dqc2", JSON.stringify([]), now],
   );
+
+  void designNotify.notifyDqcRequest(leadId, "DQC_ROUND_2", Date.now());
 
   // NOTE: The internal DQC review email (send-dqc2-final-design-submission-internal) is intentionally
   // NOT sent here. It is sent exclusively via the complete-task → DQC2_SUBMISSION_DUAL handler to
@@ -12048,6 +12236,21 @@ app.post("/api/leads/:id/dqc-review", async (req: Request, res: Response) => {
       [leadId, verdict, JSON.stringify(remarks), new Date(), user.id],
     );
 
+    const dqcRound = isDqc2 ? "DQC_ROUND_2" : "DQC_ROUND_1";
+    void designNotify.notifyDqcStatus(leadId, String(verdict), {
+      dqc_round: dqcRound,
+      approver_name: user.name || "DQC",
+      actor_name: user.name || "DQC",
+      rejection_reason:
+        String(verdict).toLowerCase().includes("reject") ||
+        String(verdict).toLowerCase().includes("change")
+          ? (remarks as { text?: string }[])
+              .map((r) => String(r?.text || "").trim())
+              .filter(Boolean)
+              .join("; ") || undefined
+          : undefined,
+    });
+
     // Send internal rejection / changes feedback email to assigned designer
     try {
       const [leadRows] = await pool.query(
@@ -12313,6 +12516,14 @@ app.post("/api/leads/:id/d1-request", async (req: Request, res: Response) => {
     }
 
     console.log("[D1-MMT] Internal manager request mail sent OK", { leadId, to: manager.email });
+    void designNotify.notifyMmtRequest(leadId, {
+      mmt_scope: "SITE_MEASUREMENT",
+      visit_date: measurementDate || null,
+      visit_time: measurementTime || null,
+      mmt_manager_id: managerId,
+      mmt_manager_name: manager.name,
+      designer_name: lead.designerName,
+    });
     return res.status(201).json({
       ok: true,
       saved: true,
@@ -12439,6 +12650,18 @@ app.post("/api/leads/:id/assign-d1-executive", async (req: Request, res: Respons
     const mailResult = await sendD1MmtVisitScheduledExternal(leadId, {
       id: user.id,
       email: user.email || null,
+    });
+
+    void designNotify.notifyMmtAssign(leadId, {
+      assignment_type: "MMT_EXECUTIVE",
+      to_id: executiveId,
+      to_name: executive.name,
+      mmt_manager_id: assignment.requested_mmt_manager_id,
+      mmt_scope: "SITE_MEASUREMENT",
+      kind: "d1_mmt_assign",
+      assigned_by: user.name || "MMT Manager",
+      actor_name: user.name || "MMT Manager",
+      approver_name: user.name || "MMT Manager",
     });
 
     if (!mailResult.ok) {
@@ -12639,6 +12862,16 @@ app.post("/api/leads/:id/d2-masking-request", upload.array("files", 20), async (
     };
     await addLeadHistoryEvent(leadId, ev);
 
+    void designNotify.notifyMmtRequest(leadId, {
+      mmt_scope: "D2_MASKING",
+      kind: "d2_masking_request",
+      visit_date: maskingDate || null,
+      visit_time: maskingTime || null,
+      requested_spm_id: spmId,
+      requested_spm_name: spmLabel,
+      actor_name: user.name,
+    });
+
     return res.status(201).json({
       ok: true,
       maskingDate: maskingDate || null,
@@ -12698,6 +12931,20 @@ function getCurrentMilestoneIndex(
     if (!allDone) return i;
   }
   return 6; // Final milestone
+}
+
+function isMilestoneFullyComplete(
+  completions: { milestoneIndex: number; taskName: string }[],
+  milestoneIndex: number,
+): boolean {
+  const tasks = MILESTONE_TASKS[milestoneIndex];
+  if (!tasks || tasks.length === 0) return false;
+  const completedSet = new Set(
+    completions
+      .filter((c) => Number(c.milestoneIndex) === milestoneIndex)
+      .map((c) => String(c.taskName).trim()),
+  );
+  return tasks.every((t) => completedSet.has(String(t).trim()));
 }
 
 /** Progress within the current milestone: 0–100 (completed tasks in that milestone / total tasks). */
@@ -13202,11 +13449,25 @@ app.post("/api/leads/:id/assign-designer", async (req: Request, res: Response) =
       }
     }
 
+    const oldDesignerId = Number(lead.assigned_designer_id) || 0;
+    let oldDesignerName = "";
+    if (oldDesignerId) {
+      const [oldRows] = await pool.query("SELECT name FROM users WHERE id = ? LIMIT 1", [oldDesignerId]);
+      oldDesignerName = String((oldRows as { name?: string }[])[0]?.name || "");
+    }
+
     await pool.query("UPDATE leads SET assigned_designer_id = ?, update_at = ? WHERE id = ?", [
       designerId,
       new Date(),
       leadId,
     ]);
+    void designNotify.notifyAssignDesigner(
+      leadId,
+      oldDesignerId,
+      designerId,
+      oldDesignerName,
+      designer.name,
+    );
     return res.json({
       ok: true,
       leadId,
@@ -13405,6 +13666,10 @@ app.patch("/api/leads/:id/assign-project-manager", async (req: Request, res: Res
       console.error("PM assignment & D2 internal masking request email error (non-fatal)", { leadId: id, error: mailErr });
     }
 
+    const [pmNameRows] = await pool.query("SELECT name FROM users WHERE id = ? LIMIT 1", [pmId]);
+    const pmName = String((pmNameRows as { name?: string }[])[0]?.name || "");
+    void designNotify.notifyAssignPm(id, pmId, pmName);
+
     return res.json({ ok: true });
   } catch (err) {
     console.error("assign-project-manager error", err);
@@ -13498,6 +13763,13 @@ app.post(
         },
       };
       await addLeadHistoryEvent(leadId, ev);
+
+      void designNotify.notifyDqcStatus(leadId, "pm_rejected", {
+        dqc_round: "DQC_ROUND_2",
+        approver_name: user.name || "Project Manager",
+        actor_name: user.name || "Project Manager",
+        rejection_reason: remarkText,
+      });
 
       try {
         const [leadRows] = await pool.query(
@@ -13790,6 +14062,8 @@ app.post("/api/leads/manual-create", async (req: Request, res: Response) => {
     const leadId = Number((result as { insertId?: number }).insertId);
     const pid = `HUB-${leadId}`;
     await pool.query("UPDATE leads SET pid = ? WHERE id = ?", [pid, leadId]);
+
+    void designNotify.notifyLeadPre10(leadId);
 
     return res.status(201).json({
       ok: true,
@@ -14348,6 +14622,7 @@ app.post("/api/leads/:id/prolance-quote-snapshots", async (req: Request, res: Re
       } catch (emailErr) {
         console.error("Failed to trigger new quote email", emailErr);
       }
+      void designNotify.notifyQuote(id, `QT-${quoteId}`, `${FRONTEND_BASE}/quote/${quoteId}`);
     }
 
     return res.json({ ok: true, quoteId, inserted, updated });
@@ -14633,9 +14908,21 @@ app.post("/api/leads/:id/cancel", async (req: Request, res: Response) => {
   }
 });
 
-registerCrmHubBookingRoutes(app, { pool, getUserFromSession, addLeadHistoryEvent });
+registerCrmHubBookingRoutes(app, {
+  pool,
+  getUserFromSession,
+  addLeadHistoryEvent,
+  onCrmLeadCreated: (leadId) => void designNotify.notifyLeadPre10(leadId),
+  onCrmSalesClosurePaymentRequested: (leadId, extra) =>
+    void designNotify.notifyPaymentRequest(leadId, "SALES_CLOSURE", {
+      payment_type: "SALES_CLOSURE",
+      milestone_context: "CRM_BOOKING",
+      ...(extra || {}),
+    }),
+});
 registerProlanceRoutes(app, getUserFromSession, pool);
 registerIncentivesRoutes(app, { pool, getUserFromSession });
+registerDesignNotificationRoutes(app, { pool, getUserFromSession });
 
 // Ensure CORS headers are present on error responses (multer, etc.) so the browser doesn't only show a generic CORS error
 app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
