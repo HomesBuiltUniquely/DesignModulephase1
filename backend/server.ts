@@ -4452,7 +4452,7 @@ app.all("/api/auth/register-mmt-executive", async (req: Request, res: Response) 
   }
 });
 
-// Admin or Deputy General Manager: create TDM (Territorial Design Manager)
+// Admin or Deputy General Manager: create TDM (Territory Design Manager)
 app.all("/api/auth/create-tdm", async (req: Request, res: Response) => {
   if (req.method !== "POST") return res.status(405).json({ message: "Use POST" });
   try {
@@ -4478,7 +4478,7 @@ app.all("/api/auth/create-tdm", async (req: Request, res: Response) => {
   } catch (err: any) {
     if (err?.code === "ER_DUP_ENTRY") return res.status(400).json({ message: "A user with this email already exists" });
     console.error("create-tdm error", err);
-    return res.status(500).json({ message: "Failed to create Territorial Design Manager" });
+    return res.status(500).json({ message: "Failed to create Territory Design Manager" });
   }
 });
 
@@ -4600,7 +4600,7 @@ app.all("/api/auth/create-project-manager", async (req: Request, res: Response) 
     const allowed = ["admin", "territorial_design_manager", "deputy_general_manager"];
     if (!allowed.includes(r)) {
       return res.status(403).json({
-        message: "Only Admin, Territorial Design Manager, or Deputy General Manager can create a Project Manager",
+        message: "Only Admin, Territory Design Manager, or Deputy General Manager can create a Project Manager",
       });
     }
     const { email, password, name, phone, branch } = req.body || {};
@@ -13268,7 +13268,7 @@ app.patch("/api/leads/:id/assign-project-manager", async (req: Request, res: Res
     if (!canAssignProjectManagerRole(role)) {
       return res.status(403).json({
         message:
-          "Only Admin, Territorial Design Manager, Deputy General Manager, or Senior Project Manager can assign a project manager",
+          "Only Admin, Territory Design Manager, Deputy General Manager, or Senior Project Manager can assign a project manager",
       });
     }
     const [urows] = await pool.query("SELECT id, role FROM users WHERE id = ?", [pmId]);

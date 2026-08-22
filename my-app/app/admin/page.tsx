@@ -28,7 +28,7 @@ export default function AdminPanelPage() {
       label: 'Create Admin',
     },
     {
-      title: 'Create Territorial Design Manager',
+      title: 'Create Territory Design Manager',
       description: 'Add a new TDM who can register Design Managers and Designers.',
       href: '/admin/create-tdm',
       label: 'Create TDM',

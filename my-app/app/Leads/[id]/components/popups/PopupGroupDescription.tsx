@@ -250,7 +250,7 @@ export default function PopupGroupDescription({
           )}
         </div>
         {renderRoleSection('Admin(s)', teamPhones?.admins || [], 'admin')}
-        {renderRoleSection('Territorial Design Manager(s)', teamPhones?.territorial_design_managers || [], 'tdm')}
+        {renderRoleSection('Territory Design Manager(s)', teamPhones?.territorial_design_managers || [], 'tdm')}
         {renderRoleSection('Design Manager(s)', dmForGroup, 'dm')}
         <div className="pt-2">
           <button

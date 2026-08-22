@@ -1,5 +1,7 @@
 'use client';
 
+import { formatUserRoleLabel } from '@/app/lib/formatUserRoleLabel';
+
 import { useRouter, usePathname } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
@@ -277,7 +279,7 @@ export default function DashboardGuard() {
                 </span>
               )}
             </div>
-            <span className="text-sm text-gray-600">{user.name} ({user.role.replace(/_/g, ' ')})</span>
+            <span className="text-sm text-gray-600">{user.name} ({formatUserRoleLabel(user.role)})</span>
           </div>
           <button type="button" onClick={() => logout().then(() => router.replace('/login'))} className="text-sm text-red-600 hover:underline">Logout</button>
         </div>
