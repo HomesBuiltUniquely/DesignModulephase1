@@ -338,12 +338,21 @@ Implemented in `designNotifyAudience.ts`. Same idea as the old email CC / bell f
 
 | Event type | Typical copies |
 |---|---|
-| LEAD / PHASE / MILESTONE / MEETING / QUOTE | Designer, their DM, their TDM, admin / DGM. PM on milestone or sign-off style meetings. |
-| PAYMENT | All finance + designer + DM + all TDMs + admin / DGM |
-| DQC | DQC manager / DQE + designer + DM + TDMs + admin. PM on DQC2. |
-| MMT | MMT managers + designer + DM + TDMs + admin. Extra `to_id` / `mmt_manager_id` from payload. |
-| ASSIGNMENT | New assignee (`to_id`) + designer tree + admin. MMT assign also MMT roles. |
-| P2P | All users (rare, broadcast). |
+| PAYMENT | Finance + assigned designer + their DM + **all** TDMs + admin / DGM |
+| DQC1 | DQC manager / DQE + designer + DM + **all** TDMs (not admin). **Not** PM / SPM. |
+| DQC2 | Same as DQC1 + admin / DGM + **assigned PM + all SPMs** |
+| LEAD / PHASE / QUOTE | Designer + their DM + **all** TDMs + admin / DGM |
+| MILESTONE | Designer + their DM + **all** TDMs. **Not** admin. Assigned PM + all SPMs only if it is **D2**. |
+| MEETING | Designer + their DM. Assigned PM + all SPMs on D2 / sign-off / DQC2-style meetings. |
+| ASSIGNMENT (PM) | New PM + assigned PM + **all SPMs** + designer + DM + all TDMs + admin / DGM |
+| ASSIGNMENT (designer) | Assignee + designer + DM + all TDMs + admin / DGM |
+| ASSIGNMENT (MMT executive) | Assignee + designer + DM + MMT managers. **Not** admin / TDM / PM / SPM |
+| MMT D1 | MMT managers + designer + DM. **Not** admin / TDM / PM / SPM |
+| MMT D2 | Same as D1 + **assigned PM + all SPMs** |
+| P2P | All users (including PM and SPM). |
+| PM approve / reject (after DQC2) | Assigned designer + their DM + admin / DGM + **all** TDMs + assigned PM + **all SPMs** |
+
+TDM is treated as a **company-wide monitor** for the types above (every designer), not only their hierarchy tree. Designer and design manager still follow the lead’s assigned designer. Finance, DQC, and MMT role inboxes are unchanged.
 
 To change “who gets payment,” edit **`designNotifyAudience.ts` only**. Do not put that logic back into the GET bell route.
 
@@ -364,17 +373,18 @@ Spec: `.cursor/plans/NotifyService_Design_APIs_Reference (1).md`.
 | 02 10–20 | PHASE | lead, project, phase, trigger, message |
 | 03 Milestone | MILESTONE | lead, project, milestone name, designer. Fires when **all tasks in that milestone** are done, not on each task. |
 | 04 Payment request | PAYMENT / REQUESTED | lead, project, payment type, file, amount, **designer** |
-| 05 Payment status | PAYMENT | lead, project, status, type, **designer**, **who approved/rejected**, amount, reason |
-| 06 DQC request | DQC / REQUESTED | lead, project, round, review id, designer |
-| 07 DQC status | DQC | lead, project, status, round, **designer**, **who approved/rejected**, reason |
+| 05 Payment status | PAYMENT | lead, project, 10%/40%/sales closure, designer, who approved/rejected, amount, reason |
+| 06 DQC request | DQC / REQUESTED | lead, project, round, designer |
+| 07 DQC status | DQC | lead, project, round, designer, who approved/rejected, reason |
 | 08 MMT request | MMT | lead, project, scope, visit date/time, MMT manager, designer |
 | 09 MMT assign | ASSIGNMENT / ASSIGNED | lead, project, assignment type, executive, **designer**, **who assigned** |
 | 10 MMT docs | MMT / DOCUMENTS_READY | lead, project, scope, via, file, approved by |
 | 11 Meeting | MEETING | lead, project, **meeting type**, **online/offline (mod)**, **date**, **time slot** |
 | 12 Designer assign | ASSIGNMENT | lead, project, type, from → to |
 | 13 PM assign | ASSIGNMENT / PM | lead, project, type, to name |
-| 14 Quote | QUOTE | lead, project, quote id |
-| 15 P2P | P2P | lead, project, designer |
+| 14 Quote | QUOTE | lead, project, quote id, **Open quotation** link |
+| 15 P2P | P2P | Congratulate designer — lead completed. The assigned designer also gets a congratulations popup. |
+| 16 PM status | PM | After DQC2: PM approved / PM rejected DQC 2. Designer, who decided, reason on reject. |
 
 If you create **two meetings the same day / same type**, each still notifies: meeting `event_id` includes date, time slot, and a unique suffix (`Date.now()`). Same `event_id` twice would skip a second insert.
 

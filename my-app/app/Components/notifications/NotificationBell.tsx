@@ -14,9 +14,11 @@ import {
   markDesignNotificationRead,
   notificationCategoryLabel,
   notificationCategoryTone,
+  quoteLinkFromNotification,
   type DesignNotificationItem,
 } from '../../lib/design-notifications';
 import { playNotificationSound, unlockNotificationSound } from '../../lib/notification-sound';
+import P2PCongratulationsModal from './P2PCongratulationsModal';
 
 const SOUND_MUTE_KEY = 'design_module_notifications_sound_muted';
 /** Backup poll if the live socket is down. */
@@ -36,7 +38,39 @@ type FilterKey =
 
 type Props = {
   sessionId: string | null;
+  userId?: number | null;
+  userRole?: string | null;
 };
+
+const ALL_TAB_DEFS: { key: FilterKey; label: string }[] = [
+  { key: 'ALL', label: 'All' },
+  { key: 'LEAD', label: 'Leads' },
+  { key: 'MILESTONE', label: 'Milestones' },
+  { key: 'PAYMENT', label: 'Payments' },
+  { key: 'MEETING', label: 'Meetings' },
+  { key: 'DQC', label: 'DQC' },
+  { key: 'MMT', label: 'MMT' },
+  { key: 'ASSIGNMENT', label: 'Assign' },
+  { key: 'QUOTE', label: 'Quote' },
+];
+
+/** Tabs that match types this role actually receives (see designNotifyAudience.ts). */
+function tabKeysForRole(role: string | null | undefined): FilterKey[] {
+  const r = (role || '').toLowerCase();
+  if (r === 'finance' || r === 'dqc_manager' || r === 'dqe') return ['ALL'];
+  if (r === 'mmt_manager' || r === 'mmt_executive') return ['ALL', 'MMT', 'ASSIGNMENT'];
+  if (r === 'admin' || r === 'deputy_general_manager') {
+    return ['ALL', 'LEAD', 'PAYMENT', 'DQC', 'ASSIGNMENT', 'QUOTE'];
+  }
+  if (r === 'territorial_design_manager') {
+    return ['ALL', 'LEAD', 'MILESTONE', 'PAYMENT', 'DQC', 'ASSIGNMENT', 'QUOTE'];
+  }
+  if (r === 'project_manager' || r === 'senior_project_manager') {
+    return ['ALL', 'MILESTONE', 'MEETING', 'DQC', 'MMT', 'ASSIGNMENT'];
+  }
+  // Designer + design manager (and anyone else on the design tree)
+  return ALL_TAB_DEFS.map((t) => t.key);
+}
 
 function isUnreadItem(item: DesignNotificationItem): boolean {
   return item.read_at == null || item.read_at === '';
@@ -59,7 +93,7 @@ function TypeIcon({ type }: { type: string }) {
       </svg>
     );
   }
-  if (t === 'DQC') {
+  if (t === 'DQC' || t === 'PM') {
     return (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} className={common}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
@@ -109,14 +143,23 @@ function matchesFilter(item: DesignNotificationItem, filter: FilterKey): boolean
   if (filter === 'MILESTONE') return t === 'MILESTONE' || t === 'P2P';
   if (filter === 'PAYMENT') return t === 'PAYMENT';
   if (filter === 'MEETING') return t === 'MEETING';
-  if (filter === 'DQC') return t === 'DQC';
+  if (filter === 'DQC') return t === 'DQC' || t === 'PM';
   if (filter === 'MMT') return t === 'MMT';
   if (filter === 'ASSIGNMENT') return t === 'ASSIGNMENT';
   if (filter === 'QUOTE') return t === 'QUOTE';
   return false;
 }
 
-export default function NotificationBell({ sessionId }: Props) {
+function p2pCongratsStorageKey(leadId: number | null | undefined, itemId: number) {
+  return `design_p2p_congrats_${leadId || itemId}`;
+}
+
+function designerNameOf(item: DesignNotificationItem): string {
+  const p = item.payload || {};
+  return String(p.designer_name || p.designerName || '').trim();
+}
+
+export default function NotificationBell({ sessionId, userId, userRole }: Props) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<DesignNotificationItem[]>([]);
@@ -124,6 +167,9 @@ export default function NotificationBell({ sessionId }: Props) {
   const [loading, setLoading] = useState(false);
   const [soundMuted, setSoundMuted] = useState(false);
   const [filter, setFilter] = useState<FilterKey>('ALL');
+  const [p2pCongrats, setP2pCongrats] = useState<{ designerName: string; leadName: string } | null>(
+    null,
+  );
   const panelRef = useRef<HTMLDivElement>(null);
   const knownIdsRef = useRef<Set<number> | null>(null);
   const primedRef = useRef(false);
@@ -154,6 +200,22 @@ export default function NotificationBell({ sessionId }: Props) {
         if (newUnread.length > 0 && !isSoundMuted()) {
           playNotificationSound();
         }
+        const p2pForDesigner = newUnread.find(
+          (n) =>
+            (n.notification_type || '').toUpperCase() === 'P2P' &&
+            userId != null &&
+            Number(n.designer_id) === Number(userId),
+        );
+        if (p2pForDesigner) {
+          const key = p2pCongratsStorageKey(p2pForDesigner.lead_id, p2pForDesigner.id);
+          if (sessionStorage.getItem(key) !== '1') {
+            sessionStorage.setItem(key, '1');
+            setP2pCongrats({
+              designerName: designerNameOf(p2pForDesigner),
+              leadName: p2pForDesigner.lead_name,
+            });
+          }
+        }
         knownIdsRef.current = nextIds;
       }
 
@@ -166,10 +228,23 @@ export default function NotificationBell({ sessionId }: Props) {
       setLoading(false);
       loadInFlightRef.current = false;
     }
-  }, [sessionId]);
+  }, [sessionId, userId]);
 
   useEffect(() => {
-    setSoundMuted(isSoundMuted());
+    const onP2p = (e: Event) => {
+      const detail = (e as CustomEvent<{ designerName?: string; leadName?: string; leadId?: number }>)
+        .detail;
+      const leadId = detail?.leadId;
+      const key = p2pCongratsStorageKey(leadId ?? null, leadId || Date.now());
+      if (sessionStorage.getItem(key) === '1') return;
+      sessionStorage.setItem(key, '1');
+      setP2pCongrats({
+        designerName: detail?.designerName || '',
+        leadName: detail?.leadName || '',
+      });
+    };
+    window.addEventListener('design-p2p-congrats', onP2p);
+    return () => window.removeEventListener('design-p2p-congrats', onP2p);
   }, []);
 
   useEffect(() => {
@@ -344,17 +419,14 @@ export default function NotificationBell({ sessionId }: Props) {
     }
   };
 
-  const tabs: { key: FilterKey; label: string }[] = [
-    { key: 'ALL', label: 'All' },
-    { key: 'LEAD', label: 'Leads' },
-    { key: 'MILESTONE', label: 'Milestones' },
-    { key: 'PAYMENT', label: 'Payments' },
-    { key: 'MEETING', label: 'Meetings' },
-    { key: 'DQC', label: 'DQC' },
-    { key: 'MMT', label: 'MMT' },
-    { key: 'ASSIGNMENT', label: 'Assign' },
-    { key: 'QUOTE', label: 'Quote' },
-  ];
+  const tabs = useMemo(() => {
+    const allowed = new Set(tabKeysForRole(userRole));
+    return ALL_TAB_DEFS.filter((t) => allowed.has(t.key));
+  }, [userRole]);
+
+  useEffect(() => {
+    if (!tabs.some((t) => t.key === filter)) setFilter('ALL');
+  }, [tabs, filter]);
 
   return (
     <div className="relative" ref={panelRef}>
@@ -508,6 +580,21 @@ export default function NotificationBell({ sessionId }: Props) {
                                   {subtitle}
                                 </span>
                               ) : null}
+                              {(item.notification_type || '').toUpperCase() === 'QUOTE' &&
+                              quoteLinkFromNotification(item) ? (
+                                <a
+                                  href={quoteLinkFromNotification(item) || '#'}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    markOneSeen(item.id);
+                                  }}
+                                  className="mt-1.5 inline-flex rounded-md border border-[#EF0101] px-2 py-0.5 text-[11px] font-semibold text-[#EF0101] hover:bg-[#EF0101]/10"
+                                >
+                                  Open quotation
+                                </a>
+                              ) : null}
                               <span className="mt-1.5 flex items-center justify-between gap-2">
                                 <span
                                   className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium ${tone.tagBg} ${tone.tagText}`}
@@ -563,6 +650,12 @@ export default function NotificationBell({ sessionId }: Props) {
           </div>
         </div>
       )}
+      <P2PCongratulationsModal
+        open={p2pCongrats != null}
+        designerName={p2pCongrats?.designerName || ''}
+        leadName={p2pCongrats?.leadName}
+        onClose={() => setP2pCongrats(null)}
+      />
     </div>
   );
 }

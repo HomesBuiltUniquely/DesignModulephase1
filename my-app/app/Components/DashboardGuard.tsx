@@ -424,7 +424,9 @@ export default function DashboardGuard() {
           )}
         </div>
         <div className="flex items-center gap-3">
-          {sessionId ? <NotificationBell sessionId={sessionId} /> : null}
+          {sessionId ? (
+            <NotificationBell sessionId={sessionId} userId={user?.id ?? null} userRole={user?.role ?? null} />
+          ) : null}
           <ThemeModeToggle />
           {isDesignManager && sessionId && user ? (
             <button

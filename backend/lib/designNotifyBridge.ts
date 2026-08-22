@@ -34,6 +34,7 @@ const PATH_META: Record<
   "assign/pm": { notification_type: "ASSIGNMENT", notification_action: "PM_ASSIGNED" },
   quote: { notification_type: "QUOTE", notification_action: "CREATED" },
   p2p: { notification_type: "P2P", notification_action: "COMPLETED" },
+  "pm/status": { notification_type: "PM", notification_action: "STATUS" },
 };
 
 function parsePayload(raw: unknown): Record<string, unknown> {
@@ -376,6 +377,26 @@ export function createDesignNotifyBridge(pool: Pool) {
           designer_name: designerName,
         },
       }),
+    notifyPmStatus: (leadId: number, status: string, extra?: Record<string, unknown>) => {
+      const rejected = status.toUpperCase().includes("REJECT");
+      return publish({
+        leadId,
+        path: "pm/status",
+        idempotencyKey: rejected
+          ? `pm:status:${leadId}:REJECTED:${Date.now()}`
+          : `pm:status:${leadId}:APPROVED`,
+        notificationActionOverride: rejected ? "REJECTED" : "APPROVED",
+        body: {
+          status,
+          decision_type: "PM",
+          dqc_round: extra?.dqc_round ?? "DQC_ROUND_2",
+          approver_name: extra?.approver_name ?? extra?.actor_name,
+          actor_name: extra?.actor_name ?? extra?.approver_name,
+          rejection_reason: extra?.rejection_reason,
+        },
+        payloadExtra: extra ?? {},
+      });
+    },
   };
 }
 

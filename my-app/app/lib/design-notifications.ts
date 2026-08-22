@@ -150,6 +150,32 @@ function designerNameFrom(item: DesignNotificationItem, p: Record<string, unknow
   );
 }
 
+function paymentTypeLabel(raw: string): string {
+  const u = str(raw).toUpperCase();
+  if (!u) return '';
+  if (u === 'SALES_CLOSURE' || u.includes('SALES_CLOSURE') || u === 'CRM_BOOKING') return 'Sales Closure';
+  if (u.includes('40')) return '40% payment';
+  if (u.includes('10')) return '10% payment';
+  return humanizeLabel(raw);
+}
+
+function dqcRoundLabel(raw: string): string {
+  const u = str(raw).toUpperCase();
+  if (!u) return '';
+  if (u.includes('2')) return 'DQC 2';
+  if (u.includes('1')) return 'DQC 1';
+  return humanizeLabel(raw);
+}
+
+export function quoteLinkFromNotification(item: DesignNotificationItem): string | null {
+  const p = pickPayload(item);
+  const link = str(p.quote_link || p.quoteLink || p.quote_url || p.quoteUrl);
+  if (link) return link;
+  const q = str(p.quote_id || p.quoteId).replace(/^QT-/i, '');
+  if (/^\d+$/.test(q)) return `/quote/${q}`;
+  return null;
+}
+
 export function formatNotificationTitle(item: DesignNotificationItem): string {
   const type = (item.notification_type || '').toUpperCase();
   const action = (item.notification_action || '').toUpperCase();
@@ -198,7 +224,14 @@ export function formatNotificationTitle(item: DesignNotificationItem): string {
   if (type === 'ASSIGNMENT' && action.includes('PM')) return 'Project Manager assigned';
   if (type === 'ASSIGNMENT') return 'Designer reassigned';
   if (type === 'QUOTE') return 'New quote created';
-  if (type === 'P2P') return 'P2P completed';
+  if (type === 'PM' && action.includes('REJECT')) return 'PM rejected DQC 2';
+  if (type === 'PM') return 'PM approved DQC 2';
+  if (type === 'P2P') {
+    const designer = designerNameFrom(item, p);
+    return designer
+      ? `Congratulate ${designer} — lead completed successfully`
+      : 'Lead completed — congratulations';
+  }
   return `${type} ${action}`.trim();
 }
 
@@ -241,17 +274,15 @@ export function formatNotificationSubtitle(item: DesignNotificationItem): string
     const designer = designerNameFrom(item, p);
     if (designer) push(`Designer: ${designer}`);
   } else if (type === 'PAYMENT' && action === 'REQUESTED') {
-    // API 04: payment_type, upload_name, amount, designer
-    push(humanizeLabel(String(p.payment_type || p.paymentType || '')));
+    const pay = paymentTypeLabel(String(p.payment_type || p.paymentType || ''));
+    if (pay) push(pay);
     push(p.upload_name || p.uploadName);
     if (p.amount != null && p.amount !== '') push(`₹${p.amount}`);
     const designer = designerNameFrom(item, p);
     if (designer) push(`Designer: ${designer}`);
   } else if (type === 'PAYMENT') {
-    // API 05: designer + who approved/rejected
-    push(humanizeLabel(String(p.status || action || '')));
-    push(humanizeLabel(String(p.payment_type || p.paymentType || '')));
-    push(humanizeLabel(String(p.milestone_context || p.milestoneContext || '')));
+    const pay = paymentTypeLabel(String(p.payment_type || p.paymentType || ''));
+    if (pay) push(pay);
     const designer = designerNameFrom(item, p);
     if (designer) push(`Designer: ${designer}`);
     const approver = actorNameFrom(p);
@@ -260,16 +291,13 @@ export function formatNotificationSubtitle(item: DesignNotificationItem): string
     const reason = str(p.rejection_reason || p.rejectionReason);
     if (reason) push(`Reason: ${reason}`);
   } else if (type === 'DQC' && action === 'REQUESTED') {
-    // API 06: dqc_round, review_id, designer_name
-    push(humanizeLabel(String(p.dqc_round || p.dqcRound || '')));
-    const reviewId = p.review_id ?? p.reviewId;
-    if (reviewId != null && reviewId !== '') push(`Review #${reviewId}`);
+    const round = dqcRoundLabel(String(p.dqc_round || p.dqcRound || ''));
+    if (round) push(round);
     const designer = designerNameFrom(item, p);
     if (designer) push(`Designer: ${designer}`);
   } else if (type === 'DQC') {
-    // API 07: designer of the lead + who approved/rejected
-    push(humanizeLabel(String(p.status || action || '')));
-    push(humanizeLabel(String(p.dqc_round || p.dqcRound || '')));
+    const round = dqcRoundLabel(String(p.dqc_round || p.dqcRound || ''));
+    if (round) push(round);
     const designer = designerNameFrom(item, p);
     if (designer) push(`Designer: ${designer}`);
     const approver = actorNameFrom(p);
@@ -320,13 +348,20 @@ export function formatNotificationSubtitle(item: DesignNotificationItem): string
     if (from && to) push(`${from} → ${to}`);
     else if (to) push(`→ ${to}`);
   } else if (type === 'QUOTE') {
-    // API 14: quote_id
     const q = str(p.quote_id || p.quoteId);
     if (q) push(`Quote ${q}`);
-  } else if (type === 'P2P') {
-    // API 15: designer_name
+  } else if (type === 'PM') {
+    push('DQC 2');
     const designer = designerNameFrom(item, p);
     if (designer) push(`Designer: ${designer}`);
+    const actor = actorNameFrom(p);
+    if (actor) push(`By: ${actor}`);
+    const reason = str(p.rejection_reason || p.rejectionReason);
+    if (reason) push(`Reason: ${reason}`);
+  } else if (type === 'P2P') {
+    const designer = designerNameFrom(item, p);
+    if (designer) push(`Designer: ${designer}`);
+    push('Successfully completed this lead');
   }
 
   return parts.filter(Boolean).join(' • ');
@@ -345,6 +380,7 @@ export function notificationCategoryLabel(type: string): string {
     ASSIGNMENT: 'Assignment',
     QUOTE: 'Quote',
     P2P: 'P2P',
+    PM: 'PM',
   };
   return map[t] || t || 'Other';
 }
@@ -368,6 +404,7 @@ export function notificationCategoryTone(type: string): {
     case 'PHASE':
       return { iconBg: 'bg-sky-100', iconText: 'text-sky-700', tagBg: 'bg-sky-50', tagText: 'text-sky-700' };
     case 'DQC':
+    case 'PM':
       return { iconBg: 'bg-teal-100', iconText: 'text-teal-700', tagBg: 'bg-teal-50', tagText: 'text-teal-700' };
     case 'MMT':
       return { iconBg: 'bg-amber-100', iconText: 'text-amber-800', tagBg: 'bg-amber-50', tagText: 'text-amber-800' };

@@ -8575,6 +8575,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
       }
     }
 
+    let p2pCompleted = false;
     if (isFirstCompletion) {
       const [allCompRows] = await pool.query(
         `SELECT milestone_index as milestoneIndex, task_name as taskName
@@ -8589,12 +8590,20 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
           milestoneIndex,
         );
         if (milestoneIndex === 6) {
+          p2pCompleted = true;
           void designNotify.notifyP2p(id, actingUser.name);
         }
       }
+      if (milestoneIndex === 4 && tNormComplete === "Project manager approval") {
+        void designNotify.notifyPmStatus(id, "APPROVED", {
+          dqc_round: "DQC_ROUND_2",
+          approver_name: actingUser.name || "Project Manager",
+          actor_name: actingUser.name || "Project Manager",
+        });
+      }
     }
 
-    return res.status(201).json({ ok: true });
+    return res.status(201).json({ ok: true, p2pCompleted });
   } catch (err) {
     console.error("complete-task error", err);
     return res.status(500).json({ message: "Failed to save completion" });
@@ -13764,7 +13773,7 @@ app.post(
       };
       await addLeadHistoryEvent(leadId, ev);
 
-      void designNotify.notifyDqcStatus(leadId, "pm_rejected", {
+      void designNotify.notifyPmStatus(leadId, "REJECTED", {
         dqc_round: "DQC_ROUND_2",
         approver_name: user.name || "Project Manager",
         actor_name: user.name || "Project Manager",
