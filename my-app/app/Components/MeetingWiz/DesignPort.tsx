@@ -73,7 +73,7 @@ export default function DesignPort({ onPrev, onNext }: Props) {
           <button onClick={onPrev} className="text-sm font-medium text-gray-500 transition hover:text-gray-700">
             Previous
           </button>
-          <button onClick={onNext} className="rounded-md bg-[#2EE86B] px-6 py-2 text-sm font-semibold text-black transition hover:bg-[#24d45d]">
+          <button onClick={onNext} className="rounded-md bg-[var(--brand-primary)] px-6 py-2 text-sm font-semibold text-white transition hover:opacity-90">
             Next Phase
           </button>
           <button className="text-xl font-light text-gray-500 transition hover:text-gray-800">×</button>
@@ -83,7 +83,7 @@ export default function DesignPort({ onPrev, onNext }: Props) {
       <div className="flex flex-col items-center py-4">
         <div className="flex items-center gap-1">
           {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className={`h-1 rounded-full w-8 ${i < 3 ? "bg-[#2EE86B]" : "bg-gray-300"}`} />
+            <div key={i} className={`h-1 rounded-full w-8 ${i < 3 ? "bg-[var(--brand-primary)]" : "bg-gray-300"}`} />
           ))}
         </div>
         <span className="mt-1 text-xs font-medium uppercase tracking-widest text-gray-400">
@@ -144,7 +144,7 @@ export default function DesignPort({ onPrev, onNext }: Props) {
       <div className="fixed bottom-6 left-1/2 -translate-x-1/2">
         <button
           onClick={() => onNext()}
-          className="flex items-center gap-3 rounded-full bg-[#2EE86B] px-8 py-4 text-sm font-bold uppercase tracking-widest text-gray-900 shadow-lg transition hover:bg-[#24d45d]"
+          className="flex items-center gap-3 rounded-full bg-[var(--brand-primary)] px-8 py-4 text-sm font-bold uppercase tracking-widest text-gray-900 shadow-lg transition hover:opacity-90"
         >
           Next: Scope of Project
           <span className="flex h-7 w-7 items-center justify-center rounded-full bg-gray-900 text-white">→</span>

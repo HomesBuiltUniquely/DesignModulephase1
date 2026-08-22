@@ -1592,8 +1592,8 @@ export default function Dashboard() {
                                             }}
                                             className={`p-3 cursor-pointer font-semibold text-left w-full transition-all duration-200 xl:p-4 xl:inline-block xl:w-66.25 ${
                                                 isSelected === type
-                                                    ? 'border-l-4 border-l-green-400 bg-gray-100 text-green-600 font-bold xl:border-gray-300 xl:text-green-400'
-                                                    : 'border-l-4 border-l-transparent hover:border-l-green-400 hover:bg-gray-100 hover:text-green-600 xl:hover:scale-105'
+                                                    ? 'border-l-4 border-l-[var(--brand-primary)] bg-gray-100 text-[var(--brand-primary)] font-bold xl:border-gray-300'
+                                                    : 'border-l-4 border-l-transparent hover:border-l-[var(--brand-primary)] hover:bg-gray-100 hover:text-[var(--brand-primary)] xl:hover:scale-105'
                                             }`}
                                         >
                                             {type}
@@ -1637,8 +1637,8 @@ export default function Dashboard() {
                                             }}
                                             className={`p-3 cursor-pointer font-semibold text-left w-full transition-all duration-200 xl:p-4 xl:inline-block xl:w-66.25 ${
                                                 statusSelected === status
-                                                    ? 'border-l-4 border-l-green-400 bg-gray-100 text-green-600 font-bold xl:text-green-400'
-                                                    : 'border-l-4 border-l-transparent hover:border-l-green-400 hover:bg-gray-100 hover:text-green-600 xl:hover:scale-105'
+                                                    ? 'border-l-4 border-l-[var(--brand-primary)] bg-gray-100 text-[var(--brand-primary)] font-bold xl:border-gray-300'
+                                                    : 'border-l-4 border-l-transparent hover:border-l-[var(--brand-primary)] hover:bg-gray-100 hover:text-[var(--brand-primary)] xl:hover:scale-105'
                                             }`}
                                         >
                                             {status}

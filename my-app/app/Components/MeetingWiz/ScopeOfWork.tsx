@@ -440,7 +440,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
           {Array.from({ length: 5 }).map((_, i) => (
             <div
               key={i}
-              className={`h-1 rounded-full w-8 ${i < 4 ? "bg-[#2EE86B]" : "bg-gray-300"}`}
+              className={`h-1 rounded-full w-8 ${i < 4 ? "bg-[var(--brand-primary)]" : "bg-gray-300"}`}
             />
           ))}
         </div>
@@ -874,7 +874,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
               display: "inline-flex",
               alignItems: "center",
               gap: "9px",
-              backgroundColor: "#2EE86B",
+              backgroundColor: "var(--brand-primary)",
               border: "none",
               borderRadius: "8px",
               padding: "14px 36px",
@@ -937,7 +937,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
             width: "10px",
             height: "10px",
             borderRadius: "9999px",
-            backgroundColor: "#2EE86B",
+            backgroundColor: "var(--brand-primary)",
           }}
         />
         <button
@@ -946,7 +946,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
             display: "inline-flex",
             alignItems: "center",
             gap: "8px",
-            backgroundColor: "#2EE86B",
+            backgroundColor: "var(--brand-primary)",
             border: "none",
             borderRadius: "6px",
             padding: "10px 20px",

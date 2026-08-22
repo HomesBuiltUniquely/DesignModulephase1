@@ -41,7 +41,7 @@ function StepPlaceholder({
           {stepNumber}. {title}
         </h1>
         <div className="mb-8 mt-2 h-0.5 overflow-hidden rounded-full bg-gray-200">
-          <div className="h-full bg-[#2EE86B]" style={{ width: `${progress}%` }} />
+          <div className="h-full bg-[var(--brand-primary)]" style={{ width: `${progress}%` }} />
         </div>
         <p className="text-sm text-gray-500">This step will be added in a later release.</p>
       </div>
@@ -73,7 +73,7 @@ function WizardTopBar({
       <button
         type="button"
         onClick={onNext}
-        className="rounded-md bg-[#2EE86B] px-5 py-2 text-sm font-bold text-black"
+        className="rounded-md bg-[var(--brand-primary)] px-5 py-2 text-sm font-bold text-white"
       >
         Next Phase
       </button>

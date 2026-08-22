@@ -270,7 +270,7 @@ export default function FinalQuoteSum({
     <main className="min-h-screen w-full bg-[#f0f4f8]" style={{ fontFamily: "Arial, Helvetica, sans-serif", display: "flex", flexDirection: "column" }}>
       <div className="flex items-center justify-between border-b border-gray-200 bg-white px-6 py-3">
         <div className="flex flex-col items-start gap-0 text-left">
-          <span className="font-mono text-xs font-semibold uppercase tracking-widest text-[#10b981] tabular-nums">
+          <span className="font-mono text-xs font-semibold uppercase tracking-widest text-[var(--brand-primary)] tabular-nums">
             {timer.formatted}
           </span>
           <span className="text-[8px] font-semibold uppercase tracking-[0.18em] text-gray-400">
@@ -618,7 +618,7 @@ export default function FinalQuoteSum({
                     width: "26px",
                     height: "26px",
                     borderRadius: "6px",
-                    backgroundColor: "#2EE86B",
+                    backgroundColor: "var(--brand-primary)",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
@@ -657,7 +657,7 @@ export default function FinalQuoteSum({
                     width: "26px",
                     height: "26px",
                     borderRadius: "6px",
-                    backgroundColor: "#2EE86B",
+                    backgroundColor: "var(--brand-primary)",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
@@ -742,7 +742,7 @@ export default function FinalQuoteSum({
             justifyContent: "center",
             gap: "10px",
             width: "100%",
-            backgroundColor: done ? "#86efac" : "#2EE86B",
+            backgroundColor: done ? "var(--brand-secondary)" : "var(--brand-primary)",
             border: "none",
             borderRadius: "10px",
             padding: "18px 32px",

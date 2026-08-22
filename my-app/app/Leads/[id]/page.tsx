@@ -1975,7 +1975,7 @@ export default function ProjectDetailPage() {
                         <button
                             type="button"
                             onClick={() => setMeetingWizOpen(true)}
-                            className="inline-flex items-center justify-center rounded-lg bg-[#2EE86B] px-4 py-2.5 text-sm font-bold text-black shadow-sm transition hover:bg-[#24d45d]"
+                            className="inline-flex items-center justify-center rounded-lg bg-[var(--brand-primary)] px-4 py-2.5 text-sm font-bold text-white shadow-sm transition hover:opacity-90"
                         >
                             Start meeting
                         </button>

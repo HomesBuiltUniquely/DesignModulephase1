@@ -143,13 +143,13 @@ export default function DashboardGuard() {
     <div>
       <header className="bg-white border-b border-gray-200 px-4 py-2 flex items-center justify-between">
         <div className="flex flex-wrap items-center gap-3">
-          <a href="/" className="text-green-700 font-semibold">Dashboard</a>
+          <a href="/" className="text-[var(--brand-primary)] font-semibold">Dashboard</a>
           {canAccessCalendar && (
             <a
               href="/google-calendar"
               className={`text-sm ${
                 pathname === '/google-calendar'
-                  ? 'text-green-700 font-semibold'
+                  ? 'text-[var(--brand-primary)] font-semibold'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >

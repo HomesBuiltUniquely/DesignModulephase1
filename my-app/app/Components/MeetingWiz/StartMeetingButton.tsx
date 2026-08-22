@@ -16,7 +16,7 @@ export function StartMeetingButton({ onClick, className = "", size = "sm" }: Pro
     <button
       type="button"
       onClick={onClick}
-      className={`inline-flex items-center justify-center rounded-lg bg-[#2EE86B] font-bold text-black shadow-sm transition hover:bg-[#24d45d] ${sizeClass} ${className}`}
+      className={`inline-flex items-center justify-center rounded-lg bg-[var(--brand-primary)] font-bold text-white shadow-sm transition hover:opacity-90 ${sizeClass} ${className}`}
     >
       Start meeting
     </button>
