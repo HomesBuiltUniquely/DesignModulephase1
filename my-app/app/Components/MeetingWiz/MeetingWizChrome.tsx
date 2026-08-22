@@ -1,7 +1,9 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { createContext, useContext, type ReactNode } from "react";
 import { MeetingWizDurationBadge } from "./MeetingWizTimer";
+
+export const MeetingWizSessionContext = createContext<{ onClose?: () => void }>({});
 
 export const mwCard =
   "rounded-2xl border border-[var(--border-color)] bg-[var(--card-bg)] shadow-sm transition-all duration-300 hover:shadow-md";
@@ -49,10 +51,12 @@ export function MeetingWizTopBar({
   hideNext?: boolean;
   leading?: ReactNode;
 }) {
+  const { onClose } = useContext(MeetingWizSessionContext);
+
   return (
-    <div className="flex items-center justify-between border-b border-[var(--border-color)] bg-[var(--card-bg)] px-6 py-3">
+    <div className="sticky top-0 z-[260] flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border-color)] bg-[var(--card-bg)]/95 px-6 py-3 backdrop-blur">
       {leading ?? <MeetingWizDurationBadge />}
-      <div className="flex items-center gap-4">
+      <div className="flex flex-wrap items-center justify-end gap-3 sm:gap-4">
         {onPrev ? (
           <button
             type="button"
@@ -71,6 +75,15 @@ export function MeetingWizTopBar({
         {!hideNext && onNext ? (
           <button type="button" onClick={onNext} className={mwPrimaryBtn}>
             {nextLabel}
+          </button>
+        ) : null}
+        {onClose ? (
+          <button
+            type="button"
+            onClick={onClose}
+            className="cursor-pointer rounded-lg border border-[var(--border-color)] bg-[var(--card-bg)] px-4 py-2 text-sm font-semibold text-[var(--brand-dark)] transition hover:bg-[var(--hover-bg)]"
+          >
+            Exit meeting
           </button>
         ) : null}
       </div>

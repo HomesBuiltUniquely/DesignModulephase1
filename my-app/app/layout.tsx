@@ -3,6 +3,7 @@ import { Manrope } from "next/font/google";
 import localFont from "next/font/local";
 import "./globals.css";
 import { AuthProvider } from "./auth/AuthContext";
+import P2PCongratulationsHost from "./Components/notifications/P2PCongratulationsHost";
 
 /* ── Body font: Manrope — Google Fonts ── */
 const manrope = Manrope({
@@ -47,6 +48,7 @@ export default function RootLayout({
       <body className={`${manrope.variable} antialiased`}>
         <AuthProvider>
           {children}
+          <P2PCongratulationsHost />
         </AuthProvider>
       </body>
     </html>

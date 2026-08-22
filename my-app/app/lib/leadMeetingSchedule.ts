@@ -7,11 +7,25 @@ export function parseMeetingDateToIsoDay(raw: string | null | undefined): string
   if (!raw || !String(raw).trim()) return null;
   const s = String(raw).trim();
 
-  if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+  // Date-only ISO: keep as calendar day (do not UTC-shift).
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    return s;
+  }
+
+  // Datetime: use local calendar day (IST on this product).
+  if (/^\d{4}-\d{2}-\d{2}[T\s]/.test(s)) {
+    const parsed = Date.parse(s);
+    if (!Number.isNaN(parsed)) {
+      const d = new Date(parsed);
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
     return s.slice(0, 10);
   }
 
-  const dmy = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  const dmy = s.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})/);
   if (dmy) {
     const day = dmy[1].padStart(2, '0');
     const month = dmy[2].padStart(2, '0');
@@ -92,16 +106,41 @@ export function getLeadScheduledMeetingIsoDay(lead: LeadshipTypes | null | undef
   return fromDesign || parseMeetingDateToIsoDay(lead.appointmentDate);
 }
 
+function listLeadMeetingIsoDays(lead: LeadshipTypes | null | undefined): string[] {
+  if (!lead) return [];
+  const days: string[] = [];
+  const push = (raw: string | null | undefined) => {
+    const d = parseMeetingDateToIsoDay(raw);
+    if (d && !days.includes(d)) days.push(d);
+  };
+  push(lead.scheduledMeetingDate);
+  push((lead as { designScheduledMeeting?: { date?: string } }).designScheduledMeeting?.date);
+  push(lead.appointmentDate);
+  return days;
+}
+
+function leadHasMeetingSlot(lead: LeadshipTypes | null | undefined): boolean {
+  if (!lead) return false;
+  return Boolean(
+    lead.scheduledMeetingSlot?.trim() ||
+      lead.appointmentSlot?.trim() ||
+      (lead as { designScheduledMeeting?: { time?: string } }).designScheduledMeeting?.time?.trim(),
+  );
+}
+
 /**
  * True when this lead has a meeting on today's calendar day.
  * Uses design scheduledMeetingDate, CRM appointmentDate, and any history meta.meetingDate.
+ * CRM intake sometimes sends a slot with no parseable date — still treat as today's meeting.
  */
 export function isLeadMeetingScheduledToday(
   lead: LeadshipTypes | null | undefined,
   historyEvents?: HistoryEventLike[] | null,
 ): boolean {
   if (historyHasMeetingScheduledToday(historyEvents)) return true;
-  return isMeetingOnToday(getLeadScheduledMeetingIsoDay(lead));
+  if (listLeadMeetingIsoDays(lead).some((d) => isMeetingOnToday(d))) return true;
+  if (leadHasMeetingSlot(lead) && listLeadMeetingIsoDays(lead).length === 0) return true;
+  return false;
 }
 
 function getScheduleUpdatedAt(lead: LeadshipTypes | null | undefined): string | null {
@@ -143,22 +182,33 @@ function getLatestMeetingWizCompletion(
   return best;
 }
 
+/** Meeting wizard is run by designers; admins can also start it. Other roles only view. */
+export function canStartMeetingByRole(role: string | null | undefined): boolean {
+  const r = (role || '').toLowerCase();
+  return r === 'designer' || r === 'admin';
+}
+
 /**
- * Start Meeting only for Pre 10% leads, while a meeting is scheduled for today
+ * Start Meeting only for designers/admins, Pre 10% leads, while a meeting is scheduled for today
  * and that session has not been completed. After Meeting Completed, hides until
  * a newer meeting is scheduled.
  */
 export function canShowStartMeetingButton(
   lead: LeadshipTypes | null | undefined,
   historyEvents?: HistoryEventLike[] | null,
+  userRole?: string | null,
 ): boolean {
+  if (!canStartMeetingByRole(userRole)) return false;
   if (!lead || getPhaseBucket(lead) !== 'Pre 10%') return false;
 
   if (!isLeadMeetingScheduledToday(lead, historyEvents)) return false;
 
+  const today = todayIsoDay();
   const scheduleDay =
-    getLeadScheduledMeetingIsoDay(lead) ||
-    (historyHasMeetingScheduledToday(historyEvents) ? todayIsoDay() : null);
+    listLeadMeetingIsoDays(lead).find((d) => d === today) ||
+    (historyHasMeetingScheduledToday(historyEvents) ? today : null) ||
+    (leadHasMeetingSlot(lead) && listLeadMeetingIsoDays(lead).length === 0 ? today : null) ||
+    getLeadScheduledMeetingIsoDay(lead);
   if (!scheduleDay) return false;
 
   const completed = getLatestMeetingWizCompletion(lead, historyEvents);
@@ -166,7 +216,9 @@ export function canShowStartMeetingButton(
 
   const scheduleUpdatedAt = getScheduleUpdatedAt(lead);
   // A meeting scheduled/rescheduled after completion unlocks Start Meeting again.
-  if (scheduleUpdatedAt && scheduleUpdatedAt > completed.at) {
+  // Ignore tiny timestamp gaps: completing the wizard used to rewrite designScheduledMeeting
+  // with a new updatedAt a few ms later, which brought the button back on refresh.
+  if (scheduleUpdatedAt && isRealRescheduleAfterCompletion(scheduleUpdatedAt, completed.at)) {
     return true;
   }
 
@@ -179,4 +231,14 @@ export function canShowStartMeetingButton(
   if (completedDay === scheduleDay) return false;
 
   return true;
+}
+
+/** True when a later invite/reschedule is clearly after Meeting Completed (not the completion write itself). */
+function isRealRescheduleAfterCompletion(scheduleUpdatedAt: string, completedAt: string): boolean {
+  const tSched = Date.parse(scheduleUpdatedAt);
+  const tDone = Date.parse(completedAt);
+  if (Number.isFinite(tSched) && Number.isFinite(tDone)) {
+    return tSched - tDone > 60_000;
+  }
+  return scheduleUpdatedAt > completedAt;
 }
