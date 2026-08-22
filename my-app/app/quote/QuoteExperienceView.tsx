@@ -420,7 +420,7 @@ export function QuoteExperienceView(props: Props) {
                               {label}
                             </p>
                             <p
-                              className={`mt-0.5 text-xs font-bold tabular-nums sm:text-sm ${label === 'Savings' ? 'text-emerald-700' : 'text-[#2a1d14]'}`}
+                              className={`mt-0.5 text-xs font-bold tabular-nums sm:text-sm ${label === 'Savings' ? 'text-[#32261C]' : 'text-[#2a1d14]'}`}
                             >
                               {inr(value)}
                             </p>
