@@ -73,6 +73,8 @@ function buildAllowedOrigins(): string[] {
   const defaults = [
     "https://design.hubinterior.com",
     "https://www.design.hubinterior.com",
+    "http://design.hubinterior.com",
+    "http://www.design.hubinterior.com",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:3002",
@@ -618,8 +620,13 @@ async function triggerMailRouteWithLog(args: {
   let to = Array.isArray(toRaw) ? toRaw.map(String) : toRaw ? [String(toRaw)] : [];
   let cc = Array.isArray(ccRaw) ? ccRaw.map(String) : ccRaw ? [String(ccRaw)] : [];
 
-  // Deduplicate triggers within the 5 seconds window
-  const cacheKey = `${args.leadId}:${args.route}:${[...to].sort().join(",")}`;
+  // Deduplicate triggers within the 5 seconds window.
+  // Mail-loop initiate is keyed by lead+route only so parallel complete-task
+  // calls with slightly different To lists cannot send twice.
+  const cacheKey =
+    args.route === "/api/email/send-mail-loop-chain-initiate"
+      ? `${args.leadId}:${args.route}`
+      : `${args.leadId}:${args.route}:${[...to].sort().join(",")}`;
   const nowMs = Date.now();
   const lastSent = mailDeduplicationCache.get(cacheKey);
   if (lastSent && (nowMs - lastSent) < DEDUPLICATION_WINDOW_MS) {
@@ -1125,6 +1132,19 @@ async function initDb() {
       if ((branchCol as any[]).length === 0) {
         await conn.query(
           "ALTER TABLE users ADD COLUMN branch VARCHAR(128) NULL",
+        );
+      }
+    } catch {
+      // ignore
+    }
+    // Optional sub-role under the primary role (e.g. senior designer)
+    try {
+      const [subRoleCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'sub_role'",
+      );
+      if ((subRoleCol as any[]).length === 0) {
+        await conn.query(
+          "ALTER TABLE users ADD COLUMN sub_role VARCHAR(50) NULL",
         );
       }
     } catch {
@@ -2392,6 +2412,7 @@ async function getUserFromSession(req: Request) {
   if (!token) return null;
   const [rows] = await pool.query(
     `SELECT u.id, u.email, u.name, u.role, u.profileImage, u.phone, u.branch,
+            u.sub_role AS subRole,
             u.designer_title AS designerTitle,
             u.designer_experience AS designerExperience,
             u.designer_projects AS designerProjects,
@@ -2427,6 +2448,7 @@ async function getUserFromSession(req: Request) {
     profileImage: user.profileImage || null,
     phone: user.phone || "",
     branch: user.branch || null,
+    subRole: user.subRole || null,
     designerTitle: user.designerTitle || null,
     designerExperience: user.designerExperience || null,
     designerProjects: user.designerProjects || null,
@@ -3797,6 +3819,7 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
   try {
     const [rows] = await pool.query(
       `SELECT id, email, name, role, profileImage, phone, branch, password,
+              sub_role AS subRole,
               designer_title AS designerTitle,
               designer_experience AS designerExperience,
               designer_projects AS designerProjects,
@@ -3832,6 +3855,7 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
       profileImage: userRow.profileImage || null,
       phone: userRow.phone || "",
       branch: userRow.branch || null,
+      subRole: userRow.subRole || null,
       designerTitle: userRow.designerTitle || null,
       designerExperience: userRow.designerExperience || null,
       designerProjects: userRow.designerProjects || null,
@@ -4476,7 +4500,7 @@ app.all("/api/auth/register-mmt-executive", async (req: Request, res: Response) 
   }
 });
 
-// Admin or Deputy General Manager: create TDM (Territory Design Manager)
+// Admin or Deputy General Manager: create TDM (Territorial Design Manager)
 app.all("/api/auth/create-tdm", async (req: Request, res: Response) => {
   if (req.method !== "POST") return res.status(405).json({ message: "Use POST" });
   try {
@@ -4502,7 +4526,7 @@ app.all("/api/auth/create-tdm", async (req: Request, res: Response) => {
   } catch (err: any) {
     if (err?.code === "ER_DUP_ENTRY") return res.status(400).json({ message: "A user with this email already exists" });
     console.error("create-tdm error", err);
-    return res.status(500).json({ message: "Failed to create Territory Design Manager" });
+    return res.status(500).json({ message: "Failed to create Territorial Design Manager" });
   }
 });
 
@@ -4624,7 +4648,7 @@ app.all("/api/auth/create-project-manager", async (req: Request, res: Response) 
     const allowed = ["admin", "territorial_design_manager", "deputy_general_manager"];
     if (!allowed.includes(r)) {
       return res.status(403).json({
-        message: "Only Admin, Territory Design Manager, or Deputy General Manager can create a Project Manager",
+        message: "Only Admin, Territorial Design Manager, or Deputy General Manager can create a Project Manager",
       });
     }
     const { email, password, name, phone, branch } = req.body || {};
@@ -6696,12 +6720,14 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
       isFirstDqc1Approval = (priorDqc1Rows as unknown[]).length === 0;
     }
 
-    await pool.query(
+    const [completionWrite] = await pool.query(
       `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
        VALUES (?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
       [id, milestoneIndex, taskName, new Date()],
     );
+    // MySQL: 1 = inserted (first complete), 2 = updated existing row. Never re-send mail on re-mark.
+    const isFirstCompletion = Number((completionWrite as { affectedRows?: number })?.affectedRows) === 1;
 
     try {
       const meetingDate = meta?.meetingDate ?? meta?.signoffDate ?? null;
@@ -6841,7 +6867,14 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
       return null;
     })();
 
-    if (emailRoutePath) {
+    if (emailRoutePath && !isFirstCompletion) {
+      console.log("[complete-task] Email skipped (task already completed):", {
+        leadId: id,
+        milestoneIndex,
+        taskName,
+        emailRoutePath,
+      });
+    } else if (emailRoutePath) {
       console.log("[complete-task] Email trigger:", { leadId: id, milestoneIndex, taskName, emailRoutePath });
       // DQC 1 approval: fire BOTH internal (to designer) and CX (10% payment request)
       if (emailRoutePath === "DQC1_APPROVAL_DUAL") {
@@ -13310,6 +13343,7 @@ app.get("/api/designers", async (req: Request, res: Response) => {
                         u.name,
                         u.email,
                         u.role,
+                        u.sub_role AS subRole,
                         COALESCE(m.name, '') as leadName
                  FROM users u
                  LEFT JOIN users m ON u.design_manager_id = m.id
@@ -13347,11 +13381,11 @@ app.get("/api/designers/assignable", async (req: Request, res: Response) => {
 
     if (role === "design_manager") {
       const [rows] = await pool.query(
-        `SELECT id, name, role
+        `SELECT id, name, role, sub_role AS subRole
          FROM users
          WHERE role = 'design_manager' AND id = ?
          UNION
-         SELECT id, name, role
+         SELECT id, name, role, sub_role AS subRole
          FROM users
          WHERE role = 'designer' AND design_manager_id = ?
          ORDER BY name ASC`,
@@ -13361,7 +13395,7 @@ app.get("/api/designers/assignable", async (req: Request, res: Response) => {
     }
 
     const [rows] = await pool.query(
-      `SELECT id, name, role
+      `SELECT id, name, role, sub_role AS subRole
        FROM users
        WHERE role IN ('designer', 'design_manager')
        ORDER BY name ASC`,
@@ -13538,7 +13572,7 @@ app.patch("/api/leads/:id/assign-project-manager", async (req: Request, res: Res
     if (!canAssignProjectManagerRole(role)) {
       return res.status(403).json({
         message:
-          "Only Admin, Territory Design Manager, Deputy General Manager, or Senior Project Manager can assign a project manager",
+          "Only Admin, Territorial Design Manager, Deputy General Manager, or Senior Project Manager can assign a project manager",
       });
     }
     const [urows] = await pool.query("SELECT id, role FROM users WHERE id = ?", [pmId]);

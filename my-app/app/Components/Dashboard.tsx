@@ -20,6 +20,7 @@ import { formatHubPid } from "@/app/lib/formatHubPid";
 import { Pre10LeadViewModal } from "./Pre10LeadViewModal";
 import { MeetingWizSessionOverlay } from "./MeetingWiz/MeetingWizSessionOverlay";
 import { StartMeetingButton } from "./MeetingWiz/StartMeetingButton";
+import CustomSelect from "./ui/CustomSelect";
 import { canShowStartMeetingButton } from "@/app/lib/leadMeetingSchedule";
 import { AddProjectModal } from "./AddProjectModal";
 import { PersonalAppointmentModal } from "./PersonalAppointmentModal";
@@ -104,8 +105,8 @@ function getProgressPercent(bucket: string): number {
 // Status pill label and style from stage bucket (fallback when milestone not available)
 function getStatusFromBucket(bucket: string): { label: string; className: string } {
     if (bucket === "Pre 10%") return { label: "DELAYED", className: "bg-red-100 text-red-800" };
-    if (bucket === "10-20%") return { label: "UNDER QC", className: "bg-purple-100 text-purple-800" };
-    if (bucket === "20-60%") return { label: "READY PROD.", className: "bg-green-100 text-green-800" };
+    if (bucket === "10-20%") return { label: "UNDER QC", className: "bg-[#DDCDC1]/40 text-[#32261C]" };
+    if (bucket === "20-60%") return { label: "READY PROD.", className: "bg-[#DDCDC1]/40 text-[#32261C]" };
     return { label: "PRE 10%", className: "bg-gray-100 text-gray-800" };
 }
 
@@ -115,26 +116,26 @@ function getStatusFromMilestone(
     milestoneName: string | null | undefined,
 ): { label: string; className: string } {
     const byIndex: Record<number, { label: string; className: string }> = {
-        0: { label: "D1", className: "bg-sky-100 text-sky-800" },
-        1: { label: "DQC 1", className: "bg-purple-100 text-purple-800" },
+        0: { label: "D1", className: "bg-[#00B0ED]/15 text-[#00B0ED]" },
+        1: { label: "DQC 1", className: "bg-[#DDCDC1]/40 text-[#32261C]" },
         2: { label: "10% PAYMENT", className: "bg-amber-100 text-amber-800" },
-        3: { label: "D2", className: "bg-sky-100 text-sky-800" },
-        4: { label: "DQC 2", className: "bg-purple-100 text-purple-800" },
+        3: { label: "D2", className: "bg-[#00B0ED]/15 text-[#00B0ED]" },
+        4: { label: "DQC 2", className: "bg-[#DDCDC1]/40 text-[#32261C]" },
         5: { label: "40% PAYMENT", className: "bg-amber-100 text-amber-800" },
-        6: { label: "PUSH TO PROD.", className: "bg-green-100 text-green-800" },
-        7: { label: "KT TRANSFER", className: "bg-teal-100 text-teal-800" },
+        6: { label: "PUSH TO PROD.", className: "bg-[#DDCDC1]/40 text-[#32261C]" },
+        7: { label: "KT TRANSFER", className: "bg-[#DDCDC1]/40 text-[#32261C]" },
     };
     if (milestoneIndex !== undefined && milestoneIndex >= 0 && byIndex[milestoneIndex])
         return byIndex[milestoneIndex];
     const byName: Record<string, { label: string; className: string }> = {
-        "D1 SITE MEASUREMENT": { label: "D1", className: "bg-sky-100 text-sky-800" },
-        "DQC1": { label: "DQC 1", className: "bg-purple-100 text-purple-800" },
+        "D1 SITE MEASUREMENT": { label: "D1", className: "bg-[#00B0ED]/15 text-[#00B0ED]" },
+        "DQC1": { label: "DQC 1", className: "bg-[#DDCDC1]/40 text-[#32261C]" },
         "10% PAYMENT": { label: "10% PAYMENT", className: "bg-amber-100 text-amber-800" },
-        "D2 SITE MASKING": { label: "D2", className: "bg-sky-100 text-sky-800" },
-        "DQC2": { label: "DQC 2", className: "bg-purple-100 text-purple-800" },
+        "D2 SITE MASKING": { label: "D2", className: "bg-[#00B0ED]/15 text-[#00B0ED]" },
+        "DQC2": { label: "DQC 2", className: "bg-[#DDCDC1]/40 text-[#32261C]" },
         "40% PAYMENT": { label: "40% PAYMENT", className: "bg-amber-100 text-amber-800" },
-        "PUSH TO PRODUCTION": { label: "PUSH TO PROD.", className: "bg-green-100 text-green-800" },
-        "KT TRANSFER": { label: "KT TRANSFER", className: "bg-teal-100 text-teal-800" },
+        "PUSH TO PRODUCTION": { label: "PUSH TO PROD.", className: "bg-[#DDCDC1]/40 text-[#32261C]" },
+        "KT TRANSFER": { label: "KT TRANSFER", className: "bg-[#DDCDC1]/40 text-[#32261C]" },
     };
     if (milestoneName && byName[milestoneName]) return byName[milestoneName];
     return { label: "—", className: "bg-gray-100 text-gray-600" };
@@ -289,7 +290,7 @@ export default function Dashboard() {
                         </a>
                         <a
                             href="/finance"
-                            className="inline-flex items-center gap-2 px-5 py-3 rounded-lg bg-green-600 text-white font-semibold hover:bg-green-700"
+                            className="inline-flex items-center gap-2 px-5 py-3 rounded-lg bg-[#EF0101] text-white font-semibold hover:bg-[#EF0101]"
                         >
                             10% Payment
                         </a>
@@ -956,18 +957,18 @@ export default function Dashboard() {
     const renderDqcRow = (row: DqcQueueItem, stage: "dqc1" | "dqc2", label: string) => (
         <div
             key={`${stage}-${row.id}`}
-            className={`xl:grid xl:grid-cols-5 xl:gap-4 xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:border-gray-300 xl:rounded-lg xl:shadow-md hover:xl:bg-green-100 xl:text-gray-900 xl:cursor-pointer xl:items-center ${(row.id % 2 === 0) ? "bg-gray-50" : "bg-gray-100"}`}
+            className={`xl:grid xl:grid-cols-5 xl:gap-4 xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:border-gray-300 xl:rounded-lg xl:shadow-md hover:xl:bg-[#DDCDC1]/40 xl:text-gray-900 xl:cursor-pointer xl:items-center ${(row.id % 2 === 0) ? "bg-gray-50" : "bg-gray-100"}`}
             onClick={() => handleRouter(row.id, stage)}
         >
             <div className="xl:text-lg xl:font-semibold xl:text-center">{row.id}</div>
             <div className="xl:text-lg xl:font-semibold xl:text-left">{row.projectName}</div>
             <div className="xl:text-lg xl:font-semibold xl:text-center">{getStatusDisplay(row.projectStage)}</div>
             <div className="xl:text-center" onClick={(e) => { e.stopPropagation(); handleRouter(row.id, stage); }}>
-                <span className="xl:px-4 xl:py-2 xl:rounded-lg xl:bg-blue-600 xl:text-white xl:font-semibold xl:text-sm hover:xl:bg-blue-700 inline-block cursor-pointer">
+                <span className="xl:px-4 xl:py-2 xl:rounded-lg xl:bg-[#00B0ED] xl:text-white xl:font-semibold xl:text-sm hover:xl:bg-[#00B0ED]/90 inline-block cursor-pointer">
                     {label}
                 </span>
             </div>
-            <div className={`xl:text-center xl:font-semibold xl:text-sm ${row.dqcStatus === "Approved DQC" ? "xl:text-green-700" : "xl:text-amber-700"}`}>
+            <div className={`xl:text-center xl:font-semibold xl:text-sm ${row.dqcStatus === "Approved DQC" ? "xl:text-[#32261C]" : "xl:text-amber-700"}`}>
                 {row.dqcStatus}
             </div>
         </div>
@@ -1012,7 +1013,7 @@ export default function Dashboard() {
                     {list.map((arr1) => (
                         <div
                             key={arr1.id}
-                            className={`xl:grid xl:grid-cols-4 xl:gap-4 xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:border-gray-300 xl:rounded-lg xl:shadow-md hover:xl:bg-green-100 xl:text-gray-900 xl:cursor-pointer xl:items-center ${(arr1.id % 2 === 0) ? "bg-gray-50" : "bg-gray-100"}`}
+                            className={`xl:grid xl:grid-cols-4 xl:gap-4 xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:border-gray-300 xl:rounded-lg xl:shadow-md hover:xl:bg-[#DDCDC1]/40 xl:text-gray-900 xl:cursor-pointer xl:items-center ${(arr1.id % 2 === 0) ? "bg-gray-50" : "bg-gray-100"}`}
                             onClick={() => handleRouter(arr1)}
                         >
                             <div className="xl:text-lg xl:font-semibold xl:text-center">{arr1.id}</div>
@@ -1022,7 +1023,7 @@ export default function Dashboard() {
                                 <button
                                     type="button"
                                     disabled={uploadingId === arr1.id}
-                                    className="xl:px-4 xl:py-2 xl:rounded-lg xl:bg-green-600 xl:text-white xl:font-semibold xl:text-sm hover:xl:bg-green-700 disabled:xl:opacity-60"
+                                    className="xl:px-4 xl:py-2 xl:rounded-lg xl:bg-[#EF0101] xl:text-white xl:font-semibold xl:text-sm hover:xl:bg-[#EF0101] disabled:xl:opacity-60"
                                 >
                                     {uploadingId === arr1.id ? "Uploading…" : "Upload ZIP"}
                                 </button>
@@ -1055,24 +1056,24 @@ export default function Dashboard() {
                     </div>
                     <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm min-w-[120px]">
                         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Under QC</p>
-                        <p className="text-2xl font-bold text-purple-700 mt-1">{stats.bucket1020}</p>
+                        <p className="text-2xl font-bold text-[#32261C] mt-1">{stats.bucket1020}</p>
                         <p className="text-xs text-gray-500 mt-0.5">10-20%</p>
                     </div>
                     <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm min-w-[120px]">
                         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Ready Prod.</p>
-                        <p className="text-2xl font-bold text-green-700 mt-1">{stats.bucket2060}</p>
+                        <p className="text-2xl font-bold text-[#32261C] mt-1">{stats.bucket2060}</p>
                         <p className="text-xs text-gray-500 mt-0.5">20-60%</p>
                     </div>
                 </div>
 
-                <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden min-w-0">
-                    <div className="overflow-x-auto">
+                <div className="bg-white rounded-xl border border-gray-200 shadow-sm min-w-0">
+                    <div className="overflow-x-auto rounded-t-xl">
                         {pre10TabActive ? (
-                            <table className="w-full min-w-[760px]">
+                            <table className="w-full min-w-[700px] table-auto">
                                 <thead>
-                                    <tr className="bg-gray-900 text-white text-left text-sm font-semibold">
+                                    <tr className="bg-gray-900 text-white text-left text-xs sm:text-sm font-semibold">
                                         {canImportLeads && (
-                                            <th className="py-3 px-3">
+                                            <th className="py-3 px-2 w-[3%]">
                                                 <input
                                                     type="checkbox"
                                                     checked={
@@ -1083,12 +1084,12 @@ export default function Dashboard() {
                                                 />
                                             </th>
                                         )}
-                                        <th className="py-3 px-5">ID / Project Name</th>
-                                        <th className="py-3 px-5">Time slot</th>
-                                        {isAdmin && <th className="py-3 px-5">Assignee</th>}
-                                        <th className="py-3 px-5">View</th>
-                                        <th className="py-3 px-5">Create project</th>
-                                        <th className="py-3 px-5">Get quote</th>
+                                        <th className="py-3 px-2 w-[22%]">ID / Project Name</th>
+                                        <th className="py-3 px-2 w-[18%]">Time slot</th>
+                                        {canImportLeads && <th className="py-3 px-2 w-[22%]">Assignee</th>}
+                                        <th className="py-3 px-2 w-[10%]">View</th>
+                                        <th className="py-3 px-2 w-[13%]">Create project</th>
+                                        <th className="py-3 px-2 w-[12%]">Get quote</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -1104,7 +1105,7 @@ export default function Dashboard() {
                                         return (
                                             <tr key={row.id} className="border-b border-gray-100 hover:bg-gray-50">
                                                 {canImportLeads && (
-                                                    <td className="py-3 px-3">
+                                                    <td className="py-3 px-2">
                                                         <input
                                                             type="checkbox"
                                                             checked={selectedLeadIds.includes(row.id)}
@@ -1112,21 +1113,21 @@ export default function Dashboard() {
                                                         />
                                                     </td>
                                                 )}
-                                                <td className="py-3 px-5">
-                                                    <div className="flex items-center gap-2">
-                                                        <div className="font-medium text-gray-900">{formatHubPid(row.pid, row.id)}</div>
+                                                <td className="py-3 px-2">
+                                                    <div className="flex items-center gap-1.5">
+                                                        <div className="font-medium text-xs text-gray-900">{formatHubPid(row.pid, row.id)}</div>
                                                         {row.financeApprovedRaw === "false" && (
-                                                            <span className="inline-flex items-center rounded-md bg-red-50 px-2 py-1 text-[10px] font-medium text-red-700 ring-1 ring-inset ring-red-600/10 whitespace-nowrap">
+                                                            <span className="inline-flex items-center rounded bg-red-50 px-1.5 py-0.5 text-[9px] font-medium text-red-700 ring-1 ring-inset ring-red-600/10 whitespace-nowrap">
                                                                 Not Approved
                                                             </span>
                                                         )}
                                                     </div>
-                                                    <div className="text-sm text-gray-600 truncate max-w-[200px]" title={row.projectName}>
+                                                    <div className="text-xs text-gray-600 truncate max-w-[220px]" title={row.projectName}>
                                                         {row.projectName || "—"}
                                                     </div>
                                                 </td>
-                                                <td className="py-3 px-5 text-sm text-gray-700" title={timeSlotLabel}>
-                                                    <div className="flex flex-col items-start gap-2">
+                                                <td className="py-3 px-2 text-xs text-gray-700" title={timeSlotLabel}>
+                                                    <div className="flex flex-col items-start gap-1">
                                                         <span className="whitespace-nowrap">{timeSlotLabel}</span>
                                                         {canShowStartMeetingButton(row) ? (
                                                             <StartMeetingButton
@@ -1135,14 +1136,14 @@ export default function Dashboard() {
                                                         ) : null}
                                                     </div>
                                                 </td>
-                                                {isAdmin && (
-                                                    <td className="py-3 px-5 min-w-[200px]">
-                                                        <div className="flex flex-col gap-2">
-                                                            <div className="flex items-center gap-2">
-                                                                <div className="flex items-center gap-1.5">
+                                                {canImportLeads && (
+                                                    <td className="py-3 px-2 min-w-[160px]">
+                                                        <div className="flex flex-col gap-1.5">
+                                                            <div className="flex items-center gap-1.5">
+                                                                <div className="flex items-center gap-1">
                                                                     {designerNameTrim ? (
                                                                         <div
-                                                                            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-semibold text-blue-800 shadow-sm"
+                                                                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#00B0ED]/15 text-[10px] font-semibold text-[#00B0ED] shadow-sm"
                                                                             title={designerNameTrim}
                                                                         >
                                                                             {getInitials(designerNameTrim)}
@@ -1150,7 +1151,7 @@ export default function Dashboard() {
                                                                     ) : null}
                                                                     {pmName ? (
                                                                         <div
-                                                                            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-violet-100 text-xs font-semibold text-violet-800 shadow-sm"
+                                                                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#DDCDC1]/40 text-[10px] font-semibold text-[#32261C] shadow-sm"
                                                                             title={`PM: ${pmName}`}
                                                                         >
                                                                             {getInitials(pmName)}
@@ -1158,36 +1159,31 @@ export default function Dashboard() {
                                                                     ) : null}
                                                                 </div>
                                                                 <span
-                                                                    className="max-w-[120px] truncate text-xs text-gray-600"
+                                                                    className="max-w-[120px] truncate text-[11px] text-gray-600"
                                                                     title={designerLabel}
                                                                 >
                                                                     {designerLabel}
                                                                 </span>
                                                             </div>
-                                                            <div className="flex flex-wrap items-center gap-1.5">
-                                                                <select
+                                                            <div className="flex flex-wrap items-center gap-1">
+                                                                <CustomSelect
                                                                     id={`pre10-assign-${row.id}`}
-                                                                    value={singleAssignByLead[row.id] ?? row.assigned_designer_id ?? ""}
-                                                                    onChange={(e) =>
+                                                                    value={singleAssignByLead[row.id] ? String(singleAssignByLead[row.id]) : String(row.assigned_designer_id ?? "")}
+                                                                    onChange={(val) =>
                                                                         setSingleAssignByLead((prev) => ({
                                                                             ...prev,
-                                                                            [row.id]: e.target.value ? Number(e.target.value) : "",
+                                                                            [row.id]: val ? Number(val) : "",
                                                                         }))
                                                                     }
-                                                                    className="max-w-[140px] rounded border border-gray-300 px-2 py-1 text-xs"
-                                                                >
-                                                                    <option value="">Designer…</option>
-                                                                    {assignableDesigners.map((d) => (
-                                                                        <option key={d.id} value={d.id}>
-                                                                            {d.name}
-                                                                        </option>
-                                                                    ))}
-                                                                </select>
+                                                                    options={assignableDesigners.map((d) => ({ value: String(d.id), label: d.name }))}
+                                                                    placeholder="Designer…"
+                                                                    className="max-w-[110px]"
+                                                                />
                                                                 <button
                                                                     type="button"
                                                                     onClick={() => assignSingleLead(row.id)}
                                                                     disabled={singleAssignLoadingLeadId === row.id}
-                                                                    className="rounded bg-emerald-600 px-2 py-1 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
+                                                                    className="rounded bg-[#EF0101] px-1.5 py-0.5 text-[10px] font-semibold text-white hover:bg-[#EF0101] disabled:opacity-60"
                                                                 >
                                                                     {singleAssignLoadingLeadId === row.id ? "…" : "Assign"}
                                                                 </button>
@@ -1195,12 +1191,12 @@ export default function Dashboard() {
                                                         </div>
                                                     </td>
                                                 )}
-                                                <td className="py-3 px-5">
-                                                    <div className="flex flex-wrap items-center gap-2">
+                                                <td className="py-3 px-2">
+                                                    <div className="flex flex-wrap items-center gap-1">
                                                         <button
                                                             type="button"
                                                             onClick={() => setViewLead(row)}
-                                                            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700 shadow-sm hover:bg-gray-50"
+                                                            className="rounded border border-gray-300 bg-white px-2 py-1 text-[11px] font-semibold text-gray-700 shadow-sm hover:bg-gray-50 whitespace-nowrap"
                                                         >
                                                             View
                                                         </button>
@@ -1211,7 +1207,7 @@ export default function Dashboard() {
                                                         ) : null}
                                                     </div>
                                                 </td>
-                                                <td className="py-3 px-5">
+                                                <td className="py-3 px-2">
                                                     <button
                                                         type="button"
                                                         disabled={!sessionId || prolanceRowBusy}
@@ -1221,7 +1217,7 @@ export default function Dashboard() {
                                                                 ? "Open this project in Prolance (browser)"
                                                                 : "Create Prolance project via Hub API and save ID on this lead"
                                                         }
-                                                        className="rounded-lg border border-teal-600 bg-white px-3 py-2 text-xs font-semibold text-teal-800 shadow-sm hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                                        className="rounded border border-[#EF0101] bg-white px-2 py-1 text-[11px] font-semibold text-[#EF0101] shadow-sm hover:bg-[#DDCDC1]/20 disabled:cursor-not-allowed disabled:opacity-50"
                                                     >
                                                         {prolanceRowBusy
                                                             ? "Creating…"
@@ -1230,12 +1226,12 @@ export default function Dashboard() {
                                                               : "Create project"}
                                                     </button>
                                                 </td>
-                                                <td className="py-3 px-5">
+                                                <td className="py-3 px-2">
                                                     <button
                                                         type="button"
                                                         disabled={!sessionId || getQuoteRowBusy}
                                                         onClick={() => void runGetQuoteForDashboardLead(row)}
-                                                        className="w-full min-w-[7rem] rounded-lg bg-teal-700 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                                                        className="w-full min-w-[5.5rem] rounded bg-[#EF0101] px-2 py-1 text-[11px] font-bold text-white shadow-sm hover:bg-[#EF0101]/90 disabled:cursor-not-allowed disabled:opacity-50 transition-all duration-200"
                                                     >
                                                         {getQuoteRowBusy ? "Working…" : "Get quote"}
                                                     </button>
@@ -1246,11 +1242,11 @@ export default function Dashboard() {
                                 </tbody>
                             </table>
                         ) : (
-                            <table className="w-full min-w-[920px]">
+                            <table className="w-full table-auto">
                                 <thead>
-                                    <tr className="bg-gray-900 text-left text-sm font-semibold text-white">
+                                    <tr className="bg-gray-900 text-left text-xs sm:text-sm font-semibold text-white">
                                         {canImportLeads && (
-                                            <th className="px-3 py-3">
+                                            <th className="px-2 py-3 w-[3%]">
                                                 <input
                                                     type="checkbox"
                                                     checked={
@@ -1261,14 +1257,14 @@ export default function Dashboard() {
                                                 />
                                             </th>
                                         )}
-                                        <th className="px-5 py-3">ID / Project Name</th>
-                                        <th className="px-5 py-3">Designer</th>
-                                        <th className="px-5 py-3">Milestone</th>
-                                        <th className="px-5 py-3">Progress %</th>
-                                        <th className="px-5 py-3">Last Update</th>
-                                        <th className="px-5 py-3">Next Action</th>
-                                        <th className="px-5 py-3">Status</th>
-                                        <th className="px-5 py-3">Actions</th>
+                                        <th className="px-2 py-3 w-[20%]">ID / Project Name</th>
+                                        <th className="px-2 py-3 w-[12%]">Designer</th>
+                                        <th className="px-2 py-3 w-[13%]">Milestone</th>
+                                        <th className="px-2 py-3 w-[10%]">Progress %</th>
+                                        <th className="px-2 py-3 w-[11%]">Last Update</th>
+                                        <th className="px-2 py-3 w-[18%]">Next Action</th>
+                                        <th className="px-2 py-3 w-[10%]">Status</th>
+                                        <th className="px-2 py-3 w-[6%]">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -1289,11 +1285,11 @@ export default function Dashboard() {
                                         return (
                                             <tr
                                                 key={row.id}
-                                                className={`border-b border-gray-100 hover:bg-gray-50 ${isPre10 ? "" : "cursor-pointer"}`}
+                                                className={`border-b border-gray-100 hover:bg-[#F1F2F6] transition-colors duration-150 ${isPre10 ? "" : "cursor-pointer"}`}
                                                 onClick={isPre10 ? undefined : () => handleRouter(row)}
                                             >
                                                 {canImportLeads && (
-                                                    <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+                                                    <td className="px-2 py-3" onClick={(e) => e.stopPropagation()}>
                                                         <input
                                                             type="checkbox"
                                                             checked={selectedLeadIds.includes(row.id)}
@@ -1301,52 +1297,64 @@ export default function Dashboard() {
                                                         />
                                                     </td>
                                                 )}
-                                                <td className="px-5 py-3">
-                                                    <div className="flex items-center gap-2">
-                                                        <div className="font-medium text-gray-900">{formatHubPid(row.pid, row.id)}</div>
+                                                <td className="px-2 py-3">
+                                                    <div className="flex items-center gap-1.5">
+                                                        <div className="font-medium text-xs text-gray-900">{formatHubPid(row.pid, row.id)}</div>
                                                         {row.financeApprovedRaw === "false" && (
-                                                            <span className="inline-flex items-center rounded-md bg-red-50 px-2 py-1 text-[10px] font-medium text-red-700 ring-1 ring-inset ring-red-600/10 whitespace-nowrap">
+                                                            <span className="inline-flex items-center rounded bg-red-50 px-1.5 py-0.5 text-[9px] font-medium text-red-700 ring-1 ring-inset ring-red-600/10 whitespace-nowrap">
                                                                 Not Approved
                                                             </span>
                                                         )}
                                                     </div>
-                                                    <div className="text-sm text-gray-600 truncate max-w-[180px]" title={row.projectName}>
+                                                    <div className="text-xs text-gray-600 truncate max-w-[220px]" title={row.projectName}>
                                                         {row.projectName || "—"}
                                                     </div>
                                                 </td>
-                                                <td className="px-5 py-3">
-                                                    <div className="flex items-center gap-2">
-                                                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-semibold text-blue-800">
+                                                <td className="px-2 py-3">
+                                                    <div className="flex items-center gap-1.5">
+                                                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#00B0ED]/15 text-[10px] font-semibold text-[#00B0ED]">
                                                             {getInitials(designerName)}
                                                         </div>
-                                                        <span className="max-w-[100px] truncate text-sm text-gray-700" title={designerName}>
+                                                        <span className="max-w-[120px] truncate text-xs text-gray-700" title={designerName}>
                                                             {designerName}
                                                         </span>
                                                     </div>
                                                 </td>
-                                                <td className="px-5 py-3 text-sm text-gray-700">
+                                                <td className="px-2 py-3 text-xs text-gray-700 max-w-[160px] truncate" title={isPre10 ? "—" : row.currentMilestoneName ?? bucket}>
                                                     {isPre10 ? "—" : row.currentMilestoneName ?? bucket}
                                                 </td>
-                                                <td className="px-5 py-3">
+                                                <td className="px-2 py-3">
                                                     {isPre10 ? (
-                                                        <span className="text-sm text-gray-400">—</span>
+                                                        <span className="text-xs text-gray-400">—</span>
                                                     ) : (
-                                                        <div className="flex items-center gap-2">
-                                                            <div className="h-2 w-20 overflow-hidden rounded-full bg-gray-200">
+                                                        <div className="flex items-center gap-1.5">
+                                                            <div className="h-1.5 w-12 overflow-hidden rounded-full bg-gray-200">
                                                                 <div
-                                                                    className="h-full rounded-full bg-blue-500 transition-all"
+                                                                    className="h-full rounded-full bg-[#00B0ED] transition-all"
                                                                     style={{ width: `${progress}%` }}
                                                                 />
                                                             </div>
-                                                            <span className="text-xs font-medium text-gray-600">{progress}%</span>
+                                                            <span className="text-[11px] font-medium text-gray-600">{progress}%</span>
                                                         </div>
                                                     )}
                                                 </td>
-                                                <td className="px-5 py-3 whitespace-nowrap text-sm text-gray-600">
-                                                    {formatDateTime(row.updateAt)}
+                                                <td className="px-2 py-3">
+                                                    {(() => {
+                                                        const dt = formatDateTime(row.updateAt);
+                                                        if (!dt) return "—";
+                                                        const parts = dt.split(" ");
+                                                        const datePart = parts[0];
+                                                        const timePart = parts.slice(1).join(" ");
+                                                        return (
+                                                            <div className="flex flex-col text-[11px] leading-tight">
+                                                                <span className="font-medium text-gray-700">{datePart}</span>
+                                                                <span className="text-gray-500">{timePart}</span>
+                                                            </div>
+                                                        );
+                                                    })()}
                                                 </td>
-                                                <td className="px-5 py-3 text-sm text-gray-700">
-                                                    {isPre10
+                                                {(() => {
+                                                    const nextActionVal = isPre10
                                                         ? "—"
                                                         : row.currentMilestoneIndex != null || row.currentMilestoneName
                                                           ? getNextActionFromMilestone(
@@ -1354,77 +1362,83 @@ export default function Dashboard() {
                                                                 row.currentMilestoneName ?? undefined,
                                                                 { isSpm: isSpmUser },
                                                             )
-                                                          : getNextAction(bucket)}
-                                                </td>
-                                                <td className="px-5 py-3">
+                                                          : getNextAction(bucket);
+                                                    return (
+                                                        <td className="px-2 py-3 text-xs text-gray-700 max-w-[180px] truncate" title={nextActionVal}>
+                                                            {nextActionVal}
+                                                        </td>
+                                                    );
+                                                })()}
+                                                <td className="px-2 py-3">
                                                     <span
-                                                        className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${statusInfo.className}`}
+                                                        className={`inline-block rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${statusInfo.className}`}
                                                     >
                                                         {statusInfo.label}
                                                     </span>
                                                 </td>
-                                                <td className="px-5 py-3" onClick={(e) => e.stopPropagation()}>
-                                                    <div className="flex flex-wrap items-center gap-2">
+                                                <td className="px-2 py-3" onClick={(e) => e.stopPropagation()}>
+                                                    <div className="flex flex-wrap items-center gap-1.5">
                                                         {isPre10 ? (
                                                             <button
                                                                 type="button"
                                                                 disabled={!sessionId || getQuoteLeadId === row.id}
                                                                 onClick={() => void runGetQuoteForDashboardLead(row)}
-                                                                className="rounded-lg bg-teal-700 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-50"
+                                                                className="rounded bg-[#EF0101] px-2 py-1 text-[11px] font-bold text-white shadow-sm hover:bg-[#EF0101]/90 transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50"
                                                             >
                                                                 {getQuoteLeadId === row.id ? "Working…" : "Get quote"}
                                                             </button>
                                                         ) : (
-                                                            <>
-                                                                {canShowStartMeetingButton(row) ? (
-                                                                    <StartMeetingButton
-                                                                        onClick={() => openMeetingWizForLead(row)}
-                                                                    />
-                                                                ) : null}
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => setViewLead(row)}
-                                                                    className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700 shadow-sm hover:bg-gray-50"
-                                                                >
-                                                                    View
-                                                                </button>
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => handleRouter(row)}
-                                                                    className="text-sm font-semibold text-blue-600 hover:underline"
-                                                                >
-                                                                    View Project
-                                                                </button>
+                                                            <div className="flex flex-col gap-1.5">
+                                                                <div className="flex items-center gap-1.5">
+                                                                    {canShowStartMeetingButton(row) ? (
+                                                                        <StartMeetingButton
+                                                                            onClick={() => openMeetingWizForLead(row)}
+                                                                        />
+                                                                    ) : null}
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => setViewLead(row)}
+                                                                        className="rounded border border-gray-300 bg-white px-2 py-1 text-[11px] font-semibold text-gray-700 shadow-sm hover:bg-gray-50 whitespace-nowrap"
+                                                                    >
+                                                                        View
+                                                                    </button>
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => handleRouter(row)}
+                                                                        className="rounded bg-[#DDCDC1] px-2 py-1 text-[11px] font-bold text-[#32261C] shadow-sm hover:bg-[#DDCDC1]/80 transition-colors flex items-center gap-1 whitespace-nowrap"
+                                                                    >
+                                                                        View Project
+                                                                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3">
+                                                                            <path fillRule="evenodd" d="M2 8a.75.75 0 0 1 .75-.75h8.69L8.22 4.03a.75.75 0 0 1 1.06-1.06l4.5 4.5a.75.75 0 0 1 0 1.06l-4.5 4.5a.75.75 0 0 1-1.06-1.06l3.22-3.22H2.75A.75.75 0 0 1 2 8Z" clipRule="evenodd" />
+                                                                        </svg>
+                                                                    </button>
+                                                                </div>
                                                                 {canImportLeads && (
-                                                                    <>
-                                                                        <select
-                                                                            value={singleAssignByLead[row.id] ?? row.assigned_designer_id ?? ""}
-                                                                            onChange={(e) =>
-                                                                                setSingleAssignByLead((prev) => ({
-                                                                                    ...prev,
-                                                                                    [row.id]: e.target.value ? Number(e.target.value) : "",
-                                                                                }))
-                                                                            }
-                                                                            className="rounded border border-gray-300 px-2 py-1 text-xs"
-                                                                        >
-                                                                            <option value="">Assign designer</option>
-                                                                            {assignableDesigners.map((d) => (
-                                                                                <option key={d.id} value={d.id}>
-                                                                                    {d.name}
-                                                                                </option>
-                                                                            ))}
-                                                                        </select>
+                                                                    <div className="flex items-center gap-1">
+                                                                        <div className="w-[110px]">
+                                                                            <CustomSelect
+                                                                                value={singleAssignByLead[row.id] ? String(singleAssignByLead[row.id]) : String(row.assigned_designer_id ?? "")}
+                                                                                onChange={(val) =>
+                                                                                    setSingleAssignByLead((prev) => ({
+                                                                                        ...prev,
+                                                                                        [row.id]: val ? Number(val) : "",
+                                                                                    }))
+                                                                                }
+                                                                                options={assignableDesigners.map((d) => ({ value: String(d.id), label: d.name }))}
+                                                                                placeholder="Assign designer"
+                                                                            />
+                                                                        </div>
                                                                         <button
                                                                             type="button"
                                                                             onClick={() => assignSingleLead(row.id)}
                                                                             disabled={singleAssignLoadingLeadId === row.id}
-                                                                            className="rounded bg-emerald-600 px-2 py-1 text-xs text-white hover:bg-emerald-700 disabled:opacity-60"
+                                                                            className="rounded bg-[#EF0101] px-2 py-1 text-[11px] font-bold text-white shadow-sm hover:bg-[#EF0101]/90 disabled:opacity-60"
                                                                         >
                                                                             {singleAssignLoadingLeadId === row.id ? "..." : "Assign"}
                                                                         </button>
-                                                                    </>
+                                                                    </div>
                                                                 )}
-                                                            </>
+                                                            </div>
                                                         )}
                                                     </div>
                                                 </td>
@@ -1436,10 +1450,10 @@ export default function Dashboard() {
                         )}
                     </div>
                     {totalItems === 0 && (
-                        <div className="py-12 text-center text-gray-500 text-sm">No projects match the current filter or search.</div>
+                        <div className="py-12 text-center text-gray-500 text-sm rounded-b-xl bg-white">No projects match the current filter or search.</div>
                     )}
                     {totalItems > 0 && (
-                        <div className="flex flex-col gap-3 px-4 py-3 border-t border-gray-200 bg-white text-sm sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+                        <div className="flex flex-col gap-3 px-4 py-3 border-t border-gray-200 bg-white text-sm sm:flex-row sm:flex-wrap sm:items-center sm:justify-between rounded-b-xl">
                             <span className="text-gray-600 shrink-0">
                                 Showing {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, totalItems)} of {totalItems}{" "}
                                 projects
@@ -1473,7 +1487,7 @@ export default function Dashboard() {
                                                 onClick={() => setPage(item)}
                                                 className={`min-h-9 min-w-9 rounded-lg px-2 text-sm font-medium transition-colors ${
                                                     item === currentPage
-                                                        ? "border-2 border-violet-500 bg-violet-50 text-violet-800 shadow-sm"
+                                                        ? "border-2 border-[#EF0101] bg-[#DDCDC1]/20 text-[#32261C] shadow-sm"
                                                         : "border border-transparent text-gray-600 hover:bg-gray-100"
                                                 }`}
                                             >
@@ -1499,17 +1513,11 @@ export default function Dashboard() {
                                 </div>
                                 <label className="inline-flex items-center gap-2 text-gray-700">
                                     <span className="sr-only">Leads per page</span>
-                                    <select
-                                        value={pageSize}
-                                        onChange={(e) => setPageSize(Number(e.target.value))}
-                                        className="cursor-pointer rounded-lg border-2 border-violet-200 bg-white px-3 py-2 text-sm font-medium text-gray-800 shadow-sm hover:border-violet-300 focus:outline-none focus:ring-2 focus:ring-violet-400"
-                                    >
-                                        {PAGE_SIZE_OPTIONS.map((n) => (
-                                            <option key={n} value={n}>
-                                                {n} / page
-                                            </option>
-                                        ))}
-                                    </select>
+                                    <CustomSelect
+                                        value={String(pageSize)}
+                                        onChange={(val) => setPageSize(Number(val))}
+                                        options={PAGE_SIZE_OPTIONS.map((n) => ({ value: String(n), label: `${n} / page` }))}
+                                    />
                                 </label>
                             </div>
                         </div>
@@ -1522,8 +1530,8 @@ export default function Dashboard() {
     return (
         <div>
             <main className="">
-                <div className="xl:grid xl:grid-cols-5 xl:gap-4">
-                    <div className=" xl:grid-cols-1 xl:h-screen border-r border-gray-300 xl:pt-4 xl:pl-2">
+                <div className="xl:flex xl:gap-4">
+                    <div className="xl:w-64 xl:shrink-0 xl:sticky xl:top-[57px] xl:h-[calc(100vh-57px)] xl:overflow-y-auto border-r border-gray-300 xl:pt-4 xl:pr-2">
 
                     {!isDqcUser && !isSpmUser && (
                         <>
@@ -1532,10 +1540,10 @@ export default function Dashboard() {
                         id="workspace-sidebar-trigger"
                         aria-expanded={isDropdownOpen}
                         aria-controls="workspace-sidebar-panel"
-                        className="flex w-full items-center justify-between gap-2 mb-1 rounded-lg py-3 pl-2 pr-2 text-left cursor-pointer hover:bg-gray-100 transition-colors xl:mb-2 xl:py-4 xl:pr-2"
+                        className="flex w-full items-center justify-between gap-2 mb-1 rounded-lg py-3 pl-4 pr-2 text-left cursor-pointer hover:bg-gray-100 transition-colors xl:mb-2 xl:py-4"
                         onClick={toggleDropdown}
                     >
-                        <span className="text-base font-semibold text-gray-900 xl:text-lg xl:pl-2 xl:pt-0">My WorkSpace</span>
+                        <span className="text-base font-bold text-[#32261C] xl:text-lg xl:pl-4 xl:pt-0">My WorkSpace</span>
                         <svg
                             xmlns="http://www.w3.org/2000/svg"
                             fill="none"
@@ -1551,7 +1559,7 @@ export default function Dashboard() {
                     {canShowIncentivesNav(user?.role) && (
                         <IncentivesNavLink
                             active={false}
-                            className="mb-2 xl:w-66.25"
+                            className="mb-2 xl:w-full"
                         />
                     )}
                     {isDropdownOpen && (
@@ -1560,10 +1568,10 @@ export default function Dashboard() {
                                 type="button"
                                 aria-expanded={designPhasesOpen}
                                 aria-controls="workspace-design-phases"
-                                className="flex w-full items-center justify-between gap-2 rounded-lg py-2 pl-2 pr-2 text-left cursor-pointer hover:bg-gray-100 transition-colors xl:pl-2"
+                                className="flex w-full items-center justify-between gap-2 rounded-lg py-2 pl-4 pr-2 text-left cursor-pointer hover:bg-gray-100 transition-colors"
                                 onClick={() => setDesignPhasesOpen((o) => !o)}
                             >
-                                <span className="text-xs font-bold text-gray-500 uppercase tracking-wide">Design Phases</span>
+                                <span className="text-xs font-bold text-[#32261C]/60 uppercase tracking-widest">Design Phases</span>
                                 <svg
                                     xmlns="http://www.w3.org/2000/svg"
                                     fill="none"
@@ -1590,10 +1598,10 @@ export default function Dashboard() {
                                                     handleSelection(type);
                                                 }
                                             }}
-                                            className={`p-3 cursor-pointer font-semibold text-left w-full transition-all duration-200 xl:p-4 xl:inline-block xl:w-66.25 ${
+                                            className={`p-3 pl-4 cursor-pointer font-semibold text-sm text-left w-full transition-all duration-200 xl:p-4 xl:pl-4 xl:block xl:w-full rounded-r-lg ${
                                                 isSelected === type
-                                                    ? 'border-l-4 border-l-green-400 bg-gray-100 text-green-600 font-bold xl:border-gray-300 xl:text-green-400'
-                                                    : 'border-l-4 border-l-transparent hover:border-l-green-400 hover:bg-gray-100 hover:text-green-600 xl:hover:scale-105'
+                                                    ? 'border-l-4 border-l-[#EF0101] bg-[#DDCDC1]/40 text-[#32261C] font-bold shadow-sm'
+                                                    : 'border-l-4 border-l-transparent text-gray-600 hover:border-l-[#EF0101]/40 hover:bg-[#F1F2F6] hover:text-[#32261C]'
                                             }`}
                                         >
                                             {type}
@@ -1605,10 +1613,10 @@ export default function Dashboard() {
                                 type="button"
                                 aria-expanded={projectStatusOpen}
                                 aria-controls="workspace-project-status"
-                                className="flex w-full items-center justify-between gap-2 rounded-lg py-2 pl-2 pr-2 text-left cursor-pointer hover:bg-gray-100 transition-colors mt-2 xl:pl-2"
+                                className="flex w-full items-center justify-between gap-2 rounded-lg py-2 pl-4 pr-2 text-left cursor-pointer hover:bg-gray-100 transition-colors mt-2"
                                 onClick={() => setProjectStatusOpen((o) => !o)}
                             >
-                                <span className="text-xs font-bold text-gray-500 uppercase tracking-wide">Project status</span>
+                                <span className="text-xs font-bold text-[#32261C]/60 uppercase tracking-widest">Project status</span>
                                 <svg
                                     xmlns="http://www.w3.org/2000/svg"
                                     fill="none"
@@ -1635,10 +1643,10 @@ export default function Dashboard() {
                                                     handleStatusSelection(status);
                                                 }
                                             }}
-                                            className={`p-3 cursor-pointer font-semibold text-left w-full transition-all duration-200 xl:p-4 xl:inline-block xl:w-66.25 ${
+                                            className={`p-3 pl-4 cursor-pointer font-semibold text-sm text-left w-full transition-all duration-200 xl:p-4 xl:pl-4 xl:block xl:w-full rounded-r-lg ${
                                                 statusSelected === status
-                                                    ? 'border-l-4 border-l-green-400 bg-gray-100 text-green-600 font-bold xl:text-green-400'
-                                                    : 'border-l-4 border-l-transparent hover:border-l-green-400 hover:bg-gray-100 hover:text-green-600 xl:hover:scale-105'
+                                                    ? 'border-l-4 border-l-[#EF0101] bg-[#DDCDC1]/40 text-[#32261C] font-bold shadow-sm'
+                                                    : 'border-l-4 border-l-transparent text-gray-600 hover:border-l-[#EF0101]/40 hover:bg-[#F1F2F6] hover:text-[#32261C]'
                                             }`}
                                         >
                                             {status}
@@ -1651,134 +1659,190 @@ export default function Dashboard() {
                         </>
                     )}
                     {isDqcUser && (
-                        <div className="xl:text-lg xl:font-semibold xl:pl-2 xl:pt-4">DQC Queue</div>
+                        <div className="xl:text-lg xl:font-semibold xl:pl-4 xl:pt-4">DQC Queue</div>
                     )}
                     </div>
-                    <div className="xl:col-span-4 min-w-0 flex-1 w-full overflow-auto">
+                    <div className="min-w-0 flex-1 w-full overflow-auto">
                         {!isDqcUser && !isMmtUser ? (
-                            <div className="p-4 xl:p-6 space-y-6 max-w-[1600px]">
-                                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                                    <div>
-                                        <h1 className="text-xl xl:text-2xl font-bold text-gray-900">
-                                            {isSpmUser ? "D2 Site Masking Queue" : "Design Phase Projects"}
-                                        </h1>
-                                        <p className="text-sm text-gray-500 mt-0.5">
-                                            {isSpmUser
-                                                ? "Leads where a D2 masking request has been raised — assign PM and manage D2 files."
-                                                : "Projects between 10% and 60% progress."}
-                                        </p>
-                                    </div>
-                                    <div className="flex flex-wrap items-center gap-3">
-                                        <input
-                                            type="search"
-                                            placeholder="Search projects..."
-                                            value={searchQuery}
-                                            onChange={(e) => setSearchQuery(e.target.value)}
-                                            className="px-3 py-2 border border-gray-300 rounded-lg text-sm w-full sm:w-48 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                                        />
-                                        {showBranchDesignerFilters && (
-                                            <>
-                                                <select
-                                                    value={branchFilter}
-                                                    onChange={(e) => setBranchFilter(e.target.value)}
-                                                    aria-label="Filter by branch"
-                                                    className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white text-gray-800 min-w-[7rem] focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                            <div className="p-4 xl:p-6 pb-32 xl:pb-32 space-y-6 max-w-[1600px]">
+                                <div className="flex flex-col gap-4">
+                                    {/* Row 1: Title and Action Buttons */}
+                                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                                        <div>
+                                            <h1 className="text-xl xl:text-2xl font-bold text-gray-900">
+                                                {isSpmUser ? "D2 Site Masking Queue" : "Design Phase Projects"}
+                                            </h1>
+                                            <p className="text-sm text-gray-500 mt-0.5">
+                                                {isSpmUser
+                                                    ? "Leads where a D2 masking request has been raised — assign PM and manage D2 files."
+                                                    : "Projects between 10% and 60% progress."}
+                                            </p>
+                                        </div>
+                                        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                                            {canBookPersonalAppointment && isDesigner && (
+                                                <button
+                                                    type="button"
+                                                    disabled={!sessionId}
+                                                    onClick={() => setShowPersonalAppointmentModal(true)}
+                                                    title="Block personal time on your calendar"
+                                                    className="inline-flex px-4 py-2 rounded-lg border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 text-sm font-semibold transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50"
                                                 >
-                                                    <option value="">All branches</option>
-                                                    {BRANCH_OPTIONS.map((b) => (
-                                                        <option key={b} value={b}>
-                                                            {b}
-                        </option>
-                    ))}   
-                                                </select>
-                                                <select
-                                                    value={designerFilter}
-                                                    onChange={(e) => setDesignerFilter(e.target.value)}
-                                                    aria-label="Filter by designer"
-                                                    className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white text-gray-800 min-w-[10rem] max-w-[14rem] focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                                    Appointment
+                                                </button>
+                                            )}
+                                            {canImportLeads && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setShowImportPanel((v) => !v)}
+                                                    className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border text-sm font-semibold transition-all duration-200 ${
+                                                        showImportPanel
+                                                            ? "bg-[#272c36] border-slate-700 text-white"
+                                                            : "border-gray-300 text-gray-700 bg-white hover:bg-gray-50"
+                                                    }`}
                                                 >
-                                                    <option value="">All designers</option>
-                                                    {hasUnassignedInQueue && (
-                                                        <option value="__unassigned__">Unassigned</option>
-                                                    )}
-                                                    {designerFilterOptions.map(([id, name]) => (
-                                                        <option key={id} value={String(id)}>
-                                                            {name}
-                                                        </option>
-                                                    ))}
-                                                </select>
-                                            </>
-                                        )}
-                                        <div className="relative" ref={filterDropdownRef}>
-                                            <button
-                                                type="button"
-                                                onClick={() => setFilterDropdownOpen((o) => !o)}
-                                                className="px-4 py-2 rounded-lg border border-gray-300 bg-white text-gray-700 text-sm font-medium hover:bg-gray-50 flex items-center gap-2"
-                                            >
-                                                <span>Filter</span>
-                                                {milestoneFilter ? (
-                                                    <span className="text-blue-600 font-semibold truncate max-w-[120px]" title={MILESTONE_FILTER_OPTIONS.find((o) => o.value === milestoneFilter)?.label}>
-                                                        {MILESTONE_FILTER_OPTIONS.find((o) => o.value === milestoneFilter)?.label}
-                                                    </span>
-                                                ) : null}
-                                                <span aria-hidden>▾</span>
-                                            </button>
-                                            {filterDropdownOpen && (
-                                                <div className="absolute right-0 top-full mt-1 z-50 min-w-[200px] py-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-64 overflow-y-auto">
-                                                    <p className="px-3 py-2 text-xs font-semibold text-gray-500 uppercase border-b border-gray-100">By milestone</p>
-                                                    {MILESTONE_FILTER_OPTIONS.map((opt) => (
-                                                        <button
-                                                            key={opt.value || "all"}
-                                                            type="button"
-                                                            onClick={() => {
-                                                                setMilestoneFilter(opt.value);
-                                                                setFilterDropdownOpen(false);
-                                                            }}
-                                                            className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 ${opt.value === milestoneFilter ? "bg-blue-50 text-blue-700 font-medium" : "text-gray-700"}`}
-                                                        >
-                                                            {opt.label}
-                                                        </button>
-                                                    ))}
-                    </div>
+                                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor" className="w-4 h-4">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 16.5V9.75m0 0 3 3m-3-3-3 3M6.75 19.5a4.5 4.5 0 0 1-1.41-8.775 5.25 5.25 0 0 1 10.233-2.33 3 3 0 0 1 3.758 3.848A3.752 3.752 0 0 1 18 19.5H6.75Z" />
+                                                    </svg>
+                                                    {showImportPanel ? "Close Import" : "Import Excel"}
+                                                </button>
+                                            )}
+                                            {!isSpmUser && (
+                                                <button
+                                                    type="button"
+                                                    disabled={!sessionId}
+                                                    onClick={handleAddProjectClick}
+                                                    title="Fill a form to create a Prolance project and add it to Pre 10%"
+                                                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-bold hover:bg-[#EF0101]/90 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50 transition-all duration-200"
+                                                >
+                                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-4 h-4">
+                                                        <path d="M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z" />
+                                                    </svg>
+                                                    Add Project
+                                                </button>
                                             )}
                                         </div>
-                                        {!isSpmUser && (
-                                        <button
-                                            type="button"
-                                            disabled={!sessionId}
-                                            onClick={handleAddProjectClick}
-                                            title="Fill a form to create a Prolance project and add it to Pre 10%"
-                                            className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                                        >
-                                            + Add Project
-                                        </button>
-                                        )}
-                                        {canBookPersonalAppointment && isDesigner && (
-                                        <button
-                                            type="button"
-                                            disabled={!sessionId}
-                                            onClick={() => setShowPersonalAppointmentModal(true)}
-                                            title="Block personal time on your calendar"
-                                            className="hidden xl:inline-flex px-4 py-2 rounded-lg border border-emerald-600 text-emerald-700 text-sm font-medium hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
-                                        >
-                                            Appointment
-                                        </button>
-                                        )}
-                                        {canImportLeads && (
+                                    </div>
+
+                                    {/* Row 2: Filter Toolbar */}
+                                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 bg-[#F1F2F6]/50 p-3 rounded-2xl border border-gray-200">
+                                        <div className="flex flex-wrap items-center gap-2.5">
+                                            {/* Search input with leading icon */}
+                                            <div className="relative w-full md:w-60">
+                                                <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor" className="w-4 h-4 text-gray-400">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.602 10.602Z" />
+                                                    </svg>
+                                                </span>
+                                                <input
+                                                    type="search"
+                                                    placeholder="Search projects..."
+                                                    value={searchQuery}
+                                                    onChange={(e) => setSearchQuery(e.target.value)}
+                                                    className="pl-9 pr-3 py-2 border border-gray-300 rounded-xl text-sm w-full bg-white focus:outline-none focus:ring-2 focus:ring-[#00B0ED]/30 focus:border-[#00B0ED] transition-all duration-150"
+                                                />
+                                            </div>
+
+                                            {showBranchDesignerFilters && (
+                                                <>
+                                                    <CustomSelect
+                                                        value={branchFilter}
+                                                        onChange={(v) => setBranchFilter(v)}
+                                                        placeholder="All branches"
+                                                        minWidth="9rem"
+                                                        options={[
+                                                            { value: "", label: "All branches" },
+                                                            ...BRANCH_OPTIONS.map((b) => ({ value: b, label: b })),
+                                                        ]}
+                                                    />
+                                                    <CustomSelect
+                                                        value={designerFilter}
+                                                        onChange={(v) => setDesignerFilter(v)}
+                                                        placeholder="All designers"
+                                                        minWidth="11rem"
+                                                        options={[
+                                                            { value: "", label: "All designers" },
+                                                            ...(hasUnassignedInQueue ? [{ value: "__unassigned__", label: "Unassigned" }] : []),
+                                                            ...designerFilterOptions.map(([id, name]) => ({ value: String(id), label: name as string })),
+                                                        ]}
+                                                    />
+                                                </>
+                                            )}
+
+                                            <div className="relative" ref={filterDropdownRef}>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setFilterDropdownOpen((o) => !o)}
+                                                    className={`px-4 py-2 rounded-xl border text-sm font-medium flex items-center gap-2 transition-all duration-200 ${
+                                                        filterDropdownOpen || milestoneFilter
+                                                            ? 'border-[#EF0101] bg-[#EF0101] text-white shadow-md'
+                                                            : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
+                                                    }`}
+                                                >
+                                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
+                                                        <path d="M14 2a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v1.5a1 1 0 0 0 .293.707L6 8v5.5a.5.5 0 0 0 .777.416l3-2A.5.5 0 0 0 10 11.5V8l3.707-3.793A1 1 0 0 0 14 3.5V2Z" />
+                                                    </svg>
+                                                    <span>Milestone</span>
+                                                    {milestoneFilter ? (
+                                                        <span className="font-semibold truncate max-w-[120px]" title={MILESTONE_FILTER_OPTIONS.find((o) => o.value === milestoneFilter)?.label}>
+                                                            · {MILESTONE_FILTER_OPTIONS.find((o) => o.value === milestoneFilter)?.label}
+                                                        </span>
+                                                    ) : null}
+                                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className={`w-3.5 h-3.5 transition-transform duration-200 ${filterDropdownOpen ? 'rotate-180' : ''}`}>
+                                                        <path fillRule="evenodd" d="M4.22 6.22a.75.75 0 0 1 1.06 0L8 8.94l2.72-2.72a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+                                                    </svg>
+                                                </button>
+                                                {filterDropdownOpen && (
+                                                    <div
+                                                        className="absolute left-0 md:right-0 md:left-auto top-full mt-1.5 z-50 min-w-[220px] py-1 bg-white border border-gray-200 rounded-xl shadow-xl max-h-64 overflow-y-auto custom-select-dropdown"
+                                                        style={{ animation: 'customSelectSlideDown 0.18s cubic-bezier(0.16,1,0.3,1) forwards', transformOrigin: 'top' }}
+                                                    >
+                                                        <p className="px-3.5 py-2 text-[10px] font-bold uppercase tracking-widest text-[#32261C]/40 border-b border-gray-100">By milestone</p>
+                                                        {MILESTONE_FILTER_OPTIONS.map((opt) => (
+                                                            <button
+                                                                key={opt.value || "all"}
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    setMilestoneFilter(opt.value);
+                                                                    setFilterDropdownOpen(false);
+                                                                }}
+                                                                className={`w-full text-left px-3.5 py-2.5 text-sm flex items-center gap-2 transition-colors duration-100 ${
+                                                                    opt.value === milestoneFilter
+                                                                        ? "bg-[#EF0101] text-white font-semibold"
+                                                                        : "text-[#32261C] hover:bg-[#F1F2F6]"
+                                                                }`}
+                                                            >
+                                                                <span className={`w-4 h-4 flex-shrink-0 ${opt.value === milestoneFilter ? 'opacity-100' : 'opacity-0'}`}>
+                                                                    <svg viewBox="0 0 16 16" fill="currentColor"><path fillRule="evenodd" d="M12.416 3.376a.75.75 0 0 1 .208 1.04l-5 7.5a.75.75 0 0 1-1.154.114l-3-3a.75.75 0 0 1 1.06-1.06l2.353 2.353 4.493-6.74a.75.75 0 0 1 1.04-.207Z" clipRule="evenodd" /></svg>
+                                                                </span>
+                                                                {opt.label}
+                                                            </button>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        {/* Reset Filters Option */}
+                                        {(searchQuery || branchFilter || designerFilter || milestoneFilter) && (
                                             <button
                                                 type="button"
-                                                onClick={() => setShowImportPanel((v) => !v)}
-                                                className="px-4 py-2 rounded-lg border border-indigo-300 text-indigo-700 text-sm font-medium hover:bg-indigo-50"
+                                                onClick={() => {
+                                                    setSearchQuery("");
+                                                    setBranchFilter("");
+                                                    setDesignerFilter("");
+                                                    setMilestoneFilter("");
+                                                }}
+                                                className="text-xs font-bold text-[#EF0101] hover:text-[#EF0101]/85 shrink-0 px-2.5 py-1.5 hover:bg-[#EF0101]/5 rounded-lg transition-all duration-200"
                                             >
-                                                {showImportPanel ? "Close Import" : "Import Excel"}
+                                                Clear all filters
                                             </button>
                                         )}
                                     </div>
                                 </div>
                                 {canImportLeads && showImportPanel && (
-                                    <div className="rounded-xl border border-indigo-100 bg-indigo-50/30 p-4">
-                                        <p className="text-sm font-semibold text-indigo-900">Import Leads from Excel</p>
-                                        <p className="mt-1 text-xs text-indigo-700">
+                                    <div className="rounded-xl border border-[#DDCDC1] bg-[#DDCDC1]/20 p-4">
+                                        <p className="text-sm font-semibold text-[#32261C]">Import Leads from Excel</p>
+                                        <p className="mt-1 text-xs text-[#32261C]">
                                             Upload Excel, map headers to lead fields, then import.
                                         </p>
                                         <div className="mt-3 flex flex-wrap items-center gap-3">
@@ -1788,23 +1852,17 @@ export default function Dashboard() {
                                                 onChange={(e) => setExcelFile(e.target.files?.[0] ?? null)}
                                                 className="text-sm"
                                             />
-                                            <select
-                                                value={importDesignerId}
-                                                onChange={(e) => setImportDesignerId(e.target.value ? Number(e.target.value) : "")}
-                                                className="rounded-md border border-indigo-300 bg-white px-3 py-1.5 text-xs text-indigo-900"
-                                            >
-                                                <option value="">Select designer from DB</option>
-                                                {assignableDesigners.map((d) => (
-                                                    <option key={d.id} value={d.id}>
-                                                        {d.name} ({d.role.replace("_", " ")})
-                                                    </option>
-                                                ))}
-                                            </select>
+                                            <CustomSelect
+                                                value={importDesignerId ? String(importDesignerId) : ""}
+                                                onChange={(val) => setImportDesignerId(val ? Number(val) : "")}
+                                                options={assignableDesigners.map((d) => ({ value: String(d.id), label: `${d.name} (${d.role.replace("_", " ")})` }))}
+                                                placeholder="Select designer from DB"
+                                            />
                                             <button
                                                 type="button"
                                                 onClick={runExcelPreview}
                                                 disabled={previewLoading || !excelFile}
-                                                className="rounded-md border border-indigo-500 px-3 py-1.5 text-xs font-semibold text-indigo-700 disabled:opacity-50"
+                                                className="rounded-md border border-[#EF0101] px-3 py-1.5 text-xs font-semibold text-[#32261C] disabled:opacity-50"
                                             >
                                                 {previewLoading ? "Loading Preview..." : "Preview Headers"}
                                             </button>
@@ -1818,20 +1876,15 @@ export default function Dashboard() {
                                                             <span className="mb-1 block text-xs font-medium text-gray-700">
                                                                 {f.label} {f.required ? <span className="text-red-500">*</span> : null}
                                                             </span>
-                                                            <select
+                                                            <CustomSelect
                                                                 value={mappings[f.key] || ""}
-                                                                onChange={(e) =>
-                                                                    setMappings((prev) => ({ ...prev, [f.key]: e.target.value }))
+                                                                onChange={(val) =>
+                                                                    setMappings((prev) => ({ ...prev, [f.key]: val }))
                                                                 }
-                                                                className="w-full rounded-lg border border-gray-300 bg-white px-2 py-2 text-xs text-gray-900 outline-none focus:border-indigo-500"
-                                                            >
-                                                                <option value="">-- Not mapped --</option>
-                                                                {excelHeaders.map((h) => (
-                                                                    <option key={h} value={h}>
-                                                                        {h}
-                                                                    </option>
-                                                                ))}
-                                                            </select>
+                                                                options={excelHeaders.map((h) => ({ value: h, label: h }))}
+                                                                placeholder="-- Not mapped --"
+                                                                className="w-full"
+                                                            />
                                                         </label>
                                                     ))}
                                                 </div>
@@ -1839,7 +1892,7 @@ export default function Dashboard() {
                                                     type="button"
                                                     onClick={runExcelImport}
                                                     disabled={importLoading}
-                                                    className="mt-4 rounded-md bg-indigo-600 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                                                    className="mt-4 rounded-md bg-[#EF0101] px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
                                                 >
                                                     {importLoading ? "Importing..." : "Import Leads"}
                                                 </button>
@@ -1851,32 +1904,27 @@ export default function Dashboard() {
                     </div>
                                 )}
                                 {canImportLeads && (
-                                    <div className="rounded-xl border border-emerald-100 bg-emerald-50/30 p-4 space-y-3">
-                                        <p className="text-sm font-semibold text-emerald-900">Lead Reassignment</p>
+                                    <div className="rounded-xl border border-[#DDCDC1] bg-[#DDCDC1]/20 p-4 space-y-3">
+                                        <p className="text-sm font-semibold text-[#32261C]">Lead Reassignment</p>
                                         <div className="flex flex-wrap items-center gap-3">
-                                            <select
-                                                value={bulkDesignerId}
-                                                onChange={(e) => setBulkDesignerId(e.target.value ? Number(e.target.value) : "")}
-                                                className="rounded-lg border border-emerald-200 bg-white px-3 py-2 text-sm min-w-[240px]"
-                                            >
-                                                <option value="">Select designer for bulk assign</option>
-                                                {assignableDesigners.map((d) => (
-                                                    <option key={d.id} value={d.id}>
-                                                        {d.name} ({d.role.replace("_", " ")})
-                        </option>
-                    ))}   
-                                            </select>
+                                            <CustomSelect
+                                                value={bulkDesignerId ? String(bulkDesignerId) : ""}
+                                                onChange={(val) => setBulkDesignerId(val ? Number(val) : "")}
+                                                options={assignableDesigners.map((d) => ({ value: String(d.id), label: `${d.name} (${d.role.replace("_", " ")})` }))}
+                                                placeholder="Select designer for bulk assign"
+                                                className="min-w-[240px]"
+                                            />
                                             <button
                                                 type="button"
                                                 onClick={assignBulkLeads}
                                                 disabled={bulkAssignLoading}
-                                                className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-60"
+                                                className="px-4 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-medium hover:bg-[#EF0101] disabled:opacity-60"
                                             >
                                                 {bulkAssignLoading ? "Assigning..." : `Bulk Assign (${selectedLeadIds.length})`}
                                             </button>
                                         </div>
                                         {bulkAssignMessage && (
-                                            <p className="text-xs text-emerald-800">{bulkAssignMessage}</p>
+                                            <p className="text-xs text-[#32261C]">{bulkAssignMessage}</p>
                                         )}
                                     </div>
                                 )}
@@ -1886,7 +1934,7 @@ export default function Dashboard() {
                                             bulkAssignMessage.toLowerCase().includes("fail") ||
                                             bulkAssignMessage.toLowerCase().includes("error")
                                                 ? "border-red-200 bg-red-50 text-red-800"
-                                                : "border-teal-200 bg-teal-50 text-teal-900"
+                                                : "border-[#DDCDC1] bg-[#DDCDC1]/20 text-[#32261C]"
                                         }`}
                                         role="status"
                                     >
@@ -1929,7 +1977,7 @@ export default function Dashboard() {
                                     <div className="flex justify-end">
                                         <button
                                             onClick={() => setShowFinancePopup(false)}
-                                            className="px-4 py-2 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-colors"
+                                            className="px-4 py-2 bg-[#00B0ED] text-white rounded-lg font-semibold hover:bg-[#00B0ED]/90 transition-colors"
                                         >
                                             Okay
                                         </button>
