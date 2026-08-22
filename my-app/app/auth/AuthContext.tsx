@@ -13,7 +13,6 @@ export type AuthUser = {
   branch?: string | null;
   role: AuthRole;
   profileImage?: string;
-  subRole?: string | null;
   designerTitle?: string | null;
   designerExperience?: string | null;
   designerProjects?: string | null;

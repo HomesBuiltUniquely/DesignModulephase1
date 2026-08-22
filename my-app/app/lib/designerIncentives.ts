@@ -1,4 +1,4 @@
-/** Designer incentives — fortnight target is half of the sub-role monthly target (1–15 / 16–month end). */
+/** Designer incentives — ₹15L per calendar fortnight (1–15 / 16–month end); ₹30L per month. */
 
 export type IncentiveSlab = {
   targetPct: number;
@@ -89,7 +89,7 @@ export type DealLedgerRow = {
 };
 
 export type IncentiveCycleInfo = {
-  /** Fortnight target (defaults to ID ₹15L until overridden per sub-role) */
+  /** Fixed target for every designer each cycle */
   totalTarget: number;
   cycleDays: number;
   cycleIndex: number;
@@ -146,11 +146,8 @@ export type WeightedRevenueBreakdown = {
 export type DesignerIncentivesData = {
   designerId: number;
   designerName: string;
-  /** Normalized sub-role used for the target (JID / ID / SID / PD) */
-  subRole: string | null;
   totalTarget: number;
-  monthlyTarget: number;
-  /** Weighted revenue (not raw collection) toward the fortnight target */
+  /** Weighted revenue (not raw collection) toward the ₹15L fortnight target */
   revenueAchieved: number;
   revenueDeltaPct: number;
   achievementPct: number;
@@ -181,7 +178,6 @@ export type TeamIncentiveRow = {
   designerId: number;
   designerName: string;
   role: string;
-  subRole: string | null;
   totalTarget: number;
   revenueAchieved: number;
   achievementPct: number;
@@ -208,63 +204,12 @@ export type IncentiveMember = {
   id: number;
   name: string;
   role: string;
-  subRole?: string | null;
 };
 
-export type IncentiveSubRoleCode = "JID" | "ID" | "SID" | "PD";
-
-/** Monthly targets by sub-role (₹). Fortnight target = monthly / 2. */
-export const SUB_ROLE_MONTHLY_TARGETS: Record<IncentiveSubRoleCode, number> = {
-  JID: 25_00_000,
-  ID: 30_00_000,
-  SID: 35_00_000,
-  PD: 38_00_000,
-};
-
-/** Fallback when sub_role is missing: Interior Designer (ID) */
-export const DEFAULT_INCENTIVE_SUB_ROLE: IncentiveSubRoleCode = "ID";
-/** Per-designer target for each calendar fortnight when sub-role is ID */
-export const INCENTIVE_CYCLE_TARGET = Math.round(SUB_ROLE_MONTHLY_TARGETS.ID / 2);
-/** Monthly target for ID (legacy default) */
-export const INCENTIVE_MONTHLY_TARGET = SUB_ROLE_MONTHLY_TARGETS.ID;
-
-const SUB_ROLE_ALIASES: Record<string, IncentiveSubRoleCode> = {
-  JID: "JID",
-  JUNIORINTERIORDESIGNER: "JID",
-  JUNIORDESIGNER: "JID",
-  ID: "ID",
-  INTERIORDESIGNER: "ID",
-  SID: "SID",
-  SENIORINTERIORDESIGNER: "SID",
-  SENIORDESIGNER: "SID",
-  PD: "PD",
-  PRINCIPALDESIGNER: "PD",
-};
-
-export function normalizeIncentiveSubRole(raw?: string | null): IncentiveSubRoleCode | null {
-  const key = String(raw || "")
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, "");
-  if (!key) return null;
-  return SUB_ROLE_ALIASES[key] || null;
-}
-
-export function getMonthlyTargetForSubRole(raw?: string | null): number {
-  const code = normalizeIncentiveSubRole(raw) || DEFAULT_INCENTIVE_SUB_ROLE;
-  return SUB_ROLE_MONTHLY_TARGETS[code];
-}
-
-/** 15-day / fortnight target = monthly target ÷ 2 */
-export function getFortnightTargetForSubRole(raw?: string | null): number {
-  return Math.round(getMonthlyTargetForSubRole(raw) / 2);
-}
-
-export function formatTargetLakhs(amount: number): string {
-  const lakhs = amount / 1_00_000;
-  const text = Number.isInteger(lakhs) ? String(lakhs) : String(Math.round(lakhs * 10) / 10);
-  return `₹${text}L`;
-}
+/** Per-designer target for each calendar fortnight (1–15 or 16–month end) */
+export const INCENTIVE_CYCLE_TARGET = 15_00_000;
+/** Monthly target = 2 fortnights */
+export const INCENTIVE_MONTHLY_TARGET = 30_00_000;
 /** Typical first-half length; second half is 13–16 days depending on the month */
 export const INCENTIVE_CYCLE_DAYS = 15;
 /** Designers must complete at least this many meetings in the fortnight to unlock incentives */
@@ -771,10 +716,7 @@ export function buildIncentivesFromDealInputs(
   meetingsCompleted: number,
   options?: { revenueDeltaPct?: number },
 ): DesignerIncentivesData {
-  const subRole = normalizeIncentiveSubRole(member.subRole);
-  const monthlyTarget = getMonthlyTargetForSubRole(member.subRole);
-  const totalTarget = getFortnightTargetForSubRole(member.subRole);
-  const cycleForMember: IncentiveCycleInfo = { ...cycle, totalTarget };
+  const totalTarget = cycle.totalTarget;
   const slabs = buildSlabsForTarget(totalTarget);
   const meetingsRequired = MIN_MEETINGS_PER_FORTNIGHT;
 
@@ -865,9 +807,7 @@ export function buildIncentivesFromDealInputs(
   return {
     designerId: member.id,
     designerName: member.name,
-    subRole,
     totalTarget,
-    monthlyTarget,
     revenueAchieved,
     revenueDeltaPct: options?.revenueDeltaPct ?? 0,
     achievementPct,
@@ -888,13 +828,13 @@ export function buildIncentivesFromDealInputs(
     meetingsEligible,
     weightedBreakdown,
     deals: finalDeals,
-    cycle: cycleForMember,
+    cycle,
   };
 }
 
 /**
  * Deterministic demo incentives for a selected calendar fortnight.
- * Target is half of the sub-role monthly target; progress is driven by weighted collection milestones
+ * Target is ₹15L per fortnight (₹30L/month); progress is driven by weighted collection milestones
  * (Parts 1–3) until a real API exists.
  */
 export function buildDemoIncentivesForDesigner(
@@ -908,10 +848,7 @@ export function buildDemoIncentivesForDesigner(
       : getCurrentCycleIndex(cycleIndexOrNow);
   const asOf = typeof cycleIndexOrNow === "number" ? now : cycleIndexOrNow;
   const cycle = getIncentiveCycleByIndex(cycleIndex, asOf);
-  const subRole = normalizeIncentiveSubRole(member.subRole);
-  const monthlyTarget = getMonthlyTargetForSubRole(member.subRole);
-  const totalTarget = getFortnightTargetForSubRole(member.subRole);
-  const cycleForMember: IncentiveCycleInfo = { ...cycle, totalTarget };
+  const totalTarget = cycle.totalTarget;
   const slabs = buildSlabsForTarget(totalTarget);
   const seed = hashSeed((member.id || 1) * 31 + cycle.cycleIndex * 17);
 
@@ -1030,9 +967,7 @@ export function buildDemoIncentivesForDesigner(
   return {
     designerId: member.id,
     designerName: member.name,
-    subRole,
     totalTarget,
-    monthlyTarget,
     revenueAchieved,
     revenueDeltaPct: 4 + (seed % 12),
     achievementPct,
@@ -1053,7 +988,7 @@ export function buildDemoIncentivesForDesigner(
     meetingsEligible,
     weightedBreakdown,
     deals: finalDeals,
-    cycle: cycleForMember,
+    cycle,
   };
 }
 
@@ -1079,7 +1014,6 @@ export function buildTeamIncentivesSummary(
       designerId: m.id,
       designerName: m.name,
       role: m.role,
-      subRole: normalizeIncentiveSubRole(m.subRole),
       totalTarget: d.totalTarget,
       revenueAchieved: d.revenueAchieved,
       achievementPct: d.achievementPct,

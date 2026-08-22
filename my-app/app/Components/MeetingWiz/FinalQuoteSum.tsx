@@ -21,14 +21,6 @@ import {
 } from "@/app/lib/prolanceGetQuotePersistSnapshot";
 import type { LeadshipTypes } from "@/app/Components/Types/Types";
 import { useMeetingWizTimer } from "./MeetingWizTimer";
-import {
-  MeetingWizShell,
-  MeetingWizTopBar,
-  mwCard,
-  mwDarkBtn,
-  mwH1,
-  mwMuted,
-} from "./MeetingWizChrome";
 
 interface Props {
   onNext: () => void;
@@ -40,7 +32,7 @@ interface Props {
 
 function RoomIcon() {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--foreground)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.55 }}>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6b7280" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
       <polyline points="9 22 9 12 15 12 15 22" />
     </svg>
@@ -275,42 +267,74 @@ export default function FinalQuoteSum({
   };
 
   return (
-    <MeetingWizShell className="flex flex-col">
-      <MeetingWizTopBar
-        onPrev={onPrev}
-        hideNext
-        extra={
+    <main className="min-h-screen w-full bg-[#f0f4f8]" style={{ fontFamily: "Arial, Helvetica, sans-serif", display: "flex", flexDirection: "column" }}>
+      <div className="flex items-center justify-between border-b border-gray-200 bg-white px-6 py-3">
+        <div className="flex flex-col items-start gap-0 text-left">
+          <span className="font-mono text-xs font-semibold uppercase tracking-widest text-[#10b981] tabular-nums">
+            {timer.formatted}
+          </span>
+          <span className="text-[8px] font-semibold uppercase tracking-[0.18em] text-gray-400">
+            STEP 5/5 · LIVE
+          </span>
+        </div>
+        <div className="flex items-center gap-4">
+          <button
+            type="button"
+            onClick={onPrev}
+            className="text-sm font-medium text-gray-500 transition hover:text-gray-700"
+          >
+            Previous
+          </button>
           <button
             type="button"
             onClick={() => void fetchQuote()}
             disabled={quoteLoading}
-            className={mwDarkBtn}
+            className="rounded-md bg-slate-950 px-4 py-2 text-xs font-semibold text-white disabled:opacity-60"
           >
             {quoteLoading ? "Fetching quote…" : "Refresh quote"}
           </button>
-        }
-        leading={
-          <div className="flex flex-col items-start gap-0 text-left">
-            <span className="font-mono text-xs font-semibold uppercase tracking-widest text-[var(--brand-blue)] tabular-nums">
-              {timer.formatted}
-            </span>
-            <span className="text-[8px] font-semibold uppercase tracking-[0.18em] text-[var(--foreground)]/50">
-              STEP 5/5 · LIVE
-            </span>
-          </div>
-        }
-      />
+        </div>
+      </div>
 
-      <div className="flex-1 px-8 md:px-12 py-10 max-w-7xl mx-auto w-full box-border pb-28">
+      <div className="flex-1 mx-auto max-w-4xl px-6 pb-28 w-full box-border">
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: "25px" }}>
+          <div
+            style={{
+              width: "48px",
+              height: "48px",
+              borderRadius: "10px",
+              backgroundColor: "#d1fae5",
+            }}
+          />
+        </div>
 
-
-        <h1 className={`${mwH1} mb-4 text-center`}>
+        <h1
+          style={{
+            fontSize: "30px",
+            fontWeight: 800,
+            color: "#111827",
+            textAlign: "center",
+            margin: "0 0 10px",
+            lineHeight: 1.1,
+          }}
+        >
           5. Final Quote &amp; Summary
         </h1>
 
-        <p className={`${mwMuted} mx-auto mb-10 max-w-2xl text-center`}>
+        <p
+          style={{
+            fontSize: "13.5px",
+            color: "#6b7280",
+            textAlign: "center",
+            margin: "0 0 16px",
+            lineHeight: 1.6,
+            maxWidth: "420px",
+            marginLeft: "auto",
+            marginRight: "auto",
+          }}
+        >
           Thank you,{" "}
-          <strong className="font-bold text-[var(--brand-dark)]">
+          <strong style={{ color: "#111827", fontWeight: 700 }}>
             {info.customerName}
           </strong>
           , for sharing your vision with HUB
@@ -318,7 +342,7 @@ export default function FinalQuoteSum({
             <>
               {" "}
               on{" "}
-              <strong className="font-bold text-[var(--brand-dark)]">
+              <strong style={{ color: "#111827", fontWeight: 700 }}>
                 {info.projectName}
               </strong>
             </>
@@ -327,17 +351,17 @@ export default function FinalQuoteSum({
         </p>
 
         {quoteLoading ? (
-          <p className="mb-4 text-center text-[13px] text-[var(--brand-blue)]">
+          <p style={{ textAlign: "center", fontSize: "13px", color: "#059669", marginBottom: "16px" }}>
             Collecting the latest Prolance quote…
           </p>
         ) : null}
         {quoteError ? (
-          <p className="mb-4 text-center text-xs text-[var(--brand-primary)]">
+          <p style={{ textAlign: "center", fontSize: "12px", color: "#b91c1c", marginBottom: "16px" }}>
             {quoteError}
           </p>
         ) : null}
         {quoteId != null && !quoteLoading ? (
-          <p className="mb-4 text-center text-[11px] text-[var(--foreground)]/50">
+          <p style={{ textAlign: "center", fontSize: "11px", color: "#9ca3af", marginBottom: "16px" }}>
             Quote ID {quoteId}
           </p>
         ) : null}
@@ -350,12 +374,19 @@ export default function FinalQuoteSum({
             marginBottom: "16px",
           }}
         >
-          <div className={`${mwCard} p-8`}>
+          <div
+            style={{
+              backgroundColor: "#ffffff",
+              borderRadius: "12px",
+              border: "1px solid #e5e7eb",
+              padding: "20px 22px 18px",
+            }}
+          >
             <p
               style={{
                 fontSize: "10px",
                 fontWeight: 600,
-                color: "color-mix(in srgb, var(--foreground) 50%, transparent)",
+                color: "#9ca3af",
                 textTransform: "uppercase",
                 letterSpacing: "0.08em",
                 margin: "0 0 6px",
@@ -375,7 +406,7 @@ export default function FinalQuoteSum({
                 style={{
                   fontSize: "34px",
                   fontWeight: 800,
-                  color: "var(--brand-dark)",
+                  color: "#111827",
                   lineHeight: 1,
                   letterSpacing: "-0.02em",
                 }}
@@ -386,7 +417,7 @@ export default function FinalQuoteSum({
                 style={{
                   fontSize: "11px",
                   fontWeight: 600,
-                  color: "color-mix(in srgb, var(--foreground) 50%, transparent)",
+                  color: "#9ca3af",
                   letterSpacing: "0.04em",
                 }}
               >
@@ -396,7 +427,7 @@ export default function FinalQuoteSum({
 
             <div style={{ display: "flex", flexDirection: "column", gap: "0" }}>
               {!quoteLoading && !lineItems.length ? (
-                <p style={{ fontSize: "12px", color: "color-mix(in srgb, var(--foreground) 50%, transparent)", margin: "8px 0" }}>
+                <p style={{ fontSize: "12px", color: "#9ca3af", margin: "8px 0" }}>
                   No room-wise quote lines yet. Use Create Project on the previous step, build the quote in
                   Prolance, then Refresh quote.
                 </p>
@@ -409,7 +440,7 @@ export default function FinalQuoteSum({
                     alignItems: "center",
                     justifyContent: "space-between",
                     padding: "11px 0",
-                    borderTop: "1px solid var(--border-color)",
+                    borderTop: "1px solid #f3f4f6",
                   }}
                 >
                   <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
@@ -418,8 +449,8 @@ export default function FinalQuoteSum({
                         width: "28px",
                         height: "28px",
                         borderRadius: "6px",
-                        backgroundColor: "var(--hover-bg)",
-                        border: "1px solid var(--border-color)",
+                        backgroundColor: "#f9fafb",
+                        border: "1px solid #e5e7eb",
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "center",
@@ -433,7 +464,7 @@ export default function FinalQuoteSum({
                         style={{
                           fontSize: "13px",
                           fontWeight: 600,
-                          color: "var(--brand-dark)",
+                          color: "#111827",
                           lineHeight: 1.2,
                         }}
                       >
@@ -442,7 +473,7 @@ export default function FinalQuoteSum({
                       <div
                         style={{
                           fontSize: "9.5px",
-                          color: "color-mix(in srgb, var(--foreground) 50%, transparent)",
+                          color: "#9ca3af",
                           fontWeight: 500,
                           letterSpacing: "0.04em",
                           marginTop: "1px",
@@ -456,7 +487,7 @@ export default function FinalQuoteSum({
                     style={{
                       fontSize: "13px",
                       fontWeight: 700,
-                      color: "var(--brand-dark)",
+                      color: "#111827",
                       whiteSpace: "nowrap",
                     }}
                   >
@@ -468,12 +499,23 @@ export default function FinalQuoteSum({
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-            <div className={`${mwCard} flex flex-col items-center gap-2 p-6`}>
+            <div
+              style={{
+                backgroundColor: "#ffffff",
+                borderRadius: "12px",
+                border: "1px solid #e5e7eb",
+                padding: "18px 16px",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: "8px",
+              }}
+            >
               <p
                 style={{
                   fontSize: "9.5px",
                   fontWeight: 600,
-                  color: "color-mix(in srgb, var(--foreground) 50%, transparent)",
+                  color: "#9ca3af",
                   textTransform: "uppercase",
                   letterSpacing: "0.08em",
                   margin: 0,
@@ -487,7 +529,7 @@ export default function FinalQuoteSum({
                   width: "36px",
                   height: "36px",
                   borderRadius: "8px",
-                  backgroundColor: "color-mix(in srgb, var(--brand-blue) 22%, var(--card-bg))",
+                  backgroundColor: "#d1fae5",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
@@ -498,7 +540,7 @@ export default function FinalQuoteSum({
                   height="18"
                   viewBox="0 0 24 24"
                   fill="none"
-                  stroke="var(--brand-blue)"
+                  stroke="#059669"
                   strokeWidth="2"
                   strokeLinecap="round"
                   strokeLinejoin="round"
@@ -513,7 +555,7 @@ export default function FinalQuoteSum({
                 style={{
                   fontSize: "17px",
                   fontWeight: 800,
-                  color: "var(--brand-dark)",
+                  color: "#111827",
                   textAlign: "center",
                   lineHeight: 1.2,
                 }}
@@ -523,7 +565,7 @@ export default function FinalQuoteSum({
               <div
                 style={{
                   fontSize: "10px",
-                  color: "color-mix(in srgb, var(--foreground) 50%, transparent)",
+                  color: "#9ca3af",
                   fontWeight: 500,
                   textAlign: "center",
                   letterSpacing: "0.04em",
@@ -533,12 +575,21 @@ export default function FinalQuoteSum({
               </div>
             </div>
 
-            <div className="flex flex-col gap-3 rounded-2xl border border-[var(--border-color)] bg-[var(--card-bg)] p-6 shadow-sm transition-all duration-300 hover:shadow-md">
+            <div
+              style={{
+                backgroundColor: "#111827",
+                borderRadius: "12px",
+                padding: "16px 14px",
+                display: "flex",
+                flexDirection: "column",
+                gap: "10px",
+              }}
+            >
               <p
                 style={{
                   fontSize: "9.5px",
                   fontWeight: 600,
-                  color: "color-mix(in srgb, var(--foreground) 55%, transparent)",
+                  color: "#6b7280",
                   textTransform: "uppercase",
                   letterSpacing: "0.08em",
                   margin: 0,
@@ -549,26 +600,37 @@ export default function FinalQuoteSum({
               <button
                 type="button"
                 onClick={handleOpenQuoteLink}
-                className="flex w-full cursor-pointer items-center gap-2.5 rounded-lg border border-[var(--border-color)] bg-[var(--hover-bg)] px-3 py-2.5 text-left transition hover:border-[var(--brand-primary)] hover:bg-[var(--brand-secondary)]"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "10px",
+                  backgroundColor: "rgba(255,255,255,0.06)",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                  borderRadius: "8px",
+                  padding: "10px 12px",
+                  cursor: "pointer",
+                  textAlign: "left",
+                  width: "100%",
+                }}
               >
                 <div
                   style={{
                     width: "26px",
                     height: "26px",
                     borderRadius: "6px",
-                    backgroundColor: "var(--brand-primary)",
+                    backgroundColor: "#2EE86B",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
                     flexShrink: 0,
                   }}
                 >
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#000" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
                     <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
                   </svg>
                 </div>
-                <span className="text-xs font-semibold text-[var(--brand-dark)]">
+                <span style={{ fontSize: "12px", fontWeight: 600, color: "#ffffff" }}>
                   Generate quote link
                 </span>
               </button>
@@ -576,26 +638,38 @@ export default function FinalQuoteSum({
                 type="button"
                 onClick={() => void fetchQuote()}
                 disabled={quoteLoading}
-                className="flex w-full items-center gap-2.5 rounded-lg border border-[var(--border-color)] bg-[var(--hover-bg)] px-3 py-2.5 text-left transition hover:border-[var(--brand-primary)] hover:bg-[var(--brand-secondary)] disabled:cursor-not-allowed disabled:opacity-60"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "10px",
+                  backgroundColor: "rgba(255,255,255,0.06)",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                  borderRadius: "8px",
+                  padding: "10px 12px",
+                  cursor: quoteLoading ? "not-allowed" : "pointer",
+                  textAlign: "left",
+                  width: "100%",
+                  opacity: quoteLoading ? 0.6 : 1,
+                }}
               >
                 <div
                   style={{
                     width: "26px",
                     height: "26px",
                     borderRadius: "6px",
-                    backgroundColor: "var(--brand-primary)",
+                    backgroundColor: "#2EE86B",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
                     flexShrink: 0,
                   }}
                 >
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#000" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                     <polyline points="23 4 23 10 17 10" />
                     <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
                   </svg>
                 </div>
-                <span className="text-xs font-semibold text-[var(--brand-dark)]">
+                <span style={{ fontSize: "12px", fontWeight: 600, color: "#ffffff" }}>
                   {quoteLoading ? "Fetching…" : "Refresh Get Quote"}
                 </span>
               </button>
@@ -618,13 +692,13 @@ export default function FinalQuoteSum({
                 width: "18px",
                 height: "18px",
                 borderRadius: "9999px",
-                border: "1.5px solid var(--brand-yellow)",
+                border: "1.5px solid #f97316",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
               }}
             >
-              <span style={{ fontSize: "10px", fontWeight: 700, color: "var(--brand-yellow)", lineHeight: 1 }}>
+              <span style={{ fontSize: "10px", fontWeight: 700, color: "#f97316", lineHeight: 1 }}>
                 i
               </span>
             </div>
@@ -634,7 +708,7 @@ export default function FinalQuoteSum({
               style={{
                 fontSize: "9.5px",
                 fontWeight: 700,
-                color: "color-mix(in srgb, var(--foreground) 50%, transparent)",
+                color: "#9ca3af",
                 textTransform: "uppercase",
                 letterSpacing: "0.08em",
                 margin: "0 0 5px",
@@ -645,7 +719,7 @@ export default function FinalQuoteSum({
             <p
               style={{
                 fontSize: "12px",
-                color: "color-mix(in srgb, var(--foreground) 62%, transparent)",
+                color: "#6b7280",
                 margin: 0,
                 lineHeight: 1.65,
                 maxWidth: "520px",
@@ -662,7 +736,24 @@ export default function FinalQuoteSum({
           type="button"
           onClick={() => void handleMeetingCompleted()}
           disabled={busy || done}
-          className={`flex w-full items-center justify-center gap-3 rounded-2xl border-none p-5 text-sm font-bold uppercase tracking-widest transition-all duration-300 ${done ? "cursor-not-allowed bg-[var(--brand-primary)]/50 text-white" : "cursor-pointer bg-[var(--brand-primary)] text-white shadow-sm hover:-translate-y-0.5 hover:opacity-90"} ${busy ? "cursor-not-allowed opacity-75" : ""}`}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "10px",
+            width: "100%",
+            backgroundColor: done ? "#86efac" : "#2EE86B",
+            border: "none",
+            borderRadius: "10px",
+            padding: "18px 32px",
+            fontSize: "14px",
+            fontWeight: 800,
+            color: "#000000",
+            cursor: busy || done ? "not-allowed" : "pointer",
+            letterSpacing: "0.1em",
+            textTransform: "uppercase",
+            opacity: busy ? 0.75 : 1,
+          }}
         >
           {busy ? "Saving…" : done ? "Meeting Recorded" : "Meeting Completed"}
           <span style={{ fontSize: "18px" }}>🚀</span>
@@ -673,13 +764,13 @@ export default function FinalQuoteSum({
               marginTop: "12px",
               textAlign: "center",
               fontSize: "12px",
-              color: message.toLowerCase().includes("fail") ? "var(--brand-primary)" : "var(--brand-blue)",
+              color: message.toLowerCase().includes("fail") ? "#b91c1c" : "#166534",
             }}
           >
             {message}
           </p>
         ) : null}
       </div>
-    </MeetingWizShell>
+    </main>
   );
 }

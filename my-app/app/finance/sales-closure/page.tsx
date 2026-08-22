@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../../auth/AuthContext';
 import { getApiBase } from '@/app/lib/apiBase';
 import FinanceRefundsNavLink from '../../Components/FinanceRefundsNavLink';
-import CustomDatePicker from '@/app/Components/ui/CustomDatePicker';
 
 type PaymentSubmission = {
   id: string;
@@ -464,7 +463,7 @@ export default function FinanceSalesClosurePage() {
           </div>
         </div>
 
-        <div className="mt-5 p-4 rounded-xl border border-[#DDCDC1] bg-[#DDCDC1]/20">
+        <div className="mt-5 p-4 rounded-xl border border-indigo-200 bg-indigo-50/50">
           <h2 className="text-sm font-bold text-gray-900 mb-2">Fetch lead — finance history</h2>
           <div className="flex flex-wrap gap-2 items-center">
             <input
@@ -478,7 +477,7 @@ export default function FinanceSalesClosurePage() {
               type="button"
               onClick={onLookupLead}
               disabled={historyLoading}
-              className="px-4 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-semibold hover:bg-[#EF0101]/80 disabled:opacity-60"
+              className="px-4 py-2 rounded-lg bg-indigo-700 text-white text-sm font-semibold hover:bg-indigo-800 disabled:opacity-60"
             >
               {historyLoading ? 'Loading…' : 'Load history'}
             </button>
@@ -495,7 +494,7 @@ export default function FinanceSalesClosurePage() {
         </div>
 
         {historyLead && (
-          <div className="mt-4 p-4 rounded-xl border-2 border-[#EF0101]/50 bg-white space-y-4">
+          <div className="mt-4 p-4 rounded-xl border-2 border-indigo-300 bg-white space-y-4">
             <div className="flex flex-wrap items-start justify-between gap-2">
               <div>
                 <h2 className="text-lg font-bold text-gray-900">
@@ -523,7 +522,7 @@ export default function FinanceSalesClosurePage() {
               </div>
             </div>
             {historyLead.financeApproved && (
-              <div className="rounded-lg bg-[#DDCDC1]/20 border border-[#DDCDC1] px-4 py-3 text-sm text-[#32261C]">
+              <div className="rounded-lg bg-teal-50 border border-teal-200 px-4 py-3 text-sm text-teal-900">
                 <span className="font-semibold">Finance approved</span>
                 {historyLead.approvedAt ? ` on ${formatDate(historyLead.approvedAt)}` : ''}. This
                 project has moved to the <span className="font-semibold">10–20%</span> design phase.
@@ -535,7 +534,7 @@ export default function FinanceSalesClosurePage() {
                   type="button"
                   onClick={() => void refreshHubProofs()}
                   disabled={refreshingProofs || !sessionId}
-                  className="px-3 py-1.5 rounded-lg border border-[#EF0101]/50 text-[#32261C] text-xs font-semibold hover:bg-[#DDCDC1]/20 disabled:opacity-60"
+                  className="px-3 py-1.5 rounded-lg border border-indigo-300 text-indigo-800 text-xs font-semibold hover:bg-indigo-50 disabled:opacity-60"
                 >
                   {refreshingProofs ? 'Refreshing proofs…' : 'Refresh proofs from CRM sync'}
                 </button>
@@ -556,7 +555,7 @@ export default function FinanceSalesClosurePage() {
                   type="button"
                   onClick={() => onApprove(historyLead.id, historyLead.paymentSource)}
                   disabled={approvingLeadId === historyLead.id}
-                  className="px-4 py-2 rounded-lg bg-[#00B0ED] text-white text-sm font-semibold hover:bg-[#00B0ED]/90 disabled:opacity-60"
+                  className="px-4 py-2 rounded-lg bg-green-700 text-white text-sm font-semibold hover:bg-green-800 disabled:opacity-60"
                 >
                   {approvingLeadId === historyLead.id ? 'Approving…' : 'Approve (move to 10–20%)'}
                 </button>
@@ -591,18 +590,22 @@ export default function FinanceSalesClosurePage() {
             <label className="block text-xs font-semibold text-gray-600 mb-1">
               {queueTab === 'approved' ? 'Approved from' : 'Submitted from'}
             </label>
-            <CustomDatePicker
+            <input
+              type="date"
               value={dateFromFilter}
-              onChange={(date) => setDateFromFilter(date)}
+              onChange={(e) => setDateFromFilter(e.target.value)}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
             />
           </div>
           <div>
             <label className="block text-xs font-semibold text-gray-600 mb-1">
               {queueTab === 'approved' ? 'Approved to' : 'Submitted to'}
             </label>
-            <CustomDatePicker
+            <input
+              type="date"
               value={dateToFilter}
-              onChange={(date) => setDateToFilter(date)}
+              onChange={(e) => setDateToFilter(e.target.value)}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
             />
           </div>
           <div className="sm:col-span-2 lg:col-span-4 flex flex-wrap gap-2">
@@ -649,7 +652,7 @@ export default function FinanceSalesClosurePage() {
             onClick={() => setQueueTab('approved')}
             className={`px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px ${
               queueTab === 'approved'
-                ? 'border-[#EF0101] text-[#32261C]'
+                ? 'border-teal-700 text-teal-800'
                 : 'border-transparent text-gray-500 hover:text-gray-800'
             }`}
           >
@@ -690,7 +693,7 @@ export default function FinanceSalesClosurePage() {
                         <div className="font-medium truncate" title={String(l.customerName)}>
                           {l.customerName}
                           {l.paymentSource === 'crm_hub' && (
-                            <span className="ml-1 inline-block px-1.5 py-0.5 rounded bg-[#DDCDC1]/40 text-[#32261C] text-[10px] font-bold">
+                            <span className="ml-1 inline-block px-1.5 py-0.5 rounded bg-violet-100 text-violet-800 text-[10px] font-bold">
                               CRM
                             </span>
                           )}
@@ -709,7 +712,7 @@ export default function FinanceSalesClosurePage() {
                         )}
                       </div>
                       <div className="col-span-1">
-                        <span className="inline-flex items-center justify-center min-w-[1.75rem] h-7 px-2 rounded-full bg-[#DDCDC1]/40 text-[#32261C] text-xs font-bold">
+                        <span className="inline-flex items-center justify-center min-w-[1.75rem] h-7 px-2 rounded-full bg-indigo-100 text-indigo-900 text-xs font-bold">
                           {count || 1}
                         </span>
                       </div>
@@ -717,7 +720,7 @@ export default function FinanceSalesClosurePage() {
                         <span
                           className={`inline-block rounded-full px-2 py-0.5 font-medium ${
                             l.tenPercentMet
-                              ? 'bg-[#DDCDC1]/40 text-[#32261C]'
+                              ? 'bg-teal-100 text-teal-800'
                               : 'bg-amber-100 text-amber-800'
                           }`}
                         >
@@ -731,7 +734,7 @@ export default function FinanceSalesClosurePage() {
                         <button
                           type="button"
                           onClick={() => openHistory(l)}
-                          className="px-2 py-1.5 rounded-lg border border-[#EF0101] text-[#32261C] text-xs font-semibold hover:bg-[#DDCDC1]/20"
+                          className="px-2 py-1.5 rounded-lg border border-indigo-400 text-indigo-800 text-xs font-semibold hover:bg-indigo-50"
                         >
                           {count > 1 ? `${count} entries` : 'History'}
                         </button>
@@ -741,7 +744,7 @@ export default function FinanceSalesClosurePage() {
                           type="button"
                           onClick={() => onApprove(l.id, l.paymentSource)}
                           disabled={!l.canApprove || busyApprove || !sessionId}
-                          className="px-2 py-1.5 rounded-lg bg-[#00B0ED] text-white text-xs font-semibold hover:bg-[#00B0ED]/90 disabled:opacity-60"
+                          className="px-2 py-1.5 rounded-lg bg-green-700 text-white text-xs font-semibold hover:bg-green-800 disabled:opacity-60"
                         >
                           {busyApprove ? '…' : 'Approve'}
                         </button>
@@ -751,7 +754,7 @@ export default function FinanceSalesClosurePage() {
                           type="button"
                           onClick={() => onRejectClick(l)}
                           disabled={busyReject || !sessionId}
-                          className="px-2 py-1.5 rounded-lg bg-[#EF0101] text-white text-xs font-semibold hover:bg-[#EF0101]/90 disabled:opacity-60"
+                          className="px-2 py-1.5 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 disabled:opacity-60"
                         >
                           {busyReject ? '…' : 'Reject'}
                         </button>
@@ -763,7 +766,7 @@ export default function FinanceSalesClosurePage() {
             </>
           ) : (
             <>
-              <div className="min-w-[900px] grid grid-cols-12 bg-[#DDCDC1]/20 px-4 py-3 text-xs font-semibold text-[#32261C]">
+              <div className="min-w-[900px] grid grid-cols-12 bg-teal-50 px-4 py-3 text-xs font-semibold text-teal-900">
                 <div className="col-span-1">ID</div>
                 <div className="col-span-3">Customer</div>
                 <div className="col-span-2">10% paid</div>
@@ -790,11 +793,11 @@ export default function FinanceSalesClosurePage() {
                       <div className="col-span-3 text-sm font-medium text-gray-800 truncate">
                         {l.customerName}
                       </div>
-                      <div className="col-span-2 text-sm font-semibold text-[#32261C]">
+                      <div className="col-span-2 text-sm font-semibold text-teal-800">
                         {formatInr(l.amountPaid)}
                       </div>
                       <div className="col-span-1">
-                        <span className="inline-flex items-center justify-center min-w-[1.75rem] h-7 px-2 rounded-full bg-[#DDCDC1]/40 text-[#32261C] text-xs font-bold">
+                        <span className="inline-flex items-center justify-center min-w-[1.75rem] h-7 px-2 rounded-full bg-teal-100 text-teal-900 text-xs font-bold">
                           {count || 1}
                         </span>
                       </div>
@@ -806,7 +809,7 @@ export default function FinanceSalesClosurePage() {
                         <button
                           type="button"
                           onClick={() => openHistory(l)}
-                          className="px-2 py-1.5 rounded-lg border border-[#EF0101] text-[#32261C] text-xs font-semibold hover:bg-[#DDCDC1]/20"
+                          className="px-2 py-1.5 rounded-lg border border-teal-600 text-teal-800 text-xs font-semibold hover:bg-teal-50"
                         >
                           View
                         </button>

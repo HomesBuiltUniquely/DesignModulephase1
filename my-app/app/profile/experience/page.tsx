@@ -109,7 +109,7 @@ export default function DesignerExperiencePage() {
           <Link href="/profile/inspiration" className="text-sm text-gray-600 hover:text-gray-900">
             Portfolio projects
           </Link>
-          <Link href="/" className="text-sm text-[#32261C] hover:underline">
+          <Link href="/" className="text-sm text-green-600 hover:underline">
             Dashboard
           </Link>
         </div>
@@ -140,7 +140,7 @@ export default function DesignerExperiencePage() {
             {message ? (
               <div
                 className={`p-3 rounded-lg text-sm ${
-                  message.type === 'success' ? 'bg-[#DDCDC1]/20 text-[#32261C]' : 'bg-red-50 text-red-700'
+                  message.type === 'success' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-700'
                 }`}
               >
                 {message.text}
@@ -229,7 +229,7 @@ export default function DesignerExperiencePage() {
             <button
               type="submit"
               disabled={submitting}
-              className="w-full py-2.5 rounded-lg bg-[#EF0101] text-white font-medium hover:bg-[#EF0101] disabled:opacity-60"
+              className="w-full py-2.5 rounded-lg bg-green-600 text-white font-medium hover:bg-green-700 disabled:opacity-60"
             >
               {submitting ? 'Saving…' : 'Save experience'}
             </button>
@@ -240,7 +240,7 @@ export default function DesignerExperiencePage() {
             <p className="text-xs font-semibold uppercase tracking-wide text-gray-400 self-start">
               Meeting Wizard preview
             </p>
-            <div className="w-16 h-16 rounded-xl overflow-hidden border-2 border-[#DDCDC1] bg-gray-100 flex items-center justify-center">
+            <div className="w-16 h-16 rounded-xl overflow-hidden border-2 border-emerald-200 bg-gray-100 flex items-center justify-center">
               {user.profileImage ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={user.profileImage} alt="" className="w-full h-full object-cover" />

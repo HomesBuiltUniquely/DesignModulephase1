@@ -12,17 +12,7 @@ import type {
   ConfigScopeSummary,
   LeadshipTypes,
 } from "@/app/Components/Types/Types";
-import CustomSelect from "@/app/Components/ui/CustomSelect";
-import {
-  MeetingWizShell,
-  MeetingWizStepDots,
-  MeetingWizTopBar,
-  mwCard,
-  mwCta,
-  mwDarkBtn,
-  mwH1,
-  mwMuted,
-} from "./MeetingWizChrome";
+import { MeetingWizDurationBadge } from "./MeetingWizTimer";
 
 const ROOM_OPTIONS = [
   "Living Room",
@@ -39,11 +29,11 @@ const ROOM_OPTIONS = [
 ] as const;
 
 const ROOM_PALETTE = [
-  { icon: "🌿", iconBg: "color-mix(in srgb, var(--brand-secondary) 70%, var(--card-bg))" },
-  { icon: "🟡", iconBg: "color-mix(in srgb, var(--brand-yellow) 28%, var(--card-bg))" },
-  { icon: "🛋️", iconBg: "color-mix(in srgb, var(--brand-blue) 18%, var(--card-bg))" },
-  { icon: "🍳", iconBg: "color-mix(in srgb, var(--brand-primary) 12%, var(--card-bg))" },
-  { icon: "🛏️", iconBg: "color-mix(in srgb, var(--brand-secondary) 85%, var(--card-bg))" },
+  { icon: "🌿", iconBg: "#f0fdf4" },
+  { icon: "🟡", iconBg: "#fefce8" },
+  { icon: "🛋️", iconBg: "#eff6ff" },
+  { icon: "🍳", iconBg: "#fff7ed" },
+  { icon: "🛏️", iconBg: "#faf5ff" },
 ];
 
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
@@ -420,36 +410,67 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
   };
 
   return (
-    <MeetingWizShell className="flex flex-col">
-      <MeetingWizTopBar
-        onPrev={onPrev}
-        hideNext
-        extra={
+    <main
+      className="min-h-screen w-full bg-[#f0f4f8]"
+      style={{ fontFamily: "Arial, Helvetica, sans-serif", display: "flex", flexDirection: "column" }}
+    >
+      <div className="flex items-center justify-between border-b border-gray-200 bg-white px-6 py-3">
+        <MeetingWizDurationBadge />
+        <div className="flex items-center gap-4">
+          <button
+            onClick={onPrev}
+            className="text-sm font-medium text-gray-500 transition hover:text-gray-700"
+          >
+            Previous
+          </button>
           <button
             type="button"
             onClick={() => void handleSaveDraft()}
             disabled={saveBusy}
-            className={mwDarkBtn}
+            className="rounded-md bg-slate-950 px-6 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-900 disabled:opacity-60"
           >
             {saveBusy ? "Saving…" : "Save Draft"}
           </button>
-        }
-      />
-      <MeetingWizStepDots current={4} />
+          <button className="text-xl font-light text-gray-500 transition hover:text-gray-800">×</button>
+        </div>
+      </div>
 
-      <div className="flex-1 px-8 md:px-12 py-10 max-w-7xl mx-auto w-full box-border pb-28">
-        <h1 className={mwH1}>
+      <div className="flex flex-col items-center py-4">
+        <div className="flex items-center gap-1">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <div
+              key={i}
+              className={`h-1 rounded-full w-8 ${i < 4 ? "bg-[#2EE86B]" : "bg-gray-300"}`}
+            />
+          ))}
+        </div>
+        <span className="mt-1 text-xs font-medium uppercase tracking-widest text-gray-400">
+          Step 4 of 5
+        </span>
+      </div>
+
+      <div className="flex-1 mx-auto max-w-4xl px-6 pb-28 w-full box-border">
+        <h1
+          style={{
+            fontSize: "30px",
+            fontWeight: 800,
+            color: "#111827",
+            margin: "0 0 6px",
+            lineHeight: 1.1,
+          }}
+        >
           4. Scope of Work Summary
         </h1>
-        <p className={`${mwMuted} mb-10 max-w-2xl`}>
+        <p style={{ fontSize: "13px", color: "#9ca3af", margin: "0 0 12px", lineHeight: 1.5 }}>
           Add rooms from the client discussion, then capture any designs they have in mind. Use Save Draft
           to store this on the lead.
         </p>
         {saveMessage ? (
           <p
-            className="mb-4 text-xs"
             style={{
-              color: saveMessage.type === "error" ? "var(--brand-primary)" : "var(--brand-blue)",
+              fontSize: "12px",
+              margin: "0 0 16px",
+              color: saveMessage.type === "error" ? "#b91c1c" : "#166534",
             }}
           >
             {saveMessage.text}
@@ -457,30 +478,38 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
         ) : null}
 
         {/* Design Scope */}
-        <div className={`${mwCard} mb-6 p-8`}>
+        <div
+          style={{
+            backgroundColor: "#ffffff",
+            borderRadius: "12px",
+            border: "1px solid #e5e7eb",
+            padding: "20px 22px 16px",
+            marginBottom: "16px",
+          }}
+        >
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "18px" }}>
             <div
               style={{
                 width: "30px",
                 height: "30px",
                 borderRadius: "7px",
-                backgroundColor: "var(--brand-dark)",
+                backgroundColor: "#111827",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 flexShrink: 0,
               }}
             >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--card-bg)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
                 <polyline points="9 22 9 12 15 12 15 22" />
               </svg>
             </div>
-            <span style={{ fontSize: "14px", fontWeight: 700, color: "var(--brand-dark)" }}>Design Scope</span>
+            <span style={{ fontSize: "14px", fontWeight: 700, color: "#111827" }}>Design Scope</span>
           </div>
 
           {!rooms.length ? (
-            <p style={{ fontSize: "13px", color: "color-mix(in srgb, var(--foreground) 65%, transparent)", margin: "0 0 14px", lineHeight: 1.55 }}>
+            <p style={{ fontSize: "13px", color: "#6b7280", margin: "0 0 14px", lineHeight: 1.55 }}>
               No rooms yet. Add kitchen, bedroom, living room, and other areas discussed with the client.
             </p>
           ) : null}
@@ -491,7 +520,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
               <div
                 key={room.id}
                 style={{
-                  border: "1px solid var(--border-color)",
+                  border: "1px solid #e5e7eb",
                   borderRadius: "10px",
                   padding: "16px 18px",
                   marginBottom: "12px",
@@ -522,19 +551,33 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
                     >
                       {palette.icon}
                     </div>
-                    <CustomSelect
+                    <select
                       value={room.roomName}
-                      onChange={(val) => updateRoom(room.id, { roomName: val })}
-                      options={ROOM_OPTIONS.map((opt) => ({ value: opt, label: opt }))}
-                      className="flex-1"
-                    />
+                      onChange={(e) => updateRoom(room.id, { roomName: e.target.value })}
+                      style={{
+                        flex: 1,
+                        border: "1px solid #e5e7eb",
+                        borderRadius: "6px",
+                        padding: "6px 10px",
+                        fontSize: "13px",
+                        fontWeight: 700,
+                        color: "#111827",
+                        background: "#fff",
+                      }}
+                    >
+                      {ROOM_OPTIONS.map((opt) => (
+                        <option key={opt} value={opt}>
+                          {opt}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                   <button
                     type="button"
                     onClick={() => removeRoom(room.id)}
                     style={{
                       fontSize: "12px",
-                      color: "var(--brand-primary)",
+                      color: "#dc2626",
                       background: "none",
                       border: "none",
                       cursor: "pointer",
@@ -552,7 +595,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
                     placeholder="Custom room name"
                     style={{
                       width: "100%",
-                      border: "1px solid var(--border-color)",
+                      border: "1px solid #e5e7eb",
                       borderRadius: "6px",
                       padding: "8px 10px",
                       fontSize: "13px",
@@ -584,7 +627,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
                     alignItems: "center",
                     gap: "8px",
                     fontSize: "12px",
-                    color: "var(--foreground)",
+                    color: "#374151",
                     marginBottom: "10px",
                     cursor: "pointer",
                   }}
@@ -610,25 +653,34 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
           })}
 
           <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" }}>
-            <div className="w-32">
-              <CustomSelect
-                value={addRoomChoice}
-                onChange={(val) => setAddRoomChoice(val)}
-                options={ROOM_OPTIONS.map((opt) => ({ value: opt, label: opt }))}
-              />
-            </div>
+            <select
+              value={addRoomChoice}
+              onChange={(e) => setAddRoomChoice(e.target.value)}
+              style={{
+                border: "1px solid #e5e7eb",
+                borderRadius: "6px",
+                padding: "8px 10px",
+                fontSize: "12px",
+                background: "#fff",
+              }}
+            >
+              {ROOM_OPTIONS.map((opt) => (
+                <option key={opt} value={opt}>
+                  {opt}
+                </option>
+              ))}
+            </select>
             <button
               type="button"
               onClick={addRoom}
-              className="transition hover:border-[var(--brand-primary)] hover:text-[var(--brand-primary)]"
               style={{
-                border: "1px dashed var(--border-color)",
+                border: "1px dashed #d1d5db",
                 borderRadius: "8px",
                 padding: "8px 14px",
                 fontSize: "12px",
                 fontWeight: 600,
-                color: "var(--brand-dark)",
-                background: "var(--hover-bg)",
+                color: "#374151",
+                background: "#fafafa",
                 cursor: "pointer",
               }}
             >
@@ -638,14 +690,22 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
         </div>
 
         {/* Reference & Inspiration */}
-        <div className={`${mwCard} mb-10 p-8`}>
+        <div
+          style={{
+            backgroundColor: "#ffffff",
+            borderRadius: "12px",
+            border: "1px solid #e5e7eb",
+            padding: "20px 22px 20px",
+            marginBottom: "28px",
+          }}
+        >
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "12px" }}>
             <div
               style={{
                 width: "30px",
                 height: "30px",
                 borderRadius: "7px",
-                backgroundColor: "color-mix(in srgb, var(--brand-yellow) 28%, var(--card-bg))",
+                backgroundColor: "#fefce8",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
@@ -655,11 +715,11 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
             >
               ✨
             </div>
-            <span style={{ fontSize: "14px", fontWeight: 700, color: "var(--brand-dark)" }}>
+            <span style={{ fontSize: "14px", fontWeight: 700, color: "#111827" }}>
               Reference &amp; Inspiration
             </span>
           </div>
-          <p style={{ fontSize: "12px", color: "color-mix(in srgb, var(--foreground) 62%, transparent)", margin: "0 0 14px", lineHeight: 1.5 }}>
+          <p style={{ fontSize: "12px", color: "#6b7280", margin: "0 0 14px", lineHeight: 1.5 }}>
             If the client has designs in mind, upload photos or mood boards from this meeting.
           </p>
 
@@ -674,8 +734,8 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
                     borderRadius: "8px",
                     overflow: "hidden",
                     flexShrink: 0,
-                    border: "1px solid var(--border-color)",
-                    background: "var(--hover-bg)",
+                    border: "1px solid #e5e7eb",
+                    background: "#fafafa",
                   }}
                 >
                   {showImage ? (
@@ -696,7 +756,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
                         justifyContent: "center",
                         padding: "8px",
                         fontSize: "11px",
-                        color: "color-mix(in srgb, var(--foreground) 62%, transparent)",
+                        color: "#6b7280",
                         textAlign: "center",
                       }}
                     >
@@ -715,7 +775,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
                       }
                       style={{
                         width: "100%",
-                        border: "1px solid var(--border-color)",
+                        border: "1px solid #e5e7eb",
                         borderRadius: "4px",
                         padding: "4px 6px",
                         fontSize: "11px",
@@ -728,7 +788,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
                       onClick={() => removeReference(ref.id)}
                       style={{
                         fontSize: "11px",
-                        color: "var(--brand-primary)",
+                        color: "#dc2626",
                         background: "none",
                         border: "none",
                         cursor: "pointer",
@@ -749,7 +809,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
                 width: "100px",
                 height: "120px",
                 borderRadius: "8px",
-                border: "1.5px dashed var(--border-color)",
+                border: "1.5px dashed #d1d5db",
                 display: "flex",
                 flexDirection: "column",
                 alignItems: "center",
@@ -757,14 +817,14 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
                 gap: "8px",
                 cursor: "pointer",
                 flexShrink: 0,
-                backgroundColor: "var(--hover-bg)",
+                backgroundColor: "#fafafa",
               }}
             >
-              <span style={{ fontSize: "22px", color: "color-mix(in srgb, var(--foreground) 50%, transparent)", lineHeight: 1 }}>+</span>
+              <span style={{ fontSize: "22px", color: "#9ca3af", lineHeight: 1 }}>+</span>
               <span
                 style={{
                   fontSize: "10px",
-                  color: "color-mix(in srgb, var(--foreground) 50%, transparent)",
+                  color: "#9ca3af",
                   fontWeight: 600,
                   textTransform: "uppercase",
                   letterSpacing: "0.05em",
@@ -785,7 +845,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
             />
           </div>
 
-          <div style={{ borderTop: "1px solid var(--border-color)", paddingTop: "14px" }}>
+          <div style={{ borderTop: "1px solid #f3f4f6", paddingTop: "14px" }}>
             <p style={labelStyle}>Aesthetic notes</p>
             <textarea
               value={aestheticNotes}
@@ -797,14 +857,37 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
           </div>
         </div>
 
-        <div className="flex flex-col items-center gap-3 mb-10">
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: "10px",
+            marginBottom: "32px",
+          }}
+        >
           <button
             type="button"
             onClick={() => void handleCreateProject()}
             disabled={createBusy}
-            className={`${mwCta} ${createBusy ? "opacity-75 cursor-not-allowed" : ""}`}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "9px",
+              backgroundColor: "#2EE86B",
+              border: "none",
+              borderRadius: "8px",
+              padding: "14px 36px",
+              fontSize: "13px",
+              fontWeight: 700,
+              color: "#000000",
+              cursor: createBusy ? "not-allowed" : "pointer",
+              letterSpacing: "0.06em",
+              textTransform: "uppercase",
+              opacity: createBusy ? 0.7 : 1,
+            }}
           >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000000" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z" />
               <path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z" />
               <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0" />
@@ -819,7 +902,7 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
                 maxWidth: "520px",
                 textAlign: "center",
                 fontSize: "12px",
-                color: createMessage.toLowerCase().includes("fail") ? "var(--brand-primary)" : "var(--brand-blue)",
+                color: createMessage.toLowerCase().includes("fail") ? "#b91c1c" : "#166534",
                 lineHeight: 1.5,
               }}
             >
@@ -827,23 +910,62 @@ export default function ScopeOfWork({ onNext, onPrev, lead, onLeadUpdated }: Pro
             </p>
           ) : null}
           {!lead ? (
-            <p style={{ margin: 0, fontSize: "11px", color: "color-mix(in srgb, var(--foreground) 50%, transparent)", textAlign: "center" }}>
+            <p style={{ margin: 0, fontSize: "11px", color: "#9ca3af", textAlign: "center" }}>
               Start this meeting from a lead row to create the Prolance project for that lead.
             </p>
           ) : null}
         </div>
       </div>
 
-      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-10">
+      <div
+        style={{
+          position: "fixed",
+          bottom: 0,
+          left: 0,
+          right: 0,
+          backgroundColor: "#f2f4f7",
+          padding: "12px 32px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          zIndex: 50,
+          borderTop: "1px solid #e5e7eb",
+        }}
+      >
+        <div
+          style={{
+            width: "10px",
+            height: "10px",
+            borderRadius: "9999px",
+            backgroundColor: "#2EE86B",
+          }}
+        />
         <button
           onClick={onNext}
-          className={mwCta}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "8px",
+            backgroundColor: "#2EE86B",
+            border: "none",
+            borderRadius: "6px",
+            padding: "10px 20px",
+            fontSize: "12px",
+            fontWeight: 700,
+            color: "#000000",
+            cursor: "pointer",
+            letterSpacing: "0.05em",
+            textTransform: "uppercase",
+          }}
         >
           Next: Get Quote
-          <span className="flex h-7 w-7 items-center justify-center rounded-full bg-white/20 text-white">→</span>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#000000" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="5" y1="12" x2="19" y2="12" />
+            <polyline points="12 5 19 12 12 19" />
+          </svg>
         </button>
       </div>
-    </MeetingWizShell>
+    </main>
   );
 }
 
@@ -851,7 +973,7 @@ const labelStyle: CSSProperties = {
   display: "block",
   fontSize: "9.5px",
   fontWeight: 700,
-  color: "color-mix(in srgb, var(--foreground) 50%, transparent)",
+  color: "#9ca3af",
   textTransform: "uppercase",
   letterSpacing: "0.08em",
   margin: "0 0 6px",
@@ -859,12 +981,11 @@ const labelStyle: CSSProperties = {
 
 const inputStyle: CSSProperties = {
   width: "100%",
-  border: "1px solid var(--border-color)",
+  border: "1px solid #e5e7eb",
   borderRadius: "6px",
   padding: "8px 10px",
   fontSize: "13px",
-  color: "var(--brand-dark)",
-  backgroundColor: "var(--input-bg)",
+  color: "#111827",
   marginBottom: "10px",
   boxSizing: "border-box",
 };

@@ -36,7 +36,7 @@ function Section({
 }) {
     return (
         <section className="space-y-3">
-            <h3 className="border-b border-gray-100 pb-1 text-xs font-semibold uppercase tracking-wider text-[#32261C]">
+            <h3 className="border-b border-gray-100 pb-1 text-xs font-semibold uppercase tracking-wider text-teal-800">
                 {title}
             </h3>
             <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">{children}</dl>
@@ -209,7 +209,7 @@ export function Pre10LeadViewModal({
                                         href={floorPlanUrl}
                                         target="_blank"
                                         rel="noopener noreferrer"
-                                        className="inline-flex items-center gap-1.5 rounded-lg border border-[#EF0101] bg-white px-3 py-1.5 text-sm font-semibold text-[#32261C] shadow-sm hover:bg-[#DDCDC1]/20"
+                                        className="inline-flex items-center gap-1.5 rounded-lg border border-teal-600 bg-white px-3 py-1.5 text-sm font-semibold text-teal-800 shadow-sm hover:bg-teal-50"
                                     >
                                         Open floor plan
                                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
@@ -277,7 +277,7 @@ export function Pre10LeadViewModal({
                                                                 href={ref.viewUrl}
                                                                 target="_blank"
                                                                 rel="noopener noreferrer"
-                                                                className="font-medium text-[#32261C] underline-offset-2 hover:underline"
+                                                                className="font-medium text-teal-800 underline-offset-2 hover:underline"
                                                             >
                                                                 {ref.fileName || 'Open reference'}
                                                             </a>

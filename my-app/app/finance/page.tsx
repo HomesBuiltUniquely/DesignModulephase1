@@ -244,7 +244,7 @@ export default function Finance10pPage() {
               return (
                 <div key={l.id} className="grid grid-cols-12 px-4 py-3 border-t border-gray-200 items-center gap-2">
                   <div className="col-span-2 text-sm font-semibold text-gray-900">
-                    <a href={`/Leads/${l.id}`} className="text-[#32261C] hover:underline">
+                    <a href={`/Leads/${l.id}`} className="text-indigo-700 hover:underline">
                       {l.id}
                     </a>
                   </div>
@@ -274,7 +274,7 @@ export default function Finance10pPage() {
                       type="button"
                       onClick={() => onUploadClick(l.id)}
                       disabled={!sessionId || busyUpload}
-                      className="px-3 py-2 rounded-lg bg-[#00B0ED] text-white text-sm font-semibold hover:bg-[#00B0ED]/90 disabled:opacity-60"
+                      className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-60"
                     >
                       {busyUpload ? '…' : 'Upload'}
                     </button>
@@ -284,7 +284,7 @@ export default function Finance10pPage() {
                       type="button"
                       onClick={() => onApprove(l.id)}
                       disabled={!l.canApprove || busyApprove || !sessionId}
-                      className="px-3 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-semibold hover:bg-[#EF0101]/90 disabled:opacity-60 disabled:cursor-not-allowed"
+                      className="px-3 py-2 rounded-lg bg-green-700 text-white text-sm font-semibold hover:bg-green-800 disabled:opacity-60 disabled:cursor-not-allowed"
                     >
                       {busyApprove ? 'Approving…' : 'Approve'}
                     </button>
@@ -343,7 +343,7 @@ export default function Finance10pPage() {
                           <button
                             type="button"
                             onClick={() => void openUpload(viewLeadId, u)}
-                            className="text-sm text-[#00B0ED] font-semibold hover:underline flex-shrink-0"
+                            className="text-sm text-blue-600 font-semibold hover:underline flex-shrink-0"
                           >
                             {isExternal ? 'Open' : 'Download'}
                           </button>

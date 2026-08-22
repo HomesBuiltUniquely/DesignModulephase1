@@ -3,7 +3,6 @@
 import dynamic from "next/dynamic";
 import type { RefObject } from "react";
 import type { QCRemark, Dqc1Verdict } from "../../types";
-import CustomSelect from "@/app/Components/ui/CustomSelect";
 
 const Dqc1PdfViewer = dynamic<{
   fileUrl: string;
@@ -180,14 +179,18 @@ export default function PopupDqc1Approval({
               Choose PDF
             </button>
             {dqcSubmissionFiles.length > 1 && onSelectDqcSubmissionFile && (
-              <div className="w-[220px]">
-                <CustomSelect
-                  value={String(selectedDqcSubmissionFileId ?? dqcSubmissionFiles[0].id)}
-                  onChange={(val) => onSelectDqcSubmissionFile(Number(val))}
-                  options={dqcSubmissionFiles.map((f) => ({ value: String(f.id), label: f.originalName }))}
-                  placeholder="Select submitted file"
-                />
-              </div>
+              <select
+                value={selectedDqcSubmissionFileId ?? dqcSubmissionFiles[0].id}
+                onChange={(e) => onSelectDqcSubmissionFile(Number(e.target.value))}
+                className="px-2 py-1.5 rounded-md border border-gray-300 bg-white text-sm max-w-[220px]"
+                title="Select submitted file"
+              >
+                {dqcSubmissionFiles.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.originalName}
+                  </option>
+                ))}
+              </select>
             )}
             <button
               type="button"
@@ -195,7 +198,7 @@ export default function PopupDqc1Approval({
                 setDqc1AnnotateMode((v) => !v);
                 setDqc1CommentPopup(null);
               }}
-              className={`px-3 py-1.5 rounded-md border text-sm ${dqc1AnnotateMode ? "border-[#00B0ED] bg-[#00B0ED]/10 text-[#00B0ED]" : "border-gray-300 bg-white hover:bg-gray-50 text-gray-700"}`}
+              className={`px-3 py-1.5 rounded-md border text-sm ${dqc1AnnotateMode ? "border-blue-500 bg-blue-50 text-blue-700" : "border-gray-300 bg-white hover:bg-gray-50 text-gray-700"}`}
               title="Toggle comment mode"
             >
               {dqc1AnnotateMode ? "Comment mode: ON" : "Comment mode"}
@@ -289,7 +292,7 @@ export default function PopupDqc1Approval({
                         <button
                           type="button"
                           onClick={onLoadDqcSubmission}
-                          className="mt-2 px-4 py-2 rounded-lg bg-[#00B0ED] text-white text-sm font-medium hover:bg-[#00B0ED]/90"
+                          className="mt-2 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700"
                         >
                           Load DQC submission file
                         </button>
@@ -314,7 +317,7 @@ export default function PopupDqc1Approval({
                             a.click();
                             URL.revokeObjectURL(url);
                           }}
-                          className="mt-1 px-4 py-2 rounded-lg bg-[#00B0ED] text-white text-sm font-medium hover:bg-[#00B0ED]/90"
+                          className="mt-1 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700"
                         >
                           Download “{dqc1PdfFile.name}”
                         </button>
@@ -330,7 +333,7 @@ export default function PopupDqc1Approval({
                         <button
                           type="button"
                           onClick={onLoadDqcSubmission}
-                          className="mt-2 px-4 py-2 rounded-lg bg-[#00B0ED] text-white text-sm font-medium hover:bg-[#00B0ED]/90"
+                          className="mt-2 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700"
                         >
                           Load DQC submission file
                         </button>
@@ -376,7 +379,7 @@ export default function PopupDqc1Approval({
                     <button
                       key={r.id}
                       type="button"
-                      className={`absolute z-20 w-8 h-8 rounded-full bg-[#00B0ED] text-white flex items-center justify-center text-sm font-bold border-2 border-white shadow transition pointer-events-auto ${dqc1SelectedPin === r.pinNumber ? "ring-4 ring-[#00B0ED]" : ""} ${dqc1HighlightedPin === r.pinNumber ? "animate-pulse ring-4 ring-[#00B0ED] ring-offset-2" : ""}`}
+                      className={`absolute z-20 w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center text-sm font-bold border-2 border-white shadow transition pointer-events-auto ${dqc1SelectedPin === r.pinNumber ? "ring-4 ring-blue-200" : ""} ${dqc1HighlightedPin === r.pinNumber ? "animate-pulse ring-4 ring-blue-400 ring-offset-2" : ""}`}
                       style={{
                         left: `${r.xPct}%`,
                         top: `${r.yPct}%`,
@@ -394,7 +397,7 @@ export default function PopupDqc1Approval({
                 {dqc1CommentPopup &&
                   dqc1CommentPopup.page === dqc1PdfPageNumber && (
                     <div
-                      className="absolute z-20 w-8 h-8 rounded-full bg-white border-2 border-[#00B0ED] flex items-center justify-center text-[#00B0ED] font-bold shadow pointer-events-auto"
+                      className="absolute z-20 w-8 h-8 rounded-full bg-white border-2 border-blue-500 flex items-center justify-center text-blue-600 font-bold shadow pointer-events-auto"
                       style={{
                         left: `${dqc1CommentPopup.xPct}%`,
                         top: `${dqc1CommentPopup.yPct}%`,
@@ -452,7 +455,7 @@ export default function PopupDqc1Approval({
                     setDqc1AnnotateMode(true);
                     setDqc1CommentPopup(null);
                   }}
-                  className="text-xs text-[#00B0ED] font-medium hover:underline"
+                  className="text-xs text-blue-600 font-medium hover:underline"
                 >
                   + Add Remark
                 </button>
@@ -474,7 +477,7 @@ export default function PopupDqc1Approval({
                         focusRemarkInPdf(r);
                       }
                     }}
-                    className={`rounded-lg border p-3 text-sm border-l-4 cursor-pointer ${r.priority === "high" ? "border-l-red-500 bg-red-50/50" : r.priority === "medium" ? "border-l-amber-500 bg-amber-50/50" : "border-l-gray-400 bg-gray-50"} ${dqc1SelectedPin === r.pinNumber ? "ring-2 ring-[#00B0ED] border-[#00B0ED]/30" : ""}`}
+                    className={`rounded-lg border p-3 text-sm border-l-4 cursor-pointer ${r.priority === "high" ? "border-l-red-500 bg-red-50/50" : r.priority === "medium" ? "border-l-amber-500 bg-amber-50/50" : "border-l-gray-400 bg-gray-50"} ${dqc1SelectedPin === r.pinNumber ? "ring-2 ring-blue-200 border-blue-200" : ""}`}
                   >
                     <div className="flex justify-between items-start gap-2">
                       <span
@@ -512,7 +515,7 @@ export default function PopupDqc1Approval({
               </p>
               <div className="space-y-2">
                 <label
-                  className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer ${dqc1Verdict === "approved" ? "border-[#EF0101] bg-[#DDCDC1]/20" : "border-gray-200 hover:bg-gray-50"}`}
+                  className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer ${dqc1Verdict === "approved" ? "border-green-500 bg-green-50" : "border-gray-200 hover:bg-gray-50"}`}
                 >
                   <input
                     type="radio"
@@ -522,15 +525,15 @@ export default function PopupDqc1Approval({
                     className="mt-1"
                   />
                   <div>
-                    <span className="flex items-center gap-2 font-medium text-[#32261C]">
-                      <span className="w-5 h-5 rounded-full border-2 border-[#EF0101] flex items-center justify-center">
+                    <span className="flex items-center gap-2 font-medium text-green-800">
+                      <span className="w-5 h-5 rounded-full border-2 border-green-600 flex items-center justify-center">
                         <svg
                           xmlns="http://www.w3.org/2000/svg"
                           fill="none"
                           viewBox="0 0 24 24"
                           strokeWidth="2"
                           stroke="currentColor"
-                          className="w-3 h-3 text-[#32261C]"
+                          className="w-3 h-3 text-green-600"
                         >
                           <path
                             strokeLinecap="round"
@@ -548,7 +551,7 @@ export default function PopupDqc1Approval({
                 </label>
                 {showApproveWithChanges && (
                 <label
-                  className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer ${dqc1Verdict === "approved_with_changes" ? "border-[#00B0ED] bg-[#00B0ED]/10" : "border-gray-200 hover:bg-gray-50"}`}
+                  className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer ${dqc1Verdict === "approved_with_changes" ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:bg-gray-50"}`}
                 >
                   <input
                     type="radio"
@@ -558,15 +561,15 @@ export default function PopupDqc1Approval({
                     className="mt-1"
                   />
                   <div>
-                    <span className="flex items-center gap-2 font-medium text-[#00B0ED]">
-                      <span className="w-5 h-5 rounded-full border-2 border-[#00B0ED] flex items-center justify-center">
+                    <span className="flex items-center gap-2 font-medium text-blue-800">
+                      <span className="w-5 h-5 rounded-full border-2 border-blue-600 flex items-center justify-center">
                         <svg
                           xmlns="http://www.w3.org/2000/svg"
                           fill="none"
                           viewBox="0 0 24 24"
                           strokeWidth="2"
                           stroke="currentColor"
-                          className="w-3 h-3 text-[#00B0ED]"
+                          className="w-3 h-3 text-blue-600"
                         >
                           <path
                             strokeLinecap="round"
@@ -626,7 +629,7 @@ export default function PopupDqc1Approval({
               type="button"
               onClick={submitDqc1Review}
               disabled={dqc1Verdict === null}
-              className="w-full py-2.5 bg-[#00B0ED] text-white font-medium rounded-lg hover:bg-[#00B0ED]/90 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full py-2.5 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Submit Review Verdict
             </button>
@@ -668,18 +671,19 @@ export default function PopupDqc1Approval({
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Priority
             </label>
-            <div className="mb-3">
-              <CustomSelect
-                value={newRemarkPriority}
-                onChange={(val) => setNewRemarkPriority(val as "high" | "medium" | "low")}
-                options={[
-                  { value: "high", label: "High Priority" },
-                  { value: "medium", label: "Medium Priority" },
-                  { value: "low", label: "Low Priority" }
-                ]}
-                className="w-full"
-              />
-            </div>
+            <select
+              value={newRemarkPriority}
+              onChange={(e) =>
+                setNewRemarkPriority(
+                  e.target.value as "high" | "medium" | "low",
+                )
+              }
+              className="w-full text-sm border border-gray-300 rounded-lg px-3 py-2 mb-3"
+            >
+              <option value="high">High Priority</option>
+              <option value="medium">Medium Priority</option>
+              <option value="low">Low Priority</option>
+            </select>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Comment
             </label>
@@ -704,7 +708,7 @@ export default function PopupDqc1Approval({
                 type="button"
                 onClick={() => addDqc1Remark()}
                 disabled={!newRemarkText.trim()}
-                className="px-4 py-2 bg-[#00B0ED] text-white font-medium rounded-lg hover:bg-[#00B0ED]/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Save
               </button>

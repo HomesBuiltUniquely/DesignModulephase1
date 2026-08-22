@@ -17,8 +17,6 @@ import {
   HUB_MEETING_DURATION_MIN,
   minutesToHubTime24,
 } from "@/lib/hub-meeting-schedule";
-import CustomDatePicker from "@/app/Components/ui/CustomDatePicker";
-import CustomSelect from "@/app/Components/ui/CustomSelect";
 
 type MeetingMeta = {
   meetingDate?: string;
@@ -192,7 +190,7 @@ export default function PopupFirstCutDesign({
             viewBox="0 0 24 24"
             strokeWidth="1.5"
             stroke="currentColor"
-            className="size-5 text-[#00B0ED]"
+            className="size-5 text-blue-500"
           >
             <path
               strokeLinecap="round"
@@ -227,13 +225,14 @@ export default function PopupFirstCutDesign({
         {/* Date picker */}
         <div className="px-6 py-2">
           <div className="font-bold text-sm text-black mb-1">Date <span className="text-red-500">*</span></div>
-          <CustomDatePicker
+          <input
+            type="date"
+            className="w-full max-w-xs border border-gray-300 rounded-md p-2"
             value={meetingDate}
-            onChange={(date) => {
-              setMeetingDate(date);
+            onChange={(e) => {
+              setMeetingDate(e.target.value);
               setSelectedStartMin(null);
             }}
-            className="w-full max-w-xs"
           />
         </div>
 
@@ -255,7 +254,7 @@ export default function PopupFirstCutDesign({
               <button
                 type="button"
                 onClick={() => setSlotPickerOpen(true)}
-                className="shrink-0 text-xs font-semibold text-[#00B0ED] hover:underline"
+                className="shrink-0 text-xs font-semibold text-blue-600 hover:underline"
               >
                 Change
               </button>
@@ -291,7 +290,7 @@ export default function PopupFirstCutDesign({
             viewBox="0 0 24 24"
             strokeWidth="1.5"
             stroke="currentColor"
-            className="size-5 text-[#00B0ED]"
+            className="size-5 text-blue-500"
           >
             <path
               strokeLinecap="round"
@@ -308,7 +307,7 @@ export default function PopupFirstCutDesign({
               onClick={() => setMeetingMode("online")}
               className={`w-24 h-[4.5vh] text-center font-bold rounded-md ${
                 meetingMode === "online"
-                  ? "bg-white text-[#00B0ED]"
+                  ? "bg-white text-blue-500"
                   : "bg-transparent text-gray-500 hover:text-gray-700"
               }`}
             >
@@ -319,7 +318,7 @@ export default function PopupFirstCutDesign({
               onClick={() => setMeetingMode("offline")}
               className={`w-24 h-[4.5vh] text-center font-bold rounded-md ${
                 meetingMode === "offline"
-                  ? "bg-white text-[#00B0ED]"
+                  ? "bg-white text-blue-500"
                   : "bg-transparent text-gray-500 hover:text-gray-700"
               }`}
             >
@@ -329,21 +328,24 @@ export default function PopupFirstCutDesign({
           {meetingMode === "offline" && (
             <div className="flex flex-col gap-2 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <CustomSelect
+                <select
                   value={selectedBranch}
-                  onChange={(val) => setSelectedBranch((val as Branch) || "")}
-                  options={BRANCH_OPTIONS.map((b) => ({
-                    value: b,
-                    label: `${BRANCH_LOCATIONS[b].label} (${b})`
-                  }))}
-                  placeholder="Select Experience Center"
-                  className="max-w-[300px]"
-                />
+                  onChange={(e) => setSelectedBranch((e.target.value as Branch | "") || "")}
+                  className="border border-blue-200 bg-blue-50 text-blue-800 text-sm font-semibold rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-300"
+                  aria-label="Experience Center branch"
+                >
+                  <option value="">Select Experience Center</option>
+                  {BRANCH_OPTIONS.map((b) => (
+                    <option key={b} value={b}>
+                      {BRANCH_LOCATIONS[b].label} ({b})
+                    </option>
+                  ))}
+                </select>
                 {branchLocation && (
                   <button
                     type="button"
                     onClick={openBranchMaps}
-                    className="inline-flex items-center gap-1.5 px-3 py-2 bg-[#00B0ED]/10 border border-[#00B0ED]/30 rounded-lg text-sm font-semibold text-[#00B0ED] hover:bg-[#00B0ED]/15 hover:border-[#00B0ED]/50 transition-colors"
+                    className="inline-flex items-center gap-1.5 px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-sm font-semibold text-blue-700 hover:bg-blue-100 hover:border-blue-300 transition-colors"
                     title="Open location in Google Maps"
                   >
                     <span aria-hidden>📍</span>
@@ -391,19 +393,19 @@ export default function PopupFirstCutDesign({
             onChange={onDesignFilesSelected}
           />
           <div
-            className="w-full max-w-[540px] border-2 border-dashed border-gray-300 rounded-xl bg-white p-8 flex flex-col items-center justify-center min-h-[220px] cursor-pointer hover:border-[#00B0ED] hover:bg-[#00B0ED]/10/30 transition-colors"
+            className="w-full max-w-[540px] border-2 border-dashed border-gray-300 rounded-xl bg-white p-8 flex flex-col items-center justify-center min-h-[220px] cursor-pointer hover:border-blue-400 hover:bg-blue-50/30 transition-colors"
             onClick={() => openDesignFileUpload(".pdf,.jpg,.jpeg,.png,.fig,.psd")}
             onDrop={onDesignDrop}
             onDragOver={onDesignDragOver}
           >
-            <div className="w-14 h-14 rounded-full border-2 border-[#00B0ED]/30 bg-[#00B0ED]/10 flex items-center justify-center mb-4">
+            <div className="w-14 h-14 rounded-full border-2 border-blue-200 bg-blue-50 flex items-center justify-center mb-4">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
                 fill="none"
                 viewBox="0 0 24 24"
                 strokeWidth="1.5"
                 stroke="currentColor"
-                className="w-7 h-7 text-[#00B0ED]"
+                className="w-7 h-7 text-blue-600"
               >
                 <path
                   strokeLinecap="round"
@@ -429,14 +431,14 @@ export default function PopupFirstCutDesign({
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); openDesignFileUpload(".jpg,.jpeg,.png"); }}
-                className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 text-[#00B0ED] font-medium text-sm"
+                className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 text-blue-600 font-medium text-sm"
               >
                 JPG/PNG
               </button>
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); openDesignFileUpload(".fig,.psd"); }}
-                className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 text-[#32261C] font-medium text-sm"
+                className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 text-purple-600 font-medium text-sm"
               >
                 FIG/PSD
               </button>
@@ -512,7 +514,7 @@ export default function PopupFirstCutDesign({
             type="button"
             onClick={handleSendInvite}
             disabled={isMeetingScheduleIncomplete || isSendingInvite || !!toast}
-            className="bg-[#00B0ED] text-white px-4 h-9 rounded-md flex items-center gap-2 font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+            className="bg-blue-500 text-white px-4 h-9 rounded-md flex items-center gap-2 font-bold disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isSendingInvite ? "Sending…" : "Send Invite"}
             {!isSendingInvite && (
@@ -547,7 +549,7 @@ export default function PopupFirstCutDesign({
               isSendingInvite ||
               !!toast
             }
-            className="bg-[#EF0101] text-white px-4 h-9 rounded-md flex items-center gap-2 font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+            className="bg-green-600 text-white px-4 h-9 rounded-md flex items-center gap-2 font-bold disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {hideDesignCompletion ? "Complete & proceed" : "Mark 100% complete & proceed"}
           </button>

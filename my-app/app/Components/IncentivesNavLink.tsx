@@ -13,23 +13,10 @@ export function canShowIncentivesNav(role: string | undefined | null): boolean {
 type Props = {
   active?: boolean;
   className?: string;
-  variant?: 'nav' | 'rail';
 };
 
 /** Shared Incentives sidebar/header tab (green accent rail). */
-export function IncentivesNavLink({ active = false, className = '', variant = 'rail' }: Props) {
-  if (variant === 'nav') {
-    return (
-      <a
-        href="/incentives"
-        aria-current={active ? 'page' : undefined}
-        className={className}
-      >
-        Incentives
-      </a>
-    );
-  }
-
+export function IncentivesNavLink({ active = false, className = '' }: Props) {
   return (
     <a
       href="/incentives"
@@ -37,8 +24,8 @@ export function IncentivesNavLink({ active = false, className = '', variant = 'r
       className={[
         'flex items-center gap-2 rounded-lg border-l-4 px-3 py-2.5 text-sm font-semibold transition-colors',
         active
-          ? 'border-l-[#EF0101] bg-[#DDCDC1]/40 text-[#32261C]'
-          : 'border-l-[#DDCDC1] bg-[#DDCDC1]/10 text-[#32261C] hover:bg-[#DDCDC1]/30 hover:border-l-[#EF0101]/50',
+          ? 'border-l-emerald-500 bg-emerald-100 text-emerald-800'
+          : 'border-l-emerald-400 bg-emerald-50/80 text-emerald-700 hover:bg-emerald-100',
         className,
       ]
         .filter(Boolean)
@@ -79,8 +66,8 @@ export function IncentivesSideRail({
           href="/"
           className={`flex items-center gap-2 rounded-lg border-l-4 px-3 py-2.5 text-sm font-semibold transition-colors ${
             pathname === '/'
-              ? 'border-l-[#EF0101] bg-gray-100 text-[#32261C]'
-              : 'border-l-transparent text-gray-700 hover:border-l-[#EF0101]/70 hover:bg-gray-100 hover:text-[#32261C]'
+              ? 'border-l-green-500 bg-gray-100 text-green-700'
+              : 'border-l-transparent text-gray-700 hover:border-l-green-400 hover:bg-gray-100 hover:text-green-600'
           }`}
         >
           Dashboard
@@ -91,8 +78,8 @@ export function IncentivesSideRail({
             href="/google-calendar"
             className={`flex items-center gap-2 rounded-lg border-l-4 px-3 py-2.5 text-sm font-semibold transition-colors ${
               pathname === '/google-calendar'
-                ? 'border-l-[#EF0101] bg-gray-100 text-[#32261C]'
-                : 'border-l-transparent text-gray-700 hover:border-l-[#EF0101]/70 hover:bg-gray-100 hover:text-[#32261C]'
+                ? 'border-l-green-500 bg-gray-100 text-green-700'
+                : 'border-l-transparent text-gray-700 hover:border-l-green-400 hover:bg-gray-100 hover:text-green-600'
             }`}
           >
             HUB Calendar
