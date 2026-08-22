@@ -56,8 +56,11 @@ function passesWorkspaceStatusFilter(p: LeadshipTypes, statusTab: string): boole
 
 // Helper to format backend date strings (ISO) to "dd/MM/yyyy h:mm A"
 function formatLeadTimeSlot(row: LeadshipTypes): string {
-    const date = row.appointmentDate?.trim() || "";
-    let slot = row.appointmentSlot?.trim() || "";
+    const date =
+        row.scheduledMeetingDate?.trim() ||
+        row.appointmentDate?.trim() ||
+        "";
+    let slot = row.scheduledMeetingSlot?.trim() || row.appointmentSlot?.trim() || "";
     if (slot.startsWith("{") || slot.startsWith("[")) {
         try {
             const parsed = JSON.parse(slot) as Record<string, unknown>;
@@ -463,6 +466,7 @@ export default function Dashboard() {
     const [meetingWizLead, setMeetingWizLead] = useState<LeadshipTypes | null>(null);
 
     const openMeetingWizForLead = (row: LeadshipTypes) => {
+        if (!canShowStartMeetingButton(row, undefined, user?.role)) return;
         setMeetingWizLead(row);
         setMeetingWizOpen(true);
     };
@@ -1128,7 +1132,7 @@ export default function Dashboard() {
                                                 <td className="py-3 px-5 text-sm text-gray-700" title={timeSlotLabel}>
                                                     <div className="flex flex-col items-start gap-2">
                                                         <span className="whitespace-nowrap">{timeSlotLabel}</span>
-                                                        {canShowStartMeetingButton(row) ? (
+                                                        {canShowStartMeetingButton(row, undefined, user?.role) ? (
                                                             <StartMeetingButton
                                                                 onClick={() => openMeetingWizForLead(row)}
                                                             />
@@ -1204,7 +1208,7 @@ export default function Dashboard() {
                                                         >
                                                             View
                                                         </button>
-                                                        {canShowStartMeetingButton(row) ? (
+                                                        {canShowStartMeetingButton(row, undefined, user?.role) ? (
                                                             <StartMeetingButton
                                                                 onClick={() => openMeetingWizForLead(row)}
                                                             />
@@ -1376,7 +1380,7 @@ export default function Dashboard() {
                                                             </button>
                                                         ) : (
                                                             <>
-                                                                {canShowStartMeetingButton(row) ? (
+                                                                {canShowStartMeetingButton(row, undefined, user?.role) ? (
                                                                     <StartMeetingButton
                                                                         onClick={() => openMeetingWizForLead(row)}
                                                                     />
@@ -1944,7 +1948,7 @@ export default function Dashboard() {
                 <Pre10LeadViewModal
                     lead={viewLead}
                     timeSlotLabel={formatLeadTimeSlot(viewLead)}
-                    showStartMeeting={canShowStartMeetingButton(viewLead)}
+                    showStartMeeting={canShowStartMeetingButton(viewLead, undefined, user?.role)}
                     onStartMeeting={() => openMeetingWizForLead(viewLead)}
                     onClose={() => setViewLead(null)}
                 />

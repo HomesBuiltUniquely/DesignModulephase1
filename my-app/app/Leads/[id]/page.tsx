@@ -1575,12 +1575,13 @@ export default function ProjectDetailPage() {
                     return { ok: false as const };
                 }
                 if ((data as { p2pCompleted?: boolean })?.p2pCompleted) {
+                    closePopup();
                     window.dispatchEvent(
                         new CustomEvent('design-p2p-congrats', {
                             detail: {
                                 leadId: projectId,
                                 leadName: project?.projectName || '',
-                                designerName: authUser?.name || project?.designerName || '',
+                                designerName: authUser?.name || '',
                             },
                         }),
                     );
@@ -1967,7 +1968,7 @@ export default function ProjectDetailPage() {
                         !isMmtUser &&
                         !!project &&
                         getPhaseBucket(project) === 'Pre 10%' &&
-                        canShowStartMeetingButton(project, historyEvents)
+                        canShowStartMeetingButton(project, historyEvents, authUser?.role)
                     }
                     onStartMeeting={() => setMeetingWizOpen(true)}
                 />
@@ -1980,7 +1981,7 @@ export default function ProjectDetailPage() {
                     !isMmtUser &&
                     !!project &&
                     getPhaseBucket(project) === 'Pre 10%' &&
-                    canShowStartMeetingButton(project, historyEvents);
+                    canShowStartMeetingButton(project, historyEvents, authUser?.role);
                 if (!canShow) return null;
                 return (
                     <div className="sticky top-0 z-[80] flex justify-end px-4 pt-3 xl:px-6">
