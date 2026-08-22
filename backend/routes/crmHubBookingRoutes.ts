@@ -19,6 +19,12 @@ type RouteDeps = {
   pool: Pool;
   getUserFromSession: (req: Request) => Promise<SessionUser>;
   addLeadHistoryEvent: (leadId: number, event: Record<string, unknown>) => Promise<void>;
+  onCrmLeadCreated?: (leadId: number) => void;
+  /** CRM booking token proofs synced → treat as Sales Closure payment request (finance UI). */
+  onCrmSalesClosurePaymentRequested?: (
+    leadId: number,
+    extra?: Record<string, unknown>,
+  ) => void;
 };
 
 function envTrim(name: string): string {
@@ -783,6 +789,7 @@ async function upsertCrmDesignLead(
   pool: Pool,
   body: HubLeadBody,
   addLeadHistoryEvent: RouteDeps["addLeadHistoryEvent"],
+  onCrmLeadCreated?: RouteDeps["onCrmLeadCreated"],
 ): Promise<{ designLeadId: number; created: boolean }> {
   const leadType = pickStr(body.leadType, body.crmLeadType) || "addlead";
   const leadIdNum = pickNum(body.leadId, body.crmLeadId);
@@ -931,6 +938,7 @@ async function upsertCrmDesignLead(
     leadIdNum,
     now,
   });
+  if (onCrmLeadCreated) onCrmLeadCreated(designLeadId);
   return { designLeadId, created: true };
 }
 
@@ -1025,6 +1033,7 @@ async function handleConvertBooking(
   pool: Pool,
   body: HubLeadBody,
   addLeadHistoryEvent: RouteDeps["addLeadHistoryEvent"],
+  onCrmSalesClosurePaymentRequested?: RouteDeps["onCrmSalesClosurePaymentRequested"],
 ): Promise<{
   designLeadId: number;
   bookingTokenRecordId: string;
@@ -1141,7 +1150,15 @@ async function handleConvertBooking(
     console.warn("[crm-hub] experience/decision payload merge skipped", mergeErr);
   }
 
-  await importHubPaymentProofs(pool, designLeadId, { ...body, _syncedAt: now });
+  const proofCount = await importHubPaymentProofs(pool, designLeadId, { ...body, _syncedAt: now });
+  if (proofCount > 0 && onCrmSalesClosurePaymentRequested) {
+    onCrmSalesClosurePaymentRequested(designLeadId, {
+      payment_type: "SALES_CLOSURE",
+      amount: finance.totalAmountReceived || finance.amountToward10 || null,
+      upload_name: `${proofCount} CRM payment proof(s)`,
+      milestone_context: "CRM_BOOKING",
+    });
+  }
 
   const historyNote =
     finance.mode === "BUFFER_9_9"
@@ -2116,7 +2133,13 @@ export async function getHubBookingSyncForLead(pool: Pool, leadId: number) {
 }
 
 export function registerCrmHubBookingRoutes(app: Express, deps: RouteDeps): void {
-  const { pool, getUserFromSession, addLeadHistoryEvent } = deps;
+  const {
+    pool,
+    getUserFromSession,
+    addLeadHistoryEvent,
+    onCrmLeadCreated,
+    onCrmSalesClosurePaymentRequested,
+  } = deps;
 
   void ensureLeadHubBookingSyncTable(pool).catch((err) => {
     console.error("[crm-hub] Failed to ensure lead_hub_booking_sync table:", err);
@@ -2128,7 +2151,12 @@ export function registerCrmHubBookingRoutes(app: Express, deps: RouteDeps): void
   app.post("/api/hub/crm-lead/upsert", requireHubApiKey, async (req: Request, res: Response) => {
     try {
       const body = (req.body || {}) as HubLeadBody;
-      const { designLeadId, created } = await upsertCrmDesignLead(pool, body, addLeadHistoryEvent);
+      const { designLeadId, created } = await upsertCrmDesignLead(
+        pool,
+        body,
+        addLeadHistoryEvent,
+        onCrmLeadCreated,
+      );
       return res.json({ ok: true, designLeadId, created });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Upsert failed";
@@ -2140,7 +2168,12 @@ export function registerCrmHubBookingRoutes(app: Express, deps: RouteDeps): void
   const convertHandler = async (req: Request, res: Response) => {
     try {
       const body = (req.body || {}) as HubLeadBody;
-      const result = await handleConvertBooking(pool, body, addLeadHistoryEvent);
+      const result = await handleConvertBooking(
+        pool,
+        body,
+        addLeadHistoryEvent,
+        onCrmSalesClosurePaymentRequested,
+      );
       return res.json({ ok: true, ...result });
     } catch (err) {
       if (isTransientDbError(err)) {
