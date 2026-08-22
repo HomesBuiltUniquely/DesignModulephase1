@@ -1534,7 +1534,7 @@ export default function ProjectDetailPage() {
             description?: string;
             meta?: Record<string, unknown>;
         }
-    ): Promise<{ ok: boolean; mailSent?: boolean; mailTo?: string[]; mailReason?: string | null }> => {
+    ): Promise<{ ok: boolean; mailSent?: boolean; mailTo?: string[]; mailReason?: string | null; p2pCompleted?: boolean }> => {
         const requiresChecklist = getChecklistKeyForTask(milestoneIndex, taskName) !== null;
         const key = taskKey(milestoneIndex, taskName);
         if (requiresChecklist && !completedChecklistKeys.includes(key)) {
@@ -1574,6 +1574,17 @@ export default function ProjectDetailPage() {
                     }
                     return { ok: false as const };
                 }
+                if ((data as { p2pCompleted?: boolean })?.p2pCompleted) {
+                    window.dispatchEvent(
+                        new CustomEvent('design-p2p-congrats', {
+                            detail: {
+                                leadId: projectId,
+                                leadName: project?.projectName || '',
+                                designerName: authUser?.name || project?.designerName || '',
+                            },
+                        }),
+                    );
+                }
                 return {
                     ok: true as const,
                     mailSent: Boolean((data as { mailSent?: boolean })?.mailSent),
@@ -1581,6 +1592,7 @@ export default function ProjectDetailPage() {
                         ? (data as { mailTo: string[] }).mailTo
                         : undefined,
                     mailReason: (data as { mailReason?: string | null })?.mailReason ?? null,
+                    p2pCompleted: Boolean((data as { p2pCompleted?: boolean })?.p2pCompleted),
                 };
             })
             .catch(() => ({ ok: false as const }));
