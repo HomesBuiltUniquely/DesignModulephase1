@@ -1970,14 +1970,6 @@ function pickTrimmedString(...candidates: unknown[]): string | null {
     if (c == null) continue;
     if (typeof c === "string" && c.trim()) return c.trim();
     if (typeof c === "number" && Number.isFinite(c)) return String(c);
-    if (c instanceof Date && !Number.isNaN(c.getTime())) return c.toISOString();
-    if (typeof c === "object" && !Array.isArray(c)) {
-      const o = c as Record<string, unknown>;
-      for (const key of ["date", "meetingDate", "appointmentDate", "value", "label", "start"]) {
-        const nested = o[key];
-        if (typeof nested === "string" && nested.trim()) return nested.trim();
-      }
-    }
   }
   return null;
 }
@@ -2096,10 +2088,8 @@ function extractLeadScheduleFromPayload(payloadInput: unknown): {
 
   const formData = (root.formData || root.form_data || root.form || {}) as Record<string, unknown>;
   const rawPayload = (root.rawPayload || root.raw_payload || {}) as Record<string, unknown>;
-  const rawHub = (root.rawHubPayload || root.raw_hub_payload || {}) as Record<string, unknown>;
   const crmSchedule = (root.crmSchedule || root.crm_schedule || {}) as Record<string, unknown>;
   const fetched = (root.fetchedData || root.fetched_data || {}) as Record<string, unknown>;
-  const connection = (root.connection || {}) as Record<string, unknown>;
   const nestedExtra = (rawPayload.allOtherFieldsFromOtherProject ||
     rawPayload.all_other_fields_from_other_project ||
     rawPayload.extraFields ||
@@ -2113,20 +2103,11 @@ function extractLeadScheduleFromPayload(payloadInput: unknown): {
     root.visitDate,
     root.scheduled_date,
     root.scheduledDate,
-    root.meetingDate,
-    root.meeting_date,
     crmSchedule.date,
     formData.appointment_date,
     formData.appointmentDate,
-    formData.meetingDate,
     rawPayload.appointment_date,
     rawPayload.appointmentDate,
-    rawHub.appointmentDate,
-    rawHub.appointment_date,
-    rawHub.meetingDate,
-    rawHub.meeting_date,
-    connection.appointmentDate,
-    connection.meetingDate,
     nestedExtra.appointment_date,
     nestedExtra.appointmentDate,
     fetched.appointment_date,
@@ -3751,22 +3732,6 @@ async function persistLeadDesignScheduledMeeting(
       ? String((payload.designScheduledMeeting as Record<string, unknown>).time || "").trim()
       : "") ||
     null;
-
-  const prev =
-    payload.designScheduledMeeting && typeof payload.designScheduledMeeting === "object"
-      ? (payload.designScheduledMeeting as Record<string, unknown>)
-      : null;
-  const prevDate = prev?.date != null ? String(prev.date).slice(0, 10) : "";
-  const prevTime = prev?.time != null ? String(prev.time).trim() : "";
-  const nextTime = (timeLabel || "").trim();
-  const scheduleUnchanged = prevDate === dateIso && prevTime === nextTime;
-  // Completing a wizard session posts history with the same meetingDate and must not
-  // bump updatedAt — that would re-show Start Meeting after refresh.
-  if (scheduleUnchanged && prev) {
-    payload.scheduledMeetingDate = dateIso;
-    if (timeLabel) payload.scheduledMeetingSlot = timeLabel;
-    return;
-  }
 
   payload.designScheduledMeeting = {
     date: dateIso,
@@ -6620,17 +6585,12 @@ app.post("/api/leads/:id/history", async (req: Request, res: Response) => {
   try {
     await addLeadHistoryEvent(id, req.body);
     try {
-      const taskName = req.body?.taskName != null ? String(req.body.taskName).trim() : "";
       const meta =
         req.body?.meta && typeof req.body.meta === "object"
           ? (req.body.meta as Record<string, unknown>)
           : null;
-      const isMeetingWizCompletion =
-        taskName === "Meeting wizard session completed" ||
-        meta?.incentiveMeeting === true ||
-        meta?.source === "meeting_wiz_final_quote";
       const meetingDate = meta?.meetingDate ?? meta?.signoffDate ?? null;
-      if (meetingDate && !isMeetingWizCompletion) {
+      if (meetingDate) {
         await persistLeadDesignScheduledMeeting(id, {
           meetingDate: String(meetingDate),
           meetingTime:
@@ -8590,16 +8550,13 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         [id],
       );
       const allComps = allCompRows as { milestoneIndex: number; taskName: string }[];
-      if (
-        isMilestoneFullyComplete(allComps, milestoneIndex) ||
-        (milestoneIndex === 6 && isP2pPushComplete(allComps))
-      ) {
+      if (isMilestoneFullyComplete(allComps, milestoneIndex)) {
         void designNotify.notifyMilestone(
           id,
           MILESTONE_NAMES[milestoneIndex] ?? `Milestone ${milestoneIndex}`,
           milestoneIndex,
         );
-        if (milestoneIndex === 6 && isP2pPushComplete(allComps)) {
+        if (milestoneIndex === 6) {
           p2pCompleted = true;
           void designNotify.notifyP2p(id, actingUser.name);
         }
@@ -12950,17 +12907,6 @@ function getCurrentMilestoneIndex(
     if (!allDone) return i;
   }
   return 6; // Final milestone
-}
-
-function isP2pPushComplete(
-  completions: { milestoneIndex: number; taskName: string }[],
-): boolean {
-  const names = completions
-    .filter((c) => Number(c.milestoneIndex) === 6)
-    .map((c) => String(c.taskName).trim().toLowerCase());
-  const hasCx = names.some((n) => n.includes("cx approval") || n.includes("production"));
-  const hasPoc = names.some((n) => n.includes("poc mail"));
-  return hasCx && hasPoc;
 }
 
 function isMilestoneFullyComplete(

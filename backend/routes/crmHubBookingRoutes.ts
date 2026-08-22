@@ -85,53 +85,6 @@ function pickNum(...values: unknown[]): number | null {
   return null;
 }
 
-/** CRM dates arrive as ISO, DD/MM/YYYY, or datetime — Start Meeting needs YYYY-MM-DD. */
-function crmDateToIsoDay(raw: string): string | null {
-  const s = raw.trim();
-  if (!s) return null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  if (/^\d{4}-\d{2}-\d{2}[T\s]/.test(s)) {
-    const parsed = Date.parse(s);
-    if (!Number.isNaN(parsed)) {
-      const d = new Date(parsed);
-      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    }
-    return s.slice(0, 10);
-  }
-  const dmy = s.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})/);
-  if (dmy) {
-    const day = dmy[1].padStart(2, "0");
-    const month = dmy[2].padStart(2, "0");
-    const monthN = Number(month);
-    const dayN = Number(day);
-    if (monthN >= 1 && monthN <= 12 && dayN >= 1 && dayN <= 31) {
-      return `${dmy[3]}-${month}-${day}`;
-    }
-  }
-  const parsed = Date.parse(s);
-  if (Number.isNaN(parsed)) return null;
-  const d = new Date(parsed);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function pickCrmAppointmentDate(body: HubLeadBody, connectionIn: Record<string, unknown>): string {
-  return pickStr(
-    body.appointmentDate,
-    body.appointment_date,
-    body.meetingDate,
-    body.meeting_date,
-    body.visitDate,
-    body.visit_date,
-    body.scheduledDate,
-    body.scheduled_date,
-    body.slotDate,
-    connectionIn.appointmentDate,
-    connectionIn.appointment_date,
-    connectionIn.meetingDate,
-    connectionIn.meeting_date,
-  );
-}
-
 type HubLeadBody = Record<string, unknown>;
 
 type BookingFinanceSyncMode = "FULL_10" | "BUFFER_9_9";
@@ -721,19 +674,10 @@ function buildCrmHubPayload(body: HubLeadBody, leadType: string, leadIdNum: numb
   const contactNo = pickStr(body.contactNo, body.contact_no, body.phone);
   const clientEmail = pickStr(body.clientEmail, body.client_email, body.email);
   const designerName = pickStr(body.designerName, body.designer_name);
+  const appointmentDate = pickStr(body.appointmentDate, body.appointment_date);
+  const appointmentSlot = pickStr(body.appointmentSlot, body.appointment_slot, body.slot);
   const discoveryIn = asRecord(body.discovery) || {};
   const connectionIn = asRecord(body.connection) || {};
-  const appointmentDate = pickCrmAppointmentDate(body, connectionIn);
-  const appointmentSlot = pickStr(
-    body.appointmentSlot,
-    body.appointment_slot,
-    body.slot,
-    body.timeSlot,
-    body.time_slot,
-    connectionIn.appointmentSlot,
-    connectionIn.slot,
-  );
-  const appointmentDateIso = appointmentDate ? crmDateToIsoDay(appointmentDate) : null;
   const propertyNotes = pickStr(
     body.propertyNotes,
     body.property_notes,
@@ -825,29 +769,9 @@ function buildCrmHubPayload(body: HubLeadBody, leadType: string, leadIdNum: numb
       ...(salesExecutiveEmail ? { sales_executive_email: salesExecutiveEmail } : {}),
     },
     crmSchedule: {
-      date: appointmentDateIso || appointmentDate || null,
+      date: appointmentDate || null,
       slot: appointmentSlot || null,
     },
-    ...(appointmentDateIso || appointmentDate
-      ? {
-          scheduledMeetingDate: appointmentDateIso || appointmentDate,
-          scheduledMeetingSlot: appointmentSlot || null,
-        }
-      : appointmentSlot
-        ? { scheduledMeetingSlot: appointmentSlot }
-        : {}),
-    ...(appointmentDateIso
-      ? {
-          designScheduledMeeting: {
-            date: appointmentDateIso,
-            time: appointmentSlot || null,
-            meetingType: meetingType || "CRM",
-            meetingMode: meetingType || null,
-            updatedAt: new Date().toISOString(),
-            source: "crm_hub",
-          },
-        }
-      : {}),
     discovery,
     connection,
     floorPlanPublicLink: floorPlanPublicLink || null,
@@ -979,14 +903,6 @@ async function upsertCrmDesignLead(
       description: "Lead updated from CRM Booking & Token",
       user: { name: "CRM Hub" },
       details: { kind: "crm_hub_upsert", crmLeadType: leadType, crmLeadId: leadIdNum },
-      meta: {
-        meetingDate:
-          (payloadToPersist.scheduledMeetingDate as string | null) ||
-          (payloadToPersist.crmSchedule as { date?: string | null } | undefined)?.date ||
-          null,
-        meetingTime: (payloadToPersist.scheduledMeetingSlot as string | null) || null,
-        source: "crm_hub",
-      },
     });
     await cancelDuplicateCrmLeads(pool, {
       keepLeadId: existingId,
@@ -1014,14 +930,6 @@ async function upsertCrmDesignLead(
     description: "Lead created from CRM Booking & Token",
     user: { name: "CRM Hub" },
     details: { kind: "crm_hub_upsert", crmLeadType: leadType, crmLeadId: leadIdNum },
-    meta: {
-      meetingDate:
-        (payloadToPersist.scheduledMeetingDate as string | null) ||
-        (payloadToPersist.crmSchedule as { date?: string | null } | undefined)?.date ||
-        null,
-      meetingTime: (payloadToPersist.scheduledMeetingSlot as string | null) || null,
-      source: "crm_hub",
-    },
   });
   await cancelDuplicateCrmLeads(pool, {
     keepLeadId: designLeadId,

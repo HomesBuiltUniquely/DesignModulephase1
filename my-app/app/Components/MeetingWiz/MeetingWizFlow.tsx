@@ -8,13 +8,6 @@ import ScopeOfWork from "./ScopeOfWork";
 import FinalQuoteSum from "./FinalQuoteSum";
 import { MeetingWizTimerProvider } from "./MeetingWizTimer";
 import type { LeadshipTypes } from "@/app/Components/Types/Types";
-import {
-  MeetingWizSessionContext,
-  MeetingWizShell,
-  MeetingWizTopBar,
-  mwH1,
-  mwMuted,
-} from "./MeetingWizChrome";
 
 const WIZARD_STEPS = 5;
 
@@ -29,28 +22,72 @@ function StepPlaceholder({
   title,
   onNext,
   onPrev,
+  onClose,
 }: {
   stepNumber: number;
   title: string;
   onNext: () => void;
   onPrev: () => void;
+  onClose?: () => void;
 }) {
   const progress = Math.round((stepNumber / 5) * 100);
 
   return (
-    <MeetingWizShell>
-      <MeetingWizTopBar onPrev={onPrev} onNext={onNext} prevDisabled={stepNumber <= 1} />
+    <main className="flex min-h-screen flex-col bg-[#f7f9fc] font-sans">
+      <WizardTopBar onPrev={onPrev} onNext={onNext} onClose={onClose} prevDisabled={stepNumber <= 1} />
       <div className="mx-auto w-full max-w-[900px] flex-1 px-8 py-8">
-        <p className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-[var(--foreground)]/50">Current Step</p>
-        <h1 className={mwH1}>
+        <p className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-gray-400">Current Step</p>
+        <h1 className="text-3xl font-extrabold text-gray-900">
           {stepNumber}. {title}
         </h1>
-        <div className="mb-8 mt-2 h-0.5 overflow-hidden rounded-full bg-[var(--border-color)]">
-          <div className="h-full bg-[var(--brand-primary)]" style={{ width: `${progress}%` }} />
+        <div className="mb-8 mt-2 h-0.5 overflow-hidden rounded-full bg-gray-200">
+          <div className="h-full bg-[#2EE86B]" style={{ width: `${progress}%` }} />
         </div>
-        <p className={mwMuted}>This step will be added in a later release.</p>
+        <p className="text-sm text-gray-500">This step will be added in a later release.</p>
       </div>
-    </MeetingWizShell>
+    </main>
+  );
+}
+
+function WizardTopBar({
+  onPrev,
+  onNext,
+  onClose,
+  prevDisabled,
+}: {
+  onPrev: () => void;
+  onNext: () => void;
+  onClose?: () => void;
+  prevDisabled?: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-end gap-3 border-b border-gray-200 bg-white px-6 py-3">
+      <button
+        type="button"
+        onClick={onPrev}
+        disabled={prevDisabled}
+        className="text-sm font-medium text-gray-500 disabled:text-gray-300"
+      >
+        Previous
+      </button>
+      <button
+        type="button"
+        onClick={onNext}
+        className="rounded-md bg-[#2EE86B] px-5 py-2 text-sm font-bold text-black"
+      >
+        Next Phase
+      </button>
+      {onClose ? (
+        <button
+          type="button"
+          onClick={onClose}
+          className="px-2 text-xl text-gray-400 hover:text-gray-700"
+          aria-label="Close meeting wizard"
+        >
+          ×
+        </button>
+      ) : null}
+    </div>
   );
 }
 
@@ -59,6 +96,12 @@ function MeetingWizSteps({ onClose, lead, onLeadUpdated }: Props) {
 
   const next = () => setStep((s) => Math.min(s + 1, WIZARD_STEPS));
   const prev = () => setStep((s) => Math.max(s - 1, 1));
+
+  const wrapClose = onClose
+    ? () => {
+        onClose();
+      }
+    : undefined;
 
   switch (step) {
     case 1:
@@ -93,8 +136,9 @@ function MeetingWizSteps({ onClose, lead, onLeadUpdated }: Props) {
         <StepPlaceholder
           stepNumber={step}
           title={`Step ${step}`}
-          onPrev={prev}
           onNext={next}
+          onPrev={prev}
+          onClose={wrapClose}
         />
       );
   }
@@ -102,10 +146,8 @@ function MeetingWizSteps({ onClose, lead, onLeadUpdated }: Props) {
 
 export default function MeetingWizFlow(props: Props) {
   return (
-    <MeetingWizSessionContext.Provider value={{ onClose: props.onClose }}>
-      <MeetingWizTimerProvider>
-        <MeetingWizSteps {...props} />
-      </MeetingWizTimerProvider>
-    </MeetingWizSessionContext.Provider>
+    <MeetingWizTimerProvider>
+      <MeetingWizSteps {...props} />
+    </MeetingWizTimerProvider>
   );
 }
