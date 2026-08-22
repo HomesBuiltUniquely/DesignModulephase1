@@ -13,7 +13,7 @@ export default function P2PCongratulationsModal({ open, designerName, leadName, 
   if (!open) return null;
   const who = designerName || 'Designer';
   return (
-    <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/50 px-4" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/45 px-4" role="dialog" aria-modal="true">
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
         {BALLOONS.map((emoji, i) => (
           <span
