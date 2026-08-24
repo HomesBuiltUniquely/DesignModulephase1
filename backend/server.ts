@@ -3803,7 +3803,28 @@ async function persistLeadDesignScheduledMeeting(
     leadId,
   ]);
 }
+async function notifyCrmMeetingCompleted(crmLeadId: number): Promise<void> {
+  const hubBase = (process.env.HUB_API_BASE_URL || "http://localhost:8081").trim();
+  const url = `${hubBase.replace(/\/$/, "")}/v1/design-module/meeting-completed`;
+  const apiKey = (process.env.EXTERNAL_LEAD_INGEST_API_KEY || process.env.HUB_SYNC_API_KEY || "hi").trim();
 
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+      },
+      body: JSON.stringify({ leadId: crmLeadId }),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      console.error("[meeting-wiz-completed] CRM meeting-completed call failed:", res.status, text);
+    }
+  } catch (err) {
+    console.error("[meeting-wiz-completed] CRM meeting-completed call error:", err);
+  }
+}
 /** Mark Meeting Wizard session completed so Start Meeting stays hidden until a newer schedule. */
 async function persistLeadMeetingWizCompleted(
   leadId: number,
@@ -3832,6 +3853,23 @@ async function persistLeadMeetingWizCompleted(
     at: completedAt,
     meetingDate,
   };
+
+    // Design internal lead ID (leadId param) is NOT the CRM lead ID — the CRM lead id is
+  // stored in payload.crmLeadId (set during /api/leads/external-intake). Only notify CRM
+  // when this lead actually has one; older/manually-created leads may not.
+  const crmLeadIdNum = (() => {
+    const n = Number(payload.crmLeadId);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  })();
+  if (crmLeadIdNum != null) {
+    void notifyCrmMeetingCompleted(crmLeadIdNum).catch((err) => {
+      console.error("[meeting-wiz-completed] CRM notify error (non-fatal)", {
+        leadId,
+        crmLeadIdNum,
+        error: err,
+      });
+    });
+  }
 
   await pool.query("UPDATE leads SET payload = ?, update_at = ? WHERE id = ?", [
     JSON.stringify(payload),
@@ -6776,6 +6814,29 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
     } catch (persistErr) {
       console.error("[complete-task] persist scheduled meeting failed (non-fatal)", persistErr);
     }
+
+    if (milestoneIndex === 1 && tNormComplete === "meeting completed") {
+      try {
+        const [leadRows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [id]);
+        const leadRow = (leadRows as { payload?: string | null }[])[0];
+        if (leadRow && leadRow.payload) {
+          const payload = JSON.parse(leadRow.payload);
+          const crmLeadIdNum = Number(payload.crmLeadId);
+          if (Number.isFinite(crmLeadIdNum) && crmLeadIdNum > 0) {
+            void notifyCrmMeetingCompleted(crmLeadIdNum).catch((err) => {
+              console.error("[complete-task] CRM notify error (non-fatal)", {
+                leadId: id,
+                crmLeadIdNum,
+                error: err,
+              });
+            });
+          }
+        }
+      } catch (err) {
+        console.error("[complete-task] failed to notify CRM of meeting completed (non-fatal)", err);
+      }
+    }
+
 
     // CRM convert-booking / finance can mark design 10% tasks before DQC1. On first DQC1
     // approval, clear those so the lead lands on the 10% PAYMENT milestone (not D2).
