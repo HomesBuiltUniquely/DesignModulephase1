@@ -1,7 +1,7 @@
 'use client';
 
 import { SideDashboard, SideDashboardStatus } from "../Enums/Enums";
-import { usePathname, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { LeadshipTypes } from "./Types/Types";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../auth/AuthContext";
@@ -249,7 +249,6 @@ type AssignableDesigner = {
 };
 
 export default function Dashboard() {
-    const pathname = usePathname();
     const { user, sessionId } = useAuth();
     const [projects, setProjects] = useState<LeadshipTypes[]>([]);
     const [dqcProjects, setDqcProjects] = useState<DqcQueueItem[]>([]);
@@ -271,40 +270,6 @@ export default function Dashboard() {
         (user?.role || "").toLowerCase() === "territorial_design_manager" ||
         (user?.role || "").toLowerCase() === "deputy_general_manager" ||
         (user?.role || "").toLowerCase() === "design_manager";
-
-    // Finance: limited access – 10% and 40% payment upload/approve only, no full project list
-    if (isFinanceUser) {
-        return (
-            <div className="p-6 max-w-2xl mx-auto">
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8 text-center">
-                    <h2 className="text-xl font-bold text-gray-900 mb-2">Limited access</h2>
-                    <p className="text-gray-600 mb-6">
-                        As finance, you can only upload payment screenshots and approve 10% and 40% payments. You do not have access to the full project list or lead details.
-                    </p>
-                    <div className="flex flex-wrap items-center justify-center gap-3">
-                        <a
-                            href="/finance/sales-closure"
-                            className="inline-flex items-center gap-2 px-5 py-3 rounded-lg border border-gray-300 text-gray-700 font-semibold hover:bg-gray-50"
-                        >
-                            Sales Closure
-                        </a>
-                        <a
-                            href="/finance"
-                            className="inline-flex items-center gap-2 px-5 py-3 rounded-lg bg-[#EF0101] text-white font-semibold hover:bg-[#EF0101]"
-                        >
-                            10% Payment
-                        </a>
-                        <a
-                            href="/finance/40"
-                            className="inline-flex items-center gap-2 px-5 py-3 rounded-lg border border-gray-300 text-gray-700 font-semibold hover:bg-gray-50"
-                        >
-                            40% Payment
-                        </a>
-                    </div>
-                </div>
-            </div>
-        );
-    }
 
     // Fetch leads queue (DQC users get dqc-queue; others get queue)
     useEffect(() => {
@@ -470,7 +435,7 @@ export default function Dashboard() {
     const [showFinancePopup, setShowFinancePopup] = useState(false);
     const [showAddProjectModal, setShowAddProjectModal] = useState(false);
     const [showPersonalAppointmentModal, setShowPersonalAppointmentModal] = useState(false);
-    const [appointmentHistoryRefreshKey, setAppointmentHistoryRefreshKey] = useState(0);
+    const [, setAppointmentHistoryRefreshKey] = useState(0);
     const [appointmentSuccessToast, setAppointmentSuccessToast] =
         useState<AppointmentSuccessPayload | null>(null);
 
@@ -609,7 +574,7 @@ export default function Dashboard() {
         if (leadRow && getPhaseBucket(leadRow) === "Pre 10%") {
             return;
         }
-        if (leadRow && (leadRow as any).financeApprovedRaw === "false") {
+        if (leadRow && leadRow.financeApprovedRaw === "false") {
             setShowFinancePopup(true);
             return;
         }
@@ -1522,6 +1487,40 @@ export default function Dashboard() {
                             </div>
                         </div>
                     )}
+                </div>
+            </div>
+        );
+    }
+
+    // Finance: limited access - 10% and 40% payment upload/approve only, no full project list
+    if (isFinanceUser) {
+        return (
+            <div className="p-6 max-w-2xl mx-auto">
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8 text-center">
+                    <h2 className="text-xl font-bold text-gray-900 mb-2">Limited access</h2>
+                    <p className="text-gray-600 mb-6">
+                        As finance, you can only upload payment screenshots and approve 10% and 40% payments. You do not have access to the full project list or lead details.
+                    </p>
+                    <div className="flex flex-wrap items-center justify-center gap-3">
+                        <a
+                            href="/finance/sales-closure"
+                            className="inline-flex items-center gap-2 px-5 py-3 rounded-lg border border-gray-300 text-gray-700 font-semibold hover:bg-gray-50"
+                        >
+                            Sales Closure
+                        </a>
+                        <a
+                            href="/finance"
+                            className="inline-flex items-center gap-2 px-5 py-3 rounded-lg bg-[#EF0101] text-white font-semibold hover:bg-[#EF0101]"
+                        >
+                            10% Payment
+                        </a>
+                        <a
+                            href="/finance/40"
+                            className="inline-flex items-center gap-2 px-5 py-3 rounded-lg border border-gray-300 text-gray-700 font-semibold hover:bg-gray-50"
+                        >
+                            40% Payment
+                        </a>
+                    </div>
                 </div>
             </div>
         );
