@@ -97,6 +97,71 @@ function buildEventId(type: string, action: string, leadId: number, payload: any
   return base.substring(0, 250);
 }
 
+function pickPayloadStr(payload: Record<string, unknown>, key: string): string {
+  const v = payload?.[key];
+  if (v == null || v === "") return "";
+  return String(v).trim();
+}
+
+function isDqc2Round(type: string, payload: Record<string, unknown>): boolean {
+  if (type !== "DQC") return false;
+  const round = pickPayloadStr(payload, "dqc_round").toUpperCase();
+  return round.includes("2") || round.includes("ROUND_2") || round === "DQC2";
+}
+
+function isMmtAssignment(action: string, payload: Record<string, unknown>): boolean {
+  const assignmentType = pickPayloadStr(payload, "assignment_type").toUpperCase();
+  const kind = pickPayloadStr(payload, "kind").toUpperCase();
+  return (
+    assignmentType.includes("MMT") ||
+    kind.includes("MMT") ||
+    kind.includes("D1_MMT") ||
+    action === "ASSIGNED"
+  );
+}
+
+/** D2 milestone onward (index 3+) or D2/MMT/sign-off related payloads. */
+function isD2Related(type: string, action: string, payload: Record<string, unknown>): boolean {
+  const mmtScope = pickPayloadStr(payload, "mmt_scope").toUpperCase();
+  const kind = pickPayloadStr(payload, "kind").toUpperCase();
+  const milestoneName = pickPayloadStr(payload, "milestone_name").toUpperCase();
+  const milestoneIndex = Number(payload.milestone_index ?? payload.milestoneIndex);
+  if (type === "MMT") {
+    return mmtScope.includes("D2") || mmtScope.includes("MASKING") || kind.includes("D2");
+  }
+  if (type === "MILESTONE") {
+    return Number.isFinite(milestoneIndex) && milestoneIndex >= 3 || milestoneName.includes("D2");
+  }
+  if (type === "MEETING") {
+    const meetingType = pickPayloadStr(payload, "meeting_type").toLowerCase();
+    return (
+      meetingType.includes("sign") ||
+      meetingType.includes("dqc2") ||
+      meetingType.includes("d2") ||
+      meetingType.includes("masking") ||
+      meetingType.includes("sign-off") ||
+      meetingType.includes("signoff") ||
+      meetingType.includes("design sign")
+    );
+  }
+  if (type === "PAYMENT") {
+    const pt = pickPayloadStr(payload, "payment_type").toUpperCase();
+    return pt.includes("40");
+  }
+  return false;
+}
+
+function shouldNotifyPmSpm(
+  type: string,
+  action: string,
+  payload: Record<string, unknown>,
+): boolean {
+  if (type === "PM" || type === "P2P") return true;
+  if (type === "DQC" && isDqc2Round(type, payload)) return true;
+  if (type === "ASSIGNMENT" && action === "PM_ASSIGNED") return true;
+  return isD2Related(type, action, payload);
+}
+
 export async function resolveNotificationRecipients(args: {
   leadId: number;
   designerId: number | null;
@@ -112,37 +177,43 @@ export async function resolveNotificationRecipients(args: {
     return [];
   }
 
-  // 1. Fetch management/system-wide users with special roles
-  const [managementRows] = await pool.query(
-    "SELECT id, role FROM users WHERE role IN ('admin', 'deputy_general_manager', 'dgm', 'finance', 'dqc_manager', 'mmt_manager')"
-  ) as any[];
+  const payload: Record<string, unknown> =
+    args.payload && typeof args.payload === "object" ? args.payload : {};
 
-  const managementUsers = {
-    admin: [] as number[],
-    deputy_general_manager: [] as number[],
-    finance: [] as number[],
-    dqc_manager: [] as number[],
-    mmt_manager: [] as number[],
-  };
+  const [roleRows] = await pool.query(
+    `SELECT id, role FROM users
+     WHERE role IN (
+       'admin','deputy_general_manager','dgm','territorial_design_manager','design_manager',
+       'finance','dqc_manager','dqe','mmt_manager','mmt_executive',
+       'project_manager','senior_project_manager'
+     )`,
+  ) as [{ id: number; role: string }[], unknown];
 
-  for (const row of managementRows) {
-    const role = row.role as string;
+  const byRole = new Map<string, number[]>();
+  for (const row of roleRows) {
+    const role = String(row.role || "").toLowerCase();
     if (role === "dgm") {
-      managementUsers.deputy_general_manager.push(row.id);
-    } else if (role in managementUsers) {
-      managementUsers[role as keyof typeof managementUsers].push(row.id);
+      const list = byRole.get("deputy_general_manager") || [];
+      list.push(Number(row.id));
+      byRole.set("deputy_general_manager", list);
+    } else {
+      const list = byRole.get(role) || [];
+      list.push(Number(row.id));
+      byRole.set(role, list);
     }
   }
 
-  // Always notify DGM & Admin (system copies)
-  for (const uid of managementUsers.deputy_general_manager) {
-    recipientsMap.set(uid, "dgm");
-  }
-  for (const uid of managementUsers.admin) {
-    recipientsMap.set(uid, "admin");
-  }
+  const add = (userId: number, role: string) => {
+    if (!Number.isFinite(userId) || userId <= 0) return;
+    if (!recipientsMap.has(userId)) recipientsMap.set(userId, role);
+  };
 
-  // 2. Fetch lead-specific reporting line
+  const allOf = (...roles: string[]) => {
+    for (const role of roles) {
+      for (const id of byRole.get(role) || []) add(id, role);
+    }
+  };
+
   let assignedDesignerId: number | null = args.designerId;
   let assignedPmId: number | null = args.pmId;
   let designManagerId: number | null = null;
@@ -150,21 +221,23 @@ export async function resolveNotificationRecipients(args: {
 
   if (args.leadId > 0) {
     const [leadRows] = await pool.query(
-      `SELECT l.assigned_designer_id, l.assigned_project_manager_id, 
+      `SELECT l.assigned_designer_id, l.assigned_project_manager_id,
               d.design_manager_id, dm.territorial_design_manager_id
        FROM leads l
        LEFT JOIN users d ON d.id = l.assigned_designer_id
        LEFT JOIN users dm ON dm.id = d.design_manager_id
        WHERE l.id = ? LIMIT 1`,
-      [args.leadId]
-    ) as any[];
+      [args.leadId],
+    ) as [Record<string, unknown>[], unknown];
 
-    if (leadRows && leadRows.length > 0) {
+    if (leadRows?.[0]) {
       const row = leadRows[0];
-      if (row.assigned_designer_id) assignedDesignerId = row.assigned_designer_id;
-      if (row.assigned_project_manager_id) assignedPmId = row.assigned_project_manager_id;
-      if (row.design_manager_id) designManagerId = row.design_manager_id;
-      if (row.territorial_design_manager_id) territorialDesignManagerId = row.territorial_design_manager_id;
+      if (row.assigned_designer_id) assignedDesignerId = Number(row.assigned_designer_id);
+      if (row.assigned_project_manager_id) assignedPmId = Number(row.assigned_project_manager_id);
+      if (row.design_manager_id) designManagerId = Number(row.design_manager_id);
+      if (row.territorial_design_manager_id) {
+        territorialDesignManagerId = Number(row.territorial_design_manager_id);
+      }
     }
   }
 
@@ -174,81 +247,116 @@ export async function resolveNotificationRecipients(args: {
        FROM users d
        LEFT JOIN users dm ON dm.id = d.design_manager_id
        WHERE d.id = ? LIMIT 1`,
-      [assignedDesignerId]
-    ) as any[];
+      [assignedDesignerId],
+    ) as [Record<string, unknown>[], unknown];
 
-    if (userRows && userRows.length > 0) {
-      designManagerId = userRows[0].design_manager_id;
-      territorialDesignManagerId = userRows[0].territorial_design_manager_id;
+    if (userRows?.[0]) {
+      designManagerId = Number(userRows[0].design_manager_id) || null;
+      territorialDesignManagerId =
+        Number(userRows[0].territorial_design_manager_id) || territorialDesignManagerId;
     }
   }
 
-  // 3. Resolve role-specific lists from payload
-  const extraTo = args.payload?.to_id ? Number(args.payload.to_id) : null;
-  const mmtManagerId = args.payload?.mmt_manager_id ? Number(args.payload.mmt_manager_id) : null;
-  const requestedSpmId = args.payload?.requested_spm_id ? Number(args.payload.requested_spm_id) : null;
+  const extraTo = Number(payload.to_id) || 0;
+  const mmtManagerId = Number(payload.mmt_manager_id) || 0;
+  const requestedSpmId = Number(payload.requested_spm_id) || 0;
 
-  const type = args.notificationType.toUpperCase();
-  const action = args.notificationAction.toUpperCase();
+  const type = (args.notificationType || "").toUpperCase();
+  const action = (args.notificationAction || "").toUpperCase();
 
-  // 4. Apply Legacy Fanout Routing Rules
-  if (type === "P2P") {
-    if (assignedDesignerId) recipientsMap.set(assignedDesignerId, "designer");
-    if (designManagerId) recipientsMap.set(designManagerId, "dm");
-    if (territorialDesignManagerId) recipientsMap.set(territorialDesignManagerId, "tdm");
-    if (assignedPmId) recipientsMap.set(assignedPmId, "pm");
-    for (const uid of managementUsers.finance) {
-      recipientsMap.set(uid, "finance");
+  const addDesignerLine = () => {
+    if (assignedDesignerId) add(assignedDesignerId, "designer");
+    if (designManagerId) add(designManagerId, "design_manager");
+  };
+
+  const addTdms = () => allOf("territorial_design_manager");
+
+  /** Admin/DGM scoped categories — TDM gets the same lead/payment/quote/assign set, all TDMs (not hierarchy-only). */
+  const addAdminsScoped = () => {
+    if (type === "PAYMENT" || type === "LEAD" || type === "PHASE" || type === "QUOTE" || type === "QUOTATION") {
+      allOf("admin", "deputy_general_manager", "territorial_design_manager");
+    } else if (type === "DQC" && isDqc2Round(type, payload)) {
+      allOf("admin", "deputy_general_manager");
+    } else if (type === "ASSIGNMENT" && !isMmtAssignment(action, payload)) {
+      allOf("admin", "deputy_general_manager", "territorial_design_manager");
     }
-    for (const uid of managementUsers.dqc_manager) {
-      recipientsMap.set(uid, "dqc_manager");
-    }
-  } else if (type === "PAYMENT") {
-    for (const uid of managementUsers.finance) {
-      recipientsMap.set(uid, "finance");
-    }
-    if (territorialDesignManagerId) recipientsMap.set(territorialDesignManagerId, "tdm");
-    if (designManagerId) recipientsMap.set(designManagerId, "dm");
-    if (assignedDesignerId) recipientsMap.set(assignedDesignerId, "designer");
+  };
+
+  const addPmSpm = () => {
+    if (assignedPmId) add(assignedPmId, "project_manager");
+    allOf("senior_project_manager");
+    if (requestedSpmId) add(requestedSpmId, "senior_project_manager");
+  };
+
+  // ── Role-scoped fan-out ─────────────────────────────────────────────────────
+  // TDM = all territorial_design_manager users (org-wide), same as admin for lead/payment/quote/assign.
+  // DM/Designer = hierarchy only (assigned designer + their DM).
+
+  if (type === "PAYMENT") {
+    allOf("finance");
+    addAdminsScoped();
+    addDesignerLine();
+    if (shouldNotifyPmSpm(type, action, payload)) addPmSpm();
+  } else if (type === "LEAD" || type === "PHASE") {
+    // Every Admin + every TDM (not hierarchy-limited), plus designer line
+    addAdminsScoped();
+    addDesignerLine();
+  } else if (type === "QUOTE" || type === "QUOTATION") {
+    addAdminsScoped();
+    addDesignerLine();
   } else if (type === "DQC") {
-    for (const uid of managementUsers.dqc_manager) {
-      recipientsMap.set(uid, "dqc_manager");
-    }
-    if (extraTo) recipientsMap.set(extraTo, "dqe");
-    if (assignedDesignerId) recipientsMap.set(assignedDesignerId, "designer");
-    if (designManagerId) recipientsMap.set(designManagerId, "dm");
-    if (territorialDesignManagerId) recipientsMap.set(territorialDesignManagerId, "tdm");
-    const round = args.payload?.dqc_round;
-    if (round === "DQC2" && assignedPmId) {
-      recipientsMap.set(assignedPmId, "pm");
+    allOf("dqc_manager", "dqe");
+    if (extraTo) add(extraTo, "dqe");
+    addTdms();
+    addDesignerLine();
+    if (isDqc2Round(type, payload)) {
+      addAdminsScoped();
+      addPmSpm();
     }
   } else if (type === "MMT") {
-    for (const uid of managementUsers.mmt_manager) {
-      recipientsMap.set(uid, "mmt_manager");
+    allOf("mmt_manager");
+    if (mmtManagerId) add(mmtManagerId, "mmt_manager");
+    if (extraTo) add(extraTo, "mmt_executive");
+    addDesignerLine();
+    if (isD2Related(type, action, payload)) {
+      addPmSpm();
+      if (requestedSpmId) add(requestedSpmId, "senior_project_manager");
     }
-    if (mmtManagerId) recipientsMap.set(mmtManagerId, "mmt_manager");
-    if (extraTo) recipientsMap.set(extraTo, "mmt_executive");
-    if (assignedDesignerId) recipientsMap.set(assignedDesignerId, "designer");
-    if (designManagerId) recipientsMap.set(designManagerId, "dm");
-    if (territorialDesignManagerId) recipientsMap.set(territorialDesignManagerId, "tdm");
-    if (assignedPmId) recipientsMap.set(assignedPmId, "pm");
-    if (requestedSpmId) recipientsMap.set(requestedSpmId, "spm");
   } else if (type === "ASSIGNMENT") {
     if (extraTo) {
-      const role = action === "PM_ASSIGNED" ? "pm" : "designer";
-      recipientsMap.set(extraTo, role);
+      add(extraTo, action === "PM_ASSIGNED" ? "project_manager" : "designer");
     }
-    if (assignedDesignerId) recipientsMap.set(assignedDesignerId, "designer");
-    if (designManagerId) recipientsMap.set(designManagerId, "dm");
-    if (territorialDesignManagerId) recipientsMap.set(territorialDesignManagerId, "tdm");
-    if (assignedPmId) recipientsMap.set(assignedPmId, "pm");
+    addDesignerLine();
+    if (isMmtAssignment(action, payload)) {
+      allOf("mmt_manager");
+      if (extraTo) add(extraTo, "mmt_executive");
+    } else {
+      addAdminsScoped();
+    }
+    if (action === "PM_ASSIGNED") {
+      addPmSpm();
+    }
+  } else if (type === "MILESTONE") {
+    addTdms();
+    addDesignerLine();
+    if (shouldNotifyPmSpm(type, action, payload)) addPmSpm();
+  } else if (type === "P2P") {
+    // Congratulate designer — broadcast to every active user
+    const [everyone] = await pool.query(
+      `SELECT id, role FROM users WHERE id IS NOT NULL`,
+    ) as [{ id: number; role: string }[], unknown];
+    for (const r of everyone) {
+      add(Number(r.id), String(r.role || "user").toLowerCase() || "user");
+    }
+  } else if (type === "PM") {
+    addDesignerLine();
+    addPmSpm();
+  } else if (type === "MEETING") {
+    addDesignerLine();
+    if (shouldNotifyPmSpm(type, action, payload)) addPmSpm();
   } else {
-    if (assignedDesignerId) recipientsMap.set(assignedDesignerId, "designer");
-    if (designManagerId) recipientsMap.set(designManagerId, "dm");
-    if (territorialDesignManagerId) recipientsMap.set(territorialDesignManagerId, "tdm");
-    if (assignedPmId && (type === "MILESTONE" || type === "PM")) {
-      recipientsMap.set(assignedPmId, "pm");
-    }
+    addDesignerLine();
+    if (shouldNotifyPmSpm(type, action, payload)) addPmSpm();
   }
 
   const list: InboxRecipient[] = [];
@@ -414,6 +522,25 @@ function fanoutPayload(body: Record<string, any>): Record<string, any> {
   if (body.dqc_round && payload.dqc_round == null) payload.dqc_round = body.dqc_round;
   if (body.payment_type && payload.payment_type == null) payload.payment_type = body.payment_type;
   if (body.mmt_manager_id && payload.mmt_manager_id == null) payload.mmt_manager_id = body.mmt_manager_id;
+  if (body.designer_name && payload.designer_name == null) payload.designer_name = body.designer_name;
+  if (body.approver_name && payload.approver_name == null) payload.approver_name = body.approver_name;
+  if (body.decision_type && payload.decision_type == null) payload.decision_type = body.decision_type;
+  if (body.status && payload.status == null) payload.status = body.status;
+  if (body.meeting_type && payload.meeting_type == null) payload.meeting_type = body.meeting_type;
+  if (body.mod && payload.mod == null) payload.mod = body.mod;
+  if (body.slot && payload.slot == null) payload.slot = body.slot;
+  if (body.milestone_context && payload.milestone_context == null) {
+    payload.milestone_context = body.milestone_context;
+  }
+  if (body.rejection_reason && payload.rejection_reason == null) {
+    payload.rejection_reason = body.rejection_reason;
+  }
+  if (body.visit_date && payload.visit_date == null) payload.visit_date = body.visit_date;
+  if (body.visit_time && payload.visit_time == null) payload.visit_time = body.visit_time;
+  if (body.mmt_manager_name && payload.mmt_manager_name == null) {
+    payload.mmt_manager_name = body.mmt_manager_name;
+  }
+  if (body.mmt_scope && payload.mmt_scope == null) payload.mmt_scope = body.mmt_scope;
   return payload;
 }
 
@@ -511,7 +638,9 @@ export async function leadPre10(p: LeadPre10Params): Promise<void> {
 //  02  leadEntered1020
 //  Trigger: approve-10p-payment — lead transitions from PRE_10 → 10-20%
 // ─────────────────────────────────────────────────────────────────────────────
-export interface LeadEntered1020Params extends NotifyBase {}
+export interface LeadEntered1020Params extends NotifyBase {
+  designerName?: string;
+}
 
 export async function leadEntered1020(p: LeadEntered1020Params): Promise<void> {
   return post("/v1/design/notifications/lead/10-20", {
@@ -522,8 +651,10 @@ export async function leadEntered1020(p: LeadEntered1020Params): Promise<void> {
     notification_action: "PHASE_ENTERED",
     payload: {
       previous_phase: "PRE_10",
+      current_phase: "PHASE_10_20",
       trigger: "PHASE_ENTERED",
       message: "Lead entered 10-20% phase",
+      designer_name: p.designerName ?? "",
     },
   });
 }
@@ -561,9 +692,12 @@ export async function milestoneCompleted(p: MilestoneCompletedParams): Promise<v
 //  Meaning: designer has uploaded proof and is requesting Finance review.
 // ─────────────────────────────────────────────────────────────────────────────
 export interface PaymentRequestedParams extends NotifyBase {
-  paymentType: "PRE_10_PERCENT" | "40_PERCENT";
+  /** SALES_CLOSURE = CRM booking token; PRE_10 / 40 = design-module milestone payments */
+  paymentType: "SALES_CLOSURE" | "PRE_10_PERCENT" | "40_PERCENT";
   uploadName?: string;
   amount?: number;
+  designerName?: string;
+  milestoneContext?: string;
 }
 
 export async function paymentRequested(p: PaymentRequestedParams): Promise<void> {
@@ -575,25 +709,29 @@ export async function paymentRequested(p: PaymentRequestedParams): Promise<void>
     notification_action: "REQUESTED",
     payload: {
       payment_type: p.paymentType,
+      milestone_context: p.milestoneContext ?? p.paymentType,
       upload_name: p.uploadName ?? "Payment Collection",
       amount: p.amount ?? 0,
+      designer_name: p.designerName ?? "",
     },
   });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  05  paymentStatus
-//  Trigger (APPROVED): approve-10p-payment
-//  Trigger (REJECTED): reject-10p-payment
+//  CRM/Sales closure: approve-10p (crm_booking path) / approve-sales-closure / reject-sales-closure
+//  Design 10%: approve-10p (design path after DQC1) / reject-10p
+//  Design 40%: approve-40p-payment
 // ─────────────────────────────────────────────────────────────────────────────
 export interface PaymentStatusParams extends NotifyBase {
   status: "SUCCESS" | "FAILED";
   decision: "APPROVED" | "REJECTED";
-  paymentType: "PRE_10_PERCENT" | "40_PERCENT";
+  paymentType: "SALES_CLOSURE" | "PRE_10_PERCENT" | "40_PERCENT";
   milestoneContext: string;
   approverName: string;
   amount?: number;
   rejectionReason?: string;
+  designerName?: string;
 }
 
 export async function paymentStatus(p: PaymentStatusParams): Promise<void> {
@@ -611,6 +749,7 @@ export async function paymentStatus(p: PaymentStatusParams): Promise<void> {
     amount: p.amount ?? 0,
     created_at: new Date().toISOString(),
     rejection_reason: p.rejectionReason ?? "",
+    designer_name: p.designerName ?? "",
   });
 }
 
@@ -720,14 +859,20 @@ export async function mmtAssigned(p: MmtAssignedParams): Promise<void> {
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  10  mmtDocReady
-//  Trigger: d2-masking-request POST — D2 masking documents uploaded
+//  Trigger: D1/D2 upload approved by MMT manager/admin, OR auto-approved when
+//           manager/admin (D1) or SPM/PM/admin (D2) uploads directly.
+//  Message for designer: "D1/D2 docs uploaded — you can check now"
 // ─────────────────────────────────────────────────────────────────────────────
 export interface MmtDocReadyParams extends NotifyBase {
   designerName: string;
   uploadName?: string;
+  /** D1 site measurement files or D2 masking files */
+  docKind?: "D1" | "D2";
+  approvedBy?: string;
 }
 
 export async function mmtDocReady(p: MmtDocReadyParams): Promise<void> {
+  const kind = p.docKind === "D2" ? "D2" : "D1";
   return post("/v1/design/notifications/mmt/doc-ready", {
     project_id: p.projectId,
     lead_name: p.leadName,
@@ -735,10 +880,13 @@ export async function mmtDocReady(p: MmtDocReadyParams): Promise<void> {
     notification_type: "MMT",
     notification_action: "DOC_READY",
     payload: {
-      mmt_scope: "SITE_VISIT",
+      mmt_scope: kind === "D2" ? "D2_MASKING" : "SITE_VISIT",
+      doc_kind: kind,
       via: "UPLOAD",
-      upload_name: p.uploadName ?? "D2 Masking Document",
-      approved_by: p.designerName,
+      upload_name: p.uploadName ?? `${kind} Document`,
+      approved_by: p.approvedBy || p.designerName,
+      message: `${kind} documents uploaded — you can check them now`,
+      designer_name: p.designerName,
     },
     created_at: new Date().toISOString(),
   });
@@ -753,6 +901,7 @@ export interface MeetingScheduledParams extends NotifyBase {
   meetingMode?: string;
   meetingDate: string;
   meetingTime: string;
+  designerName?: string;
 }
 
 export async function meetingScheduled(p: MeetingScheduledParams): Promise<void> {
@@ -768,6 +917,7 @@ export async function meetingScheduled(p: MeetingScheduledParams): Promise<void>
       date: p.meetingDate,
       time_slot: p.meetingTime,
     },
+    designer_name: p.designerName ?? "",
     created_at: new Date().toISOString(),
   });
 }
@@ -851,8 +1001,8 @@ export async function quoteSaved(p: QuoteSavedParams): Promise<void> {
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  15  p2pCompleted
-//  Trigger: complete-task → milestone 4 "Project manager approval" (first time)
-//  P2P = Push-to-Production sign-off.
+//  Trigger: complete-task — when PUSH TO PRODUCTION milestone (index 6) is fully done
+//  Broadcast congratulation to all users for the designer who completed the lead.
 // ─────────────────────────────────────────────────────────────────────────────
 export interface P2pCompletedParams extends NotifyBase {
   designerName: string;
@@ -866,6 +1016,12 @@ export async function p2pCompleted(p: P2pCompletedParams): Promise<void> {
     notification_type: "P2P",
     notification_action: "COMPLETED",
     designer_name: p.designerName,
+    payload: {
+      designer_name: p.designerName,
+      message: p.designerName
+        ? `Congratulate ${p.designerName} — push to production completed`
+        : "Push to production completed — congratulations",
+    },
     created_at: new Date().toISOString(),
   });
 }

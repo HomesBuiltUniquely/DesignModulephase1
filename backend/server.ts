@@ -3689,6 +3689,35 @@ function canApproveMmtUploads(role: string | null | undefined): boolean {
   return r === "mmt_manager" || r === "admin";
 }
 
+/** Notify designer that D1/D2 MMT docs are ready to check (after approve or auto-approve). */
+async function notifyDesignerMmtDocsReady(
+  leadId: number,
+  opts: { docKind: "D1" | "D2"; uploadName?: string; approvedBy?: string },
+): Promise<void> {
+  try {
+    const [rows] = await pool.query(
+      `SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+              u.name as designerName
+       FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+       WHERE l.id = ? LIMIT 1`,
+      [leadId],
+    );
+    const row = (rows as any[])[0];
+    if (!row?.designerId) return;
+    void notify.mmtDocReady({
+      projectId: row.pid || `HUB-${leadId}`,
+      leadName: row.projectName || "",
+      designerId: Number(row.designerId) || 0,
+      designerName: row.designerName || "",
+      uploadName: opts.uploadName,
+      docKind: opts.docKind,
+      approvedBy: opts.approvedBy,
+    });
+  } catch (err) {
+    console.warn("[notify] mmtDocReady error (non-fatal)", { leadId, err });
+  }
+}
+
 /** TEMPORARY: relax finance approval gates (screenshots / 10% paid checks). Set false when going live. */
 const TEMP_FINANCE_RELAXED_APPROVAL = true;
 
@@ -8635,19 +8664,39 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               leadName: nLeadName,
               designerId: nDesignerId,
               paymentType: "PRE_10_PERCENT",
-              uploadName: "10% Payment Collection",
+              uploadName: "10% Design Payment Collection",
               amount: 0,
+              designerName: nDesignerName,
+              milestoneContext: "DESIGN_10",
             });
           }
 
-          // 15 + 16a — P2P completed & PM status APPROVED (milestone 4: Project manager approval)
-          if (milestoneIndex === 4 && tNormNotify === "Project manager approval") {
+          // 40% design payment request (milestone 5)
+          if (milestoneIndex === 5 && (tNormNotify === "40% collection" || tNormNotify === "40% collection ")) {
+            void notify.paymentRequested({
+              projectId: nPid,
+              leadName: nLeadName,
+              designerId: nDesignerId,
+              paymentType: "40_PERCENT",
+              uploadName: "40% Design Payment Collection",
+              amount: 0,
+              designerName: nDesignerName,
+              milestoneContext: "DESIGN_40",
+            });
+          }
+
+          // 15 — P2P: PUSH TO PRODUCTION milestone fully done → congratulate designer (all users)
+          if (milestoneFullyComplete && milestoneIndex === 6) {
             void notify.p2pCompleted({
               projectId: nPid,
               leadName: nLeadName,
               designerId: nDesignerId,
               designerName: nDesignerName,
             });
+          }
+
+          // 16a — PM approval on DQC2 (milestone 4 task) — not P2P
+          if (milestoneIndex === 4 && tNormNotify === "Project manager approval") {
             void notify.pmApprovalStatus({
               projectId: nPid,
               leadName: nLeadName,
@@ -9069,7 +9118,6 @@ app.post("/api/leads/:id/approve-sales-closure", async (req: Request, res: Respo
       [JSON.stringify(payloadObj), new Date(), leadId]
     );
 
-    // Optional event tracking for lead history
     await addLeadHistoryEvent(leadId, {
       id: `approve-sales-closure-${Date.now()}`,
       type: "note",
@@ -9080,6 +9128,44 @@ app.post("/api/leads/:id/approve-sales-closure", async (req: Request, res: Respo
       user: { name: user.name || "Finance" },
       details: { kind: "note", noteText: "Sales Closure payment screenshot approved." },
     });
+
+    // Notify: Sales Closure payment approved + lead entered 10–20%
+    try {
+      const [notifyRows] = await pool.query(
+        `SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                u.name as designerName
+         FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+         WHERE l.id = ? LIMIT 1`,
+        [leadId],
+      );
+      const nRow = (notifyRows as any[])[0];
+      if (nRow) {
+        const nPid = nRow.pid || `HUB-${leadId}`;
+        const nLeadName = nRow.projectName || "";
+        const nDesignerId = Number(nRow.designerId) || 0;
+        const nDesignerName = nRow.designerName || "";
+        void notify.leadEntered1020({
+          projectId: nPid,
+          leadName: nLeadName,
+          designerId: nDesignerId,
+          designerName: nDesignerName,
+        });
+        void notify.paymentStatus({
+          projectId: nPid,
+          leadName: nLeadName,
+          designerId: nDesignerId,
+          status: "SUCCESS",
+          decision: "APPROVED",
+          paymentType: "SALES_CLOSURE",
+          milestoneContext: "SALES_CLOSURE",
+          approverName: user.name ?? "Finance",
+          amount: 0,
+          designerName: nDesignerName,
+        });
+      }
+    } catch (notifyErr) {
+      console.warn("[notify] approve-sales-closure notify error (non-fatal)", notifyErr);
+    }
 
     return res.json({ success: true, message: "Sales closure approved successfully" });
   } catch (err) {
@@ -9167,6 +9253,35 @@ app.post("/api/leads/:id/reject-sales-closure", async (req: Request, res: Respon
       user: { name: user.name || "Finance" },
       details: { kind: "note", noteText: "Sales Closure payment screenshot rejected. Notification sent to sales." },
     });
+
+    // Notify: Sales Closure payment rejected (distinct from design 10%)
+    try {
+      const [notifyRows] = await pool.query(
+        `SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                u.name as designerName
+         FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+         WHERE l.id = ? LIMIT 1`,
+        [leadId],
+      );
+      const nRow = (notifyRows as any[])[0];
+      if (nRow) {
+        void notify.paymentStatus({
+          projectId: nRow.pid || `HUB-${leadId}`,
+          leadName: nRow.projectName || "",
+          designerId: Number(nRow.designerId) || 0,
+          status: "FAILED",
+          decision: "REJECTED",
+          paymentType: "SALES_CLOSURE",
+          milestoneContext: "SALES_CLOSURE",
+          approverName: user.name ?? "Finance",
+          amount: 0,
+          rejectionReason: String((req.body as any)?.reason || (req.body as any)?.rejectionReason || ""),
+          designerName: nRow.designerName || "",
+        });
+      }
+    } catch (notifyErr) {
+      console.warn("[notify] reject-sales-closure notify error (non-fatal)", notifyErr);
+    }
 
     return res.json({ success: true, message: "Sales closure rejected and sales person notified" });
   } catch (err) {
@@ -9500,6 +9615,45 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
         user: { name: user.name ?? "Finance" },
         details: { kind: "note", noteText: "CRM pre-DQC1 payment approved." },
       });
+
+      // Notify: Sales Closure payment approved (NOT design 10%) + lead entered 10–20%
+      try {
+        const [notifyRows] = await pool.query(
+          `SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                  u.name as designerName
+           FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+           WHERE l.id = ? LIMIT 1`,
+          [leadId],
+        );
+        const nRow = (notifyRows as any[])[0];
+        if (nRow) {
+          const nPid = nRow.pid || `HUB-${leadId}`;
+          const nLeadName = nRow.projectName || "";
+          const nDesignerId = Number(nRow.designerId) || 0;
+          const nDesignerName = nRow.designerName || "";
+          void notify.leadEntered1020({
+            projectId: nPid,
+            leadName: nLeadName,
+            designerId: nDesignerId,
+            designerName: nDesignerName,
+          });
+          void notify.paymentStatus({
+            projectId: nPid,
+            leadName: nLeadName,
+            designerId: nDesignerId,
+            status: "SUCCESS",
+            decision: "APPROVED",
+            paymentType: "SALES_CLOSURE",
+            milestoneContext: "CRM_BOOKING",
+            approverName: user.name ?? "Finance",
+            amount: 0,
+            designerName: nDesignerName,
+          });
+        }
+      } catch (notifyErr) {
+        console.warn("[notify] CRM booking approve notify error (non-fatal)", notifyErr);
+      }
+
       return res.status(201).json({ ok: true, path: "crm_booking" });
     }
 
@@ -9508,6 +9662,14 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
         message: "DQC 1 must be approved before design 10% payment can be approved.",
       });
     }
+
+    const [stageBeforeRows] = await pool.query(
+      `SELECT project_stage as projectStage FROM leads WHERE id = ? LIMIT 1`,
+      [leadId],
+    );
+    const stageBefore = String((stageBeforeRows as any[])[0]?.projectStage || "").toLowerCase();
+    const wasAlreadyIn1020 =
+      stageBefore.includes("10-20") || stageBefore.includes("10–20");
 
     await pool.query(
       `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
@@ -9747,7 +9909,8 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
       });
     }
 
-    // Notify: 02 — Lead entered 10-20% phase + 05 — Payment status APPROVED
+    // Notify: Design-module 10% payment APPROVED (after DQC1) — NOT sales closure.
+    // Phase notify only if lead was still Pre 10% before this approval (CRM may already have moved it).
     try {
       const [notifyRows] = await pool.query(
         `SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
@@ -9762,16 +9925,16 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
         const nLeadName = notifyRow.projectName || "";
         const nDesignerId = Number(notifyRow.designerId) || 0;
         const nDesignerName = notifyRow.designerName || "";
-        const nNow = new Date().toISOString();
 
-        // 02 — 10-20% phase entered
-        void notify.leadEntered1020({
-          projectId: nPid,
-          leadName: nLeadName,
-          designerId: nDesignerId,
-        });
+        if (!wasAlreadyIn1020) {
+          void notify.leadEntered1020({
+            projectId: nPid,
+            leadName: nLeadName,
+            designerId: nDesignerId,
+            designerName: nDesignerName,
+          });
+        }
 
-        // 05 — Payment status: APPROVED
         void notify.paymentStatus({
           projectId: nPid,
           leadName: nLeadName,
@@ -9779,13 +9942,14 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
           status: "SUCCESS",
           decision: "APPROVED",
           paymentType: "PRE_10_PERCENT",
-          milestoneContext: "PRE_10",
+          milestoneContext: "DESIGN_10",
           approverName: user.name ?? "Finance",
           amount: 0,
+          designerName: nDesignerName,
         });
       }
     } catch (notifyErr) {
-      console.warn("[notify] approve-10p data fetch error (non-fatal)", notifyErr);
+      console.warn("[notify] approve-10p design path notify error (non-fatal)", notifyErr);
     }
 
     return res.status(201).json({ ok: true, path: "design_10p" });
@@ -9844,6 +10008,36 @@ app.post("/api/leads/:id/reject-10p-payment", async (req: Request, res: Response
         details: { kind: "note", noteText: reason || "CRM booking payment rejected." },
       });
       void notifyHubFinanceReview(pool, leadId, "REJECTED", user.name ?? "Finance", reason);
+
+      // Notify: Sales Closure / CRM booking payment rejected
+      try {
+        const [notifyRows] = await pool.query(
+          `SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                  u.name as designerName
+           FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+           WHERE l.id = ? LIMIT 1`,
+          [leadId],
+        );
+        const nRow = (notifyRows as any[])[0];
+        if (nRow) {
+          void notify.paymentStatus({
+            projectId: nRow.pid || `HUB-${leadId}`,
+            leadName: nRow.projectName || "",
+            designerId: Number(nRow.designerId) || 0,
+            status: "FAILED",
+            decision: "REJECTED",
+            paymentType: "SALES_CLOSURE",
+            milestoneContext: "CRM_BOOKING",
+            approverName: user.name ?? "Finance",
+            amount: 0,
+            rejectionReason: reason ?? "",
+            designerName: nRow.designerName || "",
+          });
+        }
+      } catch (notifyErr) {
+        console.warn("[notify] CRM booking reject notify error (non-fatal)", notifyErr);
+      }
+
       return res.json({ ok: true, path: "crm_booking" });
     }
 
@@ -9870,8 +10064,10 @@ app.post("/api/leads/:id/reject-10p-payment", async (req: Request, res: Response
     // Notify: 05 — Payment status: REJECTED
     try {
       const [nRows] = await pool.query(
-        `SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId
-         FROM leads l WHERE l.id = ? LIMIT 1`,
+        `SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                u.name as designerName
+         FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+         WHERE l.id = ? LIMIT 1`,
         [leadId],
       );
       const nRow = (nRows as any[])[0];
@@ -9883,10 +10079,11 @@ app.post("/api/leads/:id/reject-10p-payment", async (req: Request, res: Response
           status: "FAILED",
           decision: "REJECTED",
           paymentType: "PRE_10_PERCENT",
-          milestoneContext: "PRE_10",
+          milestoneContext: "DESIGN_10",
           approverName: user.name ?? "Finance",
           amount: 0,
           rejectionReason: reason ?? "",
+          designerName: nRow.designerName || "",
         });
       }
     } catch (notifyErr) {
@@ -9936,6 +10133,32 @@ app.post(
         details: { kind: "payment_40p", fileNames: files.map((f) => f.originalname) },
       };
       await addLeadHistoryEvent(leadId, ev);
+
+      // Notify: Design 40% payment requested (for finance review)
+      try {
+        const [notifyRows] = await pool.query(
+          `SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                  u.name as designerName
+           FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+           WHERE l.id = ? LIMIT 1`,
+          [leadId],
+        );
+        const nRow = (notifyRows as any[])[0];
+        if (nRow) {
+          void notify.paymentRequested({
+            projectId: nRow.pid || `HUB-${leadId}`,
+            leadName: nRow.projectName || "",
+            designerId: Number(nRow.designerId) || 0,
+            paymentType: "40_PERCENT",
+            uploadName: `40% payment screenshots (${files.length})`,
+            amount: 0,
+            designerName: nRow.designerName || "",
+            milestoneContext: "DESIGN_40",
+          });
+        }
+      } catch (notifyErr) {
+        console.warn("[notify] 40p-payment-upload notify error (non-fatal)", notifyErr);
+      }
 
       // Fire internal notification email to Finance Team with CC to Admin and TDM
       try {
@@ -10280,6 +10503,34 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
       console.error("40% payment approval email prepare error (non-fatal)", e);
     }
 
+    // Notify: Design 40% payment APPROVED (distinct from sales closure / design 10%)
+    try {
+      const [notifyRows] = await pool.query(
+        `SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                u.name as designerName
+         FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+         WHERE l.id = ? LIMIT 1`,
+        [leadId],
+      );
+      const nRow = (notifyRows as any[])[0];
+      if (nRow) {
+        void notify.paymentStatus({
+          projectId: nRow.pid || `HUB-${leadId}`,
+          leadName: nRow.projectName || "",
+          designerId: Number(nRow.designerId) || 0,
+          status: "SUCCESS",
+          decision: "APPROVED",
+          paymentType: "40_PERCENT",
+          milestoneContext: "DESIGN_40",
+          approverName: user.name ?? "Finance",
+          amount: 0,
+          designerName: nRow.designerName || "",
+        });
+      }
+    } catch (notifyErr) {
+      console.warn("[notify] approve-40p notify error (non-fatal)", notifyErr);
+    }
+
     return res.status(201).json({ ok: true });
   } catch (err) {
     console.error("approve-40p-payment error", err);
@@ -10408,7 +10659,14 @@ app.post(
              ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
             [leadId, uploadMilestoneIndex, uploadTaskName, now],
           );
-          // Manager/admin direct D1 upload → auto-complete + notify designer
+          // Manager/admin (or D2 SPM/PM) direct upload → auto-approved → notify designer
+          if (!isKT) {
+            void notifyDesignerMmtDocsReady(leadId, {
+              docKind: isD2 ? "D2" : "D1",
+              uploadName: fileName || undefined,
+              approvedBy: user?.name ?? (isD2 ? "Uploader" : "MMT Manager"),
+            });
+          }
           if (!isD2 && (role === "mmt_manager" || role === "admin")) {
             void notifyD1FilesReadyInternal(
               leadId,
@@ -10811,6 +11069,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       meetingMode: String(meetingMode || "IN_PERSON"),
       meetingDate: String(meetingDate || ""),
       meetingTime: String(meetingTime || ""),
+      designerName: designerName || "",
     });
 
     return res.status(201).json({ ok: true });
@@ -10970,7 +11229,14 @@ app.post("/api/leads/:leadId/uploads/:uploadId/approve", async (req: Request, re
     };
     await addLeadHistoryEvent(leadId, approvalEv);
 
-    // D1: notify designer that files are ready (same mail loop)
+    // Designer inbox: D1/D2 docs approved and visible — you can check now
+    void notifyDesignerMmtDocsReady(leadId, {
+      docKind: isD2Upload ? "D2" : "D1",
+      uploadName: uploadRow.originalName || undefined,
+      approvedBy: user.name ?? approverLabel,
+    });
+
+    // D1: also keep existing email to designer that files are ready
     if (!isD2Upload) {
       void notifyD1FilesReadyInternal(
         leadId,
@@ -12962,28 +13228,8 @@ app.post("/api/leads/:id/d2-masking-request", upload.array("files", 20), async (
     };
     await addLeadHistoryEvent(leadId, ev);
 
-    // Notify: 10 — MMT documents ready (D2 masking files submitted)
-    try {
-      const [nRows] = await pool.query(
-        `SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
-                u.name as designerName
-         FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
-         WHERE l.id = ? LIMIT 1`,
-        [leadId],
-      );
-      const nRow = (nRows as any[])[0];
-      if (nRow) {
-        void notify.mmtDocReady({
-          projectId: nRow.pid || `HUB-${leadId}`,
-          leadName: nRow.projectName || "",
-          designerId: Number(nRow.designerId) || 0,
-          designerName: nRow.designerName || "",
-          uploadName: uploadedFiles.length > 0 ? uploadedFiles[0].name : "D2 Masking Document",
-        });
-      }
-    } catch (notifyErr) {
-      console.warn("[notify] d2-masking-request error (non-fatal)", notifyErr);
-    }
+    // D2 masking *request* is not the same as MMT docs ready for designer.
+    // Designer DOC_READY fires when D1/D2 uploads are approved (or auto-approved).
 
     return res.status(201).json({
       ok: true,
@@ -15100,6 +15346,33 @@ registerCrmHubBookingRoutes(app, {
   pool,
   getUserFromSession,
   addLeadHistoryEvent,
+  onCrmSalesClosurePaymentRequested: (leadId, meta) => {
+    void (async () => {
+      try {
+        const [rows] = await pool.query(
+          `SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                  u.name as designerName
+           FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+           WHERE l.id = ? LIMIT 1`,
+          [leadId],
+        );
+        const row = (rows as any[])[0];
+        if (!row) return;
+        void notify.paymentRequested({
+          projectId: row.pid || `HUB-${leadId}`,
+          leadName: row.projectName || "",
+          designerId: Number(row.designerId) || 0,
+          paymentType: "SALES_CLOSURE",
+          uploadName: String(meta?.upload_name || "CRM payment proof"),
+          amount: Number(meta?.amount) || 0,
+          designerName: row.designerName || "",
+          milestoneContext: String(meta?.milestone_context || "CRM_BOOKING"),
+        });
+      } catch (err) {
+        console.warn("[notify] CRM sales-closure payment requested error (non-fatal)", err);
+      }
+    })();
+  },
 });
 registerProlanceRoutes(app, getUserFromSession, pool);
 registerIncentivesRoutes(app, { pool, getUserFromSession });

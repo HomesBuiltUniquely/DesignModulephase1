@@ -52,6 +52,9 @@ type DesignNotificationContextValue = {
 
 const DesignNotificationContext = createContext<DesignNotificationContextValue | null>(null);
 
+/** Backup poll interval when WebSocket is down. */
+const POLL_MS_FALLBACK = 20_000;
+
 export function useDesignNotifications(): DesignNotificationContextValue {
   const ctx = useContext(DesignNotificationContext);
   if (!ctx) {
@@ -73,6 +76,9 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
   const isMutedRef = useRef(isMuted);
   const prevUnreadRef = useRef(0);
   const inboxCountsReadyRef = useRef(false);
+  const knownIdsRef = useRef<Set<number> | null>(null);
+  const wsLiveRef = useRef(false);
+  const refreshInFlightRef = useRef(false);
 
   useEffect(() => {
     isMutedRef.current = isMuted;
@@ -84,6 +90,8 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
   useEffect(() => {
     inboxCountsReadyRef.current = false;
     prevUnreadRef.current = 0;
+    knownIdsRef.current = null;
+    wsLiveRef.current = false;
   }, [sessionId, user?.id]);
 
   useEffect(() => {
@@ -114,52 +122,85 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
     });
   };
 
-  const loadNotifications = useCallback(() => {
-    if (!sessionId || !user) return;
-    fetch(`${apiBase}/v1/design/inbox?user_id=${user.id}`, {
-      headers: buildAuthHeaders(sessionId),
-      credentials: 'include',
-    })
-      .then((r) => r.json())
-      .then((res) => {
-        if (res && Array.isArray(res.data)) {
-          setNotifications(res.data);
+  const applyListAndMaybeChime = useCallback(
+    (list: DesignNotificationItem[], allowChime: boolean) => {
+      const nextIds = new Set(list.map((n) => n.id));
+
+      if (knownIdsRef.current === null) {
+        knownIdsRef.current = nextIds;
+      } else if (allowChime && !isMutedRef.current) {
+        const hasNewUnread = list.some(
+          (n) => !knownIdsRef.current!.has(n.id) && isNotificationUnread(n),
+        );
+        if (hasNewUnread) {
+          playNotificationChime();
         }
-      })
-      .catch((err) => console.error('Failed to load notifications:', err));
-  }, [sessionId, user, apiBase]);
+      }
 
-  const loadUnreadCount = useCallback(
-    (options?: { allowChime?: boolean }) => {
-      if (!sessionId || !user) return;
-      fetch(`${apiBase}/v1/design/inbox/counts?user_id=${user.id}`, {
-        headers: buildAuthHeaders(sessionId),
-        credentials: 'include',
-      })
-        .then((r) => r.json())
-        .then((res) => {
-          if (!res?.data) return;
-          const total = Number(res.data.total) || 0;
-          const prev = prevUnreadRef.current;
-
-          if (!inboxCountsReadyRef.current) {
-            inboxCountsReadyRef.current = true;
-            prevUnreadRef.current = total;
-            setUnreadCount(total);
-            return;
-          }
-
-          const countIncreased = total > prev;
-          if (!isMutedRef.current && options?.allowChime && countIncreased) {
-            playNotificationChime();
-          }
-
-          prevUnreadRef.current = total;
-          setUnreadCount(total);
-        })
-        .catch((err) => console.error('Failed to load notification counts:', err));
+      knownIdsRef.current = nextIds;
+      setNotifications(list);
     },
-    [sessionId, user, apiBase],
+    [],
+  );
+
+  const refreshInbox = useCallback(
+    async (options?: { allowChime?: boolean }) => {
+      if (!sessionId || !user || refreshInFlightRef.current) return;
+      refreshInFlightRef.current = true;
+      const allowChime = options?.allowChime ?? false;
+
+      try {
+        const headers = buildAuthHeaders(sessionId);
+        const [listRes, countRes] = await Promise.all([
+          fetch(`${apiBase}/v1/design/inbox?user_id=${user.id}`, {
+            headers,
+            credentials: 'include',
+          }),
+          fetch(`${apiBase}/v1/design/inbox/counts?user_id=${user.id}`, {
+            headers,
+            credentials: 'include',
+          }),
+        ]);
+
+        let list: DesignNotificationItem[] | null = null;
+        if (listRes.ok) {
+          const json = await listRes.json().catch(() => ({}));
+          if (Array.isArray(json?.data)) list = json.data as DesignNotificationItem[];
+        }
+
+        if (list) {
+          applyListAndMaybeChime(list, allowChime);
+        }
+
+        if (countRes.ok) {
+          const countJson = await countRes.json().catch(() => ({}));
+          const total = Number(countJson?.data?.total);
+          if (Number.isFinite(total)) {
+            if (!inboxCountsReadyRef.current) {
+              inboxCountsReadyRef.current = true;
+              prevUnreadRef.current = total;
+              setUnreadCount(total);
+            } else if (!list) {
+              const countIncreased = total > prevUnreadRef.current;
+              if (allowChime && countIncreased && !isMutedRef.current) {
+                playNotificationChime();
+              }
+              prevUnreadRef.current = total;
+              setUnreadCount(total);
+            } else {
+              // Prefer server count (may include items outside list limit)
+              prevUnreadRef.current = total;
+              setUnreadCount(total);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('[notification] refresh failed:', err);
+      } finally {
+        refreshInFlightRef.current = false;
+      }
+    },
+    [sessionId, user, apiBase, applyListAndMaybeChime],
   );
 
   const handleMarkRead = (id: number) => {
@@ -190,19 +231,14 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
     })
       .then(async (r) => {
         const res = await r.json().catch(() => ({}));
-        if (r.ok && (res?.ok || res?.success)) {
-          loadNotifications();
-          loadUnreadCount();
-          return;
+        if (!r.ok || !(res?.ok || res?.success)) {
+          console.error('[notification] mark read failed', r.status, res);
         }
-        console.error('[notification] mark read failed', r.status, res);
-        loadNotifications();
-        loadUnreadCount();
+        void refreshInbox();
       })
       .catch((err) => {
         console.error('Failed to mark read:', err);
-        loadNotifications();
-        loadUnreadCount();
+        void refreshInbox();
       });
   };
 
@@ -226,43 +262,58 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
     })
       .then(async (r) => {
         const res = await r.json().catch(() => ({}));
-        if (r.ok && (res?.ok || res?.success)) {
-          loadNotifications();
-          loadUnreadCount();
-          return;
+        if (!r.ok || !(res?.ok || res?.success)) {
+          console.error('[notification] mark all read failed', r.status, res);
         }
-        console.error('[notification] mark all read failed', r.status, res);
-        loadNotifications();
-        loadUnreadCount();
+        void refreshInbox();
       })
       .catch((err) => {
         console.error('Failed to mark all read:', err);
-        loadNotifications();
-        loadUnreadCount();
+        void refreshInbox();
       });
   };
 
   useEffect(() => {
     const onChime = () => {
       if (!isMutedRef.current) playNotificationChime();
-      loadNotifications();
-      loadUnreadCount({ allowChime: true });
+      void refreshInbox({ allowChime: false });
     };
     window.addEventListener(DESIGN_NOTIFICATION_CHIME_EVENT, onChime);
     return () => window.removeEventListener(DESIGN_NOTIFICATION_CHIME_EVENT, onChime);
-  }, [loadNotifications, loadUnreadCount]);
+  }, [refreshInbox]);
 
   useEffect(() => {
     if (!sessionId || !user) return;
-    loadNotifications();
-    loadUnreadCount();
-  }, [sessionId, user, loadNotifications, loadUnreadCount]);
+    void refreshInbox();
+  }, [sessionId, user, refreshInbox]);
 
   useEffect(() => {
     if (!isInboxOpen || !sessionId || !user) return;
-    loadNotifications();
-    loadUnreadCount();
-  }, [isInboxOpen, sessionId, user, loadNotifications, loadUnreadCount]);
+    void refreshInbox();
+  }, [isInboxOpen, sessionId, user, refreshInbox]);
+
+  // Backup poll so inbox updates even if WebSocket is down
+  useEffect(() => {
+    if (!sessionId || !user) return;
+
+    const poll = () => {
+      if (document.visibilityState === 'hidden') return;
+      void refreshInbox({ allowChime: true });
+    };
+
+    const interval = setInterval(poll, POLL_MS_FALLBACK);
+    return () => clearInterval(interval);
+  }, [sessionId, user, refreshInbox]);
+
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshInbox({ allowChime: true });
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [refreshInbox]);
 
   useEffect(() => {
     if (!sessionId || !user) return;
@@ -273,6 +324,7 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
     let active = true;
 
     const scheduleReconnect = () => {
+      wsLiveRef.current = false;
       if (!active) return;
       const delay = Math.min(1000 * 2 ** reconnectAttempt, 15000);
       reconnectAttempt += 1;
@@ -296,7 +348,7 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
           return r.json();
         })
         .then((res) => {
-          if (!active || !res || !res.ticket) {
+          if (!active || !res?.ticket) {
             scheduleReconnect();
             return;
           }
@@ -305,11 +357,14 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
             typeof res.ws_url === 'string' && res.ws_url
               ? res.ws_url
               : `ws://localhost:8080/v1/design/inbox/ws?ticket=${encodeURIComponent(res.ticket)}`;
+
           socket = new WebSocket(wsUrl);
           wsRef.current = socket;
 
           socket.onopen = () => {
+            wsLiveRef.current = true;
             reconnectAttempt = 0;
+            void refreshInbox({ allowChime: false });
           };
 
           socket.onmessage = (event) => {
@@ -317,33 +372,23 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
               const data = JSON.parse(event.data);
               if (!data || data.type !== 'inbox_updated') return;
 
-              if (!isNewInboxEvent(data)) {
-                loadNotifications();
-                loadUnreadCount();
-                return;
-              }
-
-              if (!isMutedRef.current) playNotificationChime();
-              window.setTimeout(() => {
-                loadNotifications();
-                loadUnreadCount({ allowChime: true });
-              }, 350);
+              const allowChime = isNewInboxEvent(data);
+              void refreshInbox({ allowChime });
             } catch (e) {
               console.error('Error parsing WebSocket message:', e);
             }
           };
 
           socket.onerror = () => {
-            console.warn('Notification WebSocket error');
+            console.warn('[notification] WebSocket error');
           };
 
           socket.onclose = () => {
-            if (!active) return;
             scheduleReconnect();
           };
         })
         .catch((err) => {
-          console.error('Failed to establish WebSocket connection:', err);
+          console.error('[notification] WebSocket setup failed:', err);
           scheduleReconnect();
         });
     };
@@ -352,16 +397,12 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
 
     return () => {
       active = false;
+      wsLiveRef.current = false;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (socket) socket.close();
       wsRef.current = null;
     };
-  }, [sessionId, user, apiBase, loadNotifications, loadUnreadCount]);
-
-  const refreshInbox = useCallback(() => {
-    loadNotifications();
-    loadUnreadCount();
-  }, [loadNotifications, loadUnreadCount]);
+  }, [sessionId, user, apiBase, refreshInbox]);
 
   const value: DesignNotificationContextValue = {
     notifications,
@@ -372,7 +413,9 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
     toggleMute,
     handleMarkRead,
     handleMarkAllRead,
-    refreshInbox,
+    refreshInbox: () => {
+      void refreshInbox();
+    },
   };
 
   return (

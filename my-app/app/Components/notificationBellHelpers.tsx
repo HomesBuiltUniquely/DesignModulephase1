@@ -403,21 +403,125 @@ export const NOTIFICATION_FILTERS: Array<{
   { id: 'quote', label: 'Quote', types: ['QUOTE', 'QUOTATION'] },
 ];
 
-/** Tabs visible per role (matches abb595 notification UI). */
+/** Tabs visible per role — aligned with notification fan-out rules. */
 export function notificationTabIdsForRole(role: string | null | undefined): NotificationFilterId[] {
   const r = (role || '').toLowerCase();
-  if (r === 'finance' || r === 'dqc_manager' || r === 'dqe') return ['all'];
+  if (r === 'finance') return ['all', 'payment'];
+  if (r === 'dqc_manager' || r === 'dqe') return ['all', 'dqc'];
   if (r === 'mmt_manager' || r === 'mmt_executive') return ['all', 'mmt', 'assignment'];
   if (r === 'admin' || r === 'deputy_general_manager') {
-    return ['all', 'lead', 'payment', 'dqc', 'assignment', 'quote'];
+    return ['all', 'lead', 'payment', 'dqc', 'assignment', 'quote', 'milestone'];
   }
   if (r === 'territorial_design_manager') {
     return ['all', 'lead', 'milestone', 'payment', 'dqc', 'assignment', 'quote'];
+  }
+  if (r === 'design_manager') {
+    return NOTIFICATION_FILTERS.map((f) => f.id);
+  }
+  if (r === 'designer') {
+    return NOTIFICATION_FILTERS.map((f) => f.id);
   }
   if (r === 'project_manager' || r === 'senior_project_manager') {
     return ['all', 'milestone', 'meeting', 'dqc', 'mmt', 'assignment'];
   }
   return NOTIFICATION_FILTERS.map((f) => f.id);
+}
+
+function payloadIsDqc2(item: DesignNotificationItem): boolean {
+  const type = (item.notification_type || '').toUpperCase();
+  if (type !== 'DQC') return false;
+  const round = pick(asRecord(item.payload), ['dqc_round']).toUpperCase();
+  return round.includes('2') || round.includes('ROUND_2') || round === 'DQC2';
+}
+
+function payloadIsD2Related(item: DesignNotificationItem): boolean {
+  const type = (item.notification_type || '').toUpperCase();
+  const action = (item.notification_action || '').toUpperCase();
+  const p = asRecord(item.payload);
+  if (type === 'PM' || type === 'P2P') return true;
+  if (type === 'DQC' && payloadIsDqc2(item)) return true;
+  if (type === 'ASSIGNMENT' && action === 'PM_ASSIGNED') return true;
+  const milestoneIndex = Number(p.milestone_index ?? p.milestoneIndex);
+  if (type === 'MILESTONE' && Number.isFinite(milestoneIndex) && milestoneIndex >= 3) return true;
+  const mmtScope = pick(p, ['mmt_scope']).toUpperCase();
+  const kind = pick(p, ['kind']).toUpperCase();
+  if (type === 'MMT' && (mmtScope.includes('D2') || mmtScope.includes('MASKING') || kind.includes('D2'))) {
+    return true;
+  }
+  if (type === 'MEETING') {
+    const mt = pick(p, ['meeting_type', 'meetingType']).toLowerCase();
+    return (
+      mt.includes('sign') ||
+      mt.includes('dqc2') ||
+      mt.includes('d2') ||
+      mt.includes('masking') ||
+      mt.includes('sign-off') ||
+      mt.includes('signoff') ||
+      mt.includes('design sign')
+    );
+  }
+  const pt = pick(p, ['payment_type', 'paymentType']).toUpperCase();
+  if (type === 'PAYMENT' && pt.includes('40')) return true;
+  return false;
+}
+
+function payloadIsMmtAssignment(item: DesignNotificationItem): boolean {
+  const action = (item.notification_action || '').toUpperCase();
+  const p = asRecord(item.payload);
+  const assignmentType = pick(p, ['assignment_type']).toUpperCase();
+  const kind = pick(p, ['kind']).toUpperCase();
+  return (
+    assignmentType.includes('MMT') ||
+    kind.includes('MMT') ||
+    kind.includes('D1_MMT') ||
+    action === 'ASSIGNED'
+  );
+}
+
+/** Client-side guard — inbox rows this role should see (matches backend fan-out). */
+export function notificationVisibleForRole(
+  item: DesignNotificationItem,
+  role: string | null | undefined,
+): boolean {
+  const r = (role || '').toLowerCase();
+  const type = (item.notification_type || '').toUpperCase();
+
+  if (r === 'admin' || r === 'deputy_general_manager') {
+    if (type === 'PAYMENT' || type === 'LEAD' || type === 'PHASE' || type === 'QUOTE' || type === 'QUOTATION') {
+      return true;
+    }
+    if (type === 'ASSIGNMENT' && !payloadIsMmtAssignment(item)) return true;
+    if (type === 'DQC' && payloadIsDqc2(item)) return true;
+    if (type === 'P2P') return true;
+    return false;
+  }
+
+  if (r === 'territorial_design_manager') {
+    return (
+      type === 'PAYMENT' ||
+      type === 'MILESTONE' ||
+      type === 'P2P' ||
+      type === 'LEAD' ||
+      type === 'PHASE' ||
+      type === 'DQC' ||
+      type === 'ASSIGNMENT' ||
+      type === 'QUOTE' ||
+      type === 'QUOTATION'
+    );
+  }
+
+  if (r === 'finance') return type === 'PAYMENT' || type === 'P2P';
+  if (r === 'dqc_manager' || r === 'dqe') return type === 'DQC' || type === 'P2P';
+  if (r === 'mmt_manager' || r === 'mmt_executive') {
+    return type === 'MMT' || type === 'P2P';
+  }
+
+  if (r === 'project_manager' || r === 'senior_project_manager') {
+    return payloadIsD2Related(item) || type === 'P2P';
+  }
+
+  // design_manager, designer, and others: show what was delivered to their inbox
+  return true;
 }
 
 export function matchesNotificationFilter(
@@ -435,19 +539,86 @@ export function getCategoryLabel(type?: string): string {
   const key = (type || '').toUpperCase();
   const map: Record<string, string> = {
     LEAD: 'Lead',
-    PHASE: 'Lead',
+    PHASE: 'Phase',
     MILESTONE: 'Milestone',
     PAYMENT: 'Payment',
     DQC: 'DQC',
     MMT: 'MMT',
     MEETING: 'Meeting',
-    ASSIGNMENT: 'Assignment',
+    ASSIGNMENT: 'Assign',
     QUOTE: 'Quote',
     QUOTATION: 'Quote',
-    P2P: 'Milestone',
-    PM: 'Milestone',
+    P2P: 'P2P',
+    PM: 'PM',
   };
   return map[key] || key || 'Update';
+}
+
+function humanizeLabel(raw: string): string {
+  const s = String(raw || '')
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!s) return '';
+  const lower = s.toLowerCase();
+  if (/^pre[_\s-]?10/.test(lower) || lower === 'pre 10%') return 'Pre-10%';
+  if (/10.?20|phase.?10/.test(lower)) return '10–20%';
+  if (/dqc1|first.?cut/.test(lower)) return 'DQC 1';
+  if (/dqc2|sign.?off|signoff/.test(lower)) return 'DQC 2';
+  if (/material/.test(lower)) return 'Material Selection';
+  if (/showroom/.test(lower)) return 'Showroom Visit';
+  if (/site.?visit/.test(lower)) return 'Site Visit';
+  if (/virtual/.test(lower)) return 'Virtual Meeting';
+  if (/in.?person/.test(lower)) return 'In Person';
+  if (/pre.?10.?percent|10.?percent/.test(lower)) return '10% Payment';
+  if (/40.?percent/.test(lower)) return '40% Payment';
+  return s
+    .split(' ')
+    .map((w) => (w.length <= 3 && w === w.toUpperCase() ? w : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()))
+    .join(' ');
+}
+
+function designerNameFrom(item: DesignNotificationItem, p: Record<string, unknown>): string {
+  return pick(p, ['designer_name', 'designerName']);
+}
+
+function actorNameFrom(p: Record<string, unknown>): string {
+  return pick(p, [
+    'approver_name',
+    'approverName',
+    'approved_by',
+    'approvedBy',
+    'actor_name',
+    'actorName',
+    'assigned_by',
+  ]);
+}
+
+function paymentTypeLabel(raw: string): string {
+  const u = String(raw || '').toUpperCase();
+  if (!u) return '';
+  if (u.includes('SALES') || u.includes('CRM') || u.includes('CLOSURE') || u.includes('BOOKING')) {
+    return 'Sales Closure Payment';
+  }
+  if (u.includes('40')) return '40% Design Payment';
+  if (u.includes('10') || u.includes('PRE_10')) return '10% Design Payment';
+  return humanizeLabel(raw);
+}
+
+function dqcRoundLabel(raw: string): string {
+  const u = String(raw || '').toUpperCase();
+  if (!u) return '';
+  if (u.includes('2')) return 'DQC 2';
+  if (u.includes('1')) return 'DQC 1';
+  return humanizeLabel(raw);
+}
+
+function joinParts(parts: Array<string | false | null | undefined>): string {
+  return parts
+    .map((p) => (typeof p === 'string' ? p.trim() : ''))
+    .filter(Boolean)
+    .filter((v, i, arr) => arr.indexOf(v) === i)
+    .join(' · ');
 }
 
 export function getNotificationListTitle(item: DesignNotificationItem): string {
@@ -457,39 +628,62 @@ export function getNotificationListTitle(item: DesignNotificationItem): string {
 
   switch (type) {
     case 'LEAD':
-      return 'New lead created';
+      return 'New lead in Pre-10%';
     case 'PHASE':
-      return 'Lead phase updated';
-    case 'MILESTONE':
-      const milestone = pick(p, ['milestone_name']);
-      const task = pick(p, ['task_name']);
-      if (milestone) return `${milestone} completed`;
-      return task ? `${task} completed` : 'Milestone completed';
-    case 'PAYMENT':
-      if (action === 'REQUESTED') return 'Payment submitted for review';
-      const pt = pick(p, ['payment_type']);
-      const decision = pick(p, ['decision_type', 'status']);
-      if (pt.includes('PRE_10') || pt.includes('10')) return decision === 'APPROVED' ? '10% Payment approved' : '10% Payment update';
-      if (pt.includes('40')) return decision === 'APPROVED' ? '40% Payment approved' : '40% Payment update';
-      return decision === 'APPROVED' ? 'Payment approved' : 'Payment status updated';
-    case 'DQC':
-      if (action.includes('REQUEST')) return 'DQC review requested';
-      return `DQC ${pick(p, ['decision_type', 'status']) || 'updated'}`;
+      return 'Lead moved to 10–20%';
+    case 'MILESTONE': {
+      const milestone = humanizeLabel(pick(p, ['milestone_name', 'milestoneName']));
+      return milestone ? `${milestone} completed` : 'Milestone completed';
+    }
+    case 'PAYMENT': {
+      const pay = paymentTypeLabel(pick(p, ['payment_type', 'paymentType', 'milestone_context']));
+      const decision = pick(p, ['decision_type', 'status']).toUpperCase();
+      if (action === 'REQUESTED') return pay ? `${pay} requested` : 'Payment requested';
+      if (decision === 'REJECTED' || action.includes('REJECT')) {
+        return pay ? `${pay} rejected` : 'Payment rejected';
+      }
+      if (decision === 'APPROVED' || decision === 'SUCCESS') {
+        return pay ? `${pay} approved` : 'Payment approved';
+      }
+      return pay ? `${pay} updated` : 'Payment status updated';
+    }
+    case 'DQC': {
+      const round = dqcRoundLabel(pick(p, ['dqc_round', 'dqcRound'])) || 'DQC';
+      if (action.includes('REQUEST')) return `${round} review requested`;
+      const decision = pick(p, ['decision_type', 'status']).toUpperCase();
+      if (decision === 'REJECTED') return `${round} rejected`;
+      if (decision === 'APPROVED') return `${round} approved`;
+      return `${round} status updated`;
+    }
     case 'MMT':
-      if (action.includes('DOC')) return 'MMT documents ready';
+      if (action.includes('DOC')) {
+        const kind = pick(p, ['doc_kind']).toUpperCase() === 'D2' ? 'D2' : 'D1';
+        return `${kind} documents ready — you can check now`;
+      }
       if (action.includes('ASSIGN')) return 'MMT executive assigned';
       return 'Site measurement requested';
-    case 'MEETING':
-      return 'Meeting scheduled';
+    case 'MEETING': {
+      const mt = humanizeLabel(pick(p, ['meeting_type', 'meetingType']));
+      return mt ? `${mt} scheduled` : 'Meeting scheduled';
+    }
     case 'ASSIGNMENT':
-      return action.includes('DESIGNER') ? 'Designer reassigned' : 'Project manager assigned';
+      if (action.includes('PM')) return 'Project manager assigned';
+      if (action === 'ASSIGNED') return 'MMT executive assigned';
+      return 'Designer reassigned';
     case 'QUOTE':
     case 'QUOTATION':
-      return 'Quotation saved';
-    case 'P2P':
-      return 'Push to production done';
-    case 'PM':
-      return `PM approval ${pick(p, ['status']) || action}`;
+      return 'New quotation saved';
+    case 'P2P': {
+      const designer = designerNameFrom(item, p);
+      return designer
+        ? `Congratulate ${designer} — lead completed`
+        : 'Push to production completed — congratulations';
+    }
+    case 'PM': {
+      const status = pick(p, ['status', 'decision_type']).toUpperCase();
+      if (status.includes('REJECT')) return 'PM rejected DQC 2';
+      return 'PM approved DQC 2';
+    }
     default:
       return getNotificationHeadline(item);
   }
@@ -497,28 +691,172 @@ export function getNotificationListTitle(item: DesignNotificationItem): string {
 
 export function getNotificationSubtitle(item: DesignNotificationItem): string {
   const p = asRecord(item.payload);
-  const customer = (item.lead_name || '').trim() || 'Unknown customer';
-  const projectLabel = formatProjectLabel(item, p);
+  const type = (item.notification_type || '').toUpperCase();
+  const action = (item.notification_action || '').toUpperCase();
+  const lead = (item.lead_name || '').trim() || 'Unknown lead';
+  const designer = designerNameFrom(item, p);
+  const slot = formatSlot(p.slot);
+  const visit = [pick(p, ['visit_date', 'visitDate']), pick(p, ['visit_time', 'visitTime'])]
+    .filter(Boolean)
+    .join(' ');
 
-  const context =
-    pick(p, ['approver_name', 'approved_by'])
-      ? `Approved by ${pick(p, ['approver_name', 'approved_by'])}`
-      : pick(p, ['designer_name'])
-        ? `Designer: ${pick(p, ['designer_name'])}`
-        : formatSlot(p.slot)
-          ? formatSlot(p.slot)
-          : pick(p, ['dqc_round'])
-            ? `Round ${pick(p, ['dqc_round'])}`
-            : pick(p, ['mmt_manager_name'])
-              ? `Manager: ${pick(p, ['mmt_manager_name'])}`
-              : pick(p, ['task_name'])
-                ? pick(p, ['task_name'])
-                : '';
+  if (type === 'LEAD') {
+    return joinParts([
+      lead,
+      `Stage: ${humanizeLabel(pick(p, ['current_phase']) || 'PRE_10')}`,
+      designer && `Designer: ${designer}`,
+      pick(p, ['sales_executive_name', 'salesExecutiveName']) &&
+        `Sales: ${pick(p, ['sales_executive_name', 'salesExecutiveName'])}`,
+      humanizeLabel(pick(p, ['meeting_type', 'meetingType'])),
+      slot,
+    ]);
+  }
 
-  if (context && projectLabel) return `${customer} · ${projectLabel} · ${context}`;
-  if (context) return `${customer} · ${context}`;
-  if (projectLabel) return `${customer} · ${projectLabel}`;
-  return customer;
+  if (type === 'PHASE') {
+    return joinParts([
+      lead,
+      `Stage: ${humanizeLabel(pick(p, ['current_phase', 'phase']) || 'PHASE_10_20')}`,
+      pick(p, ['previous_phase']) && `From ${humanizeLabel(pick(p, ['previous_phase']))}`,
+      designer && `Designer: ${designer}`,
+      pick(p, ['message']),
+    ]);
+  }
+
+  if (type === 'MILESTONE') {
+    return joinParts([
+      lead,
+      humanizeLabel(pick(p, ['milestone_name', 'milestoneName'])),
+      designer && `Designer: ${designer}`,
+    ]);
+  }
+
+  if (type === 'PAYMENT' && action === 'REQUESTED') {
+    return joinParts([
+      lead,
+      paymentTypeLabel(pick(p, ['payment_type', 'paymentType', 'milestone_context'])),
+      designer && `Designer: ${designer}`,
+      pick(p, ['upload_name', 'uploadName']),
+      pick(p, ['amount']) && Number(pick(p, ['amount'])) > 0 && `₹${pick(p, ['amount'])}`,
+    ]);
+  }
+
+  if (type === 'PAYMENT') {
+    return joinParts([
+      lead,
+      paymentTypeLabel(pick(p, ['payment_type', 'paymentType', 'milestone_context'])),
+      designer && `Designer: ${designer}`,
+      actorNameFrom(p) && `By: ${actorNameFrom(p)}`,
+      pick(p, ['rejection_reason', 'rejectionReason']) &&
+        `Reason: ${pick(p, ['rejection_reason', 'rejectionReason'])}`,
+      pick(p, ['amount']) && Number(pick(p, ['amount'])) > 0 && `₹${pick(p, ['amount'])}`,
+    ]);
+  }
+
+  if (type === 'DQC' && action.includes('REQUEST')) {
+    return joinParts([
+      lead,
+      dqcRoundLabel(pick(p, ['dqc_round', 'dqcRound'])),
+      designer && `Designer: ${designer}`,
+    ]);
+  }
+
+  if (type === 'DQC') {
+    return joinParts([
+      lead,
+      dqcRoundLabel(pick(p, ['dqc_round', 'dqcRound'])),
+      designer && `Designer: ${designer}`,
+      actorNameFrom(p) && `By: ${actorNameFrom(p)}`,
+      pick(p, ['rejection_reason', 'rejectionReason']) &&
+        `Reason: ${pick(p, ['rejection_reason', 'rejectionReason'])}`,
+    ]);
+  }
+
+  if (type === 'MMT' && action.includes('DOC')) {
+    const kind = pick(p, ['doc_kind']).toUpperCase() === 'D2' ? 'D2' : 'D1';
+    return joinParts([
+      lead,
+      pick(p, ['message']) || `${kind} documents uploaded — you can check them now`,
+      designer && `Designer: ${designer}`,
+      actorNameFrom(p) && `By: ${actorNameFrom(p)}`,
+      pick(p, ['upload_name', 'uploadName']),
+    ]);
+  }
+
+  if (type === 'MMT' && action.includes('ASSIGN')) {
+    return joinParts([
+      lead,
+      pick(p, ['to_name', 'toName']) && `Executive: ${pick(p, ['to_name', 'toName'])}`,
+      designer && `Designer: ${designer}`,
+    ]);
+  }
+
+  if (type === 'MMT') {
+    return joinParts([
+      lead,
+      visit && `Visit: ${visit}`,
+      designer && `Designer: ${designer}`,
+      pick(p, ['mmt_manager_name', 'mmtManagerName']) &&
+        `MMT Mgr: ${pick(p, ['mmt_manager_name', 'mmtManagerName'])}`,
+    ]);
+  }
+
+  if (type === 'MEETING') {
+    return joinParts([
+      lead,
+      humanizeLabel(pick(p, ['meeting_type', 'meetingType'])),
+      humanizeLabel(pick(p, ['mod', 'mode', 'meeting_mode'])),
+      slot,
+      designer && `Designer: ${designer}`,
+    ]);
+  }
+
+  if (type === 'ASSIGNMENT' && action.includes('PM')) {
+    return joinParts([
+      lead,
+      pick(p, ['to_name', 'toName']) && `PM: ${pick(p, ['to_name', 'toName'])}`,
+      designer && `Designer: ${designer}`,
+    ]);
+  }
+
+  if (type === 'ASSIGNMENT') {
+    const from = pick(p, ['from_name', 'fromName']);
+    const to = pick(p, ['to_name', 'toName']);
+    return joinParts([
+      lead,
+      from && to ? `${from} → ${to}` : to && `→ ${to}`,
+      designer && !to && `Designer: ${designer}`,
+    ]);
+  }
+
+  if (type === 'QUOTE' || type === 'QUOTATION') {
+    return joinParts([
+      lead,
+      pick(p, ['quote_id', 'quoteId', 'quotation_name']) &&
+        `Quote ${pick(p, ['quote_id', 'quoteId', 'quotation_name'])}`,
+      designer && `Designer: ${designer}`,
+    ]);
+  }
+
+  if (type === 'PM') {
+    return joinParts([
+      lead,
+      'DQC 2',
+      designer && `Designer: ${designer}`,
+      actorNameFrom(p) && `By: ${actorNameFrom(p)}`,
+      pick(p, ['rejection_reason', 'rejectionReason']) &&
+        `Reason: ${pick(p, ['rejection_reason', 'rejectionReason'])}`,
+    ]);
+  }
+
+  if (type === 'P2P') {
+    return joinParts([
+      lead,
+      designer && `Designer: ${designer}`,
+      'Push to production done — congratulations',
+    ]);
+  }
+
+  return joinParts([lead, designer && `Designer: ${designer}`, formatProjectLabel(item, p)]);
 }
 
 function formatProjectLabel(

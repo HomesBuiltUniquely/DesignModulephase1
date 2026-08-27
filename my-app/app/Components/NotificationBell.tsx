@@ -14,6 +14,7 @@ import {
   matchesNotificationFilter,
   notificationCategoryTone,
   notificationTabIdsForRole,
+  notificationVisibleForRole,
   NOTIFICATION_FILTERS,
   quoteLinkFromNotification,
   type NotificationFilterId,
@@ -120,6 +121,11 @@ export default function NotificationBell({ className = '' }: Props) {
     if (!tabs.some((t) => t.id === filter)) setFilter('all');
   }, [tabs, filter]);
 
+  const roleNotifications = useMemo(
+    () => notifications.filter((n) => notificationVisibleForRole(n, user?.role)),
+    [notifications, user?.role],
+  );
+
   const filterCounts = useMemo(() => {
     const counts: Record<NotificationFilterId, number> = {
       all: 0,
@@ -132,7 +138,7 @@ export default function NotificationBell({ className = '' }: Props) {
       assignment: 0,
       quote: 0,
     };
-    for (const item of notifications) {
+    for (const item of roleNotifications) {
       if (!isNotificationUnread(item)) continue;
       counts.all += 1;
       for (const f of NOTIFICATION_FILTERS) {
@@ -142,11 +148,11 @@ export default function NotificationBell({ className = '' }: Props) {
       }
     }
     return counts;
-  }, [notifications]);
+  }, [roleNotifications]);
 
   const filtered = useMemo(
-    () => notifications.filter((item) => matchesNotificationFilter(item, filter)),
-    [notifications, filter],
+    () => roleNotifications.filter((item) => matchesNotificationFilter(item, filter)),
+    [roleNotifications, filter],
   );
 
   const groups = useMemo(() => groupNotificationsByDay(filtered), [filtered]);
