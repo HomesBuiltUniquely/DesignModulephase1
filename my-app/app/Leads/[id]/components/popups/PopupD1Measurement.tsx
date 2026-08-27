@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 
 import { getApiBase } from '@/app/lib/apiBase';
+import { signalDesignNotificationChime } from '@/app/lib/notificationSound';
 import CustomDatePicker from '@/app/Components/ui/CustomDatePicker';
 import CustomTimePicker from '@/app/Components/ui/CustomTimePicker';
 import CustomSelect from '@/app/Components/ui/CustomSelect';
@@ -85,6 +86,7 @@ export default function PopupD1Measurement({ leadId, sessionId, onSubmit, onClos
                 return;
             }
             setToast('Request submitted successfully!');
+            signalDesignNotificationChime(800);
             await onSubmit?.();
             setTimeout(() => {
                 setToast(null);

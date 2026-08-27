@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Manrope } from "next/font/google";
 import localFont from "next/font/local";
 import "./globals.css";
-import { AuthProvider } from "./auth/AuthContext";
+import { ClientProviders } from "./providers/ClientProviders";
 
 /* ── Body font: Manrope — Google Fonts ── */
 const manrope = Manrope({
@@ -45,9 +45,9 @@ export default function RootLayout({
         />
       </head>
       <body className={`${manrope.variable} antialiased`}>
-        <AuthProvider>
+        <ClientProviders>
           {children}
-        </AuthProvider>
+        </ClientProviders>
       </body>
     </html>
   );

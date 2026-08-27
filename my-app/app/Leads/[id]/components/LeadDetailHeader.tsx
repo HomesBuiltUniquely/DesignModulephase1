@@ -82,13 +82,13 @@ export default function LeadDetailHeader({
             {/* Top row: project info (left) | Prolance + avatars + HOLD/RESUME (right) – aligned in one row */}
             <div className="flex flex-wrap items-center justify-between gap-4 xl:gap-6">
                 <div className="flex flex-wrap items-baseline gap-6 xl:gap-8">
-                    <p className="font-bold text-purple-100">
+                    <p className="font-bold text-white">
                         <span className="text-gray-400">PID:</span> {formatHubPid(project.pid, project.id)}
                     </p>
-                    <p className="font-bold text-purple-100">
+                    <p className="font-bold text-white">
                         <span className="text-gray-400">Status:</span> {holdLabel}
                     </p>
-                    <p className="font-bold text-purple-100">
+                    <p className="font-bold text-white">
                         <span className="text-gray-400">Project Name:</span> {project.projectName}
                     </p>
                 </div>
@@ -102,7 +102,7 @@ export default function LeadDetailHeader({
                         type="button"
                         onClick={onProlanceClick}
                         disabled={prolanceBusy}
-                        className="border border-gray-400 rounded-md px-4 py-2 font-bold text-purple-100 hover:text-green-900 hover:bg-purple-50 transition-colors cursor-pointer"
+                        className="border border-gray-400 rounded-md px-4 py-2 font-bold text-white hover:text-[#32261C] hover:bg-[#F1F2F6] transition-colors cursor-pointer"
                     >
                         {prolanceBusy ? 'Prolance...' : 'Prolance'}
                     </button>
@@ -110,7 +110,7 @@ export default function LeadDetailHeader({
                         type="button"
                         onClick={onGetQuoteClick}
                         disabled={getQuoteBusy || !canGetQuote}
-                        className="border border-gray-400 rounded-md px-4 py-2 font-bold text-purple-100 hover:text-green-900 hover:bg-purple-50 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                        className="border border-gray-400 rounded-md px-4 py-2 font-bold text-white hover:text-[#32261C] hover:bg-[#F1F2F6] transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                     >
                         {getQuoteBusy ? 'Get Quote...' : 'Get Quote'}
                     </button>
@@ -132,7 +132,7 @@ export default function LeadDetailHeader({
                             ) : (
                                 <div
                                     key={imgdata.id}
-                                    className="w-10 h-10 xl:w-12 xl:h-12 rounded-full border-2 border-slate-800 flex items-center justify-center bg-slate-700 text-purple-100 text-xs xl:text-sm font-bold hover:z-10 relative"
+                                    className="w-10 h-10 xl:w-12 xl:h-12 rounded-full border-2 border-slate-800 flex items-center justify-center bg-slate-700 text-white text-xs xl:text-sm font-bold hover:z-10 relative"
                                     title={imgdata.name || undefined}
                                 >
                                     {initials}
@@ -142,7 +142,7 @@ export default function LeadDetailHeader({
                         <button
                             type="button"
                             onClick={onAddImage}
-                            className="w-10 h-10 xl:w-12 xl:h-12 rounded-full border-2 border-gray-400 flex items-center justify-center bg-slate-800 text-purple-100 hover:bg-purple-900/50 text-xl font-bold ml-4 z-10"
+                            className="w-10 h-10 xl:w-12 xl:h-12 rounded-full border-2 border-gray-400 flex items-center justify-center bg-slate-800 text-white hover:bg-[#EF0101]/80/50 text-xl font-bold ml-4 z-10"
                         >
                             +
                         </button>
@@ -152,14 +152,14 @@ export default function LeadDetailHeader({
                             type="button"
                             onClick={onHoldClick}
                             disabled={isCancelled}
-                            className="px-4 py-2 border border-gray-400 rounded-md font-bold text-purple-100 hover:text-green-900 hover:bg-purple-50 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                            className="px-4 py-2 border border-gray-400 rounded-md font-bold text-white hover:text-[#32261C] hover:bg-[#F1F2F6] transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                         >
                             HOLD
                         </button>
                         <button
                             type="button"
                             onClick={onResumeClick}
-                            className="px-4 py-2 border border-gray-400 rounded-md font-bold text-purple-100 hover:text-green-900 hover:bg-purple-50 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                            className="px-4 py-2 border border-gray-400 rounded-md font-bold text-white hover:text-[#32261C] hover:bg-[#F1F2F6] transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                             disabled={!project.isOnHold || isCancelled}
                         >
                             RESUME
@@ -180,7 +180,7 @@ export default function LeadDetailHeader({
                         <button
                             type="button"
                             onClick={onLeadSettingsClick}
-                            className="border border-slate-400 rounded-md px-4 py-2 font-bold text-purple-100 hover:text-green-900 hover:bg-purple-50 transition-colors cursor-pointer"
+                            className="border border-slate-400 rounded-md px-4 py-2 font-bold text-white hover:text-[#32261C] hover:bg-[#F1F2F6] transition-colors cursor-pointer"
                         >
                             Settings
                         </button>
@@ -191,7 +191,7 @@ export default function LeadDetailHeader({
             {/* Centered stepper progress bar – hidden for MMT */}
             {!hideStepper && (
             <div className="w-full flex justify-center mt-5 xl:mt-6">
-                <div className="w-full max-w-4xl rounded-xl bg-purple-50 shadow border border-purple-200/80 px-4 py-3 xl:px-6 xl:py-4">
+                <div className="w-full max-w-4xl rounded-xl bg-[#F1F2F6] shadow border border-[#DDCDC1]/80 px-4 py-3 xl:px-6 xl:py-4">
                     <div className="flex items-start justify-between gap-1 xl:gap-2">
                         {MileStonesArray.MilestonesName.map((milestone, index) => {
                             const isCompleted = index < currentMilestoneIndex;
@@ -203,7 +203,7 @@ export default function LeadDetailHeader({
                                         {index > 0 && (
                                             <div
                                                 className={`flex-1 h-0.5 xl:h-1 min-w-[6px] transition-colors rounded ${
-                                                    index <= currentMilestoneIndex ? 'bg-green-800' : 'bg-gray-300'
+                                                    index <= currentMilestoneIndex ? 'bg-[#EF0101]/90' : 'bg-gray-300'
                                                 }`}
                                                 style={{ opacity: index <= currentMilestoneIndex ? 1 : 0.5 }}
                                             />
@@ -211,9 +211,9 @@ export default function LeadDetailHeader({
                                         <div
                                             className={`flex-shrink-0 w-7 h-7 xl:w-8 xl:h-8 rounded-full flex items-center justify-center text-xs xl:text-sm font-bold transition-all ${
                                                 isCompleted
-                                                    ? 'bg-green-800 text-white'
+                                                    ? 'bg-[#EF0101]/90 text-white'
                                                     : isCurrent
-                                                        ? 'bg-white text-green-800 border-2 border-green-800'
+                                                        ? 'bg-white text-[#32261C] border-2 border-green-800'
                                                         : 'bg-white text-gray-400 border border-gray-300'
                                             }`}
                                         >
@@ -222,7 +222,7 @@ export default function LeadDetailHeader({
                                         {!isLast && (
                                             <div
                                                 className={`flex-1 h-0.5 xl:h-1 min-w-[6px] transition-colors rounded ${
-                                                    isCompleted ? 'bg-green-800' : 'bg-gray-300'
+                                                    isCompleted ? 'bg-[#EF0101]/90' : 'bg-gray-300'
                                                 }`}
                                                 style={{ opacity: isCompleted ? 1 : 0.5 }}
                                             />
@@ -230,7 +230,7 @@ export default function LeadDetailHeader({
                                     </div>
                                     <p
                                         className={`mt-1 text-center text-[10px] xl:text-xs font-medium max-w-[80px] leading-tight ${
-                                            isCurrent ? 'text-green-800' : isCompleted ? 'text-gray-700' : 'text-gray-400'
+                                            isCurrent ? 'text-[#32261C]' : isCompleted ? 'text-gray-700' : 'text-gray-400'
                                         }`}
                                         title={milestone.name}
                                     >
@@ -252,7 +252,7 @@ export default function LeadDetailHeader({
                         <button
                             key={tab}
                             type="button"
-                            className="min-w-[80px] py-2 font-bold text-purple-100 hover:text-green-900 hover:border-b-2 hover:border-green-800 hover:bg-purple-50 rounded transition-colors cursor-pointer text-sm xl:text-base"
+                            className="min-w-[80px] py-2 font-bold text-white hover:text-[#32261C] hover:border-b-2 hover:border-green-800 hover:bg-[#F1F2F6] rounded transition-colors cursor-pointer text-sm xl:text-base"
                         >
                             {tab}
                         </button>

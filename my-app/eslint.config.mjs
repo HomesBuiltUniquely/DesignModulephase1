@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    "public/pptx-lib/**",
+    "fix_*.js",
+    "fix_*.cjs",
+    "replace_selects.js",
   ]),
 ]);
 

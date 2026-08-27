@@ -99,7 +99,7 @@ export default function AdminCreateProjectManagerPage() {
       <main className="max-w-md mx-auto p-8">
         <div className="bg-white rounded-2xl shadow border border-gray-200 p-6">
           <p className="text-gray-600 text-sm mb-4">
-            Admins, Territory Design Managers, and Deputy General Managers can create Project Manager logins. They sign in with the main login page and use the dashboard. Email must end with @hubinterior.com.
+            Admins, Territorial Design Managers, and Deputy General Managers can create Project Manager logins. They sign in with the main login page and use the dashboard. Email must end with @hubinterior.com.
           </p>
           <form onSubmit={handleSubmit} className="space-y-4">
             {message && (

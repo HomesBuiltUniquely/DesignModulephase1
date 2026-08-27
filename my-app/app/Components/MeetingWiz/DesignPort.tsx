@@ -1,7 +1,15 @@
 "use client";
 import { useMemo, useState } from "react";
 import { useAuth } from "@/app/auth/AuthContext";
-import { MeetingWizDurationBadge } from "./MeetingWizTimer";
+import {
+  MeetingWizShell,
+  MeetingWizStepDots,
+  MeetingWizTopBar,
+  mwCard,
+  mwCta,
+  mwH1,
+  mwMuted,
+} from "./MeetingWizChrome";
 
 const TABS = ["ALL PROJECTS", "LIVING ROOM", "BEDROOM", "KITCHEN"] as const;
 
@@ -65,54 +73,35 @@ export default function DesignPort({ onPrev, onNext }: Props) {
   ];
 
   return (
-    <>
-      <main className="min-h-screen w-full bg-[#f0f4f8]">
-      <div className="flex items-center justify-between border-b border-gray-200 bg-white px-6 py-3">
-        <MeetingWizDurationBadge />
-        <div className="flex items-center gap-4">
-          <button onClick={onPrev} className="text-sm font-medium text-gray-500 transition hover:text-gray-700">
-            Previous
-          </button>
-          <button onClick={onNext} className="rounded-md bg-[var(--brand-primary)] px-6 py-2 text-sm font-semibold text-white transition hover:opacity-90">
-            Next Phase
-          </button>
-          <button className="text-xl font-light text-gray-500 transition hover:text-gray-800">×</button>
-        </div>
-      </div>
+    <MeetingWizShell>
+      <MeetingWizTopBar onPrev={onPrev} onNext={onNext} />
+      <MeetingWizStepDots current={3} />
 
-      <div className="flex flex-col items-center py-4">
-        <div className="flex items-center gap-1">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className={`h-1 rounded-full w-8 ${i < 3 ? "bg-[var(--brand-primary)]" : "bg-gray-300"}`} />
-          ))}
-        </div>
-        <span className="mt-1 text-xs font-medium uppercase tracking-widest text-gray-400">
-          Step 3 of 5
-        </span>
-      </div>
-
-      <div className="mx-auto max-w-4xl px-6 pb-28">
-        <h1 className="mb-1 text-3xl font-extrabold text-gray-900">3. Designer portfolio</h1>
-        <p className="mb-6 text-sm text-gray-500 max-w-lg">
+      <div className="mx-auto box-border w-full max-w-7xl flex-1 px-8 pb-28 pt-10 md:px-12">
+        <h1 className={mwH1}>3. Designer Portfolio</h1>
+        <p className={`${mwMuted} mb-10 max-w-2xl`}>
           A curated selection of spaces that define our craft, blending architectural precision with human-centric aesthetics.
         </p>
 
-        <div className="mb-6 flex flex-wrap gap-8">
+        <div className={`${mwCard} mb-10 flex flex-wrap gap-12 p-8`}>
           {stats.map((stat) => (
-            <div key={stat.label}>
-              <p className="text-2xl font-extrabold text-gray-900">{stat.value}</p>
-              <p className="whitespace-pre-line text-[10px] font-semibold uppercase tracking-widest text-gray-400">{stat.label}</p>
+            <div key={stat.label} className="group">
+              <p className="mb-1 text-3xl font-extrabold text-[var(--brand-dark)]">{stat.value}</p>
+              <p className="whitespace-pre-line text-[10px] font-bold uppercase tracking-widest text-[var(--foreground)]/50 transition-colors group-hover:text-[var(--brand-dark)]">{stat.label}</p>
             </div>
           ))}
         </div>
 
-        <div className="mb-6 flex items-center gap-2 flex-wrap">
+        <div className="mb-8 flex flex-wrap items-center gap-3">
           {TABS.map((tab) => (
             <button
               key={tab}
+              type="button"
               onClick={() => setActiveTab(tab)}
-              className={`rounded-full px-4 py-2 text-xs font-semibold uppercase tracking-wider transition ${
-                activeTab === tab ? "bg-gray-900 text-white" : "text-gray-400 hover:text-gray-700"
+              className={`cursor-pointer rounded-full px-5 py-2.5 text-xs font-bold uppercase tracking-wider transition-all duration-300 ${
+                activeTab === tab
+                  ? "bg-[var(--brand-dark)] text-[var(--card-bg)] shadow-md hover:-translate-y-0.5"
+                  : "border border-[var(--border-color)] bg-[var(--card-bg)] text-[var(--foreground)]/65 hover:border-[var(--brand-primary)] hover:text-[var(--brand-dark)] hover:shadow-sm"
               }`}
             >
               {tab}
@@ -121,36 +110,37 @@ export default function DesignPort({ onPrev, onNext }: Props) {
         </div>
 
         {filtered.length === 0 ? (
-          <p className="text-sm text-gray-500 py-8 text-center">
-            No projects in this category yet. Add them under Profile → Portfolio projects.
-          </p>
+          <div className={`${mwCard} p-12 text-center`}>
+            <p className="text-sm font-medium text-[var(--foreground)]/65">
+              No projects in this category yet. Add them under Profile → Portfolio projects.
+            </p>
+          </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
             {filtered.map((img, idx) => (
-              <div key={`${img.src}-${idx}`} className="relative h-48 overflow-hidden rounded-xl bg-gray-100">
+              <div key={`${img.src}-${idx}`} className="group relative h-64 cursor-pointer overflow-hidden rounded-2xl bg-[var(--hover-bg)] shadow-sm transition-all duration-500 hover:-translate-y-1 hover:shadow-xl">
                 {/* next/image needs known remote domains; profile uploads may be S3/API URLs */}
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={img.src}
                   alt={img.alt}
-                  className="h-full w-full object-cover transition duration-300 hover:scale-105"
+                  className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-110"
                 />
+                <div className="absolute inset-0 flex items-end bg-gradient-to-t from-black/70 to-transparent p-6 opacity-0 transition-opacity duration-300 group-hover:opacity-100">
+                   <p className="text-sm font-bold tracking-wide text-white drop-shadow-md">{img.alt}</p>
+                </div>
               </div>
             ))}
           </div>
         )}
       </div>
 
-      <div className="fixed bottom-6 left-1/2 -translate-x-1/2">
-        <button
-          onClick={() => onNext()}
-          className="flex items-center gap-3 rounded-full bg-[var(--brand-primary)] px-8 py-4 text-sm font-bold uppercase tracking-widest text-gray-900 shadow-lg transition hover:opacity-90"
-        >
+      <div className="fixed bottom-6 left-1/2 z-10 -translate-x-1/2">
+        <button type="button" onClick={() => onNext()} className={mwCta}>
           Next: Scope of Project
-          <span className="flex h-7 w-7 items-center justify-center rounded-full bg-gray-900 text-white">→</span>
+          <span className="flex h-7 w-7 items-center justify-center rounded-full bg-white/20 text-white">→</span>
         </button>
       </div>
-    </main>
-    </>
+    </MeetingWizShell>
   );
 }

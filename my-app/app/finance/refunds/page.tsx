@@ -181,7 +181,7 @@ function FinanceRefundsPageInner() {
               type="button"
               onClick={() => setQueueTab('pending')}
               className={`px-4 py-2 rounded-lg text-sm font-semibold ${
-                queueTab === 'pending' ? 'bg-rose-700 text-white' : 'border border-gray-300 hover:bg-gray-50'
+                queueTab === 'pending' ? 'bg-[#EF0101] text-white' : 'border border-gray-300 hover:bg-gray-50'
               }`}
             >
               Pending approval
@@ -190,7 +190,7 @@ function FinanceRefundsPageInner() {
               type="button"
               onClick={() => setQueueTab('approved')}
               className={`px-4 py-2 rounded-lg text-sm font-semibold ${
-                queueTab === 'approved' ? 'bg-teal-700 text-white' : 'border border-gray-300 hover:bg-gray-50'
+                queueTab === 'approved' ? 'bg-[#EF0101] text-white' : 'border border-gray-300 hover:bg-gray-50'
               }`}
             >
               Approved history
@@ -226,7 +226,7 @@ function FinanceRefundsPageInner() {
           </div>
         </div>
 
-        <div className="mt-4 p-4 rounded-xl border border-rose-200 bg-rose-50/60 flex flex-wrap gap-3 items-end">
+        <div className="mt-4 p-4 rounded-xl border border-[#EF0101]/30 bg-[#EF0101]/5/60 flex flex-wrap gap-3 items-end">
           <div className="min-w-[220px] flex-1">
             <label className="block text-xs font-semibold text-gray-600 mb-1">Customer name</label>
             <input
@@ -240,7 +240,7 @@ function FinanceRefundsPageInner() {
           <button
             type="button"
             onClick={() => void loadRefunds()}
-            className="px-4 py-2 rounded-lg bg-rose-700 text-white text-sm font-semibold hover:bg-rose-800"
+            className="px-4 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-semibold hover:bg-[#EF0101]/90"
           >
             Apply
           </button>
@@ -251,7 +251,7 @@ function FinanceRefundsPageInner() {
         <div className="mt-5 border border-gray-200 rounded-2xl overflow-x-auto">
           <div
             className={`min-w-[1100px] grid grid-cols-12 px-4 py-3 text-xs font-semibold ${
-              queueTab === 'pending' ? 'bg-rose-50 text-rose-900' : 'bg-teal-50 text-teal-900'
+              queueTab === 'pending' ? 'bg-[#EF0101]/5 text-[#EF0101]' : 'bg-[#DDCDC1]/20 text-[#32261C]'
             }`}
           >
             <div className="col-span-2">Refund ID</div>
@@ -277,7 +277,7 @@ function FinanceRefundsPageInner() {
               >
                 <div className="col-span-2 font-mono text-xs break-all" title={r.refundId}>
                   {r.refundId}
-                  <div className="mt-0.5 text-[10px] font-semibold uppercase text-rose-700">
+                  <div className="mt-0.5 text-[10px] font-semibold uppercase text-[#EF0101]">
                     {r.refundScope || 'deal'} · {r.status || (queueTab === 'pending' ? 'PENDING' : 'APPROVED')}
                   </div>
                 </div>
@@ -287,7 +287,7 @@ function FinanceRefundsPageInner() {
                     <div className="text-[10px] text-gray-500">{r.leadIdentifier}</div>
                   ) : null}
                 </div>
-                <div className="col-span-2 font-semibold text-rose-800">{formatInr(r.refundAmount)}</div>
+                <div className="col-span-2 font-semibold text-[#EF0101]">{formatInr(r.refundAmount)}</div>
                 <div className="col-span-2 text-xs text-gray-600">
                   <div>10%: {formatInr(r.amountTowardTenRefund)}</div>
                   <div>Extra: {formatInr(r.extraAmountRefund)}</div>
@@ -312,7 +312,7 @@ function FinanceRefundsPageInner() {
                 <div className="col-span-2 text-right">
                   <a
                     href={`/Leads/${r.designLeadId}`}
-                    className="text-indigo-700 hover:underline text-xs font-semibold"
+                    className="text-[#32261C] hover:underline text-xs font-semibold"
                   >
                     Lead #{r.designLeadId}
                   </a>
@@ -322,7 +322,7 @@ function FinanceRefundsPageInner() {
                         type="button"
                         onClick={() => void onApprove(r.refundId)}
                         disabled={approvingId === r.refundId}
-                        className="px-2 py-1 rounded bg-green-700 text-white text-xs font-semibold disabled:opacity-50"
+                        className="px-2 py-1 rounded bg-[#EF0101] text-white text-xs font-semibold disabled:opacity-50"
                       >
                         {approvingId === r.refundId ? '…' : 'Approve'}
                       </button>

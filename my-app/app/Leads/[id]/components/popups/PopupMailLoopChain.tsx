@@ -260,7 +260,7 @@ export default function PopupMailLoopChain({
         {teamEmailsLoaded && teamEmails && (
           <>
             {renderRoleSection('Admin(s) (CC)', adminsForLoop)}
-            {renderRoleSection('Territory Design Manager(s) (CC)', tdmForLoop)}
+            {renderRoleSection('Territorial Design Manager(s) (CC)', tdmForLoop)}
             {renderRoleSection('Design Manager(s) (CC)', dmForLoop)}
           </>
         )}

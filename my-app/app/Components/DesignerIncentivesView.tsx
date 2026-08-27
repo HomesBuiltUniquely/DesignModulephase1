@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { getApiBase, buildAuthHeaders } from '../lib/apiBase';
+import CustomDatePicker from '@/app/Components/ui/CustomDatePicker';
+import CustomSelect from '@/app/Components/ui/CustomSelect';
 import {
   buildDayActivitySummary,
   buildIncentivesFromDealInputs,
@@ -10,6 +12,7 @@ import {
   filterDealsByDate,
   formatInr,
   formatInrCompact,
+  formatTargetLakhs,
   getCurrentCycleIndex,
   getIncentiveCycleByIndex,
   listFortnightOptions,
@@ -35,23 +38,23 @@ const WEIGHTED_PART_META: Record<
   pre_d1_finance_10: {
     short: 'Part 1',
     title: 'Part 1 · Pre-D1 finance 10%',
-    accent: 'text-emerald-800',
-    ring: 'border-emerald-100 bg-emerald-50/50 hover:border-emerald-300',
-    selected: 'border-emerald-500 ring-2 ring-emerald-200 bg-emerald-50',
+    accent: 'text-[#32261C]',
+    ring: 'border-[#DDCDC1] bg-[#DDCDC1]/20 hover:border-emerald-300',
+    selected: 'border-[#EF0101] ring-2 ring-emerald-200 bg-[#DDCDC1]/20',
   },
   post_dqc1_design_10: {
     short: 'Part 2',
     title: 'Part 2 · Post-DQC1 design 10%',
-    accent: 'text-sky-800',
-    ring: 'border-sky-100 bg-sky-50/50 hover:border-sky-300',
-    selected: 'border-sky-500 ring-2 ring-sky-200 bg-sky-50',
+    accent: 'text-[#00B0ED]',
+    ring: 'border-[#00B0ED]/20 bg-[#00B0ED]/10 hover:border-[#00B0ED]/50',
+    selected: 'border-[#00B0ED] ring-2 ring-[#00B0ED]/20 bg-[#00B0ED]/10',
   },
   part3_forty_percent: {
     short: 'Part 3',
     title: 'Part 3 · 40% payment + upsale',
-    accent: 'text-violet-800',
-    ring: 'border-violet-100 bg-violet-50/50 hover:border-violet-300',
-    selected: 'border-violet-500 ring-2 ring-violet-200 bg-violet-50',
+    accent: 'text-[#32261C]',
+    ring: 'border-[#DDCDC1] bg-[#DDCDC1]/20 hover:border-[#EF0101]/50',
+    selected: 'border-[#EF0101] ring-2 ring-[#EF0101]/20 bg-[#DDCDC1]/20',
   },
 };
 
@@ -91,11 +94,11 @@ function MetricCard({
     >
       <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">{label}</p>
       <div className="mt-2 flex items-start gap-2">
-        <p className={`text-xl font-bold tracking-tight ${accent ? 'text-emerald-600' : 'text-gray-900'}`}>
+        <p className={`text-xl font-bold tracking-tight ${accent ? 'text-[#32261C]' : 'text-gray-900'}`}>
           {value}
         </p>
         {badge ? (
-          <span className="mt-0.5 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-bold text-emerald-600">
+          <span className="mt-0.5 rounded-full bg-[#DDCDC1]/20 px-1.5 py-0.5 text-[10px] font-bold text-[#32261C]">
             {badge}
           </span>
         ) : null}
@@ -128,7 +131,7 @@ function IncentiveJourney({
         <h2 className="text-sm font-bold uppercase tracking-wide text-gray-800">Incentive Journey</h2>
         <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
           Current slab:{' '}
-          <span className={currentSlabPct > 0 ? 'text-emerald-600' : 'text-amber-600'}>
+          <span className={currentSlabPct > 0 ? 'text-[#32261C]' : 'text-amber-600'}>
             {slabLabel}
           </span>
         </p>
@@ -148,7 +151,7 @@ function IncentiveJourney({
             >
               <div
                 className={`h-4 w-4 rounded-full border-2 bg-white ${
-                  clamped >= m ? 'border-emerald-500' : 'border-gray-300'
+                  clamped >= m ? 'border-[#EF0101]' : 'border-gray-300'
                 }`}
               />
             </div>
@@ -159,10 +162,10 @@ function IncentiveJourney({
           className="absolute top-0 z-[2] -translate-x-1/2"
           style={{ left: `${markerLeft}%` }}
         >
-          <div className="whitespace-nowrap rounded-md bg-emerald-600 px-2 py-1 text-[10px] font-bold uppercase text-white shadow">
+          <div className="whitespace-nowrap rounded-md bg-[#EF0101] px-2 py-1 text-[10px] font-bold uppercase text-white shadow">
             You are here ({achievementPct}%)
           </div>
-          <div className="mx-auto mt-1 h-4 w-0.5 bg-emerald-600" />
+          <div className="mx-auto mt-1 h-4 w-0.5 bg-[#EF0101]" />
         </div>
 
         <div className="pointer-events-none absolute inset-x-1 bottom-0">
@@ -170,7 +173,7 @@ function IncentiveJourney({
             <span
               key={`label-${m}`}
               className={`absolute -translate-x-1/2 text-[11px] font-semibold ${
-                clamped >= m ? 'text-emerald-700' : 'text-gray-500'
+                clamped >= m ? 'text-[#32261C]' : 'text-gray-500'
               }`}
               style={{ left: `${m}%` }}
             >
@@ -319,7 +322,7 @@ function IndividualIncentivesPanel({
               Completed cycle
             </span>
           )}
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-rose-50 px-3 py-1.5 text-[11px] font-bold uppercase tracking-wide text-rose-600 ring-1 ring-rose-200">
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-[#EF0101]/5 px-3 py-1.5 text-[11px] font-bold uppercase tracking-wide text-[#EF0101] ring-1 ring-[#EF0101]/20">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5">
               <path d="M11.983 1.907a.75.75 0 0 0-1.292-.657l-8.5 9.5A.75.75 0 0 0 2.75 12h6.572l-1.305 6.093a.75.75 0 0 0 1.292.657l8.5-9.5A.75.75 0 0 0 17.25 8h-6.572l1.305-6.093Z" />
             </svg>
@@ -329,12 +332,12 @@ function IndividualIncentivesPanel({
       </div>
 
       {dayActivity ? (
-        <section className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4 shadow-sm">
+        <section className="rounded-xl border border-[#DDCDC1] bg-[#DDCDC1]/20 p-4 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-sm font-bold uppercase tracking-wide text-emerald-900">
+            <h3 className="text-sm font-bold uppercase tracking-wide text-[#32261C]">
               Activity on {dayActivity.dateLabel}
             </h3>
-            <span className="text-xs text-emerald-800">{dayActivity.dealCount} deal(s)</span>
+            <span className="text-xs text-[#32261C]">{dayActivity.dealCount} deal(s)</span>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
             <MetricCard label="Day Weighted" value={formatInr(dayActivity.revenue)} />
@@ -343,7 +346,7 @@ function IndividualIncentivesPanel({
             <MetricCard label="48h Closures" value={String(dayActivity.fortyEightHourClosures)} />
           </div>
           {dayActivity.dealCount === 0 ? (
-            <p className="mt-3 text-sm text-emerald-900/70">No deals recorded on this date.</p>
+            <p className="mt-3 text-sm text-[#32261C]/70">No deals recorded on this date.</p>
           ) : null}
         </section>
       ) : null}
@@ -351,7 +354,7 @@ function IndividualIncentivesPanel({
       <section
         className={`rounded-xl border p-4 shadow-sm ${
           data.meetingsEligible
-            ? 'border-emerald-200 bg-emerald-50/50'
+            ? 'border-[#DDCDC1] bg-[#DDCDC1]/20/50'
             : 'border-amber-200 bg-amber-50/70'
         }`}
       >
@@ -438,11 +441,11 @@ function IndividualIncentivesPanel({
             </p>
           </div>
           <div className="text-right text-sm">
-            <p className="font-semibold text-emerald-700">
+            <p className="font-semibold text-[#32261C]">
               Net weighted: {formatInr(data.weightedBreakdown.totalWeighted)}
             </p>
             {data.weightedBreakdown.totalDownsaleDeduction > 0 ? (
-              <p className="mt-0.5 text-xs text-rose-700">
+              <p className="mt-0.5 text-xs text-[#EF0101]">
                 Gross {formatInr(data.weightedBreakdown.totalGrossWeighted)} − downsale{' '}
                 {formatInr(data.weightedBreakdown.totalDownsaleDeduction)} (50% of quote drop vs Part
                 1 · {data.weightedBreakdown.dealsWithDownsale} deal
@@ -472,7 +475,7 @@ function IndividualIncentivesPanel({
               <strong>50%</strong> of that quotation · {data.weightedBreakdown.dealsWithPart1}{' '}
               deal(s)
             </p>
-            <p className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
+            <p className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-[#32261C]">
               {selectedPart === 'pre_d1_finance_10' ? 'Showing leads · click to hide' : 'Click to view leads'}
             </p>
           </button>
@@ -496,7 +499,7 @@ function IndividualIncentivesPanel({
               <strong>finance approval</strong> → credit <strong>25%</strong> of the{' '}
               <strong>current quotation</strong> · {data.weightedBreakdown.dealsWithPart2} deal(s)
             </p>
-            <p className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-sky-700">
+            <p className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-[#00B0ED]">
               {selectedPart === 'post_dqc1_design_10' ? 'Showing leads · click to hide' : 'Click to view leads'}
             </p>
           </button>
@@ -520,7 +523,7 @@ function IndividualIncentivesPanel({
               <strong>25%</strong> of current quote, then <strong>50%</strong> of total downsale is
               deducted from gross · {data.weightedBreakdown.dealsWithPart3} deal(s)
             </p>
-            <p className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-violet-700">
+            <p className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-[#32261C]">
               {selectedPart === 'part3_forty_percent' ? 'Showing leads · click to hide' : 'Click to view leads'}
             </p>
           </button>
@@ -581,17 +584,17 @@ function IndividualIncentivesPanel({
                         </td>
                         <td className="py-2.5 pr-3 text-gray-800">{formatInr(lead.dealValue)}</td>
                         {selectedPart === 'part3_forty_percent' ? (
-                          <td className="py-2.5 pr-3 text-violet-700">
+                          <td className="py-2.5 pr-3 text-[#32261C]">
                             {lead.stageUpsale > 0 ? `+${formatInr(lead.stageUpsale)}` : '—'}
                           </td>
                         ) : null}
-                        <td className="py-2.5 pr-3 text-rose-700">
+                        <td className="py-2.5 pr-3 text-[#EF0101]">
                           {lead.downsaleAmount > 0 ? `−${formatInr(lead.downsaleAmount)}` : '—'}
                         </td>
-                        <td className="py-2.5 font-semibold text-emerald-700">
+                        <td className="py-2.5 font-semibold text-[#32261C]">
                           {formatInr(lead.stageWeighted)}
                           {lead.downsaleDeduction > 0 ? (
-                            <span className="mt-0.5 block text-[10px] font-medium text-rose-600">
+                            <span className="mt-0.5 block text-[10px] font-medium text-[#EF0101]">
                               Net deal: {formatInr(lead.weightedRevenue)} (after −
                               {formatInr(lead.downsaleDeduction)} downsale)
                             </span>
@@ -632,14 +635,14 @@ function IndividualIncentivesPanel({
                     <tr
                       key={slab.targetPct}
                       className={
-                        active ? 'bg-emerald-50/80 text-gray-900' : 'border-b border-gray-50 text-gray-700'
+                        active ? 'bg-[#DDCDC1]/20 text-gray-900' : 'border-b border-gray-50 text-gray-700'
                       }
                     >
                       <td className="py-3 pr-3 font-semibold">
                         <span className="inline-flex items-center gap-2">
                           {slab.targetPct}%
                           {active ? (
-                            <span className="rounded-full bg-emerald-500 px-2 py-0.5 text-[10px] font-bold uppercase text-white">
+                            <span className="rounded-full bg-[#DDCDC1]/20 px-2 py-0.5 text-[10px] font-bold uppercase text-white">
                               Active
                             </span>
                           ) : reached ? (
@@ -674,7 +677,7 @@ function IndividualIncentivesPanel({
               {formatInr(data.weightedBreakdown.totalGrossWeighted)} gross
             </p>
             {data.weightedBreakdown.totalDownsaleDeduction > 0 ? (
-              <p className="mt-1 text-[10px] text-rose-300">
+              <p className="mt-1 text-[10px] text-[#DDCDC1]">
                 − downsale {formatInr(data.weightedBreakdown.totalDownsaleDeduction)} (50% of Part 1
                 − current quote)
               </p>
@@ -865,7 +868,7 @@ function IndividualIncentivesPanel({
                               }
                               className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
                                 s.cleared
-                                  ? 'bg-emerald-100 text-emerald-800'
+                                  ? 'bg-[#DDCDC1]/40 text-[#32261C]'
                                   : pendingFinance
                                     ? 'bg-amber-100 text-amber-800'
                                     : 'bg-gray-100 text-gray-500'
@@ -890,10 +893,10 @@ function IndividualIncentivesPanel({
                       </div>
                       <div className="mt-1 text-[10px] text-gray-500">{deal.contributionPct}% weight</div>
                     </td>
-                    <td className="py-3.5 pr-4 font-semibold text-emerald-700">
+                    <td className="py-3.5 pr-4 font-semibold text-[#32261C]">
                       {formatInr(deal.weightedRevenue)}
                       {deal.downsaleDeduction > 0 ? (
-                        <div className="mt-0.5 text-[10px] font-medium text-rose-600">
+                        <div className="mt-0.5 text-[10px] font-medium text-[#EF0101]">
                           Gross {formatInr(deal.grossWeightedRevenue)} − downsale{' '}
                           {formatInr(deal.downsaleDeduction)}
                         </div>
@@ -1012,7 +1015,10 @@ function TeamIncentivesPanel({
                   <tr key={row.designerId} className="border-b border-gray-50 last:border-0">
                     <td className="py-3.5 pr-4">
                       <div className="font-medium text-gray-900">{row.designerName}</div>
-                      <div className="text-xs capitalize text-gray-500">{row.role.replace(/_/g, ' ')}</div>
+                      <div className="text-xs text-gray-500">
+                        {row.subRole ? `${row.subRole} · ` : ''}
+                        {row.role.replace(/_/g, ' ')}
+                      </div>
                     </td>
                     <td className="py-3.5 pr-4 text-gray-800">{formatInr(row.totalTarget)}</td>
                     <td className="py-3.5 pr-4 text-gray-800">{formatInr(row.revenueAchieved)}</td>
@@ -1034,7 +1040,7 @@ function TeamIncentivesPanel({
                         </span>
                         <span
                           className={`text-[10px] font-bold uppercase tracking-wide ${
-                            row.meetingsEligible ? 'text-emerald-600' : 'text-amber-600'
+                            row.meetingsEligible ? 'text-[#32261C]' : 'text-amber-600'
                           }`}
                         >
                           {row.meetingsEligible ? 'Eligible' : 'Locked'}
@@ -1042,11 +1048,11 @@ function TeamIncentivesPanel({
                       </div>
                     </td>
                     <td className="py-3.5 pr-4">
-                      <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700">
+                      <span className="rounded-full bg-[#DDCDC1]/20 px-2 py-0.5 text-[11px] font-bold text-[#32261C]">
                         {row.currentSlabPct > 0 ? `${row.currentSlabPct}%` : '—'}
                       </span>
                     </td>
-                    <td className="py-3.5 pr-4 font-semibold text-emerald-700">
+                    <td className="py-3.5 pr-4 font-semibold text-[#32261C]">
                       {formatInr(row.incentiveEarned)}
                     </td>
                     <td className="py-3.5 pr-4 text-gray-800">{formatInr(row.onSpotBonus)}</td>
@@ -1054,7 +1060,7 @@ function TeamIncentivesPanel({
                       <button
                         type="button"
                         onClick={() => onOpenDesigner(row.designerId)}
-                        className="rounded-lg border border-emerald-600 px-2.5 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
+                        className="rounded-lg border border-[#EF0101] px-2.5 py-1 text-xs font-semibold text-[#32261C] hover:bg-[#DDCDC1]/20"
                       >
                         Individual
                       </button>
@@ -1117,7 +1123,13 @@ export default function DesignerIncentivesView() {
       const body = await res.json();
       const deals = (Array.isArray(body?.deals) ? body.deals : []) as IncentiveDealInput[];
       const meetingsCompleted = Number(body?.meetingsCompleted) || 0;
-      return buildIncentivesFromDealInputs(member, cycle, deals, meetingsCompleted);
+      const resolvedMember: IncentiveMember = {
+        id: Number(body?.designer?.id) || member.id,
+        name: String(body?.designer?.name || member.name),
+        role: String(body?.designer?.role || member.role),
+        subRole: body?.designer?.subRole ?? body?.designer?.sub_role ?? member.subRole ?? null,
+      };
+      return buildIncentivesFromDealInputs(resolvedMember, cycle, deals, meetingsCompleted);
     },
     [apiBase, cycle, cycleIndex, sessionId],
   );
@@ -1125,7 +1137,12 @@ export default function DesignerIncentivesView() {
   const loadMembers = useCallback(async () => {
     if (!user) return;
     if (isDesignerOnly) {
-      const self: IncentiveMember = { id: user.id, name: user.name, role: user.role };
+      const self: IncentiveMember = {
+        id: user.id,
+        name: user.name,
+        role: user.role,
+        subRole: user.subRole ?? null,
+      };
       setMembers([self]);
       setSelectedId(user.id);
       return;
@@ -1142,13 +1159,20 @@ export default function DesignerIncentivesView() {
       });
       if (assignableRes.ok) {
         const data = await assignableRes.json();
-        const raw = (data?.designers || data || []) as { id: number; name: string; role?: string }[];
+        const raw = (data?.designers || data || []) as {
+          id: number;
+          name: string;
+          role?: string;
+          subRole?: string | null;
+          sub_role?: string | null;
+        }[];
         list = raw
           .filter((d) => Number.isFinite(Number(d.id)))
           .map((d) => ({
             id: Number(d.id),
             name: String(d.name || 'Designer'),
             role: String(d.role || 'designer'),
+            subRole: d.subRole ?? d.sub_role ?? null,
           }));
       }
       if (list.length === 0) {
@@ -1158,13 +1182,20 @@ export default function DesignerIncentivesView() {
         });
         if (designersRes.ok) {
           const data = await designersRes.json();
-          const raw = (data?.designers || []) as { id: number; name: string; role?: string }[];
+          const raw = (data?.designers || []) as {
+            id: number;
+            name: string;
+            role?: string;
+            subRole?: string | null;
+            sub_role?: string | null;
+          }[];
           list = raw
             .filter((d) => Number.isFinite(Number(d.id)))
             .map((d) => ({
               id: Number(d.id),
               name: String(d.name || 'Designer'),
               role: String(d.role || 'designer'),
+              subRole: d.subRole ?? d.sub_role ?? null,
             }));
         }
       }
@@ -1204,7 +1235,12 @@ export default function DesignerIncentivesView() {
       const member =
         selectedMember ||
         (user
-          ? ({ id: user.id, name: user.name, role: user.role } as IncentiveMember)
+          ? ({
+              id: user.id,
+              name: user.name,
+              role: user.role,
+              subRole: user.subRole ?? null,
+            } as IncentiveMember)
           : null);
       if (!member) {
         setIndividualData(null);
@@ -1251,6 +1287,7 @@ export default function DesignerIncentivesView() {
             designerId: d.designerId,
             designerName: d.designerName,
             role: m.role,
+            subRole: d.subRole,
             totalTarget: d.totalTarget,
             revenueAchieved: d.revenueAchieved,
             achievementPct: d.achievementPct,
@@ -1306,13 +1343,15 @@ export default function DesignerIncentivesView() {
   };
 
   return (
-    <div className="min-h-[calc(100vh-3.5rem)] bg-slate-50">
+    <div className="min-h-[calc(100vh-3.5rem)] bg-[#F1F2F6]">
       <div className="mx-auto max-w-7xl space-y-5 px-4 py-6 sm:px-6 lg:px-8">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold tracking-tight text-gray-900">Performance Incentives</h1>
             <p className="mt-1 text-sm text-gray-500">
-              ₹15L per fortnight (1–15 / 16–month end) · ₹30L per month
+              {viewMode === 'individual' && individualData
+                ? `${individualData.subRole || 'ID'} target ${formatTargetLakhs(individualData.totalTarget)} this fortnight (${formatTargetLakhs(individualData.monthlyTarget)} / month)`
+                : 'Fortnight target is half of the monthly sub-role target (JID ₹25L · ID ₹30L · SID ₹35L · PD ₹38L)'}
               {isManager ? ` · ${scopeLabel}` : null}
             </p>
           </div>
@@ -1325,7 +1364,7 @@ export default function DesignerIncentivesView() {
                   onClick={() => setViewMode('team')}
                   className={`rounded-md px-3 py-1.5 text-xs font-semibold uppercase tracking-wide ${
                     viewMode === 'team'
-                      ? 'bg-emerald-500 text-white'
+                      ? 'bg-[#DDCDC1]/200 text-white'
                       : 'text-gray-600 hover:bg-gray-50'
                   }`}
                 >
@@ -1336,7 +1375,7 @@ export default function DesignerIncentivesView() {
                   onClick={() => setViewMode('individual')}
                   className={`rounded-md px-3 py-1.5 text-xs font-semibold uppercase tracking-wide ${
                     viewMode === 'individual'
-                      ? 'bg-emerald-500 text-white'
+                      ? 'bg-[#DDCDC1]/200 text-white'
                       : 'text-gray-600 hover:bg-gray-50'
                   }`}
                 >
@@ -1350,23 +1389,13 @@ export default function DesignerIncentivesView() {
                 <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
                   Designer
                 </span>
-                <select
-                  className="min-w-[200px] rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                  value={selectedId ?? ''}
-                  onChange={(e) => setSelectedId(Number(e.target.value))}
+                <CustomSelect
+                  value={selectedId ? String(selectedId) : ''}
+                  onChange={(val) => setSelectedId(Number(val))}
+                  options={members.length === 0 ? [{ value: '', label: 'No designers' }] : members.map((m) => ({ value: String(m.id), label: `${m.name}${m.role !== 'designer' ? ` (${m.role.replace(/_/g, ' ')})` : ''}` }))}
                   disabled={loadingMembers || members.length === 0}
-                >
-                  {members.length === 0 ? (
-                    <option value="">No designers</option>
-                  ) : (
-                    members.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name}
-                        {m.role !== 'designer' ? ` (${m.role.replace(/_/g, ' ')})` : ''}
-                      </option>
-                    ))
-                  )}
-                </select>
+                  className="min-w-[200px]"
+                />
               </label>
             ) : null}
           </div>
@@ -1377,30 +1406,22 @@ export default function DesignerIncentivesView() {
             <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
               Fortnight (1–15 / 16–end)
             </span>
-            <select
-              className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-              value={cycleIndex}
-              onChange={(e) => onFortnightChange(Number(e.target.value))}
-            >
-              {fortnightOptions.map((opt) => (
-                <option key={opt.cycleIndex} value={opt.cycleIndex}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
+            <CustomSelect
+              value={String(cycleIndex)}
+              onChange={(val) => onFortnightChange(Number(val))}
+              options={fortnightOptions.map((opt) => ({ value: String(opt.cycleIndex), label: opt.label }))}
+            />
           </label>
 
           <label className="flex min-w-[180px] flex-col gap-1 text-sm text-gray-600">
             <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
               Date filter
             </span>
-            <input
-              type="date"
-              className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+            <CustomDatePicker
               value={selectedDate}
               min={selectedFortnight?.startIso}
               max={selectedFortnight?.endIso}
-              onChange={(e) => setSelectedDate(e.target.value)}
+              onChange={(date) => setSelectedDate(date)}
             />
           </label>
 

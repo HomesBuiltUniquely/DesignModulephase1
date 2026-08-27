@@ -130,7 +130,7 @@ export default function MilestonesCard({
       {isMaximized ? (
         <div className="flex-shrink-0 flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-gray-200">
           <div>
-            <h2 className="text-xl font-bold text-green-950">
+            <h2 className="text-xl font-bold text-[#32261C]">
               Project Tracker
             </h2>
             <p className="text-sm text-gray-500 mt-0.5">Swipe milestones →</p>
@@ -179,7 +179,7 @@ export default function MilestonesCard({
             </button>
             <button
               type="button"
-              className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700"
+              className="flex items-center gap-2 px-4 py-2 bg-[#00B0ED] text-white text-sm font-medium rounded-lg hover:bg-[#00B0ED]/90"
             >
               <span className="text-lg leading-none">+</span> New Milestone
             </button>
@@ -207,7 +207,7 @@ export default function MilestonesCard({
         </div>
       ) : (
         <div className="mb-4 flex flex-shrink-0 items-center justify-between">
-          <h2 className="text-xl font-bold text-green-950">Project Tracker</h2>
+          <h2 className="text-xl font-bold text-[#32261C]">Project Tracker</h2>
           <button
             onClick={onToggleMaximize}
             className="p-2 rounded-full bg-white border border-gray-200 hover:bg-gray-50 shadow-sm"
@@ -327,27 +327,27 @@ export default function MilestonesCard({
                 >
                   <div className="mb-4 flex flex-shrink-0 justify-between">
                     <span
-                      className={`text-xs font-bold uppercase tracking-wide ${isCurrent ? "text-green-900" : isNextOrLater ? "text-gray-400" : "text-gray-500"}`}
+                      className={`text-xs font-bold uppercase tracking-wide ${isCurrent ? "text-[#32261C]" : isNextOrLater ? "text-gray-400" : "text-gray-500"}`}
                     >
                       Milestone {String(milestone.id === 7 ? 0 : milestone.id + 1).padStart(2, "0")}
                     </span>
                     <span
-                      className={`text-xs ml-2 ${isNextOrLater ? "text-green-400" : "text-green-600"}`}
+                      className={`text-xs ml-2 ${isNextOrLater ? "text-[#32261C]/70" : "text-[#32261C]"}`}
                     >
                       {dateRange}
                     </span>
                   </div>
                   <div
-                    className={`flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border p-4 shadow-sm transition-all ${isCurrent ? "bg-white border-green-900 ring-2 ring-green-200" : isNextOrLater ? "bg-gray-100 border-gray-200 opacity-75" : "bg-white border-gray-200"}`}
+                    className={`flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border p-4 shadow-sm transition-all ${isCurrent ? "bg-white border-[#EF0101] ring-2 ring-[#EF0101]/20" : isNextOrLater ? "bg-gray-100 border-gray-200 opacity-75" : "bg-white border-gray-200"}`}
                   >
                     <h3
-                      className={`text-lg font-bold mb-3 flex-shrink-0 ${isNextOrLater ? "text-gray-500" : "text-green-950"}`}
+                      className={`text-lg font-bold mb-3 flex-shrink-0 ${isNextOrLater ? "text-gray-500" : "text-[#32261C]"}`}
                     >
                       {milestone.name}
                     </h3>
                     <div className="h-2 bg-gray-200 rounded-full overflow-hidden mb-4 flex-shrink-0">
                       <div
-                        className="h-full bg-blue-500 rounded-full transition-all"
+                        className="h-full bg-[#00B0ED] rounded-full transition-all"
                         style={{ width: `${progressPercent}%` }}
                       />
                     </div>
@@ -394,11 +394,11 @@ export default function MilestonesCard({
                                 onOpenTask(milestoneIndex, task);
                               }
                             }}
-                            className={`relative w-full text-left p-3 transition-colors flex items-start gap-3 cursor-pointer ${isNextOrLater ? "hover:bg-gray-200/50 opacity-90" : "hover:bg-gray-50"} ${status.icon === "current" ? "border-l-4 border-blue-500 pl-2" : ""}`}
+                            className={`relative w-full text-left p-3 transition-colors flex items-start gap-3 cursor-pointer ${isNextOrLater ? "hover:bg-gray-200/50 opacity-90" : "hover:bg-gray-50"} ${status.icon === "current" ? "border-l-4 border-[#00B0ED] pl-2" : ""}`}
                           >
                             <span className="flex-shrink-0 mt-0.5">
                               {status.icon === "completed" && (
-                                <span className="w-6 h-6 rounded-full bg-green-500 flex items-center justify-center">
+                                <span className="w-6 h-6 rounded-full bg-[#EF0101]/80 flex items-center justify-center">
                                   <svg
                                     xmlns="http://www.w3.org/2000/svg"
                                     fill="none"
@@ -416,8 +416,8 @@ export default function MilestonesCard({
                                 </span>
                               )}
                               {status.icon === "current" && (
-                                <span className="w-6 h-6 rounded-full border-2 border-blue-500 flex items-center justify-center mt-1">
-                                  <span className="w-2 h-2 rounded-full bg-blue-600" />
+                                <span className="w-6 h-6 rounded-full border-2 border-[#00B0ED] flex items-center justify-center mt-1">
+                                  <span className="w-2 h-2 rounded-full bg-[#00B0ED]" />
                                 </span>
                               )}
                               {status.icon === "delayed" && (
@@ -462,9 +462,9 @@ export default function MilestonesCard({
                                   key={tag}
                                   className={`text-[10px] font-semibold px-2.5 py-1 rounded-md ${
                                     tag === "ON-TIME"
-                                      ? "bg-green-200 text-green-900 font-bold"
+                                      ? "bg-[#DDCDC1] text-[#32261C] font-bold"
                                       : tag === "CURRENT" || tag === "ACTION"
-                                        ? "bg-blue-200 text-blue-700"
+                                        ? "bg-[#00B0ED]/25 text-[#00B0ED]"
                                         : tag === "DELAYED"
                                           ? "bg-amber-200 text-amber-700"
                                           : "bg-gray-100 border border-gray-300 text-gray-500"
@@ -552,7 +552,7 @@ export default function MilestonesCard({
           </span>
           <span className="text-gray-600">
             TEAM VELOCITY:{" "}
-            <strong className="text-green-600">+12% vs Baseline</strong>
+            <strong className="text-[#32261C]">+12% vs Baseline</strong>
           </span>
           <span className="text-gray-600 flex items-center gap-2">
             ACTIVE MEMBERS
@@ -571,7 +571,7 @@ export default function MilestonesCard({
             Last synchronized: 2 mins ago
             <button
               type="button"
-              className="text-blue-600 hover:underline inline-flex items-center gap-1"
+              className="text-[#00B0ED] hover:underline inline-flex items-center gap-1"
             >
               <svg
                 xmlns="http://www.w3.org/2000/svg"

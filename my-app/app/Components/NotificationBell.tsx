@@ -1,80 +1,27 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useAuth } from '../auth/AuthContext';
+import { primeNotificationSound } from '../lib/notificationSound';
+import { useDesignNotifications, isNotificationUnread, type DesignNotificationItem } from './DesignNotificationProvider';
 import {
-  fetchDesignNotificationCounts,
-  fetchDesignNotifications,
-  fetchDesignNotificationWsUrl,
-  formatNotificationSubtitle,
-  formatNotificationTitle,
   formatTimeAgo,
+  getCategoryLabel,
+  getNotificationListTitle,
+  getNotificationSubtitle,
   groupNotificationsByDay,
-  markAllDesignNotificationsRead,
-  markDesignNotificationRead,
-  notificationCategoryLabel,
+  matchesNotificationFilter,
   notificationCategoryTone,
+  notificationTabIdsForRole,
+  NOTIFICATION_FILTERS,
   quoteLinkFromNotification,
-  type DesignNotificationItem,
-} from '../../lib/design-notifications';
-import { playNotificationSound, unlockNotificationSound } from '../../lib/notification-sound';
-import P2PCongratulationsModal from './P2PCongratulationsModal';
-
-const SOUND_MUTE_KEY = 'design_module_notifications_sound_muted';
-/** Backup poll if the live socket is down. */
-const POLL_MS_FALLBACK = 30_000;
-const LIST_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
-
-type FilterKey =
-  | 'ALL'
-  | 'LEAD'
-  | 'MILESTONE'
-  | 'PAYMENT'
-  | 'MEETING'
-  | 'DQC'
-  | 'MMT'
-  | 'ASSIGNMENT'
-  | 'QUOTE';
+  type NotificationFilterId,
+} from './notificationBellHelpers';
 
 type Props = {
-  sessionId: string | null;
-  userId?: number | null;
-  userRole?: string | null;
+  className?: string;
 };
-
-const ALL_TAB_DEFS: { key: FilterKey; label: string }[] = [
-  { key: 'ALL', label: 'All' },
-  { key: 'LEAD', label: 'Leads' },
-  { key: 'MILESTONE', label: 'Milestones' },
-  { key: 'PAYMENT', label: 'Payments' },
-  { key: 'MEETING', label: 'Meetings' },
-  { key: 'DQC', label: 'DQC' },
-  { key: 'MMT', label: 'MMT' },
-  { key: 'ASSIGNMENT', label: 'Assign' },
-  { key: 'QUOTE', label: 'Quote' },
-];
-
-/** Tabs that match types this role actually receives (see designNotifyAudience.ts). */
-function tabKeysForRole(role: string | null | undefined): FilterKey[] {
-  const r = (role || '').toLowerCase();
-  if (r === 'finance' || r === 'dqc_manager' || r === 'dqe') return ['ALL'];
-  if (r === 'mmt_manager' || r === 'mmt_executive') return ['ALL', 'MMT', 'ASSIGNMENT'];
-  if (r === 'admin' || r === 'deputy_general_manager') {
-    return ['ALL', 'LEAD', 'PAYMENT', 'DQC', 'ASSIGNMENT', 'QUOTE'];
-  }
-  if (r === 'territorial_design_manager') {
-    return ['ALL', 'LEAD', 'MILESTONE', 'PAYMENT', 'DQC', 'ASSIGNMENT', 'QUOTE'];
-  }
-  if (r === 'project_manager' || r === 'senior_project_manager') {
-    return ['ALL', 'MILESTONE', 'MEETING', 'DQC', 'MMT', 'ASSIGNMENT'];
-  }
-  // Designer + design manager (and anyone else on the design tree)
-  return ALL_TAB_DEFS.map((t) => t.key);
-}
-
-function isUnreadItem(item: DesignNotificationItem): boolean {
-  return item.read_at == null || item.read_at === '';
-}
 
 function TypeIcon({ type }: { type: string }) {
   const t = (type || '').toUpperCase();
@@ -115,7 +62,7 @@ function TypeIcon({ type }: { type: string }) {
       </svg>
     );
   }
-  if (t === 'QUOTE') {
+  if (t === 'QUOTE' || t === 'QUOTATION') {
     return (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} className={common}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
@@ -136,332 +83,128 @@ function TypeIcon({ type }: { type: string }) {
   );
 }
 
-function matchesFilter(item: DesignNotificationItem, filter: FilterKey): boolean {
-  const t = (item.notification_type || '').toUpperCase();
-  if (filter === 'ALL') return true;
-  if (filter === 'LEAD') return t === 'LEAD' || t === 'PHASE';
-  if (filter === 'MILESTONE') return t === 'MILESTONE' || t === 'P2P';
-  if (filter === 'PAYMENT') return t === 'PAYMENT';
-  if (filter === 'MEETING') return t === 'MEETING';
-  if (filter === 'DQC') return t === 'DQC' || t === 'PM';
-  if (filter === 'MMT') return t === 'MMT';
-  if (filter === 'ASSIGNMENT') return t === 'ASSIGNMENT';
-  if (filter === 'QUOTE') return t === 'QUOTE';
-  return false;
-}
-
-function p2pCongratsStorageKey(leadId: number | null | undefined, itemId: number) {
-  return `design_p2p_congrats_${leadId || itemId}`;
-}
-
-function designerNameOf(item: DesignNotificationItem): string {
-  const p = item.payload || {};
-  return String(p.designer_name || p.designerName || '').trim();
-}
-
-export default function NotificationBell({ sessionId, userId, userRole }: Props) {
+export default function NotificationBell({ className = '' }: Props) {
   const router = useRouter();
-  const [open, setOpen] = useState(false);
-  const [items, setItems] = useState<DesignNotificationItem[]>([]);
-  const [badge, setBadge] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [soundMuted, setSoundMuted] = useState(false);
-  const [filter, setFilter] = useState<FilterKey>('ALL');
-  const [p2pCongrats, setP2pCongrats] = useState<{ designerName: string; leadName: string } | null>(
-    null,
-  );
+  const { user } = useAuth();
   const panelRef = useRef<HTMLDivElement>(null);
-  const knownIdsRef = useRef<Set<number> | null>(null);
-  const primedRef = useRef(false);
-  const loadInFlightRef = useRef(false);
+  const [filter, setFilter] = useState<NotificationFilterId>('all');
 
-  const listSinceIso = () => new Date(Date.now() - LIST_WINDOW_MS).toISOString();
-
-  const isSoundMuted = () => {
-    if (typeof window === 'undefined') return false;
-    return localStorage.getItem(SOUND_MUTE_KEY) === '1';
-  };
-
-  const load = useCallback(async () => {
-    if (!sessionId || loadInFlightRef.current) return;
-    loadInFlightRef.current = true;
-    setLoading(true);
-    try {
-      const [list, counts] = await Promise.all([
-        fetchDesignNotifications(sessionId, listSinceIso(), 80),
-        fetchDesignNotificationCounts(sessionId),
-      ]);
-      const nextIds = new Set(list.map((n) => n.id));
-
-      if (knownIdsRef.current == null) {
-        knownIdsRef.current = nextIds;
-      } else {
-        const newUnread = list.filter((n) => !knownIdsRef.current!.has(n.id) && isUnreadItem(n));
-        if (newUnread.length > 0 && !isSoundMuted()) {
-          playNotificationSound();
-        }
-        const p2pForDesigner = newUnread.find(
-          (n) =>
-            (n.notification_type || '').toUpperCase() === 'P2P' &&
-            userId != null &&
-            Number(n.designer_id) === Number(userId),
-        );
-        if (p2pForDesigner) {
-          const key = p2pCongratsStorageKey(p2pForDesigner.lead_id, p2pForDesigner.id);
-          if (sessionStorage.getItem(key) !== '1') {
-            sessionStorage.setItem(key, '1');
-            setP2pCongrats({
-              designerName: designerNameOf(p2pForDesigner),
-              leadName: p2pForDesigner.lead_name,
-            });
-          }
-        }
-        knownIdsRef.current = nextIds;
-      }
-
-      setItems(list);
-      setBadge(counts.total);
-    } catch {
-      setItems([]);
-      setBadge(0);
-    } finally {
-      setLoading(false);
-      loadInFlightRef.current = false;
-    }
-  }, [sessionId, userId]);
-
-  useEffect(() => {
-    const onP2p = (e: Event) => {
-      const detail = (e as CustomEvent<{ designerName?: string; leadName?: string; leadId?: number }>)
-        .detail;
-      const leadId = detail?.leadId;
-      const key = p2pCongratsStorageKey(leadId ?? null, leadId || Date.now());
-      if (sessionStorage.getItem(key) === '1') return;
-      sessionStorage.setItem(key, '1');
-      setP2pCongrats({
-        designerName: detail?.designerName || '',
-        leadName: detail?.leadName || '',
-      });
-    };
-    window.addEventListener('design-p2p-congrats', onP2p);
-    return () => window.removeEventListener('design-p2p-congrats', onP2p);
-  }, []);
-
-  useEffect(() => {
-    const prime = () => {
-      unlockNotificationSound();
-      primedRef.current = true;
-      window.removeEventListener('click', prime);
-      window.removeEventListener('keydown', prime);
-    };
-    window.addEventListener('click', prime);
-    window.addEventListener('keydown', prime);
-    return () => {
-      window.removeEventListener('click', prime);
-      window.removeEventListener('keydown', prime);
-    };
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  useEffect(() => {
-    if (!sessionId) return;
-    let ws: WebSocket | null = null;
-    let stopped = false;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    let fallbackPoll: ReturnType<typeof setInterval> | null = null;
-    let live = false;
-
-    const startFallbackPoll = () => {
-      if (fallbackPoll) return;
-      fallbackPoll = setInterval(() => {
-        if (!live) void load();
-      }, POLL_MS_FALLBACK);
-    };
-
-    const connect = async () => {
-      if (stopped) return;
-      try {
-        const url = await fetchDesignNotificationWsUrl(sessionId);
-        if (stopped) return;
-        if (!url) {
-          startFallbackPoll();
-          return;
-        }
-        ws = new WebSocket(url);
-        ws.onopen = () => {
-          live = true;
-          if (fallbackPoll) {
-            clearInterval(fallbackPoll);
-            fallbackPoll = null;
-          }
-          void load();
-        };
-        ws.onmessage = () => {
-          void load();
-        };
-        ws.onerror = () => {
-          live = false;
-        };
-        ws.onclose = () => {
-          live = false;
-          startFallbackPoll();
-          if (stopped) return;
-          reconnectTimer = setTimeout(() => {
-            void connect();
-          }, 3000);
-        };
-      } catch {
-        startFallbackPoll();
-      }
-    };
-
-    void connect();
-    return () => {
-      stopped = true;
-      live = false;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      if (fallbackPoll) clearInterval(fallbackPoll);
-      ws?.close();
-    };
-  }, [sessionId, load]);
+  const {
+    notifications,
+    unreadCount,
+    isInboxOpen,
+    setIsInboxOpen,
+    isMuted,
+    toggleMute,
+    handleMarkRead,
+    handleMarkAllRead,
+    refreshInbox,
+  } = useDesignNotifications();
 
   useEffect(() => {
     function onOutside(e: MouseEvent) {
       if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
-        setOpen(false);
+        setIsInboxOpen(false);
       }
     }
-    if (open) document.addEventListener('mousedown', onOutside);
+    if (isInboxOpen) document.addEventListener('mousedown', onOutside);
     return () => document.removeEventListener('mousedown', onOutside);
-  }, [open]);
+  }, [isInboxOpen, setIsInboxOpen]);
 
-  const markAllSeen = () => {
-    if (!sessionId) return;
-    const now = new Date().toISOString();
-    setItems((prev) => prev.map((item) => (item.read_at ? item : { ...item, read_at: now })));
-    setBadge(0);
-    void markAllDesignNotificationsRead(sessionId).catch(() => {
-      void load();
-    });
-  };
+  const tabs = useMemo(() => {
+    const allowed = new Set(notificationTabIdsForRole(user?.role));
+    return NOTIFICATION_FILTERS.filter((t) => allowed.has(t.id));
+  }, [user?.role]);
 
-  const markOneSeen = (id: number) => {
-    if (!sessionId) return;
-    const target = items.find((item) => item.id === id);
-    if (!target || !isUnreadItem(target)) return;
-    const now = new Date().toISOString();
-    setItems((prev) => prev.map((item) => (item.id === id ? { ...item, read_at: now } : item)));
-    setBadge((b) => Math.max(0, b - 1));
-    void markDesignNotificationRead(sessionId, id).catch(() => {
-      void load();
-    });
-  };
-
-  const toggleOpen = () => {
-    unlockNotificationSound();
-    primedRef.current = true;
-    const next = !open;
-    setOpen(next);
-    if (next) void load();
-  };
-
-  const toggleSoundMute = () => {
-    unlockNotificationSound();
-    primedRef.current = true;
-    const next = !soundMuted;
-    setSoundMuted(next);
-    localStorage.setItem(SOUND_MUTE_KEY, next ? '1' : '0');
-    if (!next) playNotificationSound();
-  };
+  useEffect(() => {
+    if (!tabs.some((t) => t.id === filter)) setFilter('all');
+  }, [tabs, filter]);
 
   const filterCounts = useMemo(() => {
-    const counts: Record<FilterKey, number> = {
-      ALL: 0,
-      LEAD: 0,
-      MILESTONE: 0,
-      PAYMENT: 0,
-      MEETING: 0,
-      DQC: 0,
-      MMT: 0,
-      ASSIGNMENT: 0,
-      QUOTE: 0,
+    const counts: Record<NotificationFilterId, number> = {
+      all: 0,
+      lead: 0,
+      milestone: 0,
+      payment: 0,
+      meeting: 0,
+      dqc: 0,
+      mmt: 0,
+      assignment: 0,
+      quote: 0,
     };
-    for (const item of items) {
-      if (!isUnreadItem(item)) continue;
-      counts.ALL += 1;
-      if (matchesFilter(item, 'LEAD')) counts.LEAD += 1;
-      if (matchesFilter(item, 'MILESTONE')) counts.MILESTONE += 1;
-      if (matchesFilter(item, 'PAYMENT')) counts.PAYMENT += 1;
-      if (matchesFilter(item, 'MEETING')) counts.MEETING += 1;
-      if (matchesFilter(item, 'DQC')) counts.DQC += 1;
-      if (matchesFilter(item, 'MMT')) counts.MMT += 1;
-      if (matchesFilter(item, 'ASSIGNMENT')) counts.ASSIGNMENT += 1;
-      if (matchesFilter(item, 'QUOTE')) counts.QUOTE += 1;
+    for (const item of notifications) {
+      if (!isNotificationUnread(item)) continue;
+      counts.all += 1;
+      for (const f of NOTIFICATION_FILTERS) {
+        if (f.id !== 'all' && matchesNotificationFilter(item, f.id)) {
+          counts[f.id] += 1;
+        }
+      }
     }
     return counts;
-  }, [items]);
+  }, [notifications]);
 
   const filtered = useMemo(
-    () => items.filter((item) => matchesFilter(item, filter)),
-    [items, filter],
+    () => notifications.filter((item) => matchesNotificationFilter(item, filter)),
+    [notifications, filter],
   );
 
   const groups = useMemo(() => groupNotificationsByDay(filtered), [filtered]);
 
+  const toggleOpen = () => {
+    primeNotificationSound();
+    const next = !isInboxOpen;
+    setIsInboxOpen(next);
+    if (next) refreshInbox();
+  };
+
+  const markOneSeen = (id: number) => {
+    handleMarkRead(id);
+  };
+
   const openItem = (item: DesignNotificationItem) => {
     markOneSeen(item.id);
-    if (item.lead_id) {
-      setOpen(false);
+    if (item.lead_id && Number(item.lead_id) > 0) {
+      setIsInboxOpen(false);
       router.push(`/Leads/${item.lead_id}`);
     }
   };
 
-  const tabs = useMemo(() => {
-    const allowed = new Set(tabKeysForRole(userRole));
-    return ALL_TAB_DEFS.filter((t) => allowed.has(t.key));
-  }, [userRole]);
-
-  useEffect(() => {
-    if (!tabs.some((t) => t.key === filter)) setFilter('ALL');
-  }, [tabs, filter]);
-
   return (
-    <div className="relative" ref={panelRef}>
+    <div className={`relative ${className}`} ref={panelRef}>
       <button
         type="button"
         onClick={toggleOpen}
         className="relative flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 hover:text-[#32261C]"
         title="Notifications"
-        aria-label="Notifications"
+        aria-label={`Notifications${unreadCount > 0 ? `, ${unreadCount} unread` : ''}`}
+        aria-expanded={isInboxOpen}
       >
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-5 w-5">
           <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.077A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.087m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0" />
         </svg>
-        {badge > 0 && (
+        {unreadCount > 0 && (
           <span className="absolute -right-1 -top-1 flex min-h-[18px] min-w-[18px] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white">
-            {badge > 99 ? '99+' : badge}
+            {unreadCount > 99 ? '99+' : unreadCount}
           </span>
         )}
       </button>
 
-      {open && (
+      {isInboxOpen && (
         <div className="absolute right-0 top-full z-[60] mt-2 flex w-[min(420px,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xl">
           <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
             <p className="text-sm font-semibold text-[#32261C]">
               Notifications
-              {badge > 0 ? (
+              {unreadCount > 0 ? (
                 <span className="ml-2 rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-bold text-white">
-                  {badge > 99 ? '99+' : badge} unread
+                  {unreadCount > 99 ? '99+' : unreadCount} unread
                 </span>
               ) : null}
             </p>
             <div className="flex items-center gap-1">
               <button
                 type="button"
-                onClick={markAllSeen}
+                onClick={handleMarkAllRead}
                 className="rounded-md p-1.5 text-gray-400 hover:bg-gray-50 hover:text-emerald-600"
                 title="Mark all as read"
               >
@@ -471,11 +214,11 @@ export default function NotificationBell({ sessionId, userId, userRole }: Props)
               </button>
               <button
                 type="button"
-                onClick={toggleSoundMute}
+                onClick={toggleMute}
                 className="rounded-md p-1.5 text-gray-400 hover:bg-gray-50 hover:text-[#32261C]"
-                title={soundMuted ? 'Unmute sound' : 'Mute sound'}
+                title={isMuted ? 'Unmute sound' : 'Mute sound'}
               >
-                {soundMuted ? (
+                {isMuted ? (
                   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} className="h-4 w-4">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M17.25 9.75 19.5 12m0 0 2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6 4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53L6.75 15H4.5A1.5 1.5 0 0 1 3 13.5v-3A1.5 1.5 0 0 1 4.5 9h2.25Z" />
                   </svg>
@@ -487,7 +230,7 @@ export default function NotificationBell({ sessionId, userId, userRole }: Props)
               </button>
               <button
                 type="button"
-                onClick={load}
+                onClick={refreshInbox}
                 className="rounded-md p-1.5 text-gray-400 hover:bg-gray-50 hover:text-[#EF0101]"
                 title="Refresh"
               >
@@ -498,15 +241,15 @@ export default function NotificationBell({ sessionId, userId, userRole }: Props)
             </div>
           </div>
 
-          <div className="flex gap-1.5 overflow-x-auto border-b border-gray-100 px-3 py-2">
+          <div className="flex gap-1.5 overflow-x-auto border-b border-gray-100 px-3 py-2 no-scrollbar">
             {tabs.map((tab) => {
-              const count = filterCounts[tab.key];
-              const active = filter === tab.key;
+              const count = filterCounts[tab.id];
+              const active = filter === tab.id;
               return (
                 <button
-                  key={tab.key}
+                  key={tab.id}
                   type="button"
-                  onClick={() => setFilter(tab.key)}
+                  onClick={() => setFilter(tab.id)}
                   className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
                     active
                       ? 'border-[#EF0101] bg-white text-[#32261C]'
@@ -529,9 +272,7 @@ export default function NotificationBell({ sessionId, userId, userRole }: Props)
           </div>
 
           <div className="max-h-[min(62vh,460px)] overflow-y-auto">
-            {loading && items.length === 0 ? (
-              <p className="px-4 py-8 text-center text-sm text-gray-500">Loading…</p>
-            ) : filtered.length === 0 ? (
+            {filtered.length === 0 ? (
               <p className="px-4 py-8 text-center text-sm text-gray-500">No notifications</p>
             ) : (
               groups.map((group) => (
@@ -541,9 +282,12 @@ export default function NotificationBell({ sessionId, userId, userRole }: Props)
                   </p>
                   <ul>
                     {group.items.map((item) => {
-                      const isUnread = isUnreadItem(item);
-                      const tone = notificationCategoryTone(item.notification_type);
-                      const subtitle = formatNotificationSubtitle(item);
+                      const unread = isNotificationUnread(item);
+                      const tone = notificationCategoryTone(item.notification_type || '');
+                      const subtitle = getNotificationSubtitle(item);
+                      const typeKey = (item.notification_type || '').toUpperCase();
+                      const quoteLink = quoteLinkFromNotification(item);
+
                       return (
                         <li key={item.id}>
                           <div
@@ -557,19 +301,19 @@ export default function NotificationBell({ sessionId, userId, userRole }: Props)
                               }
                             }}
                             className={`flex w-full cursor-pointer items-start gap-3 px-3 py-2.5 text-left transition-colors hover:bg-gray-50 ${
-                              isUnread ? 'bg-red-50/35' : ''
+                              unread ? 'bg-red-50/35' : ''
                             }`}
                             title="Click to mark as read"
                           >
                             <span
                               className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${tone.iconBg} ${tone.iconText}`}
                             >
-                              <TypeIcon type={item.notification_type} />
+                              <TypeIcon type={item.notification_type || ''} />
                             </span>
                             <span className="min-w-0 flex-1">
                               <span className="flex items-start justify-between gap-2">
                                 <span className="text-[13px] font-semibold leading-snug text-[#32261C]">
-                                  {formatNotificationTitle(item)}
+                                  {getNotificationListTitle(item)}
                                 </span>
                                 <span className="shrink-0 text-[10px] text-gray-400">
                                   {formatTimeAgo(item.created_at)}
@@ -580,10 +324,9 @@ export default function NotificationBell({ sessionId, userId, userRole }: Props)
                                   {subtitle}
                                 </span>
                               ) : null}
-                              {(item.notification_type || '').toUpperCase() === 'QUOTE' &&
-                              quoteLinkFromNotification(item) ? (
+                              {typeKey === 'QUOTE' && quoteLink ? (
                                 <a
-                                  href={quoteLinkFromNotification(item) || '#'}
+                                  href={quoteLink}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   onClick={(e) => {
@@ -599,13 +342,13 @@ export default function NotificationBell({ sessionId, userId, userRole }: Props)
                                 <span
                                   className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium ${tone.tagBg} ${tone.tagText}`}
                                 >
-                                  {notificationCategoryLabel(item.notification_type)}
+                                  {getCategoryLabel(typeKey)}
                                 </span>
                                 <span className="flex items-center gap-2">
-                                  {isUnread ? (
+                                  {unread ? (
                                     <span className="h-1.5 w-1.5 rounded-full bg-red-500" title="Unread" />
                                   ) : null}
-                                  {item.lead_id ? (
+                                  {item.lead_id && Number(item.lead_id) > 0 ? (
                                     <button
                                       type="button"
                                       onClick={(e) => {
@@ -640,8 +383,8 @@ export default function NotificationBell({ sessionId, userId, userRole }: Props)
             <button
               type="button"
               onClick={() => {
-                setFilter('ALL');
-                void load();
+                setFilter('all');
+                refreshInbox();
               }}
               className="text-xs font-medium text-[#EF0101] hover:underline"
             >
@@ -650,12 +393,6 @@ export default function NotificationBell({ sessionId, userId, userRole }: Props)
           </div>
         </div>
       )}
-      <P2PCongratulationsModal
-        open={p2pCongrats != null}
-        designerName={p2pCongrats?.designerName || ''}
-        leadName={p2pCongrats?.leadName}
-        onClose={() => setP2pCongrats(null)}
-      />
     </div>
   );
 }

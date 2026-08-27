@@ -69,11 +69,11 @@ export function MeetingWizDurationBadge({ className = "" }: { className?: string
   const { formatted } = useMeetingWizTimer();
   return (
     <div
-      className={`flex items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-4 py-2 ${className}`}
+      className={`flex items-center gap-2 rounded-full border border-[var(--border-color)] bg-[var(--hover-bg)] px-4 py-2 ${className}`}
     >
       <div className="h-2 w-2 animate-pulse rounded-full bg-[var(--brand-primary)]" />
-      <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Duration:</span>
-      <span className="font-mono text-sm font-bold tabular-nums text-gray-900">{formatted}</span>
+      <span className="text-xs font-semibold uppercase tracking-wide text-[var(--foreground)]/60">Duration:</span>
+      <span className="font-mono text-sm font-bold tabular-nums text-[var(--brand-dark)]">{formatted}</span>
     </div>
   );
 }

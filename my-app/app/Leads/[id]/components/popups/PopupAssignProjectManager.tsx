@@ -93,7 +93,7 @@ export default function PopupAssignProjectManager({
     return (
         <div className="px-6 pb-6">
             <p className="text-sm text-gray-600 mb-4">
-                After DQC 2 approval, a Senior Project Manager, Territory Design Manager, Deputy General Manager, or Admin
+                After DQC 2 approval, a Senior Project Manager, Territorial Design Manager, Deputy General Manager, or Admin
                 assigns the project manager who will review files and approve before the workflow continues to 40% payment.
             </p>
             {currentPmName && (
