@@ -530,7 +530,7 @@ export async function leadEntered1020(p: LeadEntered1020Params): Promise<void> {
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  03  milestoneCompleted
-//  Trigger: complete-task — any task marked done for the first time
+//  Trigger: complete-task — when every task in a milestone is done (8 milestones total)
 // ─────────────────────────────────────────────────────────────────────────────
 export interface MilestoneCompletedParams extends NotifyBase {
   milestoneName: string;

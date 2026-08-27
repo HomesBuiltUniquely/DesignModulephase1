@@ -8580,14 +8580,17 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
     }
 
     let p2pCompleted = false;
+    let milestoneFullyComplete = false;
+    let allComps: { milestoneIndex: number; taskName: string }[] = [];
     if (isFirstCompletion) {
       const [allCompRows] = await pool.query(
         `SELECT milestone_index as milestoneIndex, task_name as taskName
          FROM lead_task_completions WHERE lead_id = ?`,
         [id],
       );
-      const allComps = allCompRows as { milestoneIndex: number; taskName: string }[];
-      if (isMilestoneFullyComplete(allComps, milestoneIndex)) {
+      allComps = allCompRows as { milestoneIndex: number; taskName: string }[];
+      milestoneFullyComplete = isMilestoneFullyComplete(allComps, milestoneIndex);
+      if (milestoneFullyComplete) {
         if (milestoneIndex === 6) {
           p2pCompleted = true;
         }
@@ -8612,16 +8615,18 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
           const nDesignerName = nRow.designerName || "";
           const tNormNotify = String(taskName).trim();
 
-          // 03 — Milestone task completed
-          void notify.milestoneCompleted({
-            projectId: nPid,
-            leadName: nLeadName,
-            designerId: nDesignerId,
-            milestoneName: (MILESTONE_NAMES as Record<number, string>)[milestoneIndex] ?? `Milestone ${milestoneIndex}`,
-            taskName: tNormNotify,
-            milestoneIndex,
-            designerName: nDesignerName,
-          });
+          // 03 — Milestone completed (only when all tasks in this milestone are done)
+          if (milestoneFullyComplete) {
+            void notify.milestoneCompleted({
+              projectId: nPid,
+              leadName: nLeadName,
+              designerId: nDesignerId,
+              milestoneName: (MILESTONE_NAMES as Record<number, string>)[milestoneIndex] ?? `Milestone ${milestoneIndex + 1}`,
+              taskName: tNormNotify,
+              milestoneIndex,
+              designerName: nDesignerName,
+            });
+          }
 
           // 04 — Payment request: designer collected 10% payment (milestone 2)
           if (milestoneIndex === 2 && tNormNotify === "10% payment collection") {

@@ -285,6 +285,29 @@ input[type="radio"] {
   animation: fadeInUp 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
+/* ── Notification bell ring animation ── */
+@keyframes bellRing {
+  0%, 100%  { transform: rotate(0deg); }
+  5%        { transform: rotate(14deg); }
+  10%       { transform: rotate(-12deg); }
+  15%       { transform: rotate(10deg); }
+  20%       { transform: rotate(-8deg); }
+  25%       { transform: rotate(6deg); }
+  30%       { transform: rotate(0deg); }
+}
+
+/* ── Notification panel entrance animation ── */
+@keyframes notifSlideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 /* ══════════════════════════════════════════════════════
    MODAL POP-IN ANIMATIONS
    ══════════════════════════════════════════════════════ */

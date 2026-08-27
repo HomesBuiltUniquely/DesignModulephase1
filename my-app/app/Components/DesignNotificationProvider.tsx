@@ -20,10 +20,15 @@ import {
 
 export type DesignNotificationItem = {
   id: number;
-  notification_type?: string;
-  notification_action?: string;
+  event_id?: string;
+  user_id?: number;
+  recipient_role?: string;
+  lead_id?: number;
   project_id?: string;
   lead_name?: string;
+  designer_id?: number;
+  notification_type?: string;
+  notification_action?: string;
   payload?: unknown;
   created_at?: string;
   read_at?: string | null;
@@ -42,6 +47,7 @@ type DesignNotificationContextValue = {
   toggleMute: () => void;
   handleMarkRead: (id: number) => void;
   handleMarkAllRead: () => void;
+  refreshInbox: () => void;
 };
 
 const DesignNotificationContext = createContext<DesignNotificationContextValue | null>(null);
@@ -352,6 +358,11 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
     };
   }, [sessionId, user, apiBase, loadNotifications, loadUnreadCount]);
 
+  const refreshInbox = useCallback(() => {
+    loadNotifications();
+    loadUnreadCount();
+  }, [loadNotifications, loadUnreadCount]);
+
   const value: DesignNotificationContextValue = {
     notifications,
     unreadCount,
@@ -361,6 +372,7 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
     toggleMute,
     handleMarkRead,
     handleMarkAllRead,
+    refreshInbox,
   };
 
   return (
