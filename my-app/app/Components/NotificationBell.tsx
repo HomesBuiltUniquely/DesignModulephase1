@@ -92,7 +92,6 @@ export default function NotificationBell({ className = '' }: Props) {
 
   const {
     notifications,
-    unreadCount,
     isInboxOpen,
     setIsInboxOpen,
     isMuted,
@@ -157,6 +156,9 @@ export default function NotificationBell({ className = '' }: Props) {
 
   const groups = useMemo(() => groupNotificationsByDay(filtered), [filtered]);
 
+  // Keep bell badge in sync with All tab (not raw DB total).
+  const badgeUnread = filterCounts.all;
+
   const toggleOpen = () => {
     primeNotificationSound();
     const next = !isInboxOpen;
@@ -183,15 +185,15 @@ export default function NotificationBell({ className = '' }: Props) {
         onClick={toggleOpen}
         className="relative flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 hover:text-[#32261C]"
         title="Notifications"
-        aria-label={`Notifications${unreadCount > 0 ? `, ${unreadCount} unread` : ''}`}
+        aria-label={`Notifications${badgeUnread > 0 ? `, ${badgeUnread} unread` : ''}`}
         aria-expanded={isInboxOpen}
       >
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-5 w-5">
           <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.077A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.087m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0" />
         </svg>
-        {unreadCount > 0 && (
+        {badgeUnread > 0 && (
           <span className="absolute -right-1 -top-1 flex min-h-[18px] min-w-[18px] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white">
-            {unreadCount > 99 ? '99+' : unreadCount}
+            {badgeUnread > 99 ? '99+' : badgeUnread}
           </span>
         )}
       </button>
@@ -201,9 +203,9 @@ export default function NotificationBell({ className = '' }: Props) {
           <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
             <p className="text-sm font-semibold text-[#32261C]">
               Notifications
-              {unreadCount > 0 ? (
+              {badgeUnread > 0 ? (
                 <span className="ml-2 rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-bold text-white">
-                  {unreadCount > 99 ? '99+' : unreadCount} unread
+                  {badgeUnread > 99 ? '99+' : badgeUnread} unread
                 </span>
               ) : null}
             </p>

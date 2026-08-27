@@ -17,6 +17,21 @@ import {
   playNotificationSoundPreview,
   primeNotificationSound,
 } from '../lib/notificationSound';
+import { notificationVisibleForRole } from './notificationBellHelpers';
+
+/** Inbox list page size — counts badge must use the same visible set as the panel. */
+const INBOX_LIST_LIMIT = 200;
+
+function countVisibleUnread(
+  list: DesignNotificationItem[],
+  role: string | null | undefined,
+): number {
+  return list.reduce((n, item) => {
+    if (!isNotificationUnread(item)) return n;
+    if (!notificationVisibleForRole(item, role)) return n;
+    return n + 1;
+  }, 0);
+}
 
 export type DesignNotificationItem = {
   id: number;
@@ -152,7 +167,7 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
       try {
         const headers = buildAuthHeaders(sessionId);
         const [listRes, countRes] = await Promise.all([
-          fetch(`${apiBase}/v1/design/inbox?user_id=${user.id}`, {
+          fetch(`${apiBase}/v1/design/inbox?user_id=${user.id}&limit=${INBOX_LIST_LIMIT}`, {
             headers,
             credentials: 'include',
           }),
@@ -170,28 +185,24 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
 
         if (list) {
           applyListAndMaybeChime(list, allowChime);
-        }
-
-        if (countRes.ok) {
+          // Badge must match the panel: role-visible unread in the loaded list.
+          // Server total includes every type + older rows outside the list limit (caused 99+ vs All 26).
+          const visibleUnread = countVisibleUnread(list, user.role);
+          prevUnreadRef.current = visibleUnread;
+          inboxCountsReadyRef.current = true;
+          setUnreadCount(visibleUnread);
+        } else if (countRes.ok) {
           const countJson = await countRes.json().catch(() => ({}));
           const total = Number(countJson?.data?.total);
           if (Number.isFinite(total)) {
-            if (!inboxCountsReadyRef.current) {
-              inboxCountsReadyRef.current = true;
-              prevUnreadRef.current = total;
-              setUnreadCount(total);
-            } else if (!list) {
-              const countIncreased = total > prevUnreadRef.current;
-              if (allowChime && countIncreased && !isMutedRef.current) {
-                playNotificationChime();
-              }
-              prevUnreadRef.current = total;
-              setUnreadCount(total);
-            } else {
-              // Prefer server count (may include items outside list limit)
-              prevUnreadRef.current = total;
-              setUnreadCount(total);
+            const countIncreased =
+              inboxCountsReadyRef.current && total > prevUnreadRef.current;
+            if (allowChime && countIncreased && !isMutedRef.current) {
+              playNotificationChime();
             }
+            inboxCountsReadyRef.current = true;
+            prevUnreadRef.current = total;
+            setUnreadCount(total);
           }
         }
       } catch (err) {
