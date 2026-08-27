@@ -53,6 +53,7 @@ const msg91InboundApi_1 = require("./routes/msg91InboundApi");
 const prolanceApi_1 = require("./routes/prolanceApi");
 const crmHubBookingRoutes_1 = require("./routes/crmHubBookingRoutes");
 const incentivesRoutes_1 = require("./routes/incentivesRoutes");
+const notify = __importStar(require("./routes/designNotifications"));
 /**
  * Load backend/.env before dotenv. Supports `export KEY=value` and quoted values.
  * Unquoted values keep `#` (needed for passwords like Hub@API#26 — dotenv treats bare `#` as a comment).
@@ -182,6 +183,8 @@ const pool = promise_1.default.createPool({
     keepAliveInitialDelay: 0,
     connectTimeout: 60000,
 });
+notify.initPool(pool);
+notify.registerInboxRoutes(app);
 // Standalone route: /api/customer/:customerNumber (see routes/customerNumberApi.ts)
 (0, customerNumberApi_1.registerCustomerNumberRoutes)(app, pool);
 (0, offlineMeetingExportApi_1.registerOfflineMeetingExportRoutes)(app, pool);
@@ -4614,6 +4617,16 @@ app.post("/api/leads/external-intake", async (req, res) => {
             assignedDesignerId,
         ]);
         const newLeadId = Number(result.insertId);
+        // Notify: 01 — Pre-10% new lead created
+        void notify.leadPre10({
+            projectId: pid || `HUB-${newLeadId}`,
+            leadName: projectName,
+            designerId: assignedDesignerId ?? 0,
+            designerName: designerName ?? "",
+            salesExecutiveName: salesExecutive ?? "",
+            appointmentDate: appointmentDate ?? "",
+            appointmentSlot: appointmentSlot ?? "",
+        });
         return res.status(201).json({
             ok: true,
             leadId: newLeadId || null,
@@ -7424,6 +7437,65 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                 }
             }
         }
+        // Notify: 03 (milestone), 04 (payment/request), 15+16a (P2P + PM status)
+        if (isFirstCompletion) {
+            try {
+                const [nRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                  u.name as designerName
+           FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+           WHERE l.id = ? LIMIT 1`, [id]);
+                const nRow = nRows[0];
+                if (nRow) {
+                    const nPid = nRow.pid || `HUB-${id}`;
+                    const nLeadName = nRow.projectName || "";
+                    const nDesignerId = Number(nRow.designerId) || 0;
+                    const nDesignerName = nRow.designerName || "";
+                    const tNormNotify = String(taskName).trim();
+                    // 03 — Milestone task completed
+                    void notify.milestoneCompleted({
+                        projectId: nPid,
+                        leadName: nLeadName,
+                        designerId: nDesignerId,
+                        milestoneName: MILESTONE_NAMES[milestoneIndex] ?? `Milestone ${milestoneIndex}`,
+                        taskName: tNormNotify,
+                        milestoneIndex,
+                        designerName: nDesignerName,
+                    });
+                    // 04 — Payment request: designer collected 10% payment (milestone 2)
+                    if (milestoneIndex === 2 && tNormNotify === "10% payment collection") {
+                        void notify.paymentRequested({
+                            projectId: nPid,
+                            leadName: nLeadName,
+                            designerId: nDesignerId,
+                            paymentType: "PRE_10_PERCENT",
+                            uploadName: "10% Payment Collection",
+                            amount: 0,
+                        });
+                    }
+                    // 15 + 16a — P2P completed & PM status APPROVED (milestone 4: Project manager approval)
+                    if (milestoneIndex === 4 && tNormNotify === "Project manager approval") {
+                        void notify.p2pCompleted({
+                            projectId: nPid,
+                            leadName: nLeadName,
+                            designerId: nDesignerId,
+                            designerName: nDesignerName,
+                        });
+                        void notify.pmApprovalStatus({
+                            projectId: nPid,
+                            leadName: nLeadName,
+                            designerId: nDesignerId,
+                            status: "APPROVED",
+                            dqcRound: "DQC2",
+                            designerName: nDesignerName,
+                            approverName: actingUser.name ?? "Project Manager",
+                        });
+                    }
+                }
+            }
+            catch (notifyErr) {
+                console.warn("[notify] complete-task data fetch error (non-fatal)", { leadId: id, taskName, notifyErr });
+            }
+        }
         return res.status(201).json({ ok: true, p2pCompleted });
     }
     catch (err) {
@@ -8366,6 +8438,42 @@ app.post("/api/leads/:id/approve-10p-payment", async (req, res) => {
                 error: err,
             });
         }
+        // Notify: 02 — Lead entered 10-20% phase + 05 — Payment status APPROVED
+        try {
+            const [notifyRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                u.name as designerName
+         FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+         WHERE l.id = ? LIMIT 1`, [leadId]);
+            const notifyRow = notifyRows[0];
+            if (notifyRow) {
+                const nPid = notifyRow.pid || `HUB-${leadId}`;
+                const nLeadName = notifyRow.projectName || "";
+                const nDesignerId = Number(notifyRow.designerId) || 0;
+                const nDesignerName = notifyRow.designerName || "";
+                const nNow = new Date().toISOString();
+                // 02 — 10-20% phase entered
+                void notify.leadEntered1020({
+                    projectId: nPid,
+                    leadName: nLeadName,
+                    designerId: nDesignerId,
+                });
+                // 05 — Payment status: APPROVED
+                void notify.paymentStatus({
+                    projectId: nPid,
+                    leadName: nLeadName,
+                    designerId: nDesignerId,
+                    status: "SUCCESS",
+                    decision: "APPROVED",
+                    paymentType: "PRE_10_PERCENT",
+                    milestoneContext: "PRE_10",
+                    approverName: user.name ?? "Finance",
+                    amount: 0,
+                });
+            }
+        }
+        catch (notifyErr) {
+            console.warn("[notify] approve-10p data fetch error (non-fatal)", notifyErr);
+        }
         return res.status(201).json({ ok: true, path: "design_10p" });
     }
     catch (err) {
@@ -8436,6 +8544,29 @@ app.post("/api/leads/:id/reject-10p-payment", async (req, res) => {
             details: { kind: "note", noteText: reason || "10% payment rejected." },
         };
         await addLeadHistoryEvent(leadId, ev);
+        // Notify: 05 — Payment status: REJECTED
+        try {
+            const [nRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId
+         FROM leads l WHERE l.id = ? LIMIT 1`, [leadId]);
+            const nRow = nRows[0];
+            if (nRow) {
+                void notify.paymentStatus({
+                    projectId: nRow.pid || `HUB-${leadId}`,
+                    leadName: nRow.projectName || "",
+                    designerId: Number(nRow.designerId) || 0,
+                    status: "FAILED",
+                    decision: "REJECTED",
+                    paymentType: "PRE_10_PERCENT",
+                    milestoneContext: "PRE_10",
+                    approverName: user.name ?? "Finance",
+                    amount: 0,
+                    rejectionReason: reason ?? "",
+                });
+            }
+        }
+        catch (notifyErr) {
+            console.warn("[notify] reject-10p data fetch error (non-fatal)", notifyErr);
+        }
         return res.json({ ok: true, path: "design_10p" });
     }
     catch (err) {
@@ -9233,6 +9364,16 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req, res) => {
         catch (exportErr) {
             console.error("[offline-meeting-export] record failed (non-fatal)", exportErr);
         }
+        // Notify: 11 — Design meeting scheduled
+        void notify.meetingScheduled({
+            projectId: row.pid || `HUB-${leadId}`,
+            leadName: row.projectName || "",
+            designerId: Number(row.assigned_designer_id) || 0,
+            meetingType: String(meetingType || ""),
+            meetingMode: String(meetingMode || "IN_PERSON"),
+            meetingDate: String(meetingDate || ""),
+            meetingTime: String(meetingTime || ""),
+        });
         return res.status(201).json({ ok: true });
     }
     catch (err) {
@@ -9943,6 +10084,27 @@ app.post("/api/leads/:id/dqc-submission/complete", async (req, res) => {
             quotationS3Urls.push(buildS3PublicUrl(key));
         }
         await persistDqc1SubmissionFromMeta(leadId, user, drawingFilesMeta, quotationFilesMeta, drawingS3Urls, quotationS3Urls);
+        // Notify: 06 — DQC submission (S3 flow)
+        try {
+            const [nRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                u.name as designerName
+         FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+         WHERE l.id = ? LIMIT 1`, [leadId]);
+            const nRow = nRows[0];
+            if (nRow) {
+                void notify.dqcRequested({
+                    projectId: nRow.pid || `HUB-${leadId}`,
+                    leadName: nRow.projectName || "",
+                    designerId: Number(nRow.designerId) || 0,
+                    dqcRound: "DQC1",
+                    reviewId: 0,
+                    designerName: nRow.designerName || user.name || "",
+                });
+            }
+        }
+        catch (notifyErr) {
+            console.warn("[notify] dqc-submission/complete error (non-fatal)", notifyErr);
+        }
         return res.status(201).json({ ok: true });
     }
     catch (err) {
@@ -10124,6 +10286,27 @@ app.post("/api/leads/:id/dqc-submission", upload.fields([{ name: "drawing", maxC
             quotationS3Urls = await Promise.all(quotationFiles.map((f) => uploadLeadFileToS3(leadId, f.path, f.originalname, f.mimetype)));
         }
         await persistDqc1SubmissionFromMeta(leadId, user, drawingFiles, quotationFiles, drawingS3Urls, quotationS3Urls);
+        // Notify: 06 — DQC submission (legacy multipart flow)
+        try {
+            const [nRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                  u.name as designerName
+           FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+           WHERE l.id = ? LIMIT 1`, [leadId]);
+            const nRow = nRows[0];
+            if (nRow) {
+                void notify.dqcRequested({
+                    projectId: nRow.pid || `HUB-${leadId}`,
+                    leadName: nRow.projectName || "",
+                    designerId: Number(nRow.designerId) || 0,
+                    dqcRound: "DQC1",
+                    reviewId: 0,
+                    designerName: nRow.designerName || user.name || "",
+                });
+            }
+        }
+        catch (notifyErr) {
+            console.warn("[notify] dqc-submission (legacy) error (non-fatal)", notifyErr);
+        }
         return res.status(201).json({ ok: true });
     }
     catch (err) {
@@ -10552,6 +10735,30 @@ app.post("/api/leads/:id/dqc-review", async (req, res) => {
         catch (mailErr) {
             console.error("Failed to trigger DQC review email notification:", mailErr);
         }
+        // Notify: 07 — DQC status (APPROVED / REJECTED)
+        try {
+            const [nRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                u.name as designerName
+         FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+         WHERE l.id = ? LIMIT 1`, [leadId]);
+            const nRow = nRows[0];
+            if (nRow) {
+                const dqcStatus = verdict === "approved" || verdict === "approved_with_changes" ? "APPROVED" : "REJECTED";
+                const firstRemark = Array.isArray(remarks) && remarks.length > 0 ? (remarks[0]?.text ?? "") : "";
+                void notify.dqcStatus({
+                    projectId: nRow.pid || `HUB-${leadId}`,
+                    leadName: nRow.projectName || "",
+                    designerId: Number(nRow.designerId) || 0,
+                    status: dqcStatus,
+                    dqcRound: isDqc2 ? "DQC2" : "DQC1",
+                    designerName: nRow.designerName || "",
+                    rejectionReason: firstRemark,
+                });
+            }
+        }
+        catch (notifyErr) {
+            console.warn("[notify] dqc-review status error (non-fatal)", notifyErr);
+        }
         return res.status(201).json({ ok: true });
     }
     catch (err) {
@@ -10711,6 +10918,17 @@ app.post("/api/leads/:id/d1-request", async (req, res) => {
                 message: "Request saved but failed to email MMT manager. Please retry or contact admin.",
             });
         }
+        // Notify: 08 — MMT site visit requested
+        void notify.mmtRequested({
+            projectId: projectId,
+            leadName: customerName,
+            designerId: Number(lead.assigned_designer_id) || 0,
+            designerName: designerName,
+            mmtManagerId: managerId,
+            mmtManagerName: manager.name,
+            visitDate: visitDate,
+            visitTime: visitTime,
+        });
         return res.status(201).json({
             ok: true,
             saved: true,
@@ -10823,6 +11041,24 @@ app.post("/api/leads/:id/assign-d1-executive", async (req, res) => {
             id: user.id,
             email: user.email || null,
         });
+        // Notify: 09 — MMT executive assigned
+        try {
+            const [nRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId
+         FROM leads l WHERE l.id = ? LIMIT 1`, [leadId]);
+            const nRow = nRows[0];
+            if (nRow) {
+                void notify.mmtAssigned({
+                    projectId: nRow.pid || `HUB-${leadId}`,
+                    leadName: nRow.projectName || "",
+                    designerId: Number(nRow.designerId) || 0,
+                    executiveId: executiveId,
+                    executiveName: executive.name,
+                });
+            }
+        }
+        catch (notifyErr) {
+            console.warn("[notify] assign-d1-executive error (non-fatal)", notifyErr);
+        }
         if (!mailResult.ok) {
             console.error("[D1-MMT] External mail after assign failed", {
                 leadId,
@@ -11002,6 +11238,26 @@ app.post("/api/leads/:id/d2-masking-request", upload.array("files", 20), async (
             },
         };
         await addLeadHistoryEvent(leadId, ev);
+        // Notify: 10 — MMT documents ready (D2 masking files submitted)
+        try {
+            const [nRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                u.name as designerName
+         FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+         WHERE l.id = ? LIMIT 1`, [leadId]);
+            const nRow = nRows[0];
+            if (nRow) {
+                void notify.mmtDocReady({
+                    projectId: nRow.pid || `HUB-${leadId}`,
+                    leadName: nRow.projectName || "",
+                    designerId: Number(nRow.designerId) || 0,
+                    designerName: nRow.designerName || "",
+                    uploadName: uploadedFiles.length > 0 ? uploadedFiles[0].name : "D2 Masking Document",
+                });
+            }
+        }
+        catch (notifyErr) {
+            console.warn("[notify] d2-masking-request error (non-fatal)", notifyErr);
+        }
         return res.status(201).json({
             ok: true,
             maskingDate: maskingDate || null,
@@ -11497,6 +11753,25 @@ app.post("/api/leads/:id/assign-designer", async (req, res) => {
             new Date(),
             leadId,
         ]);
+        // Notify: 12 — Designer reassigned
+        try {
+            const [nRows] = await pool.query(`SELECT pid, project_name as projectName FROM leads WHERE id = ? LIMIT 1`, [leadId]);
+            const nRow = nRows[0];
+            if (nRow) {
+                void notify.designerAssigned({
+                    projectId: nRow.pid || `HUB-${leadId}`,
+                    leadName: nRow.projectName || "",
+                    designerId: designerId, // Note: designerId is the newly assigned designer
+                    fromDesignerId: oldDesignerId,
+                    fromDesignerName: oldDesignerName,
+                    toDesignerId: designerId,
+                    toDesignerName: designer.name,
+                });
+            }
+        }
+        catch (notifyErr) {
+            console.warn("[notify] assign-designer error (non-fatal)", notifyErr);
+        }
         return res.json({
             ok: true,
             leadId,
@@ -11675,6 +11950,26 @@ app.patch("/api/leads/:id/assign-project-manager", async (req, res) => {
         catch (mailErr) {
             console.error("PM assignment & D2 internal masking request email error (non-fatal)", { leadId: id, error: mailErr });
         }
+        // Notify: 13 — Project Manager assigned
+        try {
+            const [nRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                pm.name as pmName
+         FROM leads l LEFT JOIN users pm ON pm.id = ?
+         WHERE l.id = ? LIMIT 1`, [pmId, id]);
+            const nRow = nRows[0];
+            if (nRow) {
+                void notify.pmAssigned({
+                    projectId: nRow.pid || `HUB-${id}`,
+                    leadName: nRow.projectName || "",
+                    designerId: Number(nRow.designerId) || 0,
+                    pmId: pmId,
+                    pmName: nRow.pmName || "",
+                });
+            }
+        }
+        catch (notifyErr) {
+            console.warn("[notify] assign-project-manager error (non-fatal)", notifyErr);
+        }
         return res.json({ ok: true });
     }
     catch (err) {
@@ -11788,6 +12083,29 @@ app.post("/api/leads/:id/reject-pm-approval", upload.single("file"), async (req,
         }
         catch (mailErr) {
             console.error("PM rejection designer email error (non-fatal)", mailErr);
+        }
+        // Notify: 16 — PM status: REJECTED
+        try {
+            const [nRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                  u.name as designerName
+           FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+           WHERE l.id = ? LIMIT 1`, [leadId]);
+            const nRow = nRows[0];
+            if (nRow) {
+                void notify.pmApprovalStatus({
+                    projectId: nRow.pid || `HUB-${leadId}`,
+                    leadName: nRow.projectName || "",
+                    designerId: Number(nRow.designerId) || 0,
+                    status: "REJECTED",
+                    dqcRound: "DQC2",
+                    designerName: nRow.designerName || "",
+                    approverName: user.name ?? "Project Manager",
+                    rejectionReason: notes || remarkText || "",
+                });
+            }
+        }
+        catch (notifyErr) {
+            console.warn("[notify] reject-pm-approval error (non-fatal)", notifyErr);
         }
         return res.status(201).json({ ok: true, uploadId, revertedTasks: DQC2_PM_REVERT_TASKS });
     }
@@ -12513,6 +12831,26 @@ app.post("/api/leads/:id/prolance-quote-snapshots", async (req, res) => {
             catch (emailErr) {
                 console.error("Failed to trigger new quote email", emailErr);
             }
+        }
+        // Notify: 14 — New quote saved/updated
+        try {
+            const [nRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                u.name as designerName
+         FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+         WHERE l.id = ? LIMIT 1`, [id]);
+            const nRow = nRows[0];
+            if (nRow) {
+                void notify.quoteSaved({
+                    projectId: nRow.pid || `HUB-${id}`,
+                    leadName: nRow.projectName || "",
+                    designerId: Number(nRow.designerId) || 0,
+                    quoteId: quoteId,
+                    isNewQuote: !!inserted,
+                });
+            }
+        }
+        catch (notifyErr) {
+            console.warn("[notify] prolance-quote-snapshots error (non-fatal)", notifyErr);
         }
         return res.json({ ok: true, quoteId, inserted, updated });
     }

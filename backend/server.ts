@@ -161,6 +161,12 @@ const pool = mysql.createPool({
   connectTimeout: 60000,
 });
 
+notify.initPool(pool);
+notify.registerInboxRoutes(app, async (req) => {
+  const user = await getUserFromSession(req);
+  return user ? { id: Number(user.id) } : null;
+});
+
 // Standalone route: /api/customer/:customerNumber (see routes/customerNumberApi.ts)
 registerCustomerNumberRoutes(app, pool);
 registerOfflineMeetingExportRoutes(app, pool);

@@ -1,0 +1,413 @@
+================================================================================
+  DESIGN MODULE + NOTIFYPROJECT — NOTIFICATION SYSTEM DOCUMENTATION
+  Generated for: DesignModulephase1 + NotifyProject integration
+  Last updated: August 2026
+================================================================================
+
+TABLE OF CONTENTS
+  1. End-to-end flow
+  2. Environment variables
+  3. Sixteen notification trigger APIs (event creation)
+  4. Design Module backend — inbox proxy APIs
+  5. Design Module frontend — API calls by file/component
+       5A. Component tree
+       5B. Inbox APIs (direct — bell / WebSocket)
+       5C. Lead APIs → backend notify (indirect)
+       5D. Quick lookup: file → APIs
+       5E. Quick lookup: API → file
+  6. NotifyProject — notification create APIs (16)
+  7. NotifyProject — inbox / bell APIs
+  8. File index (where code lives)
+
+
+================================================================================
+1. END-TO-END FLOW
+================================================================================
+
+  User action on Lead / Dashboard
+       |
+       v
+  Design Module Express API (backend/server.ts)
+       |  e.g. POST /api/leads/:id/complete-task
+       v
+  notify.<function>() in backend/routes/designNotifications.ts
+       |  - resolveNotificationRecipients() (MySQL users/leads)
+       |  - build event_id (idempotency)
+       |  - POST to NOTIFY_API_URL
+       v
+  NotifyProject POST /v1/design/notifications/*
+       |  service/service.go → saveDesignNotification()
+       |  internal/inbox/store.go → INSERT design_user_notifications
+       |  internal/inbox/hub.go → WebSocket broadcast inbox_updated
+       v
+  Design Module frontend DesignNotificationProvider (global)
+       |  WebSocket + GET inbox/counts
+       |  playNotificationChime() on new notification
+       v
+  NotificationBell UI (dashboard only) — list, mark read, mute
+
+
+================================================================================
+2. ENVIRONMENT VARIABLES (Design Module backend .env)
+================================================================================
+
+  HUB_NOTIFY_ENABLED=true          Turn entire notification fanout on/off
+  NOTIFY_API_URL=http://localhost:8080   NotifyProject HTTP base URL
+  HUB_NOTIFY_API_KEY=design-notification Header x-external-api-key for inbox proxy
+  NOTIFY_WS_URL=                   Optional explicit WebSocket URL (prod wss://)
+
+  Frontend:
+  NEXT_PUBLIC_API_URL=http://localhost:3001   Design Module backend base
+
+
+================================================================================
+3. SIXTEEN NOTIFICATION TRIGGER APIs
+     (Design action → notify function → NotifyProject endpoint)
+================================================================================
+
+  All notify functions are defined in:
+    DesignModulephase1/backend/routes/designNotifications.ts
+
+  All are called from:
+    DesignModulephase1/backend/server.ts
+  (fire-and-forget: void notify.<name>(...))
+
+  #  | Notify function          | NotifyProject POST endpoint              | Design Module trigger route (server.ts)                    | When it fires
+  ---|--------------------------|------------------------------------------|--------------------------------------------------------------|------------------------------------------
+  01 | leadPre10()              | /v1/design/notifications/lead/pre-10     | POST /api/leads/external-intake                            | New lead created (pre-10% phase)
+  02 | leadEntered1020()        | /v1/design/notifications/lead/10-20    | POST /api/leads/:id/approve-10p-payment                  | Finance approves 10% payment; lead enters 10–20% phase
+  03 | milestoneCompleted()     | /v1/design/notifications/milestone      | POST /api/leads/:id/complete-task                          | Any milestone task completed (first time)
+  04 | paymentRequested()       | /v1/design/notifications/payment/request| POST /api/leads/:id/complete-task                          | Task "10% payment collection" completed (milestone 2)
+  05 | paymentStatus()          | /v1/design/notifications/payment/status | POST /api/leads/:id/approve-10p-payment (APPROVED)         | 10% payment approved
+     |                          |                                          | POST /api/leads/:id/reject-10p-payment (REJECTED)          | 10% payment rejected
+  06 | dqcRequested()           | /v1/design/notifications/dqc/request    | POST /api/leads/:id/dqc-submission/complete                | DQC1 submission complete
+     |                          |                                          | POST /api/leads/:id/dqc2-submission/complete               | DQC2 submission complete
+  07 | dqcStatus()              | /v1/design/notifications/dqc/status     | POST /api/leads/:id/dqc-review                             | DQC manager saves verdict (approved/rejected)
+  08 | mmtRequested()           | /v1/design/notifications/mmt/request    | POST /api/leads/:id/d1-request                             | Designer requests D1 site measurement (MMT)
+  09 | mmtAssigned()            | /v1/design/notifications/mmt/assign     | POST /api/leads/:id/assign-d1-executive                  | MMT manager assigns executive
+  10 | mmtDocReady()            | /v1/design/notifications/mmt/doc-ready  | POST /api/leads/:id/d2-masking-request                     | D2 masking files uploaded
+  11 | meetingScheduled()       | /v1/design/notifications/meeting        | POST /api/leads/:id/schedule-meeting-invite                | Meeting invite scheduled
+  12 | designerAssigned()       | /v1/design/notifications/assign/designer | POST /api/leads/:id/assign-designer                        | Designer assigned or reassigned
+  13 | pmAssigned()             | /v1/design/notifications/assign/pm      | PATCH /api/leads/:id/assign-project-manager                | Project manager assigned to lead
+  14 | quoteSaved()             | /v1/design/notifications/quote          | POST /api/leads/:id/prolance-quote-snapshots               | Quote snapshot saved / new quote generated
+  15 | p2pCompleted()           | /v1/design/notifications/p2p            | POST /api/leads/:id/complete-task                          | Task "Project manager approval" completed (milestone 4)
+  16 | pmApprovalStatus()       | /v1/design/notifications/pm/status      | POST /api/leads/:id/complete-task (APPROVED, milestone 4) | PM approval task completed
+     |                          |                                          | POST /api/leads/:id/reject-pm-approval (REJECTED)          | PM rejects DQC2 approval
+
+  How Design Module calls NotifyProject (inside designNotifications.ts):
+    - post(endpoint, body) builds event_id, resolves recipients, POST JSON to:
+        NOTIFY_API_URL + endpoint
+    - Body includes: project_id, lead_name, designer_id, notification_type,
+      notification_action, payload, event_id, recipients[]
+
+  Recipient fanout (resolveNotificationRecipients in same file):
+    - Always: admin + deputy_general_manager
+    - Plus role-specific users (finance, dqc_manager, mmt_manager, designer, PM, etc.)
+    - Uses MySQL pool (notify.initPool in server.ts)
+
+
+================================================================================
+4. DESIGN MODULE BACKEND — INBOX PROXY APIs
+     (Frontend → Design backend → NotifyProject inbox)
+================================================================================
+
+  Registered in: backend/routes/designNotifications.ts → registerInboxRoutes()
+  Wired in:       backend/server.ts (session user id from Bearer token)
+
+  Design Module route          | Method | Proxies to NotifyProject              | Purpose
+  -----------------------------|--------|---------------------------------------|----------------------------------
+  /v1/design/inbox             | GET    | GET /v1/design/inbox?user_id=         | List notifications for logged-in user
+  /v1/design/inbox/counts      | GET    | GET /v1/design/inbox/counts?user_id=| Unread counts (read_at IS NULL)
+  /v1/design/inbox/:id/read    | POST   | POST /v1/design/inbox/:id/read      | Mark one notification read
+  /v1/design/inbox/read-all    | POST   | POST /v1/design/inbox/read-all      | Mark all read for user
+  /v1/design/inbox/ws-ticket   | POST   | POST /v1/design/inbox/ws-ticket     | Get WS ticket + ws_url for live updates
+
+  Auth:
+    - Inbox routes use session Bearer token (getUserFromSession in server.ts)
+    - Client user_id query/body is ignored; server uses logged-in user id
+    - Proxy adds header x-external-api-key from HUB_NOTIFY_API_KEY
+
+  Mark-read response normalization: inboxActionResponse() sets ok + success true
+
+
+================================================================================
+5. DESIGN MODULE FRONTEND — API CALLS BY FILE / COMPONENT
+================================================================================
+
+  IMPORTANT:
+    - Frontend NEVER calls /v1/design/notifications/* directly.
+    - Those 16 endpoints are called only from backend (designNotifications.ts).
+    - Frontend either:
+        (A) calls inbox APIs for bell / sound / live updates, OR
+        (B) calls /api/leads/* routes that trigger notify.*() on the server.
+
+  Base URL:  getApiBase() in app/lib/apiBase.ts
+             → NEXT_PUBLIC_API_URL or http://localhost:3001
+  Auth:      buildAuthHeaders(sessionId) → Authorization: Bearer <sessionId>
+
+
+--------------------------------------------------------------------------------
+5A. COMPONENT TREE (notification UI + global provider)
+--------------------------------------------------------------------------------
+
+  app/layout.tsx
+    └── ClientProviders (app/providers/ClientProviders.tsx)
+          └── DesignNotificationProvider  ← all inbox fetch + WebSocket + sound
+                └── {entire app — Dashboard, Leads, Finance, etc.}
+
+  Dashboard only (bell icon):
+    app/Components/DashboardGuard.tsx
+      └── NotificationBell (app/Components/NotificationBell.tsx)
+            └── useDesignNotifications() hook from DesignNotificationProvider
+                  └── notificationBellHelpers.tsx (icons, format time, payload)
+
+  Sound helper (no HTTP):
+    app/lib/notificationSound.ts
+    app/public/sounds/notification-chord.wav
+
+
+--------------------------------------------------------------------------------
+5B. INBOX APIs — DIRECT CALLS (bell / live notifications)
+     File: app/Components/DesignNotificationProvider.tsx
+--------------------------------------------------------------------------------
+
+  Frontend API                         | Function in provider        | Called when
+  -------------------------------------|-----------------------------|------------------------------------------
+  GET /v1/design/inbox?user_id=        | loadNotifications()         | On login; on WS update; on chime event;
+                                       |                             | when bell opens; after mark read
+  GET /v1/design/inbox/counts?user_id= | loadUnreadCount()           | Same triggers as above; drives badge #
+  POST /v1/design/inbox/:id/read       | handleMarkRead(id)          | User clicks unread row in NotificationBell
+  POST /v1/design/inbox/read-all       | handleMarkAllRead()         | User clicks "Mark all read" in bell
+  POST /v1/design/inbox/ws-ticket      | connect() inside useEffect  | On login; auto-reconnect on disconnect
+  WebSocket ws_url?ticket=             | socket.onmessage            | Live inbox_updated → refresh + chime
+
+  Who triggers handleMarkRead / handleMarkAllRead (no fetch in these files):
+    NotificationBell.tsx  → onClick notification row → handleMarkRead(item.id)
+                            → "Mark all read" button → handleMarkAllRead()
+    NotificationBell.tsx  → bell button → primeNotificationSound() only (no API)
+
+  Who uses context but does NOT call inbox APIs:
+    NotificationBell.tsx  → toggleMute() → localStorage only (no API)
+
+  Window event (no HTTP — refreshes inbox + sound):
+    Event: design-notification-chime (DESIGN_NOTIFICATION_CHIME_EVENT)
+    Listener: DesignNotificationProvider useEffect → playNotificationChime + loadNotifications + loadUnreadCount
+    Emitter:  app/lib/notificationSound.ts → signalDesignNotificationChime()
+    Used in:  PopupD1Measurement.tsx after successful d1-request (Leads page, no bell)
+
+
+--------------------------------------------------------------------------------
+5C. LEAD ACTION APIs → BACKEND NOTIFY (indirect — creates notifications)
+     Frontend calls /api/leads/* → server.ts → notify.*()
+--------------------------------------------------------------------------------
+
+  Notify # | Backend notify()     | Frontend API (method + path)              | File / component                          | User action
+  ---------|----------------------|-----------------------------------------|-------------------------------------------|---------------------------
+  01       | leadPre10()          | POST /api/leads/external-intake         | (not in my-app — external/CRM intake)   | New lead created outside UI
+  02       | leadEntered1020()    | POST /api/leads/:id/approve-10p-payment | finance/page.tsx                          | Finance approves 10%
+           |                      |                                         | finance/sales-closure/page.tsx            | Finance approves (crm_hub)
+           |                      |                                         | PopupFinancePaymentApproval.tsx           | Finance approves 10% (kind=10p)
+  03       | milestoneCompleted() | POST /api/leads/:id/complete-task       | Leads/[id]/page.tsx                       | Any task completed (markTaskCompleteAndPersist)
+           |                      |                                         | Leads/[id]/page.tsx (multiple handlers)   | Popup flows that complete tasks
+  04       | paymentRequested()   | POST /api/leads/:id/complete-task       | Leads/[id]/page.tsx                       | Complete "10% payment collection" task
+  05       | paymentStatus()      | POST /api/leads/:id/approve-10p-payment | (same as #02 approve files)             | 10% approved → STATUS APPROVED
+           |                      | POST /api/leads/:id/reject-10p-payment  | finance/sales-closure/page.tsx            | 10% rejected
+           |                      |                                         | finance/page.tsx (if reject wired)        |
+  06       | dqcRequested()       | POST /api/leads/:id/dqc-submission/complete | PopupDqcSubmission.tsx (variant dqc1) | DQC1 files uploaded (S3 complete)
+           |                      | POST /api/leads/:id/dqc2-submission/complete| PopupDqcSubmission.tsx (variant dqc2)| DQC2 files uploaded
+           |                      | POST /api/leads/:id/dqc-submission      | PopupDqcSubmission.tsx (legacy multipart) | Fallback upload path
+           |                      | POST /api/leads/:id/dqc2-submission     | PopupDqcSubmission.tsx                    | Fallback DQC2 upload
+  07       | dqcStatus()          | POST /api/leads/:id/dqc-review          | Leads/[id]/page.tsx (submitDqc1Review)    | DQC manager verdict from lead page
+           |                      |                                         | PopupDqcDesignerView.tsx                  | DQC review save
+           |                      |                                         | DqcDesignerFeedbackCard.tsx               | DQC feedback save
+  08       | mmtRequested()       | POST /api/leads/:id/d1-request          | PopupD1Measurement.tsx                    | Designer requests site measurement
+           |                      |                                         | + signalDesignNotificationChime(800)      | Local sound after success
+  09       | mmtAssigned()        | POST /api/leads/:id/assign-d1-executive | mmt-manager/d1-requests/page.tsx          | MMT manager assigns executive
+  10       | mmtDocReady()        | POST /api/leads/:id/d2-masking-request  | PopupD2MaskingRequest.tsx                 | D2 masking files uploaded
+  11       | meetingScheduled()   | POST /api/leads/:id/schedule-meeting-invite | Leads/[id]/page.tsx (3 call sites)    | Schedule meeting from task popups
+  12       | designerAssigned()   | POST /api/leads/:id/assign-designer     | Dashboard.tsx                             | Assign designer from dashboard
+           |                      | POST /api/leads/assign-designer/bulk    | Dashboard.tsx                             | Bulk assign designers
+  13       | pmAssigned()         | PATCH /api/leads/:id/assign-project-manager | PopupAssignProjectManager.tsx         | Assign PM to lead
+           |                      |                                         | PopupD2MaskingRequest.tsx (assign PM)     | PM assign from D2 flow
+  14       | quoteSaved()         | POST /api/leads/:id/prolance-quote-snapshots | Leads/[id]/page.tsx (Get Quote flow)  | Save quote snapshot after Get Quote
+           |                      |                                         | lib/prolanceGetQuotePersistSnapshot.ts  | Persist quote after Prolance API
+  15       | p2pCompleted()       | POST /api/leads/:id/complete-task       | Leads/[id]/page.tsx                       | Complete "Project manager approval" task
+  16       | pmApprovalStatus()   | POST /api/leads/:id/complete-task       | Leads/[id]/page.tsx (via onApprove)       | PM approves DQC2 (APPROVED)
+           |                      | POST /api/leads/:id/reject-pm-approval  | PopupProjectManagerApproval.tsx           | PM rejects DQC2 (REJECTED)
+
+
+--------------------------------------------------------------------------------
+5D. QUICK LOOKUP — FILE → APIs CALLED (notification-related)
+--------------------------------------------------------------------------------
+
+  FILE PATH                                              | APIs / events called
+  -------------------------------------------------------|--------------------------------------------------
+  app/Components/DesignNotificationProvider.tsx          | GET inbox, GET counts, POST read, POST read-all,
+                                                         | POST ws-ticket, WebSocket connect
+  app/Components/NotificationBell.tsx                    | (uses provider only — no direct fetch)
+  app/Components/DashboardGuard.tsx                      | renders NotificationBell (no fetch)
+  app/lib/notificationSound.ts                           | signalDesignNotificationChime event (no HTTP)
+  app/lib/apiBase.ts                                     | getApiBase(), buildAuthHeaders() helpers
+  app/Leads/[id]/page.tsx                                | complete-task, dqc-review, schedule-meeting-invite,
+                                                         | prolance-quote-snapshots
+  app/Leads/[id]/components/popups/PopupD1Measurement.tsx| d1-request + signalDesignNotificationChime
+  app/Leads/[id]/components/popups/PopupD2MaskingRequest.tsx | d2-masking-request, assign-project-manager
+  app/Leads/[id]/components/popups/PopupAssignProjectManager.tsx | assign-project-manager (PATCH)
+  app/Leads/[id]/components/popups/PopupDqcSubmission.tsx| dqc-submission/presign, /complete, legacy POST
+  app/Leads/[id]/components/popups/PopupDqcDesignerView.tsx | dqc-review
+  app/Leads/[id]/components/popups/PopupProjectManagerApproval.tsx | reject-pm-approval
+  app/Leads/[id]/components/popups/PopupFinancePaymentApproval.tsx | approve-10p-payment / approve-40p-payment
+  app/Leads/[id]/components/DqcDesignerFeedbackCard.tsx  | dqc-review
+  app/Components/Dashboard.tsx                           | assign-designer, assign-designer/bulk
+  app/mmt-manager/d1-requests/page.tsx                   | assign-d1-executive
+  app/finance/page.tsx                                   | approve-10p-payment
+  app/finance/sales-closure/page.tsx                     | approve-10p-payment, reject-10p-payment,
+                                                         | approve-sales-closure (not notify #02 alone)
+  app/lib/prolanceGetQuotePersistSnapshot.ts             | prolance-quote-snapshots, prolance-ids (PATCH)
+
+
+--------------------------------------------------------------------------------
+5E. QUICK LOOKUP — API → FILE (where to find the fetch call)
+--------------------------------------------------------------------------------
+
+  API PATH (frontend calls backend)                      | Primary file(s)
+  -------------------------------------------------------|------------------------------------------
+  GET  /v1/design/inbox                                  | DesignNotificationProvider.tsx → loadNotifications()
+  GET  /v1/design/inbox/counts                           | DesignNotificationProvider.tsx → loadUnreadCount()
+  POST /v1/design/inbox/:id/read                         | DesignNotificationProvider.tsx → handleMarkRead()
+  POST /v1/design/inbox/read-all                         | DesignNotificationProvider.tsx → handleMarkAllRead()
+  POST /v1/design/inbox/ws-ticket                        | DesignNotificationProvider.tsx → connect()
+  POST /api/leads/:id/complete-task                      | Leads/[id]/page.tsx
+  POST /api/leads/:id/d1-request                         | PopupD1Measurement.tsx
+  POST /api/leads/:id/assign-d1-executive                | mmt-manager/d1-requests/page.tsx
+  POST /api/leads/:id/d2-masking-request                 | PopupD2MaskingRequest.tsx
+  PATCH /api/leads/:id/assign-project-manager            | PopupAssignProjectManager.tsx, PopupD2MaskingRequest.tsx
+  POST /api/leads/:id/dqc-submission/complete            | PopupDqcSubmission.tsx (dqc1)
+  POST /api/leads/:id/dqc2-submission/complete           | PopupDqcSubmission.tsx (dqc2)
+  POST /api/leads/:id/dqc-review                         | page.tsx, PopupDqcDesignerView.tsx, DqcDesignerFeedbackCard.tsx
+  POST /api/leads/:id/schedule-meeting-invite            | Leads/[id]/page.tsx
+  POST /api/leads/:id/assign-designer                    | Dashboard.tsx
+  POST /api/leads/assign-designer/bulk                   | Dashboard.tsx
+  POST /api/leads/:id/prolance-quote-snapshots           | page.tsx, prolanceGetQuotePersistSnapshot.ts
+  POST /api/leads/:id/approve-10p-payment                | finance/page.tsx, finance/sales-closure/page.tsx,
+                                                         | PopupFinancePaymentApproval.tsx
+  POST /api/leads/:id/reject-10p-payment                 | finance/sales-closure/page.tsx
+  POST /api/leads/:id/reject-pm-approval                 | PopupProjectManagerApproval.tsx
+
+
+================================================================================
+6. NOTIFYPROJECT — NOTIFICATION CREATE APIs (16)
+================================================================================
+
+  Proto definitions:  NotifyProject/proto/design.proto
+  HTTP gateway:       NotifyProject/proto/protogen/design/design.pb.gw.go
+  gRPC handlers:      NotifyProject/service/service.go
+  DB + fanout save:   saveDesignNotification() → internal/inbox/store.go
+
+  #  | HTTP POST endpoint                         | gRPC method (service.go)        | notification_type | notification_action (typical)
+  ---|--------------------------------------------|---------------------------------|-------------------|-------------------------------
+  01 | /v1/design/notifications/lead/pre-10       | CreateDesignLeadPre10           | LEAD              | CREATED
+  02 | /v1/design/notifications/lead/10-20       | CreateDesignLead1020            | PHASE             | PHASE_ENTERED
+  03 | /v1/design/notifications/milestone         | CreateDesignMilestone           | MILESTONE         | COMPLETED
+  04 | /v1/design/notifications/payment/request    | CreateDesignPaymentRequest      | PAYMENT           | REQUESTED
+  05 | /v1/design/notifications/payment/status     | CreateDesignPaymentStatus       | PAYMENT           | STATUS_UPDATED
+  06 | /v1/design/notifications/dqc/request        | CreateDesignDQCRequest          | DQC               | REQUESTED
+  07 | /v1/design/notifications/dqc/status         | CreateDesignDQCStatus           | DQC               | STATUS_UPDATED
+  08 | /v1/design/notifications/mmt/request        | CreateDesignMMTRequest          | MMT               | REQUESTED
+  09 | /v1/design/notifications/mmt/assign         | CreateDesignMMTAssign           | MMT               | ASSIGNED
+  10 | /v1/design/notifications/mmt/doc-ready        | CreateDesignMMTDocReady         | MMT               | DOC_READY
+  11 | /v1/design/notifications/meeting            | CreateDesignMeeting             | MEETING           | SCHEDULED
+  12 | /v1/design/notifications/assign/designer      | CreateDesignAssignDesigner      | ASSIGNMENT        | DESIGNER_REASSIGNED
+  13 | /v1/design/notifications/assign/pm            | CreateDesignAssignPM            | ASSIGNMENT        | PM_ASSIGNED
+  14 | /v1/design/notifications/quote                | CreateDesignQuote               | QUOTE             | SAVED
+  15 | /v1/design/notifications/p2p                  | CreateDesignP2P                 | P2P               | COMPLETED
+  16 | /v1/design/notifications/pm/status            | CreateDesignPMStatus              | PM                | APPROVED / REJECTED
+
+  Additional NotifyProject read APIs (not used by bell UI today):
+    GET /v1/design/notifications/{notification_id}  → GetDesignNotificationDetails
+    GET /v1/design/notifications/counts             → GetDesignNotificationCounts
+
+  On each create:
+    - Rows inserted into table design_user_notifications (per recipient user_id)
+    - WebSocket hub broadcasts { type: "inbox_updated", event_id, ... } to recipients
+
+
+================================================================================
+7. NOTIFYPROJECT — INBOX / BELL APIs
+================================================================================
+
+  Routed in: NotifyProject/cmd/main.go
+    Paths starting with /v1/design/inbox → internal/inbox/http.go
+    (takes priority over gRPC gateway for inbox)
+
+  File roles:
+    internal/inbox/http.go    REST handlers + WS endpoint
+    internal/inbox/store.go   MySQL design_user_notifications CRUD
+    internal/inbox/hub.go     WebSocket broadcast to connected users
+    internal/inbox/tickets.go WS ticket validation
+    internal/inbox/cleanup.go Delete old read/unread rows (scheduled)
+
+  Endpoint                          | Method | Handler (http.go) | Purpose
+  ----------------------------------|--------|-------------------|----------------------------------
+  /v1/design/inbox                  | GET    | list()            | List user notifications
+  /v1/design/inbox/counts           | GET    | counts()          | Unread total + by_type
+  /v1/design/inbox/{id}             | GET    | detail()          | Single notification
+  /v1/design/inbox/{id}/read        | POST   | markRead()        | Mark one read; WS reason=read
+  /v1/design/inbox/read-all         | POST   | markAllRead()     | Mark all read; WS reason=read-all
+  /v1/design/inbox/ws-ticket        | POST   | wsTicket()        | Issue short-lived WS ticket
+  /v1/design/inbox/ws?ticket=       | GET    | ws()              | WebSocket connection
+  /v1/design/inbox/events           | POST   | createEvent()     | Direct event ingest (optional)
+
+  gRPC inbox methods (also in service/service.go, used via gateway if not caught by inbox HTTP):
+    GetDesignInbox, GetDesignInboxCounts, MarkDesignNotificationRead,
+    MarkAllDesignNotificationsRead, CreateDesignInboxTicket
+
+  Auth on inbox HTTP:
+    Header x-external-api-key must match NOTIFY_API_KEY env (if set)
+
+
+================================================================================
+8. FILE INDEX — WHERE CODE LIVES
+================================================================================
+
+  DESIGN MODULE (DesignModulephase1)
+  ----------------------------------
+  backend/server.ts
+    - notify.initPool(pool)
+    - notify.registerInboxRoutes(app, session auth)
+    - All void notify.*() calls on lead routes (see table section 3)
+
+  backend/routes/designNotifications.ts
+    - 16 export functions (leadPre10 … pmApprovalStatus)
+    - resolveNotificationRecipients(), post(), buildEventId()
+    - registerInboxRoutes() inbox proxy
+    - notifyApiBase(), notifyApiHeaders()
+
+  Frontend
+  --------
+  my-app/app/layout.tsx
+  my-app/app/providers/ClientProviders.tsx
+  my-app/app/Components/DesignNotificationProvider.tsx   (WS, fetch, mark read, sound)
+  my-app/app/Components/NotificationBell.tsx             (dashboard bell UI)
+  my-app/app/Components/notificationBellHelpers.tsx
+  my-app/app/Components/DashboardGuard.tsx               (hosts NotificationBell)
+  my-app/app/lib/notificationSound.ts
+  my-app/app/lib/apiBase.ts                              (getApiBase, buildAuthHeaders)
+  my-app/public/sounds/notification-chord.wav
+  my-app/app/Leads/.../PopupD1Measurement.tsx              (signalDesignNotificationChime)
+
+  NOTIFYPROJECT (NotifyProject)
+  -----------------------------
+  cmd/main.go                          HTTP server routing
+  proto/design.proto                   API contract
+  service/service.go                   CreateDesign* handlers + saveDesignNotification
+  internal/inbox/store.go              DB table design_user_notifications
+  internal/inbox/http.go               Inbox REST + WS
+  internal/inbox/hub.go                WebSocket hub
+  internal/inbox/tickets.go            WS tickets
+  internal/inbox/cleanup.go            Retention cleanup
+  DESIGN_INBOX.md                      Short inbox endpoint reference
+
+================================================================================
+END OF DOCUMENT
+================================================================================

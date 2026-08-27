@@ -4,6 +4,7 @@ import { useRouter, usePathname } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { getApiBase, buildAuthHeaders } from '../lib/apiBase';
+import NotificationBell from './NotificationBell';
 import Dashboard from './Dashboard';
 import GoogleCalendarView from './GoogleCalendarView';
 import PersonalAppointmentsView from './PersonalAppointmentsView';
@@ -28,7 +29,6 @@ export default function DashboardGuard() {
     useState<AppointmentSuccessPayload | null>(null);
   const consoleRef = useRef<HTMLDivElement>(null);
   const apiBase = getApiBase();
-
   useEffect(() => {
     if (loading) return;
     if (pathname === '/login') return;
@@ -423,6 +423,8 @@ export default function DashboardGuard() {
           )}
         </div>
         <div className="flex items-center gap-3">
+          <NotificationBell />
+
           <ThemeModeToggle />
           {isDesignManager && sessionId && user ? (
             <button
