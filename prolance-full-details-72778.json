@@ -1,0 +1,2130 @@
+{
+  "message": "Success",
+  "status": true,
+  "totalPages": 1,
+  "currentPage": 1,
+  "totalRecords": 1,
+  "data": {
+    "quoteID": 72778,
+    "projectID": 53404,
+    "partnerID": 23398,
+    "pvid": 10109,
+    "partnerName": " Abhishek shanbhag",
+    "partnerEMail": "abhishek@hubinterior.com",
+    "partnerMobile": "9741138883",
+    "partnerCompany": "HUB",
+    "projectName": "HUB-2609 - Debashish khuntia",
+    "projectCity": "Bengaluru",
+    "projectState": "Karnataka",
+    "customer": "Debashish khuntia",
+    "quoteRemarks": "15-08",
+    "priceType": "Price",
+    "flatDiscount": 0.0,
+    "woodWorkDiscount": 0.0,
+    "accessoriesDiscount": 0.0,
+    "hardwareDiscount": 0.0,
+    "appliancesDiscount": 0.0,
+    "worktopDiscount": 0.0,
+    "servicesDiscount": 0.0,
+    "addHardwareDiscount": 0.0,
+    "decorDiscount": 0.0,
+    "createdOn": "2026-08-15T07:42:02",
+    "isSubmitted": false,
+    "quoteCharges": [],
+    "quoteOptions": [],
+    "optionDetails": [
+      {
+        "optionID": 174947,
+        "roomType": "Kitchen/Utility",
+        "roomName": "kitchen - kitchen",
+        "roomRev": "R0",
+        "matlInfo": "Base Cabinets:\r\nCarcass: BWP Ply (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / Corn 21387 SF\r\nHinges: Hettich Onsys Soft close\r\nChannels: Hettich Zinc Soft close\r\nHandles: Ebco Special Finish Aluminium Handle\r\n\r\nWall Cabinets:\r\nCarcass: MR Ply (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / 21317 SF Dusk Brown\r\nHinges: Hettich Onsys Soft close\r\nChannels: Hettich Zinc Soft close\r\nHandles: Ebco Special Finish Aluminium Handle\r\n\r\nFrame Lofts:\r\nCarcass: MR Ply (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / 21028  SF Chocolate\r\nHinges: Hettich Onsys Regular\r\nHandles: Ebco Special Finish Aluminium Handle\r\n\r\n",
+        "unitsPrice": 228884.0,
+        "woodWorkPrice": 173745.0,
+        "accessoriesPrice": 26598.0,
+        "consHardwarePrice": 28541.0,
+        "worktopsPrice": 1720.0,
+        "appliancesPrice": 0.0,
+        "servicesPrice": 0.0,
+        "hardwarePrice": 0.0,
+        "decorPrice": 0.0,
+        "units": [
+          {
+            "itemID": 9730729,
+            "label": "R01xM1",
+            "cabinetGroup": "",
+            "cabinetClass": "Base Cabinets",
+            "description": "Base L Corner Unit (RHS) with Aluminium Handle - C4-2 (Special Finish) - 96 handles",
+            "dimensions": "930W x 560D x 700",
+            "imageURL": "/Origin/Images/Cabinets/Base Cabinets/L Corner Shutter/BLCRNLS-R.jpg",
+            "hasLights": false,
+            "sqFt": 8.01,
+            "woodWorkPrice": 33995.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 4656.0,
+            "price": 38652.0,
+            "cost": 34683.0,
+            "carcass": {
+              "coreMatl": "BWP Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": ""
+            },
+            "shutters": [
+              {
+                "name": "Left Shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Corn 21387 SF",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              },
+              {
+                "name": "Right Shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Corn 21387 SF",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          },
+          {
+            "itemID": 9730738,
+            "label": "R01xM12",
+            "cabinetGroup": "",
+            "cabinetClass": "Wall Cabinets",
+            "description": "Wall 2 Alu Glass Shutter Unit",
+            "dimensions": "850W x 330D x 700",
+            "imageURL": "/Origin/Images/Cabinets/Wall Cabinets/2AGS/W2AGS.jpg",
+            "hasLights": false,
+            "sqFt": 6.4,
+            "woodWorkPrice": 12971.0,
+            "accessoriesPrice": 1136.0,
+            "hardwarePrice": 9301.0,
+            "price": 23409.0,
+            "cost": 20483.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Left Panel, Right Panel"
+            },
+            "shutters": [
+              {
+                "name": "Left Alu Frame Glass Shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Aluminium / 45mm Straight Frame Profile (Black Finish) / Black Finish",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              },
+              {
+                "name": "Right Alu Frame Glass Shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Aluminium / 45mm Straight Frame Profile (Black Finish) / Black Finish",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          },
+          {
+            "itemID": 9730730,
+            "label": "R01xM2",
+            "cabinetGroup": "",
+            "cabinetClass": "Base Cabinets",
+            "description": "Base Pullout Unit with Aluminium Handle - C4-2 (Special Finish) - 96 handles",
+            "dimensions": "300W x 560D x 700",
+            "imageURL": "/Origin/Images/Cabinets/Base Cabinets/1D/B1SPO.jpg",
+            "hasLights": false,
+            "sqFt": 2.58,
+            "woodWorkPrice": 10943.0,
+            "accessoriesPrice": 10626.0,
+            "hardwarePrice": 503.0,
+            "price": 22072.0,
+            "cost": 16830.0,
+            "carcass": {
+              "coreMatl": "BWP Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Right Panel"
+            },
+            "shutters": [
+              {
+                "name": "Drawer",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Corn 21387 SF",
+                "bottomShade": "",
+                "accessory": "Ebco Bottle Pullout 2 - Soft Close (Full Set with 2 Tier Solid Base Basket, Soft Close Slides and Mo",
+                "brand": "Ebco",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          },
+          {
+            "itemID": 9730731,
+            "label": "R01xM3",
+            "cabinetGroup": "",
+            "cabinetClass": "Base Cabinets",
+            "description": "Base Hob Unit With 3 Drawer with Aluminium Handle - C4-2 (Special Finish) - 96 handles",
+            "dimensions": "750W x 560D x 700",
+            "imageURL": "/Origin/Images/Cabinets/Base Cabinets/3D/BH3DR.jpg",
+            "hasLights": false,
+            "sqFt": 6.46,
+            "woodWorkPrice": 24398.0,
+            "accessoriesPrice": 14836.0,
+            "hardwarePrice": 967.0,
+            "price": 40201.0,
+            "cost": 31235.0,
+            "carcass": {
+              "coreMatl": "BWP Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": ""
+            },
+            "shutters": [
+              {
+                "name": "Top Drawer",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Corn 21387 SF",
+                "bottomShade": "",
+                "accessory": "Ebco N Profile Drawer System 80 80X500mm, 65Kg Silver Grey (500D)",
+                "brand": "Ebco",
+                "design": "Plain"
+              },
+              {
+                "name": "Middle Drawer",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Corn 21387 SF",
+                "bottomShade": "",
+                "accessory": "Ebco N Profile Drawer System 80 80X500mm, 65Kg Silver Grey (500D)",
+                "brand": "Ebco",
+                "design": "Plain"
+              },
+              {
+                "name": "Bottom Drawer",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Corn 21387 SF",
+                "bottomShade": "",
+                "accessory": "Ebco N Profile Drawer System 185 185X500mm, 65Kg Silver Grey (500D)",
+                "brand": "Ebco",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          },
+          {
+            "itemID": 9730732,
+            "label": "R01xM4",
+            "cabinetGroup": "",
+            "cabinetClass": "Base Cabinets",
+            "description": "Base 2 Shutter Unit with Aluminium Handle - C4-2 (Special Finish) - 96 handles",
+            "dimensions": "900W x 560D x 700",
+            "imageURL": "/Origin/Images/Cabinets/Base Cabinets/2S/B2S.jpg",
+            "hasLights": false,
+            "sqFt": 7.75,
+            "woodWorkPrice": 21752.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 2315.0,
+            "price": 24067.0,
+            "cost": 21492.0,
+            "carcass": {
+              "coreMatl": "BWP Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": ""
+            },
+            "shutters": [
+              {
+                "name": "Left shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Corn 21387 SF",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              },
+              {
+                "name": "Right shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Corn 21387 SF",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          },
+          {
+            "itemID": 9730733,
+            "label": "R01xM5",
+            "cabinetGroup": "",
+            "cabinetClass": "Base Cabinets",
+            "description": "Base Sink 1 Shutter Unit with Aluminium Handle - C4-2 (Special Finish) - 96 handles",
+            "dimensions": "600W x 560D x 700",
+            "imageURL": "/Origin/Images/Cabinets/Base Cabinets/1S/BS1S.jpg",
+            "hasLights": false,
+            "sqFt": 5.17,
+            "woodWorkPrice": 12651.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 1302.0,
+            "price": 13953.0,
+            "cost": 12365.0,
+            "carcass": {
+              "coreMatl": "BWP Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": ""
+            },
+            "shutters": [
+              {
+                "name": "Solid Shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Corn 21387 SF",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          },
+          {
+            "itemID": 9730734,
+            "label": "R01xM6",
+            "cabinetGroup": "",
+            "cabinetClass": "Base Cabinets",
+            "description": "Base Filler",
+            "dimensions": "50W x 560D x 700",
+            "imageURL": "/Origin/Images/Cabinets/Base Cabinets/Filler/BFI.jpg",
+            "hasLights": false,
+            "sqFt": 0.43,
+            "woodWorkPrice": 1051.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 22.0,
+            "price": 1074.0,
+            "cost": 807.0,
+            "carcass": {
+              "coreMatl": "BWP Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": ""
+            },
+            "shutters": [
+              {
+                "name": "Filler",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Corn 21387 SF",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          },
+          {
+            "itemID": 9730735,
+            "label": "R01xM7",
+            "cabinetGroup": "",
+            "cabinetClass": "Wall Cabinets",
+            "description": "Wall 1 Shutter Unit with Aluminium Handle - C4-2 (Special Finish) - 96 handles",
+            "dimensions": "600W x 330D x 700",
+            "imageURL": "/Origin/Images/Cabinets/Wall Cabinets/1S/W1S.jpg",
+            "hasLights": false,
+            "sqFt": 4.52,
+            "woodWorkPrice": 10400.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 1223.0,
+            "price": 11623.0,
+            "cost": 10304.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": ""
+            },
+            "shutters": [
+              {
+                "name": "Solid Shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / 21317 SF Dusk Brown",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          },
+          {
+            "itemID": 9730736,
+            "label": "R01xM8",
+            "cabinetGroup": "",
+            "cabinetClass": "Wall Cabinets",
+            "description": "Wall 2 Shutter Unit with Aluminium Handle - C4-2 (Special Finish) - 96 handles",
+            "dimensions": "850W x 330D x 700",
+            "imageURL": "/Origin/Images/Cabinets/Wall Cabinets/2S/W2S.jpg",
+            "hasLights": false,
+            "sqFt": 6.4,
+            "woodWorkPrice": 15711.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 2263.0,
+            "price": 17974.0,
+            "cost": 15634.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Right Panel"
+            },
+            "shutters": [
+              {
+                "name": "Left shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / 21317 SF Dusk Brown",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              },
+              {
+                "name": "Right shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / 21317 SF Dusk Brown",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          },
+          {
+            "itemID": 9730737,
+            "label": "R01xM9",
+            "cabinetGroup": "",
+            "cabinetClass": "Wall Cabinets",
+            "description": "Wall Filler",
+            "dimensions": "50W x 330D x 700",
+            "imageURL": "/Origin/Images/Cabinets/Wall Cabinets/Filler/WFI.jpg",
+            "hasLights": false,
+            "sqFt": 0.38,
+            "woodWorkPrice": 808.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 22.0,
+            "price": 830.0,
+            "cost": 617.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": ""
+            },
+            "shutters": [
+              {
+                "name": "Filler",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / 21317 SF Dusk Brown",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          }
+        ],
+        "lofts": [
+          {
+            "itemID": 801927,
+            "description": "Frame Loft",
+            "dimensions": "3230W x 100D x 710H",
+            "woodWorkPrice": 29065.3,
+            "hardwarePrice": 5966.9,
+            "price": 35032.0,
+            "cost": 27524.0,
+            "carcass": {
+              "coreMatl": "HDHMR - Century",
+              "shade": "21028  SF Chocolate",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": null
+            },
+            "shutters": [
+              {
+                "name": "Loft Shutter",
+                "coreMatl": "HDHMR - Century",
+                "shade": "21028  SF Chocolate",
+                "bottomShade": "Default Inner White V3",
+                "accessory": null,
+                "brand": null,
+                "design": null
+              }
+            ]
+          }
+        ],
+        "worktops": [],
+        "skirts": [
+          {
+            "itemID": 176408,
+            "category": null,
+            "subCategory": null,
+            "description": "Ebco PVC Black Skirting 100mm 2400 mm length",
+            "make": "Ebco",
+            "mfgCode": "PVCSE-08-BL-3",
+            "qty": 2.0,
+            "uom": "NOS",
+            "rate": 860.0,
+            "price": 1720.0,
+            "cost": 0.0
+          }
+        ],
+        "cornices": [],
+        "appliances": [],
+        "services": [],
+        "hardwares": [],
+        "decors": []
+      },
+      {
+        "optionID": 174952,
+        "roomType": "Bedroom",
+        "roomName": "br1 - br1",
+        "roomRev": "R0",
+        "matlInfo": "Hinged Wardrobes:\r\nCarcass: HDHMR (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / Mysore Ivory  24087 SF\r\nHinges: Hettich Onsys Soft close\r\nChannels: Hettich Zinc Soft close\r\nHandles: Ebco Special Finish Aluminium Handle\r\n\r\nOpen Shelf & Panels:\r\nCarcass: MR Ply (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / Mysore Ivory  24087 SF\r\nHinges: Hettich Onsys Regular\r\nChannels: Hettich Zinc Regular\r\nHandles: Local NH No Handle\r\n\r\nFiller:\r\nCarcass: MR Ply (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / Mysore Ivory  24087 SF\r\nHinges: Hettich Onsys Soft close\r\nChannels: Hettich Zinc Soft close\r\nHandles: Ebco Special Finish Aluminium Handle\r\n\r\nFrame Lofts:\r\nCarcass: MR Ply (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / Mysore Ivory  24087 SF\r\nHinges: Hettich Onsys Regular\r\nHandles: Ebco Special Finish Aluminium Handle\r\n\r\n",
+        "unitsPrice": 170558.0,
+        "woodWorkPrice": 150365.0,
+        "accessoriesPrice": 0.0,
+        "consHardwarePrice": 20193.0,
+        "worktopsPrice": 0.0,
+        "appliancesPrice": 0.0,
+        "servicesPrice": 0.0,
+        "hardwarePrice": 0.0,
+        "decorPrice": 0.0,
+        "units": [
+          {
+            "itemID": 9577455,
+            "label": "R02xM1",
+            "cabinetGroup": "",
+            "cabinetClass": "Base Cabinets (Other Modules)",
+            "description": "Vertical Filler",
+            "dimensions": "50W x 580D x 2100",
+            "imageURL": "/Origin/Images/Cabinets/Filler/Filler/VFI-OM.jpg",
+            "hasLights": false,
+            "sqFt": 1.13,
+            "woodWorkPrice": 2016.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 51.0,
+            "price": 2068.0,
+            "cost": 1600.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": ""
+            },
+            "shutters": [
+              {
+                "name": "Filler",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Mysore Ivory  24087 SF",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          },
+          {
+            "itemID": 9577456,
+            "label": "R02xM2",
+            "cabinetGroup": "",
+            "cabinetClass": "Hinged Wardrobes",
+            "description": "Hinged Wardrobe with 4 Shutter Unit with Aluminium Handle - C4-2 (Special Finish) - 96 handles",
+            "dimensions": "1800W x 580D x 2100",
+            "imageURL": "/Origin/Images/Cabinets/Hinged Wardrobes/4S/HW4S.jpg",
+            "hasLights": false,
+            "sqFt": 40.69,
+            "woodWorkPrice": 114293.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 15877.0,
+            "price": 130170.0,
+            "cost": 116253.0,
+            "carcass": {
+              "coreMatl": "HDHMR",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Left Panel, Skirting"
+            },
+            "shutters": [
+              {
+                "name": "Left Shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Mysore Ivory  24087 SF",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              },
+              {
+                "name": "Middle Left Shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Mysore Ivory  24087 SF",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              },
+              {
+                "name": "Middle Right Shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Mysore Ivory  24087 SF",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              },
+              {
+                "name": "Right Shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Mysore Ivory  24087 SF",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              }
+            ],
+            "accessories": [
+              {
+                "name": "1 Internal Drawer Side By Side (450D) - 1 Hanger Rod - 1 Horizontal Fixed Shelf - 1 Vertical Fixed Shelf - 2 Removable Shelf (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "1 Internal Drawer (450D) - 1 Hanger Rod - 1 Horizontal Fixed Shelf - 1 Removable Shelf (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Horizontal Fixed Shelf (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Hanger Rod (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Internal Drawer (Side By Side) (Both Side DF) (450D) (Internal Set) (Not To be Used) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Half Removable Shelf (Internal Set) (Not To be Used) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Half Removable Shelf (Internal Set) (Not To be Used) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Hanger Rod (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Horizontal Fixed Shelf (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Internal Drawer (With Both Side Filler) (450D) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Removable Shelf (1 nos.)",
+                "brand": ""
+              }
+            ]
+          },
+          {
+            "itemID": 9577457,
+            "label": "R02xM4",
+            "cabinetGroup": "",
+            "cabinetClass": "Open Shelf & Panels",
+            "description": "Horizontal Grain Panel",
+            "dimensions": "1200W x 18D x 600",
+            "imageURL": "/Origin/Images/Cabinets/Open Shelf & Panels/Panels/HGP.jpg",
+            "hasLights": false,
+            "sqFt": 7.75,
+            "woodWorkPrice": 5950.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 3.0,
+            "price": 5953.0,
+            "cost": 5682.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Horizontal Panel"
+            },
+            "shutters": [],
+            "accessories": []
+          }
+        ],
+        "lofts": [
+          {
+            "itemID": 792832,
+            "description": "Frame Loft",
+            "dimensions": "2980W x 580D x 750H",
+            "woodWorkPrice": 28105.9,
+            "hardwarePrice": 4262.1,
+            "price": 32368.0,
+            "cost": 26322.0,
+            "carcass": {
+              "coreMatl": "HDHMR - Century",
+              "shade": "Mysore Ivory  24087 SF",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": null
+            },
+            "shutters": [
+              {
+                "name": "Loft Shutter",
+                "coreMatl": "HDHMR - Century",
+                "shade": "Mysore Ivory  24087 SF",
+                "bottomShade": "Default Inner White V3",
+                "accessory": null,
+                "brand": null,
+                "design": null
+              }
+            ]
+          }
+        ],
+        "worktops": [],
+        "skirts": [],
+        "cornices": [],
+        "appliances": [],
+        "services": [],
+        "hardwares": [],
+        "decors": []
+      },
+      {
+        "optionID": 174954,
+        "roomType": "Bedroom",
+        "roomName": "br2 - br2",
+        "roomRev": "R0",
+        "matlInfo": "Suspended Cabinets:\r\nCarcass: MR Ply (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / Mysore Ivory  24087 SF\r\nHinges: Hettich Onsys Soft close\r\nChannels: Hettich Zinc Soft close\r\nHandles: Ebco Special Finish Aluminium Handle\r\n\r\nFloor To Ceiling Wardrobes:\r\nCarcass: MR Ply (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / Alaskan Walnut 10099 SF\r\nHinges: Hettich Onsys Soft close\r\nChannels: Hettich Zinc Soft close\r\nHandles: Local NH No Handle\r\n\r\nOpen Shelf & Panels:\r\nCarcass: MR Ply (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / Mysore Ivory  24087 SF\r\nHinges: Hettich Onsys Regular\r\nChannels: Hettich Zinc Regular\r\nHandles: Local NH No Handle\r\n\r\nVanity Wall Cabinets:\r\nCarcass: MR Ply (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / 21317 SF Dusk Brown\r\nHinges: Hettich Onsys Soft close\r\nChannels: Hettich Zinc Soft close\r\nHandles: Ebco Special Finish Aluminium Handle\r\n\r\nFrame Lofts:\r\nCarcass: MR Ply (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / Mysore Ivory  24087 SF\r\nHinges: Hettich Onsys Regular\r\nHandles: Ebco Special Finish Aluminium Handle\r\n\r\n",
+        "unitsPrice": 215749.0,
+        "woodWorkPrice": 199036.0,
+        "accessoriesPrice": 3306.0,
+        "consHardwarePrice": 13408.0,
+        "worktopsPrice": 0.0,
+        "appliancesPrice": 0.0,
+        "servicesPrice": 156120.0,
+        "hardwarePrice": 0.0,
+        "decorPrice": 0.0,
+        "units": [
+          {
+            "itemID": 9729699,
+            "label": "R03xM1",
+            "cabinetGroup": "",
+            "cabinetClass": "Suspended Cabinets",
+            "description": "Suspended Unit With 2 Drawer with Aluminium Handle - C4-2 (Special Finish) - 96 handles",
+            "dimensions": "700W x 580D x 200",
+            "imageURL": "/Origin/Images/Cabinets/Suspended Cabinets/2D/S2D.jpg",
+            "hasLights": false,
+            "sqFt": 1.51,
+            "woodWorkPrice": 14726.0,
+            "accessoriesPrice": 3306.0,
+            "hardwarePrice": 589.0,
+            "price": 18621.0,
+            "cost": 15548.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Left Panel, Right Panel, Top Panel"
+            },
+            "shutters": [
+              {
+                "name": "Left Drawer",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Mysore Ivory  24087 SF",
+                "bottomShade": "",
+                "accessory": "Wooden Drawer - 500 mm Depth",
+                "brand": "Prolance",
+                "design": "Plain"
+              },
+              {
+                "name": "Right Drawer",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Mysore Ivory  24087 SF",
+                "bottomShade": "",
+                "accessory": "Wooden Drawer - 500 mm Depth",
+                "brand": "Prolance",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          },
+          {
+            "itemID": 9729700,
+            "label": "R03xM3",
+            "cabinetGroup": "",
+            "cabinetClass": "Open Shelf & Panels",
+            "description": "Horizontal Grain Panel",
+            "dimensions": "800W x 18D x 600",
+            "imageURL": "/Origin/Images/Cabinets/Open Shelf & Panels/Panels/HGP.jpg",
+            "hasLights": false,
+            "sqFt": 5.17,
+            "woodWorkPrice": 3998.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 3.0,
+            "price": 4001.0,
+            "cost": 3789.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Horizontal Panel"
+            },
+            "shutters": [],
+            "accessories": []
+          },
+          {
+            "itemID": 9729701,
+            "label": "R03xM4",
+            "cabinetGroup": "",
+            "cabinetClass": "Floor To Ceiling Wardrobes",
+            "description": "Floor To Ceiling 3 Sliding Shutter Wardrobe-(1 Divider)",
+            "dimensions": "2250W x 600D x 2700",
+            "imageURL": "/Origin/Images/Cabinets/Floor To Ceiling Wardrobes/No Shutter/FTC3SLSW-2SH-1DIV.jpg",
+            "hasLights": false,
+            "sqFt": 65.39,
+            "woodWorkPrice": 142990.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 7172.0,
+            "price": 150162.0,
+            "cost": 139119.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": ""
+            },
+            "shutters": [],
+            "accessories": [
+              {
+                "name": "1 Internal Drawer (70mm Filler) (400D) - 1 Hanger Rod - 2 Horizontal Fixed Shelf - 1 Removable Shelf (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "1 Internal Drawer (70mm Filler) (400D) - 1 Fixed Shelf - 1 Removable Shelf - 1 Half Hanger Rod - 1 Vertical Shelf - 2 Half Removable Shelf (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "1 Internal Drawer (70mm Filler) (400D) - 1 Fixed Shelf - 3 Removable Shelf (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Floor To Ceiling Wardrobe Horizontal Fixed Shelf (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Floor To Ceiling Wardrobe Horizontal Fixed Shelf (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Removable Shelf (FTC Wardrobe) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Hanger Rod (FTC Wardrobe) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Internal Drawer With 70 mm Filler Both Side (FTC Wardrobe) (400D) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Floor To Ceiling Wardrobe Horizontal Fixed Shelf (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Internal Drawer With 70 mm Filler Both Side (FTC Wardrobe) (400D) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Removable Shelf (FTC Wardrobe) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Vertical Divider (Internal Set) (Top Part) (Not To be Used) (FTC Wardrobe) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Half Hanger Rod (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Half Removable Shelf (Internal Set) (Not To be Used) (FTC Wardrobe) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Half Removable Shelf (Internal Set) (Not To be Used) (FTC Wardrobe) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Floor To Ceiling Wardrobe Horizontal Fixed Shelf (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Internal Drawer With 70 mm Filler Both Side (FTC Wardrobe) (400D) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Removable Shelf (FTC Wardrobe) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Removable Shelf (FTC Wardrobe) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Removable Shelf (FTC Wardrobe) (1 nos.)",
+                "brand": ""
+              }
+            ]
+          },
+          {
+            "itemID": 9729702,
+            "label": "R03xM5",
+            "cabinetGroup": "",
+            "cabinetClass": "Vanity Wall Cabinets",
+            "description": "Vanity Wall 2 Shutter Unit with Aluminium Handle - C4-2 (Special Finish) - 96 handles",
+            "dimensions": "700W x 200D x 600",
+            "imageURL": "/Origin/Images/Cabinets/Vanity Wall Cabinets/2S/VAW2S.jpg",
+            "hasLights": false,
+            "sqFt": 4.52,
+            "woodWorkPrice": 10748.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 2234.0,
+            "price": 12983.0,
+            "cost": 10658.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Left Panel, Right Panel"
+            },
+            "shutters": [
+              {
+                "name": "Left shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / 21317 SF Dusk Brown",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              },
+              {
+                "name": "Right shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / 21317 SF Dusk Brown",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          }
+        ],
+        "lofts": [
+          {
+            "itemID": 801836,
+            "description": "Frame Loft",
+            "dimensions": "2450W x 580D x 750H",
+            "woodWorkPrice": 26573.5,
+            "hardwarePrice": 3409.6,
+            "price": 29983.0,
+            "cost": 24833.0,
+            "carcass": {
+              "coreMatl": "HDHMR - Century",
+              "shade": "Mysore Ivory  24087 SF",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": null
+            },
+            "shutters": [
+              {
+                "name": "Loft Shutter",
+                "coreMatl": "HDHMR - Century",
+                "shade": "Mysore Ivory  24087 SF",
+                "bottomShade": "Default Inner White V3",
+                "accessory": null,
+                "brand": null,
+                "design": null
+              }
+            ]
+          }
+        ],
+        "worktops": [],
+        "skirts": [],
+        "cornices": [],
+        "appliances": [],
+        "services": [
+          {
+            "itemID": 94227,
+            "category": "Al.frame shutters V3",
+            "subCategory": "Clear Glass Shutter Finish With (Aluminum, Go",
+            "description": "Cost Includes Only shutter. Hinges OR Sliding mechanism need to add separate",
+            "make": null,
+            "mfgCode": null,
+            "qty": 90.0,
+            "uom": "SQFT",
+            "rate": 1388.0,
+            "price": 124920.0,
+            "cost": 124920.0
+          },
+          {
+            "itemID": 94228,
+            "category": "Trims V3",
+            "subCategory": "HDHMR trims with CNC design with installation",
+            "description": "HDHMR trims with CNC design with installation\nHDHMR trims with CNC cutting, finished with only base paint (only primer) with installation",
+            "make": null,
+            "mfgCode": null,
+            "qty": 60.0,
+            "uom": "RFT",
+            "rate": 520.0,
+            "price": 31200.0,
+            "cost": 31200.0
+          }
+        ],
+        "hardwares": [],
+        "decors": []
+      },
+      {
+        "optionID": 174956,
+        "roomType": "Bedroom",
+        "roomName": "br3 - br3",
+        "roomRev": "R0",
+        "matlInfo": "Base Cabinets (Other Modules):\r\nCarcass: MR Ply (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / Mysore Ivory  24087 SF\r\nHinges: Hettich Onsys Soft close\r\nChannels: Hettich Zinc Soft close\r\nHandles: Ebco Special Finish Aluminium Handle\r\n\r\nSuspended Cabinets:\r\nCarcass: MR Ply (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / Mysore Ivory  24087 SF\r\nHinges: Hettich Onsys Soft close\r\nChannels: Hettich Zinc Soft close\r\nHandles: Ebco Special Finish Aluminium Handle\r\n\r\nOpen Shelf & Panels:\r\nCarcass: MR Ply (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / 21028  SF Chocolate\r\nHinges: Hettich Onsys Regular\r\nChannels: Hettich Zinc Regular\r\nHandles: Local NH No Handle\r\n\r\nFloor To Ceiling Wardrobes:\r\nCarcass: HDHMR (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / Alaskan Walnut 10099 SF\r\nHinges: Hettich Onsys Soft close\r\nChannels: Hettich Zinc Soft close\r\nHandles: Local NH No Handle\r\n\r\nVanity Wall Cabinets:\r\nCarcass: MR Ply (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / 21317 SF Dusk Brown\r\nHinges: Hettich Onsys Soft close\r\nChannels: Hettich Zinc Soft close\r\nHandles: Ebco Special Finish Aluminium Handle\r\n\r\nFrame Lofts:\r\nCarcass: MR Ply (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / Mysore Ivory  24087 SF\r\nHinges: Hettich Onsys Regular\r\nHandles: Ebco Special Finish Aluminium Handle\r\n\r\n",
+        "unitsPrice": 236482.0,
+        "woodWorkPrice": 216183.0,
+        "accessoriesPrice": 8862.0,
+        "consHardwarePrice": 11437.0,
+        "worktopsPrice": 0.0,
+        "appliancesPrice": 0.0,
+        "servicesPrice": 181839.0,
+        "hardwarePrice": 0.0,
+        "decorPrice": 0.0,
+        "units": [
+          {
+            "itemID": 9729911,
+            "label": "R04xM1",
+            "cabinetGroup": "",
+            "cabinetClass": "Suspended Cabinets",
+            "description": "Suspended Unit With 2 Drawer with Aluminium Handle - C4-2 (Special Finish) - 96 handles",
+            "dimensions": "900W x 430D x 200",
+            "imageURL": "/Origin/Images/Cabinets/Suspended Cabinets/2D/S2D.jpg",
+            "hasLights": false,
+            "sqFt": 1.94,
+            "woodWorkPrice": 14321.0,
+            "accessoriesPrice": 2954.0,
+            "hardwarePrice": 606.0,
+            "price": 17882.0,
+            "cost": 15164.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Right Panel, Top Panel, Left Panel"
+            },
+            "shutters": [
+              {
+                "name": "Left Drawer",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Mysore Ivory  24087 SF",
+                "bottomShade": "",
+                "accessory": "Wooden Drawer - 350 mm Depth",
+                "brand": "Prolance",
+                "design": "Plain"
+              },
+              {
+                "name": "Right Drawer",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Mysore Ivory  24087 SF",
+                "bottomShade": "",
+                "accessory": "Wooden Drawer - 350 mm Depth",
+                "brand": "Prolance",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          },
+          {
+            "itemID": 9729912,
+            "label": "R04xM2",
+            "cabinetGroup": "",
+            "cabinetClass": "Floor To Ceiling Wardrobes",
+            "description": "Floor To Ceiling 3 Sliding Shutter Wardrobe - (2 Divider)",
+            "dimensions": "1900W x 600D x 2700",
+            "imageURL": "/Origin/Images/Cabinets/Floor To Ceiling Wardrobes/No Shutter/FTC3SLSW-2DIV.jpg",
+            "hasLights": false,
+            "sqFt": 55.22,
+            "woodWorkPrice": 124372.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 4682.0,
+            "price": 129054.0,
+            "cost": 120640.0,
+            "carcass": {
+              "coreMatl": "HDHMR",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Right Panel, Right Panel, Skirting, Panel / Patta"
+            },
+            "shutters": [],
+            "accessories": [
+              {
+                "name": "1 Internal Drawer (70mm Filler) (400D) - 1 Hanger Rod - 2 Horizontal Fixed Shelf - 1 Removable Shelf (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "1 Horizontal Fixed Shelf - 3 Removable Shelf (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "1 Internal Drawer (70mm Filler) (400D) - 1 Fixed Shelf - 3 Removable Shelf (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Floor To Ceiling Wardrobe Horizontal Fixed Shelf (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Floor To Ceiling Wardrobe Horizontal Fixed Shelf (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Removable Shelf (FTC Wardrobe) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Hanger Rod (FTC Wardrobe) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Internal Drawer With 70 mm Filler Both Side (FTC Wardrobe) (400D) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Floor To Ceiling Wardrobe Horizontal Fixed Shelf (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Removable Shelf (FTC Wardrobe) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Removable Shelf (FTC Wardrobe) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Removable Shelf (FTC Wardrobe) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Floor To Ceiling Wardrobe Horizontal Fixed Shelf (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Internal Drawer With 70 mm Filler Both Side (FTC Wardrobe) (400D) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Removable Shelf (FTC Wardrobe) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Removable Shelf (FTC Wardrobe) (1 nos.)",
+                "brand": ""
+              },
+              {
+                "name": "Removable Shelf (FTC Wardrobe) (1 nos.)",
+                "brand": ""
+              }
+            ]
+          },
+          {
+            "itemID": 9729913,
+            "label": "R04xM3",
+            "cabinetGroup": "",
+            "cabinetClass": "Vanity Wall Cabinets",
+            "description": "Vanity Wall 2 Shutter Unit with Aluminium Handle - C4-2 (Special Finish) - 96 handles",
+            "dimensions": "700W x 200D x 600",
+            "imageURL": "/Origin/Images/Cabinets/Vanity Wall Cabinets/2S/VAW2S.jpg",
+            "hasLights": false,
+            "sqFt": 4.52,
+            "woodWorkPrice": 9508.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 2227.0,
+            "price": 11735.0,
+            "cost": 9552.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": ""
+            },
+            "shutters": [
+              {
+                "name": "Left shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / 21317 SF Dusk Brown",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              },
+              {
+                "name": "Right shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / 21317 SF Dusk Brown",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          },
+          {
+            "itemID": 9729914,
+            "label": "R04xM5",
+            "cabinetGroup": "",
+            "cabinetClass": "Open Shelf & Panels",
+            "description": "Back Panelling (Between 1200-1799 Width and 600-1199 Height)",
+            "dimensions": "1200W x 50D x 1050",
+            "imageURL": "/Origin/Images/Cabinets/Open Shelf & Panels/TV Back Panel/BP-(1200-1799W)-(600-1199H).jpg",
+            "hasLights": false,
+            "sqFt": 13.56,
+            "woodWorkPrice": 3129.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 54.0,
+            "price": 3183.0,
+            "cost": 2230.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": ""
+            },
+            "shutters": [],
+            "accessories": []
+          },
+          {
+            "itemID": 9729915,
+            "label": "R04xM6",
+            "cabinetGroup": "",
+            "cabinetClass": "Open Shelf & Panels",
+            "description": "Horizontal Grain Panel",
+            "dimensions": "1200W x 18D x 1200",
+            "imageURL": "/Origin/Images/Cabinets/Open Shelf & Panels/Panels/HGP.jpg",
+            "hasLights": false,
+            "sqFt": 15.5,
+            "woodWorkPrice": 11716.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 3.0,
+            "price": 11719.0,
+            "cost": 11359.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Horizontal Panel"
+            },
+            "shutters": [],
+            "accessories": []
+          },
+          {
+            "itemID": 9729916,
+            "label": "R04xM7",
+            "cabinetGroup": "",
+            "cabinetClass": "Suspended Cabinets",
+            "description": "Suspended Unit With 2 Drawer with Aluminium Handle - C4-2 (Special Finish) - 96 handles",
+            "dimensions": "1200W x 430D x 200",
+            "imageURL": "/Origin/Images/Cabinets/Suspended Cabinets/2D/S2D.jpg",
+            "hasLights": false,
+            "sqFt": 2.58,
+            "woodWorkPrice": 18188.0,
+            "accessoriesPrice": 2954.0,
+            "hardwarePrice": 606.0,
+            "price": 21748.0,
+            "cost": 18830.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Right Panel, Top Panel, Left Panel"
+            },
+            "shutters": [
+              {
+                "name": "Left Drawer",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Mysore Ivory  24087 SF",
+                "bottomShade": "",
+                "accessory": "Wooden Drawer - 350 mm Depth",
+                "brand": "Prolance",
+                "design": "Plain"
+              },
+              {
+                "name": "Right Drawer",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Mysore Ivory  24087 SF",
+                "bottomShade": "",
+                "accessory": "Wooden Drawer - 350 mm Depth",
+                "brand": "Prolance",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          },
+          {
+            "itemID": 9729918,
+            "label": "R04xM8",
+            "cabinetGroup": "",
+            "cabinetClass": "Base Cabinets (Other Modules)",
+            "description": "Base Unit With 1 Drawer with Aluminium Handle - C4-2 (Special Finish) - 96 handles",
+            "dimensions": "400W x 400D x 400",
+            "imageURL": "/Origin/Images/Cabinets/Base Cabinets (Other Modules)/1D/B1D-OM.jpg",
+            "hasLights": false,
+            "sqFt": 1.72,
+            "woodWorkPrice": 9742.0,
+            "accessoriesPrice": 1477.0,
+            "hardwarePrice": 351.0,
+            "price": 11570.0,
+            "cost": 9930.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Left Panel, Right Panel, Top Panel, Skirting"
+            },
+            "shutters": [
+              {
+                "name": "Drawer",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Mysore Ivory  24087 SF",
+                "bottomShade": "",
+                "accessory": "Wooden Drawer - 350 mm Depth",
+                "brand": "Prolance",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          },
+          {
+            "itemID": 9729919,
+            "label": "R04xM9",
+            "cabinetGroup": "",
+            "cabinetClass": "Base Cabinets (Other Modules)",
+            "description": "Base Unit With 1 Drawer with Aluminium Handle - C4-2 (Special Finish) - 96 handles",
+            "dimensions": "400W x 400D x 400",
+            "imageURL": "/Origin/Images/Cabinets/Base Cabinets (Other Modules)/1D/B1D-OM.jpg",
+            "hasLights": false,
+            "sqFt": 1.72,
+            "woodWorkPrice": 9742.0,
+            "accessoriesPrice": 1477.0,
+            "hardwarePrice": 351.0,
+            "price": 11570.0,
+            "cost": 9930.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Left Panel, Right Panel, Top Panel, Skirting"
+            },
+            "shutters": [
+              {
+                "name": "Drawer",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Mysore Ivory  24087 SF",
+                "bottomShade": "",
+                "accessory": "Wooden Drawer - 350 mm Depth",
+                "brand": "Prolance",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          }
+        ],
+        "lofts": [
+          {
+            "itemID": 801858,
+            "description": "Frame Loft",
+            "dimensions": "1380W x 100D x 750H",
+            "woodWorkPrice": 15465.3,
+            "hardwarePrice": 2557.2,
+            "price": 18022.0,
+            "cost": 14252.0,
+            "carcass": {
+              "coreMatl": "HDHMR - Century",
+              "shade": "Mysore Ivory  24087 SF",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": null
+            },
+            "shutters": [
+              {
+                "name": "Loft Shutter",
+                "coreMatl": "HDHMR - Century",
+                "shade": "Mysore Ivory  24087 SF",
+                "bottomShade": "Default Inner White V3",
+                "accessory": null,
+                "brand": null,
+                "design": null
+              }
+            ]
+          }
+        ],
+        "worktops": [],
+        "skirts": [],
+        "cornices": [],
+        "appliances": [],
+        "services": [
+          {
+            "itemID": 94234,
+            "category": "Al.frame shutters V3",
+            "subCategory": "Clear Glass Shutter Finish With (Aluminum, Go",
+            "description": "Cost Includes Only shutter. Hinges OR Sliding mechanism need to add separate",
+            "make": null,
+            "mfgCode": null,
+            "qty": 90.0,
+            "uom": "SQFT",
+            "rate": 1388.0,
+            "price": 124920.0,
+            "cost": 124920.0
+          },
+          {
+            "itemID": 94235,
+            "category": "Electrical Fixtures V3",
+            "subCategory": "Electrical fixture - Striplight with Alu Prof",
+            "description": "Philpis or Equivalent ( Installation to be carried out separately)",
+            "make": null,
+            "mfgCode": null,
+            "qty": 70.0,
+            "uom": "NOS",
+            "rate": 330.0,
+            "price": 23100.0,
+            "cost": 23100.0
+          },
+          {
+            "itemID": 94236,
+            "category": "Mirror Supply & installation V3",
+            "subCategory": "Supply and Installation - 5mm polished Mirror",
+            "description": "Back Panel To Be Added Separately. The scope includes the supply and installation of a 5mm thick polished-edge mirror of specified size and shape.",
+            "make": null,
+            "mfgCode": null,
+            "qty": 15.0,
+            "uom": "SQFT",
+            "rate": 520.0,
+            "price": 7800.0,
+            "cost": 7800.0
+          },
+          {
+            "itemID": 94238,
+            "category": "Material with Installation V3",
+            "subCategory": "Wallpaper with Installation ( Exclusion - Oil",
+            "description": "Supply and installation of wallpaper on interior wall surfaces as per approved design and specifications. The scope includes necessary surface preparation for proper application, excluding oil primer. Each roll of wallpaper provides a total coverage of 50 sq. ft., with an effective usable area of 47 sq. ft.,accounting for wastage due to cutting and pattern matching.",
+            "make": null,
+            "mfgCode": null,
+            "qty": 3.0,
+            "uom": "NOS",
+            "rate": 8673.0,
+            "price": 26019.0,
+            "cost": 26019.0
+          }
+        ],
+        "hardwares": [],
+        "decors": []
+      },
+      {
+        "optionID": 174958,
+        "roomType": "Living/Dining/Pooja/Foyer",
+        "roomName": "living - living",
+        "roomRev": "R0",
+        "matlInfo": "Base Cabinets (Other Modules):\r\nCarcass: MR Ply (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / Mysore Ivory  24087 SF\r\nHinges: Hettich Onsys Soft close\r\nChannels: Hettich Zinc Soft close\r\nHandles: Ebco Special Finish Aluminium Handle\r\n\r\nSuspended Cabinets:\r\nCarcass: MR Ply (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / Mysore Ivory  24087 SF\r\nHinges: Hettich Onsys Soft close\r\nChannels: Hettich Zinc Soft close\r\nHandles: Ebco Special Finish Aluminium Handle\r\n\r\nTall Cabinets (Other Modules):\r\nCarcass: MR Ply (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / Mysore Ivory  24087 SF\r\nHinges: Hettich Onsys Soft close\r\nChannels: Hettich Zinc Soft close\r\nHandles: Ebco Special Finish Aluminium Handle\r\n\r\nWall Cabinets (Other Modules):\r\nCarcass: MR Ply (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / 21317 SF Dusk Brown\r\nHinges: Hettich Onsys Soft close\r\nChannels: Hettich Zinc Soft close\r\nHandles: Ebco Special Finish Aluminium Handle\r\n\r\nOpen Shelf & Panels:\r\nCarcass: MR Ply (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / 40023 FT Pure White Onyx\r\nHinges: Hettich Onsys Regular\r\nChannels: Hettich Zinc Regular\r\nHandles: Local NH No Handle\r\n\r\nBase Ledge:\r\nCarcass: MR Ply (Century) / Default Inner White V3\r\nShutter: HDHMR (Century) / Laminate (Merino) / Mysore Ivory  24087 SF\r\nHinges: Hettich Onsys Soft close\r\nChannels: Hettich Zinc Soft close\r\nHandles: Ebco Special Finish Aluminium Handle\r\n\r\nOpen Shelf & Panels - Jaali Panels:\r\nCarcass: MR Ply (Century) / Default Inner White V3\r\nShutter: HDHMR (Century CNC) / Laminate (Merino) / Mysore Ivory  24087 SF\r\nHinges: Hettich Onsys Soft close\r\nChannels: Hettich Zinc Soft close\r\nHandles: Local NH No Handle\r\n\r\n",
+        "unitsPrice": 370616.0,
+        "woodWorkPrice": 316552.0,
+        "accessoriesPrice": 9483.0,
+        "consHardwarePrice": 44581.0,
+        "worktopsPrice": 0.0,
+        "appliancesPrice": 0.0,
+        "servicesPrice": 180033.0,
+        "hardwarePrice": 0.0,
+        "decorPrice": 0.0,
+        "units": [
+          {
+            "itemID": 9729357,
+            "label": "R05xM1",
+            "cabinetGroup": "",
+            "cabinetClass": "Suspended Cabinets",
+            "description": "Suspended Unit With 2 Drawer And 1 Open Space (H)",
+            "dimensions": "1800W x 350D x 240",
+            "imageURL": "/Origin/Images/Cabinets/Suspended Cabinets/2D + Open Space/S2D1O.jpg",
+            "hasLights": false,
+            "sqFt": 4.65,
+            "woodWorkPrice": 22678.0,
+            "accessoriesPrice": 2838.0,
+            "hardwarePrice": 657.0,
+            "price": 26173.0,
+            "cost": 23076.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Right Panel, Left Panel, Top Panel"
+            },
+            "shutters": [
+              {
+                "name": "Left Drawer",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Mysore Ivory  24087 SF",
+                "bottomShade": "",
+                "accessory": "Wooden Drawer - 300 mm Depth",
+                "brand": "Prolance",
+                "design": "Plain"
+              },
+              {
+                "name": "Right Drawer",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Mysore Ivory  24087 SF",
+                "bottomShade": "",
+                "accessory": "Wooden Drawer - 300 mm Depth",
+                "brand": "Prolance",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          },
+          {
+            "itemID": 9729366,
+            "label": "R05xM10",
+            "cabinetGroup": "",
+            "cabinetClass": "Base Cabinets (Other Modules)",
+            "description": "Base 2 Shutter & 1 Drawer Unit with Aluminium Handle - C - 160SF handles",
+            "dimensions": "800W x 430D x 900",
+            "imageURL": "/Origin/Images/Cabinets/Base Cabinets (Other Modules)/1D + 2S/B2S1DR-OM.jpg",
+            "hasLights": false,
+            "sqFt": 7.75,
+            "woodWorkPrice": 23432.0,
+            "accessoriesPrice": 1477.0,
+            "hardwarePrice": 2557.0,
+            "price": 27466.0,
+            "cost": 23723.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Left Panel, Right Panel, Skirting"
+            },
+            "shutters": [
+              {
+                "name": "Drawer",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Mysore Ivory  24087 SF",
+                "bottomShade": "",
+                "accessory": "Wooden Drawer - 350 mm Depth",
+                "brand": "Prolance",
+                "design": "Plain"
+              },
+              {
+                "name": "Left Shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Mysore Ivory  24087 SF",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              },
+              {
+                "name": "Right Shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Mysore Ivory  24087 SF",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          },
+          {
+            "itemID": 9729367,
+            "label": "R05xM11",
+            "cabinetGroup": "",
+            "cabinetClass": "Suspended Cabinets",
+            "description": "Suspended Unit With 1 Drawer with Aluminium Handle - C4-2 (Special Finish) - 96 handles",
+            "dimensions": "600W x 350D x 240",
+            "imageURL": "/Origin/Images/Cabinets/Suspended Cabinets/1D/S1D.jpg",
+            "hasLights": false,
+            "sqFt": 1.55,
+            "woodWorkPrice": 9130.0,
+            "accessoriesPrice": 1419.0,
+            "hardwarePrice": 320.0,
+            "price": 10869.0,
+            "cost": 9357.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Left Panel, Top Panel"
+            },
+            "shutters": [
+              {
+                "name": "Drawer",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Mysore Ivory  24087 SF",
+                "bottomShade": "",
+                "accessory": "Wooden Drawer - 300 mm Depth",
+                "brand": "Prolance",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          },
+          {
+            "itemID": 9729368,
+            "label": "R05xM12",
+            "cabinetGroup": "",
+            "cabinetClass": "Open Shelf & Panels",
+            "description": "Vertical Grain Panel With Carcass Finish",
+            "dimensions": "1200W x 17D x 2180",
+            "imageURL": "/Origin/Images/Cabinets/Open Shelf & Panels/Panels/VGP-CF.jpg",
+            "hasLights": false,
+            "sqFt": 28.16,
+            "woodWorkPrice": 28967.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 3.0,
+            "price": 28970.0,
+            "cost": 28568.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": ""
+            },
+            "shutters": [],
+            "accessories": []
+          },
+          {
+            "itemID": 9729369,
+            "label": "R05xM13",
+            "cabinetGroup": "",
+            "cabinetClass": "Open Shelf & Panels",
+            "description": "Vertical Grain Panel",
+            "dimensions": "900W x 18D x 2180",
+            "imageURL": "/Origin/Images/Cabinets/Open Shelf & Panels/Panels/VGP.jpg",
+            "hasLights": false,
+            "sqFt": 21.12,
+            "woodWorkPrice": 37010.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 3.0,
+            "price": 37013.0,
+            "cost": 36552.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Vertical Panel"
+            },
+            "shutters": [],
+            "accessories": []
+          },
+          {
+            "itemID": 9729370,
+            "label": "R05xM14",
+            "cabinetGroup": "",
+            "cabinetClass": "Open Shelf & Panels",
+            "description": "Vertical Grain Panel With Carcass Finish",
+            "dimensions": "900W x 17D x 2180",
+            "imageURL": "/Origin/Images/Cabinets/Open Shelf & Panels/Panels/VGP-CF.jpg",
+            "hasLights": false,
+            "sqFt": 21.12,
+            "woodWorkPrice": 21791.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 3.0,
+            "price": 21794.0,
+            "cost": 21427.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": ""
+            },
+            "shutters": [],
+            "accessories": []
+          },
+          {
+            "itemID": 9729371,
+            "label": "R05xM15",
+            "cabinetGroup": "",
+            "cabinetClass": "Base Cabinets (Other Modules)",
+            "description": "Base Unit With 2 Shutter with Aluminium Handle - C4-2 (Special Finish) - 96 handles",
+            "dimensions": "690W x 400D x 800",
+            "imageURL": "/Origin/Images/Cabinets/Base Cabinets (Other Modules)/2S/B2S-OM.jpg",
+            "hasLights": false,
+            "sqFt": 5.94,
+            "woodWorkPrice": 14611.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 2119.0,
+            "price": 16730.0,
+            "cost": 14401.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Top Panel, Skirting"
+            },
+            "shutters": [
+              {
+                "name": "Left Shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Mysore Ivory  24087 SF",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              },
+              {
+                "name": "Right Shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Mysore Ivory  24087 SF",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          },
+          {
+            "itemID": 9729372,
+            "label": "R05xM16",
+            "cabinetGroup": "",
+            "cabinetClass": "Tall Cabinets (Other Modules)",
+            "description": "Tall 1 Alu Glass Cabinet (OM)",
+            "dimensions": "400W x 400D x 2000",
+            "imageURL": "/Origin/Images/Cabinets/Tall Cabinets (Other Modules)/1AGS/T1AGS-OM.jpg",
+            "hasLights": false,
+            "sqFt": 8.61,
+            "woodWorkPrice": 22498.0,
+            "accessoriesPrice": 568.0,
+            "hardwarePrice": 12793.0,
+            "price": 35859.0,
+            "cost": 32059.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Left Panel, Right Panel, Skirting"
+            },
+            "shutters": [
+              {
+                "name": "Alu Frame Glass Shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Aluminium / 45mm Straight Frame Profile (Black Finish) / Black Finish",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          },
+          {
+            "itemID": 9729373,
+            "label": "R05xM17",
+            "cabinetGroup": "",
+            "cabinetClass": "Tall Cabinets (Other Modules)",
+            "description": "Tall 1 Alu Glass Cabinet (OM)",
+            "dimensions": "400W x 400D x 2000",
+            "imageURL": "/Origin/Images/Cabinets/Tall Cabinets (Other Modules)/1AGS/T1AGS-OM.jpg",
+            "hasLights": false,
+            "sqFt": 8.61,
+            "woodWorkPrice": 22498.0,
+            "accessoriesPrice": 568.0,
+            "hardwarePrice": 12793.0,
+            "price": 35859.0,
+            "cost": 32059.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Left Panel, Right Panel, Skirting"
+            },
+            "shutters": [
+              {
+                "name": "Alu Frame Glass Shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Aluminium / 45mm Straight Frame Profile (Black Finish) / Black Finish",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          },
+          {
+            "itemID": 9729374,
+            "label": "R05xM18",
+            "cabinetGroup": "",
+            "cabinetClass": "Wall Cabinets (Other Modules)",
+            "description": "Wall Unit With 2 Alu Shutters",
+            "dimensions": "690W x 400D x 600",
+            "imageURL": "/Origin/Images/Cabinets/Wall Cabinets (Other Modules)/2AGS/W2S-OM-AGS.jpg",
+            "hasLights": false,
+            "sqFt": 4.46,
+            "woodWorkPrice": 9638.0,
+            "accessoriesPrice": 1136.0,
+            "hardwarePrice": 7014.0,
+            "price": 17788.0,
+            "cost": 15302.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": ""
+            },
+            "shutters": [
+              {
+                "name": "Left Alu Frame Glass Shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Aluminium / 45mm Straight Frame Profile (Black Finish) / Black Finish",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              },
+              {
+                "name": "Right Alu Frame Glass Shutter",
+                "coreMatl": "HDHMR",
+                "shade": "Aluminium / 45mm Straight Frame Profile (Black Finish) / Black Finish",
+                "bottomShade": "",
+                "accessory": "",
+                "brand": "",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          },
+          {
+            "itemID": 9729358,
+            "label": "R05xM2",
+            "cabinetGroup": "",
+            "cabinetClass": "Open Shelf & Panels",
+            "description": "Vertical Grain Panel",
+            "dimensions": "1200W x 18D x 2180",
+            "imageURL": "/Origin/Images/Cabinets/Open Shelf & Panels/Panels/VGP.jpg",
+            "hasLights": false,
+            "sqFt": 28.16,
+            "woodWorkPrice": 49237.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 3.0,
+            "price": 49240.0,
+            "cost": 48735.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Vertical Panel"
+            },
+            "shutters": [],
+            "accessories": []
+          },
+          {
+            "itemID": 9729359,
+            "label": "R05xM3",
+            "cabinetGroup": "",
+            "cabinetClass": "Suspended Cabinets",
+            "description": "Suspended Unit With 1 Drawer with Aluminium Handle - C - 160SF handles",
+            "dimensions": "800W x 430D x 150",
+            "imageURL": "/Origin/Images/Cabinets/Suspended Cabinets/1D/S1D.jpg",
+            "hasLights": false,
+            "sqFt": 1.29,
+            "woodWorkPrice": 5836.0,
+            "accessoriesPrice": 1477.0,
+            "hardwarePrice": 394.0,
+            "price": 7707.0,
+            "cost": 6412.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": ""
+            },
+            "shutters": [
+              {
+                "name": "Drawer",
+                "coreMatl": "HDHMR",
+                "shade": "Laminate / Mysore Ivory  24087 SF",
+                "bottomShade": "",
+                "accessory": "Wooden Drawer - 350 mm Depth",
+                "brand": "Prolance",
+                "design": "Plain"
+              }
+            ],
+            "accessories": []
+          },
+          {
+            "itemID": 9729360,
+            "label": "R05xM4",
+            "cabinetGroup": "",
+            "cabinetClass": "Wall Cabinets (Other Modules)",
+            "description": "Wall Open Unit",
+            "dimensions": "800W x 430D x 1200",
+            "imageURL": "/Origin/Images/Cabinets/Wall Cabinets (Other Modules)/No Shutter/WOU.jpg",
+            "hasLights": false,
+            "sqFt": 10.33,
+            "woodWorkPrice": 24569.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 153.0,
+            "price": 24722.0,
+            "cost": 23489.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Left Panel, Right Panel, Top Panel, Bottom Panel, Back Panel"
+            },
+            "shutters": [],
+            "accessories": []
+          },
+          {
+            "itemID": 9729361,
+            "label": "R05xM5",
+            "cabinetGroup": "",
+            "cabinetClass": "Base Ledge",
+            "description": "Base Ledge (300-899W)",
+            "dimensions": "650W x 350D x 75",
+            "imageURL": "/Origin/Images/Cabinets/Base Ledge/Base Ledge/BL (300-899W).jpg",
+            "hasLights": false,
+            "sqFt": 0.52,
+            "woodWorkPrice": 3664.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 66.0,
+            "price": 3729.0,
+            "cost": 3218.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Ledge, Front Panel, Left Side, Right Side"
+            },
+            "shutters": [],
+            "accessories": []
+          },
+          {
+            "itemID": 9729362,
+            "label": "R05xM6",
+            "cabinetGroup": "",
+            "cabinetClass": "Base Ledge",
+            "description": "Base Ledge (300-899W)",
+            "dimensions": "550W x 250D x 75",
+            "imageURL": "/Origin/Images/Cabinets/Base Ledge/Base Ledge/BL (300-899W).jpg",
+            "hasLights": false,
+            "sqFt": 0.44,
+            "woodWorkPrice": 2536.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 66.0,
+            "price": 2601.0,
+            "cost": 2188.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Ledge, Front Panel, Left Side, Right Side"
+            },
+            "shutters": [],
+            "accessories": []
+          },
+          {
+            "itemID": 9729363,
+            "label": "R05xM7",
+            "cabinetGroup": "",
+            "cabinetClass": "Open Shelf & Panels",
+            "description": "Horizontal Jaali Panel (JCDS01)",
+            "dimensions": "400W x 18D x 1050",
+            "imageURL": "/Origin/Images/Cabinets/Open Shelf & Panels - Jaali Panels/Jaali Panels/HJP-JCDS01.jpg",
+            "hasLights": false,
+            "sqFt": 4.52,
+            "woodWorkPrice": 5700.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 2817.0,
+            "price": 8517.0,
+            "cost": 6493.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Horizontal Panel Jaali JCDS01"
+            },
+            "shutters": [],
+            "accessories": []
+          },
+          {
+            "itemID": 9729364,
+            "label": "R05xM8",
+            "cabinetGroup": "",
+            "cabinetClass": "Open Shelf & Panels",
+            "description": "Horizontal Jaali Panel (JCDS01)",
+            "dimensions": "650W x 18D x 800",
+            "imageURL": "/Origin/Images/Cabinets/Open Shelf & Panels - Jaali Panels/Jaali Panels/HJP-JCDS01.jpg",
+            "hasLights": false,
+            "sqFt": 5.6,
+            "woodWorkPrice": 7057.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 3.0,
+            "price": 7060.0,
+            "cost": 7061.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Horizontal Panel Jaali JCDS01"
+            },
+            "shutters": [],
+            "accessories": []
+          },
+          {
+            "itemID": 9729365,
+            "label": "R05xM9",
+            "cabinetGroup": "",
+            "cabinetClass": "Open Shelf & Panels",
+            "description": "Horizontal Jaali Panel (JCDS01)",
+            "dimensions": "400W x 18D x 1050",
+            "imageURL": "/Origin/Images/Cabinets/Open Shelf & Panels - Jaali Panels/Jaali Panels/HJP-JCDS01.jpg",
+            "hasLights": false,
+            "sqFt": 4.52,
+            "woodWorkPrice": 5700.0,
+            "accessoriesPrice": 0.0,
+            "hardwarePrice": 2817.0,
+            "price": 8517.0,
+            "cost": 6493.0,
+            "carcass": {
+              "coreMatl": "MR Ply",
+              "shade": "Default Inner White V3",
+              "bottomShade": "Default Inner White V3",
+              "expoSides": "Horizontal Panel Jaali JCDS01"
+            },
+            "shutters": [],
+            "accessories": []
+          }
+        ],
+        "lofts": [],
+        "worktops": [],
+        "skirts": [],
+        "cornices": [],
+        "appliances": [],
+        "services": [
+          {
+            "itemID": 94162,
+            "category": "False Ceiling V3",
+            "subCategory": "Gypsum False ceiling with painting ( 2 coat P",
+            "description": "Supply and installation of a Gypsum false ceiling using 12.5mm thick Gypsum Boards, supported by a commercial quality metal channel framework. All materials, labour, and transportation required for the complete execution of this work are included. The work also includes two coats of putty followed by two coats of Tractor emulsion paint. Inclusions: Light cutting and painting. Exclusions: All electrical works.",
+            "make": null,
+            "mfgCode": null,
+            "qty": 370.0,
+            "uom": "SQFT",
+            "rate": 139.0,
+            "price": 51430.0,
+            "cost": 51430.0
+          },
+          {
+            "itemID": 94163,
+            "category": "Electrical Fixtures V3",
+            "subCategory": "Electrical fixture - Surface light 6W circula",
+            "description": "Philpis or Equivalent ( Installation to be carried out separately)",
+            "make": null,
+            "mfgCode": null,
+            "qty": 20.0,
+            "uom": "Per Piece",
+            "rate": 607.0,
+            "price": 12140.0,
+            "cost": 12140.0
+          },
+          {
+            "itemID": 94164,
+            "category": "Electrical Fixtures V3",
+            "subCategory": "Electrical fixture - Striplight with Alu Prof",
+            "description": "Philpis or Equivalent ( Installation to be carried out separately)",
+            "make": null,
+            "mfgCode": null,
+            "qty": 90.0,
+            "uom": "NOS",
+            "rate": 330.0,
+            "price": 29700.0,
+            "cost": 29700.0
+          },
+          {
+            "itemID": 94588,
+            "category": "Trims V3",
+            "subCategory": "HDHMR trims with CNC design with installation",
+            "description": "HDHMR trims with CNC design with installation\nHDHMR trims with CNC cutting, finished with only base paint (only primer) with installation",
+            "make": null,
+            "mfgCode": null,
+            "qty": 60.0,
+            "uom": "RFT",
+            "rate": 520.0,
+            "price": 31200.0,
+            "cost": 31200.0
+          },
+          {
+            "itemID": 94589,
+            "category": "Material with Installation V3",
+            "subCategory": "Wallpaper with Installation ( Exclusion - Oil",
+            "description": "Supply and installation of wallpaper on interior wall surfaces as per approved design and specifications. The scope includes necessary surface preparation for proper application, excluding oil primer. Each roll of wallpaper provides a total coverage of 50 sq. ft., with an effective usable area of 47 sq. ft.,accounting for wastage due to cutting and pattern matching.",
+            "make": null,
+            "mfgCode": null,
+            "qty": 1.0,
+            "uom": "NOS",
+            "rate": 8673.0,
+            "price": 8673.0,
+            "cost": 8673.0
+          },
+          {
+            "itemID": 94591,
+            "category": "Partition Wall V3",
+            "subCategory": "100mm Thick Partition with Gypsum with Ply Ba",
+            "description": "Supply and Installation of 100mm thick Partition finished with Gypsum with Ply Backing.\nSpecification: 1)GI framing–50mm, 2)12mm Commercial Ply fixing, 3)Finishing with Gypsum Board",
+            "make": null,
+            "mfgCode": null,
+            "qty": 90.0,
+            "uom": "SQFT",
+            "rate": 434.0,
+            "price": 39060.0,
+            "cost": 39060.0
+          },
+          {
+            "itemID": 94592,
+            "category": "False Ceiling V3",
+            "subCategory": "False ceiling Strip light grooving cost",
+            "description": "If any strip light groove is required in the false ceiling, an additional cost per RFT shall be applicable",
+            "make": null,
+            "mfgCode": null,
+            "qty": 90.0,
+            "uom": "SQFT",
+            "rate": 87.0,
+            "price": 7830.0,
+            "cost": 7830.0
+          }
+        ],
+        "hardwares": [],
+        "decors": []
+      }
+    ]
+  }
+}

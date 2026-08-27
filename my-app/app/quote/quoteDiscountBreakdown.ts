@@ -30,8 +30,10 @@ const GRANULAR_CATEGORIES: GranularCategory[] = [
     quotePriceKeys: ['woodWorkPrice'],
     quoteDiscountKeys: ['woodWorkDiscount'],
     quoteFactorKeys: ['woodWorkFactor'],
+    // Prolance room `woodWorkPrice` already includes loft woodwork — do not add `loftsPrice` again.
     roomPrice: (o) =>
-      (asNum(o.woodWorkPrice) ?? asNum(o.unitsPrice) ?? 0) + (asNum(o.loftsPrice) ?? 0),
+      asNum(o.woodWorkPrice) ??
+      (asNum(o.unitsPrice) ?? 0) + (asNum(o.loftsPrice) ?? 0),
   },
   {
     key: 'accessories',
