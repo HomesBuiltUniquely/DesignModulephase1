@@ -8646,15 +8646,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
 
           // 03 — Milestone completed (only when all tasks in this milestone are done)
           if (milestoneFullyComplete) {
-            void notify.milestoneCompleted({
-              projectId: nPid,
-              leadName: nLeadName,
-              designerId: nDesignerId,
-              milestoneName: (MILESTONE_NAMES as Record<number, string>)[milestoneIndex] ?? `Milestone ${milestoneIndex + 1}`,
-              taskName: tNormNotify,
-              milestoneIndex,
-              designerName: nDesignerName,
-            });
+            void maybeNotifyMilestoneCompleted(id, milestoneIndex, { taskName: tNormNotify });
           }
 
           // 04 — Payment request: designer collected 10% payment (milestone 2)
@@ -9703,6 +9695,8 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
        ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
       [leadId, now]
     );
+    // 10% PAYMENT milestone completes on finance approval (collection already done on upload)
+    void maybeNotifyMilestoneCompleted(leadId, 2, { taskName: "10% payment approval" });
     await pool.query(
       "UPDATE lead_uploads SET status = 'approved' WHERE lead_id = ? AND upload_type = 'payment_10p' AND status = 'pending'",
       [leadId]
@@ -10347,6 +10341,8 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
        ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
       [leadId, now]
     );
+    // 40% PAYMENT milestone completes on finance approval
+    void maybeNotifyMilestoneCompleted(leadId, 5, { taskName: "40% payment approval" });
     await pool.query(
       "UPDATE lead_uploads SET status = 'approved' WHERE lead_id = ? AND upload_type = 'payment_40p' AND status = 'pending'",
       [leadId]
@@ -10685,6 +10681,10 @@ app.post(
              ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
             [leadId, uploadMilestoneIndex, uploadTaskName, now],
           );
+          // Auto-approve upload can finish D1 / D2 / KT milestone
+          void maybeNotifyMilestoneCompleted(leadId, uploadMilestoneIndex, {
+            taskName: uploadTaskName,
+          });
           // Manager/admin (or D2 SPM/PM) direct upload → auto-approved → notify designer
           if (!isKT) {
             void notifyDesignerMmtDocsReady(leadId, {
@@ -11238,6 +11238,11 @@ app.post("/api/leads/:leadId/uploads/:uploadId/approve", async (req: Request, re
       [leadId, approvalMilestoneIndex, approvalTaskName, now],
     );
 
+    // D1 / D2 milestone completes when last upload task is approved (not via complete-task)
+    void maybeNotifyMilestoneCompleted(leadId, approvalMilestoneIndex, {
+      taskName: approvalTaskName,
+    });
+
     // Log the approval in lead history
     const approverLabel =
       (user.role || "").toLowerCase() === "admin" ? "Admin" : "MMT Manager";
@@ -11324,6 +11329,7 @@ app.post("/api/leads/:leadId/fix-upload-task", async (req: Request, res: Respons
           [leadId, now],
         );
         fixed.push("Marked 'D2 - files upload' (milestone 3) as complete");
+        void maybeNotifyMilestoneCompleted(leadId, 3, { taskName: "D2 - files upload" });
       } else {
         fixed.push("No approved D2 upload found yet — task not marked complete");
       }
@@ -11341,6 +11347,7 @@ app.post("/api/leads/:leadId/fix-upload-task", async (req: Request, res: Respons
           [leadId, now],
         );
         fixed.push("Marked 'D1 files upload' (milestone 0) as complete");
+        void maybeNotifyMilestoneCompleted(leadId, 0, { taskName: "D1 files upload" });
       } else {
         fixed.push("No approved D1 upload found");
       }
@@ -13354,6 +13361,55 @@ function isMilestoneFullyComplete(
       .map((c) => String(c.taskName).trim()),
   );
   return tasks.every((t) => completedSet.has(String(t).trim()));
+}
+
+/**
+ * Fire MILESTONE completed inbox notify when every task in the milestone is done.
+ * Used from complete-task AND alternate paths (MMT approve, finance 10%/40% approve)
+ * because those paths insert completions without going through complete-task.
+ */
+async function maybeNotifyMilestoneCompleted(
+  leadId: number,
+  milestoneIndex: number,
+  opts?: { taskName?: string },
+): Promise<void> {
+  try {
+    const [allCompRows] = await pool.query(
+      `SELECT milestone_index as milestoneIndex, task_name as taskName
+       FROM lead_task_completions WHERE lead_id = ?`,
+      [leadId],
+    );
+    const allComps = allCompRows as { milestoneIndex: number; taskName: string }[];
+    if (!isMilestoneFullyComplete(allComps, milestoneIndex)) return;
+
+    const [nRows] = await pool.query(
+      `SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+              u.name as designerName
+       FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+       WHERE l.id = ? LIMIT 1`,
+      [leadId],
+    );
+    const nRow = (nRows as any[])[0];
+    if (!nRow) return;
+
+    void notify.milestoneCompleted({
+      projectId: nRow.pid || `HUB-${leadId}`,
+      leadName: nRow.projectName || "",
+      designerId: Number(nRow.designerId) || 0,
+      milestoneName:
+        (MILESTONE_NAMES as Record<number, string>)[milestoneIndex] ??
+        `Milestone ${milestoneIndex + 1}`,
+      taskName: opts?.taskName || "",
+      milestoneIndex,
+      designerName: nRow.designerName || "",
+    });
+  } catch (err) {
+    console.warn("[notify] maybeNotifyMilestoneCompleted error (non-fatal)", {
+      leadId,
+      milestoneIndex,
+      err,
+    });
+  }
 }
 
 /** Progress within the current milestone: 0–100 (completed tasks in that milestone / total tasks). */

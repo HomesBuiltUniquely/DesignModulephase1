@@ -307,9 +307,8 @@ export async function resolveNotificationRecipients(args: {
       allOf("admin", "deputy_general_manager");
     } else if (type === "ASSIGNMENT" && !isMmtAssignment(action, payload)) {
       allOf("admin", "deputy_general_manager", "territorial_design_manager");
-    } else if (type === "MILESTONE" || type === "MEETING") {
-      allOf("admin", "deputy_general_manager", "territorial_design_manager");
     }
+    // MILESTONE: Admin/DGM do not receive — TDM handled via addTdms()
   };
 
   const addPmSpm = () => {
@@ -367,8 +366,7 @@ export async function resolveNotificationRecipients(args: {
       addPmSpm();
     }
   } else if (type === "MILESTONE") {
-    // Admin + TDM + designer line (D1 / DQC1 / 10% / D2 / DQC2 / 40% / P2P milestones)
-    addAdminsScoped();
+    // TDM + designer line — Admin/DGM do not want milestone notifications
     addTdms();
     addDesignerLine();
     if (shouldNotifyPmSpm(type, action, payload)) addPmSpm();
@@ -384,8 +382,7 @@ export async function resolveNotificationRecipients(args: {
     addDesignerLine();
     addPmSpm();
   } else if (type === "MEETING") {
-    // Designer line + Admin/TDM — SPM/PM explicitly excluded
-    addAdminsScoped();
+    // Designer line + TDM only — admin and SPM/PM do not want meeting notifications
     addTdms();
     addDesignerLine();
   } else {
@@ -702,7 +699,8 @@ export async function leadEntered1020(p: LeadEntered1020Params): Promise<void> {
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  03  milestoneCompleted
-//  Trigger: complete-task — when every task in a milestone is done (8 milestones total)
+//  Trigger: when every task in a milestone is done —
+//    complete-task, MMT D1/D2 upload approve (or auto-approve), finance 10%/40% approve
 // ─────────────────────────────────────────────────────────────────────────────
 export interface MilestoneCompletedParams extends NotifyBase {
   milestoneName: string;

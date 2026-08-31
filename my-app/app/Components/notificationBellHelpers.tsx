@@ -460,7 +460,7 @@ export function notificationTabIdsForRole(role: string | null | undefined): Noti
   if (r === 'dqc_manager' || r === 'dqe') return ['all', 'dqc'];
   if (r === 'mmt_manager' || r === 'mmt_executive') return ['all', 'mmt', 'assignment'];
   if (r === 'admin' || r === 'deputy_general_manager') {
-    return ['all', 'lead', 'milestone', 'meeting', 'payment', 'dqc', 'assignment', 'quote'];
+    return ['all', 'lead', 'payment', 'dqc', 'assignment', 'quote'];
   }
   if (r === 'territorial_design_manager') {
     return ['all', 'lead', 'milestone', 'meeting', 'payment', 'dqc', 'assignment', 'quote'];
@@ -540,7 +540,6 @@ export function notificationVisibleForRole(
     if (type === 'PAYMENT' || type === 'LEAD' || type === 'PHASE' || type === 'QUOTE' || type === 'QUOTATION') {
       return true;
     }
-    if (type === 'MILESTONE' || type === 'MEETING') return true;
     if (type === 'ASSIGNMENT' && !payloadIsMmtAssignment(item)) return true;
     if (type === 'DQC' && payloadIsDqc2(item)) return true;
     if (type === 'P2P') return true;
