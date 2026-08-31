@@ -551,6 +551,12 @@ async function post(endpoint: string, body: Record<string, any>): Promise<void> 
   const designerId = body.designer_id || null;
   const pmId = body.payload?.to_id || null;
   const resolutionPayload = fanoutPayload(body);
+  // Always stamp lead_id so inbox rows + bell redirect can open /Leads/:id
+  if (leadId > 0) {
+    body.lead_id = leadId;
+    resolutionPayload.lead_id = leadId;
+    body.payload = { ...(body.payload || {}), lead_id: leadId };
+  }
 
   // 1. Calculate deterministic idempotency event_id to prevent duplicates
   const eventId = buildEventId(body.notification_type || "", body.notification_action || "", leadId, resolutionPayload);
@@ -701,6 +707,8 @@ export interface PaymentRequestedParams extends NotifyBase {
 }
 
 export async function paymentRequested(p: PaymentRequestedParams): Promise<void> {
+  const amountNum = Number(p.amount);
+  const amount = Number.isFinite(amountNum) && amountNum > 0 ? amountNum : 0;
   return post("/v1/design/notifications/payment/request", {
     project_id: p.projectId,
     lead_name: p.leadName,
@@ -711,7 +719,7 @@ export async function paymentRequested(p: PaymentRequestedParams): Promise<void>
       payment_type: p.paymentType,
       milestone_context: p.milestoneContext ?? p.paymentType,
       upload_name: p.uploadName ?? "Payment Collection",
-      amount: p.amount ?? 0,
+      amount,
       designer_name: p.designerName ?? "",
     },
   });
@@ -985,15 +993,20 @@ export interface QuoteSavedParams extends NotifyBase {
 }
 
 export async function quoteSaved(p: QuoteSavedParams): Promise<void> {
+  const quoteId = String(p.quoteId || "").trim();
+  const frontendBase = (process.env.FRONTEND_BASE_URL || "http://localhost:3000").replace(/\/$/, "");
+  const quoteLink = quoteId ? `${frontendBase}/quote/${encodeURIComponent(quoteId)}` : "";
   return post("/v1/design/notifications/quote", {
     project_id: p.projectId,
     lead_name: p.leadName,
     designer_id: p.designerId,
-    notification_type: "QUOTATION",
-    notification_action: p.isNewQuote ? "QUOTE_CREATED" : "QUOTE_UPDATED",
+    notification_type: "QUOTE",
+    notification_action: p.isNewQuote ? "CREATED" : "UPDATED",
     payload: {
-      quotation_name: `Quote #${p.quoteId}`,
-      link: "",
+      quote_id: quoteId ? `QT-${quoteId}` : "",
+      quotation_name: quoteId ? `Quote #${quoteId}` : "Quotation",
+      quote_link: quoteLink,
+      link: quoteLink,
     },
     created_at: new Date().toISOString(),
   });

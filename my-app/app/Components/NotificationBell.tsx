@@ -11,6 +11,7 @@ import {
   getNotificationListTitle,
   getNotificationSubtitle,
   groupNotificationsByDay,
+  leadIdFromNotification,
   matchesNotificationFilter,
   notificationCategoryTone,
   notificationTabIdsForRole,
@@ -172,10 +173,21 @@ export default function NotificationBell({ className = '' }: Props) {
 
   const openItem = (item: DesignNotificationItem) => {
     markOneSeen(item.id);
-    if (item.lead_id && Number(item.lead_id) > 0) {
+    const leadId = leadIdFromNotification(item);
+    if (leadId) {
       setIsInboxOpen(false);
-      router.push(`/Leads/${item.lead_id}`);
+      router.push(`/Leads/${leadId}`);
     }
+  };
+
+  const openQuote = (item: DesignNotificationItem, quoteLink: string) => {
+    markOneSeen(item.id);
+    setIsInboxOpen(false);
+    if (/^https?:\/\//i.test(quoteLink)) {
+      window.open(quoteLink, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    router.push(quoteLink);
   };
 
   return (
@@ -295,23 +307,29 @@ export default function NotificationBell({ className = '' }: Props) {
                       const subtitle = getNotificationSubtitle(item);
                       const typeKey = (item.notification_type || '').toUpperCase();
                       const quoteLink = quoteLinkFromNotification(item);
+                      const leadId = leadIdFromNotification(item);
+                      const isQuote = typeKey === 'QUOTE' || typeKey === 'QUOTATION';
 
                       return (
                         <li key={item.id}>
                           <div
                             role="button"
                             tabIndex={0}
-                            onClick={() => markOneSeen(item.id)}
+                            onClick={() => {
+                              if (leadId) openItem(item);
+                              else markOneSeen(item.id);
+                            }}
                             onKeyDown={(e) => {
                               if (e.key === 'Enter' || e.key === ' ') {
                                 e.preventDefault();
-                                markOneSeen(item.id);
+                                if (leadId) openItem(item);
+                                else markOneSeen(item.id);
                               }
                             }}
                             className={`flex w-full cursor-pointer items-start gap-3 px-3 py-2.5 text-left transition-colors hover:bg-gray-50 ${
                               unread ? 'bg-red-50/35' : ''
                             }`}
-                            title="Click to mark as read"
+                            title={leadId ? 'Open lead' : 'Click to mark as read'}
                           >
                             <span
                               className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${tone.iconBg} ${tone.iconText}`}
@@ -332,19 +350,17 @@ export default function NotificationBell({ className = '' }: Props) {
                                   {subtitle}
                                 </span>
                               ) : null}
-                              {typeKey === 'QUOTE' && quoteLink ? (
-                                <a
-                                  href={quoteLink}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
+                              {isQuote && quoteLink ? (
+                                <button
+                                  type="button"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    markOneSeen(item.id);
+                                    openQuote(item, quoteLink);
                                   }}
                                   className="mt-1.5 inline-flex rounded-md border border-[#EF0101] px-2 py-0.5 text-[11px] font-semibold text-[#EF0101] hover:bg-[#EF0101]/10"
                                 >
-                                  Open quotation
-                                </a>
+                                  Open Quote
+                                </button>
                               ) : null}
                               <span className="mt-1.5 flex items-center justify-between gap-2">
                                 <span
@@ -356,7 +372,7 @@ export default function NotificationBell({ className = '' }: Props) {
                                   {unread ? (
                                     <span className="h-1.5 w-1.5 rounded-full bg-red-500" title="Unread" />
                                   ) : null}
-                                  {item.lead_id && Number(item.lead_id) > 0 ? (
+                                  {leadId ? (
                                     <button
                                       type="button"
                                       onClick={(e) => {
@@ -372,7 +388,7 @@ export default function NotificationBell({ className = '' }: Props) {
                                       </svg>
                                     </button>
                                   ) : (
-                                    <span className="text-gray-300">›</span>
+                                    <span className="text-gray-300" title="Lead link unavailable">›</span>
                                   )}
                                 </span>
                               </span>

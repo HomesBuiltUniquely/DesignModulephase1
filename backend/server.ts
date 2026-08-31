@@ -14476,6 +14476,16 @@ app.post("/api/leads/manual-create", async (req: Request, res: Response) => {
     const pid = `HUB-${leadId}`;
     await pool.query("UPDATE leads SET pid = ? WHERE id = ?", [pid, leadId]);
 
+    // Notify: 01 — Pre-10% new lead (Add Project)
+    void notify.leadPre10({
+      projectId: pid,
+      leadName: customerName || projectName,
+      designerId: assignedDesignerId ?? 0,
+      designerName: user.name || "",
+      salesExecutiveName: "",
+      appointmentDate: "",
+      appointmentSlot: "",
+    });
 
     return res.status(201).json({
       ok: true,
@@ -15346,6 +15356,51 @@ registerCrmHubBookingRoutes(app, {
   pool,
   getUserFromSession,
   addLeadHistoryEvent,
+  onCrmLeadCreated: (leadId) => {
+    void (async () => {
+      try {
+        const [rows] = await pool.query(
+          `SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                  u.name as designerName, l.payload
+           FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+           WHERE l.id = ? LIMIT 1`,
+          [leadId],
+        );
+        const row = (rows as any[])[0];
+        if (!row) return;
+        let salesExecutive = "";
+        let appointmentDate = "";
+        let appointmentSlot = "";
+        try {
+          const payload =
+            typeof row.payload === "string"
+              ? JSON.parse(row.payload)
+              : row.payload && typeof row.payload === "object"
+                ? row.payload
+                : {};
+          salesExecutive = String(
+            payload.sales_executive_name || payload.salesExecutiveName || payload.formData?.sales_executive_name || "",
+          ).trim();
+          const slot = payload.slot || payload.crmSchedule || {};
+          appointmentDate = String(slot.date || payload.appointment_date || "").trim();
+          appointmentSlot = String(slot.slot_time || slot.time_slot || payload.appointment_slot || "").trim();
+        } catch {
+          /* ignore payload parse */
+        }
+        void notify.leadPre10({
+          projectId: row.pid || `HUB-${leadId}`,
+          leadName: row.projectName || "",
+          designerId: Number(row.designerId) || 0,
+          designerName: row.designerName || "",
+          salesExecutiveName: salesExecutive,
+          appointmentDate,
+          appointmentSlot,
+        });
+      } catch (err) {
+        console.warn("[notify] CRM lead Pre-10 notify error (non-fatal)", err);
+      }
+    })();
+  },
   onCrmSalesClosurePaymentRequested: (leadId, meta) => {
     void (async () => {
       try {
@@ -15358,13 +15413,20 @@ registerCrmHubBookingRoutes(app, {
         );
         const row = (rows as any[])[0];
         if (!row) return;
+        const toward = Number(meta?.amount_toward_10 ?? meta?.amountToward10);
+        const extra = Number(meta?.extra_amount ?? meta?.extraAmount);
+        const total = Number(meta?.amount);
+        const amount =
+          (Number.isFinite(total) && total > 0 ? total : 0) ||
+          ((Number.isFinite(toward) && toward > 0 ? toward : 0) +
+            (Number.isFinite(extra) && extra > 0 ? extra : 0));
         void notify.paymentRequested({
           projectId: row.pid || `HUB-${leadId}`,
           leadName: row.projectName || "",
           designerId: Number(row.designerId) || 0,
           paymentType: "SALES_CLOSURE",
           uploadName: String(meta?.upload_name || "CRM payment proof"),
-          amount: Number(meta?.amount) || 0,
+          amount,
           designerName: row.designerName || "",
           milestoneContext: String(meta?.milestone_context || "CRM_BOOKING"),
         });

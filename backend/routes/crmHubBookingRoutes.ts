@@ -1152,9 +1152,14 @@ async function handleConvertBooking(
 
   const proofCount = await importHubPaymentProofs(pool, designLeadId, { ...body, _syncedAt: now });
   if (proofCount > 0 && onCrmSalesClosurePaymentRequested) {
+    const toward = Number(finance.amountToward10) || 0;
+    const extra = Number(finance.extraAmountReceived) || 0;
+    const total = Number(finance.totalAmountReceived) || toward + extra;
     onCrmSalesClosurePaymentRequested(designLeadId, {
       payment_type: "SALES_CLOSURE",
-      amount: finance.totalAmountReceived || finance.amountToward10 || null,
+      amount: total > 0 ? total : null,
+      amount_toward_10: toward > 0 ? toward : null,
+      extra_amount: extra > 0 ? extra : null,
       upload_name: `${proofCount} CRM payment proof(s)`,
       milestone_context: "CRM_BOOKING",
     });

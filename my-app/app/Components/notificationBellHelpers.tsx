@@ -108,11 +108,61 @@ export function notificationCategoryTone(type: string): {
 
 export function quoteLinkFromNotification(item: DesignNotificationItem): string | null {
   const p = asRecord(item.payload);
-  const link = pick(p, ['quote_link', 'quoteLink', 'quote_url', 'quoteUrl']);
-  if (link) return link;
+  const link = pick(p, ['quote_link', 'quoteLink', 'quote_url', 'quoteUrl', 'link']);
+  if (link && /^https?:\/\//i.test(link)) return link;
+  if (link && link.startsWith('/')) return link;
   const q = pick(p, ['quote_id', 'quoteId']).replace(/^QT-/i, '');
   if (/^\d+$/.test(q)) return `/quote/${q}`;
+  // quotation_name like "Quote #123"
+  const name = pick(p, ['quotation_name', 'quotationName']);
+  const fromName = name.match(/#(\d+)/)?.[1];
+  if (fromName) return `/quote/${fromName}`;
+  return link || null;
+}
+
+/** Resolve design lead id for redirect — top-level, payload, or HUB-{id} project_id. */
+export function leadIdFromNotification(item: DesignNotificationItem): number | null {
+  const top = Number(item.lead_id);
+  if (Number.isFinite(top) && top > 0) return top;
+  const p = asRecord(item.payload);
+  const fromPayload = Number(p.lead_id ?? p.leadId);
+  if (Number.isFinite(fromPayload) && fromPayload > 0) return fromPayload;
+  const pid = String(item.project_id || p.project_id || '').trim();
+  const hub = pid.match(/^HUB-(\d+)$/i);
+  if (hub) {
+    const id = Number(hub[1]);
+    if (Number.isFinite(id) && id > 0) return id;
+  }
   return null;
+}
+
+function formatInrAmount(raw: unknown): string {
+  if (raw == null || raw === '') return '';
+  // Avoid string concat bugs like "44000"+"34000" → parse as number first
+  const n =
+    typeof raw === 'number'
+      ? raw
+      : Number(String(raw).replace(/,/g, '').replace(/[^\d.-]/g, ''));
+  if (!Number.isFinite(n) || n <= 0) return '';
+  return `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+}
+
+/** Single total only — token payments may arrive in multiple tranches; don't split as "extra". */
+function paymentAmountLabel(p: Record<string, unknown>): string {
+  const candidates = [
+    p.amount,
+    p.total_amount,
+    p.totalAmount,
+    p.total_amount_received,
+    p.totalAmountReceived,
+    p.amount_toward_10,
+    p.amountToward10,
+  ];
+  for (const raw of candidates) {
+    const label = formatInrAmount(raw);
+    if (label) return label;
+  }
+  return '';
 }
 
 export type DayGroup = { key: string; label: string; items: DesignNotificationItem[] };
@@ -256,7 +306,7 @@ export function extractNotificationDetails(item: DesignNotificationItem): Notifi
   add('MMT manager', pick(payload, ['mmt_manager_name']));
   add('Payment stage', pick(payload, ['payment_type', 'milestone_context']));
   add('Decision', pick(payload, ['decision_type', 'status']));
-  add('Amount', pick(payload, ['amount']));
+  add('Amount', paymentAmountLabel(payload) || pick(payload, ['amount']));
   add('Approved by', pick(payload, ['approver_name', 'approved_by']));
   add('DQC round', pick(payload, ['dqc_round']));
   add('Document', pick(payload, ['upload_name']));
@@ -410,7 +460,8 @@ export function notificationTabIdsForRole(role: string | null | undefined): Noti
   if (r === 'dqc_manager' || r === 'dqe') return ['all', 'dqc'];
   if (r === 'mmt_manager' || r === 'mmt_executive') return ['all', 'mmt', 'assignment'];
   if (r === 'admin' || r === 'deputy_general_manager') {
-    return ['all', 'lead', 'payment', 'dqc', 'assignment', 'quote', 'milestone'];
+    // Milestone notifications are not fanout to admin — hide that tab.
+    return ['all', 'lead', 'payment', 'dqc', 'assignment', 'quote'];
   }
   if (r === 'territorial_design_manager') {
     return ['all', 'lead', 'milestone', 'payment', 'dqc', 'assignment', 'quote'];
@@ -736,7 +787,7 @@ export function getNotificationSubtitle(item: DesignNotificationItem): string {
       paymentTypeLabel(pick(p, ['payment_type', 'paymentType', 'milestone_context'])),
       designer && `Designer: ${designer}`,
       pick(p, ['upload_name', 'uploadName']),
-      pick(p, ['amount']) && Number(pick(p, ['amount'])) > 0 && `₹${pick(p, ['amount'])}`,
+      paymentAmountLabel(p),
     ]);
   }
 
@@ -748,7 +799,7 @@ export function getNotificationSubtitle(item: DesignNotificationItem): string {
       actorNameFrom(p) && `By: ${actorNameFrom(p)}`,
       pick(p, ['rejection_reason', 'rejectionReason']) &&
         `Reason: ${pick(p, ['rejection_reason', 'rejectionReason'])}`,
-      pick(p, ['amount']) && Number(pick(p, ['amount'])) > 0 && `₹${pick(p, ['amount'])}`,
+      paymentAmountLabel(p),
     ]);
   }
 
