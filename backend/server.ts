@@ -9448,6 +9448,32 @@ app.post(
         );
       }
 
+      // Notify: Design 10% payment requested (same path as 40% upload — collection is done here, not via complete-task)
+      try {
+        const [notifyRows] = await pool.query(
+          `SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                  u.name as designerName
+           FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+           WHERE l.id = ? LIMIT 1`,
+          [leadId],
+        );
+        const nRow = (notifyRows as any[])[0];
+        if (nRow) {
+          void notify.paymentRequested({
+            projectId: nRow.pid || `HUB-${leadId}`,
+            leadName: nRow.projectName || "",
+            designerId: Number(nRow.designerId) || 0,
+            paymentType: "PRE_10_PERCENT",
+            uploadName: `10% payment screenshots (${files.length})`,
+            amount: 0,
+            designerName: nRow.designerName || user.name || "",
+            milestoneContext: "DESIGN_10",
+          });
+        }
+      } catch (notifyErr) {
+        console.warn("[notify] 10p-payment-upload notify error (non-fatal)", notifyErr);
+      }
+
       // Fire internal notification email to Finance Team with CC to Admin and TDM
       try {
         const [leadRows] = await pool.query(
@@ -11738,6 +11764,30 @@ async function persistDqc2SubmissionFromMeta(
   // NOTE: The internal DQC review email (send-dqc2-final-design-submission-internal) is intentionally
   // NOT sent here. It is sent exclusively via the complete-task → DQC2_SUBMISSION_DUAL handler to
   // prevent duplicate emails when the designer uploads files and then completes the task.
+
+  // Inbox: DQC2 review requested (was missing — only DQC1 submission notified)
+  try {
+    const [nRows] = await pool.query(
+      `SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+              u.name as designerName
+       FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+       WHERE l.id = ? LIMIT 1`,
+      [leadId],
+    );
+    const nRow = (nRows as any[])[0];
+    if (nRow) {
+      void notify.dqcRequested({
+        projectId: nRow.pid || `HUB-${leadId}`,
+        leadName: nRow.projectName || "",
+        designerId: Number(nRow.designerId) || 0,
+        dqcRound: "DQC2",
+        reviewId: 0,
+        designerName: nRow.designerName || user.name || "",
+      });
+    }
+  } catch (notifyErr) {
+    console.warn("[notify] dqc2 submission notify error (non-fatal)", notifyErr);
+  }
 }
 
 // ----- DQC 1: browser uploads directly to S3 (bypasses Nginx body limit); then small JSON "complete" calls API -----

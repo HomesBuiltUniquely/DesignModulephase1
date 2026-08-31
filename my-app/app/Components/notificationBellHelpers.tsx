@@ -460,11 +460,10 @@ export function notificationTabIdsForRole(role: string | null | undefined): Noti
   if (r === 'dqc_manager' || r === 'dqe') return ['all', 'dqc'];
   if (r === 'mmt_manager' || r === 'mmt_executive') return ['all', 'mmt', 'assignment'];
   if (r === 'admin' || r === 'deputy_general_manager') {
-    // Milestone notifications are not fanout to admin — hide that tab.
-    return ['all', 'lead', 'payment', 'dqc', 'assignment', 'quote'];
+    return ['all', 'lead', 'milestone', 'meeting', 'payment', 'dqc', 'assignment', 'quote'];
   }
   if (r === 'territorial_design_manager') {
-    return ['all', 'lead', 'milestone', 'payment', 'dqc', 'assignment', 'quote'];
+    return ['all', 'lead', 'milestone', 'meeting', 'payment', 'dqc', 'assignment', 'quote'];
   }
   if (r === 'design_manager') {
     return NOTIFICATION_FILTERS.map((f) => f.id);
@@ -473,7 +472,7 @@ export function notificationTabIdsForRole(role: string | null | undefined): Noti
     return NOTIFICATION_FILTERS.map((f) => f.id);
   }
   if (r === 'project_manager' || r === 'senior_project_manager') {
-    return ['all', 'milestone', 'meeting', 'dqc', 'mmt', 'assignment'];
+    return ['all', 'milestone', 'dqc', 'mmt', 'assignment'];
   }
   return NOTIFICATION_FILTERS.map((f) => f.id);
 }
@@ -541,6 +540,7 @@ export function notificationVisibleForRole(
     if (type === 'PAYMENT' || type === 'LEAD' || type === 'PHASE' || type === 'QUOTE' || type === 'QUOTATION') {
       return true;
     }
+    if (type === 'MILESTONE' || type === 'MEETING') return true;
     if (type === 'ASSIGNMENT' && !payloadIsMmtAssignment(item)) return true;
     if (type === 'DQC' && payloadIsDqc2(item)) return true;
     if (type === 'P2P') return true;
@@ -551,6 +551,7 @@ export function notificationVisibleForRole(
     return (
       type === 'PAYMENT' ||
       type === 'MILESTONE' ||
+      type === 'MEETING' ||
       type === 'P2P' ||
       type === 'LEAD' ||
       type === 'PHASE' ||
@@ -568,6 +569,8 @@ export function notificationVisibleForRole(
   }
 
   if (r === 'project_manager' || r === 'senior_project_manager') {
+    // SPM/PM do not want meeting notifications
+    if (type === 'MEETING') return false;
     return payloadIsD2Related(item) || type === 'P2P';
   }
 
@@ -649,11 +652,32 @@ function paymentTypeLabel(raw: string): string {
   const u = String(raw || '').toUpperCase();
   if (!u) return '';
   if (u.includes('SALES') || u.includes('CRM') || u.includes('CLOSURE') || u.includes('BOOKING')) {
-    return 'Sales Closure Payment';
+    return 'CRM 10% (Sales Closure)';
   }
-  if (u.includes('40')) return '40% Design Payment';
-  if (u.includes('10') || u.includes('PRE_10')) return '10% Design Payment';
+  if (u.includes('40') || u.includes('DESIGN_40')) return 'Design 40% Payment';
+  if (u.includes('PRE_10') || u.includes('DESIGN_10') || u.includes('10')) return 'Design 10% Payment';
   return humanizeLabel(raw);
+}
+
+function paymentActionTitle(pay: string, action: string, decision: string): string {
+  const base = pay || 'Payment';
+  if (action === 'REQUESTED') return `${base} — Request`;
+  if (decision === 'REJECTED' || action.includes('REJECT')) return `${base} — Rejected`;
+  if (decision === 'APPROVED' || decision === 'SUCCESS') return `${base} — Approved`;
+  return `${base} — Updated`;
+}
+
+function meetingTitleFromPayload(p: Record<string, unknown>): string {
+  const label = pick(p, ['meeting_label', 'meetingLabel']);
+  if (label) return label;
+  const mt = pick(p, ['meeting_type', 'meetingType']).toLowerCase().replace(/-/g, '_');
+  if (mt.includes('first_cut') || mt.includes('dqc1_first')) return 'First Cut Meeting (DQC1)';
+  if (mt.includes('material') || mt.includes('dqc2_material')) return 'Material Selection Meeting (DQC2)';
+  if (mt.includes('signoff') || mt.includes('sign_off') || mt.includes('design_sign')) {
+    return 'Design Sign-Off Meeting (40%)';
+  }
+  const human = humanizeLabel(pick(p, ['meeting_type', 'meetingType']));
+  return human || 'Meeting';
 }
 
 function dqcRoundLabel(raw: string): string {
@@ -683,20 +707,22 @@ export function getNotificationListTitle(item: DesignNotificationItem): string {
     case 'PHASE':
       return 'Lead moved to 10–20%';
     case 'MILESTONE': {
-      const milestone = humanizeLabel(pick(p, ['milestone_name', 'milestoneName']));
+      const raw = pick(p, ['milestone_name', 'milestoneName']);
+      const u = raw.toUpperCase();
+      let milestone = humanizeLabel(raw);
+      if (u.includes('D1') && u.includes('SITE')) milestone = 'D1 Site Measurement';
+      if (u.includes('D2') && (u.includes('MASK') || u.includes('SITE'))) milestone = 'D2 Site Masking';
+      if (u.includes('10%') || u === '10% PAYMENT') milestone = '10% Payment';
+      if (u.includes('40%') || u === '40% PAYMENT') milestone = '40% Payment';
+      if (u.includes('DQC1')) milestone = 'DQC1';
+      if (u.includes('DQC2')) milestone = 'DQC2';
+      if (u.includes('PUSH') || u.includes('PRODUCTION')) milestone = 'Push to Production';
       return milestone ? `${milestone} completed` : 'Milestone completed';
     }
     case 'PAYMENT': {
       const pay = paymentTypeLabel(pick(p, ['payment_type', 'paymentType', 'milestone_context']));
       const decision = pick(p, ['decision_type', 'status']).toUpperCase();
-      if (action === 'REQUESTED') return pay ? `${pay} requested` : 'Payment requested';
-      if (decision === 'REJECTED' || action.includes('REJECT')) {
-        return pay ? `${pay} rejected` : 'Payment rejected';
-      }
-      if (decision === 'APPROVED' || decision === 'SUCCESS') {
-        return pay ? `${pay} approved` : 'Payment approved';
-      }
-      return pay ? `${pay} updated` : 'Payment status updated';
+      return paymentActionTitle(pay, action, decision);
     }
     case 'DQC': {
       const round = dqcRoundLabel(pick(p, ['dqc_round', 'dqcRound'])) || 'DQC';
@@ -714,8 +740,7 @@ export function getNotificationListTitle(item: DesignNotificationItem): string {
       if (action.includes('ASSIGN')) return 'MMT executive assigned';
       return 'Site measurement requested';
     case 'MEETING': {
-      const mt = humanizeLabel(pick(p, ['meeting_type', 'meetingType']));
-      return mt ? `${mt} scheduled` : 'Meeting scheduled';
+      return `${meetingTitleFromPayload(p)} scheduled`;
     }
     case 'ASSIGNMENT':
       if (action.includes('PM')) return 'Project manager assigned';
@@ -854,7 +879,7 @@ export function getNotificationSubtitle(item: DesignNotificationItem): string {
   if (type === 'MEETING') {
     return joinParts([
       lead,
-      humanizeLabel(pick(p, ['meeting_type', 'meetingType'])),
+      meetingTitleFromPayload(p),
       humanizeLabel(pick(p, ['mod', 'mode', 'meeting_mode'])),
       slot,
       designer && `Designer: ${designer}`,

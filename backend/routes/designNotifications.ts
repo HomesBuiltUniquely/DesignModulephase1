@@ -156,10 +156,38 @@ function shouldNotifyPmSpm(
   action: string,
   payload: Record<string, unknown>,
 ): boolean {
+  // SPM/PM do not want meeting notifications
+  if (type === "MEETING") return false;
   if (type === "PM" || type === "P2P") return true;
   if (type === "DQC" && isDqc2Round(type, payload)) return true;
   if (type === "ASSIGNMENT" && action === "PM_ASSIGNED") return true;
   return isD2Related(type, action, payload);
+}
+
+/** Friendly meeting titles for inbox (First Cut / Material Selection / Sign-Off). */
+export function meetingDisplayLabel(meetingType: string): string {
+  const t = String(meetingType || "").toLowerCase().replace(/-/g, "_");
+  if (t.includes("first_cut") || t.includes("dqc1_first")) {
+    return "First Cut Meeting (DQC1)";
+  }
+  if (t.includes("material") || t.includes("dqc2_material")) {
+    return "Material Selection Meeting (DQC2)";
+  }
+  if (t.includes("signoff") || t.includes("sign_off") || t.includes("design_sign")) {
+    return "Design Sign-Off Meeting (40%)";
+  }
+  return String(meetingType || "Meeting")
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function meetingMilestoneContext(meetingType: string): string {
+  const t = String(meetingType || "").toLowerCase().replace(/-/g, "_");
+  if (t.includes("first_cut") || t.includes("dqc1")) return "DQC1";
+  if (t.includes("material") || t.includes("dqc2")) return "DQC2";
+  if (t.includes("sign")) return "40_PERCENT";
+  return "";
 }
 
 export async function resolveNotificationRecipients(args: {
@@ -279,6 +307,8 @@ export async function resolveNotificationRecipients(args: {
       allOf("admin", "deputy_general_manager");
     } else if (type === "ASSIGNMENT" && !isMmtAssignment(action, payload)) {
       allOf("admin", "deputy_general_manager", "territorial_design_manager");
+    } else if (type === "MILESTONE" || type === "MEETING") {
+      allOf("admin", "deputy_general_manager", "territorial_design_manager");
     }
   };
 
@@ -337,6 +367,8 @@ export async function resolveNotificationRecipients(args: {
       addPmSpm();
     }
   } else if (type === "MILESTONE") {
+    // Admin + TDM + designer line (D1 / DQC1 / 10% / D2 / DQC2 / 40% / P2P milestones)
+    addAdminsScoped();
     addTdms();
     addDesignerLine();
     if (shouldNotifyPmSpm(type, action, payload)) addPmSpm();
@@ -352,8 +384,10 @@ export async function resolveNotificationRecipients(args: {
     addDesignerLine();
     addPmSpm();
   } else if (type === "MEETING") {
+    // Designer line + Admin/TDM — SPM/PM explicitly excluded
+    addAdminsScoped();
+    addTdms();
     addDesignerLine();
-    if (shouldNotifyPmSpm(type, action, payload)) addPmSpm();
   } else {
     addDesignerLine();
     if (shouldNotifyPmSpm(type, action, payload)) addPmSpm();
@@ -527,6 +561,7 @@ function fanoutPayload(body: Record<string, any>): Record<string, any> {
   if (body.decision_type && payload.decision_type == null) payload.decision_type = body.decision_type;
   if (body.status && payload.status == null) payload.status = body.status;
   if (body.meeting_type && payload.meeting_type == null) payload.meeting_type = body.meeting_type;
+  if (body.meeting_label && payload.meeting_label == null) payload.meeting_label = body.meeting_label;
   if (body.mod && payload.mod == null) payload.mod = body.mod;
   if (body.slot && payload.slot == null) payload.slot = body.slot;
   if (body.milestone_context && payload.milestone_context == null) {
@@ -913,13 +948,18 @@ export interface MeetingScheduledParams extends NotifyBase {
 }
 
 export async function meetingScheduled(p: MeetingScheduledParams): Promise<void> {
+  const rawType = String(p.meetingType || "").trim();
+  const label = meetingDisplayLabel(rawType);
+  const milestoneContext = meetingMilestoneContext(rawType);
   return post("/v1/design/notifications/meeting", {
     project_id: p.projectId,
     lead_name: p.leadName,
     designer_id: p.designerId,
     notification_type: "MEETING",
     notification_action: "SCHEDULED",
-    meeting_type: p.meetingType.toUpperCase().replace(/\s+/g, "_"),
+    meeting_type: rawType.toUpperCase().replace(/\s+/g, "_"),
+    meeting_label: label,
+    milestone_context: milestoneContext,
     mod: (p.meetingMode ?? "IN_PERSON").toUpperCase().replace(/\s+/g, "_"),
     slot: {
       date: p.meetingDate,
