@@ -9,7 +9,12 @@ import CustomSelect from '@/app/Components/ui/CustomSelect';
 import { getApiBase } from '@/app/lib/apiBase';
 const API = getApiBase();
 
-const CAN_CREATE_PM = new Set(['admin', 'territorial_design_manager', 'deputy_general_manager']);
+const CAN_CREATE_PM = new Set([
+  'admin',
+  'territorial_design_manager',
+  'deputy_general_manager',
+  'senior_project_manager',
+]);
 
 export default function AdminCreateProjectManagerPage() {
   const router = useRouter();
@@ -69,6 +74,7 @@ export default function AdminCreateProjectManagerPage() {
   if (!CAN_CREATE_PM.has((user.role || '').toLowerCase())) return null;
 
   const isAdmin = (user.role || '').toLowerCase() === 'admin';
+  const isSpm = (user.role || '').toLowerCase() === 'senior_project_manager';
 
   return (
     <div className="min-h-screen bg-slate-100">
@@ -80,6 +86,8 @@ export default function AdminCreateProjectManagerPage() {
           <a href="/" className="text-sm text-[#32261C] hover:underline">Dashboard</a>
           {isAdmin ? (
             <a href="/admin" className="text-sm text-gray-600 hover:text-gray-900">Admin Panel</a>
+          ) : isSpm ? (
+            <a href="/project-managers" className="text-sm text-gray-600 hover:text-gray-900">Project Managers</a>
           ) : (
             <a href="/tdm/register" className="text-sm text-gray-600 hover:text-gray-900">TDM / DGM hub</a>
           )}
@@ -99,7 +107,7 @@ export default function AdminCreateProjectManagerPage() {
       <main className="max-w-md mx-auto p-8">
         <div className="bg-white rounded-2xl shadow border border-gray-200 p-6">
           <p className="text-gray-600 text-sm mb-4">
-            Admins, Territorial Design Managers, and Deputy General Managers can create Project Manager logins. They sign in with the main login page and use the dashboard. Email must end with @hubinterior.com.
+            Admins, Senior Project Managers, Territory Design Managers, and Deputy General Managers can create Project Manager logins. They sign in with the main login page and use the dashboard. Email must end with @hubinterior.com.
           </p>
           <form onSubmit={handleSubmit} className="space-y-4">
             {message && (

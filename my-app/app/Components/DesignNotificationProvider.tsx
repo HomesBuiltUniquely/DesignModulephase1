@@ -354,15 +354,26 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
         body: JSON.stringify({ user_id: user.id }),
         credentials: 'include',
       })
-        .then((r) => {
-          if (!r.ok) throw new Error(`ws-ticket HTTP ${r.status}`);
-          return r.json();
+        .then(async (r) => {
+          if (!r.ok) {
+            // 401/403 = session or notify-service auth; inbox still polls. Do not throw
+            // (Next.js overlays console errors and this is expected when notify is down).
+            if (r.status === 401 || r.status === 403) {
+              console.warn('[notification] WebSocket ticket unavailable', r.status);
+              return null;
+            }
+            console.warn('[notification] ws-ticket HTTP', r.status);
+            scheduleReconnect();
+            return null;
+          }
+          return r.json().catch(() => null);
         })
         .then((res) => {
-          if (!active || !res?.ticket) {
-            scheduleReconnect();
+          if (!res?.ticket) {
+            if (active && res != null) scheduleReconnect();
             return;
           }
+          if (!active) return;
 
           const wsUrl =
             typeof res.ws_url === 'string' && res.ws_url
@@ -399,7 +410,7 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
           };
         })
         .catch((err) => {
-          console.error('[notification] WebSocket setup failed:', err);
+          console.warn('[notification] WebSocket setup failed:', err);
           scheduleReconnect();
         });
     };

@@ -17,6 +17,7 @@ import {
 } from './AppointmentSuccessToast';
 import { IncentivesNavLink, IncentivesSideRail, canShowIncentivesNav } from './IncentivesNavLink';
 import FinanceRefundsNavLink from './FinanceRefundsNavLink';
+import { formatUserRoleLabel } from '../lib/formatUserRoleLabel';
 
 export default function DashboardGuard() {
   const router = useRouter();
@@ -141,6 +142,7 @@ export default function DashboardGuard() {
   const isOperationsActive =
     pathname === '/tdm/register' ||
     pathname === '/admin/create-tdm' ||
+    pathname === '/admin/create-project-manager' ||
     pathname === '/dqc-manager/register' ||
     pathname === '/finance' ||
     pathname === '/finance/refunds' ||
@@ -149,7 +151,8 @@ export default function DashboardGuard() {
     pathname === '/mmt-manager/register' ||
     pathname === '/mmt-manager/d1-requests' ||
     pathname === '/mmt' ||
-    pathname === '/d2-uploads';
+    pathname === '/d2-uploads' ||
+    pathname === '/project-managers';
 
   const hasExtraLinks =
     (user.role === 'territorial_design_manager' || user.role === 'deputy_general_manager') ||
@@ -189,7 +192,7 @@ export default function DashboardGuard() {
       portals.push({
         href: '/admin/create-tdm',
         title: 'Create TDM',
-        desc: 'Set up new Territorial Design Manager accounts.',
+        desc: 'Set up new Territory Design Manager accounts.',
         icon: (
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
             <path strokeLinecap="round" strokeLinejoin="round" d="M18 7.5v3m0 0v3m0-3h3m-3 0h-3m-2.25-4.125a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0ZM3 19.235v-.111a6 6 0 0 1 7.553-5.781M9 21h3v-3" />
@@ -313,6 +316,25 @@ export default function DashboardGuard() {
         color: 'text-sky-600 bg-sky-50 border-sky-100',
       });
     }
+
+    if (
+      user.role === 'senior_project_manager' ||
+      user.role === 'admin' ||
+      user.role === 'territorial_design_manager' ||
+      user.role === 'deputy_general_manager'
+    ) {
+      portals.push({
+        href: '/project-managers',
+        title: 'Project Managers',
+        desc: 'Create, search, and delete Project Manager logins.',
+        icon: (
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M18 18.72a9.094 9.094 0 0 0 3.741-.479 3 3 0 0 0-4.682-2.72m.94 3.198.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0 1 12 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 0 1 6 18.719m12 0a5.971 5.971 0 0 0-.941-3.197m0 0A5.995 5.995 0 0 0 12 12.75a5.995 5.995 0 0 0-5.058 2.772m0 0a3 3 0 0 0-4.681 2.72 8.986 8.986 0 0 0 3.74.477m.94-3.197a5.971 5.971 0 0 0-.94 3.197M15 6.75a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm6 3a2.25 2.25 0 1 1-4.5 0 2.25 2.25 0 0 1 4.5 0Zm-13.5 0a2.25 2.25 0 1 1-4.5 0 2.25 2.25 0 0 1 4.5 0Z" />
+          </svg>
+        ),
+        color: 'text-indigo-600 bg-indigo-50 border-indigo-100',
+      });
+    }
   }
 
   const settingPortals: Array<{
@@ -388,6 +410,17 @@ export default function DashboardGuard() {
         icon: (
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
             <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.57-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z" />
+          </svg>
+        ),
+        color: 'text-rose-600 bg-rose-50 border-rose-100',
+      });
+      settingPortals.push({
+        href: '/admin/manage-users',
+        title: 'Manage Design Roles',
+        desc: 'Search and delete Designers, Design Managers, and Territory Design Managers.',
+        icon: (
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M22 10.5h-6m-2.25-4.125a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0ZM4 19.235v-.11a6.375 6.375 0 0 1 12.75 0v.109A12.318 12.318 0 0 1 10.374 21c-2.331 0-4.512-.645-6.374-1.766Z" />
           </svg>
         ),
         color: 'text-rose-600 bg-rose-50 border-rose-100',
@@ -474,7 +507,7 @@ export default function DashboardGuard() {
                     <p className="text-[11px] text-gray-500 mt-0.5">Quick access to operational portals and settings</p>
                   </div>
                   <span className="text-[10px] font-bold text-gray-400 bg-gray-100 px-2.5 py-0.5 rounded-full uppercase tracking-wider">
-                    {user.role.replace(/_/g, ' ')}
+                    {formatUserRoleLabel(user.role)}
                   </span>
                 </div>
 
@@ -596,7 +629,7 @@ export default function DashboardGuard() {
                 </span>
               )}
             </div>
-            <span className="text-sm text-gray-600 hidden md:inline">{user.name} ({user.role.replace(/_/g, ' ')})</span>
+            <span className="text-sm text-gray-600 hidden md:inline">{user.name} ({formatUserRoleLabel(user.role)})</span>
           </div>
           <button type="button" onClick={() => logout().then(() => router.replace('/login'))} className="text-sm font-semibold text-red-500 hover:text-red-700 transition-colors">Logout</button>
         </div>

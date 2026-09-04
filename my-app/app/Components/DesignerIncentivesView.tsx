@@ -5,6 +5,7 @@ import { useAuth } from '../auth/AuthContext';
 import { getApiBase, buildAuthHeaders } from '../lib/apiBase';
 import CustomDatePicker from '@/app/Components/ui/CustomDatePicker';
 import CustomSelect from '@/app/Components/ui/CustomSelect';
+import { formatUserRoleLabel } from '@/app/lib/formatUserRoleLabel';
 import {
   buildDayActivitySummary,
   buildIncentivesFromDealInputs,
@@ -1017,7 +1018,7 @@ function TeamIncentivesPanel({
                       <div className="font-medium text-gray-900">{row.designerName}</div>
                       <div className="text-xs text-gray-500">
                         {row.subRole ? `${row.subRole} · ` : ''}
-                        {row.role.replace(/_/g, ' ')}
+                        {formatUserRoleLabel(row.role)}
                       </div>
                     </td>
                     <td className="py-3.5 pr-4 text-gray-800">{formatInr(row.totalTarget)}</td>
@@ -1392,7 +1393,7 @@ export default function DesignerIncentivesView() {
                 <CustomSelect
                   value={selectedId ? String(selectedId) : ''}
                   onChange={(val) => setSelectedId(Number(val))}
-                  options={members.length === 0 ? [{ value: '', label: 'No designers' }] : members.map((m) => ({ value: String(m.id), label: `${m.name}${m.role !== 'designer' ? ` (${m.role.replace(/_/g, ' ')})` : ''}` }))}
+                  options={members.length === 0 ? [{ value: '', label: 'No designers' }] : members.map((m) => ({ value: String(m.id), label: `${m.name}${m.role !== 'designer' ? ` (${formatUserRoleLabel(m.role)})` : ''}` }))}
                   disabled={loadingMembers || members.length === 0}
                   className="min-w-[200px]"
                 />

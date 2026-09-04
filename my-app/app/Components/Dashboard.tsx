@@ -385,11 +385,18 @@ export default function Dashboard() {
     };
     
     const allTypes = Object.values(SideDashboard);
+    /** SPM queue is D2-focused — only show 10–20% / 20–60% (plus all). */
+    const spmPhaseTypes = [
+        SideDashboard.All_Projects,
+        SideDashboard.Ten_50,
+        SideDashboard.Fifty_above,
+    ];
+    const phaseSidebarTypes = isSpmUser ? spmPhaseTypes : allTypes;
     const allStatusTypes = Object.values(SideDashboardStatus);
     const [isDropdownOpen, setIsDropdownOpen] = useState(true);
     const [designPhasesOpen, setDesignPhasesOpen] = useState(true);
     const [projectStatusOpen, setProjectStatusOpen] = useState(true);
-    const [isSelected, setIsSelected] = useState<string>(allTypes[0]); // "All Projects (10-60%)"
+    const [isSelected, setIsSelected] = useState<string>(SideDashboard.All_Projects);
     const [statusSelected, setStatusSelected] = useState<string>(allStatusTypes[0]);
     const [searchQuery, setSearchQuery] = useState("");
     const [milestoneFilter, setMilestoneFilter] = useState<string>("");
@@ -439,31 +446,67 @@ export default function Dashboard() {
     const [appointmentSuccessToast, setAppointmentSuccessToast] =
         useState<AppointmentSuccessPayload | null>(null);
 
-    const phaseFilteredProjects = isSpmUser
-        ? projects.filter((p) =>
-              statusSelected === SideDashboardStatus.Cancelled ? isCancelledLead(p) : !isCancelledLead(p),
-          )
-        : statusSelected === SideDashboardStatus.Cancelled
-          ? projects.filter(isCancelledLead)
-          : isSelected === "All Projects (10-60%)"
-            ? projects.filter((p) => {
-                  if (isCancelledLead(p)) return false;
-                  const phase = getPhaseBucket(p);
-                  return phase === "10-20%" || phase === "20-60%";
-              })
-            : projects.filter((p) => !isCancelledLead(p) && getPhaseBucket(p) === isSelected);
+    const phaseFilteredProjects = (() => {
+        const notCancelledUnlessTab =
+            statusSelected === SideDashboardStatus.Cancelled
+                ? projects.filter(isCancelledLead)
+                : projects.filter((p) => !isCancelledLead(p));
+
+        if (isSpmUser) {
+            if (isSelected === SideDashboard.Ten_50) {
+                return notCancelledUnlessTab.filter((p) => getPhaseBucket(p) === "10-20%");
+            }
+            if (isSelected === SideDashboard.Fifty_above) {
+                return notCancelledUnlessTab.filter((p) => getPhaseBucket(p) === "20-60%");
+            }
+            // All Projects (10-60%): keep full D2 queue (includes any edge Pre 10 rows)
+            return notCancelledUnlessTab;
+        }
+
+        if (statusSelected === SideDashboardStatus.Cancelled) {
+            return projects.filter(isCancelledLead);
+        }
+        if (isSelected === SideDashboard.All_Projects) {
+            return projects.filter((p) => {
+                if (isCancelledLead(p)) return false;
+                const phase = getPhaseBucket(p);
+                return phase === "10-20%" || phase === "20-60%";
+            });
+        }
+        return projects.filter((p) => !isCancelledLead(p) && getPhaseBucket(p) === isSelected);
+    })();
 
     const filteredProjects = phaseFilteredProjects.filter((p) =>
         passesWorkspaceStatusFilter(p, statusSelected),
     );
 
-    const searchFiltered = searchQuery.trim()
-        ? filteredProjects.filter(
-            (p) =>
-                (p.projectName || "").toLowerCase().includes(searchQuery.trim().toLowerCase()) ||
-                (p.pid || "").toLowerCase().includes(searchQuery.trim().toLowerCase()),
-          )
-        : filteredProjects;
+    const searchFiltered = (() => {
+        const q = searchQuery.trim().toLowerCase();
+        if (!q) return filteredProjects;
+        return filteredProjects.filter((p) => {
+            const haystack = [
+                String(p.id ?? ""),
+                p.pid,
+                p.projectName,
+                p.projectStage,
+                p.contactNo,
+                p.clientEmail,
+                p.designerName,
+                p.projectManagerName,
+                p.intakeCustomerName,
+                p.currentMilestoneName,
+                p.salesExecutive,
+                p.experienceCenter,
+                p.branch,
+                p.prolanceProjectId != null ? String(p.prolanceProjectId) : "",
+                p.prolanceQuoteId != null ? String(p.prolanceQuoteId) : "",
+            ]
+                .filter(Boolean)
+                .join(" ")
+                .toLowerCase();
+            return haystack.includes(q);
+        });
+    })();
 
     // Source of truth: users from DB (/api/designers/assignable or /api/designers).
     // Do NOT scrape names from lead payloads — that caused duplicates, phantom CRM names,
@@ -531,11 +574,17 @@ export default function Dashboard() {
     const currentPage = Math.min(Math.max(1, page), totalPages);
     const paginatedProjects = milestoneFiltered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
+    const phaseCountSource = isSpmUser
+        ? projects.filter((p) =>
+              statusSelected === SideDashboardStatus.Cancelled ? isCancelledLead(p) : !isCancelledLead(p),
+          )
+        : milestoneFiltered;
+
     const stats = {
         total: milestoneFiltered.length,
-        pre10: milestoneFiltered.filter((p) => getPhaseBucket(p) === "Pre 10%").length,
-        bucket1020: milestoneFiltered.filter((p) => getPhaseBucket(p) === "10-20%").length,
-        bucket2060: milestoneFiltered.filter((p) => getPhaseBucket(p) === "20-60%").length,
+        pre10: phaseCountSource.filter((p) => getPhaseBucket(p) === "Pre 10%").length,
+        bucket1020: phaseCountSource.filter((p) => getPhaseBucket(p) === "10-20%").length,
+        bucket2060: phaseCountSource.filter((p) => getPhaseBucket(p) === "20-60%").length,
     };
 
     const toggleDropdown = () => {
@@ -1019,16 +1068,32 @@ export default function Dashboard() {
                         <p className="text-2xl font-bold text-red-700 mt-1">{stats.pre10}</p>
                         <p className="text-xs text-gray-500 mt-0.5">Pre 10%</p>
                     </div>
-                    <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm min-w-[120px]">
+                    <button
+                        type="button"
+                        onClick={() => setIsSelected(SideDashboard.Ten_50)}
+                        className={`bg-white border rounded-xl p-4 shadow-sm min-w-[120px] text-left transition-all ${
+                            isSelected === SideDashboard.Ten_50
+                                ? 'border-[#EF0101] ring-2 ring-[#EF0101]/20'
+                                : 'border-gray-200 hover:border-gray-300'
+                        }`}
+                    >
                         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Under QC</p>
                         <p className="text-2xl font-bold text-[#32261C] mt-1">{stats.bucket1020}</p>
                         <p className="text-xs text-gray-500 mt-0.5">10-20%</p>
-                    </div>
-                    <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm min-w-[120px]">
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => setIsSelected(SideDashboard.Fifty_above)}
+                        className={`bg-white border rounded-xl p-4 shadow-sm min-w-[120px] text-left transition-all ${
+                            isSelected === SideDashboard.Fifty_above
+                                ? 'border-[#EF0101] ring-2 ring-[#EF0101]/20'
+                                : 'border-gray-200 hover:border-gray-300'
+                        }`}
+                    >
                         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Ready Prod.</p>
                         <p className="text-2xl font-bold text-[#32261C] mt-1">{stats.bucket2060}</p>
                         <p className="text-xs text-gray-500 mt-0.5">20-60%</p>
-                    </div>
+                    </button>
                 </div>
 
                 <div className="bg-white rounded-xl border border-gray-200 shadow-sm min-w-0">
@@ -1532,7 +1597,7 @@ export default function Dashboard() {
                 <div className="xl:flex xl:gap-4">
                     <div className="xl:w-64 xl:shrink-0 xl:sticky xl:top-[57px] xl:h-[calc(100vh-57px)] xl:overflow-y-auto border-r border-gray-300 xl:pt-4 xl:pr-2">
 
-                    {!isDqcUser && !isSpmUser && (
+                    {!isDqcUser && (
                         <>
                     <button
                         type="button"
@@ -1585,7 +1650,7 @@ export default function Dashboard() {
                             </button>
                             {designPhasesOpen && (
                                 <div id="workspace-design-phases" role="region" aria-label="Design phases">
-                                    {allTypes.map((type, index) => (
+                                    {phaseSidebarTypes.map((type, index) => (
                                         <div
                                             key={index}
                                             role="button"
@@ -1604,10 +1669,11 @@ export default function Dashboard() {
                                             }`}
                                         >
                                             {type}
-                    </div>
+                                        </div>
                                     ))}
-                    </div>
+                                </div>
                             )}
+                            {!isSpmUser && (
                             <button
                                 type="button"
                                 aria-expanded={projectStatusOpen}
@@ -1628,7 +1694,8 @@ export default function Dashboard() {
                                     <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
                                 </svg>
                             </button>
-                            {projectStatusOpen && (
+                            )}
+                            {!isSpmUser && projectStatusOpen && (
                                 <div id="workspace-project-status" role="region" aria-label="Project status">
                                     {allStatusTypes.map((status, index) => (
                                         <div
@@ -1676,6 +1743,26 @@ export default function Dashboard() {
                                                     ? "Leads where a D2 masking request has been raised — assign PM and manage D2 files."
                                                     : "Projects between 10% and 60% progress."}
                                             </p>
+                                            {isSpmUser && (
+                                                <div className="flex flex-wrap gap-2 mt-3">
+                                                    {spmPhaseTypes.map((phase) => (
+                                                        <button
+                                                            key={phase}
+                                                            type="button"
+                                                            onClick={() => setIsSelected(phase)}
+                                                            className={`px-3 py-1.5 rounded-lg text-sm font-semibold border transition ${
+                                                                isSelected === phase
+                                                                    ? 'bg-[#EF0101] text-white border-[#EF0101]'
+                                                                    : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                                                            }`}
+                                                        >
+                                                            {phase === SideDashboard.All_Projects
+                                                                ? 'All (10-60%)'
+                                                                : phase}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            )}
                                         </div>
                                         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
                                             {canBookPersonalAppointment && isDesigner && (
@@ -1719,6 +1806,18 @@ export default function Dashboard() {
                                                     Add Project
                                                 </button>
                                             )}
+                                            {isSpmUser && (
+                                                <a
+                                                    href="/project-managers"
+                                                    title="Create or delete Project Manager logins"
+                                                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-bold hover:bg-[#EF0101]/90 hover:shadow-md transition-all duration-200"
+                                                >
+                                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-4 h-4">
+                                                        <path d="M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z" />
+                                                    </svg>
+                                                    Project Managers
+                                                </a>
+                                            )}
                                         </div>
                                     </div>
 
@@ -1726,7 +1825,7 @@ export default function Dashboard() {
                                     <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 bg-[#F1F2F6]/50 p-3 rounded-2xl border border-gray-200">
                                         <div className="flex flex-wrap items-center gap-2.5">
                                             {/* Search input with leading icon */}
-                                            <div className="relative w-full md:w-60">
+                                            <div className="relative w-full md:w-72">
                                                 <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
                                                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor" className="w-4 h-4 text-gray-400">
                                                         <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.602 10.602Z" />
@@ -1734,10 +1833,15 @@ export default function Dashboard() {
                                                 </span>
                                                 <input
                                                     type="search"
-                                                    placeholder="Search projects..."
+                                                    placeholder={
+                                                        isSpmUser
+                                                            ? "Search by name, ID, PID, PM, designer..."
+                                                            : "Search by name, ID, PID..."
+                                                    }
                                                     value={searchQuery}
                                                     onChange={(e) => setSearchQuery(e.target.value)}
                                                     className="pl-9 pr-3 py-2 border border-gray-300 rounded-xl text-sm w-full bg-white focus:outline-none focus:ring-2 focus:ring-[#00B0ED]/30 focus:border-[#00B0ED] transition-all duration-150"
+                                                    aria-label="Search projects"
                                                 />
                                             </div>
 

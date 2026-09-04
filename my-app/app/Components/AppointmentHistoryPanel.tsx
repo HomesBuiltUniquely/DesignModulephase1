@@ -9,6 +9,7 @@ import {
   minutesToHubTimeLabel,
 } from "@/lib/hub-meeting-schedule";
 import CustomSelect from "@/app/Components/ui/CustomSelect";
+import { formatUserRoleLabel } from "@/app/lib/formatUserRoleLabel";
 
 type ViewableUser = { id: number; name: string; role: string };
 
@@ -233,7 +234,7 @@ export function AppointmentHistoryPanel({
     }
   };
 
-  const roleLabel = (r: string) => r.replace(/_/g, " ");
+  const roleLabel = (r: string) => formatUserRoleLabel(r);
   const isPage = variant === "page";
   const panelTitle = isAllTeamView
     ? "Team personal time blocks"
