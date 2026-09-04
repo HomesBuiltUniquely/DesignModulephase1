@@ -202,7 +202,10 @@ const CRM_CALLBACK_BASE =
   process.env.CRM_API_BASE_URL ||
   process.env.CRM_BASE_URL ||
   "";
-const ERP_BASE_URL = process.env.ERP_BASE_URL || "https://hows.hubinterior.com";
+const ERP_BASE_URL =
+  process.env.ERP_BASE_URL ||
+  process.env.HUB_API_BASE_URL ||
+  "https://hows.hubinterior.com";
 const ERP_USERNAME = process.env.ERP_USERNAME || "admin@hubinterior.com";
 const ERP_PASSWORD = process.env.ERP_PASSWORD || "admin123";
 
@@ -330,9 +333,16 @@ async function callErpApi(endpoint: string, options: { method?: string; body?: s
 
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
-    throw new Error(`ERP API error: ${res.status} ${errText}`.trim());
+    const err = new Error(`ERP API error: ${res.status} ${errText}`.trim()) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
   }
-  return res.json();
+  const text = await res.text().catch(() => "");
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch {
+    return text;
+  }
 }
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CALENDAR_CLIENT_ID || "";
@@ -3803,27 +3813,131 @@ async function persistLeadDesignScheduledMeeting(
     leadId,
   ]);
 }
-async function notifyCrmMeetingCompleted(crmLeadId: number): Promise<void> {
-  const hubBase = (process.env.HUB_API_BASE_URL || "http://localhost:8081").trim();
-  const url = `${hubBase.replace(/\/$/, "")}/v1/design-module/meeting-completed`;
-  const apiKey = (process.env.EXTERNAL_LEAD_INGEST_API_KEY || process.env.HUB_SYNC_API_KEY || "hi").trim();
-
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-      },
-      body: JSON.stringify({ leadId: crmLeadId }),
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      console.error("[meeting-wiz-completed] CRM meeting-completed call failed:", res.status, text);
-    }
-  } catch (err) {
-    console.error("[meeting-wiz-completed] CRM meeting-completed call error:", err);
+function resolveCrmLeadPutPaths(leadType: string | null | undefined, crmLeadId: number): string[] {
+  const norm = String(leadType || "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+  switch (norm) {
+    case "walkinlead":
+    case "walkin":
+      return [`/v1/WalkinLead/${crmLeadId}`];
+    case "whatsapplead":
+    case "whatsapp":
+      return [
+        `/v1/WhatsappLead/details/${crmLeadId}`,
+        `/v1/WhatsappLead/${crmLeadId}`,
+      ];
+    case "formlead":
+    case "form":
+      return [`/v1/FormLead/details/${crmLeadId}`];
+    case "glead":
+    case "google":
+    case "googlelead":
+    case "home1":
+      return [`/v1/Home1/details/${crmLeadId}`];
+    case "mlead":
+    case "meta":
+    case "metalead":
+      return [`/v1/MetaLead/details/${crmLeadId}`];
+    case "ivrlead":
+    case "ivr":
+      return [`/v1/IvrLead/details/${crmLeadId}`];
+    case "websitelead":
+    case "website":
+      return [`/v1/WebsiteLead/details/${crmLeadId}`];
+    case "addlead":
+    case "add":
+      return [`/v1/AddLead/details/${crmLeadId}`];
+    default:
+      // Unknown lead type: try candidates in order of frequency
+      return [
+        `/v1/AddLead/details/${crmLeadId}`,
+        `/v1/FormLead/details/${crmLeadId}`,
+        `/v1/Home1/details/${crmLeadId}`,
+        `/v1/MetaLead/details/${crmLeadId}`,
+        `/v1/WebsiteLead/details/${crmLeadId}`,
+        `/v1/WhatsappLead/details/${crmLeadId}`,
+        `/v1/WalkinLead/${crmLeadId}`,
+        `/v1/IvrLead/details/${crmLeadId}`,
+      ];
   }
+}
+
+async function notifyCrmMeetingCompleted(
+  crmLeadId: number,
+  leadType?: string | null,
+): Promise<void> {
+  if (!Number.isFinite(crmLeadId) || crmLeadId <= 0) return;
+
+  // If leadType wasn't explicitly provided, attempt to look it up from MySQL leads table
+  let resolvedLeadType = leadType && typeof leadType === "string" ? leadType.trim() : null;
+  if (!resolvedLeadType) {
+    try {
+      const [rows] = await pool.query(
+        `SELECT payload FROM leads 
+         WHERE payload IS NOT NULL 
+           AND JSON_VALID(payload) = 1
+           AND (
+             JSON_UNQUOTE(JSON_EXTRACT(payload, '$.crmLeadId')) = ? 
+             OR JSON_UNQUOTE(JSON_EXTRACT(payload, '$.leadId')) = ?
+           )
+         ORDER BY id DESC LIMIT 1`,
+        [String(crmLeadId), String(crmLeadId)],
+      );
+      const row = (rows as { payload?: string | null }[])[0];
+      if (row?.payload) {
+        const p = JSON.parse(row.payload);
+        resolvedLeadType =
+          (typeof p.crmLeadType === "string" && p.crmLeadType.trim()) ||
+          (typeof p.leadType === "string" && p.leadType.trim()) ||
+          (typeof p.crm_lead_type === "string" && p.crm_lead_type.trim()) ||
+          null;
+      }
+    } catch {
+      // Non-fatal, fallback to candidate probing
+    }
+  }
+
+  const payload = JSON.stringify({
+    stage: {
+      milestoneStage: "Experience & Design",
+      milestoneStageCategory: "Experience & Design Won",
+      milestoneSubStage: "Meeting Successful",
+      stage: "Experience & Design",
+      substage: {
+        substage: "Meeting Successful",
+      },
+    },
+  });
+
+  const pathsToTry = resolveCrmLeadPutPaths(resolvedLeadType, crmLeadId);
+  let lastError: any = null;
+
+  for (let i = 0; i < pathsToTry.length; i++) {
+    const endpoint = pathsToTry[i];
+    try {
+      await callErpApi(endpoint, {
+        method: "PUT",
+        body: payload,
+      });
+      console.info(
+        `[meeting-wiz-completed] Successfully updated CRM lead ${crmLeadId} to Meeting Successful via ${endpoint}`,
+      );
+      return;
+    } catch (err: any) {
+      lastError = err;
+      const is404 =
+        err?.status === 404 ||
+        String(err?.message || "").includes("404");
+      if (is404 && i < pathsToTry.length - 1) {
+        continue;
+      }
+      break;
+    }
+  }
+
+  console.error(
+    `[meeting-wiz-completed] Failed to update CRM lead ${crmLeadId} to Meeting Successful:`,
+    lastError?.message || lastError,
+  );
 }
 /** Mark Meeting Wizard session completed so Start Meeting stays hidden until a newer schedule. */
 async function persistLeadMeetingWizCompleted(
@@ -3861,11 +3975,17 @@ async function persistLeadMeetingWizCompleted(
     const n = Number(payload.crmLeadId);
     return Number.isFinite(n) && n > 0 ? n : null;
   })();
+  const crmLeadType =
+    (typeof payload.crmLeadType === "string" && payload.crmLeadType.trim()) ||
+    (typeof payload.leadType === "string" && payload.leadType.trim()) ||
+    (typeof payload.crm_lead_type === "string" && payload.crm_lead_type.trim()) ||
+    null;
   if (crmLeadIdNum != null) {
-    void notifyCrmMeetingCompleted(crmLeadIdNum).catch((err) => {
+    void notifyCrmMeetingCompleted(crmLeadIdNum, crmLeadType).catch((err) => {
       console.error("[meeting-wiz-completed] CRM notify error (non-fatal)", {
         leadId,
         crmLeadIdNum,
+        crmLeadType,
         error: err,
       });
     });
@@ -7029,11 +7149,17 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         if (leadRow && leadRow.payload) {
           const payload = JSON.parse(leadRow.payload);
           const crmLeadIdNum = Number(payload.crmLeadId);
+          const crmLeadType =
+            (typeof payload.crmLeadType === "string" && payload.crmLeadType.trim()) ||
+            (typeof payload.leadType === "string" && payload.leadType.trim()) ||
+            (typeof payload.crm_lead_type === "string" && payload.crm_lead_type.trim()) ||
+            null;
           if (Number.isFinite(crmLeadIdNum) && crmLeadIdNum > 0) {
-            void notifyCrmMeetingCompleted(crmLeadIdNum).catch((err) => {
+            void notifyCrmMeetingCompleted(crmLeadIdNum, crmLeadType).catch((err) => {
               console.error("[complete-task] CRM notify error (non-fatal)", {
                 leadId: id,
                 crmLeadIdNum,
+                crmLeadType,
                 error: err,
               });
             });
