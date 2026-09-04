@@ -59,10 +59,10 @@ export default function AdminCreateTdmPage() {
         return;
       }
       if (!res.ok) {
-        setMessage({ type: 'error', text: data.message || 'Failed to create Territorial Design Manager' });
+        setMessage({ type: 'error', text: data.message || 'Failed to create Territory Design Manager' });
         return;
       }
-      setMessage({ type: 'success', text: `Territorial Design Manager created: ${data.user?.email}` });
+      setMessage({ type: 'success', text: `Territory Design Manager created: ${data.user?.email}` });
       setEmail('');
       setPassword('');
       setName('');
@@ -82,7 +82,7 @@ export default function AdminCreateTdmPage() {
     <div className="min-h-screen bg-slate-100">
       <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <h1 className="text-xl font-bold text-gray-900">Admin — Create Territorial Design Manager</h1>
+          <h1 className="text-xl font-bold text-gray-900">Admin — Create Territory Design Manager</h1>
           <a href="/" className="text-sm text-[#32261C] hover:underline">Dashboard</a>
           <a href="/admin" className="text-sm text-gray-600 hover:text-gray-900">Admin Panel</a>
         </div>
@@ -100,7 +100,7 @@ export default function AdminCreateTdmPage() {
       </header>
       <main className="max-w-md mx-auto p-8">
         <div className="bg-white rounded-2xl shadow border border-gray-200 p-6">
-          <p className="text-gray-600 text-sm mb-4">Admin and Deputy General Manager can create Territorial Design Managers. Email must end with @hubinterior.com.</p>
+          <p className="text-gray-600 text-sm mb-4">Admin and Deputy General Manager can create Territory Design Managers. Email must end with @hubinterior.com.</p>
           <form onSubmit={handleSubmit} className="space-y-4">
             {message && (
               <div className={`p-3 rounded-lg text-sm ${message.type === 'success' ? 'bg-[#DDCDC1]/20 text-[#32261C]' : 'bg-red-50 text-red-700'}`}>
@@ -125,7 +125,7 @@ export default function AdminCreateTdmPage() {
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 className="w-full border border-gray-300 rounded-lg px-4 py-2.5"
-                placeholder="Territorial Design Manager name"
+                placeholder="Territory Design Manager name"
               />
             </div>
             <div>
@@ -164,7 +164,7 @@ export default function AdminCreateTdmPage() {
               disabled={submitting}
               className="w-full py-2.5 rounded-lg bg-[#EF0101] text-white font-medium hover:bg-[#EF0101] disabled:opacity-60"
             >
-              {submitting ? 'Creating…' : 'Create Territorial Design Manager'}
+              {submitting ? 'Creating…' : 'Create Territory Design Manager'}
             </button>
           </form>
         </div>

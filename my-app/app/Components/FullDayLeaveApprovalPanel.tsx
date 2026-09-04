@@ -5,6 +5,7 @@ import { buildAuthHeaders } from "@/app/lib/apiBase";
 import type { FullDayRequestStatus } from "@/lib/hub-meeting-schedule";
 import { canCancelFullDayBlockDate } from "@/lib/hub-meeting-schedule";
 import CustomSelect from "@/app/Components/ui/CustomSelect";
+import { formatUserRoleLabel } from "@/app/lib/formatUserRoleLabel";
 
 type FullDayRequest = {
   id: number;
@@ -78,7 +79,7 @@ function statusBadgeClass(status: FullDayRequestStatus): string {
 }
 
 function roleLabel(role: string): string {
-  return role.replace(/_/g, " ");
+  return formatUserRoleLabel(role);
 }
 
 function reasonLabel(row: FullDayRequest): string {

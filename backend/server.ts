@@ -4532,7 +4532,7 @@ app.all("/api/auth/register-mmt-executive", async (req: Request, res: Response) 
   }
 });
 
-// Admin or Deputy General Manager: create TDM (Territorial Design Manager)
+// Admin or Deputy General Manager: create TDM (Territory Design Manager)
 app.all("/api/auth/create-tdm", async (req: Request, res: Response) => {
   if (req.method !== "POST") return res.status(405).json({ message: "Use POST" });
   try {
@@ -4558,7 +4558,7 @@ app.all("/api/auth/create-tdm", async (req: Request, res: Response) => {
   } catch (err: any) {
     if (err?.code === "ER_DUP_ENTRY") return res.status(400).json({ message: "A user with this email already exists" });
     console.error("create-tdm error", err);
-    return res.status(500).json({ message: "Failed to create Territorial Design Manager" });
+    return res.status(500).json({ message: "Failed to create Territory Design Manager" });
   }
 });
 
@@ -4670,17 +4670,23 @@ app.all("/api/auth/create-escalation-manager", async (req: Request, res: Respons
   }
 });
 
-// Admin / TDM / DGM: create Project Manager
+// Admin / SPM / TDM / DGM: create Project Manager
 app.all("/api/auth/create-project-manager", async (req: Request, res: Response) => {
   if (req.method !== "POST") return res.status(405).json({ message: "Use POST" });
   try {
     const admin = await getUserFromSession(req);
     if (!admin) return res.status(401).json({ message: "Unauthorized" });
     const r = (admin.role || "").toLowerCase();
-    const allowed = ["admin", "territorial_design_manager", "deputy_general_manager"];
+    const allowed = [
+      "admin",
+      "senior_project_manager",
+      "territorial_design_manager",
+      "deputy_general_manager",
+    ];
     if (!allowed.includes(r)) {
       return res.status(403).json({
-        message: "Only Admin, Territorial Design Manager, or Deputy General Manager can create a Project Manager",
+        message:
+          "Only Admin, Senior Project Manager, Territory Design Manager, or Deputy General Manager can create a Project Manager",
       });
     }
     const { email, password, name, phone, branch } = req.body || {};
@@ -4753,6 +4759,54 @@ app.get("/api/auth/project-managers", async (req: Request, res: Response) => {
   }
 });
 
+// Admin / SPM: delete a Project Manager login (unassigns leads first)
+app.delete("/api/auth/project-managers/:id", async (req: Request, res: Response) => {
+  try {
+    const actor = await getUserFromSession(req);
+    if (!actor) return res.status(401).json({ message: "Unauthorized" });
+    const actorRole = (actor.role || "").toLowerCase();
+    if (actorRole !== "admin" && actorRole !== "senior_project_manager") {
+      return res.status(403).json({
+        message: "Only Admin or Senior Project Manager can delete a Project Manager",
+      });
+    }
+
+    const pmId = Number(req.params.id);
+    if (!Number.isFinite(pmId) || pmId <= 0) {
+      return res.status(400).json({ message: "Invalid project manager id" });
+    }
+
+    const [rows] = await pool.query(
+      "SELECT id, name, email, role FROM users WHERE id = ? LIMIT 1",
+      [pmId],
+    );
+    const pm = (rows as any[])[0];
+    if (!pm) return res.status(404).json({ message: "Project Manager not found" });
+    if ((pm.role || "").toLowerCase() !== "project_manager") {
+      return res.status(400).json({ message: "User is not a Project Manager" });
+    }
+
+    // Clear assignments so leads are not left pointing at a deleted user
+    const [updateResult] = await pool.query(
+      "UPDATE leads SET assigned_project_manager_id = NULL WHERE assigned_project_manager_id = ?",
+      [pmId],
+    );
+    const unassignedCount = Number((updateResult as any)?.affectedRows || 0);
+
+    await pool.query("DELETE FROM users WHERE id = ? AND role = 'project_manager' LIMIT 1", [pmId]);
+
+    return res.json({
+      ok: true,
+      message: `Project Manager deleted${unassignedCount > 0 ? ` (unassigned from ${unassignedCount} lead(s))` : ""}`,
+      deleted: { id: pm.id, name: pm.name, email: pm.email },
+      unassignedLeads: unassignedCount,
+    });
+  } catch (err) {
+    console.error("delete project-manager error", err);
+    return res.status(500).json({ message: "Failed to delete Project Manager" });
+  }
+});
+
 // List senior project managers (for D2 masking request SPM dropdown)
 app.get("/api/auth/senior-project-managers", async (req: Request, res: Response) => {
   try {
@@ -4805,6 +4859,159 @@ app.get("/api/auth/design-managers", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("design-managers list error", err);
     return res.status(500).json({ message: "Failed to load design managers" });
+  }
+});
+
+const ADMIN_DELETABLE_ROLES = new Set([
+  "designer",
+  "design_manager",
+  "territorial_design_manager",
+]);
+
+function adminDeletableRoleLabel(role: string): string {
+  if (role === "designer") return "Designer";
+  if (role === "design_manager") return "Design Manager";
+  if (role === "territorial_design_manager") return "Territory Design Manager";
+  return role;
+}
+
+// Admin: list users by role (designer / design_manager / territorial_design_manager)
+app.get("/api/auth/admin/users", async (req: Request, res: Response) => {
+  try {
+    const admin = await getUserFromSession(req);
+    if (!admin) return res.status(401).json({ message: "Unauthorized" });
+    if ((admin.role || "").toLowerCase() !== "admin") {
+      return res.status(403).json({ message: "Only admin can list users for management" });
+    }
+
+    const roleFilter = String(req.query.role || "").trim().toLowerCase();
+    if (!ADMIN_DELETABLE_ROLES.has(roleFilter)) {
+      return res.status(400).json({
+        message: "role query must be designer, design_manager, or territorial_design_manager",
+      });
+    }
+
+    if (roleFilter === "designer") {
+      const [rows] = await pool.query(
+        `SELECT u.id, u.name, u.email, u.role, u.branch, u.phone,
+                dm.name AS managerName, dm.email AS managerEmail
+         FROM users u
+         LEFT JOIN users dm ON dm.id = u.design_manager_id
+         WHERE u.role = 'designer'
+         ORDER BY u.name ASC`,
+      );
+      return res.json(rows);
+    }
+
+    if (roleFilter === "design_manager") {
+      const [rows] = await pool.query(
+        `SELECT u.id, u.name, u.email, u.role, u.branch, u.phone,
+                tdm.name AS managerName, tdm.email AS managerEmail
+         FROM users u
+         LEFT JOIN users tdm ON tdm.id = u.territorial_design_manager_id
+         WHERE u.role = 'design_manager'
+         ORDER BY u.name ASC`,
+      );
+      return res.json(rows);
+    }
+
+    const [rows] = await pool.query(
+      `SELECT id, name, email, role, branch, phone
+       FROM users
+       WHERE role = 'territorial_design_manager'
+       ORDER BY name ASC`,
+    );
+    return res.json(rows);
+  } catch (err) {
+    console.error("admin users list error", err);
+    return res.status(500).json({ message: "Failed to load users" });
+  }
+});
+
+// Admin: delete designer / design manager / TDM
+app.delete("/api/auth/admin/users/:id", async (req: Request, res: Response) => {
+  try {
+    const admin = await getUserFromSession(req);
+    if (!admin) return res.status(401).json({ message: "Unauthorized" });
+    if ((admin.role || "").toLowerCase() !== "admin") {
+      return res.status(403).json({ message: "Only admin can delete these users" });
+    }
+
+    const userId = Number(req.params.id);
+    if (!Number.isFinite(userId) || userId <= 0) {
+      return res.status(400).json({ message: "Invalid user id" });
+    }
+    if (admin.id === userId) {
+      return res.status(400).json({ message: "You cannot delete your own account" });
+    }
+
+    const [rows] = await pool.query(
+      "SELECT id, name, email, role FROM users WHERE id = ? LIMIT 1",
+      [userId],
+    );
+    const target = (rows as any[])[0];
+    if (!target) return res.status(404).json({ message: "User not found" });
+
+    const targetRole = String(target.role || "").toLowerCase();
+    if (!ADMIN_DELETABLE_ROLES.has(targetRole)) {
+      return res.status(400).json({
+        message: "Only Designer, Design Manager, or Territory Design Manager can be deleted here",
+      });
+    }
+
+    const notes: string[] = [];
+
+    if (targetRole === "designer") {
+      const [leadUpdate] = await pool.query(
+        "UPDATE leads SET assigned_designer_id = NULL WHERE assigned_designer_id = ?",
+        [userId],
+      );
+      const n = Number((leadUpdate as any)?.affectedRows || 0);
+      if (n > 0) notes.push(`unassigned from ${n} lead(s)`);
+    } else if (targetRole === "design_manager") {
+      const [designerUpdate] = await pool.query(
+        "UPDATE users SET design_manager_id = NULL WHERE design_manager_id = ? AND role = 'designer'",
+        [userId],
+      );
+      const n = Number((designerUpdate as any)?.affectedRows || 0);
+      if (n > 0) notes.push(`cleared manager link on ${n} designer(s)`);
+    } else if (targetRole === "territorial_design_manager") {
+      const [dmUpdate] = await pool.query(
+        "UPDATE users SET territorial_design_manager_id = NULL WHERE territorial_design_manager_id = ? AND role = 'design_manager'",
+        [userId],
+      );
+      const n = Number((dmUpdate as any)?.affectedRows || 0);
+      if (n > 0) notes.push(`cleared TDM link on ${n} design manager(s)`);
+    }
+
+    // Drop dependent rows that reference users(id)
+    try {
+      await pool.query("DELETE FROM sessions WHERE user_id = ?", [userId]);
+    } catch (sessionErr) {
+      console.warn("admin delete: sessions cleanup skipped", sessionErr);
+    }
+    try {
+      await pool.query("DELETE FROM google_calendar_connections WHERE user_id = ?", [userId]);
+    } catch (calErr) {
+      console.warn("admin delete: google calendar cleanup skipped", calErr);
+    }
+
+    await pool.query("DELETE FROM users WHERE id = ? LIMIT 1", [userId]);
+
+    const label = adminDeletableRoleLabel(targetRole);
+    return res.json({
+      ok: true,
+      message: `${label} deleted${notes.length ? ` (${notes.join("; ")})` : ""}`,
+      deleted: { id: target.id, name: target.name, email: target.email, role: targetRole },
+    });
+  } catch (err: any) {
+    console.error("admin delete user error", err);
+    if (err?.code === "ER_ROW_IS_REFERENCED_2" || err?.code === "ER_ROW_IS_REFERENCED") {
+      return res.status(409).json({
+        message: "Cannot delete this user because other records still reference them. Unassign related data first.",
+      });
+    }
+    return res.status(500).json({ message: "Failed to delete user" });
   }
 });
 
@@ -14044,7 +14251,7 @@ app.patch("/api/leads/:id/assign-project-manager", async (req: Request, res: Res
     if (!canAssignProjectManagerRole(role)) {
       return res.status(403).json({
         message:
-          "Only Admin, Territorial Design Manager, Deputy General Manager, or Senior Project Manager can assign a project manager",
+          "Only Admin, Territory Design Manager, Deputy General Manager, or Senior Project Manager can assign a project manager",
       });
     }
     const [urows] = await pool.query("SELECT id, role FROM users WHERE id = ?", [pmId]);

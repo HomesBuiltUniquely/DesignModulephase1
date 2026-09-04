@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import type { DesignNotificationItem } from './DesignNotificationProvider';
+import { formatUserRoleLabel } from '../lib/formatUserRoleLabel';
 
 export type NotificationDetailRow = { label: string; value: string };
 
@@ -318,7 +319,7 @@ export function extractNotificationDetails(item: DesignNotificationItem): Notifi
   add('Reason', pick(payload, ['rejection_reason']));
 
   if (item.designer_id) add('Designer ID', String(item.designer_id));
-  if (item.recipient_role) add('Your role', item.recipient_role.replace(/_/g, ' '));
+  if (item.recipient_role) add('Your role', formatUserRoleLabel(item.recipient_role));
 
   return rows;
 }
