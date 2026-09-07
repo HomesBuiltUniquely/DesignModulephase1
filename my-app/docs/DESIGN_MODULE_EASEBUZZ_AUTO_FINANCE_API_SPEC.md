@@ -32,8 +32,10 @@ Auth: `x-api-key: {EXTERNAL_LEAD_INGEST_API_KEY}`
 
 ## Auto vs manual decision
 
-- **AUTO_APPROVED:** All `paymentHistory[]` entries are Easebuzz gateway-verified (`gatewayVerified`, `easebuzzTxnId`, etc.)
-- **MANUAL_QUEUE:** Offline proofs, mixed manual, or unverified payments
+- **AUTO_APPROVED:** All `paymentHistory[]` entries are Easebuzz (`paymentKind: "Easebuzz"` / channel EASEBUZZ) **and** verified (`gatewayVerified` and/or `easebuzzTxnId` / `txnId` / `gatewayPaymentId`)
+- **MANUAL_QUEUE:** `paymentKind: "Offline"`, proofs-only, or `completionPaymentSource: "MIXED"` / `"OFFLINE"`
+
+CRM also sends `bookingPaymentKind` (`TOKEN` / `FULL_10%`) — Design keeps it for display; auto decision uses Design channel `paymentKind` only.
 
 ---
 

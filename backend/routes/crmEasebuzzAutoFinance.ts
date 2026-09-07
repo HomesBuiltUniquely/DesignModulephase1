@@ -51,28 +51,61 @@ function paymentHistoryEntries(body: HubLeadBody): Record<string, unknown>[] {
 
 function isEasebuzzKind(kind: string): boolean {
   const k = kind.toLowerCase();
-  return k.includes("easebuzz") || k === "online" || k === "gateway";
+  return (
+    k.includes("easebuzz") ||
+    k === "online" ||
+    k === "gateway" ||
+    k === "easebuzz"
+  );
+}
+
+function entryChannelOrKind(entry: Record<string, unknown>): string {
+  return pickStr(
+    entry.paymentKind,
+    entry.payment_kind,
+    entry.paymentChannel,
+    entry.payment_channel,
+    entry.source,
+    entry.mode,
+  );
+}
+
+function entryHasTxnId(entry: Record<string, unknown>): boolean {
+  return Boolean(
+    pickStr(
+      entry.easebuzzTxnId,
+      entry.easebuzz_txn_id,
+      entry.txnId,
+      entry.txn_id,
+      entry.transactionId,
+      entry.gatewayPaymentId,
+      entry.gateway_payment_id,
+      entry.gatewayReference,
+      entry.gateway_reference,
+    ),
+  );
 }
 
 /** Single paymentHistory entry is Easebuzz gateway-verified (no manual proof path). */
 export function isEasebuzzVerifiedPaymentEntry(entry: Record<string, unknown>): boolean {
-  if (asBool(entry.gatewayVerified) || asBool(entry.gateway_verified)) return true;
-  if (asBool(entry.easebuzzVerified) || asBool(entry.easebuzz_verified)) return true;
-  if (asBool(entry.verified) && isEasebuzzKind(pickStr(entry.paymentKind, entry.payment_kind, entry.source, entry.mode))) {
-    return true;
-  }
+  const kind = entryChannelOrKind(entry);
+  const easebuzz = isEasebuzzKind(kind);
+  const hasTxn = entryHasTxnId(entry);
+  const verified =
+    asBool(entry.gatewayVerified) ||
+    asBool(entry.gateway_verified) ||
+    asBool(entry.easebuzzVerified) ||
+    asBool(entry.easebuzz_verified);
 
-  const kind = pickStr(entry.paymentKind, entry.payment_kind, entry.source, entry.mode);
-  const hasTxn =
-    Boolean(pickStr(entry.easebuzzTxnId, entry.easebuzz_txn_id, entry.txnId, entry.txn_id, entry.transactionId)) ||
-    Boolean(pickStr(entry.gatewayReference, entry.gateway_reference));
-
-  if (isEasebuzzKind(kind) && hasTxn) return true;
-  if (isEasebuzzKind(kind) && asBool(entry.autoFinanceEligible)) return true;
+  // gatewayVerified alone is not enough — must be Easebuzz channel
+  if (easebuzz && verified) return true;
+  if (easebuzz && hasTxn) return true;
+  if (easebuzz && asBool(entry.autoFinanceEligible)) return true;
+  if (asBool(entry.verified) && easebuzz) return true;
 
   const proofs = Array.isArray(entry.proofs) ? entry.proofs : [];
-  if (proofs.length > 0 && !isEasebuzzKind(kind)) return false;
-  if (isEasebuzzKind(kind) && proofs.length === 0 && hasTxn) return true;
+  if (proofs.length > 0 && !easebuzz) return false;
+  if (easebuzz && proofs.length === 0 && hasTxn) return true;
 
   return false;
 }
@@ -82,11 +115,12 @@ export function isManualProofPaymentEntry(entry: Record<string, unknown>): boole
   if (isEasebuzzVerifiedPaymentEntry(entry)) return false;
   const proofs = Array.isArray(entry.proofs) ? entry.proofs : [];
   if (proofs.length > 0) return true;
-  const kind = pickStr(entry.paymentKind, entry.payment_kind, entry.source, entry.mode).toLowerCase();
+  const kind = entryChannelOrKind(entry).toLowerCase();
   if (!kind) return false;
   return (
     kind.includes("manual") ||
     kind.includes("offline") ||
+    kind === "offline" ||
     kind.includes("cash") ||
     kind.includes("cheque") ||
     kind.includes("check") ||
@@ -101,12 +135,32 @@ export function isManualProofPaymentEntry(entry: Record<string, unknown>): boole
  * All collected payments must be Easebuzz-verified; any manual/mixed → MANUAL_QUEUE.
  */
 export function resolveFinanceHandlingMode(body: HubLeadBody): FinanceHandlingMode {
-  const topGateway = pickStr(body.paymentGateway, body.payment_gateway, body.paymentKind, body.payment_kind).toLowerCase();
-  const topVerified = asBool(body.gatewayVerified) || asBool(body.gateway_verified) || asBool(body.easebuzzVerified);
+  const completionSource = pickStr(
+    body.completionPaymentSource,
+    body.completion_payment_source,
+  ).toUpperCase();
+  if (completionSource === "MIXED" || completionSource === "OFFLINE") {
+    return "MANUAL_QUEUE";
+  }
+
+  const topGateway = pickStr(
+    body.paymentGateway,
+    body.payment_gateway,
+    body.paymentKind,
+    body.payment_kind,
+    body.paymentChannel,
+    body.completionPaymentSource,
+  ).toLowerCase();
+  const topVerified =
+    asBool(body.gatewayVerified) ||
+    asBool(body.gateway_verified) ||
+    asBool(body.easebuzzVerified) ||
+    asBool(body.autoFinanceEligible);
 
   const history = paymentHistoryEntries(body);
   if (history.length === 0) {
     if (topVerified && isEasebuzzKind(topGateway)) return "AUTO_APPROVED";
+    if (completionSource === "EASEBUZZ" && topVerified) return "AUTO_APPROVED";
     return "MANUAL_QUEUE";
   }
 

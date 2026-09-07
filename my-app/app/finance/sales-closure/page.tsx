@@ -20,7 +20,7 @@ type PaymentSubmission = {
   uploadId?: number | null;
 };
 
-type QueueTab = 'pending' | 'approved';
+type QueueTab = 'pending' | 'approved' | 'auto_approved';
 
 type FinanceLead = {
   id: number;
@@ -44,6 +44,16 @@ type FinanceLead = {
   submissionCount: number;
   paymentSubmissions: PaymentSubmission[];
   paymentSource?: 'crm_hub' | 'manual';
+  financeHandlingMode?: 'AUTO_APPROVED' | 'MANUAL_QUEUE';
+  financeSection?: 'AUTO_APPROVED' | 'MANUAL_QUEUE';
+  approvedBy?: string | null;
+  bufferApplied?: boolean;
+  bookingApprovalMode?: string | null;
+  financeBufferNote?: string | null;
+  extraAmountReceived?: number | null;
+  actions?: string[];
+  crmRef?: string | null;
+  bookingTokenRecordId?: string | null;
 };
 
 
@@ -229,6 +239,8 @@ export default function FinanceSalesClosurePage() {
   const [rejectConfirmLead, setRejectConfirmLead] = useState<FinanceLead | null>(null);
   const [historyLead, setHistoryLead] = useState<FinanceLeadDetail | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [autoPaymentPopup, setAutoPaymentPopup] = useState<FinanceLeadDetail | null>(null);
+  const [autoPaymentLoading, setAutoPaymentLoading] = useState(false);
 
   const [customerNameFilter, setCustomerNameFilter] = useState('');
   const [monthFilter, setMonthFilter] = useState('');
@@ -254,19 +266,28 @@ export default function FinanceSalesClosurePage() {
     }
     setLoading(true);
     setError(null);
+    setLeads([]);
     try {
       const params = new URLSearchParams();
-      params.set('status', queueTab);
-      const name = customerNameFilter.trim();
-      if (name) params.set('customerName', name);
-      if (monthFilter) params.set('month', monthFilter);
-      if (dateFromFilter) params.set('dateFrom', dateFromFilter);
-      if (dateToFilter) params.set('dateTo', dateToFilter);
-      const qs = params.toString();
-      const res = await fetch(
-        `${getApiBase()}/api/leads/finance-sales-closure-queue${qs ? `?${qs}` : ''}`,
-        { headers: { ...authHeaders } },
-      );
+      let url: string;
+      if (queueTab === 'auto_approved') {
+        params.set('section', 'AUTO_APPROVED');
+        const name = customerNameFilter.trim();
+        if (name) params.set('customerName', name);
+        if (monthFilter) params.set('month', monthFilter);
+        if (dateFromFilter) params.set('dateFrom', dateFromFilter);
+        if (dateToFilter) params.set('dateTo', dateToFilter);
+        url = `${getApiBase()}/api/sales-closure/finance-10p-queue?${params.toString()}`;
+      } else {
+        params.set('status', queueTab);
+        const name = customerNameFilter.trim();
+        if (name) params.set('customerName', name);
+        if (monthFilter) params.set('month', monthFilter);
+        if (dateFromFilter) params.set('dateFrom', dateFromFilter);
+        if (dateToFilter) params.set('dateTo', dateToFilter);
+        url = `${getApiBase()}/api/leads/finance-sales-closure-queue?${params.toString()}`;
+      }
+      const res = await fetch(url, { headers: { ...authHeaders } });
       const text = await res.text();
       const data = (() => {
         try {
@@ -276,8 +297,16 @@ export default function FinanceSalesClosurePage() {
         }
       })();
       if (!res.ok) throw new Error(data?.message || 'Failed to load queue');
-      setLeads(Array.isArray(data) ? data : []);
+      let rows: FinanceLead[] = Array.isArray(data) ? data : [];
+      if (queueTab === 'approved') {
+        rows = rows.filter((r) => r.financeHandlingMode !== 'AUTO_APPROVED');
+      }
+      if (queueTab === 'auto_approved') {
+        rows = rows.filter((r) => r.financeHandlingMode === 'AUTO_APPROVED');
+      }
+      setLeads(rows);
     } catch (e: unknown) {
+      setLeads([]);
       setError(e instanceof Error ? e.message : 'Failed to load queue');
     } finally {
       setLoading(false);
@@ -415,6 +444,30 @@ export default function FinanceSalesClosurePage() {
     }
   };
 
+  const openAutoPaymentPopup = async (lead: FinanceLead) => {
+    setAutoPaymentLoading(true);
+    setError(null);
+    setAutoPaymentPopup({
+      ...lead,
+      financeApproved: true,
+      paymentSubmissions: lead.paymentSubmissions || [],
+    });
+    try {
+      if (!sessionId) return;
+      const res = await fetch(
+        `${getApiBase()}/api/leads/finance-sales-closure/${encodeURIComponent(String(lead.id))}`,
+        { headers: { ...authHeaders } },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.message || 'Failed to load payment details');
+      setAutoPaymentPopup({ ...lead, ...(data as FinanceLeadDetail), financeApproved: true });
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to load payment details');
+    } finally {
+      setAutoPaymentLoading(false);
+    }
+  };
+
   const clearFilters = () => {
     setCustomerNameFilter('');
     setMonthFilter('');
@@ -461,6 +514,27 @@ export default function FinanceSalesClosurePage() {
             >
               {loading ? 'Loading…' : 'Refresh'}
             </button>
+            <a
+              href="/"
+              title="Home — Design Phase Projects"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50"
+              aria-label="Home"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="h-4 w-4"
+              >
+                <path d="M3 10.5 12 3l9 7.5" />
+                <path d="M5 9.5V21h14V9.5" />
+                <path d="M9 21v-7h6v7" />
+              </svg>
+            </a>
           </div>
         </div>
 
@@ -550,7 +624,9 @@ export default function FinanceSalesClosurePage() {
               onProofError={setProofError}
               proofError={proofError}
             />
-            {!historyLead.financeApproved && historyLead.tenPercentMet && (
+            {!historyLead.financeApproved &&
+              historyLead.financeHandlingMode !== 'AUTO_APPROVED' &&
+              historyLead.tenPercentMet && (
               <div className="flex gap-2 justify-end">
                 <button
                   type="button"
@@ -654,6 +730,17 @@ export default function FinanceSalesClosurePage() {
             }`}
           >
             Approved history
+          </button>
+          <button
+            type="button"
+            onClick={() => setQueueTab('auto_approved')}
+            className={`px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px ${
+              queueTab === 'auto_approved'
+                ? 'border-emerald-600 text-emerald-900'
+                : 'border-transparent text-gray-500 hover:text-gray-800'
+            }`}
+          >
+            Easebuzz auto-approved
           </button>
         </div>
 
@@ -761,6 +848,76 @@ export default function FinanceSalesClosurePage() {
                 })
               )}
             </>
+          ) : queueTab === 'auto_approved' ? (
+            <>
+              <div className="min-w-[980px] grid grid-cols-12 bg-emerald-50 px-4 py-3 text-xs font-semibold text-emerald-900">
+                <div className="col-span-1">ID</div>
+                <div className="col-span-2">Customer</div>
+                <div className="col-span-2">Paid / 10%</div>
+                <div className="col-span-2">Approved by</div>
+                <div className="col-span-2">Status</div>
+                <div className="col-span-1">Approved on</div>
+                <div className="col-span-2 text-center">History</div>
+              </div>
+              {leads.length === 0 ? (
+                <div className="px-4 py-6 text-sm text-gray-600">
+                  {loading
+                    ? 'Loading…'
+                    : 'No Easebuzz auto-approved CRM bookings match your filters.'}
+                </div>
+              ) : (
+                leads.map((l) => {
+                  return (
+                    <div
+                      key={l.id}
+                      className="min-w-[980px] grid grid-cols-12 px-4 py-3 border-t border-gray-200 items-start gap-1 bg-white"
+                    >
+                      <div className="col-span-1 text-sm font-semibold text-gray-900">{l.id}</div>
+                      <div className="col-span-2 text-sm text-gray-800">
+                        <div className="font-medium truncate">{l.customerName}</div>
+                        {l.financeHandlingMode === 'AUTO_APPROVED' && (
+                          <span className="inline-block mt-1 px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                            Easebuzz auto
+                          </span>
+                        )}
+                      </div>
+                      <div className="col-span-2 text-xs text-gray-700 space-y-0.5">
+                        <div>
+                          Paid: <span className="font-semibold">{formatInr(l.amountPaid)}</span>
+                        </div>
+                        <div>10% target: {formatInr(l.tenPercentTarget)}</div>
+                        {l.bufferApplied && (l.remainingFor10Percent ?? 0) > 0 && (
+                          <div className="text-amber-800 font-medium">
+                            Shortfall tracked: {formatInr(l.remainingFor10Percent)}
+                          </div>
+                        )}
+                      </div>
+                      <div className="col-span-2 text-xs text-gray-700">
+                        {l.financeHandlingMode === 'AUTO_APPROVED'
+                          ? l.approvedBy || 'SYSTEM · Easebuzz'
+                          : l.approvedBy || '—'}
+                      </div>
+                      <div className="col-span-2 text-xs">
+                        <span className="inline-block rounded-full px-2 py-0.5 font-medium bg-emerald-100 text-emerald-900">
+                          {l.status}
+                        </span>
+                      </div>
+                      <div className="col-span-1 text-xs text-gray-600">{formatDate(l.approvedAt)}</div>
+                      <div className="col-span-2 text-center">
+                        <button
+                          type="button"
+                          onClick={() => void openAutoPaymentPopup(l)}
+                          disabled={autoPaymentLoading}
+                          className="px-2 py-1.5 rounded-lg border border-emerald-600 text-emerald-900 text-xs font-semibold hover:bg-emerald-50 disabled:opacity-60"
+                        >
+                          View
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </>
           ) : (
             <>
               <div className="min-w-[900px] grid grid-cols-12 bg-[#DDCDC1]/20 px-4 py-3 text-xs font-semibold text-[#32261C]">
@@ -845,6 +1002,150 @@ export default function FinanceSalesClosurePage() {
                   alt="Payment Screenshot"
                   className="max-w-full max-h-[70vh] object-contain rounded border border-gray-300"
                 />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {autoPaymentPopup && (
+          <div
+            className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+            onClick={() => setAutoPaymentPopup(null)}
+          >
+            <div
+              className="bg-white rounded-2xl shadow-xl max-w-lg w-full max-h-[85vh] overflow-hidden flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-4 py-3 border-b border-emerald-100 bg-emerald-50 flex items-center justify-between">
+                <div>
+                  <h2 className="text-base font-bold text-emerald-950">CRM payment details</h2>
+                  <p className="text-xs text-emerald-800">
+                    Lead #{autoPaymentPopup.id} · {autoPaymentPopup.customerName}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAutoPaymentPopup(null)}
+                  className="text-emerald-800 hover:text-emerald-950 text-2xl leading-none"
+                >
+                  &times;
+                </button>
+              </div>
+              <div className="p-4 overflow-auto space-y-3 text-sm">
+                {autoPaymentLoading ? (
+                  <p className="text-gray-500">Loading payment details…</p>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                        <div className="text-gray-500">Approved by</div>
+                        <div className="font-semibold text-gray-900">
+                          {autoPaymentPopup.approvedBy || 'SYSTEM · Easebuzz'}
+                        </div>
+                      </div>
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                        <div className="text-gray-500">Stage</div>
+                        <div className="font-semibold text-gray-900">
+                          {autoPaymentPopup.projectStage || '10-20%'}
+                        </div>
+                      </div>
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                        <div className="text-gray-500">Paid toward 10%</div>
+                        <div className="font-semibold text-gray-900">
+                          {formatInr(autoPaymentPopup.amountPaid)}
+                        </div>
+                      </div>
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                        <div className="text-gray-500">10% target</div>
+                        <div className="font-semibold text-gray-900">
+                          {formatInr(autoPaymentPopup.tenPercentTarget)}
+                        </div>
+                      </div>
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                        <div className="text-gray-500">Mode</div>
+                        <div className="font-semibold text-gray-900">
+                          {autoPaymentPopup.bookingApprovalMode ||
+                            (autoPaymentPopup.bufferApplied ? 'BUFFER_9_9' : 'FULL_10')}
+                        </div>
+                      </div>
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                        <div className="text-gray-500">Approved on</div>
+                        <div className="font-semibold text-gray-900">
+                          {formatDate(autoPaymentPopup.approvedAt)}
+                        </div>
+                      </div>
+                    </div>
+
+                    {autoPaymentPopup.bufferApplied && (
+                      <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                        <span className="font-semibold">9.9% buffer</span>
+                        {(autoPaymentPopup.remainingFor10Percent ?? 0) > 0
+                          ? ` — shortfall still tracked: ${formatInr(autoPaymentPopup.remainingFor10Percent)}`
+                          : ' — booking auto-approved; shortfall cleared or zero.'}
+                        {autoPaymentPopup.financeBufferNote ? (
+                          <p className="mt-1 text-amber-800">{autoPaymentPopup.financeBufferNote}</p>
+                        ) : null}
+                      </div>
+                    )}
+
+                    {(autoPaymentPopup.extraAmountReceived ?? 0) > 0 && (
+                      <p className="text-xs text-gray-600">
+                        Extra beyond 10%:{' '}
+                        <span className="font-semibold">
+                          {formatInr(autoPaymentPopup.extraAmountReceived)}
+                        </span>
+                      </p>
+                    )}
+
+                    {autoPaymentPopup.crmRef || autoPaymentPopup.bookingTokenRecordId ? (
+                      <p className="text-xs text-gray-500">
+                        {autoPaymentPopup.crmRef ? `CRM: ${autoPaymentPopup.crmRef}` : null}
+                        {autoPaymentPopup.crmRef && autoPaymentPopup.bookingTokenRecordId
+                          ? ' · '
+                          : null}
+                        {autoPaymentPopup.bookingTokenRecordId
+                          ? `Booking token: ${autoPaymentPopup.bookingTokenRecordId}`
+                          : null}
+                      </p>
+                    ) : null}
+
+                    <div>
+                      <h3 className="text-xs font-bold text-gray-700 mb-2">
+                        Payments from CRM ({autoPaymentPopup.paymentSubmissions?.length || 0})
+                      </h3>
+                      {(autoPaymentPopup.paymentSubmissions || []).length === 0 ? (
+                        <p className="text-xs text-gray-500">No payment line items synced.</p>
+                      ) : (
+                        <div className="border border-gray-200 rounded-xl overflow-hidden">
+                          {(autoPaymentPopup.paymentSubmissions || []).map((s, idx) => (
+                            <div
+                              key={s.id}
+                              className="grid grid-cols-12 gap-1 px-3 py-2 border-t border-gray-100 first:border-t-0 text-xs"
+                            >
+                              <div className="col-span-1 text-gray-500">{idx + 1}</div>
+                              <div className="col-span-3 text-gray-700">{formatDate(s.submittedAt)}</div>
+                              <div className="col-span-3 font-semibold text-gray-900">
+                                {formatInr(s.amount)}
+                              </div>
+                              <div className="col-span-5 text-gray-600 truncate">
+                                {s.paymentReceived || s.mode || 'Easebuzz'}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+              <div className="px-4 py-3 border-t border-gray-100 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setAutoPaymentPopup(null)}
+                  className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-semibold hover:bg-gray-50"
+                >
+                  Close
+                </button>
               </div>
             </div>
           </div>

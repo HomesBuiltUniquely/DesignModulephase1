@@ -52,6 +52,7 @@ const offlineMeetingExportApi_1 = require("./routes/offlineMeetingExportApi");
 const msg91InboundApi_1 = require("./routes/msg91InboundApi");
 const prolanceApi_1 = require("./routes/prolanceApi");
 const crmHubBookingRoutes_1 = require("./routes/crmHubBookingRoutes");
+const crmEasebuzzAutoFinance_1 = require("./routes/crmEasebuzzAutoFinance");
 const incentivesRoutes_1 = require("./routes/incentivesRoutes");
 const notify = __importStar(require("./routes/designNotifications"));
 /**
@@ -184,7 +185,10 @@ const pool = promise_1.default.createPool({
     connectTimeout: 60000,
 });
 notify.initPool(pool);
-notify.registerInboxRoutes(app);
+notify.registerInboxRoutes(app, async (req) => {
+    const user = await getUserFromSession(req);
+    return user ? { id: Number(user.id) } : null;
+});
 // Standalone route: /api/customer/:customerNumber (see routes/customerNumberApi.ts)
 (0, customerNumberApi_1.registerCustomerNumberRoutes)(app, pool);
 (0, offlineMeetingExportApi_1.registerOfflineMeetingExportRoutes)(app, pool);
@@ -3001,6 +3005,30 @@ function resolveD2UploadedAsRole(sessionRole, bodyRole) {
 function canApproveMmtUploads(role) {
     const r = (role || "").toLowerCase();
     return r === "mmt_manager" || r === "admin";
+}
+/** Notify designer that D1/D2 MMT docs are ready to check (after approve or auto-approve). */
+async function notifyDesignerMmtDocsReady(leadId, opts) {
+    try {
+        const [rows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+              u.name as designerName
+       FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+       WHERE l.id = ? LIMIT 1`, [leadId]);
+        const row = rows[0];
+        if (!row?.designerId)
+            return;
+        void notify.mmtDocReady({
+            projectId: row.pid || `HUB-${leadId}`,
+            leadName: row.projectName || "",
+            designerId: Number(row.designerId) || 0,
+            designerName: row.designerName || "",
+            uploadName: opts.uploadName,
+            docKind: opts.docKind,
+            approvedBy: opts.approvedBy,
+        });
+    }
+    catch (err) {
+        console.warn("[notify] mmtDocReady error (non-fatal)", { leadId, err });
+    }
 }
 /** TEMPORARY: relax finance approval gates (screenshots / 10% paid checks). Set false when going live. */
 const TEMP_FINANCE_RELAXED_APPROVAL = true;
@@ -7427,11 +7455,14 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
             }
         }
         let p2pCompleted = false;
+        let milestoneFullyComplete = false;
+        let allComps = [];
         if (isFirstCompletion) {
             const [allCompRows] = await pool.query(`SELECT milestone_index as milestoneIndex, task_name as taskName
          FROM lead_task_completions WHERE lead_id = ?`, [id]);
-            const allComps = allCompRows;
-            if (isMilestoneFullyComplete(allComps, milestoneIndex)) {
+            allComps = allCompRows;
+            milestoneFullyComplete = isMilestoneFullyComplete(allComps, milestoneIndex);
+            if (milestoneFullyComplete) {
                 if (milestoneIndex === 6) {
                     p2pCompleted = true;
                 }
@@ -7451,16 +7482,10 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                     const nDesignerId = Number(nRow.designerId) || 0;
                     const nDesignerName = nRow.designerName || "";
                     const tNormNotify = String(taskName).trim();
-                    // 03 — Milestone task completed
-                    void notify.milestoneCompleted({
-                        projectId: nPid,
-                        leadName: nLeadName,
-                        designerId: nDesignerId,
-                        milestoneName: MILESTONE_NAMES[milestoneIndex] ?? `Milestone ${milestoneIndex}`,
-                        taskName: tNormNotify,
-                        milestoneIndex,
-                        designerName: nDesignerName,
-                    });
+                    // 03 — Milestone completed (only when all tasks in this milestone are done)
+                    if (milestoneFullyComplete) {
+                        void maybeNotifyMilestoneCompleted(id, milestoneIndex, { taskName: tNormNotify });
+                    }
                     // 04 — Payment request: designer collected 10% payment (milestone 2)
                     if (milestoneIndex === 2 && tNormNotify === "10% payment collection") {
                         void notify.paymentRequested({
@@ -7468,18 +7493,36 @@ app.post("/api/leads/:id/complete-task", async (req, res) => {
                             leadName: nLeadName,
                             designerId: nDesignerId,
                             paymentType: "PRE_10_PERCENT",
-                            uploadName: "10% Payment Collection",
+                            uploadName: "10% Design Payment Collection",
                             amount: 0,
+                            designerName: nDesignerName,
+                            milestoneContext: "DESIGN_10",
                         });
                     }
-                    // 15 + 16a — P2P completed & PM status APPROVED (milestone 4: Project manager approval)
-                    if (milestoneIndex === 4 && tNormNotify === "Project manager approval") {
+                    // 40% design payment request (milestone 5)
+                    if (milestoneIndex === 5 && (tNormNotify === "40% collection" || tNormNotify === "40% collection ")) {
+                        void notify.paymentRequested({
+                            projectId: nPid,
+                            leadName: nLeadName,
+                            designerId: nDesignerId,
+                            paymentType: "40_PERCENT",
+                            uploadName: "40% Design Payment Collection",
+                            amount: 0,
+                            designerName: nDesignerName,
+                            milestoneContext: "DESIGN_40",
+                        });
+                    }
+                    // 15 — P2P: PUSH TO PRODUCTION milestone fully done → congratulate designer (all users)
+                    if (milestoneFullyComplete && milestoneIndex === 6) {
                         void notify.p2pCompleted({
                             projectId: nPid,
                             leadName: nLeadName,
                             designerId: nDesignerId,
                             designerName: nDesignerName,
                         });
+                    }
+                    // 16a — PM approval on DQC2 (milestone 4 task) — not P2P
+                    if (milestoneIndex === 4 && tNormNotify === "Project manager approval") {
                         void notify.pmApprovalStatus({
                             projectId: nPid,
                             leadName: nLeadName,
@@ -7849,7 +7892,6 @@ app.post("/api/leads/:id/approve-sales-closure", async (req, res) => {
             payloadObj.quotation_total_at_sales_closure = parseFiniteNumber(payloadObj.quotation_total);
         }
         await pool.query(`UPDATE leads SET project_stage = '10-20%', payload = ?, update_at = ? WHERE id = ?`, [JSON.stringify(payloadObj), new Date(), leadId]);
-        // Optional event tracking for lead history
         await addLeadHistoryEvent(leadId, {
             id: `approve-sales-closure-${Date.now()}`,
             type: "note",
@@ -7860,6 +7902,41 @@ app.post("/api/leads/:id/approve-sales-closure", async (req, res) => {
             user: { name: user.name || "Finance" },
             details: { kind: "note", noteText: "Sales Closure payment screenshot approved." },
         });
+        // Notify: Sales Closure payment approved + lead entered 10–20%
+        try {
+            const [notifyRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                u.name as designerName
+         FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+         WHERE l.id = ? LIMIT 1`, [leadId]);
+            const nRow = notifyRows[0];
+            if (nRow) {
+                const nPid = nRow.pid || `HUB-${leadId}`;
+                const nLeadName = nRow.projectName || "";
+                const nDesignerId = Number(nRow.designerId) || 0;
+                const nDesignerName = nRow.designerName || "";
+                void notify.leadEntered1020({
+                    projectId: nPid,
+                    leadName: nLeadName,
+                    designerId: nDesignerId,
+                    designerName: nDesignerName,
+                });
+                void notify.paymentStatus({
+                    projectId: nPid,
+                    leadName: nLeadName,
+                    designerId: nDesignerId,
+                    status: "SUCCESS",
+                    decision: "APPROVED",
+                    paymentType: "SALES_CLOSURE",
+                    milestoneContext: "SALES_CLOSURE",
+                    approverName: user.name ?? "Finance",
+                    amount: 0,
+                    designerName: nDesignerName,
+                });
+            }
+        }
+        catch (notifyErr) {
+            console.warn("[notify] approve-sales-closure notify error (non-fatal)", notifyErr);
+        }
         return res.json({ success: true, message: "Sales closure approved successfully" });
     }
     catch (err) {
@@ -7938,6 +8015,32 @@ app.post("/api/leads/:id/reject-sales-closure", async (req, res) => {
             user: { name: user.name || "Finance" },
             details: { kind: "note", noteText: "Sales Closure payment screenshot rejected. Notification sent to sales." },
         });
+        // Notify: Sales Closure payment rejected (distinct from design 10%)
+        try {
+            const [notifyRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                u.name as designerName
+         FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+         WHERE l.id = ? LIMIT 1`, [leadId]);
+            const nRow = notifyRows[0];
+            if (nRow) {
+                void notify.paymentStatus({
+                    projectId: nRow.pid || `HUB-${leadId}`,
+                    leadName: nRow.projectName || "",
+                    designerId: Number(nRow.designerId) || 0,
+                    status: "FAILED",
+                    decision: "REJECTED",
+                    paymentType: "SALES_CLOSURE",
+                    milestoneContext: "SALES_CLOSURE",
+                    approverName: user.name ?? "Finance",
+                    amount: 0,
+                    rejectionReason: String(req.body?.reason || req.body?.rejectionReason || ""),
+                    designerName: nRow.designerName || "",
+                });
+            }
+        }
+        catch (notifyErr) {
+            console.warn("[notify] reject-sales-closure notify error (non-fatal)", notifyErr);
+        }
         return res.json({ success: true, message: "Sales closure rejected and sales person notified" });
     }
     catch (err) {
@@ -8078,6 +8181,29 @@ app.post("/api/leads/:id/10p-payment-upload", upload.array("files"), async (req,
            VALUES (?, 2, '10% payment collection', ?)
            ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`, [leadId, now]);
         }
+        // Notify: Design 10% payment requested (same path as 40% upload — collection is done here, not via complete-task)
+        try {
+            const [notifyRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                  u.name as designerName
+           FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+           WHERE l.id = ? LIMIT 1`, [leadId]);
+            const nRow = notifyRows[0];
+            if (nRow) {
+                void notify.paymentRequested({
+                    projectId: nRow.pid || `HUB-${leadId}`,
+                    leadName: nRow.projectName || "",
+                    designerId: Number(nRow.designerId) || 0,
+                    paymentType: "PRE_10_PERCENT",
+                    uploadName: `10% payment screenshots (${files.length})`,
+                    amount: 0,
+                    designerName: nRow.designerName || user.name || "",
+                    milestoneContext: "DESIGN_10",
+                });
+            }
+        }
+        catch (notifyErr) {
+            console.warn("[notify] 10p-payment-upload notify error (non-fatal)", notifyErr);
+        }
         // Fire internal notification email to Finance Team with CC to Admin and TDM
         try {
             const [leadRows] = await pool.query("SELECT pid, project_name as projectName FROM leads WHERE id = ?", [leadId]);
@@ -8191,6 +8317,11 @@ app.post("/api/leads/:id/approve-10p-payment", async (req, res) => {
         if (Boolean(hubSync) && !hasDqc1 && crmAlreadyApproved) {
             return res.status(201).json({ ok: true, path: "crm_booking_already" });
         }
+        if (isCrmBookingPayment && (0, crmEasebuzzAutoFinance_1.readCrmFinanceHandlingMode)(leadPayload) === "AUTO_APPROVED") {
+            return res.status(400).json({
+                message: "This CRM booking was auto-approved via Easebuzz. Manual approve is not allowed.",
+            });
+        }
         // ── CRM booking token payment (sales 10% at closure) → 10-20% intake, not design milestone 2 ──
         if (isCrmBookingPayment) {
             await pool.query("UPDATE lead_uploads SET status = 'approved' WHERE lead_id = ? AND upload_type = 'hub_payment_proof' AND status = 'pending'", [leadId]);
@@ -8219,6 +8350,41 @@ app.post("/api/leads/:id/approve-10p-payment", async (req, res) => {
                 user: { name: user.name ?? "Finance" },
                 details: { kind: "note", noteText: "CRM pre-DQC1 payment approved." },
             });
+            // Notify: Sales Closure payment approved (NOT design 10%) + lead entered 10–20%
+            try {
+                const [notifyRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                  u.name as designerName
+           FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+           WHERE l.id = ? LIMIT 1`, [leadId]);
+                const nRow = notifyRows[0];
+                if (nRow) {
+                    const nPid = nRow.pid || `HUB-${leadId}`;
+                    const nLeadName = nRow.projectName || "";
+                    const nDesignerId = Number(nRow.designerId) || 0;
+                    const nDesignerName = nRow.designerName || "";
+                    void notify.leadEntered1020({
+                        projectId: nPid,
+                        leadName: nLeadName,
+                        designerId: nDesignerId,
+                        designerName: nDesignerName,
+                    });
+                    void notify.paymentStatus({
+                        projectId: nPid,
+                        leadName: nLeadName,
+                        designerId: nDesignerId,
+                        status: "SUCCESS",
+                        decision: "APPROVED",
+                        paymentType: "SALES_CLOSURE",
+                        milestoneContext: "CRM_BOOKING",
+                        approverName: user.name ?? "Finance",
+                        amount: 0,
+                        designerName: nDesignerName,
+                    });
+                }
+            }
+            catch (notifyErr) {
+                console.warn("[notify] CRM booking approve notify error (non-fatal)", notifyErr);
+            }
             return res.status(201).json({ ok: true, path: "crm_booking" });
         }
         if (!hasDqc1) {
@@ -8226,9 +8392,14 @@ app.post("/api/leads/:id/approve-10p-payment", async (req, res) => {
                 message: "DQC 1 must be approved before design 10% payment can be approved.",
             });
         }
+        const [stageBeforeRows] = await pool.query(`SELECT project_stage as projectStage FROM leads WHERE id = ? LIMIT 1`, [leadId]);
+        const stageBefore = String(stageBeforeRows[0]?.projectStage || "").toLowerCase();
+        const wasAlreadyIn1020 = stageBefore.includes("10-20") || stageBefore.includes("10–20");
         await pool.query(`INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
        VALUES (?, 2, '10% payment approval', ?)
        ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`, [leadId, now]);
+        // 10% PAYMENT milestone completes on finance approval (collection already done on upload)
+        void maybeNotifyMilestoneCompleted(leadId, 2, { taskName: "10% payment approval" });
         await pool.query("UPDATE lead_uploads SET status = 'approved' WHERE lead_id = ? AND upload_type = 'payment_10p' AND status = 'pending'", [leadId]);
         await pool.query("UPDATE leads SET project_stage = '10-20%', update_at = ? WHERE id = ?", [now, leadId]);
         const ev = {
@@ -8438,7 +8609,8 @@ app.post("/api/leads/:id/approve-10p-payment", async (req, res) => {
                 error: err,
             });
         }
-        // Notify: 02 — Lead entered 10-20% phase + 05 — Payment status APPROVED
+        // Notify: Design-module 10% payment APPROVED (after DQC1) — NOT sales closure.
+        // Phase notify only if lead was still Pre 10% before this approval (CRM may already have moved it).
         try {
             const [notifyRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
                 u.name as designerName
@@ -8450,14 +8622,14 @@ app.post("/api/leads/:id/approve-10p-payment", async (req, res) => {
                 const nLeadName = notifyRow.projectName || "";
                 const nDesignerId = Number(notifyRow.designerId) || 0;
                 const nDesignerName = notifyRow.designerName || "";
-                const nNow = new Date().toISOString();
-                // 02 — 10-20% phase entered
-                void notify.leadEntered1020({
-                    projectId: nPid,
-                    leadName: nLeadName,
-                    designerId: nDesignerId,
-                });
-                // 05 — Payment status: APPROVED
+                if (!wasAlreadyIn1020) {
+                    void notify.leadEntered1020({
+                        projectId: nPid,
+                        leadName: nLeadName,
+                        designerId: nDesignerId,
+                        designerName: nDesignerName,
+                    });
+                }
                 void notify.paymentStatus({
                     projectId: nPid,
                     leadName: nLeadName,
@@ -8465,14 +8637,15 @@ app.post("/api/leads/:id/approve-10p-payment", async (req, res) => {
                     status: "SUCCESS",
                     decision: "APPROVED",
                     paymentType: "PRE_10_PERCENT",
-                    milestoneContext: "PRE_10",
+                    milestoneContext: "DESIGN_10",
                     approverName: user.name ?? "Finance",
                     amount: 0,
+                    designerName: nDesignerName,
                 });
             }
         }
         catch (notifyErr) {
-            console.warn("[notify] approve-10p data fetch error (non-fatal)", notifyErr);
+            console.warn("[notify] approve-10p design path notify error (non-fatal)", notifyErr);
         }
         return res.status(201).json({ ok: true, path: "design_10p" });
     }
@@ -8500,6 +8673,20 @@ app.post("/api/leads/:id/reject-10p-payment", async (req, res) => {
         const hasDqc1 = await (0, crmHubBookingRoutes_1.leadHasDqc1Approval)(pool, leadId);
         const isCrmBookingPayment = Boolean(hubSync) && !hasDqc1;
         if (isCrmBookingPayment) {
+            const [lrPre] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [leadId]);
+            const rawPre = lrPre[0]?.payload;
+            let payloadPre = {};
+            try {
+                payloadPre = rawPre ? JSON.parse(String(rawPre)) : {};
+            }
+            catch {
+                payloadPre = {};
+            }
+            if ((0, crmEasebuzzAutoFinance_1.readCrmFinanceHandlingMode)(payloadPre) === "AUTO_APPROVED") {
+                return res.status(400).json({
+                    message: "This CRM booking was auto-approved via Easebuzz. Manual reject is not allowed.",
+                });
+            }
             await pool.query("UPDATE lead_uploads SET status = 'rejected' WHERE lead_id = ? AND upload_type = 'hub_payment_proof' AND status = 'pending'", [leadId]);
             const [lr] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [leadId]);
             const raw = lr[0]?.payload;
@@ -8529,6 +8716,32 @@ app.post("/api/leads/:id/reject-10p-payment", async (req, res) => {
                 details: { kind: "note", noteText: reason || "CRM booking payment rejected." },
             });
             void (0, crmHubBookingRoutes_1.notifyHubFinanceReview)(pool, leadId, "REJECTED", user.name ?? "Finance", reason);
+            // Notify: Sales Closure / CRM booking payment rejected
+            try {
+                const [notifyRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                  u.name as designerName
+           FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+           WHERE l.id = ? LIMIT 1`, [leadId]);
+                const nRow = notifyRows[0];
+                if (nRow) {
+                    void notify.paymentStatus({
+                        projectId: nRow.pid || `HUB-${leadId}`,
+                        leadName: nRow.projectName || "",
+                        designerId: Number(nRow.designerId) || 0,
+                        status: "FAILED",
+                        decision: "REJECTED",
+                        paymentType: "SALES_CLOSURE",
+                        milestoneContext: "CRM_BOOKING",
+                        approverName: user.name ?? "Finance",
+                        amount: 0,
+                        rejectionReason: reason ?? "",
+                        designerName: nRow.designerName || "",
+                    });
+                }
+            }
+            catch (notifyErr) {
+                console.warn("[notify] CRM booking reject notify error (non-fatal)", notifyErr);
+            }
             return res.json({ ok: true, path: "crm_booking" });
         }
         await pool.query("UPDATE lead_uploads SET status = 'rejected' WHERE lead_id = ? AND upload_type = 'payment_10p' AND status = 'pending'", [leadId]);
@@ -8546,8 +8759,10 @@ app.post("/api/leads/:id/reject-10p-payment", async (req, res) => {
         await addLeadHistoryEvent(leadId, ev);
         // Notify: 05 — Payment status: REJECTED
         try {
-            const [nRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId
-         FROM leads l WHERE l.id = ? LIMIT 1`, [leadId]);
+            const [nRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                u.name as designerName
+         FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+         WHERE l.id = ? LIMIT 1`, [leadId]);
             const nRow = nRows[0];
             if (nRow) {
                 void notify.paymentStatus({
@@ -8557,10 +8772,11 @@ app.post("/api/leads/:id/reject-10p-payment", async (req, res) => {
                     status: "FAILED",
                     decision: "REJECTED",
                     paymentType: "PRE_10_PERCENT",
-                    milestoneContext: "PRE_10",
+                    milestoneContext: "DESIGN_10",
                     approverName: user.name ?? "Finance",
                     amount: 0,
                     rejectionReason: reason ?? "",
+                    designerName: nRow.designerName || "",
                 });
             }
         }
@@ -8607,6 +8823,29 @@ app.post("/api/leads/:id/40p-payment-upload", upload.array("files"), async (req,
             details: { kind: "payment_40p", fileNames: files.map((f) => f.originalname) },
         };
         await addLeadHistoryEvent(leadId, ev);
+        // Notify: Design 40% payment requested (for finance review)
+        try {
+            const [notifyRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                  u.name as designerName
+           FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+           WHERE l.id = ? LIMIT 1`, [leadId]);
+            const nRow = notifyRows[0];
+            if (nRow) {
+                void notify.paymentRequested({
+                    projectId: nRow.pid || `HUB-${leadId}`,
+                    leadName: nRow.projectName || "",
+                    designerId: Number(nRow.designerId) || 0,
+                    paymentType: "40_PERCENT",
+                    uploadName: `40% payment screenshots (${files.length})`,
+                    amount: 0,
+                    designerName: nRow.designerName || "",
+                    milestoneContext: "DESIGN_40",
+                });
+            }
+        }
+        catch (notifyErr) {
+            console.warn("[notify] 40p-payment-upload notify error (non-fatal)", notifyErr);
+        }
         // Fire internal notification email to Finance Team with CC to Admin and TDM
         try {
             const [leadRows] = await pool.query("SELECT pid, project_name as projectName FROM leads WHERE id = ?", [leadId]);
@@ -8741,6 +8980,8 @@ app.post("/api/leads/:id/approve-40p-payment", async (req, res) => {
         await pool.query(`INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
        VALUES (?, 5, '40% payment approval', ?)
        ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`, [leadId, now]);
+        // 40% PAYMENT milestone completes on finance approval
+        void maybeNotifyMilestoneCompleted(leadId, 5, { taskName: "40% payment approval" });
         await pool.query("UPDATE lead_uploads SET status = 'approved' WHERE lead_id = ? AND upload_type = 'payment_40p' AND status = 'pending'", [leadId]);
         const ev = {
             id: `40p-approval-${Date.now()}`,
@@ -8905,6 +9146,31 @@ app.post("/api/leads/:id/approve-40p-payment", async (req, res) => {
         catch (e) {
             console.error("40% payment approval email prepare error (non-fatal)", e);
         }
+        // Notify: Design 40% payment APPROVED (distinct from sales closure / design 10%)
+        try {
+            const [notifyRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                u.name as designerName
+         FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+         WHERE l.id = ? LIMIT 1`, [leadId]);
+            const nRow = notifyRows[0];
+            if (nRow) {
+                void notify.paymentStatus({
+                    projectId: nRow.pid || `HUB-${leadId}`,
+                    leadName: nRow.projectName || "",
+                    designerId: Number(nRow.designerId) || 0,
+                    status: "SUCCESS",
+                    decision: "APPROVED",
+                    paymentType: "40_PERCENT",
+                    milestoneContext: "DESIGN_40",
+                    approverName: user.name ?? "Finance",
+                    amount: 0,
+                    designerName: nRow.designerName || "",
+                });
+            }
+        }
+        catch (notifyErr) {
+            console.warn("[notify] approve-40p notify error (non-fatal)", notifyErr);
+        }
         return res.status(201).json({ ok: true });
     }
     catch (err) {
@@ -9010,7 +9276,18 @@ app.post("/api/leads/:id/uploads", upload.fields([
                 await pool.query(`INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
              VALUES (?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`, [leadId, uploadMilestoneIndex, uploadTaskName, now]);
-                // Manager/admin direct D1 upload → auto-complete + notify designer
+                // Auto-approve upload can finish D1 / D2 / KT milestone
+                void maybeNotifyMilestoneCompleted(leadId, uploadMilestoneIndex, {
+                    taskName: uploadTaskName,
+                });
+                // Manager/admin (or D2 SPM/PM) direct upload → auto-approved → notify designer
+                if (!isKT) {
+                    void notifyDesignerMmtDocsReady(leadId, {
+                        docKind: isD2 ? "D2" : "D1",
+                        uploadName: fileName || undefined,
+                        approvedBy: user?.name ?? (isD2 ? "Uploader" : "MMT Manager"),
+                    });
+                }
                 if (!isD2 && (role === "mmt_manager" || role === "admin")) {
                     void notifyD1FilesReadyInternal(leadId, { name: user?.name, email: user?.email }, { fileName: fileName || null });
                 }
@@ -9373,6 +9650,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req, res) => {
             meetingMode: String(meetingMode || "IN_PERSON"),
             meetingDate: String(meetingDate || ""),
             meetingTime: String(meetingTime || ""),
+            designerName: designerName || "",
         });
         return res.status(201).json({ ok: true });
     }
@@ -9488,6 +9766,10 @@ app.post("/api/leads/:leadId/uploads/:uploadId/approve", async (req, res) => {
         await pool.query(`INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
        VALUES (?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`, [leadId, approvalMilestoneIndex, approvalTaskName, now]);
+        // D1 / D2 milestone completes when last upload task is approved (not via complete-task)
+        void maybeNotifyMilestoneCompleted(leadId, approvalMilestoneIndex, {
+            taskName: approvalTaskName,
+        });
         // Log the approval in lead history
         const approverLabel = (user.role || "").toLowerCase() === "admin" ? "Admin" : "MMT Manager";
         const approvalEv = {
@@ -9503,7 +9785,13 @@ app.post("/api/leads/:leadId/uploads/:uploadId/approve", async (req, res) => {
             details: { kind: "note", noteText: `Upload #${uploadId} approved.` },
         };
         await addLeadHistoryEvent(leadId, approvalEv);
-        // D1: notify designer that files are ready (same mail loop)
+        // Designer inbox: D1/D2 docs approved and visible — you can check now
+        void notifyDesignerMmtDocsReady(leadId, {
+            docKind: isD2Upload ? "D2" : "D1",
+            uploadName: uploadRow.originalName || undefined,
+            approvedBy: user.name ?? approverLabel,
+        });
+        // D1: also keep existing email to designer that files are ready
         if (!isD2Upload) {
             void notifyD1FilesReadyInternal(leadId, { name: user.name, email: user.email }, { fileName: uploadRow.originalName || null });
         }
@@ -9547,6 +9835,7 @@ app.post("/api/leads/:leadId/fix-upload-task", async (req, res) => {
            VALUES (?, 3, 'D2 - files upload', ?)
            ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`, [leadId, now]);
                 fixed.push("Marked 'D2 - files upload' (milestone 3) as complete");
+                void maybeNotifyMilestoneCompleted(leadId, 3, { taskName: "D2 - files upload" });
             }
             else {
                 fixed.push("No approved D2 upload found yet — task not marked complete");
@@ -9560,6 +9849,7 @@ app.post("/api/leads/:leadId/fix-upload-task", async (req, res) => {
            VALUES (?, 0, 'D1 files upload', ?)
            ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`, [leadId, now]);
                 fixed.push("Marked 'D1 files upload' (milestone 0) as complete");
+                void maybeNotifyMilestoneCompleted(leadId, 0, { taskName: "D1 files upload" });
             }
             else {
                 fixed.push("No approved D1 upload found");
@@ -9942,6 +10232,27 @@ async function persistDqc2SubmissionFromMeta(leadId, user, drawingFiles, quotati
     // NOTE: The internal DQC review email (send-dqc2-final-design-submission-internal) is intentionally
     // NOT sent here. It is sent exclusively via the complete-task → DQC2_SUBMISSION_DUAL handler to
     // prevent duplicate emails when the designer uploads files and then completes the task.
+    // Inbox: DQC2 review requested (was missing — only DQC1 submission notified)
+    try {
+        const [nRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+              u.name as designerName
+       FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+       WHERE l.id = ? LIMIT 1`, [leadId]);
+        const nRow = nRows[0];
+        if (nRow) {
+            void notify.dqcRequested({
+                projectId: nRow.pid || `HUB-${leadId}`,
+                leadName: nRow.projectName || "",
+                designerId: Number(nRow.designerId) || 0,
+                dqcRound: "DQC2",
+                reviewId: 0,
+                designerName: nRow.designerName || user.name || "",
+            });
+        }
+    }
+    catch (notifyErr) {
+        console.warn("[notify] dqc2 submission notify error (non-fatal)", notifyErr);
+    }
 }
 // ----- DQC 1: browser uploads directly to S3 (bypasses Nginx body limit); then small JSON "complete" calls API -----
 app.post("/api/leads/:id/dqc-submission/presign", async (req, res) => {
@@ -11238,26 +11549,8 @@ app.post("/api/leads/:id/d2-masking-request", upload.array("files", 20), async (
             },
         };
         await addLeadHistoryEvent(leadId, ev);
-        // Notify: 10 — MMT documents ready (D2 masking files submitted)
-        try {
-            const [nRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
-                u.name as designerName
-         FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
-         WHERE l.id = ? LIMIT 1`, [leadId]);
-            const nRow = nRows[0];
-            if (nRow) {
-                void notify.mmtDocReady({
-                    projectId: nRow.pid || `HUB-${leadId}`,
-                    leadName: nRow.projectName || "",
-                    designerId: Number(nRow.designerId) || 0,
-                    designerName: nRow.designerName || "",
-                    uploadName: uploadedFiles.length > 0 ? uploadedFiles[0].name : "D2 Masking Document",
-                });
-            }
-        }
-        catch (notifyErr) {
-            console.warn("[notify] d2-masking-request error (non-fatal)", notifyErr);
-        }
+        // D2 masking *request* is not the same as MMT docs ready for designer.
+        // Designer DOC_READY fires when D1/D2 uploads are approved (or auto-approved).
         return res.status(201).json({
             ok: true,
             maskingDate: maskingDate || null,
@@ -11321,6 +11614,44 @@ function isMilestoneFullyComplete(completions, milestoneIndex) {
         .filter((c) => Number(c.milestoneIndex) === milestoneIndex)
         .map((c) => String(c.taskName).trim()));
     return tasks.every((t) => completedSet.has(String(t).trim()));
+}
+/**
+ * Fire MILESTONE completed inbox notify when every task in the milestone is done.
+ * Used from complete-task AND alternate paths (MMT approve, finance 10%/40% approve)
+ * because those paths insert completions without going through complete-task.
+ */
+async function maybeNotifyMilestoneCompleted(leadId, milestoneIndex, opts) {
+    try {
+        const [allCompRows] = await pool.query(`SELECT milestone_index as milestoneIndex, task_name as taskName
+       FROM lead_task_completions WHERE lead_id = ?`, [leadId]);
+        const allComps = allCompRows;
+        if (!isMilestoneFullyComplete(allComps, milestoneIndex))
+            return;
+        const [nRows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+              u.name as designerName
+       FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+       WHERE l.id = ? LIMIT 1`, [leadId]);
+        const nRow = nRows[0];
+        if (!nRow)
+            return;
+        void notify.milestoneCompleted({
+            projectId: nRow.pid || `HUB-${leadId}`,
+            leadName: nRow.projectName || "",
+            designerId: Number(nRow.designerId) || 0,
+            milestoneName: MILESTONE_NAMES[milestoneIndex] ??
+                `Milestone ${milestoneIndex + 1}`,
+            taskName: opts?.taskName || "",
+            milestoneIndex,
+            designerName: nRow.designerName || "",
+        });
+    }
+    catch (err) {
+        console.warn("[notify] maybeNotifyMilestoneCompleted error (non-fatal)", {
+            leadId,
+            milestoneIndex,
+            err,
+        });
+    }
 }
 /** Progress within the current milestone: 0–100 (completed tasks in that milestone / total tasks). */
 function getCurrentMilestoneProgress(completions, milestoneIndex) {
@@ -12327,6 +12658,16 @@ app.post("/api/leads/manual-create", async (req, res) => {
         const leadId = Number(result.insertId);
         const pid = `HUB-${leadId}`;
         await pool.query("UPDATE leads SET pid = ? WHERE id = ?", [pid, leadId]);
+        // Notify: 01 — Pre-10% new lead (Add Project)
+        void notify.leadPre10({
+            projectId: pid,
+            leadName: customerName || projectName,
+            designerId: assignedDesignerId ?? 0,
+            designerName: user.name || "",
+            salesExecutiveName: "",
+            appointmentDate: "",
+            appointmentSlot: "",
+        });
         return res.status(201).json({
             ok: true,
             leadId,
@@ -13070,6 +13411,164 @@ app.post("/api/leads/:id/cancel", async (req, res) => {
     pool,
     getUserFromSession,
     addLeadHistoryEvent,
+    onCrmLeadCreated: (leadId) => {
+        void (async () => {
+            try {
+                const [rows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                  u.name as designerName, l.payload
+           FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+           WHERE l.id = ? LIMIT 1`, [leadId]);
+                const row = rows[0];
+                if (!row)
+                    return;
+                let salesExecutive = "";
+                let appointmentDate = "";
+                let appointmentSlot = "";
+                try {
+                    const payload = typeof row.payload === "string"
+                        ? JSON.parse(row.payload)
+                        : row.payload && typeof row.payload === "object"
+                            ? row.payload
+                            : {};
+                    salesExecutive = String(payload.sales_executive_name || payload.salesExecutiveName || payload.formData?.sales_executive_name || "").trim();
+                    const slot = payload.slot || payload.crmSchedule || {};
+                    appointmentDate = String(slot.date || payload.appointment_date || "").trim();
+                    appointmentSlot = String(slot.slot_time || slot.time_slot || payload.appointment_slot || "").trim();
+                }
+                catch {
+                    /* ignore payload parse */
+                }
+                void notify.leadPre10({
+                    projectId: row.pid || `HUB-${leadId}`,
+                    leadName: row.projectName || "",
+                    designerId: Number(row.designerId) || 0,
+                    designerName: row.designerName || "",
+                    salesExecutiveName: salesExecutive,
+                    appointmentDate,
+                    appointmentSlot,
+                });
+            }
+            catch (err) {
+                console.warn("[notify] CRM lead Pre-10 notify error (non-fatal)", err);
+            }
+        })();
+    },
+    onCrmSalesClosurePaymentRequested: (leadId, meta) => {
+        void (async () => {
+            try {
+                const [rows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                  u.name as designerName
+           FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+           WHERE l.id = ? LIMIT 1`, [leadId]);
+                const row = rows[0];
+                if (!row)
+                    return;
+                const toward = Number(meta?.amount_toward_10 ?? meta?.amountToward10);
+                const extra = Number(meta?.extra_amount ?? meta?.extraAmount);
+                const total = Number(meta?.amount);
+                const amount = (Number.isFinite(total) && total > 0 ? total : 0) ||
+                    ((Number.isFinite(toward) && toward > 0 ? toward : 0) +
+                        (Number.isFinite(extra) && extra > 0 ? extra : 0));
+                void notify.paymentRequested({
+                    projectId: row.pid || `HUB-${leadId}`,
+                    leadName: row.projectName || "",
+                    designerId: Number(row.designerId) || 0,
+                    paymentType: "SALES_CLOSURE",
+                    uploadName: String(meta?.upload_name || "CRM payment proof"),
+                    amount,
+                    designerName: row.designerName || "",
+                    milestoneContext: String(meta?.milestone_context || "CRM_BOOKING"),
+                });
+            }
+            catch (err) {
+                console.warn("[notify] CRM sales-closure payment requested error (non-fatal)", err);
+            }
+        })();
+    },
+    onCrmBookingAutoFinanceCc: (leadId, meta) => {
+        void (async () => {
+            try {
+                const [rows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                  u.name as designerName
+           FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+           WHERE l.id = ? LIMIT 1`, [leadId]);
+                const row = rows[0];
+                if (!row)
+                    return;
+                void notify.paymentStatus({
+                    projectId: row.pid || `HUB-${leadId}`,
+                    leadName: row.projectName || "",
+                    designerId: Number(row.designerId) || 0,
+                    status: "SUCCESS",
+                    decision: "APPROVED",
+                    paymentType: "SALES_CLOSURE",
+                    milestoneContext: "CRM_BOOKING_EASEBUZZ_AUTO",
+                    approverName: String(meta?.approvedBy || "SYSTEM · Easebuzz"),
+                    amount: 0,
+                    designerName: row.designerName || "",
+                });
+            }
+            catch (err) {
+                console.warn("[notify] CRM Easebuzz auto-finance CC error (non-fatal)", err);
+            }
+        })();
+    },
+    onCrmBookingAutoFinanceApproved: {
+        addLeadHistoryEvent,
+        notifyHubApproved: (leadId, reviewedBy) => {
+            void (0, crmHubBookingRoutes_1.notifyHubFinanceReview)(pool, leadId, "APPROVED", reviewedBy);
+        },
+        notifyLeadEntered1020: (leadId) => {
+            void (async () => {
+                try {
+                    const [rows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                    u.name as designerName
+             FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+             WHERE l.id = ? LIMIT 1`, [leadId]);
+                    const row = rows[0];
+                    if (!row)
+                        return;
+                    void notify.leadEntered1020({
+                        projectId: row.pid || `HUB-${leadId}`,
+                        leadName: row.projectName || "",
+                        designerId: Number(row.designerId) || 0,
+                        designerName: row.designerName || "",
+                    });
+                }
+                catch (err) {
+                    console.warn("[notify] Easebuzz auto leadEntered1020 error (non-fatal)", err);
+                }
+            })();
+        },
+        notifyPaymentApproved: (leadId, approvedBy, amount) => {
+            void (async () => {
+                try {
+                    const [rows] = await pool.query(`SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                    u.name as designerName
+             FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+             WHERE l.id = ? LIMIT 1`, [leadId]);
+                    const row = rows[0];
+                    if (!row)
+                        return;
+                    void notify.paymentStatus({
+                        projectId: row.pid || `HUB-${leadId}`,
+                        leadName: row.projectName || "",
+                        designerId: Number(row.designerId) || 0,
+                        status: "SUCCESS",
+                        decision: "APPROVED",
+                        paymentType: "SALES_CLOSURE",
+                        milestoneContext: "CRM_BOOKING",
+                        approverName: approvedBy,
+                        amount,
+                        designerName: row.designerName || "",
+                    });
+                }
+                catch (err) {
+                    console.warn("[notify] Easebuzz auto paymentStatus error (non-fatal)", err);
+                }
+            })();
+        },
+    },
 });
 (0, prolanceApi_1.registerProlanceRoutes)(app, getUserFromSession, pool);
 (0, incentivesRoutes_1.registerIncentivesRoutes)(app, { pool, getUserFromSession });

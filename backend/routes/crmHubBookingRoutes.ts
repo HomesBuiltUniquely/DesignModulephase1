@@ -5,6 +5,18 @@ import fs from "fs";
 import path from "path";
 import type { Express, Request, Response, NextFunction } from "express";
 import type { Pool } from "mysql2/promise";
+import {
+  applyCrmEasebuzzAutoFinanceApproval,
+  buildConvertFinanceResponse,
+  buildFinanceSyncIdempotentKey,
+  isIdempotentFinanceResync,
+  mergeFinanceMetaIntoHubPayload,
+  readCrmFinanceHandlingMode,
+  resolveFinanceHandlingMode,
+  type AutoFinanceDeps,
+  type ConvertBookingFinanceResult,
+  type FinanceSection,
+} from "./crmEasebuzzAutoFinance";
 
 const HUB_PROOFS_DIR = path.join(process.cwd(), "uploads", "hub-payment-proofs");
 
@@ -25,6 +37,8 @@ type RouteDeps = {
     leadId: number,
     extra?: Record<string, unknown>,
   ) => void;
+  onCrmBookingAutoFinanceCc?: (leadId: number, meta: Record<string, unknown>) => void;
+  onCrmBookingAutoFinanceApproved?: AutoFinanceDeps;
 };
 
 function envTrim(name: string): string {
@@ -1034,13 +1048,8 @@ async function handleConvertBooking(
   body: HubLeadBody,
   addLeadHistoryEvent: RouteDeps["addLeadHistoryEvent"],
   onCrmSalesClosurePaymentRequested?: RouteDeps["onCrmSalesClosurePaymentRequested"],
-): Promise<{
-  designLeadId: number;
-  bookingTokenRecordId: string;
-  financeSyncMode: BookingFinanceSyncMode;
-  shortfallRecorded: number;
-  extraAmountReceived: number;
-}> {
+  autoFinance?: AutoFinanceDeps,
+): Promise<ConvertBookingFinanceResult> {
   const bookingTokenRecordId = pickStr(body.bookingTokenRecordId, body.recordId);
   if (!bookingTokenRecordId) throw new Error("bookingTokenRecordId is required");
 
@@ -1061,20 +1070,23 @@ async function handleConvertBooking(
   const tenPercentAmount = finance.tenPercentAmount;
   const quoteAmount = finance.quoteAmount;
   const now = new Date();
-  const payloadJson = JSON.stringify({
-    ...body,
-    bookingApprovalMode: finance.mode,
-    bufferApplied: finance.bufferApplied,
-    bufferThresholdAmount: finance.bufferThresholdAmount,
-    remainingAmount: finance.remainingAmount,
-    shortfallAmount: finance.shortfallAmount,
-    extraAmountReceived: finance.extraAmountReceived,
-    totalAmountReceived: finance.totalAmountReceived,
-    financeBufferNote: finance.financeBufferNote || undefined,
-    amountReceived: finance.amountToward10,
-    tenPercentAmount: finance.tenPercentAmount,
-    quoteAmount: finance.quoteAmount,
-  });
+  const idempotentKey = buildFinanceSyncIdempotentKey(bookingTokenRecordId, paymentHistoryId);
+
+  const [priorSyncRows] = await pool.query(
+    `SELECT payment_payload as paymentPayload FROM lead_hub_booking_sync WHERE booking_token_record_id = ? LIMIT 1`,
+    [bookingTokenRecordId],
+  );
+  const priorPayload = parseLeadPayload(
+    (priorSyncRows as { paymentPayload?: unknown }[])[0]?.paymentPayload,
+  );
+  const idempotentResync = isIdempotentFinanceResync(priorPayload, idempotentKey);
+  const financeHandlingMode: "AUTO_APPROVED" | "MANUAL_QUEUE" = idempotentResync
+    ? (pickStr(priorPayload.financeHandlingMode) as "AUTO_APPROVED" | "MANUAL_QUEUE")
+    : resolveFinanceHandlingMode(body);
+
+  const payloadJson = JSON.stringify(
+    mergeFinanceMetaIntoHubPayload(body, finance, financeHandlingMode, idempotentKey),
+  );
 
   await pool.query(
     `INSERT INTO lead_hub_booking_sync
@@ -1188,16 +1200,58 @@ async function handleConvertBooking(
       shortfallAmount: finance.shortfallAmount,
       extraAmountReceived: finance.extraAmountReceived,
       bufferApplied: finance.bufferApplied,
+      financeHandlingMode,
     },
   });
 
-  return {
-    designLeadId,
-    bookingTokenRecordId,
-    financeSyncMode: finance.mode,
-    shortfallRecorded: finance.shortfallAmount,
-    extraAmountReceived: finance.extraAmountReceived,
-  };
+  const [leadCheckRows] = await pool.query(
+    `SELECT payload, project_stage as projectStage FROM leads WHERE id = ? LIMIT 1`,
+    [designLeadId],
+  );
+  const leadCheck = (leadCheckRows as { payload?: unknown; projectStage?: string }[])[0];
+  const leadPayloadNow = parseLeadPayload(leadCheck?.payload);
+  const alreadyAutoApproved =
+    readCrmFinanceHandlingMode(leadPayloadNow) === "AUTO_APPROVED" &&
+    (leadPayloadNow.crm_booking_finance_approved === true ||
+      leadPayloadNow.crm_booking_finance_approved === "true");
+
+  if (financeHandlingMode === "AUTO_APPROVED" && autoFinance && !alreadyAutoApproved && !idempotentResync) {
+    await applyCrmEasebuzzAutoFinanceApproval(
+      pool,
+      designLeadId,
+      finance,
+      bookingTokenRecordId,
+      paymentHistoryId,
+      autoFinance,
+    );
+  } else if (financeHandlingMode === "MANUAL_QUEUE" && !idempotentResync) {
+    const manualPayload = {
+      ...leadPayloadNow,
+      crm_finance_handling_mode: "MANUAL_QUEUE",
+      crm_finance_section: "MANUAL_QUEUE",
+      crm_finance_cc_notified: false,
+    };
+    await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
+      JSON.stringify(manualPayload),
+      now,
+      designLeadId,
+    ]);
+  }
+
+  return buildConvertFinanceResponse(
+    {
+      designLeadId,
+      bookingTokenRecordId,
+      financeSyncMode: finance.mode,
+      shortfallRecorded: finance.shortfallAmount,
+      extraAmountReceived: finance.extraAmountReceived,
+      bufferApplied: finance.bufferApplied,
+      remainingAmount: finance.remainingAmount,
+      financeBufferNote: finance.financeBufferNote,
+    },
+    financeHandlingMode,
+    idempotentResync || alreadyAutoApproved ? { idempotentResync: true } : undefined,
+  );
 }
 
 type TaskCompletion = { leadId: number; milestoneIndex: number; taskName: string; completedAt: Date | string };
@@ -1464,6 +1518,23 @@ async function mapCrmHubRowToSalesClosure(
     typeof approvedAtRaw === "string" && approvedAtRaw.trim()
       ? new Date(approvedAtRaw)
       : null;
+  const declaredMode =
+    readCrmFinanceHandlingMode(payload) ??
+    (pickStr(paymentPayload.financeHandlingMode) === "AUTO_APPROVED" ||
+    pickStr(paymentPayload.financeHandlingMode) === "MANUAL_QUEUE"
+      ? (pickStr(paymentPayload.financeHandlingMode) as "AUTO_APPROVED" | "MANUAL_QUEUE")
+      : "MANUAL_QUEUE");
+  // True Easebuzz auto only — old manual CRM approvals must not appear as auto
+  const isAutoApproved =
+    declaredMode === "AUTO_APPROVED" &&
+    (payload.crm_booking_finance_auto_approved === true ||
+      payload.crm_booking_finance_auto_approved === "true");
+  const financeHandlingMode: "AUTO_APPROVED" | "MANUAL_QUEUE" = isAutoApproved
+    ? "AUTO_APPROVED"
+    : "MANUAL_QUEUE";
+  const approvedBy = isAutoApproved
+    ? pickStr(payload.crm_booking_finance_approved_by) || "SYSTEM · Easebuzz"
+    : pickStr(payload.crm_booking_finance_approved_by) || null;
   const customerName =
     pickStr(paymentPayload.customerName, (paymentPayload.fetchedData as Record<string, unknown>)?.customer_name) ||
     lead.projectName ||
@@ -1484,8 +1555,16 @@ async function mapCrmHubRowToSalesClosure(
     customerName,
     projectStage: financeApproved ? "10-20%" : lead.projectStage || "Pre 10%",
     financeApproved,
+    financeHandlingMode,
+    financeSection: isAutoApproved ? "AUTO_APPROVED" : "MANUAL_QUEUE",
+    approvedBy,
+    financeCcNotified: isAutoApproved,
     status: financeApproved
-      ? "Approved — moved to 10–20%"
+      ? isAutoApproved
+        ? bufferApplied
+          ? "Auto-approved (9.9% buffer — shortfall tracked)"
+          : "Auto-approved by Easebuzz"
+        : "Approved — moved to 10–20%"
       : tenPercentMet
         ? "Ready for approval (10% paid)"
         : bufferApplied
@@ -1496,14 +1575,15 @@ async function mapCrmHubRowToSalesClosure(
     paymentScreenshot: firstUploadId,
     amountPaid,
     tenPercentTarget,
-    remainingFor10Percent: financeApproved ? 0 : remaining,
+    remainingFor10Percent: bufferApplied && financeApproved ? remaining : financeApproved ? 0 : remaining,
     extraAmountReceived,
     bookingApprovalMode,
     bufferApplied,
     financeBufferNote: pickStr(paymentPayload.financeBufferNote, paymentPayload.finance_buffer_note) || null,
     paymentPercentOfQuotation: null,
     tenPercentMet: financeApproved ? true : tenPercentMet,
-    canApprove: !financeApproved && tenPercentMet,
+    canApprove: !financeApproved && !isAutoApproved && (tenPercentMet || bufferApplied),
+    actions: isAutoApproved ? ["VIEW"] : ["VIEW_PROOFS", "APPROVE", "REJECT"],
     submittedAt: submittedAtIso,
     approvedAt: approvalAt && !Number.isNaN(approvalAt.getTime()) ? approvalAt.toISOString() : null,
     bookingDate: null,
@@ -1514,6 +1594,22 @@ async function mapCrmHubRowToSalesClosure(
       sync.crmLeadType && sync.crmLeadId != null ? `${sync.crmLeadType}#${sync.crmLeadId}` : null,
     bookingTokenRecordId: sync.bookingTokenRecordId ?? null,
   };
+}
+
+/** CRM hub leads for `/api/sales-closure/finance-10p-queue?section=...`. */
+export async function buildCrmFinance10pQueueRows(
+  pool: Pool,
+  section: FinanceSection,
+  filters: { customerName?: string; month?: string; dateFrom?: string; dateTo?: string },
+): Promise<Record<string, unknown>[]> {
+  if (section === "AUTO_APPROVED") {
+    const rows = await buildCrmSalesClosureQueueRows(pool, true, filters);
+    return rows.filter((r) => String(r.financeHandlingMode || "") === "AUTO_APPROVED");
+  }
+  const rows = await buildCrmSalesClosureQueueRows(pool, false, filters);
+  return rows.filter(
+    (r) => String(r.financeHandlingMode || r.financeSection || "") !== "AUTO_APPROVED",
+  );
 }
 
 /** CRM hub leads for `/api/leads/finance-sales-closure-queue`. */
@@ -2144,6 +2240,8 @@ export function registerCrmHubBookingRoutes(app: Express, deps: RouteDeps): void
     addLeadHistoryEvent,
     onCrmLeadCreated,
     onCrmSalesClosurePaymentRequested,
+    onCrmBookingAutoFinanceCc,
+    onCrmBookingAutoFinanceApproved,
   } = deps;
 
   void ensureLeadHubBookingSyncTable(pool).catch((err) => {
@@ -2173,11 +2271,20 @@ export function registerCrmHubBookingRoutes(app: Express, deps: RouteDeps): void
   const convertHandler = async (req: Request, res: Response) => {
     try {
       const body = (req.body || {}) as HubLeadBody;
+      const autoFinance: AutoFinanceDeps | undefined = onCrmBookingAutoFinanceApproved
+        ? {
+            ...onCrmBookingAutoFinanceApproved,
+            notifyFinanceCc: onCrmBookingAutoFinanceCc
+              ? (leadId, meta) => onCrmBookingAutoFinanceCc(leadId, meta)
+              : onCrmBookingAutoFinanceApproved.notifyFinanceCc,
+          }
+        : undefined;
       const result = await handleConvertBooking(
         pool,
         body,
         addLeadHistoryEvent,
         onCrmSalesClosurePaymentRequested,
+        autoFinance,
       );
       return res.json({ ok: true, ...result });
     } catch (err) {
@@ -2369,6 +2476,29 @@ export function registerCrmHubBookingRoutes(app: Express, deps: RouteDeps): void
     } catch (err) {
       console.error("[crm-hub] finance-refund detail error:", err);
       return res.status(500).json({ message: "Failed to load refund" });
+    }
+  });
+
+  app.get("/api/sales-closure/finance-10p-queue", async (req: Request, res: Response) => {
+    try {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const role = (user.role ?? "").toLowerCase();
+      if (role !== "finance" && role !== "admin") {
+        return res.status(403).json({ message: "Only finance or admin can access this queue" });
+      }
+      const sectionRaw = String(req.query.section || "MANUAL_QUEUE").toUpperCase();
+      const section: FinanceSection = sectionRaw === "AUTO_APPROVED" ? "AUTO_APPROVED" : "MANUAL_QUEUE";
+      const rows = await buildCrmFinance10pQueueRows(pool, section, {
+        customerName: String(req.query.customer || req.query.customerName || ""),
+        month: String(req.query.month || ""),
+        dateFrom: String(req.query.dateFrom || req.query.submittedFrom || ""),
+        dateTo: String(req.query.dateTo || req.query.submittedTo || ""),
+      });
+      return res.json(rows);
+    } catch (err) {
+      console.error("[crm-hub] finance-10p-queue error:", err);
+      return res.status(500).json({ message: "Failed to load CRM 10% finance queue" });
     }
   });
 

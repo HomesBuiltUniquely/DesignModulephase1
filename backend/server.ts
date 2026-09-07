@@ -24,6 +24,7 @@ import {
   resolveLeadMilestonePaymentBreakdown,
 } from "./routes/prolanceApi";
 import { registerCrmHubBookingRoutes, notifyHubFinanceReview, getHubBookingSyncForLead, buildFinance10pQueueList, buildCrmSalesClosureQueueRows, buildCrmSalesClosureLeadDetail, leadHasDqc1Approval, isCrmBookingFinanceApproved } from "./routes/crmHubBookingRoutes";
+import { readCrmFinanceHandlingMode } from "./routes/crmEasebuzzAutoFinance";
 import { registerIncentivesRoutes } from "./routes/incentivesRoutes";
 import * as notify from "./routes/designNotifications";
 
@@ -9600,6 +9601,12 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
       return res.status(201).json({ ok: true, path: "crm_booking_already" });
     }
 
+    if (isCrmBookingPayment && readCrmFinanceHandlingMode(leadPayload) === "AUTO_APPROVED") {
+      return res.status(400).json({
+        message: "This CRM booking was auto-approved via Easebuzz. Manual approve is not allowed.",
+      });
+    }
+
     // ── CRM booking token payment (sales 10% at closure) → 10-20% intake, not design milestone 2 ──
     if (isCrmBookingPayment) {
       await pool.query(
@@ -9997,6 +10004,20 @@ app.post("/api/leads/:id/reject-10p-payment", async (req: Request, res: Response
     const isCrmBookingPayment = Boolean(hubSync) && !hasDqc1;
 
     if (isCrmBookingPayment) {
+      const [lrPre] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [leadId]);
+      const rawPre = (lrPre as { payload?: unknown }[])[0]?.payload;
+      let payloadPre: Record<string, unknown> = {};
+      try {
+        payloadPre = rawPre ? (JSON.parse(String(rawPre)) as Record<string, unknown>) : {};
+      } catch {
+        payloadPre = {};
+      }
+      if (readCrmFinanceHandlingMode(payloadPre) === "AUTO_APPROVED") {
+        return res.status(400).json({
+          message: "This CRM booking was auto-approved via Easebuzz. Manual reject is not allowed.",
+        });
+      }
+
       await pool.query(
         "UPDATE lead_uploads SET status = 'rejected' WHERE lead_id = ? AND upload_type = 'hub_payment_proof' AND status = 'pending'",
         [leadId],
@@ -15540,6 +15561,93 @@ registerCrmHubBookingRoutes(app, {
         console.warn("[notify] CRM sales-closure payment requested error (non-fatal)", err);
       }
     })();
+  },
+  onCrmBookingAutoFinanceCc: (leadId, meta) => {
+    void (async () => {
+      try {
+        const [rows] = await pool.query(
+          `SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                  u.name as designerName
+           FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+           WHERE l.id = ? LIMIT 1`,
+          [leadId],
+        );
+        const row = (rows as any[])[0];
+        if (!row) return;
+        void notify.paymentStatus({
+          projectId: row.pid || `HUB-${leadId}`,
+          leadName: row.projectName || "",
+          designerId: Number(row.designerId) || 0,
+          status: "SUCCESS",
+          decision: "APPROVED",
+          paymentType: "SALES_CLOSURE",
+          milestoneContext: "CRM_BOOKING_EASEBUZZ_AUTO",
+          approverName: String(meta?.approvedBy || "SYSTEM · Easebuzz"),
+          amount: 0,
+          designerName: row.designerName || "",
+        });
+      } catch (err) {
+        console.warn("[notify] CRM Easebuzz auto-finance CC error (non-fatal)", err);
+      }
+    })();
+  },
+  onCrmBookingAutoFinanceApproved: {
+    addLeadHistoryEvent,
+    notifyHubApproved: (leadId, reviewedBy) => {
+      void notifyHubFinanceReview(pool, leadId, "APPROVED", reviewedBy);
+    },
+    notifyLeadEntered1020: (leadId) => {
+      void (async () => {
+        try {
+          const [rows] = await pool.query(
+            `SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                    u.name as designerName
+             FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+             WHERE l.id = ? LIMIT 1`,
+            [leadId],
+          );
+          const row = (rows as any[])[0];
+          if (!row) return;
+          void notify.leadEntered1020({
+            projectId: row.pid || `HUB-${leadId}`,
+            leadName: row.projectName || "",
+            designerId: Number(row.designerId) || 0,
+            designerName: row.designerName || "",
+          });
+        } catch (err) {
+          console.warn("[notify] Easebuzz auto leadEntered1020 error (non-fatal)", err);
+        }
+      })();
+    },
+    notifyPaymentApproved: (leadId, approvedBy, amount) => {
+      void (async () => {
+        try {
+          const [rows] = await pool.query(
+            `SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
+                    u.name as designerName
+             FROM leads l LEFT JOIN users u ON u.id = l.assigned_designer_id
+             WHERE l.id = ? LIMIT 1`,
+            [leadId],
+          );
+          const row = (rows as any[])[0];
+          if (!row) return;
+          void notify.paymentStatus({
+            projectId: row.pid || `HUB-${leadId}`,
+            leadName: row.projectName || "",
+            designerId: Number(row.designerId) || 0,
+            status: "SUCCESS",
+            decision: "APPROVED",
+            paymentType: "SALES_CLOSURE",
+            milestoneContext: "CRM_BOOKING",
+            approverName: approvedBy,
+            amount,
+            designerName: row.designerName || "",
+          });
+        } catch (err) {
+          console.warn("[notify] Easebuzz auto paymentStatus error (non-fatal)", err);
+        }
+      })();
+    },
   },
 });
 registerProlanceRoutes(app, getUserFromSession, pool);
