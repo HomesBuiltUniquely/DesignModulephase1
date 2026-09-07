@@ -22,13 +22,19 @@ export default function AdminPanelPage() {
 
   const actions = [
     {
+      title: 'Manage Design Roles',
+      description: 'Search and delete Designers, Design Managers, and Territory Design Managers.',
+      href: '/admin/manage-users',
+      label: 'Manage / Delete Users',
+    },
+    {
       title: 'Create Admin',
       description: 'Create another Admin who can access the Admin Panel and create users.',
       href: '/admin/create-admin',
       label: 'Create Admin',
     },
     {
-      title: 'Create Territorial Design Manager',
+      title: 'Create Territory Design Manager',
       description: 'Add a new TDM who can register Design Managers and Designers.',
       href: '/admin/create-tdm',
       label: 'Create TDM',
@@ -58,10 +64,10 @@ export default function AdminPanelPage() {
       label: 'Create Finance Login',
     },
     {
-      title: 'Create Project Manager',
-      description: 'Create Project Manager logins (Admin, TDM, or DGM). They sign in on the main login page and use the dashboard.',
-      href: '/admin/create-project-manager',
-      label: 'Create Project Manager',
+      title: 'Project Managers',
+      description: 'Create, search, and delete Project Manager logins.',
+      href: '/project-managers',
+      label: 'Open Project Managers',
     },
     {
       title: 'Create Senior Project Manager',

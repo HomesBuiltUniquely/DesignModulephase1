@@ -106,7 +106,7 @@ export default function TdmRegisterPage() {
           <h1 className="text-xl font-bold text-gray-900">Register Design Manager / Designer</h1>
           <a href="/" className="text-sm text-[#32261C] hover:underline">Dashboard</a>
           <a
-            href="/admin/create-project-manager"
+            href="/project-managers"
             className="text-sm font-medium text-[#00B0ED] hover:text-[#32261C] hover:underline"
           >
             Create Project Manager

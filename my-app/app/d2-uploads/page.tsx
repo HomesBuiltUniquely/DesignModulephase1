@@ -27,6 +27,7 @@ export default function D2UploadsPage() {
     const fileRef = useRef<HTMLInputElement | null>(null);
     const [targetLeadId, setTargetLeadId] = useState<number | null>(null);
     const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+    const [searchQuery, setSearchQuery] = useState('');
 
     const authHeaders = useMemo(() => {
         const headers: Record<string, string> = {};
@@ -43,7 +44,11 @@ export default function D2UploadsPage() {
             const res = await fetch(`${getApiBase()}/api/leads/queue?type=d2`, { headers: { ...authHeaders } });
             const text = await res.text();
             const data = (() => {
-                try { return JSON.parse(text); } catch { return null; }
+                try {
+                    return JSON.parse(text);
+                } catch {
+                    return null;
+                }
             })();
             if (!res.ok) throw new Error(data?.message || 'Failed to load leads');
             const rows = Array.isArray(data) ? data : [];
@@ -60,6 +65,17 @@ export default function D2UploadsPage() {
         loadLeads();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [sessionId]);
+
+    const filteredLeads = useMemo(() => {
+        const q = searchQuery.trim().toLowerCase();
+        if (!q) return leads;
+        return leads.filter((l) => {
+            const name = (l.projectName || l.project_name || '').toLowerCase();
+            const pid = (l.pid || '').toLowerCase();
+            const id = String(l.id);
+            return name.includes(q) || pid.includes(q) || id.includes(q);
+        });
+    }, [leads, searchQuery]);
 
     const onUploadClick = (leadId: number) => {
         setTargetLeadId(leadId);
@@ -109,12 +125,15 @@ export default function D2UploadsPage() {
             });
             const text = await res.text();
             const data = (() => {
-                try { return JSON.parse(text); } catch { return null; }
+                try {
+                    return JSON.parse(text);
+                } catch {
+                    return null;
+                }
             })();
             if (!res.ok) throw new Error(data?.message || 'Upload failed');
             const message =
-                (data?.message as string) ||
-                `${pendingFiles.length} PDF(s) uploaded successfully.`;
+                (data?.message as string) || `${pendingFiles.length} PDF(s) uploaded successfully.`;
             setSuccess(message);
             window.alert(message);
             setPendingFiles([]);
@@ -141,8 +160,8 @@ export default function D2UploadsPage() {
 
     return (
         <div className="min-h-screen bg-slate-900 p-6">
-            <div className="max-w-5xl mx-auto bg-white rounded-2xl p-6">
-                <div className="flex items-start justify-between gap-3">
+            <div className="max-w-5xl mx-auto bg-white rounded-2xl p-6 space-y-8">
+                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
                     <div>
                         <h1 className="text-xl font-bold text-gray-900">D2 Uploads</h1>
                         <p className="text-sm text-gray-600 mt-1">
@@ -150,56 +169,109 @@ export default function D2UploadsPage() {
                             uploading (Project Manager or Senior Project Manager) before files are saved.
                         </p>
                     </div>
-                    <button
-                        type="button"
-                        onClick={loadLeads}
-                        disabled={loading}
-                        className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-semibold hover:bg-gray-50 disabled:opacity-60"
-                    >
-                        {loading ? 'Loading…' : 'Refresh'}
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                        <button
+                            type="button"
+                            onClick={loadLeads}
+                            disabled={loading}
+                            className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-semibold hover:bg-gray-50 disabled:opacity-60"
+                        >
+                            {loading ? 'Loading…' : 'Refresh'}
+                        </button>
+                    </div>
                 </div>
 
-                {error && <div className="text-sm text-red-600 mt-4">{error}</div>}
+                {error && <div className="text-sm text-red-600">{error}</div>}
                 {success && (
-                    <div className="text-sm text-[#32261C] bg-[#DDCDC1]/20 border border-[#DDCDC1] rounded-lg px-3 py-2 mt-4">
+                    <div className="text-sm text-[#32261C] bg-[#DDCDC1]/20 border border-[#DDCDC1] rounded-lg px-3 py-2">
                         {success}
                     </div>
                 )}
 
-                <div className="mt-5 border border-gray-200 rounded-2xl overflow-hidden">
-                    <div className="grid grid-cols-12 bg-gray-50 px-4 py-3 text-xs font-semibold text-gray-600">
-                        <div className="col-span-2">Lead ID</div>
-                        <div className="col-span-8">Lead name</div>
-                        <div className="col-span-2 text-right">Upload</div>
-                    </div>
-                    {leads.length === 0 ? (
-                        <div className="px-4 py-6 text-sm text-gray-600">
-                            {loading ? 'Loading…' : 'No D2 masking leads found. Raise a D2 masking request from a lead to see it here.'}
+                <section>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+                        <h2 className="text-sm font-bold uppercase tracking-wider text-gray-500">
+                            D2 masking leads
+                        </h2>
+                        <div className="relative w-full sm:w-72">
+                            <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                                <svg
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    strokeWidth={1.8}
+                                    stroke="currentColor"
+                                    className="w-4 h-4 text-gray-400"
+                                >
+                                    <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.602 10.602Z"
+                                    />
+                                </svg>
+                            </span>
+                            <input
+                                type="search"
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                                placeholder="Search by name, ID, PID..."
+                                aria-label="Search D2 leads"
+                                className="pl-9 pr-3 py-2 border border-gray-300 rounded-xl text-sm w-full bg-white focus:outline-none focus:ring-2 focus:ring-[#00B0ED]/30 focus:border-[#00B0ED]"
+                            />
                         </div>
-                    ) : (
-                        leads.map((l) => {
-                            const name = l.projectName || l.project_name || 'Unnamed';
-                            const busy = uploadingLeadId === l.id;
-                            return (
-                                <div key={l.id} className="grid grid-cols-12 px-4 py-3 border-t border-gray-200 items-center">
-                                    <div className="col-span-2 text-sm font-semibold text-gray-900">{l.id}</div>
-                                    <div className="col-span-8 text-sm text-gray-800">{name}</div>
-                                    <div className="col-span-2 text-right">
-                                        <button
-                                            type="button"
-                                            onClick={() => onUploadClick(l.id)}
-                                            disabled={!sessionId || busy}
-                                            className="px-3 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-semibold hover:bg-[#EF0101]/90 disabled:opacity-60"
-                                        >
-                                            {busy ? 'Uploading…' : 'Upload PDFs'}
-                                        </button>
+                    </div>
+
+                    <div className="border border-gray-200 rounded-2xl overflow-hidden">
+                        <div className="grid grid-cols-12 bg-gray-50 px-4 py-3 text-xs font-semibold text-gray-600">
+                            <div className="col-span-2">Lead ID</div>
+                            <div className="col-span-8">Lead name</div>
+                            <div className="col-span-2 text-right">Upload</div>
+                        </div>
+                        {filteredLeads.length === 0 ? (
+                            <div className="px-4 py-6 text-sm text-gray-600">
+                                {loading
+                                    ? 'Loading…'
+                                    : searchQuery.trim()
+                                      ? 'No leads match your search.'
+                                      : 'No D2 masking leads found. Raise a D2 masking request from a lead to see it here.'}
+                            </div>
+                        ) : (
+                            filteredLeads.map((l) => {
+                                const name = l.projectName || l.project_name || 'Unnamed';
+                                const busy = uploadingLeadId === l.id;
+                                return (
+                                    <div
+                                        key={l.id}
+                                        className="grid grid-cols-12 px-4 py-3 border-t border-gray-200 items-center"
+                                    >
+                                        <div className="col-span-2 text-sm font-semibold text-gray-900">{l.id}</div>
+                                        <div className="col-span-8 text-sm text-gray-800">
+                                            {name}
+                                            {l.pid ? (
+                                                <span className="ml-2 text-xs text-gray-400">{l.pid}</span>
+                                            ) : null}
+                                        </div>
+                                        <div className="col-span-2 text-right">
+                                            <button
+                                                type="button"
+                                                onClick={() => onUploadClick(l.id)}
+                                                disabled={!sessionId || busy}
+                                                className="px-3 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-semibold hover:bg-[#EF0101]/90 disabled:opacity-60"
+                                            >
+                                                {busy ? 'Uploading…' : 'Upload PDFs'}
+                                            </button>
+                                        </div>
                                     </div>
-                                </div>
-                            );
-                        })
+                                );
+                            })
+                        )}
+                    </div>
+                    {searchQuery.trim() && filteredLeads.length > 0 && (
+                        <p className="mt-2 text-xs text-gray-500">
+                            Showing {filteredLeads.length} of {leads.length} leads
+                        </p>
                     )}
-                </div>
+                </section>
 
                 <input
                     ref={fileRef}
