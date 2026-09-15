@@ -226,7 +226,7 @@ export const HUB_QUOTE_TERMS_SECTIONS: QuoteTermsSection[] = [
     rows: [
       {
         fullWidth:
-          'Modular Units: 10 years product warranty against any manufacturing defects for woodwork. Please refer works contract.',
+          'Modular Units: Upto 15 years product warranty against any manufacturing defects for woodwork. Please refer works contract.',
       },
       { fullWidth: 'Hardware, Accessories and Appliances: As per manufacturers warranty.' },
       { fullWidth: 'Mirrors & Glass materials are void from warranty post handover.' },
