@@ -10,6 +10,8 @@ type FinanceLead = {
   projectName: string;
   status: string;
   canApprove: boolean;
+  financeHandlingMode?: string;
+  approvedAt?: string;
 };
 
 type UploadItem = {
@@ -22,8 +24,7 @@ type UploadItem = {
 };
 
 /**
- * Finance 10% payment queue: limited access – Lead ID, Lead name, Status, Upload (screenshots), Approve.
- * Finance 10% payment queue: manual DQC1 path. CRM leads appear in Sales Closure queue.
+ * Finance 10% payment queue: manual DQC1 path + Easebuzz Auto-approved tab.
  */
 export default function Finance10pPage() {
   const { user, sessionId } = useAuth();
@@ -37,6 +38,7 @@ export default function Finance10pPage() {
   const [viewLeadId, setViewLeadId] = useState<number | null>(null);
   const [viewUploads, setViewUploads] = useState<UploadItem[]>([]);
   const [viewLoading, setViewLoading] = useState(false);
+  const [queueTab, setQueueTab] = useState<'pending' | 'auto_approved'>('pending');
 
   const authHeaders = useMemo(() => {
     const headers: Record<string, string> = {};
@@ -56,7 +58,11 @@ export default function Finance10pPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${getApiBase()}/api/leads/finance-10p-queue`, { headers: { ...authHeaders } });
+      const url =
+        queueTab === 'auto_approved'
+          ? `${getApiBase()}/api/design-payment/finance-queue?bucket=DESIGN_10&section=AUTO_APPROVED`
+          : `${getApiBase()}/api/leads/finance-10p-queue`;
+      const res = await fetch(url, { headers: { ...authHeaders } });
       const text = await res.text();
       const data = (() => {
         try {
@@ -77,7 +83,7 @@ export default function Finance10pPage() {
   useEffect(() => {
     loadLeads();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId]);
+  }, [sessionId, queueTab]);
 
   const onUploadClick = (leadId: number) => {
     setTargetLeadId(leadId);
@@ -220,6 +226,29 @@ export default function Finance10pPage() {
           </div>
         </div>
 
+        <div className="mt-4 flex gap-2">
+          <button
+            type="button"
+            onClick={() => setQueueTab('pending')}
+            className={`px-3 py-1.5 rounded-lg text-sm font-semibold border ${
+              queueTab === 'pending' ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-gray-700 border-gray-300'
+            }`}
+          >
+            Pending (manual)
+          </button>
+          <button
+            type="button"
+            onClick={() => setQueueTab('auto_approved')}
+            className={`px-3 py-1.5 rounded-lg text-sm font-semibold border ${
+              queueTab === 'auto_approved'
+                ? 'bg-emerald-700 text-white border-emerald-700'
+                : 'bg-white text-gray-700 border-gray-300'
+            }`}
+          >
+            Auto-approved (Easebuzz)
+          </button>
+        </div>
+
         {error && <div className="text-sm text-red-600 mt-4">{error}</div>}
 
         <div className="mt-5 border border-gray-200 rounded-2xl overflow-hidden">
@@ -235,12 +264,15 @@ export default function Finance10pPage() {
             <div className="px-4 py-6 text-sm text-gray-600">
               {loading
                 ? 'Loading…'
-                : 'No leads at 10% payment stage. Leads appear here after DQC 1 approval.'}
+                : queueTab === 'auto_approved'
+                  ? 'No Easebuzz auto-approved Design 10% rows yet.'
+                  : 'No leads at 10% payment stage. Leads appear here after DQC 1 approval.'}
             </div>
           ) : (
             leads.map((l) => {
               const busyUpload = uploadingLeadId === l.id;
               const busyApprove = approvingLeadId === l.id;
+              const isAuto = queueTab === 'auto_approved' || l.financeHandlingMode === 'AUTO_APPROVED';
               return (
                 <div key={l.id} className="grid grid-cols-12 px-4 py-3 border-t border-gray-200 items-center gap-2">
                   <div className="col-span-2 text-sm font-semibold text-gray-900">
@@ -254,10 +286,14 @@ export default function Finance10pPage() {
                   <div className="col-span-2 text-sm">
                     <span
                       className={
-                        l.status === 'Pending approval' ? 'text-amber-700 font-medium' : 'text-gray-600'
+                        isAuto
+                          ? 'text-emerald-700 font-medium'
+                          : l.status === 'Pending approval'
+                            ? 'text-amber-700 font-medium'
+                            : 'text-gray-600'
                       }
                     >
-                      {l.status}
+                      {isAuto ? 'AUTO_APPROVED' : l.status}
                     </span>
                   </div>
                   <div className="col-span-2 text-right">
@@ -266,28 +302,34 @@ export default function Finance10pPage() {
                       onClick={() => onViewScreenshots(l.id)}
                       className="px-3 py-2 rounded-lg border border-gray-300 text-gray-700 text-sm font-semibold hover:bg-gray-50"
                     >
-                      View screenshots
+                      View
                     </button>
                   </div>
                   <div className="col-span-1 text-right">
-                    <button
-                      type="button"
-                      onClick={() => onUploadClick(l.id)}
-                      disabled={!sessionId || busyUpload}
-                      className="px-3 py-2 rounded-lg bg-[#00B0ED] text-white text-sm font-semibold hover:bg-[#00B0ED]/90 disabled:opacity-60"
-                    >
-                      {busyUpload ? '…' : 'Upload'}
-                    </button>
+                    {!isAuto && (
+                      <button
+                        type="button"
+                        onClick={() => onUploadClick(l.id)}
+                        disabled={!sessionId || busyUpload}
+                        className="px-3 py-2 rounded-lg bg-[#00B0ED] text-white text-sm font-semibold hover:bg-[#00B0ED]/90 disabled:opacity-60"
+                      >
+                        {busyUpload ? '…' : 'Upload'}
+                      </button>
+                    )}
                   </div>
                   <div className="col-span-2 text-right">
-                    <button
-                      type="button"
-                      onClick={() => onApprove(l.id)}
-                      disabled={!l.canApprove || busyApprove || !sessionId}
-                      className="px-3 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-semibold hover:bg-[#EF0101]/90 disabled:opacity-60 disabled:cursor-not-allowed"
-                    >
-                      {busyApprove ? 'Approving…' : 'Approve'}
-                    </button>
+                    {isAuto ? (
+                      <span className="text-xs text-emerald-700 font-medium">SYSTEM · Easebuzz</span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => onApprove(l.id)}
+                        disabled={!l.canApprove || busyApprove || !sessionId}
+                        className="px-3 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-semibold hover:bg-[#EF0101]/90 disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {busyApprove ? 'Approving…' : 'Approve'}
+                      </button>
+                    )}
                   </div>
                 </div>
               );

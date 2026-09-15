@@ -34,3 +34,23 @@ export function mapQuotePaymentSummaryFromApi(body: Record<string, unknown>): Qu
       Math.max(0, (Number(body.totalPayableAmount) || 0) - (Number(body.sixtyPercentTarget) || 0)),
   };
 }
+
+/** Amount to prefill on Design 10% / 40% send-link. User may still edit. */
+export function suggestedDesignCollectAmount(
+  summary: QuotePaymentSummary | null,
+  variant: '10' | '40',
+): number | null {
+  if (!summary || !(summary.totalPayableAmount > 0)) return null;
+  if (variant === '10') {
+    if (summary.amountToCollect10 > 0) return Math.round(summary.amountToCollect10);
+    if (summary.totalPaidCumulative <= 0 && summary.tenPercentAmount > 0) {
+      return Math.round(summary.tenPercentAmount);
+    }
+    return Math.round(summary.amountToCollect10);
+  }
+  if (summary.amountToCollect40 > 0) return Math.round(summary.amountToCollect40);
+  if (summary.totalPaidCumulative <= 0 && summary.fortyPercentAmount > 0) {
+    return Math.round(summary.fortyPercentAmount);
+  }
+  return Math.round(summary.amountToCollect40);
+}

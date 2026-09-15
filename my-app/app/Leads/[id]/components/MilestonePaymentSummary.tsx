@@ -145,7 +145,7 @@ export default function MilestonePaymentSummary({ variant, summary, loading, err
       )}
       <div className="space-y-1.5">
         {rows.map((row) => (
-          <div key={row.label} className="flex items-center justify-between gap-3 text-xs">
+          <div key={row.label} className="flex items-center justify-between gap-3 rounded-lg px-1 py-0.5 text-xs transition-colors hover:bg-[#DDCDC1]/25">
             <span className={row.muted ? 'text-gray-500' : 'text-gray-600'}>{row.label}</span>
             <span
               className={`font-semibold tabular-nums ${

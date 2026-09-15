@@ -42,6 +42,7 @@ const AuthContext = createContext<{
   login: (email: string, password: string) => Promise<{ success: true; user: AuthUser } | { success: false; message?: string }>;
   logout: () => Promise<void>;
   setUser: (u: AuthUser | null) => void;
+  applySession: (u: AuthUser, sid: string) => void;
   refreshUser: () => Promise<void>;
 } | null>(null);
 
@@ -66,6 +67,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const setUser = useCallback((u: AuthUser | null) => {
     setUserState(u);
     if (!u) setSessionId(null);
+  }, []);
+
+  const applySession = useCallback((u: AuthUser, sid: string) => {
+    setUserState(u);
+    setSessionId(sid);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ user: u, sessionId: sid }));
   }, []);
   
 
@@ -128,7 +135,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [sessionId]);
 
   return (
-    <AuthContext.Provider value={{ user, sessionId, loading, login, logout, setUser, refreshUser }}>
+    <AuthContext.Provider value={{ user, sessionId, loading, login, logout, setUser, applySession, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );

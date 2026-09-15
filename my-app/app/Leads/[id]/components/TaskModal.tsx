@@ -84,7 +84,7 @@ export default function TaskModal({ context, onClose, children }: Props) {
             <h3 className="text-lg font-bold text-gray-900">{modalTitle}</h3>
             <button
               onClick={onClose}
-              className="text-gray-700 bg-gray-100 hover:text-gray-700 text-2xl leading-none border border-gray-300 rounded-md p-2 font-bold text-sm"
+              className="rounded-lg border border-gray-300 bg-gray-100 px-3 py-1.5 text-sm font-bold text-gray-700 transition-all duration-200 hover:-translate-y-0.5 hover:border-[#32261C]/30 hover:bg-[#DDCDC1]/40 hover:text-[#32261C] hover:shadow-sm"
             >
               Close
             </button>

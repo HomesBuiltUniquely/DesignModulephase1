@@ -33,6 +33,7 @@ import {
     PopupFinancePaymentApproval,
     PopupKtTransfer,
 } from './components';
+import DesignPaymentLinkBanner from './components/popups/DesignPaymentLinkBanner';
 import PopupD1FilesWaiting from './components/popups/PopupD1FilesWaiting';
 import { checklistDefinitions, getChecklistKeyForTask } from './components/Checklists/checklistRegistry';
 import { buildAuthHeaders, getApiBase } from '@/app/lib/apiBase';
@@ -1068,12 +1069,7 @@ export default function ProjectDetailPage() {
             .catch(() => { /* keep existing state on error instead of clearing */ });
     }, [projectId, sessionId]);
 
-    useEffect(() => {
-        loadHistory();
-    }, [loadHistory]);
-
-    // Restore completed tasks from DB so it persists across refresh
-    useEffect(() => {
+    const loadCompletions = useCallback(() => {
         if (projectId == null || !sessionId) return;
         const headers: Record<string, string> = { Authorization: `Bearer ${sessionId}` };
         fetch(`${API}/api/leads/${projectId}/completions`, { headers })
@@ -1087,6 +1083,14 @@ export default function ProjectDetailPage() {
             })
             .catch(() => {});
     }, [projectId, sessionId]);
+
+    useEffect(() => {
+        loadHistory();
+    }, [loadHistory]);
+
+    useEffect(() => {
+        loadCompletions();
+    }, [loadCompletions]);
 
     const loadDqcFileBlob = useCallback((fileToLoad: { id: number; originalName: string }) => {
         if (!projectId || !sessionId) return Promise.resolve();
@@ -1971,6 +1975,34 @@ export default function ProjectDetailPage() {
                         canShowStartMeetingButton(project, historyEvents)
                     }
                     onStartMeeting={() => setMeetingWizOpen(true)}
+                />
+            )}
+
+            {projectId != null && sessionId && !isMmtUser && (
+                <DesignPaymentLinkBanner
+                    leadId={projectId}
+                    apiBase={API}
+                    sessionId={sessionId}
+                    onPaid={() => {
+                        loadHistory();
+                        loadCompletions();
+                        setUploadsVersion((v) => v + 1);
+                    }}
+                    onSwitchOffline={(bucket) => {
+                        if (bucket === 'DESIGN_40') {
+                            setPopupContext({
+                                milestoneIndex: 5,
+                                milestoneName: '40% PAYMENT',
+                                taskName: '40% collection',
+                            });
+                        } else {
+                            setPopupContext({
+                                milestoneIndex: 2,
+                                milestoneName: '10% PAYMENT',
+                                taskName: '10% payment collection',
+                            });
+                        }
+                    }}
                 />
             )}
 
@@ -3321,6 +3353,21 @@ export default function ProjectDetailPage() {
                                 setUploadsVersion((v) => v + 1);
                                 closePopup();
                             }}
+                            onOnlineSuccess={() => {
+                                setCompletedTaskKeys((prev) =>
+                                    Array.from(
+                                        new Set([
+                                            ...prev,
+                                            taskKey(2, '10% payment collection'),
+                                            taskKey(2, '10% payment approval'),
+                                        ]),
+                                    ),
+                                );
+                                loadHistory();
+                                loadCompletions();
+                                setUploadsVersion((v) => v + 1);
+                                closePopup();
+                            }}
                         />
                     )}
                     {popupContext.milestoneIndex === 2 && popupContext.taskName === '10% payment approval' && (
@@ -4087,6 +4134,21 @@ export default function ProjectDetailPage() {
                                     description: '40% collection: payment screenshots uploaded for finance review.',
                                     details: { kind: 'file_upload', fileName: '40% payment screenshots' },
                                 });
+                                setUploadsVersion((v) => v + 1);
+                                closePopup();
+                            }}
+                            onOnlineSuccess={() => {
+                                setCompletedTaskKeys((prev) =>
+                                    Array.from(
+                                        new Set([
+                                            ...prev,
+                                            taskKey(5, '40% collection'),
+                                            taskKey(5, '40% payment approval'),
+                                        ]),
+                                    ),
+                                );
+                                loadHistory();
+                                loadCompletions();
                                 setUploadsVersion((v) => v + 1);
                                 closePopup();
                             }}

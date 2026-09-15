@@ -25,6 +25,7 @@ import {
 } from "./routes/prolanceApi";
 import { registerCrmHubBookingRoutes, notifyHubFinanceReview, getHubBookingSyncForLead, buildFinance10pQueueList, buildCrmSalesClosureQueueRows, buildCrmSalesClosureLeadDetail, leadHasDqc1Approval, isCrmBookingFinanceApproved } from "./routes/crmHubBookingRoutes";
 import { readCrmFinanceHandlingMode } from "./routes/crmEasebuzzAutoFinance";
+import { registerDesignPaymentRoutes } from "./routes/designPaymentRoutes";
 import { registerIncentivesRoutes } from "./routes/incentivesRoutes";
 import * as notify from "./routes/designNotifications";
 
@@ -110,7 +111,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   res.setHeader("Access-Control-Allow-Methods", "GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Prolance-Token, X-Prolance-Origin-Session, X-Prolance-Api-Key, X-External-Api-Key",
+    "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Prolance-Token, X-Prolance-Origin-Session, X-Prolance-Api-Key, X-External-Api-Key, x-api-key, X-Api-Key",
   );
   res.setHeader("Access-Control-Max-Age", "86400");
   res.setHeader("Vary", "Origin");
@@ -137,6 +138,8 @@ app.use(
       "X-Prolance-Origin-Session",
       "X-Prolance-Api-Key",
       "X-External-Api-Key",
+      "x-api-key",
+      "X-Api-Key",
     ],
     optionsSuccessStatus: 204,
   })
@@ -153,7 +156,7 @@ app.get("/api/health", (_req, res) => {
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "Root@123",
+  password: process.env.DB_PASSWORD || "root",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -10001,6 +10004,16 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
       });
     }
 
+    if (
+      leadPayload.design_10_finance_auto_approved === true ||
+      leadPayload.design_10_finance_auto_approved === "true" ||
+      leadPayload.design_10_finance_handling_mode === "AUTO_APPROVED"
+    ) {
+      return res.status(400).json({
+        message: "This Design 10% payment was auto-approved via Easebuzz. Manual approve is not allowed.",
+      });
+    }
+
     // ── CRM booking token payment (sales 10% at closure) → 10-20% intake, not design milestone 2 ──
     if (isCrmBookingPayment) {
       await pool.query(
@@ -10748,6 +10761,17 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
     const role = (user?.role ?? "").toLowerCase();
     if (role !== "finance" && role !== "admin") {
       return res.status(403).json({ message: "Only finance can approve 40% payment" });
+    }
+    const [payloadRows40] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [leadId]);
+    const payload40 = parseLeadPayloadObject((payloadRows40 as { payload?: unknown }[])[0]?.payload);
+    if (
+      payload40.design_40_finance_auto_approved === true ||
+      payload40.design_40_finance_auto_approved === "true" ||
+      payload40.design_40_finance_handling_mode === "AUTO_APPROVED"
+    ) {
+      return res.status(400).json({
+        message: "This Design 40% payment was auto-approved via Easebuzz. Manual approve is not allowed.",
+      });
     }
     const now = new Date();
     await pool.query(
@@ -16046,6 +16070,13 @@ registerCrmHubBookingRoutes(app, {
 });
 registerProlanceRoutes(app, getUserFromSession, pool);
 registerIncentivesRoutes(app, { pool, getUserFromSession });
+registerDesignPaymentRoutes(app, {
+  pool,
+  getUserFromSession,
+  addLeadHistoryEvent,
+  triggerMailRouteWithLog,
+  maybeNotifyMilestoneCompleted,
+});
 
 // Ensure CORS headers are present on error responses (multer, etc.) so the browser doesn't only show a generic CORS error
 app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
