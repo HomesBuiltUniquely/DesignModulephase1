@@ -57,6 +57,7 @@ import { MeetingWizSessionOverlay } from '@/app/Components/MeetingWiz/MeetingWiz
 import { canShowStartMeetingButton } from '@/app/lib/leadMeetingSchedule';
 import { getPhaseBucket } from '@/app/lib/leadPhaseBucket';
 import CustomDatePicker from '@/app/Components/ui/CustomDatePicker';
+import { LeaderboardBottomBar } from './components/LeaderboardBottomBar';
 
 const API = getApiBase();
 
@@ -2808,6 +2809,7 @@ export default function ProjectDetailPage() {
                         getTaskStatus={getTaskStatus}
                         getTaskLabel={getTaskLabel}
                         leadId={projectId}
+                        sessionId={sessionId}
                     />
                 )}
 
@@ -4297,6 +4299,10 @@ export default function ProjectDetailPage() {
                     </div>
                 );
             })()}
+
+            {projectId && !isMmtUser && (
+                <LeaderboardBottomBar leadId={projectId} sessionId={sessionId} />
+            )}
         </div>
     );
 }

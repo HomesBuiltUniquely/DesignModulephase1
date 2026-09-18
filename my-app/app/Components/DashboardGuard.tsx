@@ -9,6 +9,7 @@ import Dashboard from './Dashboard';
 import GoogleCalendarView from './GoogleCalendarView';
 import PersonalAppointmentsView from './PersonalAppointmentsView';
 import DesignerIncentivesView from './DesignerIncentivesView';
+import { DesignerLeaderboardView } from '../leaderboard/components/DesignerLeaderboardView';
 import ThemeModeToggle from './ThemeModeToggle';
 import { PersonalAppointmentModal } from './PersonalAppointmentModal';
 import {
@@ -115,6 +116,15 @@ export default function DashboardGuard() {
 
   const canAccessIncentives = canShowIncentivesNav(user.role);
 
+  const canAccessLeaderboard = [
+    'admin',
+    'super_admin',
+    'superadmin',
+    'territorial_design_manager',
+    'design_manager',
+    'designer',
+  ].includes((user.role || '').toLowerCase());
+
   const mainContent =
     pathname === '/google-calendar' ? (
       <GoogleCalendarView />
@@ -126,6 +136,14 @@ export default function DashboardGuard() {
       ) : (
         <div className="flex min-h-[40vh] items-center justify-center text-sm text-gray-500">
           Incentives are available for designers.
+        </div>
+      )
+    ) : pathname === '/leaderboard' ? (
+      canAccessLeaderboard ? (
+        <DesignerLeaderboardView />
+      ) : (
+        <div className="flex min-h-[40vh] items-center justify-center text-sm text-gray-500">
+          Leaderboard is available for design team members.
         </div>
       )
     ) : (
@@ -402,6 +420,20 @@ export default function DashboardGuard() {
       });
     }
 
+    if (canAccessLeaderboard) {
+      settingPortals.push({
+        href: '/leaderboard',
+        title: 'Leaderboard',
+        desc: 'Review designer XP rankings, levels, and achievements.',
+        icon: (
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 18.75h-9m9 0a3 3 0 0 1 3 3h-15a3 3 0 0 1 3-3m9 0v-3.375c0-.621-.504-1.125-1.125-1.125h-.871M7.5 18.75v-3.375c0-.621.504-1.125 1.125-1.125h.872m5.007 0H9.498m5.007 0a3.375 3.375 0 0 0-3.375-3.375h-1.5a3.375 3.375 0 0 0-3.375 3.375m1.5-3.375v-1.5a1.5 1.5 0 0 1 1.5-1.5h3a1.5 1.5 0 0 1 1.5 1.5v1.5M9 2.25h6" />
+          </svg>
+        ),
+        color: 'text-amber-600 bg-amber-50 border-amber-100',
+      });
+    }
+
     if (user.role === 'admin') {
       settingPortals.push({
         href: '/admin',
@@ -453,6 +485,14 @@ export default function DashboardGuard() {
               variant="nav"
               className={navLinkClass('/incentives')}
             />
+          )}
+          {canAccessLeaderboard && (
+            <a
+              href="/leaderboard"
+              className={navLinkClass('/leaderboard')}
+            >
+              Leaderboard
+            </a>
           )}
         </div>
         <div className="flex items-center gap-3">

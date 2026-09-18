@@ -7,7 +7,7 @@ import { hasChecklistForTask } from "./Checklists/checklistRegistry";
 import { getTaskTimeline } from "./taskTimelines";
 import MilestonePaymentSummary, { type QuotePaymentSummary } from "./MilestonePaymentSummary";
 import { mapQuotePaymentSummaryFromApi } from "./mapQuotePaymentSummary";
-import { getApiBase } from "@/app/lib/apiBase";
+import { getApiBase, buildAuthHeaders } from "@/app/lib/apiBase";
 
 const PAYMENT_MILESTONE_INDICES = new Set([2, 5]);
 
@@ -36,6 +36,7 @@ type Props = {
   /** Optional role-aware label (e.g. SPM sees "Assign PM") */
   getTaskLabel?: (milestoneIndex: number, taskName: string) => string;
   leadId?: number | null;
+  sessionId?: string | null;
 };
 
 /**
@@ -54,6 +55,7 @@ export default function MilestonesCard({
   getTaskStatus,
   getTaskLabel,
   leadId,
+  sessionId,
 }: Props) {
   const [openMenuFor, setOpenMenuFor] = useState<
     { milestoneIndex: number; taskIndex: number } | undefined
@@ -61,6 +63,59 @@ export default function MilestonesCard({
   const [paymentSummary, setPaymentSummary] = useState<QuotePaymentSummary | null>(null);
   const [paymentSummaryLoading, setPaymentSummaryLoading] = useState(false);
   const [paymentSummaryError, setPaymentSummaryError] = useState<string | null>(null);
+  const [xpSummary, setXpSummary] = useState<any | null>(null);
+
+  useEffect(() => {
+    if (!leadId || leadId < 1) {
+      setXpSummary(null);
+      return;
+    }
+    let cancelled = false;
+    const headers = buildAuthHeaders(sessionId);
+    const url = `${getApiBase()}/api/xp/lead/${leadId}/summary`;
+
+    fetch(url, { headers })
+      .then((res) => {
+        console.log(`[MilestonesCard] XP API Response:`, {
+          url,
+          status: res.status,
+          ok: res.ok,
+        });
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        return res.json();
+      })
+      .then((data) => {
+        if (cancelled) return;
+        console.log(`[MilestonesCard] XP API Data:`, {
+          dataExists: !!data,
+          dataKeys: data ? Object.keys(data) : [],
+          milestonesCount: data?.milestones?.length,
+          totalPossibleProjectXp: data?.totalPossibleProjectXp,
+          completedProjectXp: data?.completedProjectXp,
+          currentXp: data?.currentXp,
+          firstMilestone: data?.milestones?.[0] ? {
+            milestoneIndex: data.milestones[0].milestoneIndex,
+            totalPossibleXp: data.milestones[0].totalPossibleXp,
+            earnedXp: data.milestones[0].earnedXp,
+            tasksCount: data.milestones[0].tasks?.length,
+          } : null,
+        });
+        if (data) {
+          setXpSummary(data);
+        }
+      })
+      .catch((err) => {
+        console.error(`[MilestonesCard] XP API Error:`, {
+          url,
+          error: err.message,
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [leadId, sessionId]);
 
   useEffect(() => {
     if (!leadId || leadId < 1) {
@@ -297,6 +352,11 @@ export default function MilestonesCard({
           >
             {milestones.map((milestone, idx) => {
               const milestoneIndex = milestone.id;
+              const milestoneXp = xpSummary?.milestones?.find(
+                (m: any) => m.milestoneIndex === milestoneIndex
+              );
+              const totalPossibleXp = milestoneXp?.totalPossibleXp || 0;
+              const earnedMilestoneXp = milestoneXp?.earnedXp || 0;
               const targetVisualIndex = MileStonesArray.MilestonesName.findIndex((m) => m.id === milestoneIndex);
               const currentVisualIndex = MileStonesArray.MilestonesName.findIndex((m) => m.id === currentMilestoneIndex);
               const isCurrent = targetVisualIndex === currentVisualIndex;
@@ -340,11 +400,18 @@ export default function MilestonesCard({
                   <div
                     className={`flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border p-4 shadow-sm transition-all ${isCurrent ? "bg-white border-[#EF0101] ring-2 ring-[#EF0101]/20" : isNextOrLater ? "bg-gray-100 border-gray-200 opacity-75" : "bg-white border-gray-200"}`}
                   >
-                    <h3
-                      className={`text-lg font-bold mb-3 flex-shrink-0 ${isNextOrLater ? "text-gray-500" : "text-[#32261C]"}`}
-                    >
-                      {milestone.name}
-                    </h3>
+                    <div className="flex items-center justify-between mb-3 flex-shrink-0">
+                      <h3
+                        className={`text-lg font-bold ${isNextOrLater ? "text-gray-500" : "text-[#32261C]"}`}
+                      >
+                        {milestone.name}
+                      </h3>
+                      {totalPossibleXp > 0 && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 border border-purple-200">
+                          {earnedMilestoneXp > 0 ? `${earnedMilestoneXp}/` : ""}{totalPossibleXp} XP
+                        </span>
+                      )}
+                    </div>
                     <div className="h-2 bg-gray-200 rounded-full overflow-hidden mb-4 flex-shrink-0">
                       <div
                         className="h-full bg-[#00B0ED] rounded-full transition-all"
@@ -376,6 +443,11 @@ export default function MilestonesCard({
                           milestone.name,
                           task,
                           undefined,
+                        );
+                        const taskXp = milestoneXp?.tasks?.find(
+                          (t: any) =>
+                            (t.taskName || "").trim().toLowerCase() === (task || "").trim().toLowerCase() ||
+                            (t.aliases && t.aliases.some((a: string) => a.trim().toLowerCase() === (task || "").trim().toLowerCase())),
                         );
                         return (
                           <div
@@ -457,6 +529,18 @@ export default function MilestonesCard({
                               </p>
                             </div>
                             <div className="flex items-center gap-1.5 flex-shrink-0">
+                              {taskXp && taskXp.isActive && taskXp.baseXp > 0 && (
+                                <span
+                                  className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
+                                    taskXp.earnedXp != null
+                                      ? "bg-emerald-100 text-emerald-800"
+                                      : "bg-purple-100 text-purple-800"
+                                  }`}
+                                  title={taskXp.earnedXp != null ? `Earned: ${taskXp.earnedXp} XP` : `Potential: ${taskXp.baseXp} XP`}
+                                >
+                                  +{taskXp.earnedXp != null ? taskXp.earnedXp : taskXp.baseXp} XP
+                                </span>
+                              )}
                               {status.tags.map((tag) => (
                                 <span
                                   key={tag}

@@ -27,6 +27,14 @@ import { registerCrmHubBookingRoutes, notifyHubFinanceReview, getHubBookingSyncF
 import { readCrmFinanceHandlingMode } from "./routes/crmEasebuzzAutoFinance";
 import { registerDesignPaymentRoutes } from "./routes/designPaymentRoutes";
 import { registerIncentivesRoutes } from "./routes/incentivesRoutes";
+import {
+  ensureDesignerXpTable,
+  registerDesignerXpRoutes,
+  awardTaskCompletionXp,
+  awardSalesClosureXp,
+  awardUpsellXp,
+  evaluateLeadQuotationRevisionXp,
+} from "./routes/designerXpRoutes";
 import * as notify from "./routes/designNotifications";
 
 /**
@@ -156,7 +164,7 @@ app.get("/api/health", (_req, res) => {
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "root",
+  password: process.env.DB_PASSWORD || "Root@123",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -1601,6 +1609,7 @@ async function initDb() {
     `);
 
     await ensureOfflineMeetingExportTable(pool);
+    await ensureDesignerXpTable(pool);
 
     try {
       const [seenCol] = await conn.query(
@@ -7131,6 +7140,18 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
     // MySQL: 1 = inserted (first complete), 2 = updated existing row. Never re-send mail on re-mark.
     const isFirstCompletion = Number((completionWrite as { affectedRows?: number })?.affectedRows) === 1;
 
+    // Non-fatal hook to award Designer XP (active tasks award XP; inactive tasks are skipped)
+    try {
+      void awardTaskCompletionXp(pool, {
+        leadId: id,
+        milestoneIndex,
+        taskName,
+        completionDate: new Date(),
+      });
+    } catch (xpErr) {
+      console.error("[designer-xp] Hook error in complete-task (non-fatal):", xpErr);
+    }
+
     try {
       const meetingDate = meta?.meetingDate ?? meta?.signoffDate ?? null;
       const meetingTime = meta?.meetingTime ?? meta?.signoffTime ?? null;
@@ -9508,6 +9529,24 @@ app.post("/api/leads/:id/approve-sales-closure", async (req: Request, res: Respo
       [JSON.stringify(payloadObj), new Date(), leadId]
     );
 
+    // Non-fatal hook to award Designer XP for New Sale
+    try {
+      const saleAmount = Number(
+        payloadObj.quotation_total_at_sales_closure ||
+        payloadObj.quotation_total ||
+        payloadObj.deal_value ||
+        0
+      );
+      if (saleAmount > 0) {
+        void awardSalesClosureXp(pool, {
+          leadId,
+          saleAmountInr: saleAmount,
+        });
+      }
+    } catch (xpErr) {
+      console.error("[designer-xp] Hook error in approve-sales-closure (non-fatal):", xpErr);
+    }
+
     await addLeadHistoryEvent(leadId, {
       id: `approve-sales-closure-${Date.now()}`,
       type: "note",
@@ -9836,6 +9875,17 @@ app.post(
            ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
           [leadId, now]
         );
+        // Non-fatal hook to award Designer XP for 10% payment collection
+        try {
+          void awardTaskCompletionXp(pool, {
+            leadId,
+            milestoneIndex: 2,
+            taskName: "10% payment collection",
+            completionDate: now,
+          });
+        } catch (xpErr) {
+          console.error("[designer-xp] Hook error in payment-10p-upload (non-fatal):", xpErr);
+        }
       }
 
       // Notify: Design 10% payment requested (same path as 40% upload — collection is done here, not via complete-task)
@@ -9966,6 +10016,17 @@ app.post(
            ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
           [leadId, now]
         );
+        // Non-fatal hook to award Designer XP for 10% payment collection
+        try {
+          void awardTaskCompletionXp(pool, {
+            leadId,
+            milestoneIndex: 2,
+            taskName: "10% payment collection",
+            completionDate: now,
+          });
+        } catch (xpErr) {
+          console.error("[designer-xp] Hook error in payment-screenshots (non-fatal):", xpErr);
+        }
       }
       return res.status(201).json({ ok: true });
     } catch (err) {
@@ -11124,6 +11185,17 @@ app.post(
           void maybeNotifyMilestoneCompleted(leadId, uploadMilestoneIndex, {
             taskName: uploadTaskName,
           });
+          // Non-fatal hook to award Designer XP for auto-approved uploads
+          try {
+            void awardTaskCompletionXp(pool, {
+              leadId,
+              milestoneIndex: uploadMilestoneIndex,
+              taskName: uploadTaskName,
+              completionDate: now,
+            });
+          } catch (xpErr) {
+            console.error("[designer-xp] Hook error in maybeCompleteTask upload (non-fatal):", xpErr);
+          }
           // Manager/admin (or D2 SPM/PM) direct upload → auto-approved → notify designer
           if (!isKT) {
             void notifyDesignerMmtDocsReady(leadId, {
@@ -11677,6 +11749,18 @@ app.post("/api/leads/:leadId/uploads/:uploadId/approve", async (req: Request, re
       [leadId, approvalMilestoneIndex, approvalTaskName, now],
     );
 
+    // Non-fatal hook to award Designer XP (D1 files upload is active; D2 files upload is inactive)
+    try {
+      void awardTaskCompletionXp(pool, {
+        leadId,
+        milestoneIndex: approvalMilestoneIndex,
+        taskName: approvalTaskName,
+        completionDate: now,
+      });
+    } catch (xpErr) {
+      console.error("[designer-xp] Hook error in approve-upload (non-fatal):", xpErr);
+    }
+
     // D1 / D2 milestone completes when last upload task is approved (not via complete-task)
     void maybeNotifyMilestoneCompleted(leadId, approvalMilestoneIndex, {
       taskName: approvalTaskName,
@@ -11769,6 +11853,16 @@ app.post("/api/leads/:leadId/fix-upload-task", async (req: Request, res: Respons
         );
         fixed.push("Marked 'D2 - files upload' (milestone 3) as complete");
         void maybeNotifyMilestoneCompleted(leadId, 3, { taskName: "D2 - files upload" });
+        try {
+          void awardTaskCompletionXp(pool, {
+            leadId,
+            milestoneIndex: 3,
+            taskName: "D2 - files upload",
+            completionDate: now,
+          });
+        } catch (xpErr) {
+          console.error("[designer-xp] Hook error in fix-upload-type (non-fatal):", xpErr);
+        }
       } else {
         fixed.push("No approved D2 upload found yet — task not marked complete");
       }
@@ -13375,6 +13469,18 @@ app.post("/api/leads/:id/d1-request", async (req: Request, res: Response) => {
       visitDate: visitDate,
       visitTime: visitTime,
     });
+
+    // Non-fatal hook to award Designer XP for Task 3: D1 for MMT request
+    try {
+      void awardTaskCompletionXp(pool, {
+        leadId,
+        milestoneIndex: 0,
+        taskName: "D1 for MMT request",
+        completionDate: new Date(),
+      });
+    } catch (xpErr) {
+      console.error("[designer-xp] Hook error in d1-request (non-fatal):", xpErr);
+    }
 
     return res.status(201).json({
       ok: true,
@@ -15341,6 +15447,7 @@ app.patch("/api/leads/:id/prolance-ids", async (req: Request, res: Response) => 
           `INSERT IGNORE INTO lead_prolance_quote_versions (lead_id, quote_id, created_at) VALUES (?, ?, ?)`,
           [id, prolanceQuoteId, new Date()],
         );
+        void evaluateLeadQuotationRevisionXp(pool, id);
       } catch (verErr) {
         console.error("lead_prolance_quote_versions insert", verErr);
       }
@@ -15554,6 +15661,8 @@ app.post("/api/leads/:id/prolance-quote-snapshots", async (req: Request, res: Re
     const ins = result as mysql.ResultSetHeader;
     const inserted = ins.affectedRows === 1;
     const updated = ins.affectedRows > 1;
+
+    void evaluateLeadQuotationRevisionXp(pool, id);
 
     if (inserted) {
       try {
@@ -16070,6 +16179,7 @@ registerCrmHubBookingRoutes(app, {
 });
 registerProlanceRoutes(app, getUserFromSession, pool);
 registerIncentivesRoutes(app, { pool, getUserFromSession });
+registerDesignerXpRoutes(app, { pool, getUserFromSession });
 registerDesignPaymentRoutes(app, {
   pool,
   getUserFromSession,

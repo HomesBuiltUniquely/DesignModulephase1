@@ -18,6 +18,7 @@ import {
   newDesignMerchantTxn,
   retrieveEasebuzzTxn,
 } from "./easebuzzClient";
+import { awardTaskCompletionXp } from "./designerXpRoutes";
 
 type SessionUser = { id: number; name?: string | null; email?: string | null; role?: string | null };
 
@@ -373,6 +374,16 @@ async function applyDesignAutoApprove(
      ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
     [leadId, meta.milestoneIndex, meta.taskCollection, now],
   );
+  try {
+    void awardTaskCompletionXp(pool, {
+      leadId,
+      milestoneIndex: meta.milestoneIndex,
+      taskName: meta.taskCollection,
+      completionDate: now,
+    });
+  } catch (xpErr) {
+    console.error("[designer-xp] Hook error in applyAutoApprovalSideEffects (non-fatal):", xpErr);
+  }
   await pool.query(
     `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
      VALUES (?, ?, ?, ?)
