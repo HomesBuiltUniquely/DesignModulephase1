@@ -282,7 +282,7 @@ export const DesignerLeaderboardView: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] p-4 md:p-8">
+    <div className="min-h-screen bg-[#F8FAFC] dark:bg-[#0d0e11] p-4 md:p-8">
       <div className="max-w-7xl mx-auto space-y-6">
         {/* Leaderboard Summary Header & 4 Stat Cards (Admin Only) */}
         {isAdmin && (
@@ -290,12 +290,12 @@ export const DesignerLeaderboardView: React.FC = () => {
             {/* Header Title + Quote */}
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
               <div>
-                <h1 className="text-2xl md:text-3xl font-extrabold text-slate-900 tracking-tight font-serif">
+                <h1 className="text-2xl md:text-3xl font-extrabold text-slate-900 dark:text-white tracking-tight font-serif">
                   Design Team
                 </h1>
-                <div className="flex items-center gap-1.5 text-xs md:text-sm text-slate-500 mt-1 font-medium">
+                <div className="flex items-center gap-1.5 text-xs md:text-sm text-slate-500 dark:text-slate-400 mt-1 font-medium">
                   <svg
-                    className="w-4 h-4 text-slate-500 shrink-0"
+                    className="w-4 h-4 text-slate-500 dark:text-slate-400 shrink-0"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
@@ -312,9 +312,9 @@ export const DesignerLeaderboardView: React.FC = () => {
               </div>
 
               {/* Inspirational Quote */}
-              <div className="bg-[#F1F5F9]/80 border border-slate-200/70 rounded-2xl px-5 py-3 max-w-md flex items-start gap-2.5 shadow-2xs">
+              <div className="bg-[#F1F5F9]/80 dark:bg-[#14171e] border border-slate-200/70 dark:border-slate-800 rounded-2xl px-5 py-3 max-w-md flex items-start gap-2.5 shadow-2xs">
                 <span className="text-slate-400 font-serif text-2xl leading-none select-none mt-0.5">“</span>
-                <p className="text-xs text-slate-600 font-medium leading-relaxed italic">
+                <p className="text-xs text-slate-600 dark:text-slate-300 font-medium leading-relaxed italic">
                   Great design isn't just what it looks like, but the impact it creates.
                 </p>
               </div>
@@ -323,9 +323,9 @@ export const DesignerLeaderboardView: React.FC = () => {
             {/* 4 Summary Stat Cards */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               {/* 1. Designers */}
-              <div className="bg-[#F0F7FF] border border-blue-100/90 rounded-2xl p-4.5 flex items-center gap-4 shadow-2xs">
-                <div className="w-12 h-12 rounded-2xl bg-[#E0EFFF] flex items-center justify-center shrink-0">
-                  <svg className="w-6 h-6 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <div className="bg-[#F0F7FF] dark:bg-blue-950/25 border border-blue-100/90 dark:border-blue-900/40 rounded-2xl p-4.5 flex items-center gap-4 shadow-2xs">
+                <div className="w-12 h-12 rounded-2xl bg-[#E0EFFF] dark:bg-blue-900/40 flex items-center justify-center shrink-0">
+                  <svg className="w-6 h-6 text-blue-500 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path
                       strokeLinecap="round"
                       strokeLinejoin="round"
@@ -335,59 +335,59 @@ export const DesignerLeaderboardView: React.FC = () => {
                   </svg>
                 </div>
                 <div>
-                  <div className="text-xl md:text-2xl font-black text-slate-900 leading-tight">
+                  <div className="text-xl md:text-2xl font-black text-slate-900 dark:text-white leading-tight">
                     {totalDesigners}
                   </div>
-                  <div className="text-xs font-bold text-slate-700 mt-0.5">Designers</div>
-                  <div className="text-[11px] text-slate-400 font-medium">Active in the team</div>
+                  <div className="text-xs font-bold text-slate-700 dark:text-slate-200 mt-0.5">Designers</div>
+                  <div className="text-[11px] text-slate-400 dark:text-slate-400 font-medium">Active in the team</div>
                 </div>
               </div>
 
               {/* 2. Total Team XP */}
-              <div className="bg-[#F0FDF4] border border-emerald-100/90 rounded-2xl p-4.5 flex items-center gap-4 shadow-2xs">
-                <div className="w-12 h-12 rounded-2xl bg-[#DCFCE7] flex items-center justify-center shrink-0">
-                  <svg className="w-6 h-6 text-emerald-500 fill-emerald-500" viewBox="0 0 24 24">
+              <div className="bg-[#F0FDF4] dark:bg-emerald-950/25 border border-emerald-100/90 dark:border-emerald-900/40 rounded-2xl p-4.5 flex items-center gap-4 shadow-2xs">
+                <div className="w-12 h-12 rounded-2xl bg-[#DCFCE7] dark:bg-emerald-900/40 flex items-center justify-center shrink-0">
+                  <svg className="w-6 h-6 text-emerald-500 fill-emerald-500 dark:text-emerald-400 dark:fill-emerald-400" viewBox="0 0 24 24">
                     <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
                   </svg>
                 </div>
                 <div>
-                  <div className="text-xl md:text-2xl font-black text-slate-900 leading-tight">
+                  <div className="text-xl md:text-2xl font-black text-slate-900 dark:text-white leading-tight">
                     {totalTeamXp.toLocaleString()} XP
                   </div>
-                  <div className="text-xs font-bold text-slate-700 mt-0.5">Total Team XP</div>
-                  <div className="text-[11px] text-slate-400 font-medium">Lifetime</div>
+                  <div className="text-xs font-bold text-slate-700 dark:text-slate-200 mt-0.5">Total Team XP</div>
+                  <div className="text-[11px] text-slate-400 dark:text-slate-400 font-medium">Lifetime</div>
                 </div>
               </div>
 
               {/* 3. Top Level */}
-              <div className="bg-[#F5F3FF] border border-purple-100/90 rounded-2xl p-4.5 flex items-center gap-4 shadow-2xs">
-                <div className="w-12 h-12 rounded-2xl bg-[#EDE9FE] flex items-center justify-center shrink-0">
-                  <svg className="w-6 h-6 text-purple-500" viewBox="0 0 24 24" fill="currentColor">
+              <div className="bg-[#F5F3FF] dark:bg-purple-950/25 border border-purple-100/90 dark:border-purple-900/40 rounded-2xl p-4.5 flex items-center gap-4 shadow-2xs">
+                <div className="w-12 h-12 rounded-2xl bg-[#EDE9FE] dark:bg-purple-900/40 flex items-center justify-center shrink-0">
+                  <svg className="w-6 h-6 text-purple-500 dark:text-purple-400" viewBox="0 0 24 24" fill="currentColor">
                     <path d="M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94.63 1.5 1.98 2.63 3.61 2.96V19H7v2h10v-2h-4v-3.1c1.63-.33 2.98-1.46 3.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z" />
                   </svg>
                 </div>
                 <div>
-                  <div className="text-xl md:text-2xl font-black text-slate-900 leading-tight">
+                  <div className="text-xl md:text-2xl font-black text-slate-900 dark:text-white leading-tight">
                     {topLevel}
                   </div>
-                  <div className="text-xs font-bold text-slate-700 mt-0.5">Top Level</div>
-                  <div className="text-[11px] text-slate-400 font-medium">Current highest level</div>
+                  <div className="text-xs font-bold text-slate-700 dark:text-slate-200 mt-0.5">Top Level</div>
+                  <div className="text-[11px] text-slate-400 dark:text-slate-400 font-medium">Current highest level</div>
                 </div>
               </div>
 
               {/* 4. Average XP */}
-              <div className="bg-[#FFFBEB] border border-amber-100/90 rounded-2xl p-4.5 flex items-center gap-4 shadow-2xs">
-                <div className="w-12 h-12 rounded-2xl bg-[#FEF3C7] flex items-center justify-center shrink-0">
-                  <svg className="w-6 h-6 text-amber-500" viewBox="0 0 24 24" fill="currentColor">
+              <div className="bg-[#FFFBEB] dark:bg-amber-950/25 border border-amber-100/90 dark:border-amber-900/40 rounded-2xl p-4.5 flex items-center gap-4 shadow-2xs">
+                <div className="w-12 h-12 rounded-2xl bg-[#FEF3C7] dark:bg-amber-900/40 flex items-center justify-center shrink-0">
+                  <svg className="w-6 h-6 text-amber-500 dark:text-amber-400" viewBox="0 0 24 24" fill="currentColor">
                     <path d="M4 19h4V9H4v10zm6 0h4V3h-4v16zm6 0h4v-6h-4v6z" />
                   </svg>
                 </div>
                 <div>
-                  <div className="text-xl md:text-2xl font-black text-slate-900 leading-tight">
+                  <div className="text-xl md:text-2xl font-black text-slate-900 dark:text-white leading-tight">
                     {avgXp.toLocaleString()} XP
                   </div>
-                  <div className="text-xs font-bold text-slate-700 mt-0.5">Average XP</div>
-                  <div className="text-[11px] text-slate-400 font-medium">Per designer</div>
+                  <div className="text-xs font-bold text-slate-700 dark:text-slate-200 mt-0.5">Average XP</div>
+                  <div className="text-[11px] text-slate-400 dark:text-slate-400 font-medium">Per designer</div>
                 </div>
               </div>
             </div>
@@ -398,10 +398,10 @@ export const DesignerLeaderboardView: React.FC = () => {
         {!isAdmin && (
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>
-              <h1 className="text-2xl md:text-3xl font-extrabold text-slate-900 tracking-tight font-serif">
+              <h1 className="text-2xl md:text-3xl font-extrabold text-slate-900 dark:text-white tracking-tight font-serif">
                 Designer Leaderboard
               </h1>
-              <p className="text-xs md:text-sm text-slate-500 mt-1 font-medium">
+              <p className="text-xs md:text-sm text-slate-500 dark:text-slate-400 mt-1 font-medium">
                 Track XP rankings, levels, and milestone accomplishments
               </p>
             </div>
@@ -409,14 +409,14 @@ export const DesignerLeaderboardView: React.FC = () => {
         )}
 
         {/* XP Levels & Badges Showcase Card (Positioned before the designer table) */}
-        <div className="bg-white border border-slate-200/80 rounded-3xl p-6 md:p-8 shadow-xs">
+        <div className="bg-white dark:bg-[#14171e] border border-slate-200/80 dark:border-slate-800 rounded-3xl p-6 md:p-8 shadow-xs">
           <div className="flex items-center gap-3">
             <span className="text-2xl">🏆</span>
             <div>
-              <h2 className="text-base md:text-lg font-bold text-slate-900">
+              <h2 className="text-base md:text-lg font-bold text-slate-900 dark:text-white">
                 XP Levels & Badges
               </h2>
-              <p className="text-xs text-slate-400 mt-0.5 font-medium">
+              <p className="text-xs text-slate-400 dark:text-slate-400 mt-0.5 font-medium">
                 Keep completing milestones to unlock higher levels
               </p>
             </div>
@@ -433,8 +433,8 @@ export const DesignerLeaderboardView: React.FC = () => {
                   key={tier.badgeKey}
                   className={`rounded-2xl p-4 flex flex-col items-center text-center transition-all ${
                     isCurrent
-                      ? "bg-[#ECFDF5] border border-emerald-300 shadow-2xs"
-                      : "bg-white border border-slate-100 hover:bg-slate-50/60"
+                      ? "bg-[#ECFDF5] dark:bg-emerald-950/30 border border-emerald-300 dark:border-emerald-500/50 shadow-2xs"
+                      : "bg-white dark:bg-[#0f1115] border border-slate-100 dark:border-slate-800/80 hover:bg-slate-50/60 dark:hover:bg-slate-900/50"
                   }`}
                 >
                   <div className="h-14 flex items-center justify-center">
@@ -444,7 +444,7 @@ export const DesignerLeaderboardView: React.FC = () => {
                   <div className="mt-2 text-center w-full">
                     <span
                       className={`text-xs font-bold block truncate ${
-                        isCurrent ? "text-emerald-900" : "text-slate-700"
+                        isCurrent ? "text-emerald-900 dark:text-emerald-300" : "text-slate-700 dark:text-slate-200"
                       }`}
                     >
                       {isCurrent ? `✦ ${tier.name} ✦` : tier.name}
@@ -458,7 +458,7 @@ export const DesignerLeaderboardView: React.FC = () => {
 
                     <span
                       className={`text-xs font-semibold block mt-1.5 ${
-                        isCurrent ? "text-emerald-600" : "text-slate-400 font-medium"
+                        isCurrent ? "text-emerald-600 dark:text-emerald-400" : "text-slate-400 dark:text-slate-500 font-medium"
                       }`}
                     >
                       {tier.maxXp != null
@@ -489,7 +489,7 @@ export const DesignerLeaderboardView: React.FC = () => {
               placeholder="Search designers..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full pl-10 pr-4 py-2.5 text-xs md:text-sm bg-white border border-slate-200/90 rounded-2xl placeholder-slate-400 text-slate-700 shadow-2xs focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 font-medium"
+              className="w-full pl-10 pr-4 py-2.5 text-xs md:text-sm bg-white dark:bg-[#0f1115] border border-slate-200/90 dark:border-slate-800 rounded-2xl placeholder-slate-400 dark:placeholder-slate-500 text-slate-700 dark:text-slate-200 shadow-2xs focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 font-medium"
             />
           </div>
 
@@ -502,7 +502,7 @@ export const DesignerLeaderboardView: React.FC = () => {
               options={sortOptions}
               minWidth="10.5rem"
               size="xs"
-              buttonClassName="rounded-2xl border border-slate-200/90 py-2.5 px-3.5 text-xs font-semibold text-slate-700 shadow-2xs hover:bg-slate-50"
+              buttonClassName="rounded-2xl border border-slate-200/90 dark:border-slate-800 py-2.5 px-3.5 text-xs font-semibold text-slate-700 dark:text-slate-200 shadow-2xs hover:bg-slate-50 dark:hover:bg-slate-900/60 bg-white dark:bg-[#14171e]"
             />
 
             {/* All Levels */}
@@ -512,7 +512,7 @@ export const DesignerLeaderboardView: React.FC = () => {
               options={levelOptions}
               minWidth="8.5rem"
               size="xs"
-              buttonClassName="rounded-2xl border border-slate-200/90 py-2.5 px-3.5 text-xs font-semibold text-slate-700 shadow-2xs hover:bg-slate-50"
+              buttonClassName="rounded-2xl border border-slate-200/90 dark:border-slate-800 py-2.5 px-3.5 text-xs font-semibold text-slate-700 dark:text-slate-200 shadow-2xs hover:bg-slate-50 dark:hover:bg-slate-900/60 bg-white dark:bg-[#14171e]"
             />
 
             {/* All Teams */}
@@ -522,17 +522,17 @@ export const DesignerLeaderboardView: React.FC = () => {
               options={teamOptions}
               minWidth="8.5rem"
               size="xs"
-              buttonClassName="rounded-2xl border border-slate-200/90 py-2.5 px-3.5 text-xs font-semibold text-slate-700 shadow-2xs hover:bg-slate-50"
+              buttonClassName="rounded-2xl border border-slate-200/90 dark:border-slate-800 py-2.5 px-3.5 text-xs font-semibold text-slate-700 dark:text-slate-200 shadow-2xs hover:bg-slate-50 dark:hover:bg-slate-900/60 bg-white dark:bg-[#14171e]"
             />
           </div>
         </div>
 
         {/* Leaderboard Table Card */}
-        <div className="bg-white border border-slate-200/80 rounded-3xl shadow-xs overflow-hidden">
+        <div className="bg-white dark:bg-[#14171e] border border-slate-200/80 dark:border-slate-800 rounded-3xl shadow-xs overflow-hidden">
           {loading ? (
             <div className="p-8 space-y-4">
               {[1, 2, 3].map((i) => (
-                <div key={i} className="h-16 bg-slate-100 animate-pulse rounded-2xl" />
+                <div key={i} className="h-16 bg-slate-100 dark:bg-slate-800 animate-pulse rounded-2xl" />
               ))}
             </div>
           ) : error ? (
@@ -540,20 +540,20 @@ export const DesignerLeaderboardView: React.FC = () => {
               <p className="text-sm text-rose-600 font-semibold mb-3">{error}</p>
               <button
                 onClick={fetchLeaderboard}
-                className="px-4 py-2 text-xs bg-slate-100 hover:bg-slate-200 rounded-xl text-slate-700 font-bold transition-colors cursor-pointer"
+                className="px-4 py-2 text-xs bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-xl text-slate-700 dark:text-slate-200 font-bold transition-colors cursor-pointer"
               >
                 Try Again
               </button>
             </div>
           ) : filteredDesigners.length === 0 ? (
-            <div className="py-16 text-center text-slate-500">
+            <div className="py-16 text-center text-slate-500 dark:text-slate-400">
               <p className="text-sm font-medium">No designers matched your search.</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse">
                 <thead>
-                  <tr className="border-b border-slate-100 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                  <tr className="border-b border-slate-100 dark:border-slate-800 text-[11px] font-bold text-slate-400 dark:text-slate-400 uppercase tracking-wider">
                     <th className="py-4 px-6 w-16 text-center">#</th>
                     <th className="py-4 px-6">DESIGNER</th>
                     <th className="py-4 px-6">LEVEL</th>
@@ -564,7 +564,7 @@ export const DesignerLeaderboardView: React.FC = () => {
                     <th className="py-4 px-6 text-center">ACTIONS</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100/80">
+                <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800/80">
                   {filteredDesigners.map((designer) => {
                     const isRank1 = designer.rank === 1;
 
@@ -572,7 +572,9 @@ export const DesignerLeaderboardView: React.FC = () => {
                       <tr
                         key={designer.id}
                         className={`transition-colors ${
-                          isRank1 ? "bg-[#FFFDF3] hover:bg-[#FFFBEB]" : "bg-white hover:bg-slate-50/60"
+                          isRank1
+                            ? "bg-[#FFFDF3] dark:bg-amber-950/15 hover:bg-[#FFFBEB] dark:hover:bg-amber-950/25"
+                            : "bg-white dark:bg-[#14171e] hover:bg-slate-50/60 dark:hover:bg-slate-800/40"
                         }`}
                       >
                         {/* Rank # */}
@@ -584,7 +586,7 @@ export const DesignerLeaderboardView: React.FC = () => {
                         <td className="py-4 px-6">
                           <div className="flex items-center gap-3.5">
                             <div className="relative shrink-0">
-                              <div className="w-11 h-11 rounded-full bg-[#E0E7FF]/70 text-slate-700 font-bold text-sm flex items-center justify-center">
+                              <div className="w-11 h-11 rounded-full bg-[#E0E7FF]/70 dark:bg-indigo-950/60 text-slate-700 dark:text-indigo-300 font-bold text-sm flex items-center justify-center ring-2 ring-white dark:ring-slate-800">
                                 {designer.profileImage ? (
                                   <img
                                     src={designer.profileImage}
@@ -595,7 +597,7 @@ export const DesignerLeaderboardView: React.FC = () => {
                                   designer.name.charAt(0).toUpperCase()
                                 )}
                               </div>
-                              <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-white" />
+                              <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-slate-900" />
                             </div>
                             <div>
                               <span
@@ -604,12 +606,12 @@ export const DesignerLeaderboardView: React.FC = () => {
                                   setShowDrawer(true);
                                 }}
                                 className={`font-bold text-sm block cursor-pointer hover:underline ${
-                                  isRank1 ? "text-[#0070F3]" : "text-slate-900"
+                                  isRank1 ? "text-[#0070F3] dark:text-sky-400" : "text-slate-900 dark:text-slate-100"
                                 }`}
                               >
                                 {designer.name}
                               </span>
-                              <span className="text-xs text-slate-400 font-normal mt-0.5 block">
+                              <span className="text-xs text-slate-400 dark:text-slate-500 font-normal mt-0.5 block">
                                 {designer.subRole || "Interior Designer"}
                                 {designer.branch ? ` · ${designer.branch}` : ""}
                               </span>
@@ -628,27 +630,27 @@ export const DesignerLeaderboardView: React.FC = () => {
                                 <path d="M50 46 C62 36 74 42 70 54 C64 59 52 52 50 46 Z" fill="#22C55E" />
                               </svg>
                             </div>
-                            <span className="font-bold text-sm text-slate-800">
+                            <span className="font-bold text-sm text-slate-800 dark:text-slate-200">
                               {designer.level}
                             </span>
                           </div>
                         </td>
 
                         {/* XP */}
-                        <td className="py-4 px-6 font-bold text-sm text-slate-900">
+                        <td className="py-4 px-6 font-bold text-sm text-slate-900 dark:text-white">
                           {designer.currentXp.toLocaleString()}
                         </td>
 
                         {/* Progress */}
                         <td className="py-4 px-6">
                           <div className="space-y-1">
-                            <div className="w-40 h-2 bg-slate-100 rounded-full overflow-hidden">
+                            <div className="w-40 h-2 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
                               <div
                                 className="bg-emerald-500 h-full rounded-full transition-all duration-500"
                                 style={{ width: `${Math.max(6, designer.progressPct)}%` }}
                               />
                             </div>
-                            <span className="text-xs text-slate-400 font-medium block">
+                            <span className="text-xs text-slate-400 dark:text-slate-500 font-medium block">
                               {designer.nextLevel
                                 ? `${designer.xpToNextLevel.toLocaleString()} XP to ${designer.nextLevel}`
                                 : "Max Level"}
@@ -657,13 +659,13 @@ export const DesignerLeaderboardView: React.FC = () => {
                         </td>
 
                         {/* Projects */}
-                        <td className="py-4 px-6 text-center font-bold text-sm text-slate-900">
+                        <td className="py-4 px-6 text-center font-bold text-sm text-slate-900 dark:text-white">
                           {designer.projectsCount}
                         </td>
 
                         {/* Rating */}
                         <td className="py-4 px-6 whitespace-nowrap">
-                          <span className="inline-flex items-center gap-1 font-semibold text-xs text-slate-500">
+                          <span className="inline-flex items-center gap-1 font-semibold text-xs text-slate-500 dark:text-slate-400">
                             <span className="text-amber-400 text-sm">★</span> {designer.ratingFormatted || "N/A"}
                           </span>
                         </td>
@@ -675,7 +677,7 @@ export const DesignerLeaderboardView: React.FC = () => {
                               setSelectedDesignerId(designer.id);
                               setShowDrawer(true);
                             }}
-                            className="px-4 py-1.5 bg-white border border-slate-200/90 rounded-xl text-xs font-bold text-slate-700 shadow-2xs hover:bg-slate-50 transition-colors cursor-pointer"
+                            className="px-4 py-1.5 bg-white dark:bg-[#1e232d] border border-slate-200/90 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-200 shadow-2xs hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer"
                           >
                             View
                           </button>
@@ -695,13 +697,13 @@ export const DesignerLeaderboardView: React.FC = () => {
         <div className="fixed inset-0 z-50 overflow-hidden">
           {/* Backdrop */}
           <div
-            className="absolute inset-0 bg-slate-900/30 backdrop-blur-xs transition-opacity"
+            className="absolute inset-0 bg-black/60 backdrop-blur-xs transition-opacity"
             onClick={() => setShowDrawer(false)}
           />
 
           {/* Slide-over panel */}
           <div className="absolute inset-y-0 right-0 max-w-full flex pl-10">
-            <div className="w-screen max-w-md bg-white shadow-2xl overflow-y-auto">
+            <div className="w-screen max-w-md bg-white dark:bg-[#14171e] shadow-2xl overflow-y-auto">
               <DesignerDetailDrawer
                 designerId={selectedDesignerId}
                 apiBaseUrl={getApiBase()}

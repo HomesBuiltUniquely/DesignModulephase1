@@ -119,7 +119,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ gamification, breakdow
 
   return (
     <div className="pt-2">
-      <h5 className="text-xs font-bold text-slate-900 uppercase tracking-wider mb-4">
+      <h5 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider mb-4">
         XP Breakdown (Lifetime)
       </h5>
       <div className="space-y-3.5">
@@ -129,15 +129,15 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ gamification, breakdow
             <div key={cat.label} className="flex items-center justify-between gap-2 text-xs">
               <div className="flex items-center gap-2.5 min-w-[130px]">
                 {cat.icon}
-                <span className="text-slate-600 font-medium">{cat.label}</span>
+                <span className="text-slate-600 dark:text-slate-300 font-medium">{cat.label}</span>
               </div>
-              <div className="flex-1 max-w-[110px] sm:max-w-[130px] bg-slate-100 h-2 rounded-full overflow-hidden mx-1">
+              <div className="flex-1 max-w-[110px] sm:max-w-[130px] bg-slate-100 dark:bg-slate-800 h-2 rounded-full overflow-hidden mx-1">
                 <div
                   className={`${cat.barColor} h-full rounded-full transition-all duration-500`}
                   style={{ width: `${barPct}%` }}
                 />
               </div>
-              <span className="text-slate-900 font-bold text-right min-w-[46px]">
+              <span className="text-slate-900 dark:text-white font-bold text-right min-w-[46px]">
                 {cat.value.toLocaleString()}
               </span>
             </div>
