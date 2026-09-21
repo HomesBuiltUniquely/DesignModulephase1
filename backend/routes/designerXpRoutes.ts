@@ -579,6 +579,57 @@ export async function evaluateLeadQuotationRevisionXp(
   }
 }
 
+const ADMIN_ROLES = ["admin", "super_admin", "superadmin"];
+
+function isRoleAdmin(role?: string | null): boolean {
+  return ADMIN_ROLES.includes((role || "").toLowerCase().trim());
+}
+
+function isRoleTDM(role?: string | null): boolean {
+  const r = (role || "").toLowerCase().trim();
+  return r === "territorial_design_manager" || r === "tdm";
+}
+
+function isRoleDesignManager(role?: string | null): boolean {
+  return (role || "").toLowerCase().trim() === "design_manager";
+}
+
+function isRoleDesigner(role?: string | null): boolean {
+  return (role || "").toLowerCase().trim() === "designer";
+}
+
+async function canViewDesignerXp(
+  viewer: { id: number; role?: string | null },
+  targetDesignerId: number,
+  pool: Pool,
+): Promise<boolean> {
+  const viewerRole = viewer.role;
+  if (isRoleAdmin(viewerRole)) {
+    return true;
+  }
+  if (isRoleDesigner(viewerRole)) {
+    return Number(viewer.id) === Number(targetDesignerId);
+  }
+  if (isRoleDesignManager(viewerRole)) {
+    const [dmRows] = await pool.query(
+      "SELECT 1 FROM users WHERE id = ? AND design_manager_id = ? LIMIT 1",
+      [targetDesignerId, viewer.id],
+    );
+    return (dmRows as any[]).length > 0;
+  }
+  if (isRoleTDM(viewerRole)) {
+    const [tdmRows] = await pool.query(
+      `SELECT 1 FROM users u
+       LEFT JOIN users dm ON dm.id = u.design_manager_id
+       WHERE u.id = ? AND (u.territorial_design_manager_id = ? OR dm.territorial_design_manager_id = ?)
+       LIMIT 1`,
+      [targetDesignerId, viewer.id, viewer.id],
+    );
+    return (tdmRows as any[]).length > 0;
+  }
+  return false;
+}
+
 /**
  * Registers the EXACT 3 APPROVED XP APIs
  */
@@ -598,6 +649,16 @@ export function registerDesignerXpRoutes(
   app.get("/api/xp/lead/:id/summary", async (req: Request, res: Response) => {
     try {
       const user = await getUserFromSession(req);
+      if (!user) {
+        return res.status(401).json({ message: "Unauthorized: Active session required" });
+      }
+
+      const userRole = (user.role || "").toLowerCase().trim();
+      if (!isRoleAdmin(userRole) && !isRoleTDM(userRole) && !isRoleDesignManager(userRole) && !isRoleDesigner(userRole)) {
+        return res.status(403).json({
+          message: "Forbidden: XP summary is available to Admin, Territorial Design Manager, Design Manager, and Designer only",
+        });
+      }
 
       const leadId = Number(req.params.id);
       if (!leadId) return res.status(400).json({ message: "Invalid lead ID" });
@@ -614,6 +675,48 @@ export function registerDesignerXpRoutes(
       if (!lead) return res.status(404).json({ message: "Lead not found" });
 
       const designerId = lead.assigned_designer_id ? Number(lead.assigned_designer_id) : null;
+
+      // Scope validation
+      if (isRoleDesigner(userRole)) {
+        if (!designerId || designerId !== Number(user.id)) {
+          return res.status(403).json({
+            message: "Forbidden: Designers can only access XP summary for leads assigned to them",
+          });
+        }
+      } else if (isRoleDesignManager(userRole)) {
+        if (!designerId) {
+          return res.status(403).json({
+            message: "Forbidden: Lead has no assigned designer in your team",
+          });
+        }
+        const [dmCheck] = await pool.query(
+          "SELECT 1 FROM users WHERE id = ? AND design_manager_id = ? LIMIT 1",
+          [designerId, user.id],
+        );
+        if ((dmCheck as any[]).length === 0) {
+          return res.status(403).json({
+            message: "Forbidden: Lead's designer is not in your managed team",
+          });
+        }
+      } else if (isRoleTDM(userRole)) {
+        if (!designerId) {
+          return res.status(403).json({
+            message: "Forbidden: Lead has no assigned designer in your territory",
+          });
+        }
+        const [tdmCheck] = await pool.query(
+          `SELECT 1 FROM users u
+           LEFT JOIN users dm ON dm.id = u.design_manager_id
+           WHERE u.id = ? AND (u.territorial_design_manager_id = ? OR dm.territorial_design_manager_id = ?)
+           LIMIT 1`,
+          [designerId, user.id, user.id],
+        );
+        if ((tdmCheck as any[]).length === 0) {
+          return res.status(403).json({
+            message: "Forbidden: Lead's designer is not in your territory team",
+          });
+        }
+      }
 
       // Non-fatal quotation revision XP check
       if (designerId) {
@@ -801,18 +904,14 @@ export function registerDesignerXpRoutes(
   app.get("/api/xp/leaderboard", async (req: Request, res: Response) => {
     try {
       const user = await getUserFromSession(req);
-      const userRole = (user?.role || "").toLowerCase();
-      const allowedRoles = [
-        "admin",
-        "super_admin",
-        "superadmin",
-        "territorial_design_manager",
-        "design_manager",
-        "designer",
-      ];
-      if (!user || !allowedRoles.includes(userRole)) {
+      if (!user) {
+        return res.status(401).json({ message: "Unauthorized: Active session required" });
+      }
+
+      const userRole = (user?.role || "").toLowerCase().trim();
+      if (!isRoleAdmin(userRole) && !isRoleTDM(userRole) && !isRoleDesignManager(userRole) && !isRoleDesigner(userRole)) {
         return res.status(403).json({
-          message: "Leaderboard is available to territorial design manager, design manager, designers, and admin only",
+          message: "Forbidden: Leaderboard is available to Admin, Territorial Design Manager, Design Manager, and Designer only",
         });
       }
 
@@ -822,7 +921,49 @@ export function registerDesignerXpRoutes(
       const page = Math.max(1, Number(req.query.page || 1));
       const limit = Math.min(100, Math.max(1, Number(req.query.limit || 50)));
 
-      // Query all users where role = 'designer'
+      // Org-wide rank calculation so designers and managers have real rankings
+      const [allXpRows] = await pool.query(
+        `SELECT u.id, COALESCE(xp.totalXp, 0) as currentXp
+         FROM users u
+         LEFT JOIN (
+           SELECT designer_id, SUM(net_xp) as totalXp
+           FROM designer_xp_transactions
+           GROUP BY designer_id
+         ) xp ON xp.designer_id = u.id
+         WHERE LOWER(u.role) = 'designer'`,
+      );
+      const allDesignersSorted = (allXpRows as any[])
+        .map((r) => ({
+          id: Number(r.id),
+          currentXp: Number(r.currentXp || 0),
+        }))
+        .sort((a, b) => b.currentXp - a.currentXp);
+
+      const overallRankMap = new Map<number, number>();
+      allDesignersSorted.forEach((d, idx) => {
+        overallRankMap.set(d.id, idx + 1);
+      });
+
+      // Role-based scoping:
+      // Admin: all designers
+      // TDM: designers where designer or their DM has territorial_design_manager_id = user.id
+      // Design Manager: only designers where design_manager_id = user.id
+      // Designer: only self (u.id = user.id)
+      let filterClause = "WHERE LOWER(u.role) = 'designer'";
+      const queryParams: any[] = [];
+
+      if (isRoleTDM(userRole)) {
+        filterClause += " AND (u.territorial_design_manager_id = ? OR dm.territorial_design_manager_id = ?)";
+        queryParams.push(user.id, user.id);
+      } else if (isRoleDesignManager(userRole)) {
+        filterClause += " AND u.design_manager_id = ?";
+        queryParams.push(user.id);
+      } else if (isRoleDesigner(userRole)) {
+        filterClause += " AND u.id = ?";
+        queryParams.push(user.id);
+      }
+
+      // Query scoped designers
       const [designerRows] = await pool.query(
         `SELECT u.id, u.name, u.email, u.role, u.sub_role as subRole, u.profileImage, u.branch,
                 COALESCE(xp.totalXp, 0) as currentXp,
@@ -830,6 +971,7 @@ export function registerDesignerXpRoutes(
                 COALESCE(ontime.onTimeCount, 0) as onTimeTasksCount,
                 COALESCE(ontime.totalTasksCount, 0) as totalTasksCount
          FROM users u
+         LEFT JOIN users dm ON dm.id = u.design_manager_id
          LEFT JOIN (
            SELECT designer_id, SUM(net_xp) as totalXp
            FROM designer_xp_transactions
@@ -848,10 +990,12 @@ export function registerDesignerXpRoutes(
            WHERE transaction_type = 'task_completion'
            GROUP BY designer_id
          ) ontime ON ontime.designer_id = u.id
-         WHERE LOWER(u.role) = 'designer'`,
+         ${filterClause}`,
+        queryParams,
       );
 
       let designers = (designerRows as any[]).map((d) => {
+        const designerId = Number(d.id);
         const currentXp = Number(d.currentXp || 0);
         const badge = getBadgeForXp(currentXp);
         const nextBadge = getNextBadge(badge.levelNum);
@@ -870,7 +1014,7 @@ export function registerDesignerXpRoutes(
         const onTimeDeliveryPct = totalTasks > 0 ? Math.round((onTimeTasks / totalTasks) * 1000) / 10 : 100.0;
 
         return {
-          id: Number(d.id),
+          id: designerId,
           name: d.name || "Unnamed Designer",
           email: d.email,
           role: "designer",
@@ -890,6 +1034,7 @@ export function registerDesignerXpRoutes(
           rating: null, // Confirmed: N/A until genuine rating source exists
           ratingFormatted: "N/A",
           onTimeDeliveryPct,
+          orgRank: overallRankMap.get(designerId) || 1,
         };
       });
 
@@ -915,10 +1060,12 @@ export function registerDesignerXpRoutes(
         return order === "asc" ? diff : -diff;
       });
 
-      // Assign ranks after sorting by XP
+      // Assign ranks:
+      // Designer: org-wide rank
+      // Admin / TDM / DM: rank in current table view
       designers = designers.map((d, index) => ({
         ...d,
-        rank: index + 1,
+        rank: isRoleDesigner(userRole) ? d.orgRank : index + 1,
       }));
 
       const total = designers.length;
@@ -949,23 +1096,28 @@ export function registerDesignerXpRoutes(
   app.get("/api/xp/designer/:id", async (req: Request, res: Response) => {
     try {
       const user = await getUserFromSession(req);
-      const userRole = (user?.role || "").toLowerCase();
-      const allowedRoles = [
-        "admin",
-        "super_admin",
-        "superadmin",
-        "territorial_design_manager",
-        "design_manager",
-        "designer",
-      ];
-      if (!user || !allowedRoles.includes(userRole)) {
+      if (!user) {
+        return res.status(401).json({ message: "Unauthorized: Active session required" });
+      }
+
+      const userRole = (user?.role || "").toLowerCase().trim();
+      if (!isRoleAdmin(userRole) && !isRoleTDM(userRole) && !isRoleDesignManager(userRole) && !isRoleDesigner(userRole)) {
         return res.status(403).json({
-          message: "Designer XP details are available to territorial design manager, design manager, designers, and admin only",
+          message: "Forbidden: Designer XP details are available to Admin, Territorial Design Manager, Design Manager, and Designer only",
         });
       }
 
       const designerId = Number(req.params.id);
       if (!designerId) return res.status(400).json({ message: "Invalid designer ID" });
+
+      const allowed = await canViewDesignerXp(user, designerId, pool);
+      if (!allowed) {
+        return res.status(403).json({
+          message: isRoleDesigner(userRole)
+            ? "Forbidden: Designers can only view their own XP details"
+            : "Forbidden: You do not have permission to view this designer's details",
+        });
+      }
 
       // Verify user is a designer
       const [userRows] = await pool.query(

@@ -143,7 +143,7 @@ export default function DashboardGuard() {
         <DesignerLeaderboardView />
       ) : (
         <div className="flex min-h-[40vh] items-center justify-center text-sm text-gray-500">
-          Leaderboard is available for design team members.
+          Leaderboard and XP Levels & Badges are available to Admin, Territorial Design Manager, Design Manager, and Designer only.
         </div>
       )
     ) : (

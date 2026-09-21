@@ -104,10 +104,6 @@ export const DesignerDetailDrawer: React.FC<DesignerDetailDrawerProps> = ({
   }
 
   const { designer, gamification, breakdown, projects, achievements, activity } = data;
-  const ratingFormatted =
-    gamification?.clientRatingFormatted && gamification.clientRatingFormatted !== "N/A"
-      ? gamification.clientRatingFormatted
-      : "4.8";
 
   return (
     <div className="bg-white dark:bg-[#14171e] border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-xs relative">
@@ -190,32 +186,12 @@ export const DesignerDetailDrawer: React.FC<DesignerDetailDrawerProps> = ({
           </div>
         </div>
 
-        {/* Lower section (3 columns stats) */}
-        <div className="grid grid-cols-3 divide-x divide-sky-200/60 dark:divide-sky-900/40 pt-3 mt-3 border-t border-sky-200/60 dark:border-sky-900/40 text-center">
-          <div className="px-1">
-            <span className="text-sm font-black text-slate-900 dark:text-white block">
-              {gamification?.projectsCount || 0}
-            </span>
-            <span className="text-2xs text-slate-400 dark:text-slate-400 font-medium block mt-0.5">
-              Projects
-            </span>
-          </div>
-          <div className="px-1">
-            <span className="text-sm font-black text-slate-900 dark:text-white flex items-center justify-center gap-1">
-              {ratingFormatted} <span className="text-amber-400 text-xs">★</span>
-            </span>
-            <span className="text-2xs text-slate-400 dark:text-slate-400 font-medium block mt-0.5">
-              Client Rating
-            </span>
-          </div>
-          <div className="px-1">
-            <span className="text-sm font-black text-slate-900 dark:text-white block">
-              {gamification?.onTimeDeliveryPct || 100}%
-            </span>
-            <span className="text-2xs text-slate-400 dark:text-slate-400 font-medium block mt-0.5">
-              On-time Delivery
-            </span>
-          </div>
+        {/* Lower section */}
+        <div className="flex items-center justify-between pt-3 mt-3 border-t border-sky-200/60 dark:border-sky-900/40 text-xs">
+          <span className="text-slate-500 dark:text-slate-400 font-medium">Assigned Projects</span>
+          <span className="font-black text-slate-900 dark:text-white">
+            {gamification?.projectsCount || 0}
+          </span>
         </div>
       </div>
 
