@@ -18,6 +18,7 @@ import {
   newDesignMerchantTxn,
   retrieveEasebuzzTxn,
 } from "./easebuzzClient";
+import { stampEntered1020At } from "../leadTimelineAnchors";
 
 type SessionUser = { id: number; name?: string | null; email?: string | null; role?: string | null };
 
@@ -433,6 +434,7 @@ async function applyDesignAutoApprove(
   }
 
   if (is10) {
+    stampEntered1020At(payload);
     await pool.query(`UPDATE leads SET project_stage = '10-20%', payload = ?, update_at = ? WHERE id = ?`, [
       JSON.stringify(payload),
       now,

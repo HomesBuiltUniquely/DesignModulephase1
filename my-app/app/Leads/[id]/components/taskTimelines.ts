@@ -1,38 +1,13 @@
-// Simple timeline mapping for 1BHK configuration.
-// Key format: `${milestoneName}::${taskName}`
-
-export const TIMELINE_1BHK: Record<string, string> = {
-  // Milestone 1: D1 SITE MEASUREMENT
-  "D1 SITE MEASUREMENT::Group Description": "24 hrs from payment",
-  "D1 SITE MEASUREMENT::Mail loop chain 2 initiate": "Same day of GD change",
-  "D1 SITE MEASUREMENT::D1 for MMT request": "48 hrs from payment",
-  "D1 SITE MEASUREMENT::D1 files upload": "24 hrs from D1",
-
-  // Milestone 2: DQC1 (examples – can be refined with more rows from sheet)
-  "DQC1::First cut design + quotation discussion meeting request":
-    "24 hrs from D1 file received",
-  "DQC1::meeting completed": "As per meeting date (MOM submission)",
-  "DQC1::DQC 1 submission - dwg + quotation": "2 days from last meeting",
-  "DQC1::DQC 1 approval": "After DQC review",
-
-  // Milestone 3: 10% PAYMENT
-  "10% PAYMENT::10% payment collection": "48 hrs from last meeting",
-  "10% PAYMENT::10% payment approval": "24 hrs of DQC1 file sent",
-
-  // Milestone 6 (40% PAYMENT in product): design sign-off → meeting → collection → finance approval
-  "40% PAYMENT::Design sign off": "After PM approval / as scheduled",
-  "40% PAYMENT::meeting completed": "As per meeting date (MOM submission)",
-  "40% PAYMENT::40% collection": "48 hrs from sign-off meeting",
-  "40% PAYMENT::40% payment approval": "After finance verification",
-};
+import { getTaskTimelineLabel } from "../lib/taskDeadlineConfig";
+import { normalizePropertyConfig } from "../lib/normalizePropertyConfig";
 
 export function getTaskTimeline(
-  milestoneName: string,
+  _milestoneName: string,
   taskName: string,
-  propertyConfig: string | undefined,
+  milestoneIndex?: number,
+  propertyConfiguration?: string | null,
 ): string | undefined {
-  // For now we only have explicit mapping for 1BHK; others can be added later.
-  const key = `${milestoneName}::${taskName}`;
-  return TIMELINE_1BHK[key];
+  if (milestoneIndex == null) return undefined;
+  const config = normalizePropertyConfig(propertyConfiguration);
+  return getTaskTimelineLabel(milestoneIndex, taskName, config);
 }
-

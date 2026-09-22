@@ -3,6 +3,7 @@
  * Manual Sales Closure, DQC1 10%, and refund flows are unchanged.
  */
 import type { Pool } from "mysql2/promise";
+import { stampEntered1020At } from "../leadTimelineAnchors";
 
 export type FinanceHandlingMode = "AUTO_APPROVED" | "MANUAL_QUEUE";
 export type FinanceSection = "AUTO_APPROVED" | "MANUAL_QUEUE";
@@ -314,6 +315,7 @@ export async function applyCrmEasebuzzAutoFinanceApproval(
   if (payload.quotation_total && !payload.quotation_total_at_sales_closure) {
     payload.quotation_total_at_sales_closure = pickNum(payload.quotation_total);
   }
+  stampEntered1020At(payload);
 
   await pool.query(
     `UPDATE leads SET project_stage = '10-20%', payload = ?, update_at = ? WHERE id = ?`,
