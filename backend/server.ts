@@ -28,6 +28,7 @@ import { readCrmFinanceHandlingMode } from "./routes/crmEasebuzzAutoFinance";
 import { registerDesignPaymentRoutes } from "./routes/designPaymentRoutes";
 import { registerIncentivesRoutes } from "./routes/incentivesRoutes";
 import * as notify from "./routes/designNotifications";
+import { buildTimelineAnchorsFromPayloadAndD1, fetchLeadTimelineAnchors, stampEntered1020At } from "./leadTimelineAnchors";
 
 /**
  * Load backend/.env before dotenv. Supports `export KEY=value` and quoted values.
@@ -156,7 +157,7 @@ app.get("/api/health", (_req, res) => {
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "root",
+  password: process.env.DB_PASSWORD || "Root@123",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,
@@ -9502,6 +9503,7 @@ app.post("/api/leads/:id/approve-sales-closure", async (req: Request, res: Respo
     if (payloadObj.quotation_total && !payloadObj.quotation_total_at_sales_closure) {
       payloadObj.quotation_total_at_sales_closure = parseFiniteNumber(payloadObj.quotation_total);
     }
+    stampEntered1020At(payloadObj);
 
     await pool.query(
       `UPDATE leads SET project_stage = '10-20%', payload = ?, update_at = ? WHERE id = ?`,
@@ -10033,6 +10035,7 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
       if (payload.quotation_total && !payload.quotation_total_at_sales_closure) {
         payload.quotation_total_at_sales_closure = parseFiniteNumber(payload.quotation_total);
       }
+      stampEntered1020At(payload);
       await pool.query(
         `UPDATE leads SET project_stage = '10-20%', payload = ?, update_at = ? WHERE id = ?`,
         [JSON.stringify(payload), now, leadId],
@@ -14000,8 +14003,10 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
        LEFT JOIN users pm ON pm.id = l.assigned_project_manager_id
        ORDER BY l.id ASC`,
     );
+    const payloadByLeadId = new Map<number, unknown>();
     const baseList = (rows as any[])
       .map((r) => {
+        payloadByLeadId.set(r.id, r.leadPayloadRaw);
         const intake = extractLeadIntakeViewFromPayload(r.leadPayloadRaw);
         const { leadPayloadRaw: _omitPayload, ...rest } = r;
         return {
@@ -14038,35 +14043,60 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
 
     // Enrich with current milestone (from task completions) for Design Phase dashboard
     const [completionRows] = await pool.query(
-      `SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName FROM lead_task_completions`,
+      `SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName, completed_at as completedAt FROM lead_task_completions`,
     );
     const compList = completionRows as {
       leadId: number;
       milestoneIndex: number;
       taskName: string;
+      completedAt?: string | Date;
     }[];
     const completionsByLead = new Map<
       number,
-      { milestoneIndex: number; taskName: string }[]
+      { milestoneIndex: number; taskName: string; completedAt?: string }[]
     >();
     for (const c of compList) {
       const arr = completionsByLead.get(c.leadId) ?? [];
-      arr.push({ milestoneIndex: c.milestoneIndex, taskName: c.taskName });
+      arr.push({
+        milestoneIndex: c.milestoneIndex,
+        taskName: c.taskName,
+        completedAt: c.completedAt ? new Date(c.completedAt).toISOString() : undefined,
+      });
       completionsByLead.set(c.leadId, arr);
+    }
+    const [d1AnchorRows] = await pool.query(
+      `SELECT lead_id as leadId, MIN(created_at) as sentAt FROM lead_d1_assignments GROUP BY lead_id`,
+    );
+    const d1SentByLead = new Map<number, string>();
+    for (const row of d1AnchorRows as { leadId: number; sentAt?: Date | string }[]) {
+      if (row.sentAt) d1SentByLead.set(row.leadId, new Date(row.sentAt).toISOString());
     }
     const enrichedList = baseList.map((l: any) => {
       let comps = completionsByLead.get(l.id) ?? [];
       // Auto-complete KT TRANSFER for existing projects that have already started on other milestones.
       if (comps.length > 0 && !comps.some((r) => r.milestoneIndex === 7)) {
-        comps = [...comps, { milestoneIndex: 7, taskName: "Upload KT files" }];
+        comps = [
+          ...comps,
+          {
+            milestoneIndex: 7,
+            taskName: "Upload KT files",
+            completedAt: new Date().toISOString(),
+          },
+        ];
       }
       const idx = getCurrentMilestoneIndex(comps);
       const progress = getCurrentMilestoneProgress(comps, idx);
+      const timelineAnchors = buildTimelineAnchorsFromPayloadAndD1(
+        payloadByLeadId.get(l.id) ?? null,
+        d1SentByLead.get(l.id) ?? null,
+      );
       return {
         ...l,
         currentMilestoneIndex: idx,
         currentMilestoneName: MILESTONE_NAMES[idx] ?? "—",
         currentMilestoneProgress: progress,
+        timelineAnchors,
+        taskCompletions: comps,
       };
     });
 
@@ -14893,8 +14923,10 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
 
     const { payload: _p, ...rest } = row;
     const intake = extractLeadIntakeViewFromPayload(row.payload);
+    const timelineAnchors = await fetchLeadTimelineAnchors(pool, id, row.payload);
     return res.json({
       ...rest,
+      timelineAnchors,
       isOnHold: !!row.isOnHold,
       designerName: designerName || null,
       designerEmail: row.designerEmail ?? null,
