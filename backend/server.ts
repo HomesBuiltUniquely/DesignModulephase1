@@ -3401,6 +3401,38 @@ async function exchangeGoogleCodeForTokens(code: string) {
   };
 }
 
+async function deactivateGoogleConnectionById(connectionId: number) {
+  await pool.query(
+    "UPDATE google_calendar_connections SET active = 0, updated_at = ? WHERE id = ?",
+    [new Date(), connectionId],
+  );
+}
+
+function shouldDeactivateGoogleConnection(errorCode: unknown, errorMessage: unknown): boolean {
+  const code = String(errorCode || "").toLowerCase();
+  const message = String(errorMessage || "").toLowerCase();
+  return (
+    code === "invalid_grant" ||
+    code === "unauthorized_client" ||
+    code === "invalid_client" ||
+    message.includes("account has been deleted") ||
+    message.includes("token has been expired or revoked")
+  );
+}
+
+const HUB_CALENDAR_FETCH_CONCURRENCY = 8;
+const HUB_CALENDAR_FETCH_TIMEOUT_MS = 20_000;
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = HUB_CALENDAR_FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function refreshGoogleAccessToken(connection: GoogleCalendarConnectionRow) {
   if (!connection.refresh_token) {
     throw new Error("Google refresh token missing. Please reconnect Google Calendar.");
@@ -3412,14 +3444,18 @@ async function refreshGoogleAccessToken(connection: GoogleCalendarConnectionRow)
   body.set("refresh_token", connection.refresh_token);
   body.set("grant_type", "refresh_token");
 
-  const response = await fetch(GOOGLE_TOKEN_URI, {
+  const response = await fetchWithTimeout(GOOGLE_TOKEN_URI, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data?.access_token) {
-    throw new Error(data?.error_description || data?.error || "Failed to refresh Google access token");
+    const errorMessage = data?.error_description || data?.error || "Failed to refresh Google access token";
+    if (shouldDeactivateGoogleConnection(data?.error, errorMessage)) {
+      await deactivateGoogleConnectionById(connection.id);
+    }
+    throw new Error(errorMessage);
   }
 
   const expiresAt =
@@ -3447,8 +3483,12 @@ async function ensureValidGoogleConnection(userId: number) {
   if (!connection) return null;
 
   const expiresAt = connection.expires_at ? new Date(connection.expires_at) : null;
-  const isExpired = expiresAt ? expiresAt.getTime() <= Date.now() + 60_000 : false;
-  if (!isExpired) return connection;
+  const stillValid =
+    Boolean(connection.access_token) &&
+    expiresAt != null &&
+    !Number.isNaN(expiresAt.getTime()) &&
+    expiresAt.getTime() > Date.now() + 60_000;
+  if (stillValid) return connection;
   return refreshGoogleAccessToken(connection);
 }
 
@@ -3502,32 +3542,27 @@ async function upsertGoogleConnection(args: {
   );
 }
 
-async function fetchGoogleEventsForConnection(
-  connection: GoogleCalendarConnectionRow,
-  owner: { id: number; email: string; name: string; role: string },
-  timeMin?: string | null,
-  timeMax?: string | null,
-) {
-  const url = new URL(GOOGLE_EVENTS_URI);
-  url.searchParams.set("singleEvents", "true");
-  url.searchParams.set("orderBy", "startTime");
-  url.searchParams.set("maxResults", "250");
-  url.searchParams.set(
-    "sharedExtendedProperty",
-    `${GOOGLE_SHARED_EVENT_PROPERTY_KEY}=${GOOGLE_SHARED_EVENT_PROPERTY_VALUE}`,
+/** Design Module users table — source of truth for designer invite email (not ERP designer master). */
+async function lookupDesignModuleUserEmailByName(name: string): Promise<string | null> {
+  const normalized = String(name || "").trim();
+  if (!normalized) return null;
+  const [rows] = await pool.query(
+    `SELECT email FROM users
+     WHERE TRIM(name) = TRIM(?)
+       AND role IN ('designer', 'design_manager', 'territorial_design_manager', 'admin', 'deputy_general_manager')
+     LIMIT 1`,
+    [normalized],
   );
-  if (timeMin) url.searchParams.set("timeMin", new Date(timeMin).toISOString());
-  if (timeMax) url.searchParams.set("timeMax", new Date(timeMax).toISOString());
+  const email = (rows as { email?: string }[])[0]?.email;
+  return typeof email === "string" && email.trim() ? email.trim() : null;
+}
 
-  const response = await fetch(url.toString(), {
-    headers: { Authorization: `Bearer ${connection.access_token}` },
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data?.error?.message || "Failed to fetch Google Calendar events");
-  }
-
-  return ((data?.items as any[]) || []).map((event) => ({
+function mapGoogleCalendarEvent(
+  event: any,
+  owner: { id: number; email: string; name: string; role: string },
+  connectedGoogleEmail: string | null,
+) {
+  return {
     id: event.id,
     summary: event.summary || "Untitled event",
     description: event.description || "",
@@ -3547,8 +3582,169 @@ async function fetchGoogleEventsForConnection(
     ownerName: owner.name,
     ownerEmail: owner.email,
     ownerRole: owner.role,
-    connectedGoogleEmail: connection.google_email,
-  }));
+    connectedGoogleEmail,
+  };
+}
+
+function buildGoogleEventsUrl(timeMin?: string | null, timeMax?: string | null, pageToken?: string) {
+  const url = new URL(GOOGLE_EVENTS_URI);
+  url.searchParams.set("singleEvents", "true");
+  url.searchParams.set("orderBy", "startTime");
+  url.searchParams.set("maxResults", "250");
+  url.searchParams.set("timeZone", GOOGLE_TIME_ZONE);
+  // Sales creates the event. The designer is only a guest, so unanswered invites
+  // stay hidden unless this is set. Both copies still carry source=Project-ERP.
+  url.searchParams.set("showHiddenInvitations", "true");
+  url.searchParams.set(
+    "sharedExtendedProperty",
+    `${GOOGLE_SHARED_EVENT_PROPERTY_KEY}=${GOOGLE_SHARED_EVENT_PROPERTY_VALUE}`,
+  );
+  if (timeMin) url.searchParams.set("timeMin", new Date(timeMin).toISOString());
+  if (timeMax) url.searchParams.set("timeMax", new Date(timeMax).toISOString());
+  if (pageToken) url.searchParams.set("pageToken", pageToken);
+  return url;
+}
+
+async function fetchGoogleEventsForConnection(
+  connection: GoogleCalendarConnectionRow,
+  owner: { id: number; email: string; name: string; role: string },
+  timeMin?: string | null,
+  timeMax?: string | null,
+) {
+  let activeConnection = connection;
+  const items: any[] = [];
+  let pageToken = "";
+  let refreshedAfterAuthError = false;
+
+  for (let page = 0; page < 20; page++) {
+    const url = buildGoogleEventsUrl(timeMin, timeMax, pageToken);
+    const response = await fetchWithTimeout(url.toString(), {
+      headers: { Authorization: `Bearer ${activeConnection.access_token}` },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (response.status === 401 && !refreshedAfterAuthError && activeConnection.refresh_token) {
+      activeConnection = await refreshGoogleAccessToken(activeConnection);
+      refreshedAfterAuthError = true;
+      page -= 1;
+      continue;
+    }
+    if (!response.ok) {
+      throw new Error(data?.error?.message || "Failed to fetch Google Calendar events");
+    }
+
+    items.push(...((data?.items as any[]) || []));
+    pageToken = typeof data?.nextPageToken === "string" ? data.nextPageToken : "";
+    if (!pageToken) break;
+  }
+
+  return items.map((event) => mapGoogleCalendarEvent(event, owner, activeConnection.google_email));
+}
+
+type HubCalendarConnectionRow = {
+  user_id: number;
+  user_email: string;
+  user_name: string;
+  user_role: string;
+};
+
+/** Admin/DGM loads every active designer connection — not the admin's own Google login. */
+async function gatherHubCalendarEventsForConnections(
+  rows: HubCalendarConnectionRow[],
+  timeMin?: string | null,
+  timeMax?: string | null,
+) {
+  const allEvents: any[] = [];
+  let nextIndex = 0;
+
+  async function worker() {
+    while (true) {
+      const rowIndex = nextIndex;
+      nextIndex += 1;
+      if (rowIndex >= rows.length) break;
+      const row = rows[rowIndex];
+      try {
+        const connection = await ensureValidGoogleConnection(row.user_id);
+        if (!connection) continue;
+        const events = await fetchGoogleEventsForConnection(
+          connection,
+          { id: row.user_id, email: row.user_email, name: row.user_name, role: row.user_role },
+          timeMin,
+          timeMax,
+        );
+        allEvents.push(...events);
+      } catch (innerErr) {
+        console.error("google-calendar connection fetch error", {
+          userId: row.user_id,
+          name: row.user_name,
+          error: innerErr,
+        });
+      }
+    }
+  }
+
+  const workerCount = Math.min(HUB_CALENDAR_FETCH_CONCURRENCY, Math.max(rows.length, 1));
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return allEvents;
+}
+
+function normalizeErpCrmCalendarEvent(raw: Record<string, unknown>) {
+  const id = String(raw.id ?? "").trim();
+  const start = raw.start ?? null;
+  const end = raw.end ?? raw.start ?? null;
+  if (!id || start == null) return null;
+  return {
+    id,
+    summary: String(raw.summary ?? "Untitled event"),
+    description: typeof raw.description === "string" ? raw.description : "",
+    htmlLink: typeof raw.htmlLink === "string" ? raw.htmlLink : "",
+    status: typeof raw.status === "string" ? raw.status : "confirmed",
+    location: typeof raw.location === "string" ? raw.location : "",
+    start,
+    end,
+    attendees: Array.isArray(raw.attendees) ? raw.attendees : [],
+    ownerUserId: raw.ownerUserId ?? null,
+    ownerName: raw.ownerName ?? null,
+    ownerEmail: raw.ownerEmail ?? null,
+    ownerRole: raw.ownerRole ?? null,
+    connectedGoogleEmail: raw.connectedGoogleEmail ?? null,
+  };
+}
+
+/**
+ * CRM admin calendar merges every CRM Google connection (sales + designers).
+ * DesignMod only stores designer tokens, so sales-organizer meetings were missing.
+ * Uses ERP service login (ERP_USERNAME) which must be a CRM ADMIN with calendar connected.
+ */
+async function fetchErpCrmHubCalendarEvents(timeMin?: string | null, timeMax?: string | null) {
+  const params = new URLSearchParams();
+  if (timeMin) params.set("timeMin", timeMin);
+  if (timeMax) params.set("timeMax", timeMax);
+  const qs = params.toString();
+  const data = await callErpApi(`/api/google-calendar/my-events${qs ? `?${qs}` : ""}`);
+  const list: unknown[] = Array.isArray(data)
+    ? data
+    : Array.isArray((data as { events?: unknown[] })?.events)
+      ? ((data as { events?: unknown[] }).events as unknown[])
+      : [];
+  const events: ReturnType<typeof normalizeErpCrmCalendarEvent>[] = [];
+  for (const row of list) {
+    if (!row || typeof row !== "object") continue;
+    const mapped = normalizeErpCrmCalendarEvent(row as Record<string, unknown>);
+    if (mapped) events.push(mapped);
+  }
+  return events;
+}
+
+function mergeHubCalendarEventsById(...groups: any[][]) {
+  const byId = new Map<string, any>();
+  for (const group of groups) {
+    for (const event of group) {
+      const id = String(event?.id ?? "").trim();
+      if (!id) continue;
+      if (!byId.has(id)) byId.set(id, event);
+    }
+  }
+  return Array.from(byId.values());
 }
 
 async function createGoogleCalendarEventForUser(args: {
@@ -4244,27 +4440,17 @@ app.get("/api/google-calendar/my-events", async (req: Request, res: Response) =>
       return res.status(403).json({ message: "You do not have access to HUB Calendar." });
     }
     const visibleUsers = await getCalendarVisibleUsers(user);
-    const allEvents: any[] = [];
-
-    for (const visibleUser of visibleUsers) {
-      try {
-        const connection = await ensureValidGoogleConnection(visibleUser.id);
-        if (!connection) continue;
-
-        const events = await fetchGoogleEventsForConnection(
-          connection,
-          { id: visibleUser.id, email: visibleUser.email, name: visibleUser.name, role: visibleUser.role },
-          (req.query.timeMin as string | undefined) || null,
-          (req.query.timeMax as string | undefined) || null,
-        );
-        allEvents.push(...events);
-      } catch (innerErr) {
-        console.error("google-calendar my-events user fetch error", {
-          userId: visibleUser.id,
-          error: innerErr,
-        });
-      }
-    }
+    const connectionRows = visibleUsers.map((visibleUser) => ({
+      user_id: visibleUser.id,
+      user_email: visibleUser.email,
+      user_name: visibleUser.name,
+      user_role: visibleUser.role,
+    }));
+    const allEvents = await gatherHubCalendarEventsForConnections(
+      connectionRows,
+      (req.query.timeMin as string | undefined) || null,
+      (req.query.timeMax as string | undefined) || null,
+    );
 
     allEvents.sort((a, b) => String(a.start || "").localeCompare(String(b.start || "")));
     return res.json({ events: allEvents });
@@ -4291,28 +4477,32 @@ app.get("/api/google-calendar/all-events", async (req: Request, res: Response) =
        ORDER BY u.name ASC`,
     );
 
-    const allEvents: any[] = [];
-    for (const row of rows as any[]) {
-      try {
-        const connection = await ensureValidGoogleConnection(row.user_id);
-        if (!connection) continue;
-        const events = await fetchGoogleEventsForConnection(
-          connection,
-          { id: row.user_id, email: row.user_email, name: row.user_name, role: row.user_role },
-          (req.query.timeMin as string | undefined) || null,
-          (req.query.timeMax as string | undefined) || null,
-        );
-        allEvents.push(...events);
-      } catch (innerErr) {
-        console.error("google-calendar all-events user fetch error", {
-          userId: row.user_id,
-          error: innerErr,
-        });
-      }
-    }
+    const timeMin = (req.query.timeMin as string | undefined) || null;
+    const timeMax = (req.query.timeMax as string | undefined) || null;
+
+    const connectionRows = (rows as HubCalendarConnectionRow[]).map((row) => ({
+      user_id: row.user_id,
+      user_email: row.user_email,
+      user_name: row.user_name,
+      user_role: row.user_role,
+    }));
+
+    const [crmEvents, localEvents] = await Promise.all([
+      fetchErpCrmHubCalendarEvents(timeMin, timeMax).catch((err) => {
+        console.error("hub calendar CRM aggregate failed", err);
+        return [] as any[];
+      }),
+      gatherHubCalendarEventsForConnections(connectionRows, timeMin, timeMax),
+    ]);
+    const allEvents = mergeHubCalendarEventsById(crmEvents, localEvents);
 
     allEvents.sort((a, b) => String(a.start || "").localeCompare(String(b.start || "")));
-    return res.json({ events: allEvents });
+    return res.json({
+      events: allEvents,
+      connectionCount: connectionRows.length,
+      crmEventCount: crmEvents.length,
+      localEventCount: localEvents.length,
+    });
   } catch (err) {
     console.error("google-calendar all-events error", err);
     return res.status(500).json({ message: "Failed to load admin Google Calendar events" });
@@ -11300,6 +11490,10 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       row.projectName ||
       "Customer";
     const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
+    const designerInviteEmail =
+      (typeof row.designerEmail === "string" && row.designerEmail.trim()) ||
+      (await lookupDesignModuleUserEmailByName(designerName)) ||
+      (typeof actingUser.email === "string" && actingUser.email.trim() ? actingUser.email.trim() : null);
     const projectId = row.pid || `HUB-${leadId}`;
     const eventStart = formatGoogleDateTime(meetingDate, meetingTime);
     if (!eventStart) {
@@ -11416,7 +11610,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
           meetingMode === "offline" ? resolvedEcLocationText : undefined,
         startDateTimeIso: eventStart,
         endDateTimeIso: eventEnd,
-        attendees: distinctEmails([customerEmail, row.designerEmail, actingUser.email]),
+        attendees: distinctEmails([customerEmail, designerInviteEmail, actingUser.email]),
       });
       if (gcalResult) {
         gcalEventId = (gcalResult as any).id ?? (gcalResult as any).eventId ?? null;
@@ -11431,13 +11625,19 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       });
     }
 
+    const erpDesignerEmail =
+      designerInviteEmail ||
+      (await lookupDesignModuleUserEmailByName(designerName)) ||
+      null;
+
     // Register slot + Google event details in Java CRM (non-fatal — GCal event and email already sent)
     if (slotId && meetingDate) {
       try {
         await callErpApi("/v1/Appointment", {
           method: "POST",
           body: JSON.stringify({
-            designerName: actingUser.name,
+            designerName,
+            ...(erpDesignerEmail ? { designerEmail: erpDesignerEmail } : {}),
             date: meetingDate,
             slotId,
             source: "DESIGN_MODULE",
@@ -11449,7 +11649,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
             googleSyncStatus: gcalEventId ? "SYNCED" : "DM_GCAL_FAILED",
           }),
         });
-        console.log(`[SlotSync] Slot ${slotId} blocked in Java for ${actingUser.name} on ${meetingDate} (gcal=${gcalEventId ?? "none"})`);
+        console.log(`[SlotSync] Slot ${slotId} blocked in Java for ${designerName} on ${meetingDate} (gcal=${gcalEventId ?? "none"})`);
       } catch (slotErr) {
         console.error("[SlotSync] Java appointment registration failed (non-fatal)", slotErr);
       }
@@ -11458,7 +11658,8 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
         await callErpApi("/v1/Appointment", {
           method: "POST",
           body: JSON.stringify({
-            designerName: actingUser.name,
+            designerName,
+            ...(erpDesignerEmail ? { designerEmail: erpDesignerEmail } : {}),
             startTime,
             endTime,
             source: "DESIGN_MODULE",
@@ -11469,7 +11670,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
             googleSyncStatus: gcalEventId ? "SYNCED" : "DM_GCAL_FAILED",
           }),
         });
-        console.log(`[SlotSync] Dynamic window ${startTime}–${endTime} blocked in Java for ${actingUser.name} (gcal=${gcalEventId ?? "none"})`);
+        console.log(`[SlotSync] Dynamic window ${startTime}–${endTime} blocked in Java for ${designerName} (gcal=${gcalEventId ?? "none"})`);
       } catch (slotErr) {
         console.error("[SlotSync] Java dynamic appointment registration failed (non-fatal)", slotErr);
       }
@@ -16207,10 +16408,12 @@ app.post("/api/appointment", async (req: Request, res: Response) => {
   }
 
   try {
+    const designerEmail = await lookupDesignModuleUserEmailByName(designerName);
     const data = await callErpApi("/v1/Appointment", {
       method: "POST",
       body: JSON.stringify({
         designerName,
+        ...(designerEmail ? { designerEmail } : {}),
         date,
         slotId,
         source: "DESIGN_MODULE",
