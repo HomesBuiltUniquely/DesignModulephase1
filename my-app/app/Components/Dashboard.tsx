@@ -10,8 +10,12 @@ import { BRANCH_OPTIONS } from "../constants/branches";
 import { getPhaseBucket } from "@/app/lib/leadPhaseBucket";
 import {
     buildTaskCompletionMap,
+    isExternalApprovalOverdue,
     isLeadDelayed,
+    type TimelineAnchors,
 } from "@/app/Leads/[id]/lib/taskDeadlineUtils";
+import { isMmtD1UploadOverdue } from "@/app/Leads/[id]/lib/queueOverdueHighlight";
+import MileStonesArray from "./Types/MileStoneArray";
 import { createProlanceProjectViaApi } from "@/app/lib/prolanceApiCreateProject";
 import { runProlanceGetQuoteApiFlow } from "@/app/lib/prolanceApiGetQuote";
 import {
@@ -249,7 +253,26 @@ type DqcQueueItem = {
   dqcStatus: "Pending DQC" | "Approved DQC";
   dqc1Pending?: boolean;
   dqc2Pending?: boolean;
+  intakeConfiguration?: string | null;
+  timelineAnchors?: TimelineAnchors;
+  taskCompletions?: Array<{ milestoneIndex: number; taskName: string; completedAt?: string }>;
 };
+
+function isDqcQueueApprovalOverdue(row: DqcQueueItem, stage: "dqc1" | "dqc2"): boolean {
+  const milestoneIndex = stage === "dqc1" ? 1 : 4;
+  const taskName = stage === "dqc1" ? "DQC 1 approval" : "DQC 2 approval ";
+  const milestone = MileStonesArray.MilestonesName.find((m) => m.id === milestoneIndex);
+  if (!milestone) return false;
+  const completions = buildTaskCompletionMap(row.taskCompletions ?? []);
+  return isExternalApprovalOverdue(
+    milestoneIndex,
+    taskName,
+    milestone.taskList,
+    row.intakeConfiguration,
+    row.timelineAnchors ?? {},
+    completions,
+  );
+}
 
 type AssignableDesigner = {
     id: number;
@@ -988,10 +1011,16 @@ export default function Dashboard() {
         }
     };
 
-    const renderDqcRow = (row: DqcQueueItem, stage: "dqc1" | "dqc2", label: string) => (
+    const renderDqcRow = (row: DqcQueueItem, stage: "dqc1" | "dqc2", label: string) => {
+        const approvalOverdue = isDqcQueueApprovalOverdue(row, stage);
+        return (
         <div
             key={`${stage}-${row.id}`}
-            className={`xl:grid xl:grid-cols-5 xl:gap-4 xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:border-gray-300 xl:rounded-lg xl:shadow-md hover:xl:bg-[#DDCDC1]/40 xl:text-gray-900 xl:cursor-pointer xl:items-center ${(row.id % 2 === 0) ? "bg-gray-50" : "bg-gray-100"}`}
+            className={`xl:grid xl:grid-cols-5 xl:gap-4 xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:rounded-lg xl:shadow-md hover:xl:bg-[#DDCDC1]/40 xl:text-gray-900 xl:cursor-pointer xl:items-center ${
+                approvalOverdue
+                    ? "border-[#EF0101]/60 bg-[#EF0101]/10 ring-1 ring-[#EF0101]/25"
+                    : `xl:border-gray-300 ${(row.id % 2 === 0) ? "bg-gray-50" : "bg-gray-100"}`
+            }`}
             onClick={() => handleRouter(row.id, stage)}
         >
             <div className="xl:text-lg xl:font-semibold xl:text-center">{row.id}</div>
@@ -1002,11 +1031,12 @@ export default function Dashboard() {
                     {label}
                 </span>
             </div>
-            <div className={`xl:text-center xl:font-semibold xl:text-sm ${row.dqcStatus === "Approved DQC" ? "xl:text-[#32261C]" : "xl:text-amber-700"}`}>
-                {row.dqcStatus}
+            <div className={`xl:text-center xl:font-semibold xl:text-sm ${approvalOverdue ? "xl:text-[#EF0101]" : row.dqcStatus === "Approved DQC" ? "xl:text-[#32261C]" : "xl:text-amber-700"}`}>
+                {approvalOverdue ? "OVERDUE — approval pending" : row.dqcStatus}
             </div>
         </div>
-    );
+        );
+    };
 
     const renderContent = () => {
         if (isDqcUser) {
@@ -1044,15 +1074,24 @@ export default function Dashboard() {
         if (isMmtUser) {
             return (
                 <div>
-                    {list.map((arr1) => (
+                    {list.map((arr1) => {
+                        const uploadOverdue = isMmtD1UploadOverdue(arr1);
+                        return (
                         <div
                             key={arr1.id}
-                            className={`xl:grid xl:grid-cols-4 xl:gap-4 xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:border-gray-300 xl:rounded-lg xl:shadow-md hover:xl:bg-[#DDCDC1]/40 xl:text-gray-900 xl:cursor-pointer xl:items-center ${(arr1.id % 2 === 0) ? "bg-gray-50" : "bg-gray-100"}`}
+                            className={`xl:grid xl:grid-cols-5 xl:gap-4 xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:rounded-lg xl:shadow-md hover:xl:bg-[#DDCDC1]/40 xl:text-gray-900 xl:cursor-pointer xl:items-center ${
+                                uploadOverdue
+                                    ? "border-[#EF0101]/60 bg-[#EF0101]/10 ring-1 ring-[#EF0101]/25"
+                                    : `xl:border-gray-300 ${(arr1.id % 2 === 0) ? "bg-gray-50" : "bg-gray-100"}`
+                            }`}
                             onClick={() => handleRouter(arr1)}
                         >
                             <div className="xl:text-lg xl:font-semibold xl:text-center">{arr1.id}</div>
                             <div className="xl:text-lg xl:font-semibold xl:text-left">{arr1.projectName}</div>
                             <div className="xl:text-lg xl:font-semibold xl:text-center">{getStatusDisplay(arr1.projectStage)}</div>
+                            <div className={`xl:text-center xl:font-semibold xl:text-sm ${uploadOverdue ? "xl:text-[#EF0101]" : "xl:text-gray-600"}`}>
+                                {uploadOverdue ? "OVERDUE — upload pending" : "On track"}
+                            </div>
                             <div className="xl:text-center" onClick={(e) => onUploadClick(e, arr1.id)}>
                                 <button
                                     type="button"
@@ -1063,7 +1102,8 @@ export default function Dashboard() {
                                 </button>
                             </div>
                         </div>
-                    ))}
+                        );
+                    })}
                 </div>
             );
         }
@@ -2085,7 +2125,7 @@ export default function Dashboard() {
                             </div>
                         ) : (
                             <>
-                                <div className={`xl:grid xl:gap-4 xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:border-gray-300 xl:rounded-lg xl:shadow-md xl:bg-black xl:text-white xl:text-lg xl:font-bold xl:items-center ${isDqcUser ? "xl:grid-cols-5" : "xl:grid-cols-4"}`}>
+                                <div className={`xl:grid xl:gap-4 xl:min-w-287.5 xl:p-4 xl:m-2 xl:border xl:border-gray-300 xl:rounded-lg xl:shadow-md xl:bg-black xl:text-white xl:text-lg xl:font-bold xl:items-center ${isDqcUser || isMmtUser ? "xl:grid-cols-5" : "xl:grid-cols-4"}`}>
                                     <div className="xl:text-center">ID</div>
                                     <div className="xl:text-left">{isDqcUser ? "Name" : "Project Name"}</div>
                                     <div className="xl:text-center">Stage</div>
@@ -2095,7 +2135,12 @@ export default function Dashboard() {
                                             <div className="xl:text-center">DQC Status</div>
                                         </>
                                     )}
-                                    {!isDqcUser && isMmtUser && <div className="xl:text-center">Upload</div>}
+                                    {!isDqcUser && isMmtUser && (
+                                        <>
+                                            <div className="xl:text-center">SLA</div>
+                                            <div className="xl:text-center">Upload</div>
+                                        </>
+                                    )}
                     </div>
                                 {renderContent()}
                             </>

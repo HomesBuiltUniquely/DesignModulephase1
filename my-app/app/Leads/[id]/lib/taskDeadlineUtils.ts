@@ -26,6 +26,122 @@ export type TaskDeadlineEvaluation = {
 const OVERDUE_MESSAGE =
   "Complete this task — you didn't complete this task within the given timeline.";
 
+const APPROVER_OVERDUE_MESSAGE =
+  "This approval is overdue — action required within the SLA.";
+
+/** Tasks completed by another role; clock starts when prerequisite task is done. */
+export type ExternalActionTask = {
+  milestoneIndex: number;
+  taskName: string;
+  prerequisiteTaskName: string;
+  waitingSubtitle: string;
+  overdueSubtitle: string;
+};
+
+export const EXTERNAL_ACTION_TASKS: ExternalActionTask[] = [
+  {
+    milestoneIndex: 0,
+    taskName: "D1 files upload",
+    prerequisiteTaskName: "D1 for MMT request",
+    waitingSubtitle: "Awaiting MMT file upload",
+    overdueSubtitle: "Overdue — MMT upload pending",
+  },
+  {
+    milestoneIndex: 1,
+    taskName: "DQC 1 approval",
+    prerequisiteTaskName: "DQC 1 submission - dwg + quotation",
+    waitingSubtitle: "Awaiting DQC 1 approval",
+    overdueSubtitle: "Overdue — DQC 1 approval pending",
+  },
+  {
+    milestoneIndex: 2,
+    taskName: "10% payment approval",
+    prerequisiteTaskName: "10% payment collection",
+    waitingSubtitle: "Awaiting finance approval (10%)",
+    overdueSubtitle: "Overdue — 10% finance approval pending",
+  },
+  {
+    milestoneIndex: 4,
+    taskName: "DQC 2 approval ",
+    prerequisiteTaskName: "DQC 2 submission",
+    waitingSubtitle: "Awaiting DQC 2 approval",
+    overdueSubtitle: "Overdue — DQC 2 approval pending",
+  },
+  {
+    milestoneIndex: 4,
+    taskName: "Project manager approval",
+    prerequisiteTaskName: "DQC 2 approval ",
+    waitingSubtitle: "Awaiting project manager approval",
+    overdueSubtitle: "Overdue — PM approval pending",
+  },
+  {
+    milestoneIndex: 5,
+    taskName: "40% payment approval",
+    prerequisiteTaskName: "40% collection",
+    waitingSubtitle: "Awaiting finance approval (40%)",
+    overdueSubtitle: "Overdue — 40% finance approval pending",
+  },
+];
+
+function normalizeTaskName(name: string): string {
+  return name.trim().replace(/\s+/g, " ");
+}
+
+export function getExternalActionTask(
+  milestoneIndex: number,
+  taskName: string,
+): ExternalActionTask | undefined {
+  const normalized = normalizeTaskName(taskName);
+  return EXTERNAL_ACTION_TASKS.find(
+    (row) =>
+      row.milestoneIndex === milestoneIndex &&
+      normalizeTaskName(row.taskName) === normalized,
+  );
+}
+
+export function isExternalActionWaiting(
+  milestoneIndex: number,
+  taskName: string,
+  completions: TaskCompletionMap,
+  isCompleted: boolean,
+): boolean {
+  if (isCompleted) return false;
+  const def = getExternalActionTask(milestoneIndex, taskName);
+  if (!def) return false;
+  const prereqKey = taskKey(milestoneIndex, def.prerequisiteTaskName);
+  return Boolean(completions[prereqKey]?.completedAt);
+}
+
+export function evaluateExternalActionDeadline(
+  milestoneIndex: number,
+  taskIndex: number,
+  taskList: string[],
+  propertyConfigRaw: string | null | undefined,
+  anchors: TimelineAnchors,
+  completions: TaskCompletionMap,
+  now: Date = new Date(),
+): TaskDeadlineEvaluation | null {
+  const taskName = taskList[taskIndex];
+  if (!isExternalActionWaiting(milestoneIndex, taskName, completions, false)) {
+    return null;
+  }
+  const evaluation = evaluateTaskDeadline(
+    milestoneIndex,
+    taskIndex,
+    taskList,
+    propertyConfigRaw,
+    anchors,
+    completions,
+    false,
+    now,
+  );
+  if (!evaluation) return null;
+  return {
+    ...evaluation,
+    overdueMessage: APPROVER_OVERDUE_MESSAGE,
+  };
+}
+
 function taskKey(milestoneIndex: number, taskName: string): string {
   return `${milestoneIndex}-${taskName}`;
 }
@@ -240,6 +356,29 @@ export function getMilestoneDateRangeLabel(
   return `${formatShortDate(new Date(startMs))} - ${formatShortDate(new Date(endMs))}`;
 }
 
+export function isExternalApprovalOverdue(
+  milestoneIndex: number,
+  taskName: string,
+  taskList: string[],
+  propertyConfigRaw: string | null | undefined,
+  anchors: TimelineAnchors,
+  completions: TaskCompletionMap,
+  now: Date = new Date(),
+): boolean {
+  const taskIndex = taskList.findIndex((t) => normalizeTaskName(t) === normalizeTaskName(taskName));
+  if (taskIndex < 0) return false;
+  const evaluation = evaluateExternalActionDeadline(
+    milestoneIndex,
+    taskIndex,
+    taskList,
+    propertyConfigRaw,
+    anchors,
+    completions,
+    now,
+  );
+  return Boolean(evaluation?.isOverdue);
+}
+
 /** True when any incomplete task is past its configured deadline. */
 export function isLeadDelayed(
   propertyConfigRaw: string | null | undefined,
@@ -253,6 +392,18 @@ export function isLeadDelayed(
       const key = taskKey(milestone.id, taskList[taskIndex]);
       const isCompleted = Boolean(completions[key]);
       if (isCompleted) continue;
+      if (isExternalActionWaiting(milestone.id, taskList[taskIndex], completions, isCompleted)) {
+        const extEval = evaluateExternalActionDeadline(
+          milestone.id,
+          taskIndex,
+          taskList,
+          propertyConfigRaw,
+          anchors,
+          completions,
+          now,
+        );
+        if (extEval?.isOverdue) return true;
+      }
       const evaluation = evaluateTaskDeadline(
         milestone.id,
         taskIndex,

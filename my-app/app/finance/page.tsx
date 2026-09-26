@@ -4,8 +4,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { getApiBase } from '@/app/lib/apiBase';
 import FinanceRefundsNavLink from '../Components/FinanceRefundsNavLink';
+import { isFinance10ApprovalOverdue, type QueueTimelineFields } from '@/app/Leads/[id]/lib/queueOverdueHighlight';
 
-type FinanceLead = {
+type FinanceLead = QueueTimelineFields & {
   id: number;
   projectName: string;
   status: string;
@@ -273,8 +274,15 @@ export default function Finance10pPage() {
               const busyUpload = uploadingLeadId === l.id;
               const busyApprove = approvingLeadId === l.id;
               const isAuto = queueTab === 'auto_approved' || l.financeHandlingMode === 'AUTO_APPROVED';
+              const approvalOverdue =
+                !isAuto && l.status === 'Pending approval' && isFinance10ApprovalOverdue(l);
               return (
-                <div key={l.id} className="grid grid-cols-12 px-4 py-3 border-t border-gray-200 items-center gap-2">
+                <div
+                  key={l.id}
+                  className={`grid grid-cols-12 px-4 py-3 border-t border-gray-200 items-center gap-2 ${
+                    approvalOverdue ? 'bg-[#EF0101]/10 ring-1 ring-inset ring-[#EF0101]/25' : ''
+                  }`}
+                >
                   <div className="col-span-2 text-sm font-semibold text-gray-900">
                     <a href={`/Leads/${l.id}`} className="text-[#32261C] hover:underline">
                       {l.id}
@@ -288,12 +296,14 @@ export default function Finance10pPage() {
                       className={
                         isAuto
                           ? 'text-emerald-700 font-medium'
-                          : l.status === 'Pending approval'
-                            ? 'text-amber-700 font-medium'
-                            : 'text-gray-600'
+                          : approvalOverdue
+                            ? 'text-[#EF0101] font-semibold'
+                            : l.status === 'Pending approval'
+                              ? 'text-amber-700 font-medium'
+                              : 'text-gray-600'
                       }
                     >
-                      {isAuto ? 'AUTO_APPROVED' : l.status}
+                      {isAuto ? 'AUTO_APPROVED' : approvalOverdue ? 'OVERDUE — approval pending' : l.status}
                     </span>
                   </div>
                   <div className="col-span-2 text-right">

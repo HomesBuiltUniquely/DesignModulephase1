@@ -10013,7 +10013,8 @@ app.get("/api/leads/finance-10p-queue", async (req: Request, res: Response) => {
       return res.status(403).json({ message: "Only finance or admin can access this queue" });
     }
     const list = await buildFinance10pQueueList(pool, TEMP_FINANCE_RELAXED_APPROVAL);
-    return res.json(list);
+    const enriched = await enrichLeadQueueRowsWithTimeline(list);
+    return res.json(enriched);
   } catch (err) {
     console.error("finance-10p-queue error", err);
     return res.status(500).json({ message: "Failed to load queue" });
@@ -10954,7 +10955,8 @@ app.get("/api/leads/finance-40p-queue", async (req: Request, res: Response) => {
       status: has40pUpload(l.id) ? "Pending approval" : "Pending upload",
       canApprove: TEMP_FINANCE_RELAXED_APPROVAL || has40pUpload(l.id),
     }));
-    return res.json(list);
+    const enriched = await enrichLeadQueueRowsWithTimeline(list);
+    return res.json(enriched);
   } catch (err) {
     console.error("finance-40p-queue error", err);
     return res.status(500).json({ message: "Failed to load queue" });
@@ -14248,7 +14250,8 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
         [userId],
       );
       const list = (rows as any[]).map((r) => ({ ...r, isOnHold: !!r.isOnHold }));
-      return res.json(list);
+      const enriched = await enrichLeadQueueRowsWithTimeline(list);
+      return res.json(enriched);
     }
 
     const [rows] = await pool.query(
@@ -14479,6 +14482,101 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
   }
 });
 
+type LeadTaskCompletionDto = {
+  milestoneIndex: number;
+  taskName: string;
+  completedAt?: string;
+};
+
+async function loadLeadTaskCompletionsByLead(): Promise<Map<number, LeadTaskCompletionDto[]>> {
+  const [completionRows] = await pool.query(
+    `SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName, completed_at as completedAt
+     FROM lead_task_completions`,
+  );
+  const completionsByLead = new Map<number, LeadTaskCompletionDto[]>();
+  for (const c of completionRows as {
+    leadId: number;
+    milestoneIndex: number;
+    taskName: string;
+    completedAt?: string | Date;
+  }[]) {
+    const arr = completionsByLead.get(c.leadId) ?? [];
+    arr.push({
+      milestoneIndex: c.milestoneIndex,
+      taskName: c.taskName,
+      completedAt: c.completedAt ? new Date(c.completedAt).toISOString() : undefined,
+    });
+    completionsByLead.set(c.leadId, arr);
+  }
+  return completionsByLead;
+}
+
+async function loadD1MmtRequestSentAtByLead(): Promise<Map<number, string>> {
+  const [d1AnchorRows] = await pool.query(
+    `SELECT lead_id as leadId, MIN(created_at) as sentAt FROM lead_d1_assignments GROUP BY lead_id`,
+  );
+  const d1SentByLead = new Map<number, string>();
+  for (const row of d1AnchorRows as { leadId: number; sentAt?: Date | string }[]) {
+    if (row.sentAt) d1SentByLead.set(row.leadId, new Date(row.sentAt).toISOString());
+  }
+  return d1SentByLead;
+}
+
+async function loadLeadPayloadByIds(leadIds: number[]): Promise<Map<number, unknown>> {
+  const map = new Map<number, unknown>();
+  if (leadIds.length === 0) return map;
+  const placeholders = leadIds.map(() => "?").join(",");
+  const [rows] = await pool.query(
+    `SELECT id, payload FROM leads WHERE id IN (${placeholders})`,
+    leadIds,
+  );
+  for (const row of rows as { id: number; payload: unknown }[]) {
+    map.set(row.id, row.payload);
+  }
+  return map;
+}
+
+async function enrichLeadQueueRowsWithTimeline<T extends { id: number }>(
+  rows: T[],
+  options?: {
+    payloadByLeadId?: Map<number, unknown>;
+    completionsByLead?: Map<number, LeadTaskCompletionDto[]>;
+    d1SentByLead?: Map<number, string>;
+  },
+): Promise<
+  Array<
+    T & {
+      intakeConfiguration: string | null;
+      timelineAnchors: ReturnType<typeof buildTimelineAnchorsFromPayloadAndD1>;
+      taskCompletions: LeadTaskCompletionDto[];
+    }
+  >
+> {
+  const leadIds = rows.map((r) => r.id);
+  const payloadByLeadId =
+    options?.payloadByLeadId ?? (await loadLeadPayloadByIds(leadIds));
+  const completionsByLead =
+    options?.completionsByLead ?? (await loadLeadTaskCompletionsByLead());
+  const d1SentByLead =
+    options?.d1SentByLead ?? (await loadD1MmtRequestSentAtByLead());
+
+  return rows.map((row) => {
+    const payload = payloadByLeadId.get(row.id) ?? null;
+    const intake = extractLeadIntakeViewFromPayload(payload);
+    const taskCompletions = completionsByLead.get(row.id) ?? [];
+    const timelineAnchors = buildTimelineAnchorsFromPayloadAndD1(
+      payload,
+      d1SentByLead.get(row.id) ?? null,
+    );
+    return {
+      ...row,
+      intakeConfiguration: intake.intakeConfiguration ?? null,
+      timelineAnchors,
+      taskCompletions,
+    };
+  });
+}
+
 // DQC dashboard: list leads with id, name, stage, dqcStatus, dqc1Pending, dqc2Pending for dqc_manager and dqe
 // dqc1Pending = needs DQC 1 approval (has DQC 1 submission, latest verdict not approved)
 // dqc2Pending = needs DQC 2 approval (latest verdict is pending_dqc2)
@@ -14490,13 +14588,22 @@ app.get("/api/leads/dqc-queue", async (req: Request, res: Response) => {
       return res.status(403).json({ message: "Only DQC Manager or DQE can access DQC queue" });
     }
     const [leadRows] = await pool.query(
-      `SELECT id, project_name as projectName, project_stage as projectStage,
+      `SELECT id, project_name as projectName, project_stage as projectStage, payload,
               JSON_UNQUOTE(JSON_EXTRACT(CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, '$.sales_closure_finance_approved')) AS financeApprovedRaw
        FROM leads ORDER BY id ASC`,
     );
     const leads = (leadRows as any[])
       .filter((l) => l.financeApprovedRaw !== "false")
-      .map((l) => ({ id: l.id, projectName: l.projectName, projectStage: l.projectStage }));
+      .map((l) => {
+        const intake = extractLeadIntakeViewFromPayload(l.payload);
+        return {
+          id: l.id,
+          projectName: l.projectName,
+          projectStage: l.projectStage,
+          intakeConfiguration: intake.intakeConfiguration,
+          payload: l.payload,
+        };
+      });
     const [reviewRows] = await pool.query(
       `SELECT lead_id as leadId, verdict FROM lead_dqc_reviews ORDER BY id DESC`,
     );
@@ -14506,13 +14613,21 @@ app.get("/api/leads/dqc-queue", async (req: Request, res: Response) => {
         latestVerdictByLead[row.leadId] = row.verdict;
       }
     }
-    const [completionRows] = await pool.query(
-      `SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName
-       FROM lead_task_completions`,
-    );
-    const completions = completionRows as { leadId: number; milestoneIndex: number; taskName: string }[];
+    const completionsByLead = await loadLeadTaskCompletionsByLead();
+    const d1SentByLead = await loadD1MmtRequestSentAtByLead();
+    const completionRowsFlat: {
+      leadId: number;
+      milestoneIndex: number;
+      taskName: string;
+      completedAt?: string;
+    }[] = [];
+    for (const [leadId, comps] of completionsByLead.entries()) {
+      for (const c of comps) {
+        completionRowsFlat.push({ leadId, ...c });
+      }
+    }
     const hasDqc1Submission = (leadId: number) =>
-      completions.some(
+      completionRowsFlat.some(
         (c) =>
           c.leadId === leadId &&
           c.milestoneIndex === 1 &&
@@ -14525,10 +14640,17 @@ app.get("/api/leads/dqc-queue", async (req: Request, res: Response) => {
         !dqc2Pending &&
         hasDqc1Submission(l.id) &&
         (verdict === undefined || verdict === "rejected" || verdict === "approved_with_changes");
+      const taskCompletions = completionsByLead.get(l.id) ?? [];
+      const timelineAnchors = buildTimelineAnchorsFromPayloadAndD1(
+        l.payload ?? null,
+        d1SentByLead.get(l.id) ?? null,
+      );
+      const { payload: _payload, ...leadPublic } = l;
       return {
-        id: l.id,
-        projectName: l.projectName,
-        projectStage: l.projectStage,
+        ...leadPublic,
+        intakeConfiguration: l.intakeConfiguration ?? null,
+        timelineAnchors,
+        taskCompletions,
         dqcStatus: verdict === "approved" ? "Approved DQC" : "Pending DQC",
         dqc1Pending: !!dqc1Pending,
         dqc2Pending: !!dqc2Pending,
