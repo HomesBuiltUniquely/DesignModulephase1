@@ -74,6 +74,76 @@ async function resolveLeadId(projectId: string): Promise<number> {
   return id ? Number(id) : 0;
 }
 
+function parsePayloadRecord(raw: unknown): Record<string, unknown> {
+  if (!raw) return {};
+  if (typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return {};
+}
+
+function leadIdFromEventId(eventId: unknown): number {
+  const match = String(eventId || "").match(/^design:(\d+):/i);
+  if (!match) return 0;
+  const id = Number(match[1]);
+  return Number.isFinite(id) && id > 0 ? id : 0;
+}
+
+/** Ensure inbox rows always carry lead_id for bell → /Leads/:id navigation. */
+async function enrichInboxNotification(item: Record<string, unknown>): Promise<void> {
+  if (!item || typeof item !== "object") return;
+
+  let leadId = Number(item.lead_id);
+  if (Number.isFinite(leadId) && leadId > 0) {
+    item.lead_id = leadId;
+    return;
+  }
+
+  const payload = parsePayloadRecord(item.payload);
+  leadId = Number(payload.lead_id ?? payload.leadId ?? payload.design_lead_id);
+  if (Number.isFinite(leadId) && leadId > 0) {
+    item.lead_id = leadId;
+    item.payload = { ...payload, lead_id: leadId };
+    return;
+  }
+
+  const projectId = String(
+    item.project_id || payload.project_id || payload.projectId || payload.pid || "",
+  ).trim();
+  if (projectId) {
+    const resolved = await resolveLeadId(projectId);
+    if (resolved > 0) {
+      item.lead_id = resolved;
+      item.payload = { ...payload, lead_id: resolved };
+      return;
+    }
+  }
+
+  const fromEvent = leadIdFromEventId(item.event_id);
+  if (fromEvent > 0) {
+    item.lead_id = fromEvent;
+    item.payload = { ...payload, lead_id: fromEvent };
+  }
+}
+
+async function enrichInboxResponse(json: unknown): Promise<void> {
+  const list = Array.isArray((json as { data?: unknown })?.data)
+    ? ((json as { data: Record<string, unknown>[] }).data)
+    : Array.isArray(json)
+      ? (json as Record<string, unknown>[])
+      : null;
+  if (!list?.length) return;
+  await Promise.all(list.map((row) => enrichInboxNotification(row)));
+}
+
 function buildEventId(type: string, action: string, leadId: number, payload: any): string {
   let suffix = "";
   if (payload) {
@@ -462,6 +532,13 @@ export function registerInboxRoutes(app: Application, authResolver?: InboxAuthRe
 
       const resp = await fetch(targetUrl, { headers: notifyApiHeaders() });
       const json = await resp.json();
+      if (resp.ok) {
+        try {
+          await enrichInboxResponse(json);
+        } catch (enrichErr) {
+          console.warn("[notify] inbox enrich skipped", enrichErr);
+        }
+      }
       return res.status(resp.status).json(json);
     } catch (err: any) {
       console.error("[notify] inbox proxy error", err);

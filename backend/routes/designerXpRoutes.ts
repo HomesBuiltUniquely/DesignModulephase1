@@ -4,10 +4,16 @@ import {
   BADGE_TIERS,
   COMMERCIAL_XP_RULES,
   TASK_XP_RULES,
+  WORKFLOW_XP_RULES,
+  findWorkflowRule,
+  matchWorkflowStep,
+  TOTAL_POSSIBLE_WORKFLOW_XP,
+  calculateWorkflowNetXp,
   calculateNetXp,
   findTaskRule,
   getBadgeForXp,
   getNextBadge,
+  getTaskSlaHours,
 } from "../constants/xpTaskRules";
 import { extractTotalPayableAmount } from "./prolanceApi";
 
@@ -23,7 +29,7 @@ export async function ensureDesignerXpTable(pool: Pool): Promise<void> {
       lead_id INT NULL,
       task_name VARCHAR(255) NULL,
       milestone_index INT NULL,
-      transaction_type ENUM('task_completion', 'new_sale', 'upsell', 'manual_adjustment') NOT NULL,
+      transaction_type ENUM('task_completion', 'workflow_completion', 'new_sale', 'upsell', 'manual_adjustment') NOT NULL,
       base_xp INT NOT NULL,
       penalty_xp INT NOT NULL DEFAULT 0,
       net_xp INT NOT NULL,
@@ -40,31 +46,54 @@ export async function ensureDesignerXpTable(pool: Pool): Promise<void> {
   `);
 }
 
-interface AwardTaskCompletionParams {
+export interface AwardWorkflowParams {
   leadId: number;
   milestoneIndex: number;
-  taskName: string;
-  completionDate?: Date;
+  forceDate?: Date;
 }
 
 /**
- * Server-authoritative task completion XP award engine.
- * Wrapped in non-fatal try/catch: XP calculation can NEVER disrupt the main task completion flow.
+ * Server-authoritative workflow completion XP award engine.
+ * STRICT BUSINESS RULES:
+ * 1. XP is for DESIGNER performance only.
+ * 2. XP is awarded ONLY AFTER THE COMPLETE WORKFLOW IS COMPLETED.
+ * 3. Never award XP for partial or individual steps.
+ * 4. Total workflow allowed days:
+ *    - Milestone 0 (D1 Site Measurement): 4 days -> +5 XP
+ *    - Milestone 1 (DQC 1): 3 days -> +10 XP
+ *    - Milestone 2 (10% Payment): 3 days -> +10 XP
+ *    - Milestone 3 (D2 Site Masking): 2 days -> +10 XP
+ *    - Milestone 4 (DQC 2): 2 days -> +10 XP
+ *    - Milestone 5 (40% Payment): 1 day -> +15 XP
+ *    - Milestone 6 (Push to Production): 2 days -> +5 XP
+ *    Total Possible = 65 XP.
+ * 5. Overdue penalty: If complete workflow finishes after allowed time:
+ *    - On-time base XP is NOT awarded.
+ *    - Delay penalty = overdueDays * 2 = negative points.
+ *    - Net XP = -penalty.
+ * 6. Idempotency: Unique key `lead_${leadId}_workflow_m${milestoneIndex}` guarantees exactly once award.
  */
-export async function awardTaskCompletionXp(
+export async function evaluateAndAwardWorkflowXp(
   pool: Pool,
-  params: AwardTaskCompletionParams,
-): Promise<{ awarded: boolean; netXp?: number; reason?: string }> {
+  params: AwardWorkflowParams,
+): Promise<{
+  completed: boolean;
+  awarded: boolean;
+  netXp?: number;
+  baseXp?: number;
+  penaltyXp?: number;
+  isDelayed?: boolean;
+  overdueDays?: number;
+  reason?: string;
+}> {
   try {
-    const { leadId, milestoneIndex, taskName, completionDate = new Date() } = params;
-    const rule = findTaskRule(milestoneIndex, taskName);
-
-    // If task is not defined or is INACTIVE / DISABLED (Tasks 9–22), do not award XP
-    if (!rule || !rule.isActive) {
-      return { awarded: false, reason: "Rule is inactive or unconfirmed" };
+    const { leadId, milestoneIndex, forceDate } = params;
+    const workflow = findWorkflowRule(milestoneIndex);
+    if (!workflow) {
+      return { completed: false, awarded: false, reason: `No workflow rule for milestone index ${milestoneIndex}` };
     }
 
-    // Resolve assigned designer from leads table
+    // 1. Resolve assigned designer from leads table
     const [leadRows] = await pool.query(
       `SELECT l.id, l.assigned_designer_id, l.create_at, l.payload,
               u.role as designerRole, u.name as designerName
@@ -75,253 +104,249 @@ export async function awardTaskCompletionXp(
     );
     const lead = (leadRows as any[])[0];
     if (!lead || !lead.assigned_designer_id) {
-      return { awarded: false, reason: "No designer assigned to this lead" };
+      return { completed: false, awarded: false, reason: "No designer assigned to this lead" };
     }
     if ((lead.designerRole || "").toLowerCase() !== "designer") {
-      return { awarded: false, reason: "Assigned user is not a designer" };
+      return { completed: false, awarded: false, reason: "Assigned user is not a designer" };
     }
 
     const designerId = Number(lead.assigned_designer_id);
 
-    // If task awards 0 XP (e.g. KT files upload excluded)
-    if (rule.baseXp === 0) {
-      return { awarded: true, netXp: 0 };
+    // 2. Query completed tasks for this lead in this milestone
+    const [compRows] = await pool.query(
+      `SELECT task_name, completed_at
+       FROM lead_task_completions
+       WHERE lead_id = ? AND milestone_index = ?`,
+      [leadId, milestoneIndex],
+    );
+    const completedTasks = compRows as Array<{ task_name: string; completed_at: Date | string }>;
+
+    // 3. Verify ALL required workflow steps are completed
+    const stepCompletionTimes: number[] = [];
+    for (const step of workflow.steps) {
+      const match = completedTasks.find((c) => matchWorkflowStep(step, c.task_name));
+      if (!match || !match.completed_at) {
+        // INCOMPLETE WORKFLOW:
+        // Do NOT award XP.
+        // Clean up any premature or legacy transactions for this workflow/milestone on this lead
+        await pool.query(
+          `DELETE FROM designer_xp_transactions
+           WHERE lead_id = ? AND milestone_index = ? AND transaction_type IN ('workflow_completion', 'task_completion')`,
+          [leadId, milestoneIndex],
+        );
+        return {
+          completed: false,
+          awarded: false,
+          netXp: 0,
+          reason: `Workflow incomplete: missing step '${step.stepName}'`,
+        };
+      }
+      stepCompletionTimes.push(new Date(match.completed_at).getTime());
     }
 
-    // Determine delay based on SLA baseline event
-    let delayDays = 0;
-    if (rule.slaDays != null && rule.slaDays > 0) {
-      let baselineDate: Date | null = null;
-      let payloadObj: any = {};
-      try {
-        payloadObj = typeof lead.payload === "string" ? JSON.parse(lead.payload) : lead.payload || {};
-      } catch {
-        payloadObj = {};
-      }
+    // ALL steps are completed!
+    const workflowCompletedAt = forceDate || new Date(Math.max(...stepCompletionTimes));
 
-      switch (rule.baselineType) {
-        case "group_description_completed": {
-          const [compRows] = await pool.query(
-            `SELECT completed_at FROM lead_task_completions
-             WHERE lead_id = ? AND milestone_index = 0 AND task_name IN ('Group Description', 'Group description update')
-             ORDER BY id ASC LIMIT 1`,
-            [leadId],
-          );
-          const comp = (compRows as any[])[0];
-          if (comp?.completed_at) {
-            baselineDate = new Date(comp.completed_at);
-          } else {
-            const approvedAt =
-              payloadObj.sales_closure_finance_approved_at ||
-              payloadObj.formData?.sales_closure_finance_approved_at;
-            baselineDate = approvedAt ? new Date(approvedAt) : new Date(lead.create_at);
-          }
-          break;
-        }
-        case "sales_closure_approval": {
-          const approvedAt =
-            payloadObj.sales_closure_finance_approved_at ||
-            payloadObj.formData?.sales_closure_finance_approved_at;
-          baselineDate = approvedAt ? new Date(approvedAt) : new Date(lead.create_at);
-          break;
-        }
-        case "d1_measurement_date": {
-          const [d1Rows] = await pool.query(
-            "SELECT measurement_date, created_at FROM lead_d1_assignments WHERE lead_id = ? ORDER BY id DESC LIMIT 1",
-            [leadId],
-          );
-          const d1 = (d1Rows as any[])[0];
-          if (d1?.measurement_date) {
-            baselineDate = new Date(d1.measurement_date);
-          } else if (d1?.created_at) {
-            baselineDate = new Date(d1.created_at);
-          } else {
-            baselineDate = new Date(lead.create_at);
-          }
-          break;
-        }
-        case "d1_upload_approval": {
-          const [compRows] = await pool.query(
-            "SELECT completed_at FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 0 AND task_name = 'D1 files upload' LIMIT 1",
-            [leadId],
-          );
-          const comp = (compRows as any[])[0];
-          baselineDate = comp?.completed_at ? new Date(comp.completed_at) : new Date(lead.create_at);
-          break;
-        }
-        case "first_cut_meeting_completed": {
-          const [compRows] = await pool.query(
-            "SELECT completed_at FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 1 AND task_name = 'meeting completed' LIMIT 1",
-            [leadId],
-          );
-          const comp = (compRows as any[])[0];
-          baselineDate = comp?.completed_at ? new Date(comp.completed_at) : new Date(lead.create_at);
-          break;
-        }
-        case "dqc1_approval": {
-          const [compRows] = await pool.query(
-            "SELECT completed_at FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 1 AND task_name = 'DQC 1 approval' LIMIT 1",
-            [leadId],
-          );
-          const comp = (compRows as any[])[0];
-          baselineDate = comp?.completed_at ? new Date(comp.completed_at) : new Date(lead.create_at);
-          break;
-        }
-        case "payment_10p_uploaded": {
-          const [compRows] = await pool.query(
-            "SELECT completed_at FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 2 AND task_name = '10% payment collection' LIMIT 1",
-            [leadId],
-          );
-          const comp = (compRows as any[])[0];
-          baselineDate = comp?.completed_at ? new Date(comp.completed_at) : new Date(lead.create_at);
-          break;
-        }
-        case "payment_10p_approved": {
-          const [compRows] = await pool.query(
-            "SELECT completed_at FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 2 AND task_name = '10% payment approval' LIMIT 1",
-            [leadId],
-          );
-          const comp = (compRows as any[])[0];
-          baselineDate = comp?.completed_at ? new Date(comp.completed_at) : new Date(lead.create_at);
-          break;
-        }
-        case "d2_masking_date": {
-          const [compRows] = await pool.query(
-            "SELECT completed_at FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 3 ORDER BY id DESC LIMIT 1",
-            [leadId],
-          );
-          const comp = (compRows as any[])[0];
-          baselineDate = comp?.completed_at ? new Date(comp.completed_at) : new Date(lead.create_at);
-          break;
-        }
-        case "material_meeting_completed": {
-          const [compRows] = await pool.query(
-            "SELECT completed_at FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 4 AND task_name = 'Material selection meeting completed' LIMIT 1",
-            [leadId],
-          );
-          const comp = (compRows as any[])[0];
-          baselineDate = comp?.completed_at ? new Date(comp.completed_at) : new Date(lead.create_at);
-          break;
-        }
-        case "dqc2_submission": {
-          const [compRows] = await pool.query(
-            "SELECT completed_at FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 4 AND task_name = 'DQC 2 submission' LIMIT 1",
-            [leadId],
-          );
-          const comp = (compRows as any[])[0];
-          baselineDate = comp?.completed_at ? new Date(comp.completed_at) : new Date(lead.create_at);
-          break;
-        }
-        case "dqc2_approval": {
-          const [compRows] = await pool.query(
-            "SELECT completed_at FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 4 AND (task_name = 'DQC 2 approval' OR task_name = 'DQC 2 approval ') LIMIT 1",
-            [leadId],
-          );
-          const comp = (compRows as any[])[0];
-          baselineDate = comp?.completed_at ? new Date(comp.completed_at) : new Date(lead.create_at);
-          break;
-        }
-        case "payment_40p_approved": {
-          const [compRows] = await pool.query(
-            "SELECT completed_at FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 5 AND task_name = '40% payment approval' LIMIT 1",
-            [leadId],
-          );
-          const comp = (compRows as any[])[0];
-          baselineDate = comp?.completed_at ? new Date(comp.completed_at) : new Date(lead.create_at);
-          break;
-        }
-        case "production_approval": {
-          const [compRows] = await pool.query(
-            "SELECT completed_at FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 6 AND task_name = 'Cx approval for production' LIMIT 1",
-            [leadId],
-          );
-          const comp = (compRows as any[])[0];
-          baselineDate = comp?.completed_at ? new Date(comp.completed_at) : new Date(lead.create_at);
-          break;
-        }
-        default:
-          baselineDate = null;
-      }
+    // 4. Determine workflow start time
+    let payloadObj: any = {};
+    try {
+      payloadObj = typeof lead.payload === "string" ? JSON.parse(lead.payload) : lead.payload || {};
+    } catch {
+      payloadObj = {};
+    }
 
-      if (baselineDate && !isNaN(baselineDate.getTime())) {
-        const expectedMs = baselineDate.getTime() + rule.slaDays * 24 * 60 * 60 * 1000;
-        const actualMs = completionDate.getTime();
-        if (actualMs > expectedMs) {
-          delayDays = Math.floor((actualMs - expectedMs) / (24 * 60 * 60 * 1000));
-        }
+    let workflowStartTime: Date | null = null;
+    if (milestoneIndex === 0) {
+      // Milestone 0 start: check KT transfer upload or 10-20% entry / sales closure approval
+      const [m7Rows] = await pool.query(
+        "SELECT completed_at FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 7 AND task_name = 'Upload KT files' LIMIT 1",
+        [leadId],
+      );
+      const m7 = (m7Rows as any[])[0];
+      if (m7?.completed_at) {
+        workflowStartTime = new Date(m7.completed_at);
+      } else {
+        const enteredAt =
+          payloadObj.entered_1020_at ||
+          payloadObj.sales_closure_finance_approved_at ||
+          lead.create_at;
+        workflowStartTime = enteredAt ? new Date(enteredAt) : new Date(lead.create_at);
+      }
+    } else {
+      // For milestone N (1..6), start anchor is the completion of previous milestone!
+      const prevMilestoneIndex = milestoneIndex === 1 ? 0 : milestoneIndex - 1;
+      const [prevComps] = await pool.query(
+        `SELECT completed_at FROM lead_task_completions
+         WHERE lead_id = ? AND milestone_index = ?
+         ORDER BY completed_at DESC LIMIT 1`,
+        [leadId, prevMilestoneIndex],
+      );
+      const prev = (prevComps as any[])[0];
+      if (prev?.completed_at) {
+        workflowStartTime = new Date(prev.completed_at);
+      } else {
+        // Fallback: earliest task completion in this milestone
+        workflowStartTime = new Date(Math.min(...stepCompletionTimes));
       }
     }
 
-    const { penaltyXp, netXp } = calculateNetXp(rule.baseXp, delayDays);
-    const idempotencyKey = `lead_${leadId}_m${milestoneIndex}_${rule.taskName.trim()}`;
+    if (!workflowStartTime || isNaN(workflowStartTime.getTime())) {
+      workflowStartTime = new Date(Math.min(...stepCompletionTimes));
+    }
 
-    // Idempotent insertion using MySQL UNIQUE constraint
+    // 5. Calculate elapsed time vs total allowed time
+    const startMs = workflowStartTime.getTime();
+    const endMs = workflowCompletedAt.getTime();
+    const elapsedMs = Math.max(0, endMs - startMs);
+    const allowedMs = workflow.totalAllowedDays * 24 * 60 * 60 * 1000;
+
+    let isDelayed = false;
+    let overdueDays = 0;
+
+    if (elapsedMs > allowedMs) {
+      isDelayed = true;
+      const diffMs = elapsedMs - allowedMs;
+      overdueDays = Math.max(1, Math.ceil(diffMs / (24 * 60 * 60 * 1000)));
+    }
+
+    // 6. Calculate Net XP:
+    // If on-time: base_xp = rewardXp, penalty_xp = 0, net_xp = rewardXp
+    // If overdue: base_xp = 0, penalty_xp = overdueDays * 2, net_xp = -penalty_xp
+    const { base_xp, penalty_xp, net_xp } = calculateWorkflowNetXp(
+      workflow.rewardXp,
+      isDelayed,
+      overdueDays,
+    );
+
+    const idempotencyKey = `lead_${leadId}_workflow_m${milestoneIndex}`;
+
+    // Clean up any legacy task_completion transactions for this milestone
+    await pool.query(
+      `DELETE FROM designer_xp_transactions
+       WHERE lead_id = ? AND milestone_index = ? AND transaction_type = 'task_completion'`,
+      [leadId, milestoneIndex],
+    );
+
+    // 7. Idempotent insertion using MySQL UNIQUE KEY (idempotency_key)
     await pool.query(
       `INSERT INTO designer_xp_transactions
         (designer_id, lead_id, task_name, milestone_index, transaction_type, base_xp, penalty_xp, net_xp, delay_days, idempotency_key, meta, created_at)
-       VALUES (?, ?, ?, ?, 'task_completion', ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, 'workflow_completion', ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
+         designer_id = VALUES(designer_id),
+         task_name = VALUES(task_name),
+         milestone_index = VALUES(milestone_index),
+         transaction_type = VALUES(transaction_type),
          base_xp = VALUES(base_xp),
          penalty_xp = VALUES(penalty_xp),
          net_xp = VALUES(net_xp),
          delay_days = VALUES(delay_days),
-         meta = VALUES(meta)`,
+         meta = VALUES(meta),
+         created_at = VALUES(created_at)`,
       [
         designerId,
         leadId,
-        rule.taskName,
+        workflow.workflowName,
         milestoneIndex,
-        rule.baseXp,
-        penaltyXp,
-        netXp,
-        delayDays,
+        base_xp,
+        penalty_xp,
+        net_xp,
+        overdueDays,
         idempotencyKey,
         JSON.stringify({
-          slaDays: rule.slaDays,
-          delayDays,
-          completionDate: completionDate.toISOString(),
+          workflowId: workflow.workflowId,
+          totalAllowedDays: workflow.totalAllowedDays,
+          elapsedDays: Number((elapsedMs / (24 * 60 * 60 * 1000)).toFixed(2)),
+          overdueDays,
+          isDelayed,
+          startTime: workflowStartTime.toISOString(),
+          completionTime: workflowCompletedAt.toISOString(),
         }),
-        completionDate,
+        workflowCompletedAt,
       ],
     );
 
-    return { awarded: true, netXp };
+    return {
+      completed: true,
+      awarded: true,
+      netXp: net_xp,
+      baseXp: base_xp,
+      penaltyXp: penalty_xp,
+      isDelayed,
+      overdueDays,
+    };
   } catch (err: any) {
-    console.error("[designer-xp] Error awarding task XP (non-fatal):", err);
+    console.error("[designer-xp] Error evaluating workflow XP (non-fatal):", err);
+    return { completed: false, awarded: false, reason: err?.message };
+  }
+}
+
+interface AwardTaskCompletionParams {
+  leadId: number;
+  milestoneIndex: number;
+  taskName: string;
+  completionDate?: Date;
+}
+
+/**
+ * Server-authoritative task completion hook.
+ * When any task completes, evaluate the workflow for that milestone.
+ * Wrapped in non-fatal try/catch: XP calculation can NEVER disrupt the main task completion flow.
+ */
+export async function awardTaskCompletionXp(
+  pool: Pool,
+  params: AwardTaskCompletionParams,
+): Promise<{ awarded: boolean; netXp?: number; reason?: string }> {
+  try {
+    const { leadId, milestoneIndex } = params;
+    const res = await evaluateAndAwardWorkflowXp(pool, { leadId, milestoneIndex });
+    return {
+      awarded: res.awarded,
+      netXp: res.netXp,
+      reason: res.reason,
+    };
+  } catch (err: any) {
+    console.error("[designer-xp] Error in awardTaskCompletionXp (non-fatal):", err);
     return { awarded: false, reason: err?.message };
   }
 }
 
 /**
- * Reconciles/syncs XP for any completed tasks of a lead by calling awardTaskCompletionXp
- * with the original completed_at timestamp.
+ * Reconciles/syncs XP for all workflows of a lead.
+ * 1. Purges any legacy task_completion rows.
+ * 2. Evaluates all 7 workflows.
  * This is non-fatal and idempotent.
  */
 export async function reconcileLeadXp(
   pool: Pool,
   leadId: number,
-): Promise<{ processed: number; awards: Array<{ taskName: string; netXp?: number; awarded: boolean; reason?: string }> }> {
-  const [completions] = await pool.query(
-    `SELECT milestone_index, task_name, completed_at
-     FROM lead_task_completions
-     WHERE lead_id = ?
-     ORDER BY milestone_index ASC, completed_at ASC`,
+): Promise<{
+  processed: number;
+  awards: Array<{ milestoneIndex: number; workflowName: string; netXp?: number; awarded: boolean; reason?: string }>;
+}> {
+  // 1. Purge legacy task_completion transactions
+  await pool.query(
+    "DELETE FROM designer_xp_transactions WHERE lead_id = ? AND transaction_type = 'task_completion'",
     [leadId],
   );
-  const rows = completions as Array<{ milestone_index: number; task_name: string; completed_at: Date }>;
-  const awards: Array<{ taskName: string; netXp?: number; awarded: boolean; reason?: string }> = [];
 
-  for (const row of rows) {
-    const res = await awardTaskCompletionXp(pool, {
+  // 2. Evaluate all 7 workflows (milestones 0 through 6)
+  const awards: Array<{ milestoneIndex: number; workflowName: string; netXp?: number; awarded: boolean; reason?: string }> = [];
+  for (const wf of WORKFLOW_XP_RULES) {
+    const res = await evaluateAndAwardWorkflowXp(pool, {
       leadId,
-      milestoneIndex: Number(row.milestone_index),
-      taskName: row.task_name,
-      completionDate: new Date(row.completed_at),
+      milestoneIndex: wf.milestoneIndex,
     });
-    awards.push({ taskName: row.task_name, netXp: res.netXp, awarded: res.awarded, reason: res.reason });
+    awards.push({
+      milestoneIndex: wf.milestoneIndex,
+      workflowName: wf.workflowName,
+      netXp: res.netXp,
+      awarded: res.awarded,
+      reason: res.reason,
+    });
   }
 
-  return { processed: rows.length, awards };
+  return { processed: WORKFLOW_XP_RULES.length, awards };
 }
 
 /**
@@ -780,12 +805,28 @@ export function registerDesignerXpRoutes(
         });
       });
 
-      // Map milestone breakdown across all 8 milestones
+      // Map milestone breakdown across all 8 milestones (0 to 7)
       const milestonesMap = new Map<number, {
         milestoneIndex: number;
         milestoneName: string;
+        workflowName: string;
         totalPossibleXp: number;
-        earnedXp: number;
+        baseXp?: number;
+        penaltyXp?: number;
+        earnedXp: number | null;
+        netXp?: number | null;
+        finalXp?: number | null;
+        workflowStatus?: string;
+        completionState?: string;
+        isWorkflowCompleted: boolean;
+        isDelayed: boolean;
+        delayDays: number;
+        overdueDays?: number;
+        allowedDurationDays?: number;
+        actualDurationDays?: number | null;
+        overdueDurationDays?: number;
+        workflowStartTimestamp?: string | null;
+        workflowCompletionTimestamp?: string | null;
         tasks: Array<{
           taskName: string;
           aliases?: string[];
@@ -799,73 +840,129 @@ export function registerDesignerXpRoutes(
         }>;
       }>();
 
-      let totalPossibleProjectXp = 0;
+      // 1. Initialize Milestone 7: KT TRANSFER (Excluded from designer XP)
+      milestonesMap.set(7, {
+        milestoneIndex: 7,
+        milestoneName: "KT TRANSFER",
+        workflowName: "KT Transfer",
+        totalPossibleXp: 0,
+        earnedXp: 0,
+        isWorkflowCompleted: completedSet.has("7::upload kt files"),
+        isDelayed: false,
+        delayDays: 0,
+        tasks: [
+          {
+            taskName: "Upload KT files",
+            aliases: [],
+            baseXp: 0,
+            earnedXp: null,
+            status: completedSet.has("7::upload kt files") ? "completed" : "pending",
+            isDelayed: false,
+            delayDays: 0,
+            tag: completedSet.has("7::upload kt files") ? "ON-TIME" : "PENDING",
+            isActive: false,
+          },
+        ],
+      });
 
-      TASK_XP_RULES.forEach((rule) => {
-        if (!milestonesMap.has(rule.milestoneIndex)) {
-          milestonesMap.set(rule.milestoneIndex, {
-            milestoneIndex: rule.milestoneIndex,
-            milestoneName: rule.milestoneName,
-            totalPossibleXp: 0,
-            earnedXp: 0,
-            tasks: [],
-          });
-        }
-        const m = milestonesMap.get(rule.milestoneIndex)!;
-        if (rule.isActive && rule.baseXp > 0) {
-          m.totalPossibleXp += rule.baseXp;
-          totalPossibleProjectXp += rule.baseXp;
-        }
+      // 2. Map all 7 Designer Workflows (Milestones 0 to 6)
+      WORKFLOW_XP_RULES.forEach((wf) => {
+        const tx = leadTransactions.find(
+          (t) => t.milestone_index === wf.milestoneIndex && t.transaction_type === "workflow_completion",
+        );
 
-        const compKey = `${rule.milestoneIndex}::${rule.taskName.trim().toLowerCase()}`;
-        let isCompleted = completedSet.has(compKey);
-        if (!isCompleted && rule.aliases) {
-          for (const alias of rule.aliases) {
-            if (completedSet.has(`${rule.milestoneIndex}::${alias.trim().toLowerCase()}`)) {
-              isCompleted = true;
-              break;
+        let allStepsCompleted = true;
+        const taskDetails = wf.steps.map((step) => {
+          let isCompleted = completedSet.has(`${wf.milestoneIndex}::${step.stepName.trim().toLowerCase()}`);
+          if (!isCompleted && step.aliases) {
+            for (const alias of step.aliases) {
+              if (completedSet.has(`${wf.milestoneIndex}::${alias.trim().toLowerCase()}`)) {
+                isCompleted = true;
+                break;
+              }
             }
           }
-        }
+          if (!isCompleted) {
+            allStepsCompleted = false;
+          }
 
-        const tx = leadTransactions.find((t) => {
-          if (t.milestone_index !== rule.milestoneIndex) return false;
-          const tName = (t.task_name || "").trim().toLowerCase();
-          if (tName === rule.taskName.trim().toLowerCase()) return true;
-          if (rule.aliases && rule.aliases.some((a) => a.trim().toLowerCase() === tName)) return true;
-          return false;
+          let tag = "PENDING";
+          let status: "completed" | "current" | "pending" = "pending";
+          if (isCompleted) {
+            status = "completed";
+            tag = "ON-TIME";
+          }
+
+          return {
+            taskName: step.stepName,
+            aliases: step.aliases || [],
+            baseXp: 0,
+            earnedXp: null,
+            status,
+            isDelayed: false,
+            delayDays: 0,
+            tag,
+            isActive: false,
+          };
         });
 
-        let status: "completed" | "current" | "pending" = "pending";
-        let tag = "PENDING";
         let earnedXp: number | null = null;
         let isDelayed = false;
         let delayDays = 0;
 
-        if (isCompleted) {
-          status = "completed";
-          delayDays = tx ? Number(tx.delay_days || 0) : 0;
-          isDelayed = delayDays > 0;
-          tag = isDelayed ? "DELAYED" : "ON-TIME";
-          earnedXp = tx ? Number(tx.net_xp) : null;
-          if (tx && rule.isActive && rule.baseXp > 0) {
-            m.earnedXp += Number(tx.net_xp || 0);
+        if (tx) {
+          earnedXp = Number(tx.net_xp);
+          delayDays = Number(tx.delay_days || 0);
+          isDelayed = delayDays > 0 || (Number(tx.net_xp) <= 0 && Number(tx.penalty_xp) > 0);
+          if (isDelayed) {
+            taskDetails.forEach((t) => {
+              if (t.status === "completed") {
+                t.isDelayed = true;
+                t.tag = "OVERDUE";
+              }
+            });
           }
         }
 
-        m.tasks.push({
-          taskName: rule.taskName,
-          aliases: rule.aliases || [],
-          baseXp: rule.baseXp,
+        let metaObj: any = null;
+        if (tx && tx.meta) {
+          try {
+            metaObj = typeof tx.meta === "string" ? JSON.parse(tx.meta) : tx.meta;
+          } catch {}
+        }
+
+        const workflowStatus = tx
+          ? (isDelayed ? "OVERDUE" : "ON-TIME")
+          : "IN_PROGRESS";
+        const completionState = tx ? "COMPLETED" : "INCOMPLETE";
+
+        milestonesMap.set(wf.milestoneIndex, {
+          milestoneIndex: wf.milestoneIndex,
+          milestoneName: wf.milestoneName,
+          workflowName: wf.workflowName,
+          totalPossibleXp: wf.rewardXp,
+          baseXp: tx ? Number(tx.base_xp || 0) : (allStepsCompleted ? (isDelayed ? 0 : wf.rewardXp) : 0),
+          penaltyXp: tx ? Number(tx.penalty_xp || 0) : 0,
           earnedXp,
-          status,
+          netXp: earnedXp,
+          finalXp: earnedXp,
+          workflowStatus,
+          completionState,
+          isWorkflowCompleted: Boolean(tx),
           isDelayed,
           delayDays,
-          tag,
-          isActive: rule.isActive && rule.baseXp > 0,
+          overdueDays: delayDays,
+          allowedDurationDays: wf.totalAllowedDays,
+          actualDurationDays: metaObj?.elapsedDays ?? null,
+          overdueDurationDays: metaObj?.overdueDurationMs ? Number((metaObj.overdueDurationMs / 86400000).toFixed(2)) : (delayDays > 0 ? delayDays : 0),
+          workflowStartTimestamp: metaObj?.startTime || null,
+          workflowCompletionTimestamp: metaObj?.completionTime || (tx ? new Date(tx.created_at).toISOString() : null),
+          tasks: taskDetails,
         });
       });
 
+      const totalPossibleProjectXp = TOTAL_POSSIBLE_WORKFLOW_XP; // Strictly 75
+      
       return res.json({
         leadId,
         designerId,

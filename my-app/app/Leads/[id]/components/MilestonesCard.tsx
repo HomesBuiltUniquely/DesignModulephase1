@@ -4,10 +4,14 @@ import type { RefObject } from "react";
 import { useState, useEffect } from "react";
 import MileStonesArray from "@/app/Components/Types/MileStoneArray";
 import { hasChecklistForTask } from "./Checklists/checklistRegistry";
-import { getTaskTimeline } from "./taskTimelines";
 import MilestonePaymentSummary, { type QuotePaymentSummary } from "./MilestonePaymentSummary";
 import { mapQuotePaymentSummaryFromApi } from "./mapQuotePaymentSummary";
 import { getApiBase, buildAuthHeaders } from "@/app/lib/apiBase";
+import {
+  getMilestoneDateRangeLabel,
+  type TaskCompletionMap,
+  type TimelineAnchors,
+} from "../lib/taskDeadlineUtils";
 
 const PAYMENT_MILESTONE_INDICES = new Set([2, 5]);
 
@@ -15,6 +19,10 @@ type TaskStatus = {
   icon: "completed" | "current" | "delayed" | "pending";
   subtitle: string;
   tags: readonly string[];
+  isOverdue?: boolean;
+  overdueMessage?: string;
+  timelineLabel?: string;
+  dueBy?: string;
 };
 
 type Props = {
@@ -37,6 +45,9 @@ type Props = {
   getTaskLabel?: (milestoneIndex: number, taskName: string) => string;
   leadId?: number | null;
   sessionId?: string | null;
+  propertyConfiguration?: string | null;
+  timelineAnchors?: TimelineAnchors;
+  taskCompletions?: TaskCompletionMap;
 };
 
 /**
@@ -56,6 +67,9 @@ export default function MilestonesCard({
   getTaskLabel,
   leadId,
   sessionId,
+  propertyConfiguration,
+  timelineAnchors,
+  taskCompletions,
 }: Props) {
   const [openMenuFor, setOpenMenuFor] = useState<
     { milestoneIndex: number; taskIndex: number } | undefined
@@ -368,17 +382,13 @@ export default function MilestonesCard({
               const progressPercent = taskList.length
                 ? Math.min(100, Math.round((completedCount / taskList.length) * 100))
                 : 0;
-              const dateRanges = [
-                "Dec 01 - Dec 15",
-                "Dec 16 - Dec 30",
-                "Jan 01 - Jan 15",
-                "Jan 16 - Jan 30",
-                "Feb 01 - Feb 15",
-                "Mar 01 - Mar 15",
-                "Mar 16 - Mar 31",
-              ];
               const displayIndex = milestone.id === 7 ? 0 : milestone.id + 1;
-              const dateRange = dateRanges[displayIndex] ?? "TBD";
+              const dateRange = getMilestoneDateRangeLabel(
+                milestoneIndex,
+                propertyConfiguration,
+                timelineAnchors ?? {},
+                taskCompletions ?? {},
+              );
               return (
                 <div
                   key={milestone.id}
@@ -407,9 +417,21 @@ export default function MilestonesCard({
                         {milestone.name}
                       </h3>
                       {totalPossibleXp > 0 && (
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 border border-purple-200">
-                          {earnedMilestoneXp > 0 ? `${earnedMilestoneXp}/` : ""}{totalPossibleXp} XP
-                        </span>
+                        milestoneXp?.isWorkflowCompleted ? (
+                          milestoneXp.workflowStatus === "ON-TIME" ? (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                              +{earnedMilestoneXp} XP (ON-TIME)
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200">
+                              {earnedMilestoneXp} XP (OVERDUE {milestoneXp.overdueDays || milestoneXp.delayDays || 1}d)
+                            </span>
+                          )
+                        ) : (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 border border-purple-200">
+                            0/{totalPossibleXp} XP
+                          </span>
+                        )
                       )}
                     </div>
                     <div className="h-2 bg-gray-200 rounded-full overflow-hidden mb-4 flex-shrink-0">
@@ -432,28 +454,32 @@ export default function MilestonesCard({
                           milestoneIndex,
                           task,
                         );
+                        const resolvedStatus = getTaskStatus(milestoneIndex, taskIndex, taskList);
                         const status = isNextOrLater
                           ? {
+                              ...resolvedStatus,
                               icon: "pending" as const,
                               subtitle: "Not started",
                               tags: ["PENDING"] as const,
                             }
-                          : getTaskStatus(milestoneIndex, taskIndex, taskList);
-                        const timelineText = getTaskTimeline(
-                          milestone.name,
-                          task,
-                          undefined,
-                        );
+                          : resolvedStatus;
                         const taskXp = milestoneXp?.tasks?.find(
                           (t: any) =>
                             (t.taskName || "").trim().toLowerCase() === (task || "").trim().toLowerCase() ||
                             (t.aliases && t.aliases.some((a: string) => a.trim().toLowerCase() === (task || "").trim().toLowerCase())),
                         );
+                        const isOverdue =
+                          status.isOverdue === true ||
+                          (status.icon === "completed" && (taskXp?.isDelayed === true || taskXp?.tag === "OVERDUE"));
+                        const tags = isOverdue
+                          ? status.tags.map((t) => (t === "ON-TIME" ? "OVERDUE" : t))
+                          : status.tags;
                         return (
                           <div
                             key={taskIndex}
                             role="button"
                             tabIndex={0}
+                            title={isOverdue ? status.overdueMessage : undefined}
                             onClick={() => {
                               // clicking the row should close any open menu
                               setOpenMenuFor(undefined);
@@ -466,7 +492,13 @@ export default function MilestonesCard({
                                 onOpenTask(milestoneIndex, task);
                               }
                             }}
-                            className={`relative w-full text-left p-3 transition-colors flex items-start gap-3 cursor-pointer ${isNextOrLater ? "hover:bg-gray-200/50 opacity-90" : "hover:bg-gray-50"} ${status.icon === "current" ? "border-l-4 border-[#00B0ED] pl-2" : ""}`}
+                            className={`relative w-full text-left p-3 transition-colors flex items-start gap-3 cursor-pointer rounded-lg ${
+                              isOverdue
+                                ? "bg-[#EF0101]/10 border border-[#EF0101]/50 ring-1 ring-[#EF0101]/20 hover:bg-[#EF0101]/15"
+                                : isNextOrLater
+                                  ? "hover:bg-gray-200/50 opacity-90"
+                                  : "hover:bg-gray-50"
+                            } ${!isOverdue && status.icon === "current" ? "border-l-4 border-[#00B0ED] pl-2" : ""}`}
                           >
                             <span className="flex-shrink-0 mt-0.5">
                               {status.icon === "completed" && (
@@ -493,7 +525,7 @@ export default function MilestonesCard({
                                 </span>
                               )}
                               {status.icon === "delayed" && (
-                                <span className="w-6 h-6 flex items-center justify-center text-amber-500">
+                                <span className="w-6 h-6 flex items-center justify-center text-[#EF0101]">
                                   <svg
                                     xmlns="http://www.w3.org/2000/svg"
                                     viewBox="0 0 24 24"
@@ -514,26 +546,40 @@ export default function MilestonesCard({
                             </span>
                             <div className="flex-1 min-w-0">
                               <p
-                                className={`text-sm font-medium truncate ${isNextOrLater ? "text-gray-500" : "text-gray-900"}`}
+                                className={`text-sm font-medium truncate ${
+                                  isOverdue
+                                    ? "text-[#EF0101]"
+                                    : isNextOrLater
+                                      ? "text-gray-500"
+                                      : "text-gray-900"
+                                }`}
                               >
                                 {getTaskLabel ? getTaskLabel(milestoneIndex, task) : task}
                               </p>
-                              <p className="text-xs text-gray-500 mt-0.5">
-                                {status.subtitle}
-                                {timelineText && (
-                                  <>
-                                    {" "}
-                                    · <span>{timelineText}</span>
-                                  </>
-                                )}
-                              </p>
+                              <p className="text-xs text-gray-500 mt-0.5">{status.subtitle}</p>
+                              {status.timelineLabel && (
+                                <p
+                                  className={`text-xs mt-1 leading-snug ${
+                                    isOverdue ? "text-[#EF0101] font-semibold" : "text-[#0077A3] font-medium"
+                                  }`}
+                                >
+                                  {status.timelineLabel}
+                                </p>
+                              )}
+                              {status.dueBy && !isNextOrLater && status.icon !== "completed" && (
+                                <p className="text-[11px] text-gray-600 mt-0.5">
+                                  Due by: <span className="font-medium">{status.dueBy}</span>
+                                </p>
+                              )}
                             </div>
                             <div className="flex items-center gap-1.5 flex-shrink-0">
                               {taskXp && taskXp.isActive && taskXp.baseXp > 0 && (
                                 <span
                                   className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
                                     taskXp.earnedXp != null
-                                      ? "bg-emerald-100 text-emerald-800"
+                                      ? taskXp.earnedXp > 0
+                                        ? "bg-emerald-100 text-emerald-800"
+                                        : "bg-gray-100 text-gray-500 border border-gray-200"
                                       : "bg-purple-100 text-purple-800"
                                   }`}
                                   title={taskXp.earnedXp != null ? `Earned: ${taskXp.earnedXp} XP` : `Potential: ${taskXp.baseXp} XP`}
@@ -541,17 +587,19 @@ export default function MilestonesCard({
                                   +{taskXp.earnedXp != null ? taskXp.earnedXp : taskXp.baseXp} XP
                                 </span>
                               )}
-                              {status.tags.map((tag) => (
+                              {tags.map((tag) => (
                                 <span
                                   key={tag}
                                   className={`text-[10px] font-semibold px-2.5 py-1 rounded-md ${
                                     tag === "ON-TIME"
                                       ? "bg-[#DDCDC1] text-[#32261C] font-bold"
-                                      : tag === "CURRENT" || tag === "ACTION"
-                                        ? "bg-[#00B0ED]/25 text-[#00B0ED]"
-                                        : tag === "DELAYED"
-                                          ? "bg-amber-200 text-amber-700"
-                                          : "bg-gray-100 border border-gray-300 text-gray-500"
+                                      : tag === "OVERDUE"
+                                        ? "bg-[#EF0101]/15 text-[#EF0101] border border-[#EF0101]/30"
+                                        : tag === "CURRENT" || tag === "ACTION"
+                                          ? "bg-[#00B0ED]/25 text-[#00B0ED]"
+                                          : tag === "DELAYED"
+                                            ? "bg-[#EF0101]/15 text-[#EF0101]"
+                                            : "bg-gray-100 border border-gray-300 text-gray-500"
                                   }`}
                                 >
                                   {tag}

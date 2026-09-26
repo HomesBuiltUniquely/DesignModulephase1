@@ -8,6 +8,10 @@ import { useAuth } from "../auth/AuthContext";
 import { getApiBase } from "@/app/lib/apiBase";
 import { BRANCH_OPTIONS } from "../constants/branches";
 import { getPhaseBucket } from "@/app/lib/leadPhaseBucket";
+import {
+    buildTaskCompletionMap,
+    isLeadDelayed,
+} from "@/app/Leads/[id]/lib/taskDeadlineUtils";
 import { createProlanceProjectViaApi } from "@/app/lib/prolanceApiCreateProject";
 import { runProlanceGetQuoteApiFlow } from "@/app/lib/prolanceApiGetQuote";
 import {
@@ -233,6 +237,11 @@ function getPaginationRange(current: number, total: number): (number | "ellipsis
 
 const API = getApiBase();
 
+function projectIsDelayed(row: LeadshipTypes): boolean {
+    const completions = buildTaskCompletionMap(row.taskCompletions ?? []);
+    return isLeadDelayed(row.intakeConfiguration, row.timelineAnchors ?? {}, completions);
+}
+
 type DqcQueueItem = {
   id: number;
   projectName: string;
@@ -397,6 +406,7 @@ export default function Dashboard() {
     const [designPhasesOpen, setDesignPhasesOpen] = useState(true);
     const [projectStatusOpen, setProjectStatusOpen] = useState(true);
     const [isSelected, setIsSelected] = useState<string>(SideDashboard.All_Projects);
+    const [showDelayedOnly, setShowDelayedOnly] = useState(false);
     const [statusSelected, setStatusSelected] = useState<string>(allStatusTypes[0]);
     const [searchQuery, setSearchQuery] = useState("");
     const [milestoneFilter, setMilestoneFilter] = useState<string>("");
@@ -565,9 +575,17 @@ export default function Dashboard() {
         }
     }
 
-    const milestoneFiltered = milestoneFilter
-        ? queueFilterFiltered.filter((p) => (p.currentMilestoneName ?? "") === milestoneFilter)
-        : queueFilterFiltered;
+    const milestoneFiltered = (() => {
+        let list = milestoneFilter
+            ? queueFilterFiltered.filter((p) => (p.currentMilestoneName ?? "") === milestoneFilter)
+            : queueFilterFiltered;
+        if (showDelayedOnly) {
+            list = list.filter(
+                (p) => getPhaseBucket(p) === "10-20%" && projectIsDelayed(p),
+            );
+        }
+        return list;
+    })();
 
     const totalItems = milestoneFiltered.length;
     const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
@@ -582,7 +600,9 @@ export default function Dashboard() {
 
     const stats = {
         total: milestoneFiltered.length,
-        pre10: phaseCountSource.filter((p) => getPhaseBucket(p) === "Pre 10%").length,
+        delayed1020: phaseCountSource.filter(
+            (p) => getPhaseBucket(p) === "10-20%" && projectIsDelayed(p),
+        ).length,
         bucket1020: phaseCountSource.filter((p) => getPhaseBucket(p) === "10-20%").length,
         bucket2060: phaseCountSource.filter((p) => getPhaseBucket(p) === "20-60%").length,
     };
@@ -603,7 +623,7 @@ export default function Dashboard() {
 
     useEffect(() => {
         setPage(1);
-    }, [isSelected, statusSelected, searchQuery, milestoneFilter, branchFilter, designerFilter, pageSize]);
+    }, [isSelected, statusSelected, searchQuery, milestoneFilter, branchFilter, designerFilter, pageSize, showDelayedOnly]);
 
     // Close filter dropdown when clicking outside
     useEffect(() => {
@@ -1063,16 +1083,30 @@ export default function Dashboard() {
                         <p className="text-2xl font-bold text-amber-700 mt-1">0</p>
                         <p className="text-xs text-gray-500 mt-0.5">—</p>
                     </div>
-                    <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm min-w-[120px]">
-                        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Delayed</p>
-                        <p className="text-2xl font-bold text-red-700 mt-1">{stats.pre10}</p>
-                        <p className="text-xs text-gray-500 mt-0.5">Pre 10%</p>
-                    </div>
                     <button
                         type="button"
-                        onClick={() => setIsSelected(SideDashboard.Ten_50)}
+                        onClick={() => {
+                            setShowDelayedOnly((prev) => !prev);
+                            if (!showDelayedOnly) setIsSelected(SideDashboard.Ten_50);
+                        }}
                         className={`bg-white border rounded-xl p-4 shadow-sm min-w-[120px] text-left transition-all ${
-                            isSelected === SideDashboard.Ten_50
+                            showDelayedOnly
+                                ? "border-[#EF0101] ring-2 ring-[#EF0101]/20"
+                                : "border-gray-200 hover:border-gray-300"
+                        }`}
+                    >
+                        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Delayed</p>
+                        <p className="text-2xl font-bold text-red-700 mt-1">{stats.delayed1020}</p>
+                        <p className="text-xs text-gray-500 mt-0.5">10-20%</p>
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setShowDelayedOnly(false);
+                            setIsSelected(SideDashboard.Ten_50);
+                        }}
+                        className={`bg-white border rounded-xl p-4 shadow-sm min-w-[120px] text-left transition-all ${
+                            isSelected === SideDashboard.Ten_50 && !showDelayedOnly
                                 ? 'border-[#EF0101] ring-2 ring-[#EF0101]/20'
                                 : 'border-gray-200 hover:border-gray-300'
                         }`}
@@ -1083,9 +1117,12 @@ export default function Dashboard() {
                     </button>
                     <button
                         type="button"
-                        onClick={() => setIsSelected(SideDashboard.Fifty_above)}
+                        onClick={() => {
+                            setShowDelayedOnly(false);
+                            setIsSelected(SideDashboard.Fifty_above);
+                        }}
                         className={`bg-white border rounded-xl p-4 shadow-sm min-w-[120px] text-left transition-all ${
-                            isSelected === SideDashboard.Fifty_above
+                            isSelected === SideDashboard.Fifty_above && !showDelayedOnly
                                 ? 'border-[#EF0101] ring-2 ring-[#EF0101]/20'
                                 : 'border-gray-200 hover:border-gray-300'
                         }`}

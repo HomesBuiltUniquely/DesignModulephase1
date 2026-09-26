@@ -58,6 +58,13 @@ import { canShowStartMeetingButton } from '@/app/lib/leadMeetingSchedule';
 import { getPhaseBucket } from '@/app/lib/leadPhaseBucket';
 import CustomDatePicker from '@/app/Components/ui/CustomDatePicker';
 import { LeaderboardBottomBar } from './components/LeaderboardBottomBar';
+import {
+    evaluateTaskDeadline,
+    formatTaskDueBy,
+    getNormalizedPropertyConfig,
+    type TaskCompletionMap,
+} from './lib/taskDeadlineUtils';
+import { getTaskTimelineLabel } from './lib/taskDeadlineConfig';
 
 const API = getApiBase();
 
@@ -82,6 +89,7 @@ export default function ProjectDetailPage() {
     const [currentMilestoneIndex, setCurrentMilestoneIndex] = useState(0); // 0 = 1st, 1 = 2nd (DQC1), 2 = 3rd, 3 = D2 SITE MASKING, ...
     // Track which tasks are completed; next milestone unlocks only when all tasks in current milestone are done
     const [completedTaskKeys, setCompletedTaskKeys] = useState<string[]>([]);
+    const [taskCompletions, setTaskCompletions] = useState<TaskCompletionMap>({});
     // Track which tasks that have checklists have had their checklist completed
     const [completedChecklistKeys, setCompletedChecklistKeys] = useState<string[]>([]);
 
@@ -92,8 +100,24 @@ export default function ProjectDetailPage() {
 
     const markTaskComplete = (milestoneIndex: number, taskName: string) => {
         const key = taskKey(milestoneIndex, taskName);
+        const completedAt = new Date().toISOString();
         setCompletedTaskKeys((prev) => (prev.includes(key) ? prev : [...prev, key]));
+        setTaskCompletions((prev) => ({
+            ...prev,
+            [key]: { completedAt: prev[key]?.completedAt ?? completedAt },
+        }));
     };
+
+    const hydrateCompletions = useCallback((data: { milestoneIndex: number; taskName: string; completedAt?: string }[]) => {
+        const keys = data.map((c) => taskKey(c.milestoneIndex, c.taskName));
+        const completionMap: TaskCompletionMap = {};
+        data.forEach((c) => {
+            const key = taskKey(c.milestoneIndex, c.taskName);
+            completionMap[key] = { completedAt: c.completedAt ?? new Date().toISOString() };
+        });
+        setCompletedTaskKeys(keys);
+        setTaskCompletions(completionMap);
+    }, []);
 
     // Keep highlighted milestone in sync with persisted task completions (handles refresh and new tasks).
     useEffect(() => {
@@ -121,16 +145,20 @@ export default function ProjectDetailPage() {
         const headers: Record<string, string> = { Authorization: `Bearer ${sessionId}` };
         fetch(`${API}/api/leads/${projectId}/completions`, { headers })
             .then((res) => res.json())
-            .then((data: { milestoneIndex: number; taskName: string }[]) => {
-                if (!Array.isArray(data)) return;
-                const keys = data.map((c) => taskKey(c.milestoneIndex, c.taskName));
-                if (keys.length) {
-                    setCompletedTaskKeys((prev) => {
-                        // merge to avoid losing any local completions
-                        const merged = new Set([...prev, ...keys]);
-                        return Array.from(merged);
+            .then((data: { milestoneIndex: number; taskName: string; completedAt?: string }[]) => {
+                if (!Array.isArray(data) || data.length === 0) return;
+                setCompletedTaskKeys((prev) => {
+                    const merged = new Set([...prev, ...data.map((c) => taskKey(c.milestoneIndex, c.taskName))]);
+                    return Array.from(merged);
+                });
+                setTaskCompletions((prev) => {
+                    const next = { ...prev };
+                    data.forEach((c) => {
+                        const key = taskKey(c.milestoneIndex, c.taskName);
+                        next[key] = { completedAt: c.completedAt ?? prev[key]?.completedAt ?? new Date().toISOString() };
                     });
-                }
+                    return next;
+                });
             })
             .catch(() => {});
     }, [projectId, sessionId]);
@@ -141,12 +169,12 @@ export default function ProjectDetailPage() {
             headers: { Authorization: `Bearer ${sessionId}` },
         })
             .then((res) => res.json())
-            .then((data: { milestoneIndex: number; taskName: string }[]) => {
+            .then((data: { milestoneIndex: number; taskName: string; completedAt?: string }[]) => {
                 if (!Array.isArray(data)) return;
-                setCompletedTaskKeys(data.map((c) => taskKey(c.milestoneIndex, c.taskName)));
+                hydrateCompletions(data);
             })
             .catch(() => {});
-    }, [projectId, sessionId]);
+    }, [projectId, sessionId, hydrateCompletions]);
 
     // Which milestone popup is open (null = closed). Lets you show different popup content per milestone/task.
     const [popupContext, setPopupContext] = useState<{ milestoneIndex: number; milestoneName: string; taskName: string } | null>(null);
@@ -1788,23 +1816,88 @@ export default function ProjectDetailPage() {
             taskName === 'D2 - masking request raise' &&
             !project?.assigned_project_manager_id;
 
+        const deadline = evaluateTaskDeadline(
+            milestoneIndex,
+            taskIndex,
+            taskList,
+            project?.intakeConfiguration,
+            project?.timelineAnchors ?? {},
+            taskCompletions,
+            isCompleted,
+        );
+
+        const config = getNormalizedPropertyConfig(project?.intakeConfiguration);
+        const timelineLabel = getTaskTimelineLabel(milestoneIndex, taskName, config);
+        const dueBy =
+            deadline?.dueAt && !isCompleted ? formatTaskDueBy(deadline.dueAt) : undefined;
+
+        const withTimeline = <T extends { icon: 'completed' | 'current' | 'delayed' | 'pending'; subtitle: string; tags: readonly string[] }>(
+            status: T,
+        ) => ({
+            ...status,
+            timelineLabel,
+            dueBy,
+        });
+
+        const withOverdue = <T extends { icon: 'completed' | 'current' | 'delayed' | 'pending'; subtitle: string; tags: readonly string[] }>(
+            status: T,
+        ) => {
+            const base = withTimeline(status);
+            if (!deadline?.isOverdue) return base;
+            return {
+                ...base,
+                icon: 'delayed' as const,
+                subtitle: status.icon === 'current' ? 'Overdue — in progress' : 'Overdue',
+                tags: ['OVERDUE'] as const,
+                isOverdue: true,
+                overdueMessage: deadline.overdueMessage,
+            };
+        };
+
         // SPM: keep Assign PM actionable until a project manager is set
         if (needsSpmAssignPm && isCurrentMilestone) {
-            return {
+            return withOverdue({
                 icon: 'current' as const,
                 subtitle: 'Assign project manager',
                 tags: ['CURRENT', 'ACTION'] as const,
-            };
+            });
         }
 
-        if (isCompleted) return { icon: 'completed' as const, subtitle: 'Completed', tags: ['ON-TIME'] as const };
-        if (isPastMilestone) return { icon: 'completed' as const, subtitle: 'Completed', tags: ['ON-TIME'] as const };
-        if (!isCurrentMilestone) return { icon: 'pending' as const, subtitle: 'Not started', tags: ['PENDING'] as const };
+        if (isCompleted) {
+            if (deadline?.isOverdue) {
+                return withTimeline({
+                    icon: 'completed' as const,
+                    subtitle: 'Completed (Overdue)',
+                    tags: ['OVERDUE'] as const,
+                    isOverdue: true,
+                    overdueMessage: deadline.overdueMessage,
+                });
+            }
+            return withTimeline({
+                icon: 'completed' as const,
+                subtitle: 'Completed',
+                tags: ['ON-TIME'] as const,
+                isOverdue: false,
+            });
+        }
+        if (isPastMilestone) {
+            const isPastOverdue = deadline?.isOverdue ?? false;
+            return withTimeline({
+                icon: 'completed' as const,
+                subtitle: isPastOverdue ? 'Completed (Overdue)' : 'Completed',
+                tags: isPastOverdue ? (['OVERDUE'] as const) : (['ON-TIME'] as const),
+                isOverdue: isPastOverdue,
+                overdueMessage: deadline?.overdueMessage,
+            });
+        }
+        if (!isCurrentMilestone) return withTimeline({ icon: 'pending' as const, subtitle: 'Not started', tags: ['PENDING'] as const });
 
         const firstIncompleteIndex = taskList.findIndex((t) => !completedTaskKeys.includes(taskKey(milestoneIndex, t)));
         const isCurrentTask = firstIncompleteIndex === taskIndex;
-        if (isCurrentTask) return { icon: 'current' as const, subtitle: 'In progress', tags: ['CURRENT', 'ACTION'] as const };
-        return { icon: 'pending' as const, subtitle: 'Not started', tags: ['PENDING'] as const };
+        if (isCurrentTask) {
+            return withOverdue({ icon: 'current' as const, subtitle: 'In progress', tags: ['CURRENT', 'ACTION'] as const });
+        }
+        return withOverdue({ icon: 'pending' as const, subtitle: 'Not started', tags: ['PENDING'] as const });
     };
 
     const getTaskLabel = (milestoneIndex: number, taskName: string) => {
@@ -2810,6 +2903,9 @@ export default function ProjectDetailPage() {
                         getTaskLabel={getTaskLabel}
                         leadId={projectId}
                         sessionId={sessionId}
+                        propertyConfiguration={project?.intakeConfiguration}
+                        timelineAnchors={project?.timelineAnchors ?? {}}
+                        taskCompletions={taskCompletions}
                     />
                 )}
 
@@ -3017,7 +3113,29 @@ export default function ProjectDetailPage() {
                         <PopupD1Measurement
                             leadId={projectId}
                             sessionId={sessionId}
-                            onSubmit={() => recordTaskComplete(0, 'D1 for MMT request')}
+                            onSubmit={async () => {
+                                recordTaskComplete(0, 'D1 for MMT request');
+                                if (!projectId || !sessionId) return;
+                                try {
+                                    const res = await fetch(`${API}/api/leads/${projectId}`, {
+                                        headers: buildAuthHeaders(sessionId),
+                                    });
+                                    const data = res.ok ? ((await res.json()) as LeadshipTypes) : null;
+                                    if (data) setProject(data);
+                                } catch {
+                                    setProject((prev) =>
+                                        prev
+                                            ? {
+                                                  ...prev,
+                                                  timelineAnchors: {
+                                                      ...prev.timelineAnchors,
+                                                      d1MmtRequestSentAt: new Date().toISOString(),
+                                                  },
+                                              }
+                                            : prev,
+                                    );
+                                }
+                            }}
                             onClose={closePopup}
                         />
                     )}
