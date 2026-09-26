@@ -59,9 +59,12 @@ import { getPhaseBucket } from '@/app/lib/leadPhaseBucket';
 import CustomDatePicker from '@/app/Components/ui/CustomDatePicker';
 import { LeaderboardBottomBar } from './components/LeaderboardBottomBar';
 import {
+    evaluateExternalActionDeadline,
     evaluateTaskDeadline,
     formatTaskDueBy,
+    getExternalActionTask,
     getNormalizedPropertyConfig,
+    isExternalActionWaiting,
     type TaskCompletionMap,
 } from './lib/taskDeadlineUtils';
 import { getTaskTimelineLabel } from './lib/taskDeadlineConfig';
@@ -1861,6 +1864,42 @@ export default function ProjectDetailPage() {
                 subtitle: 'Assign project manager',
                 tags: ['CURRENT', 'ACTION'] as const,
             });
+        }
+
+        if (
+            !isCompleted &&
+            isExternalActionWaiting(milestoneIndex, taskName, taskCompletions, isCompleted)
+        ) {
+            const extDef = getExternalActionTask(milestoneIndex, taskName);
+            const extDeadline =
+                evaluateExternalActionDeadline(
+                    milestoneIndex,
+                    taskIndex,
+                    taskList,
+                    project?.intakeConfiguration,
+                    project?.timelineAnchors ?? {},
+                    taskCompletions,
+                ) ?? deadline;
+            const overdue = extDeadline?.isOverdue === true;
+            return {
+                ...withTimeline({
+                    icon: overdue ? ('delayed' as const) : ('current' as const),
+                    subtitle: overdue
+                        ? extDef?.overdueSubtitle ?? 'Overdue — approval pending'
+                        : extDef?.waitingSubtitle ?? 'Awaiting approval',
+                    tags: overdue ? (['OVERDUE', 'ACTION'] as const) : (['CURRENT', 'ACTION'] as const),
+                }),
+                ...(overdue
+                    ? {
+                          isOverdue: true,
+                          overdueMessage: extDeadline?.overdueMessage ?? deadline?.overdueMessage,
+                      }
+                    : {}),
+                dueBy:
+                    extDeadline?.dueAt && !isCompleted
+                        ? formatTaskDueBy(extDeadline.dueAt)
+                        : dueBy,
+            };
         }
 
         if (isCompleted) {

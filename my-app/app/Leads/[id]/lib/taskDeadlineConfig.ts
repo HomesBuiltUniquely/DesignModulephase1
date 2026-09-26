@@ -82,10 +82,9 @@ export const TASK_DEADLINE_RULES: TaskDeadlineRule[] = [
   {
     milestoneIndex: 1,
     taskName: "DQC 1 approval",
-    anchor: "task_completed",
-    anchorTask: { milestoneIndex: 1, taskName: "meeting completed" },
+    anchor: "previous_task_completed",
     hoursByConfig: uniformHours(24),
-    timelineLabel: "24 hrs from last meeting",
+    timelineLabel: "24 hrs from DQC 1 submission",
   },
 
   // 10% PAYMENT
@@ -99,7 +98,8 @@ export const TASK_DEADLINE_RULES: TaskDeadlineRule[] = [
     milestoneIndex: 2,
     taskName: "10% payment approval",
     anchor: "previous_task_completed",
-    hoursByConfig: { "1BHK": 24, "2BHK": 24, "3BHK": 24, "4BHK": 24, "5BHK": 24 },
+    hoursByConfig: uniformHours(24),
+    timelineLabel: "24 hrs from 10% payment collection",
   },
 
   // D2 SITE MASKING
@@ -141,7 +141,8 @@ export const TASK_DEADLINE_RULES: TaskDeadlineRule[] = [
     milestoneIndex: 4,
     taskName: "DQC 2 approval ",
     anchor: "previous_task_completed",
-    hoursByConfig: { "1BHK": 24, "2BHK": 48, "3BHK": 48, "4BHK": 48, "5BHK": 72 },
+    hoursByConfig: uniformHours(24),
+    timelineLabel: "24 hrs from DQC 2 submission",
   },
   {
     milestoneIndex: 4,
@@ -177,7 +178,8 @@ export const TASK_DEADLINE_RULES: TaskDeadlineRule[] = [
     milestoneIndex: 5,
     taskName: "40% payment approval",
     anchor: "previous_task_completed",
-    hoursByConfig: { "1BHK": 8, "2BHK": 8, "3BHK": 8, "4BHK": 8, "5BHK": 8 },
+    hoursByConfig: uniformHours(24),
+    timelineLabel: "24 hrs from 40% collection",
   },
 
   // PUSH TO PRODUCTION
@@ -213,11 +215,23 @@ const RULES_BY_KEY = new Map(
   ALL_RULES.map((rule) => [ruleKey(rule.milestoneIndex, rule.taskName), rule]),
 );
 
+function normalizeTaskNameKey(name: string): string {
+  return name.trim().replace(/\s+/g, " ");
+}
+
 export function getTaskDeadlineRule(
   milestoneIndex: number,
   taskName: string,
 ): TaskDeadlineRule | undefined {
-  return RULES_BY_KEY.get(ruleKey(milestoneIndex, taskName));
+  const exact = RULES_BY_KEY.get(ruleKey(milestoneIndex, taskName));
+  if (exact) return exact;
+  const normalized = normalizeTaskNameKey(taskName);
+  for (const rule of ALL_RULES) {
+    if (rule.milestoneIndex === milestoneIndex && normalizeTaskNameKey(rule.taskName) === normalized) {
+      return rule;
+    }
+  }
+  return undefined;
 }
 
 export function getTaskDeadlineHours(
