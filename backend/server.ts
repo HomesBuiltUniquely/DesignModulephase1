@@ -551,20 +551,216 @@ async function getMailLoopCcEmails(extraEmails: Array<string | null | undefined>
   return distinctEmails([...validExtras, ...teamEmails]);
 }
 
+function leadPayloadRoots(payload?: any) {
+  const p = payload && typeof payload === "object" ? payload : {};
+  const form = p.form && typeof p.form === "object" ? p.form : {};
+  const formData = p.formData && typeof p.formData === "object" ? p.formData : {};
+  const form_data = p.form_data && typeof p.form_data === "object" ? p.form_data : {};
+  const fetched = p.fetchedData && typeof p.fetchedData === "object" ? p.fetchedData : {};
+  const fetched_data = p.fetched_data && typeof p.fetched_data === "object" ? p.fetched_data : {};
+  const rawPayload =
+    (p.rawPayload && typeof p.rawPayload === "object" ? p.rawPayload : null) ||
+    (p.raw_payload && typeof p.raw_payload === "object" ? p.raw_payload : null) ||
+    (p.rawHubPayload && typeof p.rawHubPayload === "object" ? p.rawHubPayload : {}) ||
+    {};
+  const connection = p.connection && typeof p.connection === "object" ? p.connection : {};
+  const scope =
+    (connection.configurationScope && typeof connection.configurationScope === "object"
+      ? connection.configurationScope
+      : null) ||
+    (p.configurationScope && typeof p.configurationScope === "object" ? p.configurationScope : null) ||
+    {};
+  return { p, form, formData, form_data, fetched, fetched_data, rawPayload, connection, scope };
+}
+
+/** Same sources as sales closure + View modal (intake / CRM hub booking payload). */
+function collectLeadClientPhones(
+  row: { contactNo?: string | null },
+  payload?: any,
+): string[] {
+  const { p, form, formData, form_data, fetched, fetched_data, rawPayload, scope } =
+    leadPayloadRoots(payload);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const add = (value: unknown) => {
+    const raw = value == null ? "" : String(value).trim();
+    if (!raw) return;
+    const digits = raw.replace(/\D/g, "");
+    if (digits.length < 10) return;
+    const key = digits.length > 10 ? digits.slice(-10) : digits;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(raw);
+  };
+  [
+    row.contactNo,
+    p.contact_no,
+    p.contactNo,
+    p.phone,
+    p.co_no,
+    form.co_no,
+    form.phone,
+    formData.co_no,
+    formData.phone,
+    form_data.co_no,
+    fetched.co_no,
+    fetched.phone,
+    fetched.alt_phone,
+    fetched_data.co_no,
+    rawPayload.co_no,
+    rawPayload.phone,
+    formData.altPhone,
+    form.altPhone,
+    scope.familyContactPhone,
+  ].forEach(add);
+  return out;
+}
+
+function resolveLeadClientContact(
+  row: {
+    clientEmail?: string | null;
+    alternateClientEmail?: string | null;
+    contactNo?: string | null;
+  },
+  payload?: any,
+): {
+  emails: string[];
+  phones: string[];
+  primaryEmail: string | null;
+  primaryPhone: string | null;
+} {
+  const emails = collectLeadClientEmails(row, payload);
+  const phones = collectLeadClientPhones(row, payload);
+  return {
+    emails,
+    phones,
+    primaryEmail: emails[0] ?? null,
+    primaryPhone: phones[0] ?? (row.contactNo ? String(row.contactNo).trim() : null),
+  };
+}
+
+type MailLoopChainState = {
+  initiated: boolean;
+  initiatedAt: string | null;
+  to: string[];
+};
+
+function readMailLoopChainState(payload?: any): MailLoopChainState {
+  const p = payload && typeof payload === "object" ? payload : {};
+  const at = pickTrimmedString(
+    p.mail_loop_chain_initiated_at,
+    p.formData?.mail_loop_chain_initiated_at,
+    p.form_data?.mail_loop_chain_initiated_at,
+  );
+  const rawTo = p.mail_loop_chain_to ?? p.formData?.mail_loop_chain_to;
+  const to = Array.isArray(rawTo)
+    ? distinctEmails(rawTo.map((e: unknown) => String(e || "")))
+    : [];
+  return { initiated: Boolean(at), initiatedAt: at, to };
+}
+
+async function persistMailLoopChainInitiated(leadId: number, toEmails: string[]): Promise<void> {
+  const [rows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [leadId]);
+  const row = (rows as { payload?: string | null }[])[0];
+  if (!row) return;
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = row.payload ? (JSON.parse(row.payload) as Record<string, unknown>) : {};
+  } catch {
+    payload = {};
+  }
+  const now = new Date().toISOString();
+  payload.mail_loop_chain_initiated_at = now;
+  payload.mail_loop_chain_to = toEmails;
+  const formData =
+    payload.formData && typeof payload.formData === "object"
+      ? { ...(payload.formData as Record<string, unknown>) }
+      : {};
+  formData.mail_loop_chain_initiated_at = now;
+  formData.mail_loop_chain_to = toEmails;
+  payload.formData = formData;
+  await pool.query("UPDATE leads SET payload = ?, update_at = ? WHERE id = ?", [
+    JSON.stringify(payload),
+    new Date(),
+    leadId,
+  ]);
+}
+
+/** Backfill DB columns from payload (sales closure / CRM) so mail + popups stay in sync. */
+async function ensureLeadClientContactColumns(leadId: number): Promise<void> {
+  const [rows] = await pool.query(
+    `SELECT contact_no as contactNo, client_email as clientEmail, client_email_alt as alternateClientEmail, payload
+     FROM leads WHERE id = ? LIMIT 1`,
+    [leadId],
+  );
+  const row = (rows as any[])[0];
+  if (!row) return;
+  let payload: any = {};
+  try {
+    payload = row.payload ? JSON.parse(row.payload) : {};
+  } catch {
+    payload = {};
+  }
+  const contact = resolveLeadClientContact(row, payload);
+  const nextEmail = row.clientEmail?.trim() || contact.primaryEmail;
+  const nextPhone = row.contactNo?.trim() || contact.primaryPhone;
+  if (!nextEmail && !nextPhone) return;
+  await pool.query(
+    `UPDATE leads SET
+       client_email = COALESCE(NULLIF(TRIM(client_email), ''), NULLIF(?, '')),
+       contact_no = COALESCE(NULLIF(TRIM(contact_no), ''), NULLIF(?, '')),
+       update_at = ?
+     WHERE id = ?`,
+    [nextEmail ?? null, nextPhone ?? null, new Date(), leadId],
+  );
+}
+
+async function mailLoopAlreadyCreatedResponse(
+  res: Response,
+  leadId: number,
+): Promise<Response> {
+  const emails = await getLeadClientToEmails(leadId);
+  let stateTo: string[] = [];
+  try {
+    const [rows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [leadId]);
+    const row = (rows as { payload?: string | null }[])[0];
+    let payload: any = {};
+    try {
+      payload = row?.payload ? JSON.parse(row.payload) : {};
+    } catch {
+      payload = {};
+    }
+    stateTo = readMailLoopChainState(payload).to;
+  } catch {
+    stateTo = [];
+  }
+  const mailTo = stateTo.length > 0 ? stateTo : emails;
+  const clientLabel = mailTo[0] || emails[0] || "this client";
+  return res.status(201).json({
+    ok: true,
+    mailAlreadySent: true,
+    mailSent: false,
+    mailTo,
+    mailReason: `Mail loop chain already created with this client (${clientLabel}).`,
+  });
+}
+
 /** Collect every client-side email on the lead — primary, family/alt, payload. Never skip any. */
 function collectLeadClientEmails(
   row: { clientEmail?: string | null; alternateClientEmail?: string | null },
   payload?: any,
 ): string[] {
-  const p = payload && typeof payload === "object" ? payload : {};
-  const form = p.form && typeof p.form === "object" ? p.form : {};
-  const formData = p.formData && typeof p.formData === "object" ? p.formData : {};
+  const { p, form, formData, form_data, fetched, fetched_data, rawPayload } =
+    leadPayloadRoots(payload);
   return distinctEmails([
     row.clientEmail,
     row.alternateClientEmail,
     p.email,
     p.clientEmail,
     p.client_email,
+    p.customer_email,
+    p.customerEmail,
+    p.sales_email,
     p.alternateClientEmail,
     p.client_email_alt,
     p.familyEmail,
@@ -572,9 +768,30 @@ function collectLeadClientEmails(
     form.email,
     form.clientEmail,
     form.client_email,
+    form.customer_email,
+    form.customerEmail,
+    form.sales_email,
     formData.email,
     formData.clientEmail,
     formData.client_email,
+    formData.customer_email,
+    formData.customerEmail,
+    formData.sales_email,
+    form_data.email,
+    form_data.client_email,
+    form_data.customer_email,
+    form_data.sales_email,
+    fetched.email,
+    fetched.client_email,
+    fetched.customer_email,
+    fetched_data.email,
+    fetched_data.client_email,
+    fetched_data.customer_email,
+    rawPayload.email,
+    rawPayload.client_email,
+    rawPayload.clientEmail,
+    rawPayload.customer_email,
+    rawPayload.customerEmail,
   ]);
 }
 
@@ -7517,6 +7734,9 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         taskName,
         emailRoutePath,
       });
+      if (emailRoutePath === "/api/email/send-mail-loop-chain-initiate") {
+        return mailLoopAlreadyCreatedResponse(res, id);
+      }
     } else if (emailRoutePath) {
       console.log("[complete-task] Email trigger:", { leadId: id, milestoneIndex, taskName, emailRoutePath });
       // DQC 1 approval: fire BOTH internal (to designer) and CX (10% payment request)
@@ -9183,15 +9403,36 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
       } else if (emailRoutePath === "/api/email/send-mail-loop-chain-initiate") {
         // Group Description — await welcome mail so UI can confirm success
         try {
+          await ensureLeadClientContactColumns(id);
+          const [stateRows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [id]);
+          const stateRow = (stateRows as { payload?: string | null }[])[0];
+          let statePayload: any = {};
+          try {
+            statePayload = stateRow?.payload ? JSON.parse(stateRow.payload) : {};
+          } catch {
+            statePayload = {};
+          }
+          if (readMailLoopChainState(statePayload).initiated) {
+            return mailLoopAlreadyCreatedResponse(res, id);
+          }
+
           const mailResult = await triggerCustomerEmailForLead(id, emailRoutePath, {
             actorEmail: actingUser.email || null,
             awaitSend: true,
           });
+          if (mailResult.ok && mailResult.to.length > 0) {
+            await persistMailLoopChainInitiated(id, mailResult.to);
+          }
+          const clientLabel = mailResult.to[0] || "";
           return res.status(201).json({
             ok: true,
             mailSent: mailResult.ok,
             mailTo: mailResult.to,
-            mailReason: mailResult.reason || null,
+            mailReason: mailResult.ok
+              ? clientLabel
+                ? `Mail loop chain created with ${clientLabel}.`
+                : null
+              : mailResult.reason || null,
           });
         } catch (err) {
           console.error("complete-task Group Description mail error (non-fatal)", {
@@ -15350,11 +15591,33 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
     }
     if (!revision) revision = "v1.0 (Latest)";
 
+    let parsedPayload: any = {};
+    try {
+      parsedPayload = row.payload ? JSON.parse(row.payload) : {};
+    } catch {
+      parsedPayload = {};
+    }
+    const clientContact = resolveLeadClientContact(
+      {
+        clientEmail: row.clientEmail,
+        alternateClientEmail: row.alternateClientEmail,
+        contactNo: row.contactNo,
+      },
+      parsedPayload,
+    );
+
     const { payload: _p, ...rest } = row;
     const intake = extractLeadIntakeViewFromPayload(row.payload);
     const timelineAnchors = await fetchLeadTimelineAnchors(pool, id, row.payload);
+    const mailLoopState = readMailLoopChainState(parsedPayload);
     return res.json({
       ...rest,
+      contactNo: rest.contactNo || clientContact.primaryPhone,
+      clientEmail: rest.clientEmail || clientContact.primaryEmail,
+      clientEmails: clientContact.emails,
+      clientPhones: clientContact.phones,
+      mailLoopChainInitiated: mailLoopState.initiated,
+      mailLoopChainInitiatedAt: mailLoopState.initiatedAt,
       timelineAnchors,
       isOnHold: !!row.isOnHold,
       designerName: designerName || null,

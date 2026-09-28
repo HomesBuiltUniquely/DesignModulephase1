@@ -1571,7 +1571,14 @@ export default function ProjectDetailPage() {
             description?: string;
             meta?: Record<string, unknown>;
         }
-    ): Promise<{ ok: boolean; mailSent?: boolean; mailTo?: string[]; mailReason?: string | null; p2pCompleted?: boolean }> => {
+    ): Promise<{
+        ok: boolean;
+        mailSent?: boolean;
+        mailAlreadySent?: boolean;
+        mailTo?: string[];
+        mailReason?: string | null;
+        p2pCompleted?: boolean;
+    }> => {
         const requiresChecklist = getChecklistKeyForTask(milestoneIndex, taskName) !== null;
         const key = taskKey(milestoneIndex, taskName);
         if (requiresChecklist && !completedChecklistKeys.includes(key)) {
@@ -1625,6 +1632,7 @@ export default function ProjectDetailPage() {
                 return {
                     ok: true as const,
                     mailSent: Boolean((data as { mailSent?: boolean })?.mailSent),
+                    mailAlreadySent: Boolean((data as { mailAlreadySent?: boolean })?.mailAlreadySent),
                     mailTo: Array.isArray((data as { mailTo?: string[] })?.mailTo)
                         ? (data as { mailTo: string[] }).mailTo
                         : undefined,
@@ -3182,7 +3190,21 @@ export default function ProjectDetailPage() {
                         <PopupGroupDescription
                             leadId={projectId}
                             designerPhone={authUser?.phone ?? ''}
-                            clientPhone={project?.contactNo ?? ''}
+                            clientPhone={
+                                project?.contactNo?.trim() ||
+                                (project as { clientPhones?: string[] })?.clientPhones?.[0] ||
+                                project?.intakeAltPhone ||
+                                ''
+                            }
+                            clientEmail={project?.clientEmail ?? ''}
+                            customerName={
+                                project?.intakeCustomerName?.trim() ||
+                                project?.projectName?.trim() ||
+                                ''
+                            }
+                            mailLoopChainInitiated={Boolean(
+                                (project as { mailLoopChainInitiated?: boolean })?.mailLoopChainInitiated,
+                            )}
                             designManagerName={
                                 (project as any)?.designManagerName ||
                                 (project as any)?.design_manager_name ||
