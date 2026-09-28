@@ -129,4 +129,15 @@ export type LeadshipTypes = {
     experienceSummary?: PhaseSummaryBag | null;
     decisionSummary?: PhaseSummaryBag | null;
     financeApprovedRaw?: string;
+    /** Anchor timestamps for task deadline / overdue checks */
+    timelineAnchors?: {
+        entered1020At?: string | null;
+        d1MmtRequestSentAt?: string | null;
+    } | null;
+    /** Task completions with timestamps (from queue API) */
+    taskCompletions?: Array<{
+        milestoneIndex: number;
+        taskName: string;
+        completedAt?: string;
+    }>;
 };

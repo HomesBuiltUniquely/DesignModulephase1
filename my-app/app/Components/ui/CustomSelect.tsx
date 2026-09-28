@@ -17,6 +17,7 @@ interface CustomSelectProps {
   placeholder?: string;
   disabled?: boolean;
   className?: string;
+  buttonClassName?: string;
   size?: "xs" | "sm" | "md";
   minWidth?: string;
   /** Optional label for the group header shown inside dropdown */
@@ -37,6 +38,7 @@ export default function CustomSelect({
   placeholder = "Select...",
   disabled = false,
   className = "",
+  buttonClassName = "",
   size = "sm",
   minWidth,
   groupLabel,
@@ -177,14 +179,16 @@ export default function CustomSelect({
         onClick={toggle}
         onKeyDown={handleKeyDown}
         className={`
-          w-full flex items-center justify-between gap-2 font-medium rounded-lg border
+          w-full flex items-center justify-between gap-2 font-medium border
           transition-all duration-200 cursor-pointer
-          ${sizeClasses[size]}
+          ${buttonClassName ? buttonClassName : `rounded-lg ${sizeClasses[size]}`}
           ${disabled
             ? "bg-[#F1F2F6] border-gray-200 text-gray-400 cursor-not-allowed"
             : open
               ? "bg-white border-[#EF0101] text-[#32261C] shadow-md ring-2 ring-[#EF0101]/10"
-              : "bg-white border-[#DDCDC1] text-[#32261C] hover:border-[#EF0101]/60 hover:shadow-sm"
+              : buttonClassName?.includes("border-")
+                ? "bg-white text-[#32261C] hover:border-[#EF0101]/60 hover:shadow-sm"
+                : "bg-white border-[#DDCDC1] text-[#32261C] hover:border-[#EF0101]/60 hover:shadow-sm"
           }
         `}
       >
@@ -242,8 +246,9 @@ export default function CustomSelect({
                 onClick={() => { if (!opt.disabled) { onChange(opt.value); setOpen(false); } }}
                 onMouseEnter={() => setHighlightedIndex(idx)}
                 className={`
-                  w-full text-left px-3.5 py-2.5 text-sm flex items-center gap-2
+                  w-full text-left flex items-center gap-2
                   transition-colors duration-100
+                  ${size === "xs" ? "px-3 py-2 text-xs" : "px-3.5 py-2.5 text-sm"}
                   ${opt.disabled ? "text-gray-300 cursor-not-allowed" : "cursor-pointer"}
                   ${isSelected
                     ? "bg-[#EF0101] text-white font-semibold"

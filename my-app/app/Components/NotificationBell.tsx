@@ -11,7 +11,7 @@ import {
   getNotificationListTitle,
   getNotificationSubtitle,
   groupNotificationsByDay,
-  leadIdFromNotification,
+  notificationHrefFromItem,
   matchesNotificationFilter,
   notificationCategoryTone,
   notificationTabIdsForRole,
@@ -172,12 +172,11 @@ export default function NotificationBell({ className = '' }: Props) {
   };
 
   const openItem = (item: DesignNotificationItem) => {
+    const href = notificationHrefFromItem(item);
+    if (!href) return;
     markOneSeen(item.id);
-    const leadId = leadIdFromNotification(item);
-    if (leadId) {
-      setIsInboxOpen(false);
-      router.push(`/Leads/${leadId}`);
-    }
+    setIsInboxOpen(false);
+    router.push(href);
   };
 
   const openQuote = (item: DesignNotificationItem, quoteLink: string) => {
@@ -307,7 +306,7 @@ export default function NotificationBell({ className = '' }: Props) {
                       const subtitle = getNotificationSubtitle(item);
                       const typeKey = (item.notification_type || '').toUpperCase();
                       const quoteLink = quoteLinkFromNotification(item);
-                      const leadId = leadIdFromNotification(item);
+                      const leadHref = notificationHrefFromItem(item);
                       const isQuote = typeKey === 'QUOTE' || typeKey === 'QUOTATION';
 
                       return (
@@ -316,20 +315,20 @@ export default function NotificationBell({ className = '' }: Props) {
                             role="button"
                             tabIndex={0}
                             onClick={() => {
-                              if (leadId) openItem(item);
+                              if (leadHref) openItem(item);
                               else markOneSeen(item.id);
                             }}
                             onKeyDown={(e) => {
                               if (e.key === 'Enter' || e.key === ' ') {
                                 e.preventDefault();
-                                if (leadId) openItem(item);
+                                if (leadHref) openItem(item);
                                 else markOneSeen(item.id);
                               }
                             }}
                             className={`flex w-full cursor-pointer items-start gap-3 px-3 py-2.5 text-left transition-colors hover:bg-gray-50 ${
                               unread ? 'bg-red-50/35' : ''
                             }`}
-                            title={leadId ? 'Open lead' : 'Click to mark as read'}
+                            title={leadHref ? 'Open lead project' : 'Click to mark as read'}
                           >
                             <span
                               className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${tone.iconBg} ${tone.iconText}`}
@@ -372,7 +371,7 @@ export default function NotificationBell({ className = '' }: Props) {
                                   {unread ? (
                                     <span className="h-1.5 w-1.5 rounded-full bg-red-500" title="Unread" />
                                   ) : null}
-                                  {leadId ? (
+                                  {leadHref ? (
                                     <button
                                       type="button"
                                       onClick={(e) => {
@@ -380,8 +379,8 @@ export default function NotificationBell({ className = '' }: Props) {
                                         openItem(item);
                                       }}
                                       className="flex h-7 w-7 items-center justify-center rounded-md text-gray-400 hover:bg-[#EF0101]/10 hover:text-[#EF0101]"
-                                      title="Open lead"
-                                      aria-label="Open lead"
+                                      title="Open lead project"
+                                      aria-label="Open lead project"
                                     >
                                       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4">
                                         <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />

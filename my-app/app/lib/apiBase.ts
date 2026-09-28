@@ -11,8 +11,21 @@ export const buildAuthHeaders = (
   headers: Record<string, string> = {},
 ): Record<string, string> => {
   const merged: Record<string, string> = { ...headers };
-  if (sessionId) {
-    merged.Authorization = `Bearer ${sessionId}`;
+  const token = sessionId || getStoredSessionId();
+  if (token) {
+    merged.Authorization = `Bearer ${token}`;
   }
   return merged;
+};
+
+export const getStoredSessionId = (): string => {
+  if (typeof window === "undefined") return "";
+  try {
+    const raw = localStorage.getItem("design_module_auth");
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed?.sessionId) return String(parsed.sessionId);
+    }
+  } catch {}
+  return localStorage.getItem("sessionId") || "";
 };

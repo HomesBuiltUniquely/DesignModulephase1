@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 /* ══════════════════════════════════════════════════════
    WULKAN — local heading font
    Place Wulkan-Regular.woff2 & Wulkan-Bold.woff2
@@ -460,11 +462,32 @@ div.fixed[class*="z-["] {
   [class*="text-gray-600"] { color: #aab4c2 !important; }
   [class*="text-gray-500"] { color: #8a96a7 !important; }
   [class*="text-gray-400"] { color: #93a0b2 !important; }
+  
+  /* Slate text colors */
+  [class*="text-slate-900"] { color: #fcfcfd !important; }
+  [class*="text-slate-800"] { color: #f3f5f8 !important; }
+  [class*="text-slate-700"] { color: #e1e6eb !important; }
+  [class*="text-slate-600"] { color: #cbd5e1 !important; }
+  [class*="text-slate-500"] { color: #94a3b8 !important; }
+  [class*="text-slate-400"] { color: #94a3b8 !important; }
 
   /* Border colors */
   [class*="border-gray-100"] { border-color: #14171e !important; }
   [class*="border-gray-200"] { border-color: var(--border-color) !important; }
   [class*="border-gray-300"] { border-color: #2d3442 !important; }
+  
+  /* Slate border & divider colors */
+  [class*="border-slate-100"] { border-color: #222731 !important; }
+  [class*="border-slate-200"] { border-color: var(--border-color) !important; }
+  [class*="border-slate-300"] { border-color: #2d3442 !important; }
+  [class*="divide-slate-100"] { border-color: #222731 !important; }
+  [class*="divide-slate-200"] { border-color: var(--border-color) !important; }
+  
+  /* Slate backgrounds */
+  .bg-slate-100, [class*="bg-slate-100"] { background-color: #1d212b !important; }
+  .bg-slate-200, [class*="bg-slate-200"] { background-color: #272c36 !important; }
+  .bg-\[\#F8FAFC\], [class*="bg-[#F8FAFC]"] { background-color: var(--background) !important; }
+  .bg-\[\#F1F5F9\], [class*="bg-[#F1F5F9]"] { background-color: #14171e !important; }
   
   /* Hover effects */
   [class*="hover:bg-gray-50"]:hover { background-color: var(--hover-bg) !important; }

@@ -134,7 +134,11 @@ function buildPositionedEvents(events: CalendarEventItem[], weekStart: Date): Po
 
     let current = startOfDay(clippedStart);
     while (current <= clippedEnd) {
-      const dayIndex = Math.floor((current.getTime() - startOfWeek(current).getTime()) / (24 * 60 * 60 * 1000));
+      const dayIndex = Math.floor((startOfDay(current).getTime() - weekStart.getTime()) / (24 * 60 * 60 * 1000));
+      if (dayIndex < 0 || dayIndex > 6) {
+        current = addDays(current, 1);
+        continue;
+      }
       const segmentStart = isSameDay(current, startDate)
         ? new Date(startDate)
         : new Date(current.getFullYear(), current.getMonth(), current.getDate(), DAY_START_HOUR, 0, 0, 0);
@@ -374,7 +378,13 @@ export default function GoogleCalendarView() {
       params.set('timeMin', `${toInputDate(targetWeekStart)}T00:00:00+05:30`);
       params.set('timeMax', `${toInputDate(endOfWeek(targetWeekStart))}T23:59:59+05:30`);
       const path = canSeeAllEvents ? '/api/google-calendar/all-events' : '/api/google-calendar/my-events';
-      const res = await fetch(`${getApiBase()}${path}?${params.toString()}`, { headers: authHeaders });
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), 120_000);
+      const res = await fetch(`${getApiBase()}${path}?${params.toString()}`, {
+        headers: authHeaders,
+        signal: controller.signal,
+      });
+      window.clearTimeout(timeoutId);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.message || 'Failed to load calendar events');
       setEvents(Array.isArray(data?.events) ? data.events : []);

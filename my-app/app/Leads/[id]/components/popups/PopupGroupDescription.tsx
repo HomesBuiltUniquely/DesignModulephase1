@@ -30,11 +30,20 @@ type Props = {
   leadId?: number | null;
   designerPhone: string;
   clientPhone: string;
+  clientEmail?: string;
+  customerName?: string;
+  mailLoopChainInitiated?: boolean;
   designManagerName?: string;
   designManagerEmail?: string;
   sessionId: string | null;
   /** Returns API result so popup can show mail-success toast */
-  onMarkComplete: () => Promise<{ ok: boolean; mailSent?: boolean; mailTo?: string[] }>;
+  onMarkComplete: () => Promise<{
+    ok: boolean;
+    mailSent?: boolean;
+    mailAlreadySent?: boolean;
+    mailTo?: string[];
+    mailReason?: string | null;
+  }>;
   onClose: () => void;
 };
 
@@ -46,6 +55,9 @@ export default function PopupGroupDescription({
   leadId,
   designerPhone,
   clientPhone,
+  clientEmail = '',
+  customerName = '',
+  mailLoopChainInitiated = false,
   designManagerName = '',
   designManagerEmail = '',
   sessionId,
@@ -149,10 +161,27 @@ export default function PopupGroupDescription({
         submittingRef.current = false;
         return;
       }
-      if (result.mailSent) {
-        setToast('Mail loop chain is created and welcome mail sent successfully to client.');
+      if (result.mailAlreadySent) {
+        const reason = (result.mailReason || '').trim();
+        setToast(
+          reason ||
+            'Mail loop chain already created with this client. Welcome mail is not sent again.',
+        );
+      } else if (result.mailSent) {
+        const reason = (result.mailReason || '').trim();
+        setToast(
+          reason ||
+            'Mail loop chain is created and welcome mail sent successfully to the client.',
+        );
       } else {
-        setToast('Task completed. Welcome mail could not be sent — check client email on the lead.');
+        const reason = (result.mailReason || '').trim();
+        setToast(
+          reason === 'No client email on lead'
+            ? 'Task completed. No client email found (sales closure / View data). Add it under Client emails on the lead, then re-send welcome mail.'
+            : reason === 'Mail send failed'
+              ? 'Task completed. Welcome mail failed to send (SMTP or server config). Check backend logs and SMTP settings.'
+              : `Task completed. Welcome mail could not be sent${reason ? ` — ${reason}` : ' — check client email on the lead.'}`,
+        );
       }
       setTimeout(() => {
         setToast(null);
@@ -205,9 +234,14 @@ export default function PopupGroupDescription({
         Create a WhatsApp group for this project. Add the designer (you), client, admin, TDM, and DMs. Open a chat with the client, then add the rest to create the group.
       </p>
       <p className="text-amber-700 text-xs mb-4 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
-        Marking as done <strong>starts the mail loop</strong>: client email from the lead goes in{" "}
+        Marking as done <strong>starts the mail loop</strong>: client email from sales closure / View data goes in{" "}
         <strong>To</strong>; CC includes all admins, all TDMs, and this designer’s design manager.
       </p>
+      {mailLoopChainInitiated && (
+        <p className="text-sm text-[#32261C] mb-4 bg-[#DDCDC1]/30 border border-[#DDCDC1] rounded-lg px-3 py-2">
+          Mail loop chain was already created for this lead{clientEmail.trim() ? ` (${clientEmail.trim()})` : ''}.
+        </p>
+      )}
       <div className="space-y-4">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Designer number (from profile)</label>
@@ -230,7 +264,9 @@ export default function PopupGroupDescription({
           )}
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Client number (from sales closure)</label>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Client {customerName.trim() ? `(${customerName.trim()})` : ''} — phone (sales closure / View)
+          </label>
           <div className="flex items-center gap-2">
             <span className="flex-1 border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-gray-900 font-mono">
               {clientDigits ? formatPhone(clientPhone) : '—'}
@@ -246,7 +282,18 @@ export default function PopupGroupDescription({
             )}
           </div>
           {!clientDigits && (
-            <p className="text-xs text-amber-600 mt-1">Client contact is set from the sales closure form for this lead.</p>
+            <p className="text-xs text-amber-600 mt-1">Phone is loaded from the same lead data as the dashboard View popup (sales closure / CRM).</p>
+          )}
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Client email (welcome mail To)</label>
+          <span className="block border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-gray-900 text-sm break-all">
+            {(clientEmail || '').trim() || '—'}
+          </span>
+          {!(clientEmail || '').trim() && (
+            <p className="text-xs text-amber-600 mt-1">
+              No email on this lead yet. It should match sales closure; you can add it under Client emails on the lead page.
+            </p>
           )}
         </div>
         {renderRoleSection('Admin(s)', teamPhones?.admins || [], 'admin')}

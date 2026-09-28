@@ -27,7 +27,16 @@ import { registerCrmHubBookingRoutes, notifyHubFinanceReview, getHubBookingSyncF
 import { readCrmFinanceHandlingMode } from "./routes/crmEasebuzzAutoFinance";
 import { registerDesignPaymentRoutes } from "./routes/designPaymentRoutes";
 import { registerIncentivesRoutes } from "./routes/incentivesRoutes";
+import {
+  ensureDesignerXpTable,
+  registerDesignerXpRoutes,
+  awardTaskCompletionXp,
+  awardSalesClosureXp,
+  awardUpsellXp,
+  evaluateLeadQuotationRevisionXp,
+} from "./routes/designerXpRoutes";
 import * as notify from "./routes/designNotifications";
+import { buildTimelineAnchorsFromPayloadAndD1, fetchLeadTimelineAnchors, stampEntered1020At } from "./leadTimelineAnchors";
 
 /**
  * Load backend/.env before dotenv. Supports `export KEY=value` and quoted values.
@@ -542,20 +551,216 @@ async function getMailLoopCcEmails(extraEmails: Array<string | null | undefined>
   return distinctEmails([...validExtras, ...teamEmails]);
 }
 
+function leadPayloadRoots(payload?: any) {
+  const p = payload && typeof payload === "object" ? payload : {};
+  const form = p.form && typeof p.form === "object" ? p.form : {};
+  const formData = p.formData && typeof p.formData === "object" ? p.formData : {};
+  const form_data = p.form_data && typeof p.form_data === "object" ? p.form_data : {};
+  const fetched = p.fetchedData && typeof p.fetchedData === "object" ? p.fetchedData : {};
+  const fetched_data = p.fetched_data && typeof p.fetched_data === "object" ? p.fetched_data : {};
+  const rawPayload =
+    (p.rawPayload && typeof p.rawPayload === "object" ? p.rawPayload : null) ||
+    (p.raw_payload && typeof p.raw_payload === "object" ? p.raw_payload : null) ||
+    (p.rawHubPayload && typeof p.rawHubPayload === "object" ? p.rawHubPayload : {}) ||
+    {};
+  const connection = p.connection && typeof p.connection === "object" ? p.connection : {};
+  const scope =
+    (connection.configurationScope && typeof connection.configurationScope === "object"
+      ? connection.configurationScope
+      : null) ||
+    (p.configurationScope && typeof p.configurationScope === "object" ? p.configurationScope : null) ||
+    {};
+  return { p, form, formData, form_data, fetched, fetched_data, rawPayload, connection, scope };
+}
+
+/** Same sources as sales closure + View modal (intake / CRM hub booking payload). */
+function collectLeadClientPhones(
+  row: { contactNo?: string | null },
+  payload?: any,
+): string[] {
+  const { p, form, formData, form_data, fetched, fetched_data, rawPayload, scope } =
+    leadPayloadRoots(payload);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const add = (value: unknown) => {
+    const raw = value == null ? "" : String(value).trim();
+    if (!raw) return;
+    const digits = raw.replace(/\D/g, "");
+    if (digits.length < 10) return;
+    const key = digits.length > 10 ? digits.slice(-10) : digits;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(raw);
+  };
+  [
+    row.contactNo,
+    p.contact_no,
+    p.contactNo,
+    p.phone,
+    p.co_no,
+    form.co_no,
+    form.phone,
+    formData.co_no,
+    formData.phone,
+    form_data.co_no,
+    fetched.co_no,
+    fetched.phone,
+    fetched.alt_phone,
+    fetched_data.co_no,
+    rawPayload.co_no,
+    rawPayload.phone,
+    formData.altPhone,
+    form.altPhone,
+    scope.familyContactPhone,
+  ].forEach(add);
+  return out;
+}
+
+function resolveLeadClientContact(
+  row: {
+    clientEmail?: string | null;
+    alternateClientEmail?: string | null;
+    contactNo?: string | null;
+  },
+  payload?: any,
+): {
+  emails: string[];
+  phones: string[];
+  primaryEmail: string | null;
+  primaryPhone: string | null;
+} {
+  const emails = collectLeadClientEmails(row, payload);
+  const phones = collectLeadClientPhones(row, payload);
+  return {
+    emails,
+    phones,
+    primaryEmail: emails[0] ?? null,
+    primaryPhone: phones[0] ?? (row.contactNo ? String(row.contactNo).trim() : null),
+  };
+}
+
+type MailLoopChainState = {
+  initiated: boolean;
+  initiatedAt: string | null;
+  to: string[];
+};
+
+function readMailLoopChainState(payload?: any): MailLoopChainState {
+  const p = payload && typeof payload === "object" ? payload : {};
+  const at = pickTrimmedString(
+    p.mail_loop_chain_initiated_at,
+    p.formData?.mail_loop_chain_initiated_at,
+    p.form_data?.mail_loop_chain_initiated_at,
+  );
+  const rawTo = p.mail_loop_chain_to ?? p.formData?.mail_loop_chain_to;
+  const to = Array.isArray(rawTo)
+    ? distinctEmails(rawTo.map((e: unknown) => String(e || "")))
+    : [];
+  return { initiated: Boolean(at), initiatedAt: at, to };
+}
+
+async function persistMailLoopChainInitiated(leadId: number, toEmails: string[]): Promise<void> {
+  const [rows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [leadId]);
+  const row = (rows as { payload?: string | null }[])[0];
+  if (!row) return;
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = row.payload ? (JSON.parse(row.payload) as Record<string, unknown>) : {};
+  } catch {
+    payload = {};
+  }
+  const now = new Date().toISOString();
+  payload.mail_loop_chain_initiated_at = now;
+  payload.mail_loop_chain_to = toEmails;
+  const formData =
+    payload.formData && typeof payload.formData === "object"
+      ? { ...(payload.formData as Record<string, unknown>) }
+      : {};
+  formData.mail_loop_chain_initiated_at = now;
+  formData.mail_loop_chain_to = toEmails;
+  payload.formData = formData;
+  await pool.query("UPDATE leads SET payload = ?, update_at = ? WHERE id = ?", [
+    JSON.stringify(payload),
+    new Date(),
+    leadId,
+  ]);
+}
+
+/** Backfill DB columns from payload (sales closure / CRM) so mail + popups stay in sync. */
+async function ensureLeadClientContactColumns(leadId: number): Promise<void> {
+  const [rows] = await pool.query(
+    `SELECT contact_no as contactNo, client_email as clientEmail, client_email_alt as alternateClientEmail, payload
+     FROM leads WHERE id = ? LIMIT 1`,
+    [leadId],
+  );
+  const row = (rows as any[])[0];
+  if (!row) return;
+  let payload: any = {};
+  try {
+    payload = row.payload ? JSON.parse(row.payload) : {};
+  } catch {
+    payload = {};
+  }
+  const contact = resolveLeadClientContact(row, payload);
+  const nextEmail = row.clientEmail?.trim() || contact.primaryEmail;
+  const nextPhone = row.contactNo?.trim() || contact.primaryPhone;
+  if (!nextEmail && !nextPhone) return;
+  await pool.query(
+    `UPDATE leads SET
+       client_email = COALESCE(NULLIF(TRIM(client_email), ''), NULLIF(?, '')),
+       contact_no = COALESCE(NULLIF(TRIM(contact_no), ''), NULLIF(?, '')),
+       update_at = ?
+     WHERE id = ?`,
+    [nextEmail ?? null, nextPhone ?? null, new Date(), leadId],
+  );
+}
+
+async function mailLoopAlreadyCreatedResponse(
+  res: Response,
+  leadId: number,
+): Promise<Response> {
+  const emails = await getLeadClientToEmails(leadId);
+  let stateTo: string[] = [];
+  try {
+    const [rows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [leadId]);
+    const row = (rows as { payload?: string | null }[])[0];
+    let payload: any = {};
+    try {
+      payload = row?.payload ? JSON.parse(row.payload) : {};
+    } catch {
+      payload = {};
+    }
+    stateTo = readMailLoopChainState(payload).to;
+  } catch {
+    stateTo = [];
+  }
+  const mailTo = stateTo.length > 0 ? stateTo : emails;
+  const clientLabel = mailTo[0] || emails[0] || "this client";
+  return res.status(201).json({
+    ok: true,
+    mailAlreadySent: true,
+    mailSent: false,
+    mailTo,
+    mailReason: `Mail loop chain already created with this client (${clientLabel}).`,
+  });
+}
+
 /** Collect every client-side email on the lead — primary, family/alt, payload. Never skip any. */
 function collectLeadClientEmails(
   row: { clientEmail?: string | null; alternateClientEmail?: string | null },
   payload?: any,
 ): string[] {
-  const p = payload && typeof payload === "object" ? payload : {};
-  const form = p.form && typeof p.form === "object" ? p.form : {};
-  const formData = p.formData && typeof p.formData === "object" ? p.formData : {};
+  const { p, form, formData, form_data, fetched, fetched_data, rawPayload } =
+    leadPayloadRoots(payload);
   return distinctEmails([
     row.clientEmail,
     row.alternateClientEmail,
     p.email,
     p.clientEmail,
     p.client_email,
+    p.customer_email,
+    p.customerEmail,
+    p.sales_email,
     p.alternateClientEmail,
     p.client_email_alt,
     p.familyEmail,
@@ -563,9 +768,30 @@ function collectLeadClientEmails(
     form.email,
     form.clientEmail,
     form.client_email,
+    form.customer_email,
+    form.customerEmail,
+    form.sales_email,
     formData.email,
     formData.clientEmail,
     formData.client_email,
+    formData.customer_email,
+    formData.customerEmail,
+    formData.sales_email,
+    form_data.email,
+    form_data.client_email,
+    form_data.customer_email,
+    form_data.sales_email,
+    fetched.email,
+    fetched.client_email,
+    fetched.customer_email,
+    fetched_data.email,
+    fetched_data.client_email,
+    fetched_data.customer_email,
+    rawPayload.email,
+    rawPayload.client_email,
+    rawPayload.clientEmail,
+    rawPayload.customer_email,
+    rawPayload.customerEmail,
   ]);
 }
 
@@ -1601,6 +1827,7 @@ async function initDb() {
     `);
 
     await ensureOfflineMeetingExportTable(pool);
+    await ensureDesignerXpTable(pool);
 
     try {
       const [seenCol] = await conn.query(
@@ -3400,6 +3627,38 @@ async function exchangeGoogleCodeForTokens(code: string) {
   };
 }
 
+async function deactivateGoogleConnectionById(connectionId: number) {
+  await pool.query(
+    "UPDATE google_calendar_connections SET active = 0, updated_at = ? WHERE id = ?",
+    [new Date(), connectionId],
+  );
+}
+
+function shouldDeactivateGoogleConnection(errorCode: unknown, errorMessage: unknown): boolean {
+  const code = String(errorCode || "").toLowerCase();
+  const message = String(errorMessage || "").toLowerCase();
+  return (
+    code === "invalid_grant" ||
+    code === "unauthorized_client" ||
+    code === "invalid_client" ||
+    message.includes("account has been deleted") ||
+    message.includes("token has been expired or revoked")
+  );
+}
+
+const HUB_CALENDAR_FETCH_CONCURRENCY = 8;
+const HUB_CALENDAR_FETCH_TIMEOUT_MS = 20_000;
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = HUB_CALENDAR_FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function refreshGoogleAccessToken(connection: GoogleCalendarConnectionRow) {
   if (!connection.refresh_token) {
     throw new Error("Google refresh token missing. Please reconnect Google Calendar.");
@@ -3411,14 +3670,18 @@ async function refreshGoogleAccessToken(connection: GoogleCalendarConnectionRow)
   body.set("refresh_token", connection.refresh_token);
   body.set("grant_type", "refresh_token");
 
-  const response = await fetch(GOOGLE_TOKEN_URI, {
+  const response = await fetchWithTimeout(GOOGLE_TOKEN_URI, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data?.access_token) {
-    throw new Error(data?.error_description || data?.error || "Failed to refresh Google access token");
+    const errorMessage = data?.error_description || data?.error || "Failed to refresh Google access token";
+    if (shouldDeactivateGoogleConnection(data?.error, errorMessage)) {
+      await deactivateGoogleConnectionById(connection.id);
+    }
+    throw new Error(errorMessage);
   }
 
   const expiresAt =
@@ -3446,8 +3709,12 @@ async function ensureValidGoogleConnection(userId: number) {
   if (!connection) return null;
 
   const expiresAt = connection.expires_at ? new Date(connection.expires_at) : null;
-  const isExpired = expiresAt ? expiresAt.getTime() <= Date.now() + 60_000 : false;
-  if (!isExpired) return connection;
+  const stillValid =
+    Boolean(connection.access_token) &&
+    expiresAt != null &&
+    !Number.isNaN(expiresAt.getTime()) &&
+    expiresAt.getTime() > Date.now() + 60_000;
+  if (stillValid) return connection;
   return refreshGoogleAccessToken(connection);
 }
 
@@ -3501,32 +3768,27 @@ async function upsertGoogleConnection(args: {
   );
 }
 
-async function fetchGoogleEventsForConnection(
-  connection: GoogleCalendarConnectionRow,
-  owner: { id: number; email: string; name: string; role: string },
-  timeMin?: string | null,
-  timeMax?: string | null,
-) {
-  const url = new URL(GOOGLE_EVENTS_URI);
-  url.searchParams.set("singleEvents", "true");
-  url.searchParams.set("orderBy", "startTime");
-  url.searchParams.set("maxResults", "250");
-  url.searchParams.set(
-    "sharedExtendedProperty",
-    `${GOOGLE_SHARED_EVENT_PROPERTY_KEY}=${GOOGLE_SHARED_EVENT_PROPERTY_VALUE}`,
+/** Design Module users table — source of truth for designer invite email (not ERP designer master). */
+async function lookupDesignModuleUserEmailByName(name: string): Promise<string | null> {
+  const normalized = String(name || "").trim();
+  if (!normalized) return null;
+  const [rows] = await pool.query(
+    `SELECT email FROM users
+     WHERE TRIM(name) = TRIM(?)
+       AND role IN ('designer', 'design_manager', 'territorial_design_manager', 'admin', 'deputy_general_manager')
+     LIMIT 1`,
+    [normalized],
   );
-  if (timeMin) url.searchParams.set("timeMin", new Date(timeMin).toISOString());
-  if (timeMax) url.searchParams.set("timeMax", new Date(timeMax).toISOString());
+  const email = (rows as { email?: string }[])[0]?.email;
+  return typeof email === "string" && email.trim() ? email.trim() : null;
+}
 
-  const response = await fetch(url.toString(), {
-    headers: { Authorization: `Bearer ${connection.access_token}` },
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data?.error?.message || "Failed to fetch Google Calendar events");
-  }
-
-  return ((data?.items as any[]) || []).map((event) => ({
+function mapGoogleCalendarEvent(
+  event: any,
+  owner: { id: number; email: string; name: string; role: string },
+  connectedGoogleEmail: string | null,
+) {
+  return {
     id: event.id,
     summary: event.summary || "Untitled event",
     description: event.description || "",
@@ -3546,8 +3808,169 @@ async function fetchGoogleEventsForConnection(
     ownerName: owner.name,
     ownerEmail: owner.email,
     ownerRole: owner.role,
-    connectedGoogleEmail: connection.google_email,
-  }));
+    connectedGoogleEmail,
+  };
+}
+
+function buildGoogleEventsUrl(timeMin?: string | null, timeMax?: string | null, pageToken?: string) {
+  const url = new URL(GOOGLE_EVENTS_URI);
+  url.searchParams.set("singleEvents", "true");
+  url.searchParams.set("orderBy", "startTime");
+  url.searchParams.set("maxResults", "250");
+  url.searchParams.set("timeZone", GOOGLE_TIME_ZONE);
+  // Sales creates the event. The designer is only a guest, so unanswered invites
+  // stay hidden unless this is set. Both copies still carry source=Project-ERP.
+  url.searchParams.set("showHiddenInvitations", "true");
+  url.searchParams.set(
+    "sharedExtendedProperty",
+    `${GOOGLE_SHARED_EVENT_PROPERTY_KEY}=${GOOGLE_SHARED_EVENT_PROPERTY_VALUE}`,
+  );
+  if (timeMin) url.searchParams.set("timeMin", new Date(timeMin).toISOString());
+  if (timeMax) url.searchParams.set("timeMax", new Date(timeMax).toISOString());
+  if (pageToken) url.searchParams.set("pageToken", pageToken);
+  return url;
+}
+
+async function fetchGoogleEventsForConnection(
+  connection: GoogleCalendarConnectionRow,
+  owner: { id: number; email: string; name: string; role: string },
+  timeMin?: string | null,
+  timeMax?: string | null,
+) {
+  let activeConnection = connection;
+  const items: any[] = [];
+  let pageToken = "";
+  let refreshedAfterAuthError = false;
+
+  for (let page = 0; page < 20; page++) {
+    const url = buildGoogleEventsUrl(timeMin, timeMax, pageToken);
+    const response = await fetchWithTimeout(url.toString(), {
+      headers: { Authorization: `Bearer ${activeConnection.access_token}` },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (response.status === 401 && !refreshedAfterAuthError && activeConnection.refresh_token) {
+      activeConnection = await refreshGoogleAccessToken(activeConnection);
+      refreshedAfterAuthError = true;
+      page -= 1;
+      continue;
+    }
+    if (!response.ok) {
+      throw new Error(data?.error?.message || "Failed to fetch Google Calendar events");
+    }
+
+    items.push(...((data?.items as any[]) || []));
+    pageToken = typeof data?.nextPageToken === "string" ? data.nextPageToken : "";
+    if (!pageToken) break;
+  }
+
+  return items.map((event) => mapGoogleCalendarEvent(event, owner, activeConnection.google_email));
+}
+
+type HubCalendarConnectionRow = {
+  user_id: number;
+  user_email: string;
+  user_name: string;
+  user_role: string;
+};
+
+/** Admin/DGM loads every active designer connection — not the admin's own Google login. */
+async function gatherHubCalendarEventsForConnections(
+  rows: HubCalendarConnectionRow[],
+  timeMin?: string | null,
+  timeMax?: string | null,
+) {
+  const allEvents: any[] = [];
+  let nextIndex = 0;
+
+  async function worker() {
+    while (true) {
+      const rowIndex = nextIndex;
+      nextIndex += 1;
+      if (rowIndex >= rows.length) break;
+      const row = rows[rowIndex];
+      try {
+        const connection = await ensureValidGoogleConnection(row.user_id);
+        if (!connection) continue;
+        const events = await fetchGoogleEventsForConnection(
+          connection,
+          { id: row.user_id, email: row.user_email, name: row.user_name, role: row.user_role },
+          timeMin,
+          timeMax,
+        );
+        allEvents.push(...events);
+      } catch (innerErr) {
+        console.error("google-calendar connection fetch error", {
+          userId: row.user_id,
+          name: row.user_name,
+          error: innerErr,
+        });
+      }
+    }
+  }
+
+  const workerCount = Math.min(HUB_CALENDAR_FETCH_CONCURRENCY, Math.max(rows.length, 1));
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return allEvents;
+}
+
+function normalizeErpCrmCalendarEvent(raw: Record<string, unknown>) {
+  const id = String(raw.id ?? "").trim();
+  const start = raw.start ?? null;
+  const end = raw.end ?? raw.start ?? null;
+  if (!id || start == null) return null;
+  return {
+    id,
+    summary: String(raw.summary ?? "Untitled event"),
+    description: typeof raw.description === "string" ? raw.description : "",
+    htmlLink: typeof raw.htmlLink === "string" ? raw.htmlLink : "",
+    status: typeof raw.status === "string" ? raw.status : "confirmed",
+    location: typeof raw.location === "string" ? raw.location : "",
+    start,
+    end,
+    attendees: Array.isArray(raw.attendees) ? raw.attendees : [],
+    ownerUserId: raw.ownerUserId ?? null,
+    ownerName: raw.ownerName ?? null,
+    ownerEmail: raw.ownerEmail ?? null,
+    ownerRole: raw.ownerRole ?? null,
+    connectedGoogleEmail: raw.connectedGoogleEmail ?? null,
+  };
+}
+
+/**
+ * CRM admin calendar merges every CRM Google connection (sales + designers).
+ * DesignMod only stores designer tokens, so sales-organizer meetings were missing.
+ * Uses ERP service login (ERP_USERNAME) which must be a CRM ADMIN with calendar connected.
+ */
+async function fetchErpCrmHubCalendarEvents(timeMin?: string | null, timeMax?: string | null) {
+  const params = new URLSearchParams();
+  if (timeMin) params.set("timeMin", timeMin);
+  if (timeMax) params.set("timeMax", timeMax);
+  const qs = params.toString();
+  const data = await callErpApi(`/api/google-calendar/my-events${qs ? `?${qs}` : ""}`);
+  const list: unknown[] = Array.isArray(data)
+    ? data
+    : Array.isArray((data as { events?: unknown[] })?.events)
+      ? ((data as { events?: unknown[] }).events as unknown[])
+      : [];
+  const events: ReturnType<typeof normalizeErpCrmCalendarEvent>[] = [];
+  for (const row of list) {
+    if (!row || typeof row !== "object") continue;
+    const mapped = normalizeErpCrmCalendarEvent(row as Record<string, unknown>);
+    if (mapped) events.push(mapped);
+  }
+  return events;
+}
+
+function mergeHubCalendarEventsById(...groups: any[][]) {
+  const byId = new Map<string, any>();
+  for (const group of groups) {
+    for (const event of group) {
+      const id = String(event?.id ?? "").trim();
+      if (!id) continue;
+      if (!byId.has(id)) byId.set(id, event);
+    }
+  }
+  return Array.from(byId.values());
 }
 
 async function createGoogleCalendarEventForUser(args: {
@@ -4243,27 +4666,17 @@ app.get("/api/google-calendar/my-events", async (req: Request, res: Response) =>
       return res.status(403).json({ message: "You do not have access to HUB Calendar." });
     }
     const visibleUsers = await getCalendarVisibleUsers(user);
-    const allEvents: any[] = [];
-
-    for (const visibleUser of visibleUsers) {
-      try {
-        const connection = await ensureValidGoogleConnection(visibleUser.id);
-        if (!connection) continue;
-
-        const events = await fetchGoogleEventsForConnection(
-          connection,
-          { id: visibleUser.id, email: visibleUser.email, name: visibleUser.name, role: visibleUser.role },
-          (req.query.timeMin as string | undefined) || null,
-          (req.query.timeMax as string | undefined) || null,
-        );
-        allEvents.push(...events);
-      } catch (innerErr) {
-        console.error("google-calendar my-events user fetch error", {
-          userId: visibleUser.id,
-          error: innerErr,
-        });
-      }
-    }
+    const connectionRows = visibleUsers.map((visibleUser) => ({
+      user_id: visibleUser.id,
+      user_email: visibleUser.email,
+      user_name: visibleUser.name,
+      user_role: visibleUser.role,
+    }));
+    const allEvents = await gatherHubCalendarEventsForConnections(
+      connectionRows,
+      (req.query.timeMin as string | undefined) || null,
+      (req.query.timeMax as string | undefined) || null,
+    );
 
     allEvents.sort((a, b) => String(a.start || "").localeCompare(String(b.start || "")));
     return res.json({ events: allEvents });
@@ -4290,28 +4703,32 @@ app.get("/api/google-calendar/all-events", async (req: Request, res: Response) =
        ORDER BY u.name ASC`,
     );
 
-    const allEvents: any[] = [];
-    for (const row of rows as any[]) {
-      try {
-        const connection = await ensureValidGoogleConnection(row.user_id);
-        if (!connection) continue;
-        const events = await fetchGoogleEventsForConnection(
-          connection,
-          { id: row.user_id, email: row.user_email, name: row.user_name, role: row.user_role },
-          (req.query.timeMin as string | undefined) || null,
-          (req.query.timeMax as string | undefined) || null,
-        );
-        allEvents.push(...events);
-      } catch (innerErr) {
-        console.error("google-calendar all-events user fetch error", {
-          userId: row.user_id,
-          error: innerErr,
-        });
-      }
-    }
+    const timeMin = (req.query.timeMin as string | undefined) || null;
+    const timeMax = (req.query.timeMax as string | undefined) || null;
+
+    const connectionRows = (rows as HubCalendarConnectionRow[]).map((row) => ({
+      user_id: row.user_id,
+      user_email: row.user_email,
+      user_name: row.user_name,
+      user_role: row.user_role,
+    }));
+
+    const [crmEvents, localEvents] = await Promise.all([
+      fetchErpCrmHubCalendarEvents(timeMin, timeMax).catch((err) => {
+        console.error("hub calendar CRM aggregate failed", err);
+        return [] as any[];
+      }),
+      gatherHubCalendarEventsForConnections(connectionRows, timeMin, timeMax),
+    ]);
+    const allEvents = mergeHubCalendarEventsById(crmEvents, localEvents);
 
     allEvents.sort((a, b) => String(a.start || "").localeCompare(String(b.start || "")));
-    return res.json({ events: allEvents });
+    return res.json({
+      events: allEvents,
+      connectionCount: connectionRows.length,
+      crmEventCount: crmEvents.length,
+      localEventCount: localEvents.length,
+    });
   } catch (err) {
     console.error("google-calendar all-events error", err);
     return res.status(500).json({ message: "Failed to load admin Google Calendar events" });
@@ -7131,6 +7548,18 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
     // MySQL: 1 = inserted (first complete), 2 = updated existing row. Never re-send mail on re-mark.
     const isFirstCompletion = Number((completionWrite as { affectedRows?: number })?.affectedRows) === 1;
 
+    // Non-fatal hook to award Designer XP (active tasks award XP; inactive tasks are skipped)
+    try {
+      void awardTaskCompletionXp(pool, {
+        leadId: id,
+        milestoneIndex,
+        taskName,
+        completionDate: new Date(),
+      });
+    } catch (xpErr) {
+      console.error("[designer-xp] Hook error in complete-task (non-fatal):", xpErr);
+    }
+
     try {
       const meetingDate = meta?.meetingDate ?? meta?.signoffDate ?? null;
       const meetingTime = meta?.meetingTime ?? meta?.signoffTime ?? null;
@@ -7305,6 +7734,9 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         taskName,
         emailRoutePath,
       });
+      if (emailRoutePath === "/api/email/send-mail-loop-chain-initiate") {
+        return mailLoopAlreadyCreatedResponse(res, id);
+      }
     } else if (emailRoutePath) {
       console.log("[complete-task] Email trigger:", { leadId: id, milestoneIndex, taskName, emailRoutePath });
       // DQC 1 approval: fire BOTH internal (to designer) and CX (10% payment request)
@@ -8971,15 +9403,36 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
       } else if (emailRoutePath === "/api/email/send-mail-loop-chain-initiate") {
         // Group Description — await welcome mail so UI can confirm success
         try {
+          await ensureLeadClientContactColumns(id);
+          const [stateRows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [id]);
+          const stateRow = (stateRows as { payload?: string | null }[])[0];
+          let statePayload: any = {};
+          try {
+            statePayload = stateRow?.payload ? JSON.parse(stateRow.payload) : {};
+          } catch {
+            statePayload = {};
+          }
+          if (readMailLoopChainState(statePayload).initiated) {
+            return mailLoopAlreadyCreatedResponse(res, id);
+          }
+
           const mailResult = await triggerCustomerEmailForLead(id, emailRoutePath, {
             actorEmail: actingUser.email || null,
             awaitSend: true,
           });
+          if (mailResult.ok && mailResult.to.length > 0) {
+            await persistMailLoopChainInitiated(id, mailResult.to);
+          }
+          const clientLabel = mailResult.to[0] || "";
           return res.status(201).json({
             ok: true,
             mailSent: mailResult.ok,
             mailTo: mailResult.to,
-            mailReason: mailResult.reason || null,
+            mailReason: mailResult.ok
+              ? clientLabel
+                ? `Mail loop chain created with ${clientLabel}.`
+                : null
+              : mailResult.reason || null,
           });
         } catch (err) {
           console.error("complete-task Group Description mail error (non-fatal)", {
@@ -9502,11 +9955,30 @@ app.post("/api/leads/:id/approve-sales-closure", async (req: Request, res: Respo
     if (payloadObj.quotation_total && !payloadObj.quotation_total_at_sales_closure) {
       payloadObj.quotation_total_at_sales_closure = parseFiniteNumber(payloadObj.quotation_total);
     }
+    stampEntered1020At(payloadObj);
 
     await pool.query(
       `UPDATE leads SET project_stage = '10-20%', payload = ?, update_at = ? WHERE id = ?`,
       [JSON.stringify(payloadObj), new Date(), leadId]
     );
+
+    // Non-fatal hook to award Designer XP for New Sale
+    try {
+      const saleAmount = Number(
+        payloadObj.quotation_total_at_sales_closure ||
+        payloadObj.quotation_total ||
+        payloadObj.deal_value ||
+        0
+      );
+      if (saleAmount > 0) {
+        void awardSalesClosureXp(pool, {
+          leadId,
+          saleAmountInr: saleAmount,
+        });
+      }
+    } catch (xpErr) {
+      console.error("[designer-xp] Hook error in approve-sales-closure (non-fatal):", xpErr);
+    }
 
     await addLeadHistoryEvent(leadId, {
       id: `approve-sales-closure-${Date.now()}`,
@@ -9782,7 +10254,8 @@ app.get("/api/leads/finance-10p-queue", async (req: Request, res: Response) => {
       return res.status(403).json({ message: "Only finance or admin can access this queue" });
     }
     const list = await buildFinance10pQueueList(pool, TEMP_FINANCE_RELAXED_APPROVAL);
-    return res.json(list);
+    const enriched = await enrichLeadQueueRowsWithTimeline(list);
+    return res.json(enriched);
   } catch (err) {
     console.error("finance-10p-queue error", err);
     return res.status(500).json({ message: "Failed to load queue" });
@@ -9836,6 +10309,17 @@ app.post(
            ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
           [leadId, now]
         );
+        // Non-fatal hook to award Designer XP for 10% payment collection
+        try {
+          void awardTaskCompletionXp(pool, {
+            leadId,
+            milestoneIndex: 2,
+            taskName: "10% payment collection",
+            completionDate: now,
+          });
+        } catch (xpErr) {
+          console.error("[designer-xp] Hook error in payment-10p-upload (non-fatal):", xpErr);
+        }
       }
 
       // Notify: Design 10% payment requested (same path as 40% upload — collection is done here, not via complete-task)
@@ -9966,6 +10450,17 @@ app.post(
            ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
           [leadId, now]
         );
+        // Non-fatal hook to award Designer XP for 10% payment collection
+        try {
+          void awardTaskCompletionXp(pool, {
+            leadId,
+            milestoneIndex: 2,
+            taskName: "10% payment collection",
+            completionDate: now,
+          });
+        } catch (xpErr) {
+          console.error("[designer-xp] Hook error in payment-screenshots (non-fatal):", xpErr);
+        }
       }
       return res.status(201).json({ ok: true });
     } catch (err) {
@@ -10033,6 +10528,7 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
       if (payload.quotation_total && !payload.quotation_total_at_sales_closure) {
         payload.quotation_total_at_sales_closure = parseFiniteNumber(payload.quotation_total);
       }
+      stampEntered1020At(payload);
       await pool.query(
         `UPDATE leads SET project_stage = '10-20%', payload = ?, update_at = ? WHERE id = ?`,
         [JSON.stringify(payload), now, leadId],
@@ -10700,7 +11196,8 @@ app.get("/api/leads/finance-40p-queue", async (req: Request, res: Response) => {
       status: has40pUpload(l.id) ? "Pending approval" : "Pending upload",
       canApprove: TEMP_FINANCE_RELAXED_APPROVAL || has40pUpload(l.id),
     }));
-    return res.json(list);
+    const enriched = await enrichLeadQueueRowsWithTimeline(list);
+    return res.json(enriched);
   } catch (err) {
     console.error("finance-40p-queue error", err);
     return res.status(500).json({ message: "Failed to load queue" });
@@ -11124,6 +11621,17 @@ app.post(
           void maybeNotifyMilestoneCompleted(leadId, uploadMilestoneIndex, {
             taskName: uploadTaskName,
           });
+          // Non-fatal hook to award Designer XP for auto-approved uploads
+          try {
+            void awardTaskCompletionXp(pool, {
+              leadId,
+              milestoneIndex: uploadMilestoneIndex,
+              taskName: uploadTaskName,
+              completionDate: now,
+            });
+          } catch (xpErr) {
+            console.error("[designer-xp] Hook error in maybeCompleteTask upload (non-fatal):", xpErr);
+          }
           // Manager/admin (or D2 SPM/PM) direct upload → auto-approved → notify designer
           if (!isKT) {
             void notifyDesignerMmtDocsReady(leadId, {
@@ -11297,6 +11805,10 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       row.projectName ||
       "Customer";
     const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
+    const designerInviteEmail =
+      (typeof row.designerEmail === "string" && row.designerEmail.trim()) ||
+      (await lookupDesignModuleUserEmailByName(designerName)) ||
+      (typeof actingUser.email === "string" && actingUser.email.trim() ? actingUser.email.trim() : null);
     const projectId = row.pid || `HUB-${leadId}`;
     const eventStart = formatGoogleDateTime(meetingDate, meetingTime);
     if (!eventStart) {
@@ -11413,7 +11925,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
           meetingMode === "offline" ? resolvedEcLocationText : undefined,
         startDateTimeIso: eventStart,
         endDateTimeIso: eventEnd,
-        attendees: distinctEmails([customerEmail, row.designerEmail, actingUser.email]),
+        attendees: distinctEmails([customerEmail, designerInviteEmail, actingUser.email]),
       });
       if (gcalResult) {
         gcalEventId = (gcalResult as any).id ?? (gcalResult as any).eventId ?? null;
@@ -11428,13 +11940,19 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       });
     }
 
+    const erpDesignerEmail =
+      designerInviteEmail ||
+      (await lookupDesignModuleUserEmailByName(designerName)) ||
+      null;
+
     // Register slot + Google event details in Java CRM (non-fatal — GCal event and email already sent)
     if (slotId && meetingDate) {
       try {
         await callErpApi("/v1/Appointment", {
           method: "POST",
           body: JSON.stringify({
-            designerName: actingUser.name,
+            designerName,
+            ...(erpDesignerEmail ? { designerEmail: erpDesignerEmail } : {}),
             date: meetingDate,
             slotId,
             source: "DESIGN_MODULE",
@@ -11446,7 +11964,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
             googleSyncStatus: gcalEventId ? "SYNCED" : "DM_GCAL_FAILED",
           }),
         });
-        console.log(`[SlotSync] Slot ${slotId} blocked in Java for ${actingUser.name} on ${meetingDate} (gcal=${gcalEventId ?? "none"})`);
+        console.log(`[SlotSync] Slot ${slotId} blocked in Java for ${designerName} on ${meetingDate} (gcal=${gcalEventId ?? "none"})`);
       } catch (slotErr) {
         console.error("[SlotSync] Java appointment registration failed (non-fatal)", slotErr);
       }
@@ -11455,7 +11973,8 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
         await callErpApi("/v1/Appointment", {
           method: "POST",
           body: JSON.stringify({
-            designerName: actingUser.name,
+            designerName,
+            ...(erpDesignerEmail ? { designerEmail: erpDesignerEmail } : {}),
             startTime,
             endTime,
             source: "DESIGN_MODULE",
@@ -11466,7 +11985,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
             googleSyncStatus: gcalEventId ? "SYNCED" : "DM_GCAL_FAILED",
           }),
         });
-        console.log(`[SlotSync] Dynamic window ${startTime}–${endTime} blocked in Java for ${actingUser.name} (gcal=${gcalEventId ?? "none"})`);
+        console.log(`[SlotSync] Dynamic window ${startTime}–${endTime} blocked in Java for ${designerName} (gcal=${gcalEventId ?? "none"})`);
       } catch (slotErr) {
         console.error("[SlotSync] Java dynamic appointment registration failed (non-fatal)", slotErr);
       }
@@ -11677,6 +12196,18 @@ app.post("/api/leads/:leadId/uploads/:uploadId/approve", async (req: Request, re
       [leadId, approvalMilestoneIndex, approvalTaskName, now],
     );
 
+    // Non-fatal hook to award Designer XP (D1 files upload is active; D2 files upload is inactive)
+    try {
+      void awardTaskCompletionXp(pool, {
+        leadId,
+        milestoneIndex: approvalMilestoneIndex,
+        taskName: approvalTaskName,
+        completionDate: now,
+      });
+    } catch (xpErr) {
+      console.error("[designer-xp] Hook error in approve-upload (non-fatal):", xpErr);
+    }
+
     // D1 / D2 milestone completes when last upload task is approved (not via complete-task)
     void maybeNotifyMilestoneCompleted(leadId, approvalMilestoneIndex, {
       taskName: approvalTaskName,
@@ -11769,6 +12300,16 @@ app.post("/api/leads/:leadId/fix-upload-task", async (req: Request, res: Respons
         );
         fixed.push("Marked 'D2 - files upload' (milestone 3) as complete");
         void maybeNotifyMilestoneCompleted(leadId, 3, { taskName: "D2 - files upload" });
+        try {
+          void awardTaskCompletionXp(pool, {
+            leadId,
+            milestoneIndex: 3,
+            taskName: "D2 - files upload",
+            completionDate: now,
+          });
+        } catch (xpErr) {
+          console.error("[designer-xp] Hook error in fix-upload-type (non-fatal):", xpErr);
+        }
       } else {
         fixed.push("No approved D2 upload found yet — task not marked complete");
       }
@@ -13376,6 +13917,18 @@ app.post("/api/leads/:id/d1-request", async (req: Request, res: Response) => {
       visitTime: visitTime,
     });
 
+    // Non-fatal hook to award Designer XP for Task 3: D1 for MMT request
+    try {
+      void awardTaskCompletionXp(pool, {
+        leadId,
+        milestoneIndex: 0,
+        taskName: "D1 for MMT request",
+        completionDate: new Date(),
+      });
+    } catch (xpErr) {
+      console.error("[designer-xp] Hook error in d1-request (non-fatal):", xpErr);
+    }
+
     return res.status(201).json({
       ok: true,
       saved: true,
@@ -13938,7 +14491,8 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
         [userId],
       );
       const list = (rows as any[]).map((r) => ({ ...r, isOnHold: !!r.isOnHold }));
-      return res.json(list);
+      const enriched = await enrichLeadQueueRowsWithTimeline(list);
+      return res.json(enriched);
     }
 
     const [rows] = await pool.query(
@@ -14000,8 +14554,10 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
        LEFT JOIN users pm ON pm.id = l.assigned_project_manager_id
        ORDER BY l.id ASC`,
     );
+    const payloadByLeadId = new Map<number, unknown>();
     const baseList = (rows as any[])
       .map((r) => {
+        payloadByLeadId.set(r.id, r.leadPayloadRaw);
         const intake = extractLeadIntakeViewFromPayload(r.leadPayloadRaw);
         const { leadPayloadRaw: _omitPayload, ...rest } = r;
         return {
@@ -14038,35 +14594,60 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
 
     // Enrich with current milestone (from task completions) for Design Phase dashboard
     const [completionRows] = await pool.query(
-      `SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName FROM lead_task_completions`,
+      `SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName, completed_at as completedAt FROM lead_task_completions`,
     );
     const compList = completionRows as {
       leadId: number;
       milestoneIndex: number;
       taskName: string;
+      completedAt?: string | Date;
     }[];
     const completionsByLead = new Map<
       number,
-      { milestoneIndex: number; taskName: string }[]
+      { milestoneIndex: number; taskName: string; completedAt?: string }[]
     >();
     for (const c of compList) {
       const arr = completionsByLead.get(c.leadId) ?? [];
-      arr.push({ milestoneIndex: c.milestoneIndex, taskName: c.taskName });
+      arr.push({
+        milestoneIndex: c.milestoneIndex,
+        taskName: c.taskName,
+        completedAt: c.completedAt ? new Date(c.completedAt).toISOString() : undefined,
+      });
       completionsByLead.set(c.leadId, arr);
+    }
+    const [d1AnchorRows] = await pool.query(
+      `SELECT lead_id as leadId, MIN(created_at) as sentAt FROM lead_d1_assignments GROUP BY lead_id`,
+    );
+    const d1SentByLead = new Map<number, string>();
+    for (const row of d1AnchorRows as { leadId: number; sentAt?: Date | string }[]) {
+      if (row.sentAt) d1SentByLead.set(row.leadId, new Date(row.sentAt).toISOString());
     }
     const enrichedList = baseList.map((l: any) => {
       let comps = completionsByLead.get(l.id) ?? [];
       // Auto-complete KT TRANSFER for existing projects that have already started on other milestones.
       if (comps.length > 0 && !comps.some((r) => r.milestoneIndex === 7)) {
-        comps = [...comps, { milestoneIndex: 7, taskName: "Upload KT files" }];
+        comps = [
+          ...comps,
+          {
+            milestoneIndex: 7,
+            taskName: "Upload KT files",
+            completedAt: new Date().toISOString(),
+          },
+        ];
       }
       const idx = getCurrentMilestoneIndex(comps);
       const progress = getCurrentMilestoneProgress(comps, idx);
+      const timelineAnchors = buildTimelineAnchorsFromPayloadAndD1(
+        payloadByLeadId.get(l.id) ?? null,
+        d1SentByLead.get(l.id) ?? null,
+      );
       return {
         ...l,
         currentMilestoneIndex: idx,
         currentMilestoneName: MILESTONE_NAMES[idx] ?? "—",
         currentMilestoneProgress: progress,
+        timelineAnchors,
+        taskCompletions: comps,
       };
     });
 
@@ -14142,6 +14723,101 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
   }
 });
 
+type LeadTaskCompletionDto = {
+  milestoneIndex: number;
+  taskName: string;
+  completedAt?: string;
+};
+
+async function loadLeadTaskCompletionsByLead(): Promise<Map<number, LeadTaskCompletionDto[]>> {
+  const [completionRows] = await pool.query(
+    `SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName, completed_at as completedAt
+     FROM lead_task_completions`,
+  );
+  const completionsByLead = new Map<number, LeadTaskCompletionDto[]>();
+  for (const c of completionRows as {
+    leadId: number;
+    milestoneIndex: number;
+    taskName: string;
+    completedAt?: string | Date;
+  }[]) {
+    const arr = completionsByLead.get(c.leadId) ?? [];
+    arr.push({
+      milestoneIndex: c.milestoneIndex,
+      taskName: c.taskName,
+      completedAt: c.completedAt ? new Date(c.completedAt).toISOString() : undefined,
+    });
+    completionsByLead.set(c.leadId, arr);
+  }
+  return completionsByLead;
+}
+
+async function loadD1MmtRequestSentAtByLead(): Promise<Map<number, string>> {
+  const [d1AnchorRows] = await pool.query(
+    `SELECT lead_id as leadId, MIN(created_at) as sentAt FROM lead_d1_assignments GROUP BY lead_id`,
+  );
+  const d1SentByLead = new Map<number, string>();
+  for (const row of d1AnchorRows as { leadId: number; sentAt?: Date | string }[]) {
+    if (row.sentAt) d1SentByLead.set(row.leadId, new Date(row.sentAt).toISOString());
+  }
+  return d1SentByLead;
+}
+
+async function loadLeadPayloadByIds(leadIds: number[]): Promise<Map<number, unknown>> {
+  const map = new Map<number, unknown>();
+  if (leadIds.length === 0) return map;
+  const placeholders = leadIds.map(() => "?").join(",");
+  const [rows] = await pool.query(
+    `SELECT id, payload FROM leads WHERE id IN (${placeholders})`,
+    leadIds,
+  );
+  for (const row of rows as { id: number; payload: unknown }[]) {
+    map.set(row.id, row.payload);
+  }
+  return map;
+}
+
+async function enrichLeadQueueRowsWithTimeline<T extends { id: number }>(
+  rows: T[],
+  options?: {
+    payloadByLeadId?: Map<number, unknown>;
+    completionsByLead?: Map<number, LeadTaskCompletionDto[]>;
+    d1SentByLead?: Map<number, string>;
+  },
+): Promise<
+  Array<
+    T & {
+      intakeConfiguration: string | null;
+      timelineAnchors: ReturnType<typeof buildTimelineAnchorsFromPayloadAndD1>;
+      taskCompletions: LeadTaskCompletionDto[];
+    }
+  >
+> {
+  const leadIds = rows.map((r) => r.id);
+  const payloadByLeadId =
+    options?.payloadByLeadId ?? (await loadLeadPayloadByIds(leadIds));
+  const completionsByLead =
+    options?.completionsByLead ?? (await loadLeadTaskCompletionsByLead());
+  const d1SentByLead =
+    options?.d1SentByLead ?? (await loadD1MmtRequestSentAtByLead());
+
+  return rows.map((row) => {
+    const payload = payloadByLeadId.get(row.id) ?? null;
+    const intake = extractLeadIntakeViewFromPayload(payload);
+    const taskCompletions = completionsByLead.get(row.id) ?? [];
+    const timelineAnchors = buildTimelineAnchorsFromPayloadAndD1(
+      payload,
+      d1SentByLead.get(row.id) ?? null,
+    );
+    return {
+      ...row,
+      intakeConfiguration: intake.intakeConfiguration ?? null,
+      timelineAnchors,
+      taskCompletions,
+    };
+  });
+}
+
 // DQC dashboard: list leads with id, name, stage, dqcStatus, dqc1Pending, dqc2Pending for dqc_manager and dqe
 // dqc1Pending = needs DQC 1 approval (has DQC 1 submission, latest verdict not approved)
 // dqc2Pending = needs DQC 2 approval (latest verdict is pending_dqc2)
@@ -14153,13 +14829,22 @@ app.get("/api/leads/dqc-queue", async (req: Request, res: Response) => {
       return res.status(403).json({ message: "Only DQC Manager or DQE can access DQC queue" });
     }
     const [leadRows] = await pool.query(
-      `SELECT id, project_name as projectName, project_stage as projectStage,
+      `SELECT id, project_name as projectName, project_stage as projectStage, payload,
               JSON_UNQUOTE(JSON_EXTRACT(CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END, '$.sales_closure_finance_approved')) AS financeApprovedRaw
        FROM leads ORDER BY id ASC`,
     );
     const leads = (leadRows as any[])
       .filter((l) => l.financeApprovedRaw !== "false")
-      .map((l) => ({ id: l.id, projectName: l.projectName, projectStage: l.projectStage }));
+      .map((l) => {
+        const intake = extractLeadIntakeViewFromPayload(l.payload);
+        return {
+          id: l.id,
+          projectName: l.projectName,
+          projectStage: l.projectStage,
+          intakeConfiguration: intake.intakeConfiguration,
+          payload: l.payload,
+        };
+      });
     const [reviewRows] = await pool.query(
       `SELECT lead_id as leadId, verdict FROM lead_dqc_reviews ORDER BY id DESC`,
     );
@@ -14169,13 +14854,21 @@ app.get("/api/leads/dqc-queue", async (req: Request, res: Response) => {
         latestVerdictByLead[row.leadId] = row.verdict;
       }
     }
-    const [completionRows] = await pool.query(
-      `SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName
-       FROM lead_task_completions`,
-    );
-    const completions = completionRows as { leadId: number; milestoneIndex: number; taskName: string }[];
+    const completionsByLead = await loadLeadTaskCompletionsByLead();
+    const d1SentByLead = await loadD1MmtRequestSentAtByLead();
+    const completionRowsFlat: {
+      leadId: number;
+      milestoneIndex: number;
+      taskName: string;
+      completedAt?: string;
+    }[] = [];
+    for (const [leadId, comps] of completionsByLead.entries()) {
+      for (const c of comps) {
+        completionRowsFlat.push({ leadId, ...c });
+      }
+    }
     const hasDqc1Submission = (leadId: number) =>
-      completions.some(
+      completionRowsFlat.some(
         (c) =>
           c.leadId === leadId &&
           c.milestoneIndex === 1 &&
@@ -14188,10 +14881,17 @@ app.get("/api/leads/dqc-queue", async (req: Request, res: Response) => {
         !dqc2Pending &&
         hasDqc1Submission(l.id) &&
         (verdict === undefined || verdict === "rejected" || verdict === "approved_with_changes");
+      const taskCompletions = completionsByLead.get(l.id) ?? [];
+      const timelineAnchors = buildTimelineAnchorsFromPayloadAndD1(
+        l.payload ?? null,
+        d1SentByLead.get(l.id) ?? null,
+      );
+      const { payload: _payload, ...leadPublic } = l;
       return {
-        id: l.id,
-        projectName: l.projectName,
-        projectStage: l.projectStage,
+        ...leadPublic,
+        intakeConfiguration: l.intakeConfiguration ?? null,
+        timelineAnchors,
+        taskCompletions,
         dqcStatus: verdict === "approved" ? "Approved DQC" : "Pending DQC",
         dqc1Pending: !!dqc1Pending,
         dqc2Pending: !!dqc2Pending,
@@ -14891,10 +15591,34 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
     }
     if (!revision) revision = "v1.0 (Latest)";
 
+    let parsedPayload: any = {};
+    try {
+      parsedPayload = row.payload ? JSON.parse(row.payload) : {};
+    } catch {
+      parsedPayload = {};
+    }
+    const clientContact = resolveLeadClientContact(
+      {
+        clientEmail: row.clientEmail,
+        alternateClientEmail: row.alternateClientEmail,
+        contactNo: row.contactNo,
+      },
+      parsedPayload,
+    );
+
     const { payload: _p, ...rest } = row;
     const intake = extractLeadIntakeViewFromPayload(row.payload);
+    const timelineAnchors = await fetchLeadTimelineAnchors(pool, id, row.payload);
+    const mailLoopState = readMailLoopChainState(parsedPayload);
     return res.json({
       ...rest,
+      contactNo: rest.contactNo || clientContact.primaryPhone,
+      clientEmail: rest.clientEmail || clientContact.primaryEmail,
+      clientEmails: clientContact.emails,
+      clientPhones: clientContact.phones,
+      mailLoopChainInitiated: mailLoopState.initiated,
+      mailLoopChainInitiatedAt: mailLoopState.initiatedAt,
+      timelineAnchors,
       isOnHold: !!row.isOnHold,
       designerName: designerName || null,
       designerEmail: row.designerEmail ?? null,
@@ -15341,6 +16065,7 @@ app.patch("/api/leads/:id/prolance-ids", async (req: Request, res: Response) => 
           `INSERT IGNORE INTO lead_prolance_quote_versions (lead_id, quote_id, created_at) VALUES (?, ?, ?)`,
           [id, prolanceQuoteId, new Date()],
         );
+        void evaluateLeadQuotationRevisionXp(pool, id);
       } catch (verErr) {
         console.error("lead_prolance_quote_versions insert", verErr);
       }
@@ -15554,6 +16279,8 @@ app.post("/api/leads/:id/prolance-quote-snapshots", async (req: Request, res: Re
     const ins = result as mysql.ResultSetHeader;
     const inserted = ins.affectedRows === 1;
     const updated = ins.affectedRows > 1;
+
+    void evaluateLeadQuotationRevisionXp(pool, id);
 
     if (inserted) {
       try {
@@ -16070,6 +16797,7 @@ registerCrmHubBookingRoutes(app, {
 });
 registerProlanceRoutes(app, getUserFromSession, pool);
 registerIncentivesRoutes(app, { pool, getUserFromSession });
+registerDesignerXpRoutes(app, { pool, getUserFromSession });
 registerDesignPaymentRoutes(app, {
   pool,
   getUserFromSession,
@@ -16175,10 +16903,12 @@ app.post("/api/appointment", async (req: Request, res: Response) => {
   }
 
   try {
+    const designerEmail = await lookupDesignModuleUserEmailByName(designerName);
     const data = await callErpApi("/v1/Appointment", {
       method: "POST",
       body: JSON.stringify({
         designerName,
+        ...(designerEmail ? { designerEmail } : {}),
         date,
         slotId,
         source: "DESIGN_MODULE",

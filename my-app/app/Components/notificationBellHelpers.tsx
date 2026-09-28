@@ -121,20 +121,27 @@ export function quoteLinkFromNotification(item: DesignNotificationItem): string 
   return link || null;
 }
 
-/** Resolve design lead id for redirect — top-level, payload, or HUB-{id} project_id. */
+/** Resolve design lead id for redirect — top-level, payload, project_id, or event_id. */
 export function leadIdFromNotification(item: DesignNotificationItem): number | null {
-  const top = Number(item.lead_id);
-  if (Number.isFinite(top) && top > 0) return top;
+  const top = positiveInt(item.lead_id);
+  if (top) return top;
+
   const p = asRecord(item.payload);
-  const fromPayload = Number(p.lead_id ?? p.leadId);
-  if (Number.isFinite(fromPayload) && fromPayload > 0) return fromPayload;
-  const pid = String(item.project_id || p.project_id || '').trim();
-  const hub = pid.match(/^HUB-(\d+)$/i);
-  if (hub) {
-    const id = Number(hub[1]);
-    if (Number.isFinite(id) && id > 0) return id;
-  }
-  return null;
+  const fromPayload = positiveInt(p.lead_id ?? p.leadId ?? p.design_lead_id);
+  if (fromPayload) return fromPayload;
+
+  const fromProject =
+    parseProjectIdToLeadId(String(item.project_id || '')) ??
+    parseProjectIdToLeadId(pick(p, ['project_id', 'projectId', 'pid']));
+  if (fromProject) return fromProject;
+
+  return leadIdFromEventId(item.event_id);
+}
+
+/** Lead workspace path for notification row / chevron navigation. */
+export function notificationHrefFromItem(item: DesignNotificationItem): string | null {
+  const leadId = leadIdFromNotification(item);
+  return leadId ? `/Leads/${leadId}` : null;
 }
 
 function formatInrAmount(raw: unknown): string {
@@ -265,8 +272,40 @@ function formatMeetingType(payload: Record<string, unknown>): string {
 }
 
 function asRecord(payload: unknown): Record<string, unknown> {
-  if (!payload || typeof payload !== 'object') return {};
+  if (!payload) return {};
+  if (typeof payload === 'string') {
+    try {
+      const parsed = JSON.parse(payload) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      /* ignore */
+    }
+    return {};
+  }
+  if (typeof payload !== 'object' || Array.isArray(payload)) return {};
   return payload as Record<string, unknown>;
+}
+
+function positiveInt(raw: unknown): number | null {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null;
+}
+
+/** HUB-123, plain numeric id, etc. (custom pid strings need backend enrichment). */
+function parseProjectIdToLeadId(projectId: string): number | null {
+  const pid = String(projectId || '').trim();
+  if (!pid) return null;
+  const hub = pid.match(/^HUB-(\d+)$/i);
+  if (hub) return positiveInt(hub[1]);
+  if (/^\d+$/.test(pid)) return positiveInt(pid);
+  return null;
+}
+
+function leadIdFromEventId(eventId?: string): number | null {
+  const match = String(eventId || '').match(/^design:(\d+):/i);
+  return match ? positiveInt(match[1]) : null;
 }
 
 function pick(obj: Record<string, unknown>, keys: string[]): string {
