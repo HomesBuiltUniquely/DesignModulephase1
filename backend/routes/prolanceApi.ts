@@ -1410,12 +1410,50 @@ export type LeadMilestonePaymentBreakdown = LeadQuotePaymentSummary & {
   amountToCollect10: number;
   /** Collect now at 40% payment milestone → 60% of latest quote minus already paid. */
   amountToCollect40: number;
+  /** Easebuzz / design-case collected toward Design 10% bucket. */
+  design10Collected: number;
+  design10Target: number;
+  /** 0–100 progress of Design 10% bucket (partial payments). */
+  design10PercentPaid: number;
+  design40Collected: number;
+  design40Target: number;
+  design40PercentPaid: number;
   quoteRevisionTopUp10: number;
   quoteRevisionTopUp40: number;
   remainingAfterTwentyPercent: number;
   /** Balance remaining after 60% cumulative is reached. */
   remainingAfterSixtyPercent: number;
 };
+
+async function readDesignCaseBucketTotals(
+  pool: Pool,
+  leadId: number,
+): Promise<{ d10Collected: number; d10Target: number; d40Collected: number; d40Target: number }> {
+  try {
+    const [rows] = await pool.query(
+      `SELECT design_10_collected, design_10_target, design_40_collected, design_40_target
+       FROM design_payment_case_summary WHERE lead_id = ? LIMIT 1`,
+      [leadId],
+    );
+    const row = (rows as {
+      design_10_collected?: unknown;
+      design_10_target?: unknown;
+      design_40_collected?: unknown;
+      design_40_target?: unknown;
+    }[])[0];
+    if (!row) {
+      return { d10Collected: 0, d10Target: 0, d40Collected: 0, d40Target: 0 };
+    }
+    return {
+      d10Collected: Math.max(0, Number(row.design_10_collected) || 0),
+      d10Target: Math.max(0, Number(row.design_10_target) || 0),
+      d40Collected: Math.max(0, Number(row.design_40_collected) || 0),
+      d40Target: Math.max(0, Number(row.design_40_target) || 0),
+    };
+  } catch {
+    return { d10Collected: 0, d10Target: 0, d40Collected: 0, d40Target: 0 };
+  }
+}
 
 function readPaidFromFinanceHistory(payload: Record<string, unknown>): number {
   const raw = payload.finance_submission_history;
@@ -1506,9 +1544,36 @@ export async function resolveLeadMilestonePaymentBreakdown(
   const previousSixtyFromOldQuote = previousSixtyPercentTarget;
 
   // Design 10% milestone: sales 10% + design 10% = 20% cumulative of latest quote.
-  const amountToCollect10 = Math.max(0, twentyPercentTarget - totalPaidCumulative);
+  const fromQuote10 = Math.max(0, twentyPercentTarget - totalPaidCumulative);
   // 40% payment milestone: collect until 60% cumulative of latest quote.
-  const amountToCollect40 = Math.max(0, sixtyPercentTarget - totalPaidCumulative);
+  const fromQuote40 = Math.max(0, sixtyPercentTarget - totalPaidCumulative);
+
+  // Easebuzz partials live in design_payment_case_summary — subtract so remaining auto-fills.
+  const caseTotals = await readDesignCaseBucketTotals(pool, leadId);
+  const design10Target =
+    caseTotals.d10Target > 0 ? caseTotals.d10Target : Math.round(summary.totalPayableAmount * 0.1);
+  const design40Target =
+    caseTotals.d40Target > 0 ? caseTotals.d40Target : Math.round(summary.totalPayableAmount * 0.4);
+  const design10Collected = caseTotals.d10Collected;
+  const design40Collected = caseTotals.d40Collected;
+
+  const fromCase10 = Math.max(0, design10Target - design10Collected);
+  const fromCase40 = Math.max(0, design40Target - design40Collected);
+
+  // Prefer the tighter remaining so partial Easebuzz payments reduce "Amount to Collect Now".
+  const amountToCollect10 =
+    design10Collected > 0 || caseTotals.d10Target > 0
+      ? Math.min(fromQuote10, fromCase10)
+      : fromQuote10;
+  const amountToCollect40 =
+    design40Collected > 0 || caseTotals.d40Target > 0
+      ? Math.min(fromQuote40, fromCase40)
+      : fromQuote40;
+
+  const design10PercentPaid =
+    design10Target > 0 ? Math.min(100, Math.round((design10Collected / design10Target) * 100)) : 0;
+  const design40PercentPaid =
+    design40Target > 0 ? Math.min(100, Math.round((design40Collected / design40Target) * 100)) : 0;
 
   const quoteRevisionTopUp10 =
     previousTwentyPercentTarget != null && previousTwentyPercentTarget > 0
@@ -1533,6 +1598,12 @@ export async function resolveLeadMilestonePaymentBreakdown(
     quotationTotalAtLastPayment,
     amountToCollect10,
     amountToCollect40,
+    design10Collected,
+    design10Target,
+    design10PercentPaid,
+    design40Collected,
+    design40Target,
+    design40PercentPaid,
     quoteRevisionTopUp10,
     quoteRevisionTopUp40,
     remainingAfterTwentyPercent: Math.max(0, summary.totalPayableAmount - twentyPercentTarget),
@@ -2437,6 +2508,12 @@ function formatProlancePName(
         quotationTotalAtLastPayment: breakdown.quotationTotalAtLastPayment,
         amountToCollect10: breakdown.amountToCollect10,
         amountToCollect40: breakdown.amountToCollect40,
+        design10Collected: breakdown.design10Collected,
+        design10Target: breakdown.design10Target,
+        design10PercentPaid: breakdown.design10PercentPaid,
+        design40Collected: breakdown.design40Collected,
+        design40Target: breakdown.design40Target,
+        design40PercentPaid: breakdown.design40PercentPaid,
         quoteRevisionTopUp10: breakdown.quoteRevisionTopUp10,
         quoteRevisionTopUp40: breakdown.quoteRevisionTopUp40,
         remainingAfterTwentyPercent: breakdown.remainingAfterTwentyPercent,

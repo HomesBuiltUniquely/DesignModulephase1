@@ -25,3 +25,9 @@ export function getCachedQuotePaymentSummary(leadId: number): QuotePaymentSummar
   }
   return cache.summary;
 }
+
+export function clearCachedQuotePaymentSummary(leadId?: number): void {
+  if (leadId == null || (cache && cache.leadId === leadId)) {
+    cache = null;
+  }
+}

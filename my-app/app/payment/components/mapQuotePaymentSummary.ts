@@ -25,6 +25,12 @@ export function mapQuotePaymentSummaryFromApi(body: Record<string, unknown>): Qu
       body.quotationTotalAtLastPayment != null ? Number(body.quotationTotalAtLastPayment) : null,
     amountToCollect10: Number(body.amountToCollect10) || 0,
     amountToCollect40: Number(body.amountToCollect40) || 0,
+    design10Collected: Number(body.design10Collected) || 0,
+    design10Target: Number(body.design10Target) || 0,
+    design10PercentPaid: Number(body.design10PercentPaid) || 0,
+    design40Collected: Number(body.design40Collected) || 0,
+    design40Target: Number(body.design40Target) || 0,
+    design40PercentPaid: Number(body.design40PercentPaid) || 0,
     quoteRevisionTopUp10: Number(body.quoteRevisionTopUp10) || 0,
     quoteRevisionTopUp40: Number(body.quoteRevisionTopUp40) || 0,
     remainingAfterTwentyPercent:
@@ -89,6 +95,16 @@ export function parseQuotePaymentSummaryResponse(
       payload.amountToCollect10 ?? payload.amount_to_collect_10 ?? body.amountToCollect10,
     amountToCollect40:
       payload.amountToCollect40 ?? payload.amount_to_collect_40 ?? body.amountToCollect40,
+    design10Collected:
+      payload.design10Collected ?? payload.design_10_collected ?? body.design10Collected,
+    design10Target: payload.design10Target ?? payload.design_10_target ?? body.design10Target,
+    design10PercentPaid:
+      payload.design10PercentPaid ?? payload.design_10_percent_paid ?? body.design10PercentPaid,
+    design40Collected:
+      payload.design40Collected ?? payload.design_40_collected ?? body.design40Collected,
+    design40Target: payload.design40Target ?? payload.design_40_target ?? body.design40Target,
+    design40PercentPaid:
+      payload.design40PercentPaid ?? payload.design_40_percent_paid ?? body.design40PercentPaid,
     remainingAfterTwentyPercent:
       payload.remainingAfterTwentyPercent ??
       payload.remaining_after_twenty_percent ??

@@ -2953,6 +2953,7 @@ export default function ProjectDetailPage() {
                         propertyConfiguration={project?.intakeConfiguration}
                         timelineAnchors={project?.timelineAnchors ?? {}}
                         taskCompletions={taskCompletions}
+                        paymentSummaryRefreshKey={uploadsVersion}
                     />
                 )}
 

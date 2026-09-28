@@ -18,6 +18,12 @@ type QuotePaymentSummary = {
   quotationTotalAtLastPayment: number | null;
   amountToCollect10: number;
   amountToCollect40: number;
+  design10Collected?: number;
+  design10Target?: number;
+  design10PercentPaid?: number;
+  design40Collected?: number;
+  design40Target?: number;
+  design40PercentPaid?: number;
   quoteRevisionTopUp10: number;
   quoteRevisionTopUp40: number;
   remainingAfterTwentyPercent: number;
@@ -61,6 +67,9 @@ export default function MilestonePaymentSummary({ variant, summary, loading, err
   const cumulativePctLabel = isTen ? '20%' : '60%';
   const alreadyPaid = summary.totalPaidCumulative;
   const amountToCollect = isTen ? summary.amountToCollect10 : summary.amountToCollect40;
+  const designCollected = isTen ? summary.design10Collected || 0 : summary.design40Collected || 0;
+  const designTarget = isTen ? summary.design10Target || 0 : summary.design40Target || 0;
+  const designPercentPaid = isTen ? summary.design10PercentPaid || 0 : summary.design40PercentPaid || 0;
   const quoteRevisionTopUp = isTen ? summary.quoteRevisionTopUp10 : summary.quoteRevisionTopUp40;
   const previousTarget = isTen
     ? summary.previousTwentyPercentTarget
@@ -103,8 +112,21 @@ export default function MilestonePaymentSummary({ variant, summary, loading, err
     });
   }
 
+  if (designTarget > 0) {
+    rows.push({
+      label: isTen ? 'Design 10% target' : 'Design 40% target',
+      value: formatInr(designTarget),
+    });
+  }
+  if (designCollected > 0) {
+    rows.push({
+      label: isTen ? 'Design 10% collected so far' : 'Design 40% collected so far',
+      value: `${formatInr(designCollected)}${designPercentPaid > 0 ? ` (${designPercentPaid}%)` : ''}`,
+    });
+  }
+
   rows.push({
-    label: 'Amount to Collect Now',
+    label: designCollected > 0 ? 'Remaining to collect now' : 'Amount to Collect Now',
     value: formatInr(amountToCollect),
     highlight: true,
   });

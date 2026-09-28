@@ -5,7 +5,7 @@ import { useAuth } from '@/app/auth/AuthContext';
 import { canUseEasebuzzOnline } from '@/app/lib/easebuzzAccess';
 import MilestonePaymentSummary, { type QuotePaymentSummary } from '../MilestonePaymentSummary';
 import { loadQuotePaymentSummary } from '../loadQuotePaymentSummary';
-import { getCachedQuotePaymentSummary } from '../quotePaymentSummaryCache';
+import { clearCachedQuotePaymentSummary } from '../quotePaymentSummaryCache';
 import DesignPaymentMethodPanel from './DesignPaymentMethodPanel';
 
 type Props = {
@@ -33,9 +33,8 @@ export default function Popup40pCollection({
   const [files, setFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const cached = Number.isFinite(leadId) ? getCachedQuotePaymentSummary(leadId) : null;
-  const [paymentSummary, setPaymentSummary] = useState<QuotePaymentSummary | null>(cached);
-  const [paymentSummaryLoading, setPaymentSummaryLoading] = useState(!cached);
+  const [paymentSummary, setPaymentSummary] = useState<QuotePaymentSummary | null>(null);
+  const [paymentSummaryLoading, setPaymentSummaryLoading] = useState(true);
   const [paymentSummaryError, setPaymentSummaryError] = useState<string | null>(null);
   const [showOffline, setShowOffline] = useState(!allowOnline);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -52,15 +51,9 @@ export default function Popup40pCollection({
       return;
     }
     const controller = new AbortController();
-    const existing = getCachedQuotePaymentSummary(leadId);
-    if (existing) {
-      setPaymentSummary(existing);
-      setPaymentSummaryError(null);
-      setPaymentSummaryLoading(false);
-    } else {
-      setPaymentSummaryLoading(true);
-      setPaymentSummaryError(null);
-    }
+    clearCachedQuotePaymentSummary(leadId);
+    setPaymentSummaryLoading(true);
+    setPaymentSummaryError(null);
     (async () => {
       const result = await loadQuotePaymentSummary({
         leadId,

@@ -6,6 +6,7 @@ import MileStonesArray from "@/app/Components/Types/MileStoneArray";
 import { hasChecklistForTask } from "./Checklists/checklistRegistry";
 import MilestonePaymentSummary, { type QuotePaymentSummary } from "./MilestonePaymentSummary";
 import { loadQuotePaymentSummary } from "./loadQuotePaymentSummary";
+import { clearCachedQuotePaymentSummary } from "./quotePaymentSummaryCache";
 import { getApiBase, buildAuthHeaders, getStoredSessionId } from "@/app/lib/apiBase";
 import {
   getMilestoneDateRangeLabel,
@@ -48,6 +49,8 @@ type Props = {
   propertyConfiguration?: string | null;
   timelineAnchors?: TimelineAnchors;
   taskCompletions?: TaskCompletionMap;
+  /** Bump after payment events so remaining % / amount refreshes. */
+  paymentSummaryRefreshKey?: number;
 };
 
 /**
@@ -67,6 +70,7 @@ export default function MilestonesCard({
   getTaskLabel,
   leadId,
   sessionId,
+  paymentSummaryRefreshKey = 0,
   propertyConfiguration,
   timelineAnchors,
   taskCompletions,
@@ -120,6 +124,9 @@ export default function MilestonesCard({
       setPaymentSummaryError(null);
       return;
     }
+    if (paymentSummaryRefreshKey > 0) {
+      clearCachedQuotePaymentSummary(leadId);
+    }
     const controller = new AbortController();
     (async () => {
       setPaymentSummaryLoading(true);
@@ -134,7 +141,7 @@ export default function MilestonesCard({
       setPaymentSummaryLoading(false);
     })();
     return () => controller.abort();
-  }, [leadId]);
+  }, [leadId, paymentSummaryRefreshKey]);
 
   // When maximized, scroll so the current milestone is in view.
   useEffect(() => {
@@ -480,11 +487,61 @@ export default function MilestonesCard({
                                   </svg>
                                 </span>
                               )}
-                              {status.icon === "current" && (
-                                <span className="w-6 h-6 rounded-full border-2 border-[#00B0ED] flex items-center justify-center mt-1">
-                                  <span className="w-2 h-2 rounded-full bg-[#00B0ED]" />
-                                </span>
-                              )}
+                              {status.icon === "current" && (() => {
+                                const isPay10 =
+                                  milestoneIndex === 2 &&
+                                  /10%\s*payment\s*collection/i.test(task);
+                                const isPay40 =
+                                  milestoneIndex === 5 &&
+                                  /40%\s*collection/i.test(task);
+                                const pct = isPay10
+                                  ? paymentSummary?.design10PercentPaid || 0
+                                  : isPay40
+                                    ? paymentSummary?.design40PercentPaid || 0
+                                    : 0;
+                                const showPct = (isPay10 || isPay40) && pct > 0 && pct < 100;
+                                if (showPct) {
+                                  const r = 10;
+                                  const c = 2 * Math.PI * r;
+                                  const offset = c * (1 - pct / 100);
+                                  return (
+                                    <span
+                                      className="relative mt-1 flex h-6 w-6 items-center justify-center"
+                                      title={`${pct}% of this milestone paid`}
+                                    >
+                                      <svg className="h-6 w-6 -rotate-90" viewBox="0 0 24 24" aria-hidden>
+                                        <circle
+                                          cx="12"
+                                          cy="12"
+                                          r={r}
+                                          fill="none"
+                                          stroke="#DDCDC1"
+                                          strokeWidth="2.5"
+                                        />
+                                        <circle
+                                          cx="12"
+                                          cy="12"
+                                          r={r}
+                                          fill="none"
+                                          stroke="#00B0ED"
+                                          strokeWidth="2.5"
+                                          strokeLinecap="round"
+                                          strokeDasharray={c}
+                                          strokeDashoffset={offset}
+                                        />
+                                      </svg>
+                                      <span className="absolute text-[7px] font-bold tabular-nums text-[#00B0ED]">
+                                        {pct}
+                                      </span>
+                                    </span>
+                                  );
+                                }
+                                return (
+                                  <span className="mt-1 flex h-6 w-6 items-center justify-center rounded-full border-2 border-[#00B0ED]">
+                                    <span className="h-2 w-2 rounded-full bg-[#00B0ED]" />
+                                  </span>
+                                );
+                              })()}
                               {status.icon === "delayed" && (
                                 <span className="w-6 h-6 flex items-center justify-center text-[#EF0101]">
                                   <svg
