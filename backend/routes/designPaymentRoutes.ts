@@ -2,7 +2,7 @@
  * Design Module payment links (DESIGN_10 / DESIGN_40).
  * Links are created here with EASEBUZZ_KEY/SALT.
  * Success/fail comes from CRM forwarding the merchant webhook (txn prefix DES10/DES40).
- * Backup: retrieve cron every 8 minutes — not 15s UI poll.
+ * Backup: Design retrieve on active-link GET + ~20s cron — does not wait for a CRM refresh.
  */
 import { randomUUID } from "node:crypto";
 import type { Express, Request, Response } from "express";
@@ -596,6 +596,32 @@ async function applyFailureAttempt(deps: Deps, attempt: AttemptRow, status: stri
   );
 }
 
+const lastGatewayCheckAt = new Map<string, number>();
+const GATEWAY_CHECK_DEBOUNCE_MS = 1_500;
+
+/** Ask Easebuzz directly so Design does not wait for CRM webhook / CRM page refresh. */
+async function refreshAttemptFromGateway(deps: Deps, attempt: AttemptRow, force = false): Promise<void> {
+  if (!easebuzzConfigured() || !attempt.merchant_txn) return;
+  if (String(attempt.status).toUpperCase() === "PAID") return;
+  const txn = attempt.merchant_txn;
+  const now = Date.now();
+  const prev = lastGatewayCheckAt.get(txn) || 0;
+  if (!force && now - prev < GATEWAY_CHECK_DEBOUNCE_MS) return;
+  lastGatewayCheckAt.set(txn, now);
+  const st = await retrieveEasebuzzTxn(txn);
+  if (st.success) {
+    await applyPaidAttempt(
+      deps,
+      attempt,
+      st.paymentId || txn,
+      st.mode || "Easebuzz",
+      st.amount ?? Number(attempt.amount),
+    );
+  } else if (st.failure) {
+    await applyFailureAttempt(deps, attempt, st.status, st.status);
+  }
+}
+
 async function deactivateQuietly(attempt: AttemptRow): Promise<void> {
   await deactivateEasebuzzPaymentLink({
     merchantTxn: attempt.merchant_txn,
@@ -627,7 +653,9 @@ export function registerDesignPaymentRoutes(app: Express, deps: Deps): void {
 
   void ensureDesignPaymentTables(pool)
     .then(() => {
-      const ms = Math.max(60_000, Number(envTrim("DESIGN_PAYMENT_RECONCILE_MS") || 480_000) || 480_000);
+      const requested = Number(envTrim("DESIGN_PAYMENT_RECONCILE_MS") || 3_000) || 3_000;
+      const ms = Math.min(5_000, Math.max(2_000, requested));
+      void reconcilePending(deps).catch((err) => console.warn("[design-payment] reconcile", err));
       setInterval(() => {
         void reconcilePending(deps).catch((err) => console.warn("[design-payment] reconcile", err));
       }, ms);
@@ -760,6 +788,10 @@ export function registerDesignPaymentRoutes(app: Express, deps: Deps): void {
     const user = await requireEasebuzzAdmin(req, res);
     if (!user) return;
     const leadId = Number(req.params.leadId);
+    const pending = await findActiveAttempt(pool, leadId);
+    if (pending) {
+      await refreshAttemptFromGateway(deps, pending);
+    }
     const attempt = await findActiveAttempt(pool, leadId);
     const recentlyPaid = await findRecentlyPaidAttempt(pool, leadId);
     return res.json({
@@ -1090,15 +1122,10 @@ async function reconcilePending(deps: Deps): Promise<void> {
   const [rows] = await deps.pool.query(
     `SELECT * FROM design_payment_link_attempts
      WHERE is_active = 1 AND status IN ('PENDING', 'CREATED_NOT_DELIVERED')
-       AND created_at < DATE_SUB(NOW(), INTERVAL 2 MINUTE)
+       AND created_at < DATE_SUB(NOW(), INTERVAL 2 SECOND)
      ORDER BY created_at ASC LIMIT 40`,
   );
   for (const attempt of rows as AttemptRow[]) {
-    const st = await retrieveEasebuzzTxn(attempt.merchant_txn);
-    if (st.success) {
-      await applyPaidAttempt(deps, attempt, st.paymentId || attempt.merchant_txn, st.mode || "Easebuzz", st.amount ?? Number(attempt.amount));
-    } else if (st.failure) {
-      await applyFailureAttempt(deps, attempt, st.status, st.status);
-    }
+    await refreshAttemptFromGateway(deps, attempt, true);
   }
 }

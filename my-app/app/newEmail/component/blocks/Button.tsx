@@ -10,8 +10,9 @@ export interface ButtonProps {
 export const Button = ({ text, href }: ButtonProps) => {
   return (
     <Section className="w-full text-center py-4">
-      <ReactEmailButton 
-        href={href} 
+      <ReactEmailButton
+        href={href}
+        target="_blank"
         className="bg-brand-primary text-neutral-white font-sans text-[12px] font-bold tracking-widest px-8 py-4 rounded uppercase text-center w-auto inline-block"
       >
         {text}

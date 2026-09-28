@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Text, Section } from '@react-email/components';
+import { Text, Section, Link } from '@react-email/components';
 import { BaseLayout } from '../../component/layout/BaseLayout';
 import { StageBar } from '../../component/blocks/StageBar';
 import { DetailsList, DetailItem } from '../../component/blocks/DetailsList';
@@ -16,6 +16,8 @@ export interface DesignSignoff40pcPaymentRequestEmailProps {
   accountName?: string;
   accountNumber?: string;
   ifscCode?: string;
+  paymentLink?: string;
+  amountDue?: string;
 }
 
 export default function DesignSignoff40pcPaymentRequestEmail({
@@ -29,12 +31,16 @@ export default function DesignSignoff40pcPaymentRequestEmail({
   accountName = 'Brightspace Creation Private Limited',
   accountNumber = '748305000519',
   ifscCode = 'ICIC0007483',
+  paymentLink = '',
+  amountDue = '',
 }: DesignSignoff40pcPaymentRequestEmailProps) {
+  const payHref = /^https?:\/\//i.test(paymentLink.trim()) ? paymentLink.trim() : '';
+  const amountNow = (amountDue || amount || '0.00').trim();
   const paymentDetails: DetailItem[] = [
     ...(quotationTotal ? [{ label: 'Latest Quotation Total', value: quotationTotal }] : []),
     ...(milestoneTarget ? [{ label: '60% Cumulative Target', value: milestoneTarget }] : []),
     ...(alreadyPaid ? [{ label: 'Already Paid (Sales / Prior)', value: alreadyPaid }] : []),
-    { label: 'Amount to Collect Now', value: amount.startsWith('₹') ? amount : `₹ ${amount}` },
+    { label: 'Amount to Collect Now', value: amountNow.startsWith('₹') ? amountNow : `₹ ${amountNow}` },
   ];
 
   const bankDetails: DetailItem[] = [
@@ -69,9 +75,19 @@ export default function DesignSignoff40pcPaymentRequestEmail({
         {/* Bank Details */}
         <DetailsList title="BANK ACCOUNT DETAILS" items={bankDetails} />
 
-        <div className="text-center mt-6 mb-6">
-          <Button text="PAY 40% MILESTONE" href="#" />
-        </div>
+        {payHref ? (
+          <div className="text-center mt-6 mb-6">
+            <Button text="PAY 40% MILESTONE" href={payHref} />
+            <Text className="m-0 mt-3 text-[12px] text-neutral-mediumGrey leading-relaxed">
+              If the button does not open, use this link:
+            </Text>
+            <Text className="m-0 mt-1 text-[12px] leading-relaxed break-all">
+              <Link href={payHref} target="_blank">
+                {payHref}
+              </Link>
+            </Text>
+          </div>
+        ) : null}
 
         <Text className="m-0 text-[15px] leading-relaxed text-neutral-nearBlack pb-2">
           Upon payment confirmation:

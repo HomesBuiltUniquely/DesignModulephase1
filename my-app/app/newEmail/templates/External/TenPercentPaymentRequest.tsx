@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Text, Section } from '@react-email/components';
+import { Text, Section, Link } from '@react-email/components';
 import { BaseLayout } from '../../component/layout/BaseLayout';
 import { StageBar } from '../../component/blocks/StageBar';
 import { DetailsList, DetailItem } from '../../component/blocks/DetailsList';
@@ -15,6 +15,7 @@ export interface TenPercentPaymentRequestEmailProps {
   alreadyPaid?: string;
   dueDate?: string;
   designerName?: string;
+  paymentLink?: string;
 }
 
 export default function TenPercentPaymentRequestEmail({
@@ -27,7 +28,9 @@ export default function TenPercentPaymentRequestEmail({
   alreadyPaid = '',
   dueDate = '',
   designerName = 'Your Design Consultant',
+  paymentLink = '',
 }: TenPercentPaymentRequestEmailProps) {
+  const payHref = /^https?:\/\//i.test(paymentLink.trim()) ? paymentLink.trim() : '';
   const paymentDetails: DetailItem[] = [
     { label: 'Project ID', value: projectId },
     ...(propertyType ? [{ label: 'Property Type', value: propertyType }] : []),
@@ -94,13 +97,28 @@ export default function TenPercentPaymentRequestEmail({
           </Section>
         </Section>
 
-        {/* CTA Button */}
-        <div className="text-center mt-6 mb-8">
-          <Button text="PAY 10% NOW" href="#" />
-          <Text className="m-0 mt-4 text-[12px] text-neutral-mediumGrey leading-relaxed max-w-[480px] mx-auto">
-            You can also make a bank transfer using the above details and share the confirmation screenshot with your designer.
-          </Text>
-        </div>
+        {payHref ? (
+          <div className="text-center mt-6 mb-8">
+            <Button text="PAY 10% NOW" href={payHref} />
+            <Text className="m-0 mt-3 text-[12px] text-neutral-mediumGrey leading-relaxed">
+              If the button does not open, use this link:
+            </Text>
+            <Text className="m-0 mt-1 text-[12px] leading-relaxed break-all">
+              <Link href={payHref} target="_blank">
+                {payHref}
+              </Link>
+            </Text>
+            <Text className="m-0 mt-4 text-[12px] text-neutral-mediumGrey leading-relaxed max-w-[480px] mx-auto">
+              You can also make a bank transfer using the above details and share the confirmation screenshot with your designer.
+            </Text>
+          </div>
+        ) : (
+          <div className="text-center mt-6 mb-8">
+            <Text className="m-0 mt-4 text-[12px] text-neutral-mediumGrey leading-relaxed max-w-[480px] mx-auto">
+              Please make a bank transfer using the above details and share the confirmation screenshot with your designer.
+            </Text>
+          </div>
+        )}
 
         {/* Closing text */}
         <Text className="m-0 text-[15px] leading-relaxed text-neutral-nearBlack pb-8">

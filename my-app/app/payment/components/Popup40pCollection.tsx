@@ -3,9 +3,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/app/auth/AuthContext';
 import { canUseEasebuzzOnline } from '@/app/lib/easebuzzAccess';
-import { getApiBase } from '@/app/lib/apiBase';
-import MilestonePaymentSummary, { type QuotePaymentSummary } from '../MilestonePaymentSummary';
-import { parseQuotePaymentSummaryResponse } from '../mapQuotePaymentSummary';
+import MilestonePaymentSummary, { type QuotePaymentSummary } from './MilestonePaymentSummary';
+import { parseQuotePaymentSummaryResponse } from './mapQuotePaymentSummary';
 import DesignPaymentMethodPanel from './DesignPaymentMethodPanel';
 
 type Props = {
@@ -44,20 +43,13 @@ export default function Popup40pCollection({
   }, [allowOnline]);
 
   useEffect(() => {
-    if (!Number.isFinite(leadId) || leadId < 1) {
-      setPaymentSummary(null);
-      setPaymentSummaryError('Invalid lead');
-      setPaymentSummaryLoading(false);
-      return;
-    }
     let cancelled = false;
-    const base = (apiBase || getApiBase()).replace(/\/$/, '');
     (async () => {
       setPaymentSummaryLoading(true);
       setPaymentSummaryError(null);
       try {
         const res = await fetch(
-          `${base}/api/sales-closure/lead/${encodeURIComponent(String(leadId))}/quote-payment-summary`,
+          `${apiBase}/api/sales-closure/lead/${encodeURIComponent(String(leadId))}/quote-payment-summary`,
           { cache: 'no-store' },
         );
         const body = await res.json().catch(() => ({}));

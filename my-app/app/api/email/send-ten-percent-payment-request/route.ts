@@ -21,6 +21,7 @@ export async function POST(request: Request) {
     const attachments = body.attachments as { filename: string; path: string }[] | undefined;
 
     const designerName = body.designerName as string | undefined;
+    const paymentLink = String(body.paymentLink || body.payment_link || body.paymentLinkUrl || '').trim();
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -39,6 +40,7 @@ export async function POST(request: Request) {
       alreadyPaid,
       dueDate,
       designerName: designerName || 'Your Design Consultant',
+      paymentLink,
     });
 
     const html = await render(emailComponent);

@@ -20,6 +20,8 @@ export async function POST(request: Request) {
     const ifscCode = body.ifscCode as string | undefined;
     const designerName = body.designerName as string | undefined;
     const projectId = body.projectId as string | undefined;
+    const paymentLink = String(body.paymentLink || body.payment_link || body.paymentLinkUrl || '').trim();
+    const amountDue = body.amountDue as string | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -31,7 +33,9 @@ export async function POST(request: Request) {
     const emailComponent = React.createElement(DesignSignoff40pcPaymentRequestEmail, {
       customerName,
       projectId,
-      amount,
+      amount: amount || amountDue,
+      amountDue: amountDue || amount,
+      paymentLink,
       quotationTotal,
       milestoneTarget,
       alreadyPaid,

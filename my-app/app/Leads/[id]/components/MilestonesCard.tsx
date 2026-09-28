@@ -6,7 +6,7 @@ import MileStonesArray from "@/app/Components/Types/MileStoneArray";
 import { hasChecklistForTask } from "./Checklists/checklistRegistry";
 import { getTaskTimeline } from "./taskTimelines";
 import MilestonePaymentSummary, { type QuotePaymentSummary } from "./MilestonePaymentSummary";
-import { mapQuotePaymentSummaryFromApi } from "./mapQuotePaymentSummary";
+import { parseQuotePaymentSummaryResponse } from "./mapQuotePaymentSummary";
 import { getApiBase } from "@/app/lib/apiBase";
 
 const PAYMENT_MILESTONE_INDICES = new Set([2, 5]);
@@ -86,12 +86,9 @@ export default function MilestonesCard({
           );
           return;
         }
-        if (body && typeof body === 'object' && (body as { ok?: unknown }).ok === false) {
-          setPaymentSummary(null);
-          setPaymentSummaryError(null);
-          return;
-        }
-        setPaymentSummary(mapQuotePaymentSummaryFromApi(body as Record<string, unknown>));
+        const parsed = parseQuotePaymentSummaryResponse(body as Record<string, unknown>);
+        setPaymentSummary(parsed.summary);
+        setPaymentSummaryError(parsed.message);
       } catch {
         if (!cancelled) {
           setPaymentSummary(null);
@@ -351,15 +348,15 @@ export default function MilestonesCard({
                         style={{ width: `${progressPercent}%` }}
                       />
                     </div>
-                    {PAYMENT_MILESTONE_INDICES.has(milestoneIndex) && (
-                      <MilestonePaymentSummary
-                        variant={milestoneIndex === 2 ? '10' : '40'}
-                        summary={paymentSummary}
-                        loading={paymentSummaryLoading}
-                        error={paymentSummaryError}
-                      />
-                    )}
-                    <div className="space-y-2 flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain pr-1 [scrollbar-gutter:stable]">
+                    <div className="flex min-h-0 flex-1 flex-col space-y-2 overflow-y-auto overflow-x-hidden overscroll-contain pr-1 [scrollbar-gutter:stable]">
+                      {PAYMENT_MILESTONE_INDICES.has(milestoneIndex) && (
+                        <MilestonePaymentSummary
+                          variant={milestoneIndex === 2 ? '10' : '40'}
+                          summary={paymentSummary}
+                          loading={paymentSummaryLoading}
+                          error={paymentSummaryError}
+                        />
+                      )}
                       {taskList.map((task: string, taskIndex: number) => {
                         const canVisitChecklist = hasChecklistForTask(
                           milestoneIndex,

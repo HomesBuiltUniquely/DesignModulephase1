@@ -56,11 +56,13 @@ export default function TaskModal({ context, onClose, children }: Props) {
   const isDqcSubmission =
     context.taskName === "DQC 1 submission - dwg + quotation" ||
     context.taskName === "DQC 2 submission";
+  const isPaymentCollection =
+    context.taskName === "10% payment collection" ||
+    context.taskName === "40% collection" ||
+    context.taskName === "40% payment collection";
   const contentClass = isDqcApproval
     ? "flex-1 overflow-y-auto min-h-0 flex flex-col"
-    : isDqcSubmission
-      ? "flex-1 overflow-y-auto min-h-0"
-      : "overflow-y-auto";
+    : "flex-1 min-h-0 overflow-y-auto";
   const isMomPopup =
     context.taskName === "meeting completed" ||
     context.taskName === "Material selection meeting completed" ||
@@ -76,7 +78,7 @@ export default function TaskModal({ context, onClose, children }: Props) {
       onClick={onClose}
     >
       <div
-        className={`bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden ${isDqcApproval ? "xl:max-w-[95vw] xl:w-full xl:max-h-[90vh]" : isDqcSubmission ? "xl:max-h-[85vh] xl:w-[42rem]" : "xl:max-h-[85vh] xl:w-[40vw]"}`}
+        className={`bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden max-h-[90vh] w-[min(100%,40rem)] mx-4 ${isDqcApproval ? "xl:max-w-[95vw] xl:w-full xl:max-h-[90vh]" : isDqcSubmission ? "xl:max-h-[85vh] xl:w-[42rem]" : isPaymentCollection ? "xl:max-h-[85vh] xl:w-[42rem]" : "xl:max-h-[85vh] xl:w-[40vw]"}`}
         onClick={(e) => e.stopPropagation()}
       >
         {!isDqcApproval && !isDqcSubmission && (
