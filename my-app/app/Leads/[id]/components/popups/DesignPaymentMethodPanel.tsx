@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useAuth } from '@/app/auth/AuthContext';
 import { canUseEasebuzzOnline } from '@/app/lib/easebuzzAccess';
+import LinkExpiryProgress from './LinkExpiryProgress';
 
 type ActiveAttempt = {
   id?: string;
@@ -13,6 +14,7 @@ type ActiveAttempt = {
   emailStatus?: string;
   whatsappStatus?: string;
   expiresAt?: string;
+  createdAt?: string;
   paymentFailureCount?: number;
   lastPaymentFailureReason?: string;
 };
@@ -56,15 +58,6 @@ function IconUpload({ className }: { className?: string }) {
   );
 }
 
-function IconCopy({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
-      <rect x="9" y="9" width="11" height="11" rx="2" />
-      <path d="M5 15V5a2 2 0 0 1 2-2h10" />
-    </svg>
-  );
-}
-
 function ActionChip({
   children,
   onClick,
@@ -76,22 +69,17 @@ function ActionChip({
   disabled?: boolean;
   tone?: 'neutral' | 'amber' | 'danger' | 'primary';
 }) {
-  const tones = {
-    neutral:
-      'border-[#DDCDC1] bg-white text-[#32261C] hover:border-[#32261C]/40 hover:bg-[#DDCDC1]/25 hover:shadow-sm',
-    primary:
-      'border-[#00B0ED]/40 bg-[#00B0ED]/10 text-[#0077a3] hover:bg-[#00B0ED] hover:text-white hover:border-[#00B0ED] hover:shadow-md',
-    amber:
-      'border-amber-200 bg-amber-50 text-amber-900 hover:bg-amber-100 hover:border-amber-300 hover:shadow-sm',
-    danger:
-      'border-red-200 bg-red-50 text-[#EF0101] hover:bg-[#EF0101] hover:text-white hover:border-[#EF0101] hover:shadow-sm',
-  };
+  const isDanger = tone === 'danger';
   return (
     <button
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0 disabled:pointer-events-none disabled:opacity-45 ${tones[tone]}`}
+      className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium tracking-wide transition-colors duration-150 disabled:pointer-events-none disabled:opacity-45 ${
+        isDanger
+          ? 'border-[#DDCDC1] bg-white text-[#EF0101] hover:border-[#EF0101]/45 hover:bg-[#FFF5F5]'
+          : 'border-[#DDCDC1] bg-white text-[#32261C] hover:border-[#32261C]/40 hover:bg-[#F7F4F1]'
+      }`}
     >
       {children}
     </button>
@@ -208,6 +196,9 @@ export default function DesignPaymentMethodPanel({
       if (!res.ok) throw new Error(data?.message || data?.error || 'Failed to create link');
       setAttempt((data?.attempt as ActiveAttempt) || null);
       setMethod('online');
+      if (data?.emailSent === false && typeof data?.message === 'string') {
+        setError(data.message);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to create payment link');
     } finally {
@@ -238,6 +229,9 @@ export default function DesignPaymentMethodPanel({
         }
       } else {
         setAttempt((data?.attempt as ActiveAttempt) || attempt);
+      }
+      if (data?.emailSent === false && typeof data?.message === 'string') {
+        setError(data.message);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Action failed');
@@ -274,8 +268,7 @@ export default function DesignPaymentMethodPanel({
     return (
       <div className="animate-fadeInUp mb-5">
         <p className="mb-3 text-sm leading-relaxed text-[#32261C]/75">
-          Choose how to collect. Online sends an Easebuzz link by <span className="font-semibold text-[#32261C]">email only</span>
-          {' '}(no WhatsApp). Offline uploads proof for Finance review.
+          Choose how to collect. Online sends an Easebuzz payment link by email. Offline uploads proof for Finance review.
         </p>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <button
@@ -323,23 +316,18 @@ export default function DesignPaymentMethodPanel({
   return (
     <div className="mb-5 space-y-3">
       {(method === 'online' || attempt) && (
-        <div className="animate-fadeInUp overflow-hidden rounded-2xl border border-[#00B0ED]/25 bg-white shadow-sm">
-          <div className="flex items-center justify-between gap-2 border-b border-[#00B0ED]/15 bg-gradient-to-r from-[#00B0ED]/10 to-transparent px-4 py-3">
-            <div className="flex items-center gap-2.5">
-              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#00B0ED] text-white shadow-sm">
-                <IconMail className="h-4 w-4" />
-              </span>
-              <div>
-                <p className="text-[11px] font-bold uppercase tracking-wider text-[#0077a3]">
-                  Online payment
-                </p>
-                <p className="text-[11px] text-gray-500">Email only · no WhatsApp</p>
-              </div>
+        <div className="overflow-hidden rounded-lg border border-[#DDCDC1] bg-white transition-colors duration-150 hover:border-[#32261C]/25">
+          <div className="flex items-center justify-between gap-2 border-b border-[#DDCDC1] px-4 py-3">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#32261C]/55">
+                Online payment
+              </p>
+              <p className="text-[12px] text-[#32261C]/50">Sent by email</p>
             </div>
             {!attempt && (
               <button
                 type="button"
-                className="rounded-full px-3 py-1 text-xs font-semibold text-[#32261C]/70 transition-all hover:bg-[#DDCDC1]/50 hover:text-[#32261C]"
+                className="rounded-md px-2.5 py-1 text-xs font-medium text-[#32261C]/70 transition-colors hover:bg-[#F7F4F1] hover:text-[#32261C]"
                 onClick={() => {
                   setMethod('choose');
                   setError(null);
@@ -396,37 +384,31 @@ export default function DesignPaymentMethodPanel({
 
           {attempt && (
             <div className="space-y-3 px-4 py-4">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-amber-900">
-                  <span className="animate-payDotPulse h-1.5 w-1.5 rounded-full bg-amber-500" />
-                  {attempt.status || 'PENDING'}
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm text-[#32261C]">
+                <span className="font-medium uppercase tracking-wide">
+                  {String(attempt.status || 'PENDING').toUpperCase()}
                 </span>
                 {attempt.amount != null && (
-                  <span className="rounded-full bg-[#32261C] px-2.5 py-1 text-[11px] font-bold text-white">
-                    {formatInr(Number(attempt.amount))}
-                  </span>
+                  <span className="font-semibold tabular-nums">{formatInr(Number(attempt.amount))}</span>
                 )}
                 {attempt.emailStatus && (
-                  <span className="rounded-full bg-[#00B0ED]/10 px-2.5 py-1 text-[11px] font-semibold text-[#0077a3]">
-                    Email {attempt.emailStatus}
-                  </span>
+                  <span className="text-[12px] text-[#32261C]/50">Email {attempt.emailStatus}</span>
                 )}
               </div>
-              {linkUrl && (
-                <p className="truncate rounded-lg border border-[#DDCDC1] bg-[#F1F2F6]/80 px-3 py-2 font-mono text-[11px] text-gray-600">
-                  {linkUrl}
-                </p>
-              )}
+              <LinkExpiryProgress expiresAt={attempt.expiresAt} createdAt={attempt.createdAt} />
               {(attempt.paymentFailureCount ?? 0) > 0 && (
-                <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                <p className="rounded border border-[#EF0101]/20 bg-[#FFF5F5] px-3 py-2 text-xs text-[#EF0101]">
                   Customer pay failures: {attempt.paymentFailureCount}
                   {attempt.lastPaymentFailureReason ? ` — ${attempt.lastPaymentFailureReason}` : ''}
                 </p>
               )}
-              <div className="flex flex-wrap gap-2">
-                <ActionChip
-                  tone="primary"
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Icons — Copy / Resend / Edit */}
+                <button
+                  type="button"
                   disabled={busy || !linkUrl}
+                  title={copied ? 'Copied' : 'Copy link'}
+                  aria-label={copied ? 'Copied' : 'Copy link'}
                   onClick={async () => {
                     if (!linkUrl) return;
                     await navigator.clipboard.writeText(linkUrl);
@@ -434,31 +416,55 @@ export default function DesignPaymentMethodPanel({
                     void runAction('copy');
                     setTimeout(() => setCopied(false), 1500);
                   }}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[#DDCDC1] bg-white text-[#32261C] transition-all duration-200 hover:-translate-y-0.5 hover:border-[#32261C]/40 hover:bg-[#F7F4F1] disabled:pointer-events-none disabled:opacity-45"
                 >
-                  <IconCopy className="h-3.5 w-3.5" />
-                  {copied ? 'Copied' : 'Copy link'}
-                </ActionChip>
-                <ActionChip disabled={busy} onClick={() => void runAction('resend')}>
-                  Resend email
-                </ActionChip>
-                <ActionChip
+                  {copied ? (
+                    <svg className="h-3.5 w-3.5 text-emerald-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                    </svg>
+                  ) : (
+                    <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+                      <rect x="9" y="9" width="11" height="11" rx="2" />
+                      <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+                    </svg>
+                  )}
+                </button>
+                <button
+                  type="button"
                   disabled={busy}
+                  title="Resend email"
+                  aria-label="Resend email"
+                  onClick={() => void runAction('resend')}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[#DDCDC1] bg-white text-[#32261C] transition-all duration-200 hover:-translate-y-0.5 hover:border-[#32261C]/40 hover:bg-[#F7F4F1] disabled:pointer-events-none disabled:opacity-45"
+                >
+                  <IconMail className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  title="Edit amount"
+                  aria-label="Edit amount"
                   onClick={() => {
                     const next = window.prompt('New amount (₹)', String(attempt.amount ?? amount));
                     if (!next) return;
                     void runAction('edit', { amount: Number(next) });
                   }}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[#DDCDC1] bg-white text-[#32261C] transition-all duration-200 hover:-translate-y-0.5 hover:border-[#32261C]/40 hover:bg-[#F7F4F1] disabled:pointer-events-none disabled:opacity-45"
                 >
-                  Edit amount
-                </ActionChip>
-                <ActionChip tone="amber" disabled={busy} onClick={() => void runAction('switch-offline')}>
+                  <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 7.125 16.875 4.5" />
+                  </svg>
+                </button>
+                {/* Text — Switch offline / Cancel */}
+                <ActionChip disabled={busy} onClick={() => void runAction('switch-offline')}>
                   Switch offline
                 </ActionChip>
                 <ActionChip tone="danger" disabled={busy} onClick={() => void runAction('cancel')}>
-                  Cancel link
+                  Cancel
                 </ActionChip>
               </div>
-              <p className="text-[11px] text-gray-400">
+              <p className="text-[11px] text-[#32261C]/40">
                 Paid or failed updates come from the CRM webhook. This screen refreshes on focus or every 60s.
               </p>
             </div>

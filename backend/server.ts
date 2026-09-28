@@ -163,9 +163,9 @@ app.get("/api/health", (_req, res) => {
 
 // ----- MySQL setup -----
 const pool = mysql.createPool({
-  host: process.env.DB_HOST || "localhost",
-  user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "root",
+  host: process.env.DB_HOST || "database-1.cl002gu0o5ft.ap-south-2.rds.amazonaws.com",
+  user: process.env.DB_USER || "admin",
+  password: process.env.DB_PASSWORD || "Hubinterior2019",
   database: process.env.DB_NAME || "DesignMod",
   port: Number(process.env.DB_PORT || 3306),
   connectionLimit: 10,

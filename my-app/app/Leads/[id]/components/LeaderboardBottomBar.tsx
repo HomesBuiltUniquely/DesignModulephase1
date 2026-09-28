@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { BadgeIcon } from "../../../leaderboard/components/BadgeIcon";
-import { getApiBase, buildAuthHeaders } from "@/app/lib/apiBase";
+import { getApiBase, buildAuthHeaders, getStoredSessionId } from "@/app/lib/apiBase";
 
 interface LeaderboardBottomBarProps {
   leadId: string | number;
@@ -13,73 +13,46 @@ interface LeaderboardBottomBarProps {
 export const LeaderboardBottomBar: React.FC<LeaderboardBottomBarProps> = ({ leadId, sessionId }) => {
   const [data, setData] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<any>(null);
 
   useEffect(() => {
-    if (!leadId) return;
-    const headers = buildAuthHeaders(sessionId);
+    if (!leadId) {
+      setLoading(false);
+      return;
+    }
+
+    const token = sessionId || getStoredSessionId();
+    if (!token) {
+      setData(null);
+      setLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    const headers = buildAuthHeaders(token);
     const url = `${getApiBase()}/api/xp/lead/${leadId}/summary`;
 
-    fetch(url, { headers })
-      .then((res) => {
-        console.log(`[LeaderboardBottomBar] API Response:`, {
-          url,
-          status: res.status,
-          statusText: res.statusText,
-          ok: res.ok,
-          headers: {
-            contentType: res.headers.get('content-type'),
-          },
-        });
+    fetch(url, { headers, signal: controller.signal })
+      .then(async (res) => {
         if (!res.ok) {
-          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+          // Optional UI — 401/403/404 are expected for some roles/leads
+          setData(null);
+          return;
         }
-        return res.json();
-      })
-      .then((json) => {
-        console.log(`[LeaderboardBottomBar] API Data Received:`, {
-          dataExists: !!json,
-          dataKeys: json ? Object.keys(json) : [],
-          designerId: json?.designerId,
-          currentXp: json?.currentXp,
-          currentLevel: json?.currentLevel,
-          rank: json?.rank,
-          projectXp: json?.projectXp,
-          totalPossibleProjectXp: json?.totalPossibleProjectXp,
-          completedProjectXp: json?.completedProjectXp,
-          milestonesCount: json?.milestones?.length,
-        });
+        const json = await res.json().catch(() => null);
         setData(json);
-        setLoading(false);
       })
       .catch((err) => {
-        console.error(`[LeaderboardBottomBar] API Error:`, {
-          url,
-          error: err.message,
-          stack: err.stack,
-        });
-        setError(err);
-        setLoading(false);
+        if (err?.name === "AbortError") return;
+        setData(null);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
       });
+
+    return () => controller.abort();
   }, [leadId, sessionId]);
 
-  console.log(`[LeaderboardBottomBar] Render Check:`, {
-    loading,
-    error: error?.message || null,
-    dataExists: !!data,
-    designerId: data?.designerId,
-    condition_loading: loading,
-    condition_not_data: !data,
-    condition_not_designerId: !data?.designerId,
-    will_return_null: loading || !data || !data.designerId,
-  });
-
   if (loading || !data || !data.designerId) {
-    console.log(`[LeaderboardBottomBar] Returning null. Reason:`, {
-      loading,
-      data_null: !data,
-      designerId_null: !data?.designerId,
-    });
     return null;
   }
 

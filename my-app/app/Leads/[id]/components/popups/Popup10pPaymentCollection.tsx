@@ -3,9 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/app/auth/AuthContext";
 import { canUseEasebuzzOnline } from "@/app/lib/easebuzzAccess";
-import { getApiBase } from "@/app/lib/apiBase";
 import MilestonePaymentSummary, { type QuotePaymentSummary } from "../MilestonePaymentSummary";
-import { parseQuotePaymentSummaryResponse } from "../mapQuotePaymentSummary";
+import { loadQuotePaymentSummary } from "../loadQuotePaymentSummary";
+import { getCachedQuotePaymentSummary } from "../quotePaymentSummaryCache";
 import DesignPaymentMethodPanel from "./DesignPaymentMethodPanel";
 
 type Props = {
@@ -32,8 +32,9 @@ export default function Popup10pPaymentCollection({
   const [files, setFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [paymentSummary, setPaymentSummary] = useState<QuotePaymentSummary | null>(null);
-  const [paymentSummaryLoading, setPaymentSummaryLoading] = useState(true);
+  const cached = Number.isFinite(leadId) ? getCachedQuotePaymentSummary(leadId) : null;
+  const [paymentSummary, setPaymentSummary] = useState<QuotePaymentSummary | null>(cached);
+  const [paymentSummaryLoading, setPaymentSummaryLoading] = useState(!cached);
   const [paymentSummaryError, setPaymentSummaryError] = useState<string | null>(null);
   const [showOffline, setShowOffline] = useState(!allowOnline);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -49,40 +50,29 @@ export default function Popup10pPaymentCollection({
       setPaymentSummaryLoading(false);
       return;
     }
-    let cancelled = false;
-    const base = (apiBase || getApiBase()).replace(/\/$/, "");
-    (async () => {
+    const controller = new AbortController();
+    const existing = getCachedQuotePaymentSummary(leadId);
+    if (existing) {
+      setPaymentSummary(existing);
+      setPaymentSummaryError(null);
+      setPaymentSummaryLoading(false);
+    } else {
       setPaymentSummaryLoading(true);
       setPaymentSummaryError(null);
-      try {
-        const res = await fetch(
-          `${base}/api/sales-closure/lead/${encodeURIComponent(String(leadId))}/quote-payment-summary`,
-          { cache: "no-store" },
-        );
-        const body = await res.json().catch(() => ({}));
-        if (cancelled) return;
-        if (!res.ok) {
-          setPaymentSummary(null);
-          setPaymentSummaryError(
-            typeof body?.message === "string" ? body.message : "Could not load quotation totals",
-          );
-          return;
-        }
-        const parsed = parseQuotePaymentSummaryResponse(body as Record<string, unknown>);
-        setPaymentSummary(parsed.summary);
-        setPaymentSummaryError(parsed.message);
-      } catch {
-        if (!cancelled) {
-          setPaymentSummary(null);
-          setPaymentSummaryError("Could not load quotation totals");
-        }
-      } finally {
-        if (!cancelled) setPaymentSummaryLoading(false);
-      }
+    }
+    (async () => {
+      const result = await loadQuotePaymentSummary({
+        leadId,
+        apiBase,
+        signal: controller.signal,
+        retries: 3,
+      });
+      if (controller.signal.aborted) return;
+      setPaymentSummary(result.summary);
+      setPaymentSummaryError(result.message);
+      setPaymentSummaryLoading(false);
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [apiBase, leadId]);
 
   const accept = "image/*,.pdf,application/pdf";

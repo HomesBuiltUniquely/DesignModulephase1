@@ -5,8 +5,8 @@ import { useState, useEffect } from "react";
 import MileStonesArray from "@/app/Components/Types/MileStoneArray";
 import { hasChecklistForTask } from "./Checklists/checklistRegistry";
 import MilestonePaymentSummary, { type QuotePaymentSummary } from "./MilestonePaymentSummary";
-import { parseQuotePaymentSummaryResponse } from "./mapQuotePaymentSummary";
-import { getApiBase, buildAuthHeaders } from "@/app/lib/apiBase";
+import { loadQuotePaymentSummary } from "./loadQuotePaymentSummary";
+import { getApiBase, buildAuthHeaders, getStoredSessionId } from "@/app/lib/apiBase";
 import {
   getMilestoneDateRangeLabel,
   type TaskCompletionMap,
@@ -84,51 +84,34 @@ export default function MilestonesCard({
       setXpSummary(null);
       return;
     }
-    let cancelled = false;
-    const headers = buildAuthHeaders(sessionId);
+
+    const token = sessionId || getStoredSessionId();
+    if (!token) {
+      setXpSummary(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    const headers = buildAuthHeaders(token);
     const url = `${getApiBase()}/api/xp/lead/${leadId}/summary`;
 
-    fetch(url, { headers })
-      .then((res) => {
-        console.log(`[MilestonesCard] XP API Response:`, {
-          url,
-          status: res.status,
-          ok: res.ok,
-        });
+    fetch(url, { headers, signal: controller.signal })
+      .then(async (res) => {
         if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
+          setXpSummary(null);
+          return;
         }
-        return res.json();
-      })
-      .then((data) => {
-        if (cancelled) return;
-        console.log(`[MilestonesCard] XP API Data:`, {
-          dataExists: !!data,
-          dataKeys: data ? Object.keys(data) : [],
-          milestonesCount: data?.milestones?.length,
-          totalPossibleProjectXp: data?.totalPossibleProjectXp,
-          completedProjectXp: data?.completedProjectXp,
-          currentXp: data?.currentXp,
-          firstMilestone: data?.milestones?.[0] ? {
-            milestoneIndex: data.milestones[0].milestoneIndex,
-            totalPossibleXp: data.milestones[0].totalPossibleXp,
-            earnedXp: data.milestones[0].earnedXp,
-            tasksCount: data.milestones[0].tasks?.length,
-          } : null,
-        });
-        if (data) {
+        const data = await res.json().catch(() => null);
+        if (!controller.signal.aborted && data) {
           setXpSummary(data);
         }
       })
       .catch((err) => {
-        console.error(`[MilestonesCard] XP API Error:`, {
-          url,
-          error: err.message,
-        });
+        if (err?.name === "AbortError") return;
+        setXpSummary(null);
       });
-    return () => {
-      cancelled = true;
-    };
+
+    return () => controller.abort();
   }, [leadId, sessionId]);
 
   useEffect(() => {
@@ -137,39 +120,20 @@ export default function MilestonesCard({
       setPaymentSummaryError(null);
       return;
     }
-    let cancelled = false;
+    const controller = new AbortController();
     (async () => {
       setPaymentSummaryLoading(true);
       setPaymentSummaryError(null);
-      try {
-        const res = await fetch(
-          `${getApiBase()}/api/sales-closure/lead/${encodeURIComponent(String(leadId))}/quote-payment-summary`,
-          { cache: 'no-store' },
-        );
-        const body = await res.json().catch(() => ({}));
-        if (cancelled) return;
-        if (!res.ok) {
-          setPaymentSummary(null);
-          setPaymentSummaryError(
-            typeof body?.message === 'string' ? body.message : 'Could not load quotation totals',
-          );
-          return;
-        }
-        const parsed = parseQuotePaymentSummaryResponse(body as Record<string, unknown>);
-        setPaymentSummary(parsed.summary);
-        setPaymentSummaryError(parsed.message);
-      } catch {
-        if (!cancelled) {
-          setPaymentSummary(null);
-          setPaymentSummaryError('Could not load quotation totals');
-        }
-      } finally {
-        if (!cancelled) setPaymentSummaryLoading(false);
-      }
+      const result = await loadQuotePaymentSummary({
+        leadId,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      setPaymentSummary(result.summary);
+      setPaymentSummaryError(result.message);
+      setPaymentSummaryLoading(false);
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [leadId]);
 
   // When maximized, scroll so the current milestone is in view.

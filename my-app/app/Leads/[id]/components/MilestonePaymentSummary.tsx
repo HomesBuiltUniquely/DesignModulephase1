@@ -129,12 +129,13 @@ export default function MilestonePaymentSummary({ variant, summary, loading, err
       {isTen && (
         <p className="mb-2 text-[10px] leading-snug text-[#32261C] bg-[#DDCDC1]/20 border border-[#DDCDC1] rounded px-2 py-1">
           Sales collected 10% at closure. Design module 10% payment brings the customer to 20% of the latest
-          quotation.
+          quotation. You can Edit the link amount lower (partial) or higher (extra advance).
         </p>
       )}
       {!isTen && (
         <p className="mb-2 text-[10px] leading-snug text-[#32261C] bg-[#DDCDC1]/20 border border-[#DDCDC1] rounded px-2 py-1">
-          Design module 40% payment brings the customer to 60% cumulative of the latest quotation.
+          Design module 40% payment brings the customer to 60% cumulative of the latest quotation. Edit link
+          amount for partial or extra payment.
         </p>
       )}
       {quoteRevised && (

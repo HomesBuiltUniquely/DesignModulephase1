@@ -11,6 +11,9 @@ export interface TenPercentPaymentApprovalEmailProps {
   transactionRef?: string;
   totalProjectValue?: string | number;
   paymentMode?: string;
+  milestoneTarget?: string | number;
+  extraPaid?: string | number;
+  extraAppliedNote?: string;
 }
 
 function formatIndianCurrency(amount: string | number | undefined): string {
@@ -39,6 +42,9 @@ export default function TenPercentPaymentApprovalEmail({
   transactionRef = '',
   totalProjectValue = '',
   paymentMode = 'Bank Transfer (NEFT)',
+  milestoneTarget = '',
+  extraPaid = '',
+  extraAppliedNote = '',
 }: TenPercentPaymentApprovalEmailProps) {
   
   const numTotal = totalProjectValue 
@@ -53,10 +59,18 @@ export default function TenPercentPaymentApprovalEmail({
   const numPaid = rawAmountPaid 
     ? (typeof rawAmountPaid === 'number' ? rawAmountPaid : Number(String(rawAmountPaid).replace(/[^0-9.]/g, '')))
     : NaN;
+  const numTarget = milestoneTarget
+    ? (typeof milestoneTarget === 'number' ? milestoneTarget : Number(String(milestoneTarget).replace(/[^0-9.]/g, '')))
+    : NaN;
+  const numExtra = extraPaid
+    ? (typeof extraPaid === 'number' ? extraPaid : Number(String(extraPaid).replace(/[^0-9.]/g, '')))
+    : (!isNaN(numPaid) && !isNaN(numTarget) ? Math.max(0, numPaid - numTarget) : NaN);
 
   const displayTotalValue = !isNaN(numTotal) ? numTotal : (numPaid ? numPaid * 10 : '');
   const displayAmountPaid = !isNaN(numPaid) ? numPaid : '';
-  const displayBalanceRemaining = (!isNaN(numTotal) && !isNaN(numPaid)) ? (numTotal - numPaid) : (numPaid ? numPaid * 9 : '');
+  const displayBalanceRemaining = (!isNaN(numTotal) && !isNaN(numPaid)) ? Math.max(0, numTotal - numPaid) : (numPaid ? numPaid * 9 : '');
+  const displayTarget = !isNaN(numTarget) ? numTarget : '';
+  const displayExtra = !isNaN(numExtra) && numExtra > 0 ? numExtra : '';
 
   const displayReceiptNumber = transactionRef || `HI-REC-2026-${projectId.replace(/[^0-9]/g, '') || '0387'}`;
   const displayPaymentDate = paymentDate || new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
@@ -146,6 +160,26 @@ export default function TenPercentPaymentApprovalEmail({
               <td style={{ padding: '12px 20px', fontSize: '14px', color: '#6B7280' }}>Total project value</td>
               <td align="right" style={{ padding: '12px 20px', fontSize: '14px', color: '#1F2937', fontWeight: 500 }}>{formatIndianCurrency(displayTotalValue)}</td>
             </tr>
+            {displayTarget !== '' ? (
+              <tr style={{ borderBottom: '1px solid #E5E7EB' }}>
+                <td style={{ padding: '12px 20px', fontSize: '14px', color: '#6B7280' }}>10% milestone target</td>
+                <td align="right" style={{ padding: '12px 20px', fontSize: '14px', color: '#1F2937', fontWeight: 500 }}>{formatIndianCurrency(displayTarget)}</td>
+              </tr>
+            ) : null}
+            {displayExtra !== '' ? (
+              <tr style={{ borderBottom: '1px solid #E5E7EB' }}>
+                <td style={{ padding: '12px 20px', fontSize: '14px', color: '#6B7280' }}>Extra paid by client</td>
+                <td align="right" style={{ padding: '12px 20px', fontSize: '14px', color: '#16a34a', fontWeight: 'bold' }}>{formatIndianCurrency(displayExtra)}</td>
+              </tr>
+            ) : null}
+            {displayExtra !== '' ? (
+              <tr style={{ borderBottom: '1px solid #E5E7EB' }}>
+                <td style={{ padding: '12px 20px', fontSize: '14px', color: '#6B7280' }}>Extra applied to</td>
+                <td align="right" style={{ padding: '12px 20px', fontSize: '14px', color: '#1F2937', fontWeight: 500 }}>
+                  {extraAppliedNote || 'Next (Design 40%) payment'}
+                </td>
+              </tr>
+            ) : null}
             <tr>
               <td style={{ padding: '12px 20px', fontSize: '14px', color: '#6B7280' }}>Balance remaining</td>
               <td align="right" style={{ padding: '12px 20px', fontSize: '14px', color: '#E02424', fontWeight: 'bold' }}>{formatIndianCurrency(displayBalanceRemaining)}</td>

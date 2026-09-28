@@ -39,7 +39,7 @@ type Deps = {
     route: string;
     visibility: "external" | "internal";
     payload: Record<string, unknown>;
-  }) => unknown;
+  }) => Promise<boolean> | boolean | unknown;
   maybeNotifyMilestoneCompleted?: (leadId: number, milestoneIndex: number, extra?: Record<string, unknown>) => void;
 };
 
@@ -353,19 +353,170 @@ async function payloadAlreadyAutoApproved(pool: Pool, leadId: number, bucket: st
   return flag === true || flag === "true";
 }
 
+async function sumBucketCollected(pool: Pool, leadId: number, bucket: string): Promise<number> {
+  const [rows] = await pool.query(
+    `SELECT COALESCE(SUM(amount), 0) AS total
+     FROM design_payment_history
+     WHERE lead_id = ? AND UPPER(bucket) = UPPER(?)`,
+    [leadId, normalizeBucket(bucket)],
+  );
+  return Number((rows as RowDataPacket[])[0]?.total) || 0;
+}
+
+async function syncCollectedFromHistory(pool: Pool, leadId: number): Promise<{
+  d10Target: number;
+  d10Collected: number;
+  d10Extra: number;
+  d10Remaining: number;
+  d40Target: number;
+  d40Collected: number;
+  d40Extra: number;
+  d40Remaining: number;
+}> {
+  await upsertSummaryFromBreakdown(pool, leadId);
+  const d10Collected = await sumBucketCollected(pool, leadId, "DESIGN_10");
+  const d40Collected = await sumBucketCollected(pool, leadId, "DESIGN_40");
+  const now = new Date();
+  await pool.query(
+    `UPDATE design_payment_case_summary
+     SET design_10_collected = ?, design_40_collected = ?, updated_at = ?
+     WHERE lead_id = ?`,
+    [d10Collected, d40Collected, now, leadId],
+  );
+  const row = await getSummaryRow(pool, leadId);
+  const d10Target = Number(row?.design_10_target) || 0;
+  const d40Target = Number(row?.design_40_target) || 0;
+  return {
+    d10Target,
+    d10Collected,
+    d10Extra: Math.max(0, d10Collected - d10Target),
+    d10Remaining: Math.max(0, d10Target - d10Collected),
+    d40Target,
+    d40Collected,
+    d40Extra: Math.max(0, d40Collected - d40Target),
+    d40Remaining: Math.max(0, d40Target - d40Collected),
+  };
+}
+
+/**
+ * Extra beyond current milestone target is credited to the next design bucket
+ * (10% overpay → 40% remaining). Idempotent via unique gateway_payment_id suffix.
+ */
+async function carryExtraTowardNextPayment(
+  deps: Deps,
+  leadId: number,
+  fromBucket: string,
+  extraPaid: number,
+  opts?: { attemptId?: string; gatewayPaymentId?: string },
+): Promise<number> {
+  if (!(extraPaid > 0)) return 0;
+  const { pool } = deps;
+  const from = normalizeBucket(fromBucket);
+  const now = new Date();
+
+  if (from === "DESIGN_10") {
+    const carryId = `${opts?.gatewayPaymentId || opts?.attemptId || `lead-${leadId}`}-CARRY-D40`;
+    const [dup] = await pool.query(
+      `SELECT id FROM design_payment_history WHERE gateway_payment_id = ? LIMIT 1`,
+      [carryId],
+    );
+    if ((dup as RowDataPacket[]).length > 0) return extraPaid;
+
+    await pool.query(
+      `INSERT INTO design_payment_history
+       (lead_id, bucket, amount, quote_amount, attempt_id, gateway_payment_id,
+        payment_channel, payment_method, source, finance_handling_mode, notes, created_at)
+       VALUES (?, 'DESIGN_40', ?, NULL, ?, ?, 'ONLINE', 'CARRY_FORWARD', 'EASEBUZZ', 'CREDIT_FROM_PRIOR', ?, ?)`,
+      [
+        leadId,
+        extraPaid,
+        opts?.attemptId || null,
+        carryId,
+        `Extra from Design 10% applied toward Design 40% (₹${Math.round(extraPaid).toLocaleString("en-IN")})`,
+        now,
+      ],
+    );
+    await syncCollectedFromHistory(pool, leadId);
+    await history(
+      deps,
+      leadId,
+      "DESIGN_40",
+      `₹${Math.round(extraPaid).toLocaleString("en-IN")} extra from Design 10% added toward Design 40% payment.`,
+      {
+        kind: "DESIGN_PAYMENT_CARRY_FORWARD",
+        userName: "SYSTEM · Easebuzz",
+        amount: extraPaid,
+        fromBucket: "DESIGN_10",
+        toBucket: "DESIGN_40",
+      },
+    );
+    return extraPaid;
+  }
+
+  // DESIGN_40 overpay → advance toward remaining project balance (stored on lead payload).
+  const [lr] = await pool.query(`SELECT payload FROM leads WHERE id = ? LIMIT 1`, [leadId]);
+  let payload: Record<string, unknown> = {};
+  try {
+    const raw = (lr as { payload?: unknown }[])[0]?.payload;
+    payload = raw ? (JSON.parse(String(raw)) as Record<string, unknown>) : {};
+  } catch {
+    payload = {};
+  }
+  const prevAdvance = Number(payload.design_advance_beyond_60) || 0;
+  payload.design_advance_beyond_60 = prevAdvance + extraPaid;
+  payload.design_40_extra_paid = Number(payload.design_40_extra_paid) || 0;
+  if (Number(payload.design_40_extra_paid) < extraPaid) {
+    payload.design_40_extra_paid = extraPaid;
+  }
+  await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
+    JSON.stringify(payload),
+    now,
+    leadId,
+  ]);
+  await history(
+    deps,
+    leadId,
+    "DESIGN_40",
+    `₹${Math.round(extraPaid).toLocaleString("en-IN")} extra beyond Design 40% held as advance toward the next project payment.`,
+    {
+      kind: "DESIGN_PAYMENT_ADVANCE",
+      userName: "SYSTEM · Easebuzz",
+      amount: extraPaid,
+    },
+  );
+  return extraPaid;
+}
+
 async function applyDesignAutoApprove(
   deps: Deps,
   leadId: number,
   bucket: string,
   amount: number,
+  opts?: {
+    collected?: number;
+    target?: number;
+    extraPaid?: number;
+    attemptId?: string;
+    gatewayPaymentId?: string;
+  },
 ): Promise<void> {
   const { pool } = deps;
   const now = new Date();
   const approvedBy = "SYSTEM · Easebuzz";
   const is10 = normalizeBucket(bucket) === "DESIGN_10";
   const meta = milestoneMeta(is10 ? "DESIGN_10" : "DESIGN_40");
+  const collected = opts?.collected ?? amount;
+  const target = opts?.target ?? amount;
+  const extraPaid = opts?.extraPaid ?? Math.max(0, collected - target);
 
   if (await payloadAlreadyAutoApproved(pool, leadId, is10 ? "DESIGN_10" : "DESIGN_40")) {
+    // Still try carry if extra wasn't credited yet (idempotent).
+    if (extraPaid > 0) {
+      await carryExtraTowardNextPayment(deps, leadId, bucket, extraPaid, {
+        attemptId: opts?.attemptId,
+        gatewayPaymentId: opts?.gatewayPaymentId,
+      });
+    }
     return;
   }
 
@@ -409,6 +560,9 @@ async function applyDesignAutoApprove(
     payload.design_10_finance_auto_approved = true;
     payload.design_10_finance_approved_by = approvedBy;
     payload.design_10_finance_approved_at = now.toISOString();
+    payload.design_10_collected = collected;
+    payload.design_10_target = target;
+    payload.design_10_extra_paid = extraPaid;
     payload.cumulative_payment_percent = 20;
   } else {
     payload.forty_percent_payment_met = true;
@@ -417,6 +571,9 @@ async function applyDesignAutoApprove(
     payload.design_40_finance_auto_approved = true;
     payload.design_40_finance_approved_by = approvedBy;
     payload.design_40_finance_approved_at = now.toISOString();
+    payload.design_40_collected = collected;
+    payload.design_40_target = target;
+    payload.design_40_extra_paid = extraPaid;
     payload.cumulative_payment_percent = 60;
   }
 
@@ -429,14 +586,14 @@ async function applyDesignAutoApprove(
         payload.ten_percent_target = breakdown.tenPercentAmount;
         payload.total_paid_cumulative = Math.max(
           Number(payload.total_paid_cumulative) || 0,
-          breakdown.twentyPercentTarget,
+          breakdown.twentyPercentTarget + extraPaid,
         );
       } else {
         payload.sixty_percent_target = breakdown.sixtyPercentTarget;
         payload.forty_percent_target = breakdown.fortyPercentAmount;
         payload.total_paid_cumulative = Math.max(
           Number(payload.total_paid_cumulative) || 0,
-          breakdown.sixtyPercentTarget,
+          breakdown.sixtyPercentTarget + extraPaid,
         );
       }
     }
@@ -446,6 +603,9 @@ async function applyDesignAutoApprove(
 
   if (is10) {
     stampEntered1020At(payload);
+    if (extraPaid > 0) {
+      payload.design_10_extra_applied_to_40 = extraPaid;
+    }
     await pool.query(`UPDATE leads SET project_stage = '10-20%', payload = ?, update_at = ? WHERE id = ?`, [
       JSON.stringify(payload),
       now,
@@ -459,9 +619,12 @@ async function applyDesignAutoApprove(
          design_10_approved_at = ?,
          updated_at = ?
        WHERE lead_id = ?`,
-      [amount, now, now, leadId],
+      [collected, now, now, leadId],
     );
   } else {
+    if (extraPaid > 0) {
+      payload.design_advance_beyond_60 = Math.max(Number(payload.design_advance_beyond_60) || 0, extraPaid);
+    }
     await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [JSON.stringify(payload), now, leadId]);
     await pool.query(
       `UPDATE design_payment_case_summary SET
@@ -471,16 +634,37 @@ async function applyDesignAutoApprove(
          design_40_approved_at = ?,
          updated_at = ?
        WHERE lead_id = ?`,
-      [amount, now, now, leadId],
+      [collected, now, now, leadId],
     );
   }
 
+  // Credit overpay to the next payment bucket (10% → 40%, 40% → project advance).
+  if (extraPaid > 0) {
+    await carryExtraTowardNextPayment(deps, leadId, bucket, extraPaid, {
+      attemptId: opts?.attemptId,
+      gatewayPaymentId: opts?.gatewayPaymentId,
+    });
+  }
+
+  const extraNote =
+    extraPaid > 0
+      ? is10
+        ? ` Client paid ₹${Math.round(extraPaid).toLocaleString("en-IN")} extra — credited toward Design 40%.`
+        : ` Client paid ₹${Math.round(extraPaid).toLocaleString("en-IN")} extra — held as advance toward the next project payment.`
+      : "";
   await history(
     deps,
     leadId,
     is10 ? "DESIGN_10" : "DESIGN_40",
-    `Easebuzz ${is10 ? "Design 10%" : "Design 40%"} paid and auto-approved. Receipt emailed.`,
-    { kind: "DESIGN_PAYMENT_PAID", taskName: meta.taskApproval, userName: approvedBy, amount },
+    `Easebuzz ${is10 ? "Design 10%" : "Design 40%"} paid and auto-approved (₹${Math.round(collected).toLocaleString("en-IN")} collected).${extraNote} Receipt emailed.`,
+    {
+      kind: "DESIGN_PAYMENT_PAID",
+      taskName: meta.taskApproval,
+      userName: approvedBy,
+      amount: collected,
+      extraPaid,
+      target,
+    },
     "completed",
   );
 
@@ -499,9 +683,18 @@ async function applyDesignAutoApprove(
           to: contact.email,
           customerName: contact.name,
           projectId: contact.pid,
-          amountPaid: String(Math.round(amount)),
+          amountPaid: String(Math.round(collected)),
+          amountReceived: String(Math.round(collected)),
+          milestoneTarget: String(Math.round(target)),
+          extraPaid: extraPaid > 0 ? String(Math.round(extraPaid)) : "",
+          extraAppliedToNext: extraPaid > 0 ? String(Math.round(extraPaid)) : "",
+          extraAppliedNote: is10
+            ? "Extra amount credited toward your next (Design 40%) payment."
+            : "Extra amount held as advance toward your next project payment.",
           paymentDate: now.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }),
+          dateOfReceipt: now.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }),
           paymentMode: "Easebuzz (Online)",
+          modeOfPayment: "Easebuzz (Online)",
         },
       });
     }
@@ -510,17 +703,52 @@ async function applyDesignAutoApprove(
   }
 }
 
+async function applyPartialPaymentRecorded(
+  deps: Deps,
+  leadId: number,
+  bucket: string,
+  paidThisTxn: number,
+  collected: number,
+  target: number,
+  remaining: number,
+): Promise<void> {
+  const is10 = normalizeBucket(bucket) === "DESIGN_10";
+  const label = is10 ? "Design 10%" : "Design 40%";
+  await history(
+    deps,
+    leadId,
+    normalizeBucket(bucket),
+    `Partial ${label} payment received ₹${Math.round(paidThisTxn).toLocaleString("en-IN")}. Collected ₹${Math.round(collected).toLocaleString("en-IN")} of ₹${Math.round(target).toLocaleString("en-IN")}. Remaining ₹${Math.round(remaining).toLocaleString("en-IN")}.`,
+    {
+      kind: "DESIGN_PAYMENT_PARTIAL",
+      userName: "SYSTEM · Easebuzz",
+      amount: paidThisTxn,
+      collected,
+      target,
+      remaining,
+    },
+  );
+  await deps.pool.query(
+    `UPDATE design_payment_case_summary SET
+       ${is10 ? "design_10_finance_mode" : "design_40_finance_mode"} = 'PARTIAL',
+       updated_at = ?
+     WHERE lead_id = ?`,
+    [new Date(), leadId],
+  );
+}
+
 async function applyPaidAttempt(
   deps: Deps,
   attempt: AttemptRow,
   gatewayPaymentId: string,
   method: string,
   paidAmount: number,
-): Promise<{ ok: true; idempotent?: boolean }> {
+): Promise<{ ok: true; idempotent?: boolean; autoApproved?: boolean }> {
   const { pool } = deps;
   const gid = gatewayPaymentId || attempt.merchant_txn;
   const amount = paidAmount > 0 ? paidAmount : Number(attempt.amount);
   const now = new Date();
+  const bucket = normalizeBucket(attempt.bucket);
 
   const [upd] = await pool.query(
     `UPDATE design_payment_link_attempts
@@ -529,12 +757,31 @@ async function applyPaidAttempt(
     [gid || null, method || "Easebuzz", now, now, attempt.id],
   );
   const wonLock = Number((upd as ResultSetHeader).affectedRows || 0) > 0;
-  if (!wonLock) {
-    if (!(await payloadAlreadyAutoApproved(pool, attempt.lead_id, attempt.bucket))) {
-      await upsertSummaryFromBreakdown(pool, attempt.lead_id);
-      await applyDesignAutoApprove(deps, attempt.lead_id, attempt.bucket, amount);
+
+  const maybeComplete = async (): Promise<boolean> => {
+    const synced = await syncCollectedFromHistory(pool, attempt.lead_id);
+    const collected = bucket === "DESIGN_40" ? synced.d40Collected : synced.d10Collected;
+    const target = bucket === "DESIGN_40" ? synced.d40Target : synced.d10Target;
+    const extraPaid = bucket === "DESIGN_40" ? synced.d40Extra : synced.d10Extra;
+    if (target > 0 && collected + 0.009 >= target) {
+      if (!(await payloadAlreadyAutoApproved(pool, attempt.lead_id, bucket))) {
+        await applyDesignAutoApprove(deps, attempt.lead_id, bucket, amount, {
+          collected,
+          target,
+          extraPaid,
+          attemptId: attempt.id,
+          gatewayPaymentId: gid || undefined,
+        });
+      }
+      return true;
     }
-    return { ok: true, idempotent: true };
+    // Idempotent retries: do not re-log partial history.
+    return false;
+  };
+
+  if (!wonLock) {
+    const autoApproved = await maybeComplete();
+    return { ok: true, idempotent: true, autoApproved };
   }
 
   if (gid) {
@@ -543,10 +790,8 @@ async function applyPaidAttempt(
       [gid],
     );
     if ((dup as RowDataPacket[]).length > 0) {
-      if (!(await payloadAlreadyAutoApproved(pool, attempt.lead_id, attempt.bucket))) {
-        await applyDesignAutoApprove(deps, attempt.lead_id, attempt.bucket, amount);
-      }
-      return { ok: true, idempotent: true };
+      const autoApproved = await maybeComplete();
+      return { ok: true, idempotent: true, autoApproved };
     }
   }
 
@@ -556,15 +801,16 @@ async function applyPaidAttempt(
       `INSERT INTO design_payment_history
        (lead_id, bucket, amount, quote_amount, attempt_id, gateway_payment_id,
         payment_channel, payment_method, source, finance_handling_mode, notes, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'ONLINE', ?, 'EASEBUZZ', 'AUTO_APPROVED', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, 'ONLINE', ?, 'EASEBUZZ', ?, ?, ?)`,
       [
         attempt.lead_id,
-        attempt.bucket,
+        bucket,
         amount,
         attempt.quote_amount,
         attempt.id,
         gid || null,
         method || "Easebuzz",
+        "RECORDED",
         null,
         now,
       ],
@@ -573,14 +819,42 @@ async function applyPaidAttempt(
     const code = (err as { code?: string })?.code;
     if (code !== "ER_DUP_ENTRY") throw err;
   }
-  await applyDesignAutoApprove(deps, attempt.lead_id, attempt.bucket, amount);
+
+  const synced = await syncCollectedFromHistory(pool, attempt.lead_id);
+  const collected = bucket === "DESIGN_40" ? synced.d40Collected : synced.d10Collected;
+  const target = bucket === "DESIGN_40" ? synced.d40Target : synced.d10Target;
+  const remaining = bucket === "DESIGN_40" ? synced.d40Remaining : synced.d10Remaining;
+  const extraPaid = bucket === "DESIGN_40" ? synced.d40Extra : synced.d10Extra;
+
+  let autoApproved = false;
+  if (target > 0 && collected + 0.009 >= target) {
+    await pool.query(
+      `UPDATE design_payment_history SET finance_handling_mode = 'AUTO_APPROVED' WHERE attempt_id = ?`,
+      [attempt.id],
+    );
+    await applyDesignAutoApprove(deps, attempt.lead_id, bucket, amount, {
+      collected,
+      target,
+      extraPaid,
+      attemptId: attempt.id,
+      gatewayPaymentId: gid || undefined,
+    });
+    autoApproved = true;
+  } else {
+    await pool.query(
+      `UPDATE design_payment_history SET finance_handling_mode = 'PARTIAL' WHERE attempt_id = ?`,
+      [attempt.id],
+    );
+    await applyPartialPaymentRecorded(deps, attempt.lead_id, bucket, amount, collected, target, remaining);
+  }
+
   await pool.query(
     `UPDATE design_payment_link_attempts
      SET is_active = 0, status = IF(status IN ('PENDING','CREATED_NOT_DELIVERED'), 'SUPERSEDED', status), updated_at = ?
      WHERE lead_id = ? AND bucket = ? AND id <> ? AND is_active = 1 AND status <> 'PAID'`,
-    [now, attempt.lead_id, attempt.bucket, attempt.id],
+    [now, attempt.lead_id, bucket, attempt.id],
   );
-  return { ok: true };
+  return { ok: true, autoApproved };
 }
 
 async function applyFailureAttempt(deps: Deps, attempt: AttemptRow, status: string, reason: string): Promise<void> {
@@ -736,15 +1010,16 @@ export function registerDesignPaymentRoutes(app: Express, deps: Deps): void {
     if (!Number.isFinite(leadId)) return res.status(400).json({ message: "Invalid lead id" });
     try {
       await upsertSummaryFromBreakdown(pool, leadId);
-      const row = await getSummaryRow(pool, leadId);
+      const synced = await syncCollectedFromHistory(pool, leadId);
       const attempt = await findActiveAttempt(pool, leadId);
-      const d10Target = Number(row?.design_10_target) || 0;
-      const d10Collected = Number(row?.design_10_collected) || 0;
-      const d40Target = Number(row?.design_40_target) || 0;
-      const d40Collected = Number(row?.design_40_collected) || 0;
-      const d10Remaining = Math.max(0, d10Target - d10Collected);
-      const d40Remaining = Math.max(0, d40Target - d40Collected);
+      const d10Target = synced.d10Target;
+      const d10Collected = synced.d10Collected;
+      const d40Target = synced.d40Target;
+      const d40Collected = synced.d40Collected;
+      const d10Remaining = synced.d10Remaining;
+      const d40Remaining = synced.d40Remaining;
       const d10Done = d10Remaining <= 0 && d10Target > 0;
+      const row = await getSummaryRow(pool, leadId);
       return res.json({
         caseId: String(leadId),
         quoteAmount: Number(row?.quote_amount) || null,
@@ -759,8 +1034,9 @@ export function registerDesignPaymentRoutes(app: Express, deps: Deps): void {
             targetAmount: d10Target,
             collectedAmount: d10Collected,
             remainingAmount: d10Remaining,
+            extraPaidAmount: synced.d10Extra,
             cumulativeTargetPercent: 20,
-            status: d10Done ? "PAID" : "OPEN",
+            status: d10Done ? "PAID" : d10Collected > 0 ? "PARTIAL" : "OPEN",
             financeMode: row?.design_10_finance_mode || null,
           },
           {
@@ -769,8 +1045,9 @@ export function registerDesignPaymentRoutes(app: Express, deps: Deps): void {
             targetAmount: d40Target,
             collectedAmount: d40Collected,
             remainingAmount: d40Remaining,
+            extraPaidAmount: synced.d40Extra,
             cumulativeTargetPercent: 60,
-            status: !d10Done ? "LOCKED" : d40Remaining <= 0 ? "PAID" : "OPEN",
+            status: !d10Done ? "LOCKED" : d40Remaining <= 0 ? "PAID" : d40Collected > 0 ? "PARTIAL" : "OPEN",
             financeMode: row?.design_40_finance_mode || null,
           },
         ],
@@ -852,11 +1129,13 @@ export function registerDesignPaymentRoutes(app: Express, deps: Deps): void {
         });
       }
       let amount = pickNum(body.amount);
+      const remainingDefault =
+        bucket === "DESIGN_40"
+          ? Math.max(0, Number(summary?.design_40_target || 0) - Number(summary?.design_40_collected || 0))
+          : Math.max(0, Number(summary?.design_10_target || 0) - Number(summary?.design_10_collected || 0));
+      // Designer may set less (partial) or more (extra advance) than remaining.
       if (amount == null || amount <= 0) {
-        amount =
-          bucket === "DESIGN_40"
-            ? Math.max(0, Number(summary?.design_40_target || 0) - Number(summary?.design_40_collected || 0))
-            : Math.max(0, Number(summary?.design_10_target || 0) - Number(summary?.design_10_collected || 0));
+        amount = remainingDefault;
       }
       if (!amount || amount <= 0) {
         return res.status(400).json({ message: "Nothing remaining to collect for this bucket." });
@@ -884,7 +1163,7 @@ export function registerDesignPaymentRoutes(app: Express, deps: Deps): void {
         `INSERT INTO design_payment_link_attempts
          (id, lead_id, bucket, merchant_txn, amount, quote_amount, payment_link_url, status, is_active,
           customer_name, customer_email, customer_phone, email_status, created_by_name, expires_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', 1, ?, ?, ?, 'SENT', ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', 1, ?, ?, ?, 'PENDING', ?, ?, ?, ?)`,
         [
           id,
           leadId,
@@ -907,32 +1186,70 @@ export function registerDesignPaymentRoutes(app: Express, deps: Deps): void {
         deps,
         leadId,
         bucket,
-        `Online payment link emailed (₹${Math.round(amount).toLocaleString("en-IN")}). WhatsApp skipped.`,
+        `Online payment link created (₹${Math.round(amount).toLocaleString("en-IN")}).`,
         { kind: "DESIGN_PAYMENT_LINK_SENT", userName: user.name || "Designer", merchantTxn, amount },
       );
 
+      let emailed = false;
       if (deps.triggerMailRouteWithLog) {
         const is40 = bucket === "DESIGN_40";
-        deps.triggerMailRouteWithLog({
+        try {
+          const result = await deps.triggerMailRouteWithLog({
+            leadId,
+            milestoneIndex: is40 ? 5 : 2,
+            taskName: is40 ? "40% collection" : "10% payment collection",
+            route: is40
+              ? "/api/email/send-design-signoff-40pc-payment-request"
+              : "/api/email/send-ten-percent-payment-request",
+            visibility: "external",
+            payload: {
+              to: contact.email,
+              customerName: contact.name,
+              projectId: contact.pid,
+              amountDue: `₹${Math.round(amount).toLocaleString("en-IN")}`,
+              paymentLink: created.paymentUrl,
+            },
+          });
+          emailed = result === true;
+        } catch (mailErr) {
+          console.error("[design-payment] create-link mail error", mailErr);
+          emailed = false;
+        }
+      }
+
+      await pool.query(`UPDATE design_payment_link_attempts SET email_status = ?, updated_at = ? WHERE id = ?`, [
+        emailed ? "SENT" : "FAILED",
+        now,
+        id,
+      ]);
+
+      if (emailed) {
+        await history(
+          deps,
           leadId,
-          milestoneIndex: is40 ? 5 : 2,
-          taskName: is40 ? "40% collection" : "10% payment collection",
-          route: is40
-            ? "/api/email/send-design-signoff-40pc-payment-request"
-            : "/api/email/send-ten-percent-payment-request",
-          visibility: "external",
-          payload: {
-            to: contact.email,
-            customerName: contact.name,
-            projectId: contact.pid,
-            amountDue: `₹${Math.round(amount).toLocaleString("en-IN")}`,
-            paymentLink: created.paymentUrl,
-          },
-        });
+          bucket,
+          `Payment link emailed (₹${Math.round(amount).toLocaleString("en-IN")}).`,
+          { kind: "DESIGN_PAYMENT_LINK_EMAILED", userName: user.name || "Designer", merchantTxn, amount },
+        );
+      } else {
+        await history(
+          deps,
+          leadId,
+          bucket,
+          `Payment link created but email failed. Use Resend email.`,
+          { kind: "DESIGN_PAYMENT_LINK_EMAIL_FAILED", userName: user.name || "Designer", merchantTxn, amount },
+        );
       }
 
       const attempt = await findAttemptByTxn(pool, merchantTxn);
-      return res.json({ success: true, attempt: mapAttempt(attempt) });
+      return res.json({
+        success: true,
+        attempt: mapAttempt(attempt),
+        emailSent: emailed,
+        message: emailed
+          ? undefined
+          : "Payment link created, but the customer email failed to send. Use Resend email.",
+      });
     } catch (err) {
       console.error("[design-payment] create link error", err);
       return res.status(500).json({ message: "Failed to create payment link" });
@@ -962,29 +1279,59 @@ export function registerDesignPaymentRoutes(app: Express, deps: Deps): void {
     const old = await loadAttempt(String(req.params.attemptId));
     if (!old || !old.is_active) return res.status(400).json({ message: "No active pending payment link." });
     if (!old.customer_email) return res.status(400).json({ message: "Customer email missing." });
+
+    let emailed = false;
     if (deps.triggerMailRouteWithLog) {
       const is40 = old.bucket === "DESIGN_40";
-      deps.triggerMailRouteWithLog({
-        leadId: old.lead_id,
-        milestoneIndex: is40 ? 5 : 2,
-        taskName: is40 ? "40% collection" : "10% payment collection",
-        route: is40
-          ? "/api/email/send-design-signoff-40pc-payment-request"
-          : "/api/email/send-ten-percent-payment-request",
-        visibility: "external",
-        payload: {
-          to: old.customer_email,
-          customerName: old.customer_name,
-          amountDue: `₹${Math.round(Number(old.amount)).toLocaleString("en-IN")}`,
-          paymentLink: old.payment_link_url,
-        },
-      });
+      try {
+        const result = await deps.triggerMailRouteWithLog({
+          leadId: old.lead_id,
+          milestoneIndex: is40 ? 5 : 2,
+          taskName: is40 ? "40% collection" : "10% payment collection",
+          route: is40
+            ? "/api/email/send-design-signoff-40pc-payment-request"
+            : "/api/email/send-ten-percent-payment-request",
+          visibility: "external",
+          payload: {
+            to: old.customer_email,
+            customerName: old.customer_name,
+            amountDue: `₹${Math.round(Number(old.amount)).toLocaleString("en-IN")}`,
+            paymentLink: old.payment_link_url,
+          },
+        });
+        emailed = result === true;
+      } catch (mailErr) {
+        console.error("[design-payment] resend mail error", mailErr);
+        emailed = false;
+      }
     }
-    await history(deps, old.lead_id, old.bucket, "Payment link resent by email.", {
-      kind: "DESIGN_PAYMENT_LINK_RESENT",
-      userName: user.name || "Designer",
+
+    const now = new Date();
+    await pool.query(`UPDATE design_payment_link_attempts SET email_status = ?, updated_at = ? WHERE id = ?`, [
+      emailed ? "SENT" : "FAILED",
+      now,
+      old.id,
+    ]);
+
+    await history(
+      deps,
+      old.lead_id,
+      old.bucket,
+      emailed ? "Payment link resent by email." : "Payment link resend failed. Try again.",
+      {
+        kind: emailed ? "DESIGN_PAYMENT_LINK_RESENT" : "DESIGN_PAYMENT_LINK_EMAIL_FAILED",
+        userName: user.name || "Designer",
+      },
+    );
+
+    const refreshed = await loadAttempt(String(req.params.attemptId));
+    return res.json({
+      success: emailed,
+      attempt: mapAttempt(refreshed || old),
+      paymentLinkUrl: old.payment_link_url,
+      emailSent: emailed,
+      message: emailed ? undefined : "Email failed to send. Check SMTP / FRONTEND_BASE_URL and try Resend again.",
     });
-    return res.json({ success: true, attempt: mapAttempt(old), paymentLinkUrl: old.payment_link_url });
   });
 
   app.post("/api/design-payment/payment-links/:attemptId/edit", async (req: Request, res: Response) => {
@@ -1019,7 +1366,7 @@ export function registerDesignPaymentRoutes(app: Express, deps: Deps): void {
       `INSERT INTO design_payment_link_attempts
        (id, lead_id, bucket, merchant_txn, amount, quote_amount, payment_link_url, status, is_active,
         customer_name, customer_email, customer_phone, email_status, created_by_name, expires_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', 1, ?, ?, ?, 'SENT', ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', 1, ?, ?, ?, 'PENDING', ?, ?, ?, ?)`,
       [
         id,
         old.lead_id,
@@ -1042,33 +1389,54 @@ export function registerDesignPaymentRoutes(app: Express, deps: Deps): void {
       [now, old.id],
     );
     void deactivateQuietly(old);
+
+    let emailed = false;
     if (old.customer_email && deps.triggerMailRouteWithLog) {
       const is40 = bucket === "DESIGN_40";
-      deps.triggerMailRouteWithLog({
-        leadId: old.lead_id,
-        milestoneIndex: is40 ? 5 : 2,
-        taskName: is40 ? "40% collection" : "10% payment collection",
-        route: is40
-          ? "/api/email/send-design-signoff-40pc-payment-request"
-          : "/api/email/send-ten-percent-payment-request",
-        visibility: "external",
-        payload: {
-          to: old.customer_email,
-          customerName: old.customer_name,
-          amountDue: `₹${Math.round(amount).toLocaleString("en-IN")}`,
-          paymentLink: created.paymentUrl,
-        },
-      });
+      try {
+        const result = await deps.triggerMailRouteWithLog({
+          leadId: old.lead_id,
+          milestoneIndex: is40 ? 5 : 2,
+          taskName: is40 ? "40% collection" : "10% payment collection",
+          route: is40
+            ? "/api/email/send-design-signoff-40pc-payment-request"
+            : "/api/email/send-ten-percent-payment-request",
+          visibility: "external",
+          payload: {
+            to: old.customer_email,
+            customerName: old.customer_name,
+            amountDue: `₹${Math.round(amount).toLocaleString("en-IN")}`,
+            paymentLink: created.paymentUrl,
+          },
+        });
+        emailed = result === true;
+      } catch (mailErr) {
+        console.error("[design-payment] edit-link mail error", mailErr);
+        emailed = false;
+      }
     }
+    await pool.query(`UPDATE design_payment_link_attempts SET email_status = ?, updated_at = ? WHERE id = ?`, [
+      emailed ? "SENT" : "FAILED",
+      now,
+      id,
+    ]);
+
     await history(
       deps,
       old.lead_id,
       bucket,
-      `Payment link amount edited to ₹${Math.round(amount).toLocaleString("en-IN")}. New email link created.`,
+      emailed
+        ? `Payment link updated to ₹${Math.round(amount).toLocaleString("en-IN")} and emailed.`
+        : `Payment link updated to ₹${Math.round(amount).toLocaleString("en-IN")}. Email failed — use Resend.`,
       { kind: "DESIGN_PAYMENT_LINK_EDITED", userName: user.name || "Designer", amount },
     );
     const attempt = await findAttemptByTxn(pool, merchantTxn);
-    return res.json({ success: true, attempt: mapAttempt(attempt) });
+    return res.json({
+      success: true,
+      attempt: mapAttempt(attempt),
+      emailSent: emailed,
+      message: emailed ? undefined : "Link updated, but email failed to send. Use Resend email.",
+    });
   });
 
   app.post("/api/design-payment/payment-links/:attemptId/cancel", async (req: Request, res: Response) => {

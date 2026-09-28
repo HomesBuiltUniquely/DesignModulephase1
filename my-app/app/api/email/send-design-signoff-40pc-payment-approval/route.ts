@@ -19,6 +19,9 @@ export async function POST(request: Request) {
     const designerName = body.designerName as string | undefined;
     const totalProjectValue = body.totalProjectValue as string | number | undefined;
     const transactionRef = body.transactionRef as string | undefined;
+    const milestoneTarget = body.milestoneTarget as string | number | undefined;
+    const extraPaid = body.extraPaid as string | number | undefined;
+    const extraAppliedNote = body.extraAppliedNote as string | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -38,6 +41,9 @@ export async function POST(request: Request) {
       modeOfPayment,
       totalProjectValue,
       transactionRef,
+      milestoneTarget,
+      extraPaid,
+      extraAppliedNote,
     });
 
     const html = await render(emailComponent);

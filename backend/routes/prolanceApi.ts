@@ -1296,21 +1296,33 @@ export async function resolveLeadQuotePaymentSummary(
 
   let quoteBody: unknown | null = null;
 
-  if (prolanceProjectId != null && prolanceProjectId >= 1) {
-    const session = await createProlanceServerSession();
-    if (!("error" in session)) {
-      quoteBody = await fetchLatestQuoteBodyForProject(prolanceProjectId, session);
-      const resolved = extractQuoteIdFromResponse(quoteBody);
+  const usableTotal = (body: unknown | null): number | null => {
+    const n = extractTotalPayableAmount(body);
+    return n != null && Number.isFinite(n) && n > 0 ? n : null;
+  };
+
+  // 1) Live Prolance: latest quote for project (preferred), then by stored quote id.
+  //    If live returns a body without a parseable total, keep trying — do not skip snapshots.
+  const session = await createProlanceServerSession();
+  if (!("error" in session)) {
+    if (prolanceProjectId != null && prolanceProjectId >= 1) {
+      const live = await fetchLatestQuoteBodyForProject(prolanceProjectId, session);
+      const resolved = extractQuoteIdFromResponse(live);
       if (resolved) quoteId = Number(resolved);
+      if (usableTotal(live) != null) {
+        quoteBody = live;
+      }
     }
-  } else if (quoteId != null && quoteId >= 1) {
-    const session = await createProlanceServerSession();
-    if (!("error" in session)) {
-      quoteBody = await fetchQuoteBodyByQuoteId(quoteId, session);
+    if (quoteBody == null && quoteId != null && quoteId >= 1) {
+      const byId = await fetchQuoteBodyByQuoteId(quoteId, session);
+      if (usableTotal(byId) != null) {
+        quoteBody = byId;
+      }
     }
   }
 
-  if (quoteBody == null) {
+  // 2) DB snapshot fallback — always when live Prolance did not yield a usable total.
+  if (usableTotal(quoteBody) == null) {
     const [snapRows] = await pool.query(
       `SELECT quote_id AS quoteId, payload_json AS payloadJson
        FROM lead_prolance_quote_snapshots
@@ -1327,7 +1339,10 @@ export async function resolveLeadQuotePaymentSummary(
       const raw = String(snap.payloadJson);
       if (raw.length > 0) {
         try {
-          quoteBody = JSON.parse(raw) as unknown;
+          const parsed = JSON.parse(raw) as unknown;
+          if (usableTotal(parsed) != null) {
+            quoteBody = parsed;
+          }
         } catch {
           /* ignore */
         }
@@ -1335,8 +1350,8 @@ export async function resolveLeadQuotePaymentSummary(
     }
   }
 
-  const totalPayableAmount = extractTotalPayableAmount(quoteBody);
-  if (totalPayableAmount == null || !Number.isFinite(totalPayableAmount) || totalPayableAmount <= 0) {
+  const totalPayableAmount = usableTotal(quoteBody);
+  if (totalPayableAmount == null) {
     return null;
   }
 
