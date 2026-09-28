@@ -121,16 +121,29 @@ function flattenWebhookBody(raw: Record<string, unknown>): Record<string, unknow
   return { ...out, ...lower };
 }
 
-function normalizeBucket(raw: string): "DESIGN_10" | "DESIGN_40" {
+function normalizeBucket(raw: string): "CRM_10" | "DESIGN_10" | "DESIGN_40" {
   const b = raw.trim().toUpperCase();
+  if (b.includes("CRM") || b.includes("BOOKING") || b.startsWith("CRM10")) return "CRM_10";
   if (b.includes("40")) return "DESIGN_40";
   return "DESIGN_10";
 }
 
 function milestoneMeta(bucket: string) {
-  const is40 = bucket === "DESIGN_40";
+  const norm = normalizeBucket(bucket);
+  if (norm === "CRM_10") {
+    return {
+      is40: false,
+      isCrm10: true,
+      taskCollection: "Booking token collection",
+      taskApproval: "Booking token approval",
+      milestoneName: "BOOKING TOKEN 10%",
+      milestoneIndex: 1,
+    };
+  }
+  const is40 = norm === "DESIGN_40";
   return {
     is40,
+    isCrm10: false,
     taskCollection: is40 ? "40% collection" : "10% payment collection",
     taskApproval: is40 ? "40% payment approval" : "10% payment approval",
     milestoneName: is40 ? "40% PAYMENT" : "10% PAYMENT",
@@ -230,6 +243,16 @@ async function ensureDesignPaymentTables(pool: Pool): Promise<void> {
       KEY idx_des_lead_active (lead_id, is_active, status)
     )
   `);
+  try {
+    await pool.query(`ALTER TABLE design_payment_link_attempts ADD COLUMN quote_id VARCHAR(64) NULL AFTER lead_id`);
+  } catch {
+    /* ignore if column already exists */
+  }
+  try {
+    await pool.query(`ALTER TABLE design_payment_link_attempts ADD KEY idx_des_quote_id (quote_id)`);
+  } catch {
+    /* ignore if key already exists */
+  }
 }
 
 async function loadLeadContact(
@@ -346,8 +369,12 @@ async function payloadAlreadyAutoApproved(pool: Pool, leadId: number, bucket: st
   } catch {
     payload = {};
   }
+  const norm = normalizeBucket(bucket);
+  if (norm === "CRM_10") {
+    return payload.crm_booking_finance_auto_approved === true || payload.crm_booking_finance_auto_approved === "true";
+  }
   const flag =
-    normalizeBucket(bucket) === "DESIGN_40"
+    norm === "DESIGN_40"
       ? payload.design_40_finance_auto_approved
       : payload.design_10_finance_auto_approved;
   return flag === true || flag === "true";
@@ -362,10 +389,12 @@ async function applyDesignAutoApprove(
   const { pool } = deps;
   const now = new Date();
   const approvedBy = "SYSTEM · Easebuzz";
-  const is10 = normalizeBucket(bucket) === "DESIGN_10";
-  const meta = milestoneMeta(is10 ? "DESIGN_10" : "DESIGN_40");
+  const norm = normalizeBucket(bucket);
+  const isCrm10 = norm === "CRM_10";
+  const is10 = norm === "DESIGN_10";
+  const meta = milestoneMeta(norm);
 
-  if (await payloadAlreadyAutoApproved(pool, leadId, is10 ? "DESIGN_10" : "DESIGN_40")) {
+  if (await payloadAlreadyAutoApproved(pool, leadId, norm)) {
     return;
   }
 
@@ -402,7 +431,12 @@ async function applyDesignAutoApprove(
     payload = {};
   }
 
-  if (is10) {
+  if (isCrm10) {
+    payload.crm_booking_finance_auto_approved = true;
+    payload.crm_ten_percent_payment_met = true;
+    payload.total_paid_cumulative = Math.max(Number(payload.total_paid_cumulative) || 0, amount);
+    payload.cumulative_payment_percent = Math.max(Number(payload.cumulative_payment_percent) || 0, 10);
+  } else if (is10) {
     payload.design_ten_percent_payment_met = true;
     payload.design_10_finance_handling_mode = "AUTO_APPROVED";
     payload.design_10_finance_section = "AUTO_APPROVED";
@@ -424,7 +458,13 @@ async function applyDesignAutoApprove(
     const breakdown = await resolveLeadMilestonePaymentBreakdown(pool, leadId);
     if (breakdown) {
       payload.quotation_total = breakdown.totalPayableAmount;
-      if (is10) {
+      if (isCrm10) {
+        payload.ten_percent_target = breakdown.tenPercentAmount;
+        payload.total_paid_cumulative = Math.max(
+          Number(payload.total_paid_cumulative) || 0,
+          amount,
+        );
+      } else if (is10) {
         payload.twenty_percent_target = breakdown.twentyPercentTarget;
         payload.ten_percent_target = breakdown.tenPercentAmount;
         payload.total_paid_cumulative = Math.max(
@@ -444,23 +484,25 @@ async function applyDesignAutoApprove(
     /* ignore */
   }
 
-  if (is10) {
+  if (isCrm10 || is10) {
     stampEntered1020At(payload);
     await pool.query(`UPDATE leads SET project_stage = '10-20%', payload = ?, update_at = ? WHERE id = ?`, [
       JSON.stringify(payload),
       now,
       leadId,
     ]);
-    await pool.query(
-      `UPDATE design_payment_case_summary SET
-         design_10_collected = ?,
-         cumulative_paid_percent = 20,
-         design_10_finance_mode = 'AUTO_APPROVED',
-         design_10_approved_at = ?,
-         updated_at = ?
-       WHERE lead_id = ?`,
-      [amount, now, now, leadId],
-    );
+    if (!isCrm10) {
+      await pool.query(
+        `UPDATE design_payment_case_summary SET
+           design_10_collected = ?,
+           cumulative_paid_percent = 20,
+           design_10_finance_mode = 'AUTO_APPROVED',
+           design_10_approved_at = ?,
+           updated_at = ?
+         WHERE lead_id = ?`,
+        [amount, now, now, leadId],
+      );
+    }
   } else {
     await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [JSON.stringify(payload), now, leadId]);
     await pool.query(
@@ -478,8 +520,8 @@ async function applyDesignAutoApprove(
   await history(
     deps,
     leadId,
-    is10 ? "DESIGN_10" : "DESIGN_40",
-    `Easebuzz ${is10 ? "Design 10%" : "Design 40%"} paid and auto-approved. Receipt emailed.`,
+    norm,
+    `Easebuzz ${isCrm10 ? "Booking Token" : is10 ? "Design 10%" : "Design 40%"} paid and auto-approved.`,
     { kind: "DESIGN_PAYMENT_PAID", taskName: meta.taskApproval, userName: approvedBy, amount },
     "completed",
   );
@@ -622,6 +664,63 @@ async function deactivateQuietly(attempt: AttemptRow): Promise<void> {
   });
 }
 
+async function resolveLeadIdFromQuoteId(pool: Pool, quoteIdStr: string): Promise<number | null> {
+  const seed = Number(quoteIdStr);
+  if (Number.isFinite(seed) && seed > 0) {
+    const [vRows] = await pool.query(
+      `SELECT lead_id AS lid FROM lead_prolance_quote_versions WHERE quote_id = ? LIMIT 1`,
+      [seed],
+    );
+    const lid1 = (vRows as { lid?: unknown }[])[0]?.lid;
+    if (lid1 != null && Number.isFinite(Number(lid1))) return Number(lid1);
+
+    const [sRows] = await pool.query(
+      `SELECT lead_id AS lid FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
+      [seed],
+    );
+    const lid2 = (sRows as { lid?: unknown }[])[0]?.lid;
+    if (lid2 != null && Number.isFinite(Number(lid2))) return Number(lid2);
+
+    const [lRows] = await pool.query(
+      `SELECT id AS lid FROM leads WHERE prolance_quote_id = ? LIMIT 1`,
+      [seed],
+    );
+    const lid3 = (lRows as { lid?: unknown }[])[0]?.lid;
+    if (lid3 != null && Number.isFinite(Number(lid3))) return Number(lid3);
+  }
+
+  try {
+    const [pRows] = await pool.query(
+      `SELECT id AS lid FROM leads WHERE JSON_UNQUOTE(JSON_EXTRACT(payload, '$.quotationId')) = ? OR JSON_UNQUOTE(JSON_EXTRACT(payload, '$.quoteId')) = ? LIMIT 1`,
+      [quoteIdStr, quoteIdStr],
+    );
+    const lid4 = (pRows as { lid?: unknown }[])[0]?.lid;
+    if (lid4 != null && Number.isFinite(Number(lid4))) return Number(lid4);
+  } catch {
+    /* ignore json query failure */
+  }
+
+  return null;
+}
+
+async function loadQuoteSnapshotPayload(pool: Pool, quoteIdStr: string): Promise<Record<string, unknown> | null> {
+  const seed = Number(quoteIdStr);
+  if (!Number.isFinite(seed) || seed <= 0) return null;
+  const [rows] = await pool.query(
+    `SELECT payload_json FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
+    [seed],
+  );
+  const row = (rows as { payload_json?: unknown }[])[0];
+  if (row?.payload_json) {
+    try {
+      return JSON.parse(String(row.payload_json)) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 export function registerDesignPaymentRoutes(app: Express, deps: Deps): void {
   const { pool, getUserFromSession } = deps;
 
@@ -700,6 +799,231 @@ export function registerDesignPaymentRoutes(app: Express, deps: Deps): void {
   app.post("/api/crm/design-payment/easebuzz-webhook", webhookHandler);
   app.post("/api/hub/design-payment/easebuzz-webhook", webhookHandler);
   app.post("/api/hub/design-payment/easebuzz-paid", webhookHandler);
+
+  app.get("/api/public/quotes/:quoteId/payment-status", async (req: Request, res: Response) => {
+    const quoteId = String(req.params.quoteId || "").trim();
+    if (!quoteId) return res.status(400).json({ message: "Invalid quoteId" });
+
+    try {
+      const leadId = await resolveLeadIdFromQuoteId(pool, quoteId);
+      let quoteTotal = 0;
+      let cumulativePaid = 0;
+      let activeMilestone: "CRM_10" | "DESIGN_10" | "DESIGN_40" | "COMPLETED" = "CRM_10";
+      let milestoneLabel = "Booking Token (10%)";
+      let amountDue = 0;
+      let canPayNow = true;
+
+      if (leadId != null && leadId > 0) {
+        await upsertSummaryFromBreakdown(pool, leadId);
+        const breakdown = await resolveLeadMilestonePaymentBreakdown(pool, leadId);
+        if (breakdown) {
+          quoteTotal = Number(breakdown.totalPayableAmount) || 0;
+          cumulativePaid = Number(breakdown.totalPaidCumulative) || 0;
+          const target10 = Math.round(quoteTotal * 0.1);
+          const target20 = Number(breakdown.twentyPercentTarget) || Math.round(quoteTotal * 0.2);
+          const target60 = Number(breakdown.sixtyPercentTarget) || Math.round(quoteTotal * 0.6);
+
+          if (cumulativePaid < target10) {
+            activeMilestone = "CRM_10";
+            milestoneLabel = "Booking Token (10%)";
+            amountDue = Math.max(0, target10 - cumulativePaid);
+          } else if (cumulativePaid < target20) {
+            activeMilestone = "DESIGN_10";
+            milestoneLabel = "Design Kickoff (10%)";
+            amountDue = Math.max(0, target20 - cumulativePaid);
+          } else if (cumulativePaid < target60) {
+            activeMilestone = "DESIGN_40";
+            milestoneLabel = "Design Sign-off (40%)";
+            amountDue = Math.max(0, target60 - cumulativePaid);
+          } else {
+            activeMilestone = "COMPLETED";
+            milestoneLabel = "Fully Paid";
+            amountDue = 0;
+            canPayNow = false;
+          }
+        }
+      } else {
+        // Fallback: Check snapshot payload
+        const snapshotPayload = await loadQuoteSnapshotPayload(pool, quoteId);
+        if (snapshotPayload) {
+          const rawTotal = pickNum(
+            snapshotPayload.totalPayableAmount,
+            snapshotPayload.finalTotalPrice,
+            snapshotPayload.finalPrice,
+            snapshotPayload.totalPrice,
+          );
+          if (rawTotal != null && rawTotal > 0) {
+            quoteTotal = rawTotal;
+            activeMilestone = "CRM_10";
+            milestoneLabel = "Booking Token (10%)";
+            amountDue = Math.round(rawTotal * 0.1);
+          }
+        }
+      }
+
+      if (amountDue <= 0 && activeMilestone !== "COMPLETED") {
+        amountDue = Math.round(quoteTotal * 0.1);
+      }
+
+      return res.json({
+        ok: true,
+        quoteId,
+        leadId,
+        quoteTotal,
+        cumulativePaid,
+        activeMilestone,
+        milestoneLabel,
+        amountDue,
+        canPayNow: canPayNow && amountDue > 0,
+      });
+    } catch (err) {
+      console.error("[design-payment] public payment-status error", err);
+      return res.status(500).json({ message: "Failed to determine payment status" });
+    }
+  });
+
+  app.post("/api/public/quotes/:quoteId/initiate-payment", async (req: Request, res: Response) => {
+    const quoteId = String(req.params.quoteId || "").trim();
+    if (!quoteId) return res.status(400).json({ message: "Invalid quoteId" });
+
+    try {
+      if (!easebuzzConfigured()) {
+        return res.status(503).json({
+          message: "Payment gateway is currently being configured. Please contact HUB support.",
+        });
+      }
+
+      const body = (req.body || {}) as Record<string, unknown>;
+      const leadId = await resolveLeadIdFromQuoteId(pool, quoteId);
+
+      let contactName = pickStr(body.customerName, "Valued Customer");
+      let contactEmail = pickStr(body.customerEmail, "");
+      let contactPhone = pickStr(body.customerPhone, "");
+      let projectId = `QUOTE-${quoteId}`;
+
+      let quoteTotal = pickNum(body.quoteTotal) ?? 0;
+      let cumulativePaid = 0;
+      let activeMilestone: "CRM_10" | "DESIGN_10" | "DESIGN_40" = "CRM_10";
+      let milestoneLabel = "Booking Token";
+      let amountDue = pickNum(body.amount);
+
+      if (leadId != null && leadId > 0) {
+        try {
+          const contact = await loadLeadContact(pool, leadId);
+          if (contact) {
+            contactName = contact.name || contactName;
+            contactEmail = contact.email || contactEmail;
+            contactPhone = contact.phone || contactPhone;
+            projectId = contact.pid || projectId;
+          }
+        } catch {
+          /* ignore */
+        }
+
+        const breakdown = await resolveLeadMilestonePaymentBreakdown(pool, leadId);
+        if (breakdown) {
+          quoteTotal = Number(breakdown.totalPayableAmount) || quoteTotal;
+          cumulativePaid = Number(breakdown.totalPaidCumulative) || 0;
+          const target10 = Math.round(quoteTotal * 0.1);
+          const target20 = Number(breakdown.twentyPercentTarget) || Math.round(quoteTotal * 0.2);
+          const target60 = Number(breakdown.sixtyPercentTarget) || Math.round(quoteTotal * 0.6);
+
+          if (cumulativePaid < target10) {
+            activeMilestone = "CRM_10";
+            milestoneLabel = "Booking Token";
+            if (amountDue == null || amountDue <= 0) {
+              amountDue = Math.max(0, target10 - cumulativePaid);
+            }
+          } else if (cumulativePaid < target20) {
+            activeMilestone = "DESIGN_10";
+            milestoneLabel = "Design Kickoff 10%";
+            if (amountDue == null || amountDue <= 0) {
+              amountDue = Math.max(0, target20 - cumulativePaid);
+            }
+          } else if (cumulativePaid < target60) {
+            activeMilestone = "DESIGN_40";
+            milestoneLabel = "Design Sign-off 40%";
+            if (amountDue == null || amountDue <= 0) {
+              amountDue = Math.max(0, target60 - cumulativePaid);
+            }
+          } else {
+            return res.status(400).json({ message: "All milestone payments have already been collected for this project." });
+          }
+        }
+      }
+
+      if (amountDue == null || amountDue <= 0) {
+        if (quoteTotal > 0) {
+          amountDue = Math.round(quoteTotal * 0.1);
+        } else {
+          amountDue = 50000;
+        }
+      }
+
+      if (!contactEmail) {
+        contactEmail = "customer@hubinterior.com";
+      }
+      if (!contactPhone) {
+        contactPhone = "9999999999";
+      }
+
+      const merchantTxn = newDesignMerchantTxn(activeMilestone);
+      const created = await createEasebuzzPaymentLink({
+        merchantTxn,
+        name: contactName,
+        email: contactEmail,
+        phone: contactPhone,
+        amount: amountDue,
+        message: `HUB ${milestoneLabel} ${projectId}`,
+        udf1: "QUOTATION",
+        udf2: String(leadId || quoteId),
+      });
+
+      if (!created.ok || !created.paymentUrl) {
+        return res.status(502).json({
+          message: created.error || "Payment gateway failed to generate link. Please try again.",
+        });
+      }
+
+      const now = new Date();
+      const ttlHours = Math.max(1, Number(envTrim("EASEBUZZ_LINK_TTL_HOURS") || 24) || 24);
+      const attemptId = randomUUID();
+
+      await pool.query(
+        `INSERT INTO design_payment_link_attempts
+         (id, lead_id, quote_id, bucket, merchant_txn, amount, quote_amount, payment_link_url, status, is_active,
+          customer_name, customer_email, customer_phone, email_status, created_by_name, expires_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 1, ?, ?, ?, 'ONLINE_QUOTE', 'Customer (Quotation)', ?, ?, ?)`,
+        [
+          attemptId,
+          leadId || 0,
+          quoteId,
+          activeMilestone,
+          merchantTxn,
+          amountDue,
+          quoteTotal || null,
+          created.paymentUrl,
+          contactName,
+          contactEmail,
+          contactPhone,
+          new Date(now.getTime() + ttlHours * 3600 * 1000),
+          now,
+          now,
+        ],
+      );
+
+      return res.json({
+        ok: true,
+        paymentUrl: created.paymentUrl,
+        merchantTxn,
+        amount: amountDue,
+        milestone: activeMilestone,
+      });
+    } catch (err) {
+      console.error("[design-payment] initiate quote payment error", err);
+      return res.status(500).json({ message: "Failed to initiate payment. Please try again." });
+    }
+  });
 
   app.get("/api/design-payment/cases/:leadId/summary", async (req: Request, res: Response) => {
     const user = await getUserFromSession(req);

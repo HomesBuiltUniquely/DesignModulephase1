@@ -8,6 +8,7 @@ import {
   type QuoteCategoryDiscountSavePayload,
 } from './QuoteDiscountDetails';
 import { QuoteTermsAndConditions } from './hubQuoteTermsPanel';
+import { QuotePayNowButton } from './QuotePayNowButton';
 import { inr, QUOTE } from './quoteStyles';
 import type { QuoteRoom } from './quoteTypes';
 
@@ -357,6 +358,14 @@ export function QuoteExperienceView(props: Props) {
                 </svg>
                 This estimate is valid for 30 days from the date of issue
               </p>
+
+              <div className="flex justify-center pt-1">
+                <QuotePayNowButton
+                  quoteId={quote.quotationId || quote.quoteNum || versionFetchId}
+                  totalPayableAmount={quote.totalPayableAmount}
+                  customerName={quote.customerName}
+                />
+              </div>
             </div>
           ) : (
             <div className="mt-4 space-y-4 sm:mt-6 sm:space-y-6">
@@ -594,11 +603,10 @@ export function QuoteExperienceView(props: Props) {
                   <a
                     key={`qv-${v.quoteId}-${idx}`}
                     href={href}
-                    className={`block rounded-xl border p-5 transition-shadow hover:shadow-md ${
-                      isCurrent
+                    className={`block rounded-xl border p-5 transition-shadow hover:shadow-md ${isCurrent
                         ? 'border-[#f5c6cb] bg-[#fff5f5]'
                         : 'border-[#ece6df] bg-white'
-                    }`}
+                      }`}
                     style={isCurrent ? { borderLeftWidth: 4, borderLeftColor: QUOTE.red } : undefined}
                   >
                     <p className="font-bold text-[#2a1d14]">

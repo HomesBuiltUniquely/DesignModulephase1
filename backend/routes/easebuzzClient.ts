@@ -130,11 +130,16 @@ export function isGatewayFailure(status: string): boolean {
 /** merchant_txn prefix so CRM can route Design txns without looking up CRM deals. */
 export function isDesignMerchantTxn(txn: string): boolean {
   const t = txn.trim().toUpperCase();
-  return t.startsWith("DES10") || t.startsWith("DES40") || t.startsWith("DES_");
+  return (
+    t.startsWith("DES10") ||
+    t.startsWith("DES40") ||
+    t.startsWith("DES_") ||
+    t.startsWith("CRM10")
+  );
 }
 
-export function newDesignMerchantTxn(bucket: "DESIGN_10" | "DESIGN_40"): string {
-  const prefix = bucket === "DESIGN_40" ? "DES40" : "DES10";
+export function newDesignMerchantTxn(bucket: "CRM_10" | "DESIGN_10" | "DESIGN_40"): string {
+  const prefix = bucket === "CRM_10" ? "CRM10" : bucket === "DESIGN_40" ? "DES40" : "DES10";
   const rand = Math.random().toString(16).slice(2, 10).toUpperCase();
   const t = Date.now().toString(36).toUpperCase();
   return `${prefix}${t}${rand}`.slice(0, 32);

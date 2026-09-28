@@ -5,7 +5,7 @@ async function run() {
   const pool = mysql.createPool({
     host: process.env.DB_HOST || "localhost",
     user: process.env.DB_USER || "root",
-    password: process.env.DB_PASSWORD || "Root@123",
+    password: process.env.DB_PASSWORD || "root@00",
     database: process.env.DB_NAME || "DesignMod",
   });
   
