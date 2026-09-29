@@ -356,6 +356,34 @@ export function getMilestoneDateRangeLabel(
   return `${formatShortDate(new Date(startMs))} - ${formatShortDate(new Date(endMs))}`;
 }
 
+/** Task row badge tags — OVERDUE = open SLA breach; LATE = finished after SLA. */
+export type TaskSlaBadgeTag = "PENDING" | "CURRENT" | "ACTION" | "OVERDUE" | "ON-TIME" | "LATE";
+
+export type CompletedTaskSlaDisplay = {
+  tags: readonly TaskSlaBadgeTag[];
+  subtitle: string;
+  /** Never true for completed rows (no red “act now” UI). */
+  isOverdue: false;
+};
+
+/** Completed task: ON-TIME vs LATE from evaluateTaskDeadline(..., isCompleted: true). */
+export function resolveCompletedTaskSlaDisplay(
+  deadline: TaskDeadlineEvaluation | null,
+): CompletedTaskSlaDisplay {
+  if (deadline?.isOverdue) {
+    return {
+      tags: ["LATE"],
+      subtitle: "Completed late",
+      isOverdue: false,
+    };
+  }
+  return {
+    tags: ["ON-TIME"],
+    subtitle: "Completed",
+    isOverdue: false,
+  };
+}
+
 export function isExternalApprovalOverdue(
   milestoneIndex: number,
   taskName: string,
