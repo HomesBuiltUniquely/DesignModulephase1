@@ -89,6 +89,14 @@ export default function Popup40pCollection({
   };
   const onDragOver = (e: React.DragEvent) => e.preventDefault();
 
+  const collectionComplete =
+    !!paymentSummary &&
+    !paymentSummaryLoading &&
+    (paymentSummary.amountToCollect40 <= 0 ||
+      (paymentSummary.design40PercentPaid || 0) >= 100 ||
+      ((paymentSummary.design40Target || 0) > 0 &&
+        (paymentSummary.design40Collected || 0) + 0.009 >= (paymentSummary.design40Target || 0)));
+
   const onSubmit = async () => {
     if (!sessionId) {
       setError('You must be signed in to upload.');
@@ -127,6 +135,19 @@ export default function Popup40pCollection({
         error={paymentSummaryError}
       />
 
+      {collectionComplete ? (
+        <div className="mt-1 rounded-2xl border border-emerald-200 bg-emerald-50/80 px-4 py-4">
+          <p className="text-sm font-bold text-emerald-900">40% payment done</p>
+          <p className="mt-1 text-xs leading-relaxed text-emerald-800">
+            Design 40% collection is complete
+            {(paymentSummary?.design40Collected || 0) > 0
+              ? ` (₹${Math.round(paymentSummary!.design40Collected || 0).toLocaleString('en-IN')} collected)`
+              : ''}
+            . Online and offline payment options are closed for this milestone.
+          </p>
+        </div>
+      ) : (
+        <>
       {allowOnline && (
         <DesignPaymentMethodPanel
           leadId={leadId}
@@ -204,6 +225,8 @@ export default function Popup40pCollection({
             </button>
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   );

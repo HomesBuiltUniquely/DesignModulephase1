@@ -89,6 +89,14 @@ export default function Popup10pPaymentCollection({
   };
   const onDragOver = (e: React.DragEvent) => e.preventDefault();
 
+  const collectionComplete =
+    !!paymentSummary &&
+    !paymentSummaryLoading &&
+    (paymentSummary.amountToCollect10 <= 0 ||
+      (paymentSummary.design10PercentPaid || 0) >= 100 ||
+      ((paymentSummary.design10Target || 0) > 0 &&
+        (paymentSummary.design10Collected || 0) + 0.009 >= (paymentSummary.design10Target || 0)));
+
   const onSubmit = async () => {
     if (!files.length || !sessionId) {
       setError("Please add at least one screenshot (image or PDF).");
@@ -124,6 +132,19 @@ export default function Popup10pPaymentCollection({
           error={paymentSummaryError}
         />
 
+        {collectionComplete ? (
+          <div className="mt-1 rounded-2xl border border-emerald-200 bg-emerald-50/80 px-4 py-4">
+            <p className="text-sm font-bold text-emerald-900">10% payment done</p>
+            <p className="mt-1 text-xs leading-relaxed text-emerald-800">
+              Design 10% collection is complete
+              {(paymentSummary?.design10Collected || 0) > 0
+                ? ` (₹${Math.round(paymentSummary!.design10Collected || 0).toLocaleString("en-IN")} collected)`
+                : ""}
+              . Online and offline payment options are closed for this milestone.
+            </p>
+          </div>
+        ) : (
+          <>
         {allowOnline && (
           <DesignPaymentMethodPanel
             leadId={leadId}
@@ -205,6 +226,8 @@ export default function Popup10pPaymentCollection({
               </button>
             </div>
           </div>
+        )}
+          </>
         )}
       </div>
     </div>

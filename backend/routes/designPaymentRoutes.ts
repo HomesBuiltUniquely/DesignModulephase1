@@ -712,13 +712,15 @@ async function applyPartialPaymentRecorded(
   target: number,
   remaining: number,
 ): Promise<void> {
+  const { pool } = deps;
   const is10 = normalizeBucket(bucket) === "DESIGN_10";
   const label = is10 ? "Design 10%" : "Design 40%";
+  const now = new Date();
   await history(
     deps,
     leadId,
     normalizeBucket(bucket),
-    `Partial ${label} payment received ₹${Math.round(paidThisTxn).toLocaleString("en-IN")}. Collected ₹${Math.round(collected).toLocaleString("en-IN")} of ₹${Math.round(target).toLocaleString("en-IN")}. Remaining ₹${Math.round(remaining).toLocaleString("en-IN")}.`,
+    `Partial ${label} payment received ₹${Math.round(paidThisTxn).toLocaleString("en-IN")}. Collected ₹${Math.round(collected).toLocaleString("en-IN")} of ₹${Math.round(target).toLocaleString("en-IN")}. Remaining ₹${Math.round(remaining).toLocaleString("en-IN")}. Confirmation emailed.`,
     {
       kind: "DESIGN_PAYMENT_PARTIAL",
       userName: "SYSTEM · Easebuzz",
@@ -728,13 +730,54 @@ async function applyPartialPaymentRecorded(
       remaining,
     },
   );
-  await deps.pool.query(
+  await pool.query(
     `UPDATE design_payment_case_summary SET
        ${is10 ? "design_10_finance_mode" : "design_40_finance_mode"} = 'PARTIAL',
        updated_at = ?
      WHERE lead_id = ?`,
-    [new Date(), leadId],
+    [now, leadId],
   );
+
+  // Same receipt look as full approval — with target / achieved / remaining for this milestone.
+  try {
+    const contact = await loadLeadContact(pool, leadId);
+    if (contact.email && deps.triggerMailRouteWithLog) {
+      const dateStr = now.toLocaleDateString("en-IN", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+      });
+      deps.triggerMailRouteWithLog({
+        leadId,
+        milestoneIndex: is10 ? 2 : 5,
+        taskName: is10 ? "10% payment collection" : "40% collection",
+        route: is10
+          ? "/api/email/send-ten-percent-payment-approval"
+          : "/api/email/send-design-signoff-40pc-payment-approval",
+        visibility: "external",
+        payload: {
+          to: contact.email,
+          customerName: contact.name,
+          projectId: contact.pid,
+          isPartial: true,
+          amountPaid: String(Math.round(paidThisTxn)),
+          amountReceived: String(Math.round(paidThisTxn)),
+          amountAchieved: String(Math.round(collected)),
+          remainingMilestone: String(Math.round(remaining)),
+          milestoneTarget: String(Math.round(target)),
+          paymentDate: dateStr,
+          dateOfReceipt: dateStr,
+          paymentMode: "Easebuzz (Online)",
+          modeOfPayment: "Easebuzz (Online)",
+          subject: is10
+            ? "10% Payment Received — Partial Confirmation"
+            : "Payment Received – 40% Milestone (Partial)",
+        },
+      });
+    }
+  } catch (mailErr) {
+    console.warn("[design-payment] partial confirmation email failed (non-fatal)", mailErr);
+  }
 }
 
 async function applyPaidAttempt(

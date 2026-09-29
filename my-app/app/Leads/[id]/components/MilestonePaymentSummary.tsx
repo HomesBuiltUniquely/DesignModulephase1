@@ -181,8 +181,8 @@ export default function MilestonePaymentSummary({ variant, summary, loading, err
         ))}
       </div>
       {fullyCollected && (
-        <p className="mt-2 text-[10px] font-medium text-[#32261C]">
-          {cumulativePctLabel} cumulative target is already met from prior payments.
+        <p className="mt-2 text-[10px] font-medium text-emerald-800">
+          {isTen ? '10%' : '40%'} milestone payment is complete — collection is closed.
         </p>
       )}
     </div>

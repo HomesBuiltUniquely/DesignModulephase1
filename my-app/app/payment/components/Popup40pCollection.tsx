@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/app/auth/AuthContext';
 import { canUseEasebuzzOnline } from '@/app/lib/easebuzzAccess';
 import MilestonePaymentSummary, { type QuotePaymentSummary } from './MilestonePaymentSummary';
-import { parseQuotePaymentSummaryResponse } from './mapQuotePaymentSummary';
+import { loadQuotePaymentSummary } from '@/app/Leads/[id]/components/loadQuotePaymentSummary';
+import { clearCachedQuotePaymentSummary } from '@/app/Leads/[id]/components/quotePaymentSummaryCache';
 import DesignPaymentMethodPanel from './DesignPaymentMethodPanel';
 
 type Props = {
@@ -43,39 +44,29 @@ export default function Popup40pCollection({
   }, [allowOnline]);
 
   useEffect(() => {
-    let cancelled = false;
+    if (!Number.isFinite(leadId) || leadId < 1) {
+      setPaymentSummary(null);
+      setPaymentSummaryError('Invalid lead');
+      setPaymentSummaryLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    clearCachedQuotePaymentSummary(leadId);
+    setPaymentSummaryLoading(true);
+    setPaymentSummaryError(null);
     (async () => {
-      setPaymentSummaryLoading(true);
-      setPaymentSummaryError(null);
-      try {
-        const res = await fetch(
-          `${apiBase}/api/sales-closure/lead/${encodeURIComponent(String(leadId))}/quote-payment-summary`,
-          { cache: 'no-store' },
-        );
-        const body = await res.json().catch(() => ({}));
-        if (cancelled) return;
-        if (!res.ok) {
-          setPaymentSummary(null);
-          setPaymentSummaryError(
-            typeof body?.message === 'string' ? body.message : 'Could not load quotation totals',
-          );
-          return;
-        }
-        const parsed = parseQuotePaymentSummaryResponse(body as Record<string, unknown>);
-        setPaymentSummary(parsed.summary);
-        setPaymentSummaryError(parsed.message);
-      } catch {
-        if (!cancelled) {
-          setPaymentSummary(null);
-          setPaymentSummaryError('Could not load quotation totals');
-        }
-      } finally {
-        if (!cancelled) setPaymentSummaryLoading(false);
-      }
+      const result = await loadQuotePaymentSummary({
+        leadId,
+        apiBase,
+        signal: controller.signal,
+        retries: 3,
+      });
+      if (controller.signal.aborted) return;
+      setPaymentSummary(result.summary);
+      setPaymentSummaryError(result.message);
+      setPaymentSummaryLoading(false);
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [apiBase, leadId]);
 
   const accept = 'image/*,.pdf,application/pdf';
@@ -97,6 +88,14 @@ export default function Popup40pCollection({
     if (dropped.length) setFiles((prev) => [...prev, ...dropped]);
   };
   const onDragOver = (e: React.DragEvent) => e.preventDefault();
+
+  const collectionComplete =
+    !!paymentSummary &&
+    !paymentSummaryLoading &&
+    (paymentSummary.amountToCollect40 <= 0 ||
+      (paymentSummary.design40PercentPaid || 0) >= 100 ||
+      ((paymentSummary.design40Target || 0) > 0 &&
+        (paymentSummary.design40Collected || 0) + 0.009 >= (paymentSummary.design40Target || 0)));
 
   const onSubmit = async () => {
     if (!sessionId) {
@@ -136,6 +135,19 @@ export default function Popup40pCollection({
         error={paymentSummaryError}
       />
 
+      {collectionComplete ? (
+        <div className="mt-1 rounded-2xl border border-emerald-200 bg-emerald-50/80 px-4 py-4">
+          <p className="text-sm font-bold text-emerald-900">40% payment done</p>
+          <p className="mt-1 text-xs leading-relaxed text-emerald-800">
+            Design 40% collection is complete
+            {(paymentSummary?.design40Collected || 0) > 0
+              ? ` (₹${Math.round(paymentSummary!.design40Collected || 0).toLocaleString('en-IN')} collected)`
+              : ''}
+            . Online and offline payment options are closed for this milestone.
+          </p>
+        </div>
+      ) : (
+        <>
       {allowOnline && (
         <DesignPaymentMethodPanel
           leadId={leadId}
@@ -213,6 +225,8 @@ export default function Popup40pCollection({
             </button>
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   );

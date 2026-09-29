@@ -21,6 +21,9 @@ export async function POST(request: Request) {
     const milestoneTarget = body.milestoneTarget as string | number | undefined;
     const extraPaid = body.extraPaid as string | number | undefined;
     const extraAppliedNote = body.extraAppliedNote as string | undefined;
+    const isPartial = Boolean(body.isPartial);
+    const amountAchieved = body.amountAchieved as string | number | undefined;
+    const remainingMilestone = body.remainingMilestone as string | number | undefined;
 
     if (!to || !customerName) {
       return NextResponse.json(
@@ -43,6 +46,9 @@ export async function POST(request: Request) {
       milestoneTarget,
       extraPaid,
       extraAppliedNote,
+      isPartial,
+      amountAchieved,
+      remainingMilestone,
     });
 
     const html = await render(emailComponent);
@@ -50,7 +56,9 @@ export async function POST(request: Request) {
     const info = await sendMailForPayment({
       to,
       ...(cc ? { cc } : {}),
-      subject: subject || '10% Payment Confirmation',
+      subject:
+        subject ||
+        (isPartial ? '10% Payment Received — Partial Confirmation' : '10% Payment Confirmation'),
       html,
       ...(attachments && attachments.length ? { attachments } : {}),
     });
