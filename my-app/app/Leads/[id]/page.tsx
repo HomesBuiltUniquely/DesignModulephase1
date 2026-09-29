@@ -65,6 +65,7 @@ import {
     getExternalActionTask,
     getNormalizedPropertyConfig,
     isExternalActionWaiting,
+    resolveCompletedTaskSlaDisplay,
     type TaskCompletionMap,
 } from './lib/taskDeadlineUtils';
 import { getTaskTimelineLabel } from './lib/taskDeadlineConfig';
@@ -1911,30 +1912,35 @@ export default function ProjectDetailPage() {
         }
 
         if (isCompleted) {
-            if (deadline?.isOverdue) {
-                return withTimeline({
-                    icon: 'completed' as const,
-                    subtitle: 'Completed (Overdue)',
-                    tags: ['OVERDUE'] as const,
-                    isOverdue: true,
-                    overdueMessage: deadline.overdueMessage,
-                });
-            }
+            const sla = resolveCompletedTaskSlaDisplay(deadline);
             return withTimeline({
                 icon: 'completed' as const,
-                subtitle: 'Completed',
-                tags: ['ON-TIME'] as const,
-                isOverdue: false,
+                subtitle: sla.subtitle,
+                tags: sla.tags,
+                isOverdue: sla.isOverdue,
+                ...(deadline?.isOverdue
+                    ? { overdueMessage: deadline.overdueMessage }
+                    : {}),
             });
         }
         if (isPastMilestone) {
-            const isPastOverdue = deadline?.isOverdue ?? false;
+            const pastDeadline = isCompleted
+                ? deadline
+                : evaluateTaskDeadline(
+                      milestoneIndex,
+                      taskIndex,
+                      taskList,
+                      project?.intakeConfiguration,
+                      project?.timelineAnchors ?? {},
+                      taskCompletions,
+                      true,
+                  );
+            const sla = resolveCompletedTaskSlaDisplay(pastDeadline);
             return withTimeline({
                 icon: 'completed' as const,
-                subtitle: isPastOverdue ? 'Completed (Overdue)' : 'Completed',
-                tags: isPastOverdue ? (['OVERDUE'] as const) : (['ON-TIME'] as const),
-                isOverdue: isPastOverdue,
-                overdueMessage: deadline?.overdueMessage,
+                subtitle: sla.subtitle,
+                tags: sla.tags,
+                isOverdue: sla.isOverdue,
             });
         }
         if (!isCurrentMilestone) return withTimeline({ icon: 'pending' as const, subtitle: 'Not started', tags: ['PENDING'] as const });

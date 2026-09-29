@@ -436,18 +436,23 @@ export default function MilestonesCard({
                             (t.taskName || "").trim().toLowerCase() === (task || "").trim().toLowerCase() ||
                             (t.aliases && t.aliases.some((a: string) => a.trim().toLowerCase() === (task || "").trim().toLowerCase())),
                         );
-                        const isOverdue =
-                          status.isOverdue === true ||
-                          (status.icon === "completed" && (taskXp?.isDelayed === true || taskXp?.tag === "OVERDUE"));
-                        const tags = isOverdue
-                          ? status.tags.map((t) => (t === "ON-TIME" ? "OVERDUE" : t))
-                          : status.tags;
+                        const isActiveOverdue =
+                          status.icon !== "completed" && status.isOverdue === true;
+                        const isLateCompleted =
+                          status.icon === "completed" && status.tags.includes("LATE");
+                        const tags = status.tags;
                         return (
                           <div
                             key={taskIndex}
                             role="button"
                             tabIndex={0}
-                            title={isOverdue ? status.overdueMessage : undefined}
+                            title={
+                              isActiveOverdue
+                                ? status.overdueMessage
+                                : isLateCompleted
+                                  ? status.overdueMessage
+                                  : undefined
+                            }
                             onClick={() => {
                               // clicking the row should close any open menu
                               setOpenMenuFor(undefined);
@@ -461,12 +466,14 @@ export default function MilestonesCard({
                               }
                             }}
                             className={`relative w-full text-left p-3 transition-colors flex items-start gap-3 cursor-pointer rounded-lg ${
-                              isOverdue
+                              isActiveOverdue
                                 ? "bg-[#EF0101]/10 border border-[#EF0101]/50 ring-1 ring-[#EF0101]/20 hover:bg-[#EF0101]/15"
-                                : isNextOrLater
-                                  ? "hover:bg-gray-200/50 opacity-90"
-                                  : "hover:bg-gray-50"
-                            } ${!isOverdue && status.icon === "current" ? "border-l-4 border-[#00B0ED] pl-2" : ""}`}
+                                : isLateCompleted
+                                  ? "bg-amber-50/80 border border-amber-200/80 hover:bg-amber-50"
+                                  : isNextOrLater
+                                    ? "hover:bg-gray-200/50 opacity-90"
+                                    : "hover:bg-gray-50"
+                            } ${!isActiveOverdue && status.icon === "current" ? "border-l-4 border-[#00B0ED] pl-2" : ""}`}
                           >
                             <span className="flex-shrink-0 mt-0.5">
                               {status.icon === "completed" && (
@@ -565,11 +572,13 @@ export default function MilestonesCard({
                             <div className="flex-1 min-w-0">
                               <p
                                 className={`text-sm font-medium truncate ${
-                                  isOverdue
+                                  isActiveOverdue
                                     ? "text-[#EF0101]"
-                                    : isNextOrLater
-                                      ? "text-gray-500"
-                                      : "text-gray-900"
+                                    : isLateCompleted
+                                      ? "text-amber-900"
+                                      : isNextOrLater
+                                        ? "text-gray-500"
+                                        : "text-gray-900"
                                 }`}
                               >
                                 {getTaskLabel ? getTaskLabel(milestoneIndex, task) : task}
@@ -578,7 +587,9 @@ export default function MilestonesCard({
                               {status.timelineLabel && (
                                 <p
                                   className={`text-xs mt-1 leading-snug ${
-                                    isOverdue ? "text-[#EF0101] font-semibold" : "text-[#0077A3] font-medium"
+                                    isActiveOverdue
+                                      ? "text-[#EF0101] font-semibold"
+                                      : "text-[#0077A3] font-medium"
                                   }`}
                                 >
                                   {status.timelineLabel}
@@ -611,9 +622,11 @@ export default function MilestonesCard({
                                   className={`text-[10px] font-semibold px-2.5 py-1 rounded-md ${
                                     tag === "ON-TIME"
                                       ? "bg-[#DDCDC1] text-[#32261C] font-bold"
-                                      : tag === "OVERDUE"
-                                        ? "bg-[#EF0101]/15 text-[#EF0101] border border-[#EF0101]/30"
-                                        : tag === "CURRENT" || tag === "ACTION"
+                                      : tag === "LATE"
+                                        ? "bg-amber-100 text-amber-900 border border-amber-300/80 font-semibold"
+                                        : tag === "OVERDUE"
+                                          ? "bg-[#EF0101]/15 text-[#EF0101] border border-[#EF0101]/30"
+                                          : tag === "CURRENT" || tag === "ACTION"
                                           ? "bg-[#00B0ED]/25 text-[#00B0ED]"
                                           : tag === "DELAYED"
                                             ? "bg-[#EF0101]/15 text-[#EF0101]"
