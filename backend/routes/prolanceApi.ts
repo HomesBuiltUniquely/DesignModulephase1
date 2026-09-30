@@ -929,19 +929,34 @@ function quoteOptionKey(o: Record<string, unknown>, idx: number): string {
   return id != null ? String(id) : `idx-${idx}`;
 }
 
+function preferGrossPrice(...vals: unknown[]): unknown {
+  let best: number | null = null;
+  let fallback: unknown = undefined;
+  for (const v of vals) {
+    if (fallback === undefined && v != null) fallback = v;
+    const n = parseFiniteNum(v);
+    if (n != null && n > 0) best = best == null ? n : Math.max(best, n);
+  }
+  return best ?? fallback;
+}
+
 function mergeQuoteOptionRow(summary: Record<string, unknown>, detail: Record<string, unknown>): Record<string, unknown> {
   return {
     ...detail,
     ...summary,
-    totalPrice: summary.totalPrice ?? detail.totalPrice,
-    totalPriceOld: summary.totalPriceOld ?? detail.totalPriceOld,
-    unitsPrice: summary.unitsPrice ?? detail.unitsPrice,
-    loftsPrice: summary.loftsPrice ?? detail.loftsPrice,
-    servicesPrice: summary.servicesPrice ?? detail.servicesPrice,
-    appliancesPrice: summary.appliancesPrice ?? detail.appliancesPrice,
-    skirtingsPrice: summary.skirtingsPrice ?? detail.skirtingsPrice,
-    worktopsPrice: summary.worktopsPrice ?? detail.worktopsPrice,
-    additionalHWPrice: summary.additionalHWPrice ?? detail.additionalHWPrice,
+    totalPrice: preferGrossPrice(summary.totalPrice, detail.totalPrice),
+    totalPriceOld: preferGrossPrice(summary.totalPriceOld, detail.totalPriceOld),
+    unitsPrice: preferGrossPrice(summary.unitsPrice, detail.unitsPrice),
+    loftsPrice: preferGrossPrice(summary.loftsPrice, detail.loftsPrice),
+    woodWorkPrice: preferGrossPrice(summary.woodWorkPrice, detail.woodWorkPrice),
+    accessoriesPrice: preferGrossPrice(summary.accessoriesPrice, detail.accessoriesPrice),
+    consHardwarePrice: preferGrossPrice(summary.consHardwarePrice, detail.consHardwarePrice),
+    hardwarePrice: preferGrossPrice(summary.hardwarePrice, detail.hardwarePrice),
+    additionalHWPrice: preferGrossPrice(summary.additionalHWPrice, detail.additionalHWPrice),
+    servicesPrice: preferGrossPrice(summary.servicesPrice, detail.servicesPrice),
+    appliancesPrice: preferGrossPrice(summary.appliancesPrice, detail.appliancesPrice),
+    skirtingsPrice: preferGrossPrice(summary.skirtingsPrice, detail.skirtingsPrice),
+    worktopsPrice: preferGrossPrice(summary.worktopsPrice, detail.worktopsPrice, summary.worktopPrice, detail.worktopPrice),
     units: mergeQuoteLineItemArrays(
       Array.isArray(summary.units) ? summary.units : [],
       Array.isArray(detail.units) ? detail.units : [],
@@ -953,6 +968,10 @@ function mergeQuoteOptionRow(summary: Record<string, unknown>, detail: Record<st
     services: mergeQuoteLineItemArrays(
       Array.isArray(summary.services) ? summary.services : [],
       Array.isArray(detail.services) ? detail.services : [],
+    ),
+    worktops: mergeQuoteLineItemArrays(
+      Array.isArray(summary.worktops) ? summary.worktops : [],
+      Array.isArray(detail.worktops) ? detail.worktops : [],
     ),
   };
 }
@@ -1032,6 +1051,8 @@ function mergeFullDetailsWithSummaryQuote(
       finalTotalPrice: matched.finalTotalPrice ?? fullData.finalTotalPrice,
       discount: matched.discount ?? fullData.discount,
       quoteNum: matched.quoteNum ?? fullData.quoteNum,
+      servicesPrice: preferGrossPrice(matched.servicesPrice, fullData.servicesPrice),
+      worktopsPrice: preferGrossPrice(matched.worktopsPrice, fullData.worktopsPrice, matched.worktopPrice, fullData.worktopPrice),
       quoteOptionsData:
         mergedOptionsData.length > 0
           ? mergedOptionsData

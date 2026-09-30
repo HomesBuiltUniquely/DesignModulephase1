@@ -189,11 +189,21 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
         totalPrice: asNum(r.totalPrice),
         totalPriceOld: asNum(r.totalPriceOld ?? r.unitsPrice ?? r.woodWorkPrice),
         unitsPrice: asNum(r.unitsPrice ?? r.woodWorkPrice),
-        loftsPrice: asNum(r.loftsPrice),
-        servicesPrice: asNum(r.servicesPrice),
-        appliancesPrice: asNum(r.appliancesPrice),
-        skirtingsPrice: asNum(r.skirtingsPrice),
-        worktopsPrice: asNum(r.worktopsPrice),
+        loftsPrice: asNum(r.loftsPrice) ?? asNum(d.loftsPrice),
+        servicesPrice: (() => {
+          const a = asNum(r.servicesPrice);
+          const b = asNum(d.servicesPrice);
+          if (a != null && a > 0 && b != null && b > 0) return Math.max(a, b);
+          return (a != null && a > 0 ? a : b) ?? a ?? b;
+        })(),
+        appliancesPrice: asNum(r.appliancesPrice) ?? asNum(d.appliancesPrice),
+        skirtingsPrice: asNum(r.skirtingsPrice) ?? asNum(d.skirtingsPrice),
+        worktopsPrice: (() => {
+          const a = asNum(r.worktopsPrice) ?? asNum(r.worktopPrice);
+          const b = asNum(d.worktopsPrice) ?? asNum(d.worktopPrice);
+          if (a != null && a > 0 && b != null && b > 0) return Math.max(a, b);
+          return (a != null && a > 0 ? a : b) ?? a ?? b;
+        })(),
         additionalHWPrice: asNum(r.additionalHWPrice),
         roomRev: asStr(d.roomRev),
         matlInfo: asStr(d.matlInfo) === '-' ? '' : asStr(d.matlInfo),
