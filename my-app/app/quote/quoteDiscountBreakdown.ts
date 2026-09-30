@@ -293,7 +293,7 @@ export function buildQuoteDiscountBreakdown(
   }
 
   for (const cat of EXTRA_CATEGORIES) {
-    const row = buildRow(cat, quoteObj, roomSets, false);
+    const row = buildRow(cat, quoteObj, roomSets, cat.key === 'worktops');
     if (row) rows.push(row);
   }
 
