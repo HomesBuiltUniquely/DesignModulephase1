@@ -283,7 +283,12 @@ export function buildQuoteDiscountBreakdown(
   optionDetails: unknown[],
   roomSummaries: unknown[] = [],
 ): QuoteDiscountBreakdownRow[] {
-  const roomSets = [optionDetails, roomSummaries].filter((arr) => arr.length > 0);
+  const extraFromQuote = [
+    Array.isArray(quoteObj.optionDetails) ? quoteObj.optionDetails : [],
+    Array.isArray(quoteObj.quoteOptionsData) ? quoteObj.quoteOptionsData : [],
+    Array.isArray(quoteObj.roomWiseSummary) ? quoteObj.roomWiseSummary : [],
+  ];
+  const roomSets = [optionDetails, roomSummaries, ...extraFromQuote].filter((arr) => arr.length > 0);
   if (roomSets.length === 0) roomSets.push([]);
   const rows: QuoteDiscountBreakdownRow[] = [];
 

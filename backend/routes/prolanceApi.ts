@@ -977,18 +977,98 @@ function mergeQuoteOptionRow(summary: Record<string, unknown>, detail: Record<st
 }
 
 function mergeQuoteOptionsData(summaryRows: unknown[], detailRows: unknown[]): Record<string, unknown>[] {
+  const detailList = detailRows.map((r) => asQuoteRecord(r));
+  const summaryList = summaryRows.map((r) => asQuoteRecord(r));
+  if (summaryList.length === 0) return detailList;
+  if (detailList.length === 0) return summaryList;
+
   const detailByKey = new Map<string, Record<string, unknown>>();
-  detailRows.forEach((row, idx) => {
-    const o = asQuoteRecord(row);
-    detailByKey.set(quoteOptionKey(o, idx), o);
-  });
-  if (summaryRows.length === 0) return detailRows.map((r) => asQuoteRecord(r));
-  return summaryRows.map((row, idx) => {
-    const summary = asQuoteRecord(row);
-    const detail = detailByKey.get(quoteOptionKey(summary, idx));
+  detailList.forEach((o, idx) => detailByKey.set(quoteOptionKey(o, idx), o));
+  const used = new Set<string>();
+  const merged = summaryList.map((summary, idx) => {
+    const key = quoteOptionKey(summary, idx);
+    used.add(key);
+    const detail = detailByKey.get(key);
     if (!detail) return summary;
     return mergeQuoteOptionRow(summary, detail);
   });
+  detailList.forEach((detail, idx) => {
+    const key = quoteOptionKey(detail, idx);
+    if (!used.has(key)) merged.push(detail);
+  });
+  return merged;
+}
+
+const CATEGORY_PRICE_KEYS = [
+  "servicesPrice",
+  "worktopsPrice",
+  "worktopPrice",
+  "woodWorkPrice",
+  "accessoriesPrice",
+  "consHardwarePrice",
+  "hardwarePrice",
+  "additionalHWPrice",
+  "additionalHardwarePrice",
+  "appliancesPrice",
+  "decorPrice",
+  "unitsPrice",
+  "loftsPrice",
+  "skirtingsPrice",
+] as const;
+
+function overlayGrossOnRecord(target: Record<string, unknown>, source: Record<string, unknown>): void {
+  for (const k of CATEGORY_PRICE_KEYS) {
+    const next = preferGrossPrice(target[k], source[k]);
+    if (next != null) target[k] = next;
+  }
+}
+
+function quoteRoomArrays(obj: Record<string, unknown> | null | undefined): unknown[] {
+  if (!obj) return [];
+  const out: unknown[] = [];
+  for (const key of ["optionDetails", "quoteOptionsData", "roomWiseSummary"] as const) {
+    const arr = obj[key];
+    if (Array.isArray(arr) && arr.length) out.push(...arr);
+  }
+  return out;
+}
+
+function overlayGrossOnRoomArrays(liveRooms: unknown[], snapRooms: unknown[]): Record<string, unknown>[] {
+  const live = liveRooms.map((r) => asQuoteRecord(r));
+  const snap = snapRooms.map((r) => asQuoteRecord(r));
+  if (!snap.length) return live;
+  if (!live.length) return snap;
+
+  const snapByKey = new Map<string, Record<string, unknown>>();
+  snap.forEach((row, idx) => {
+    const key = quoteOptionKey(row, idx);
+    const prev = snapByKey.get(key);
+    if (!prev) {
+      snapByKey.set(key, row);
+      return;
+    }
+    const merged = { ...prev };
+    overlayGrossOnRecord(merged, row);
+    snapByKey.set(key, merged);
+  });
+  const used = new Set<string>();
+  const out: Record<string, unknown>[] = live.map((row, idx) => {
+    const key = quoteOptionKey(row, idx);
+    used.add(key);
+    const snapRow = snapByKey.get(key);
+    if (!snapRow) return row;
+    const merged = { ...row };
+    overlayGrossOnRecord(merged, snapRow);
+    if (snapRow.worktopsPrice != null || snapRow.worktopPrice != null) {
+      merged.worktopsPrice = preferGrossPrice(merged.worktopsPrice, snapRow.worktopsPrice, snapRow.worktopPrice);
+    }
+    return merged;
+  });
+  snap.forEach((row, idx) => {
+    const key = quoteOptionKey(row, idx);
+    if (!used.has(key)) out.push(row);
+  });
+  return out;
 }
 
 function applyHubDiscountOverlay(
@@ -1018,15 +1098,44 @@ function applyHubDiscountOverlay(
       if (overlay[k] == null && snapRow[k] != null) overlay[k] = snapRow[k];
     }
   }
-  if (Object.keys(overlay).length === 0) return live;
 
   const out: Record<string, unknown> = { ...live, ...overlay };
+  overlayGrossOnRecord(out, snapshot);
+  if (snapRow) overlayGrossOnRecord(out, snapRow);
+
   const data = out.data ?? out.Data;
+  const snapRooms = [
+    ...quoteRoomArrays(snapRow ?? undefined),
+    ...quoteRoomArrays(snapshot),
+  ];
+  const applyRooms = (host: Record<string, unknown>) => {
+    if (Array.isArray(host.optionDetails)) {
+      host.optionDetails = overlayGrossOnRoomArrays(host.optionDetails, snapRooms);
+    }
+    if (Array.isArray(host.quoteOptionsData)) {
+      host.quoteOptionsData = overlayGrossOnRoomArrays(host.quoteOptionsData, snapRooms);
+    }
+    if (Array.isArray(host.roomWiseSummary)) {
+      host.roomWiseSummary = overlayGrossOnRoomArrays(host.roomWiseSummary, snapRooms);
+    }
+  };
+
   if (data && typeof data === "object" && !Array.isArray(data)) {
-    out.data = { ...(data as Record<string, unknown>), ...overlay };
+    const dataObj = { ...(data as Record<string, unknown>), ...overlay };
+    overlayGrossOnRecord(dataObj, snapshot);
+    if (snapRow) overlayGrossOnRecord(dataObj, snapRow);
+    applyRooms(dataObj);
+    out.data = dataObj;
   } else if (Array.isArray(data) && data[0] && typeof data[0] === "object") {
-    out.data = [{ ...(data[0] as Record<string, unknown>), ...overlay }, ...data.slice(1)];
+    const row0 = { ...(data[0] as Record<string, unknown>), ...overlay };
+    overlayGrossOnRecord(row0, snapshot);
+    if (snapRow) overlayGrossOnRecord(row0, snapRow);
+    applyRooms(row0);
+    out.data = [row0, ...data.slice(1)];
+  } else {
+    applyRooms(out);
   }
+  applyRooms(out);
   return out;
 }
 
