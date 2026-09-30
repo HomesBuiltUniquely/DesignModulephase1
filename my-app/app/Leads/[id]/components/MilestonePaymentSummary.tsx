@@ -24,6 +24,8 @@ type QuotePaymentSummary = {
   design40Collected?: number;
   design40Target?: number;
   design40PercentPaid?: number;
+  design10Complete?: boolean;
+  design40Complete?: boolean;
   quoteRevisionTopUp10: number;
   quoteRevisionTopUp40: number;
   remainingAfterTwentyPercent: number;
@@ -136,7 +138,9 @@ export default function MilestonePaymentSummary({ variant, summary, loading, err
     value: formatInr(remainingBalance),
   });
 
-  const fullyCollected = summary.totalPayableAmount > 0 && amountToCollect <= 0;
+  const fullyCollected =
+    (isTen ? summary.design10Complete : summary.design40Complete) === true ||
+    (summary.totalPayableAmount > 0 && amountToCollect <= 0);
 
   return (
     <div className="mb-3 rounded-xl border border-[#DDCDC1] bg-white px-3 py-2.5 shadow-sm">

@@ -51,6 +51,10 @@ type Props = {
   taskCompletions?: TaskCompletionMap;
   /** Bump after payment events so remaining % / amount refreshes. */
   paymentSummaryRefreshKey?: number;
+  /** Temp: Hub Pass ON + admin — show bypass X on current milestone */
+  hubPassEnabled?: boolean;
+  onBypassMilestone?: (milestoneIndex: number) => void;
+  bypassBusy?: boolean;
 };
 
 /**
@@ -74,6 +78,9 @@ export default function MilestonesCard({
   propertyConfiguration,
   timelineAnchors,
   taskCompletions,
+  hubPassEnabled = false,
+  onBypassMilestone,
+  bypassBusy = false,
 }: Props) {
   const [openMenuFor, setOpenMenuFor] = useState<
     { milestoneIndex: number; taskIndex: number } | undefined
@@ -378,29 +385,62 @@ export default function MilestonesCard({
                   <div
                     className={`flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border p-4 shadow-sm transition-all ${isCurrent ? "bg-white border-[#EF0101] ring-2 ring-[#EF0101]/20" : isNextOrLater ? "bg-gray-100 border-gray-200 opacity-75" : "bg-white border-gray-200"}`}
                   >
-                    <div className="flex items-center justify-between mb-3 flex-shrink-0">
+                    <div className="flex items-center justify-between mb-3 flex-shrink-0 gap-2">
                       <h3
-                        className={`text-lg font-bold ${isNextOrLater ? "text-gray-500" : "text-[#32261C]"}`}
+                        className={`text-lg font-bold min-w-0 truncate ${isNextOrLater ? "text-gray-500" : "text-[#32261C]"}`}
                       >
                         {milestone.name}
                       </h3>
-                      {totalPossibleXp > 0 && (
-                        milestoneXp?.isWorkflowCompleted ? (
-                          milestoneXp.workflowStatus === "ON-TIME" ? (
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                              +{earnedMilestoneXp} XP (ON-TIME)
-                            </span>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        {hubPassEnabled &&
+                          isCurrent &&
+                          progressPercent < 100 &&
+                          onBypassMilestone && (
+                            <button
+                              type="button"
+                              title="Hub Pass: bypass this milestone"
+                              aria-label="Bypass this milestone"
+                              disabled={bypassBusy}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onBypassMilestone(milestoneIndex);
+                              }}
+                              className="flex h-7 w-7 items-center justify-center rounded-full border border-red-300 bg-red-50 text-red-600 hover:bg-red-100 hover:border-red-400 disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                strokeWidth="2.5"
+                                stroke="currentColor"
+                                className="h-3.5 w-3.5"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  d="M6 18 18 6M6 6l12 12"
+                                />
+                              </svg>
+                            </button>
+                          )}
+                        {totalPossibleXp > 0 && (
+                          milestoneXp?.isWorkflowCompleted ? (
+                            milestoneXp.workflowStatus === "ON-TIME" ? (
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                +{earnedMilestoneXp} XP (ON-TIME)
+                              </span>
+                            ) : (
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200">
+                                {earnedMilestoneXp} XP (OVERDUE {milestoneXp.overdueDays || milestoneXp.delayDays || 1}d)
+                              </span>
+                            )
                           ) : (
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200">
-                              {earnedMilestoneXp} XP (OVERDUE {milestoneXp.overdueDays || milestoneXp.delayDays || 1}d)
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 border border-purple-200">
+                              0/{totalPossibleXp} XP
                             </span>
                           )
-                        ) : (
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 border border-purple-200">
-                            0/{totalPossibleXp} XP
-                          </span>
-                        )
-                      )}
+                        )}
+                      </div>
                     </div>
                     <div className="h-2 bg-gray-200 rounded-full overflow-hidden mb-4 flex-shrink-0">
                       <div

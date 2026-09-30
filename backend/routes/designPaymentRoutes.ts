@@ -263,12 +263,17 @@ async function upsertSummaryFromBreakdown(pool: Pool, leadId: number): Promise<v
   const now = new Date();
   const quote = breakdown?.totalPayableAmount ?? null;
   const d10 =
-    breakdown?.twentyPercentTarget != null && breakdown?.tenPercentAmount != null
-      ? Math.max(0, Number(breakdown.twentyPercentTarget) - Number(breakdown.tenPercentAmount || 0))
-      : breakdown
-        ? Math.round(Number(breakdown.totalPayableAmount) * 0.1)
-        : null;
-  const d40 = breakdown?.fortyPercentAmount ?? (quote != null ? Math.round(quote * 0.4) : null);
+    breakdown?.design10Target != null && breakdown.design10Target > 0
+      ? Number(breakdown.design10Target)
+      : breakdown?.twentyPercentTarget != null && breakdown?.tenPercentAmount != null
+        ? Math.max(0, Number(breakdown.twentyPercentTarget) - Number(breakdown.tenPercentAmount || 0))
+        : breakdown
+          ? Math.round(Number(breakdown.totalPayableAmount) * 0.1)
+          : null;
+  const d40 =
+    breakdown?.design40Target != null && breakdown.design40Target > 0
+      ? Number(breakdown.design40Target)
+      : breakdown?.fortyPercentAmount ?? (quote != null ? Math.round(quote * 0.4) : null);
   await pool.query(
     `INSERT INTO design_payment_case_summary
      (lead_id, quote_amount, design_10_target, design_40_target, cumulative_paid_percent, updated_at)
@@ -487,6 +492,47 @@ async function carryExtraTowardNextPayment(
   return extraPaid;
 }
 
+function milestoneTasksForBucket(bucket: string): string[] {
+  const b = normalizeBucket(bucket);
+  if (b === "DESIGN_40") {
+    // Same as 10%: when Easebuzz auto-approves, complete the whole milestone so next unlocks.
+    return ["Design sign off", "meeting completed", "40% collection", "40% payment approval"];
+  }
+  return ["10% payment collection", "10% payment approval"];
+}
+
+async function completeMilestoneTasks(
+  deps: Deps,
+  leadId: number,
+  bucket: string,
+  now: Date,
+): Promise<void> {
+  const { pool } = deps;
+  const meta = milestoneMeta(normalizeBucket(bucket));
+  const tasks = milestoneTasksForBucket(bucket);
+  for (const taskName of tasks) {
+    await pool.query(
+      `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
+      [leadId, meta.milestoneIndex, taskName, now],
+    );
+    try {
+      void awardTaskCompletionXp(pool, {
+        leadId,
+        milestoneIndex: meta.milestoneIndex,
+        taskName,
+        completionDate: now,
+      });
+    } catch (xpErr) {
+      console.error("[designer-xp] Hook error in completeMilestoneTasks (non-fatal):", xpErr);
+    }
+  }
+  deps.maybeNotifyMilestoneCompleted?.(leadId, meta.milestoneIndex, {
+    taskName: meta.taskApproval,
+  });
+}
+
 async function applyDesignAutoApprove(
   deps: Deps,
   leadId: number,
@@ -509,8 +555,20 @@ async function applyDesignAutoApprove(
   const target = opts?.target ?? amount;
   const extraPaid = opts?.extraPaid ?? Math.max(0, collected - target);
 
+  // Always finish milestone tasks (fixes stuck 40% when prior steps like meeting were open).
+  await completeMilestoneTasks(deps, leadId, is10 ? "DESIGN_10" : "DESIGN_40", now);
+
   if (await payloadAlreadyAutoApproved(pool, leadId, is10 ? "DESIGN_10" : "DESIGN_40")) {
-    // Still try carry if extra wasn't credited yet (idempotent).
+    // Ensure finance auto-approved row exists for queue display.
+    await upsertSummaryFromBreakdown(pool, leadId);
+    await pool.query(
+      `UPDATE design_payment_case_summary SET
+         ${is10 ? "design_10_finance_mode" : "design_40_finance_mode"} = 'AUTO_APPROVED',
+         ${is10 ? "design_10_approved_at" : "design_40_approved_at"} = COALESCE(${is10 ? "design_10_approved_at" : "design_40_approved_at"}, ?),
+         updated_at = ?
+       WHERE lead_id = ?`,
+      [now, now, leadId],
+    );
     if (extraPaid > 0) {
       await carryExtraTowardNextPayment(deps, leadId, bucket, extraPaid, {
         attemptId: opts?.attemptId,
@@ -519,30 +577,6 @@ async function applyDesignAutoApprove(
     }
     return;
   }
-
-  await pool.query(
-    `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
-     VALUES (?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
-    [leadId, meta.milestoneIndex, meta.taskCollection, now],
-  );
-  try {
-    void awardTaskCompletionXp(pool, {
-      leadId,
-      milestoneIndex: meta.milestoneIndex,
-      taskName: meta.taskCollection,
-      completionDate: now,
-    });
-  } catch (xpErr) {
-    console.error("[designer-xp] Hook error in applyAutoApprovalSideEffects (non-fatal):", xpErr);
-  }
-  await pool.query(
-    `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
-     VALUES (?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
-    [leadId, meta.milestoneIndex, meta.taskApproval, now],
-  );
-  deps.maybeNotifyMilestoneCompleted?.(leadId, meta.milestoneIndex, { taskName: meta.taskApproval });
 
   const [lr] = await pool.query(`SELECT payload FROM leads WHERE id = ? LIMIT 1`, [leadId]);
   let payload: Record<string, unknown> = {};
@@ -577,9 +611,11 @@ async function applyDesignAutoApprove(
     payload.cumulative_payment_percent = 60;
   }
 
+  let stampedQuoteAmount: number | null = null;
   try {
     const breakdown = await resolveLeadMilestonePaymentBreakdown(pool, leadId);
     if (breakdown) {
+      stampedQuoteAmount = breakdown.totalPayableAmount > 0 ? breakdown.totalPayableAmount : null;
       payload.quotation_total = breakdown.totalPayableAmount;
       if (is10) {
         payload.twenty_percent_target = breakdown.twentyPercentTarget;
@@ -601,6 +637,8 @@ async function applyDesignAutoApprove(
     /* ignore */
   }
 
+  await upsertSummaryFromBreakdown(pool, leadId);
+
   if (is10) {
     stampEntered1020At(payload);
     if (extraPaid > 0) {
@@ -614,12 +652,14 @@ async function applyDesignAutoApprove(
     await pool.query(
       `UPDATE design_payment_case_summary SET
          design_10_collected = ?,
+         design_10_target = COALESCE(NULLIF(design_10_target, 0), ?),
+         quote_amount = COALESCE(NULLIF(quote_amount, 0), ?),
          cumulative_paid_percent = 20,
          design_10_finance_mode = 'AUTO_APPROVED',
          design_10_approved_at = ?,
          updated_at = ?
        WHERE lead_id = ?`,
-      [collected, now, now, leadId],
+      [collected, target, stampedQuoteAmount, now, now, leadId],
     );
   } else {
     if (extraPaid > 0) {
@@ -629,12 +669,14 @@ async function applyDesignAutoApprove(
     await pool.query(
       `UPDATE design_payment_case_summary SET
          design_40_collected = ?,
+         design_40_target = COALESCE(NULLIF(design_40_target, 0), ?),
+         quote_amount = COALESCE(NULLIF(quote_amount, 0), ?),
          cumulative_paid_percent = 60,
          design_40_finance_mode = 'AUTO_APPROVED',
          design_40_approved_at = ?,
          updated_at = ?
        WHERE lead_id = ?`,
-      [collected, now, now, leadId],
+      [collected, target, stampedQuoteAmount, now, now, leadId],
     );
   }
 
@@ -807,15 +849,14 @@ async function applyPaidAttempt(
     const target = bucket === "DESIGN_40" ? synced.d40Target : synced.d10Target;
     const extraPaid = bucket === "DESIGN_40" ? synced.d40Extra : synced.d10Extra;
     if (target > 0 && collected + 0.009 >= target) {
-      if (!(await payloadAlreadyAutoApproved(pool, attempt.lead_id, bucket))) {
-        await applyDesignAutoApprove(deps, attempt.lead_id, bucket, amount, {
-          collected,
-          target,
-          extraPaid,
-          attemptId: attempt.id,
-          gatewayPaymentId: gid || undefined,
-        });
-      }
+      // Always run — completes remaining milestone tasks + ensures finance AUTO_APPROVED row.
+      await applyDesignAutoApprove(deps, attempt.lead_id, bucket, amount, {
+        collected,
+        target,
+        extraPaid,
+        attemptId: attempt.id,
+        gatewayPaymentId: gid || undefined,
+      });
       return true;
     }
     // Idempotent retries: do not re-log partial history.
@@ -1117,6 +1158,149 @@ export function registerDesignPaymentRoutes(app: Express, deps: Deps): void {
     return res.json({ ok: true, rows });
   });
 
+  /** Finance View modal: customer + Easebuzz txn details for Design 10% / 40%. */
+  app.get("/api/design-payment/cases/:leadId/finance-view", async (req: Request, res: Response) => {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = String(user.role || "").toLowerCase();
+    if (role !== "finance" && role !== "admin") {
+      return res.status(403).json({ message: "Finance only" });
+    }
+    const leadId = Number(req.params.leadId);
+    if (!Number.isFinite(leadId) || leadId < 1) {
+      return res.status(400).json({ message: "Invalid lead id" });
+    }
+    const bucket = normalizeBucket(pickStr(req.query.bucket, "DESIGN_10"));
+
+    try {
+      const [leadRows] = await pool.query(
+        `SELECT id, project_name as projectName, payload FROM leads WHERE id = ? LIMIT 1`,
+        [leadId],
+      );
+      const lead = (leadRows as { id: number; projectName: string; payload?: string | null }[])[0];
+      if (!lead) return res.status(404).json({ message: "Lead not found" });
+
+      let payloadCustomer = "";
+      try {
+        const p = lead.payload ? (JSON.parse(String(lead.payload)) as Record<string, unknown>) : {};
+        const fd =
+          p.formData && typeof p.formData === "object"
+            ? (p.formData as Record<string, unknown>)
+            : {};
+        payloadCustomer = pickStr(fd.customer_name, p.customer_name, lead.projectName);
+      } catch {
+        payloadCustomer = lead.projectName || "";
+      }
+
+      const [histRows] = await pool.query(
+        `SELECT h.id as historyId, h.bucket, h.amount, h.gateway_payment_id as gatewayPaymentId,
+                h.payment_channel as paymentChannel, h.payment_method as paymentMethod,
+                h.source, h.finance_handling_mode as financeHandlingMode, h.notes,
+                h.created_at as historyCreatedAt, h.attempt_id as attemptId,
+                a.merchant_txn as merchantTxn, a.customer_name as customerName,
+                a.customer_email as customerEmail, a.customer_phone as customerPhone,
+                a.email_status as emailStatus, a.created_by_name as linkSentBy,
+                a.payment_method as attemptPaymentMethod, a.paid_at as paidAt,
+                a.created_at as linkCreatedAt, a.status as attemptStatus
+         FROM design_payment_history h
+         LEFT JOIN design_payment_link_attempts a ON a.id = h.attempt_id
+         WHERE h.lead_id = ? AND UPPER(h.bucket) = ?
+         ORDER BY h.created_at DESC
+         LIMIT 20`,
+        [leadId, bucket],
+      );
+
+      let payments = (histRows as Record<string, unknown>[]).map((r) => {
+        const emailStatus = pickStr(r.emailStatus);
+        const emailUpper = emailStatus.toUpperCase();
+        let linkSentVia = "Email";
+        if (!emailStatus) linkSentVia = "Email";
+        else if (["SENT", "OK", "SUCCESS", "DELIVERED"].includes(emailUpper)) linkSentVia = "Email";
+        else if (emailUpper === "FAILED") linkSentVia = "Email (send failed)";
+        else linkSentVia = `Email (${emailStatus})`;
+
+        const paidAt = r.paidAt || r.historyCreatedAt;
+        return {
+          id: pickStr(r.historyId, r.attemptId, r.merchantTxn) || String(r.historyId || ""),
+          historyId: r.historyId ?? null,
+          attemptId: r.attemptId ?? null,
+          leadId,
+          bucket,
+          amount: Number(r.amount) || 0,
+          customerName: pickStr(r.customerName, payloadCustomer, lead.projectName, "Customer"),
+          customerEmail: pickStr(r.customerEmail) || null,
+          customerPhone: pickStr(r.customerPhone) || null,
+          paymentMethod: pickStr(r.attemptPaymentMethod, r.paymentMethod, "Easebuzz") || "Easebuzz",
+          paymentChannel: pickStr(r.paymentChannel, "ONLINE") || "ONLINE",
+          transactionId: pickStr(r.gatewayPaymentId, r.merchantTxn) || null,
+          merchantTxn: pickStr(r.merchantTxn) || null,
+          paidAt: paidAt ? new Date(String(paidAt)).toISOString() : null,
+          linkSentVia,
+          linkSentBy: pickStr(r.linkSentBy, "SYSTEM") || "SYSTEM",
+          financeHandlingMode: pickStr(r.financeHandlingMode, "AUTO_APPROVED") || "AUTO_APPROVED",
+          source: pickStr(r.source, "EASEBUZZ") || "EASEBUZZ",
+        };
+      });
+
+      // Fallback: PAID attempts with no history row yet
+      if (payments.length === 0) {
+        const [attemptRows] = await pool.query(
+          `SELECT id, merchant_txn, amount, customer_name, customer_email, customer_phone,
+                  email_status, created_by_name, payment_method, gateway_payment_id,
+                  paid_at, created_at, status
+           FROM design_payment_link_attempts
+           WHERE lead_id = ? AND UPPER(bucket) = ? AND status = 'PAID'
+           ORDER BY COALESCE(paid_at, created_at) DESC
+           LIMIT 10`,
+          [leadId, bucket],
+        );
+        payments = (attemptRows as Record<string, unknown>[]).map((r) => {
+          const emailStatus = pickStr(r.email_status);
+          const emailUpper = emailStatus.toUpperCase();
+          const linkSentVia = !emailStatus
+            ? "Email"
+            : ["SENT", "OK", "SUCCESS", "DELIVERED"].includes(emailUpper)
+              ? "Email"
+              : emailUpper === "FAILED"
+                ? "Email (send failed)"
+                : `Email (${emailStatus})`;
+          const paidAt = r.paid_at || r.created_at;
+          return {
+            id: pickStr(r.id, r.merchant_txn),
+            historyId: null,
+            attemptId: pickStr(r.id) || null,
+            leadId,
+            bucket,
+            amount: Number(r.amount) || 0,
+            customerName: pickStr(r.customer_name, payloadCustomer, lead.projectName, "Customer"),
+            customerEmail: pickStr(r.customer_email) || null,
+            customerPhone: pickStr(r.customer_phone) || null,
+            paymentMethod: pickStr(r.payment_method, "Easebuzz") || "Easebuzz",
+            paymentChannel: "ONLINE",
+            transactionId: pickStr(r.gateway_payment_id, r.merchant_txn) || null,
+            merchantTxn: pickStr(r.merchant_txn) || null,
+            paidAt: paidAt ? new Date(String(paidAt)).toISOString() : null,
+            linkSentVia,
+            linkSentBy: pickStr(r.created_by_name, "SYSTEM") || "SYSTEM",
+            financeHandlingMode: "AUTO_APPROVED",
+            source: "EASEBUZZ",
+          };
+        });
+      }
+
+      return res.json({
+        ok: true,
+        leadId,
+        projectName: lead.projectName,
+        bucket,
+        payments,
+      });
+    } catch (err) {
+      console.error("[design-payment] finance-view error", err);
+      return res.status(500).json({ message: "Failed to load payment details" });
+    }
+  });
+
   app.get("/api/design-payment/cases/:leadId/payment-links/active", async (req: Request, res: Response) => {
     const user = await requireEasebuzzAdmin(req, res);
     if (!user) return;
@@ -1127,6 +1311,47 @@ export function registerDesignPaymentRoutes(app: Express, deps: Deps): void {
     }
     const attempt = await findActiveAttempt(pool, leadId);
     const recentlyPaid = await findRecentlyPaidAttempt(pool, leadId);
+    // Heal stuck milestone / finance AUTO_APPROVED row after online pay (esp. Design 40%).
+    try {
+      const healBuckets: Array<"DESIGN_10" | "DESIGN_40"> = [];
+      if (recentlyPaid) healBuckets.push(normalizeBucket(recentlyPaid.bucket));
+      if (await payloadAlreadyAutoApproved(pool, leadId, "DESIGN_40")) healBuckets.push("DESIGN_40");
+      if (await payloadAlreadyAutoApproved(pool, leadId, "DESIGN_10")) healBuckets.push("DESIGN_10");
+      const unique = Array.from(new Set(healBuckets));
+      for (const bucket of unique) {
+        const synced = await syncCollectedFromHistory(pool, leadId);
+        const collected = bucket === "DESIGN_40" ? synced.d40Collected : synced.d10Collected;
+        const target = bucket === "DESIGN_40" ? synced.d40Target : synced.d10Target;
+        const extraPaid = bucket === "DESIGN_40" ? synced.d40Extra : synced.d10Extra;
+        const amountHint =
+          recentlyPaid && normalizeBucket(recentlyPaid.bucket) === bucket
+            ? Number(recentlyPaid.amount) || collected
+            : collected || target || 0;
+        if (target > 0 && collected + 0.009 >= target) {
+          await applyDesignAutoApprove(deps, leadId, bucket, amountHint, {
+            collected,
+            target,
+            extraPaid,
+            attemptId: recentlyPaid?.id,
+            gatewayPaymentId: recentlyPaid?.gateway_payment_id || undefined,
+          });
+        } else if (await payloadAlreadyAutoApproved(pool, leadId, bucket)) {
+          // Target sync may be incomplete — still finish milestone tasks + finance row.
+          await completeMilestoneTasks(deps, leadId, bucket, new Date());
+          await upsertSummaryFromBreakdown(pool, leadId);
+          await pool.query(
+            `UPDATE design_payment_case_summary SET
+               ${bucket === "DESIGN_40" ? "design_40_finance_mode" : "design_10_finance_mode"} = 'AUTO_APPROVED',
+               ${bucket === "DESIGN_40" ? "design_40_approved_at" : "design_10_approved_at"} = COALESCE(${bucket === "DESIGN_40" ? "design_40_approved_at" : "design_10_approved_at"}, ?),
+               updated_at = ?
+             WHERE lead_id = ?`,
+            [new Date(), new Date(), leadId],
+          );
+        }
+      }
+    } catch (healErr) {
+      console.warn("[design-payment] post-pay milestone heal failed (non-fatal)", healErr);
+    }
     return res.json({
       success: true,
       attempt: mapAttempt(attempt),
@@ -1525,19 +1750,50 @@ export function registerDesignPaymentRoutes(app: Express, deps: Deps): void {
     }
     const bucket = pickStr(req.query.bucket, "DESIGN_10").toUpperCase();
     const section = pickStr(req.query.section, "AUTO_APPROVED").toUpperCase();
-    const modeCol = bucket.startsWith("DESIGN_40") ? "design_40_finance_mode" : "design_10_finance_mode";
-    const approvedCol = bucket.startsWith("DESIGN_40") ? "design_40_approved_at" : "design_10_approved_at";
-    if (section !== "AUTO_APPROVED") return res.json([]);
-    const [rows] = await pool.query(
-      `SELECT s.lead_id as id, l.project_name as projectName, s.${modeCol} as financeHandlingMode,
-              s.${approvedCol} as approvedAt, 'AUTO_APPROVED' as status, 0 as canApprove
-       FROM design_payment_case_summary s
-       JOIN leads l ON l.id = s.lead_id
-       WHERE s.${modeCol} = 'AUTO_APPROVED'
-       ORDER BY s.${approvedCol} DESC
-       LIMIT 200`,
-    );
-    return res.json(rows);
+    const is40 = bucket.startsWith("DESIGN_40");
+    const modeCol = is40 ? "design_40_finance_mode" : "design_10_finance_mode";
+    const approvedCol = is40 ? "design_40_approved_at" : "design_10_approved_at";
+    const approvedByJsonPath = is40
+      ? "$.design_40_finance_approved_by"
+      : "$.design_10_finance_approved_by";
+
+    if (section === "AUTO_APPROVED") {
+      const [rows] = await pool.query(
+        `SELECT s.lead_id as id, l.project_name as projectName, s.${modeCol} as financeHandlingMode,
+                s.${approvedCol} as approvedAt,
+                COALESCE(
+                  NULLIF(JSON_UNQUOTE(JSON_EXTRACT(l.payload, '${approvedByJsonPath}')), ''),
+                  'SYSTEM · Easebuzz'
+                ) as approvedBy,
+                'AUTO_APPROVED' as status, 0 as canApprove
+         FROM design_payment_case_summary s
+         JOIN leads l ON l.id = s.lead_id
+         WHERE s.${modeCol} = 'AUTO_APPROVED'
+         ORDER BY s.${approvedCol} DESC
+         LIMIT 200`,
+      );
+      return res.json(rows);
+    }
+
+    if (section === "APPROVED_HISTORY" || section === "MANUAL_APPROVED") {
+      const [rows] = await pool.query(
+        `SELECT s.lead_id as id, l.project_name as projectName, s.${modeCol} as financeHandlingMode,
+                s.${approvedCol} as approvedAt,
+                COALESCE(
+                  NULLIF(JSON_UNQUOTE(JSON_EXTRACT(l.payload, '${approvedByJsonPath}')), ''),
+                  'Finance'
+                ) as approvedBy,
+                'MANUAL_APPROVED' as status, 0 as canApprove
+         FROM design_payment_case_summary s
+         JOIN leads l ON l.id = s.lead_id
+         WHERE s.${modeCol} = 'MANUAL_APPROVED'
+         ORDER BY s.${approvedCol} DESC
+         LIMIT 200`,
+      );
+      return res.json(rows);
+    }
+
+    return res.json([]);
   });
 }
 

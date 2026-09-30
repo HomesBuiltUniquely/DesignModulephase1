@@ -31,6 +31,8 @@ export function mapQuotePaymentSummaryFromApi(body: Record<string, unknown>): Qu
     design40Collected: Number(body.design40Collected) || 0,
     design40Target: Number(body.design40Target) || 0,
     design40PercentPaid: Number(body.design40PercentPaid) || 0,
+    design10Complete: Boolean(body.design10Complete),
+    design40Complete: Boolean(body.design40Complete),
     quoteRevisionTopUp10: Number(body.quoteRevisionTopUp10) || 0,
     quoteRevisionTopUp40: Number(body.quoteRevisionTopUp40) || 0,
     remainingAfterTwentyPercent:
@@ -105,6 +107,8 @@ export function parseQuotePaymentSummaryResponse(
     design40Target: payload.design40Target ?? payload.design_40_target ?? body.design40Target,
     design40PercentPaid:
       payload.design40PercentPaid ?? payload.design_40_percent_paid ?? body.design40PercentPaid,
+    design10Complete: payload.design10Complete ?? payload.design_10_complete ?? body.design10Complete,
+    design40Complete: payload.design40Complete ?? payload.design_40_complete ?? body.design40Complete,
     remainingAfterTwentyPercent:
       payload.remainingAfterTwentyPercent ??
       payload.remaining_after_twenty_percent ??

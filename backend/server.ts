@@ -7477,6 +7477,137 @@ app.get("/api/leads/:id/completions", async (req: Request, res: Response) => {
   }
 });
 
+/** Temp testing: Hub Pass — admin-only milestone bypass (matches frontend MileStoneArray). */
+const HUB_PASS_MILESTONE_TASKS: Record<number, string[]> = {
+  7: ["Upload KT files"],
+  0: ["Group Description", "Mail loop chain 2 initiate", "D1 for MMT request", "D1 files upload"],
+  1: [
+    "First cut design + quotation discussion meeting request",
+    "meeting completed",
+    "DQC 1 submission - dwg + quotation",
+    "DQC 1 approval",
+  ],
+  2: ["10% payment collection", "10% payment approval"],
+  3: ["D2 - masking request raise", "D2 - files upload"],
+  4: [
+    "Material selection meeting + quotation discussion",
+    "Material selection meeting completed",
+    "DQC 2 submission",
+    "DQC 2 approval ",
+    "Project manager approval",
+  ],
+  5: ["Design sign off", "meeting completed", "40% collection", "40% payment approval"],
+  6: ["Cx approval for production", "POC mail"],
+};
+
+function isHubPassAdminRole(role: string | null | undefined): boolean {
+  const r = String(role || "").trim().toLowerCase();
+  return r === "admin" || r === "super_admin" || r === "superadmin";
+}
+
+function readHubPassEnabled(payload: Record<string, unknown> | null | undefined): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const v = (payload as Record<string, unknown>).hubPass;
+  return v === true || v === "true" || v === 1 || v === "1";
+}
+
+// Toggle Hub Pass on a lead (admin / super-admin only). Stored in lead payload.
+app.patch("/api/leads/:id/hub-pass", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+
+  const user = await getUserFromSession(req);
+  if (!user) return res.status(401).json({ message: "Unauthorized" });
+  if (!isHubPassAdminRole(user.role)) {
+    return res.status(403).json({ message: "Only super admin can toggle Hub Pass" });
+  }
+
+  const enabled = Boolean((req.body || {}).enabled);
+  try {
+    const [rows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [id]);
+    const row = (rows as { payload?: string | null }[])[0];
+    if (!row) return res.status(404).json({ message: "Lead not found" });
+
+    let payload: Record<string, unknown> = {};
+    try {
+      payload = row.payload ? (JSON.parse(row.payload) as Record<string, unknown>) : {};
+    } catch {
+      payload = {};
+    }
+    payload.hubPass = enabled;
+    await pool.query("UPDATE leads SET payload = ?, update_at = ? WHERE id = ?", [
+      JSON.stringify(payload),
+      new Date(),
+      id,
+    ]);
+    return res.json({ ok: true, hubPass: enabled });
+  } catch (err) {
+    console.error("hub-pass toggle error", err);
+    return res.status(500).json({ message: "Failed to update Hub Pass" });
+  }
+});
+
+// Bypass one milestone: mark all its tasks complete (no emails). Requires Hub Pass ON + admin.
+app.post("/api/leads/:id/hub-pass/bypass-milestone", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+
+  const user = await getUserFromSession(req);
+  if (!user) return res.status(401).json({ message: "Unauthorized" });
+  if (!isHubPassAdminRole(user.role)) {
+    return res.status(403).json({ message: "Only super admin can bypass milestones" });
+  }
+
+  const milestoneIndex = Number((req.body || {}).milestoneIndex);
+  if (!Number.isFinite(milestoneIndex)) {
+    return res.status(400).json({ message: "milestoneIndex is required" });
+  }
+  const tasks = HUB_PASS_MILESTONE_TASKS[milestoneIndex];
+  if (!tasks || tasks.length === 0) {
+    return res.status(400).json({ message: "Unknown milestoneIndex" });
+  }
+
+  try {
+    const [rows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [id]);
+    const row = (rows as { payload?: string | null }[])[0];
+    if (!row) return res.status(404).json({ message: "Lead not found" });
+
+    let payload: Record<string, unknown> = {};
+    try {
+      payload = row.payload ? (JSON.parse(row.payload) as Record<string, unknown>) : {};
+    } catch {
+      payload = {};
+    }
+    if (!readHubPassEnabled(payload)) {
+      return res.status(403).json({ message: "Hub Pass is disabled for this lead" });
+    }
+
+    const now = new Date();
+    for (const taskName of tasks) {
+      await pool.query(
+        `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
+        [id, milestoneIndex, taskName, now],
+      );
+    }
+
+    const [completions] = await pool.query(
+      "SELECT milestone_index as milestoneIndex, task_name as taskName, completed_at as completedAt FROM lead_task_completions WHERE lead_id = ?",
+      [id],
+    );
+    return res.json({
+      ok: true,
+      milestoneIndex,
+      bypassedTasks: tasks.length,
+      completions,
+    });
+  } catch (err) {
+    console.error("hub-pass bypass error", err);
+    return res.status(500).json({ message: "Failed to bypass milestone" });
+  }
+});
+
 // Mark a task completed for a lead (persists across refresh)
 app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => {
   const id = Number(req.params.id);
@@ -10652,14 +10783,68 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
         payload.remaining_for_10_percent = 0;
         payload.ten_percent_payment_met = true;
         payload.design_ten_percent_payment_met = true;
+        payload.design_10_finance_handling_mode = "MANUAL_APPROVED";
+        payload.design_10_finance_section = "APPROVED_HISTORY";
+        payload.design_10_finance_approved_by = user.name ?? "Finance";
+        payload.design_10_finance_approved_at = now.toISOString();
+        await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
+          JSON.stringify(payload),
+          now,
+          leadId,
+        ]);
+        try {
+          await pool.query(
+            `INSERT INTO design_payment_case_summary
+             (lead_id, design_10_finance_mode, design_10_approved_at, cumulative_paid_percent, updated_at)
+             VALUES (?, 'MANUAL_APPROVED', ?, 20, ?)
+             ON DUPLICATE KEY UPDATE
+               design_10_finance_mode = 'MANUAL_APPROVED',
+               design_10_approved_at = VALUES(design_10_approved_at),
+               cumulative_paid_percent = GREATEST(COALESCE(cumulative_paid_percent, 0), 20),
+               updated_at = VALUES(updated_at)`,
+            [leadId, now, now],
+          );
+        } catch (sumErr) {
+          console.error("10p approval case_summary update error (non-fatal)", sumErr);
+        }
+      }
+    } catch (syncErr) {
+      console.error("10p approval payload sync error (non-fatal)", syncErr);
+    }
+
+    // Always record manual approve in Approved history (even if quote sync failed).
+    try {
+      const [lr] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [leadId]);
+      const raw = (lr as { payload?: unknown }[])[0]?.payload;
+      let payload: Record<string, unknown> = {};
+      try {
+        payload = raw ? (JSON.parse(String(raw)) as Record<string, unknown>) : {};
+      } catch {
+        payload = {};
+      }
+      if (payload.design_10_finance_handling_mode !== "MANUAL_APPROVED") {
+        payload.design_10_finance_handling_mode = "MANUAL_APPROVED";
+        payload.design_10_finance_section = "APPROVED_HISTORY";
+        payload.design_10_finance_approved_by = user.name ?? "Finance";
+        payload.design_10_finance_approved_at = now.toISOString();
         await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
           JSON.stringify(payload),
           now,
           leadId,
         ]);
       }
-    } catch (syncErr) {
-      console.error("10p approval payload sync error (non-fatal)", syncErr);
+      await pool.query(
+        `INSERT INTO design_payment_case_summary
+         (lead_id, design_10_finance_mode, design_10_approved_at, cumulative_paid_percent, updated_at)
+         VALUES (?, 'MANUAL_APPROVED', ?, 20, ?)
+         ON DUPLICATE KEY UPDATE
+           design_10_finance_mode = 'MANUAL_APPROVED',
+           design_10_approved_at = COALESCE(design_10_approved_at, VALUES(design_10_approved_at)),
+           updated_at = VALUES(updated_at)`,
+        [leadId, now, now],
+      );
+    } catch (histErr) {
+      console.error("10p approval history stamp error (non-fatal)", histErr);
     }
 
     // Fire-and-forget: trigger 10% payment approval email (custom template with receipt details)
@@ -11318,14 +11503,68 @@ app.post("/api/leads/:id/approve-40p-payment", async (req: Request, res: Respons
         payload.forty_percent_amount = paid;
         payload.cumulative_payment_percent = 60;
         payload.forty_percent_payment_met = true;
+        payload.design_40_finance_handling_mode = "MANUAL_APPROVED";
+        payload.design_40_finance_section = "APPROVED_HISTORY";
+        payload.design_40_finance_approved_by = user.name ?? "Finance";
+        payload.design_40_finance_approved_at = now.toISOString();
+        await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
+          JSON.stringify(payload),
+          now,
+          leadId,
+        ]);
+        try {
+          await pool.query(
+            `INSERT INTO design_payment_case_summary
+             (lead_id, design_40_finance_mode, design_40_approved_at, cumulative_paid_percent, updated_at)
+             VALUES (?, 'MANUAL_APPROVED', ?, 60, ?)
+             ON DUPLICATE KEY UPDATE
+               design_40_finance_mode = 'MANUAL_APPROVED',
+               design_40_approved_at = VALUES(design_40_approved_at),
+               cumulative_paid_percent = GREATEST(COALESCE(cumulative_paid_percent, 0), 60),
+               updated_at = VALUES(updated_at)`,
+            [leadId, now, now],
+          );
+        } catch (sumErr) {
+          console.error("40p approval case_summary update error (non-fatal)", sumErr);
+        }
+      }
+    } catch (syncErr) {
+      console.error("40p approval payload sync error (non-fatal)", syncErr);
+    }
+
+    // Always record manual approve in Approved history (even if quote sync failed).
+    try {
+      const [lr] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [leadId]);
+      const raw = (lr as { payload?: unknown }[])[0]?.payload;
+      let payload: Record<string, unknown> = {};
+      try {
+        payload = raw ? (JSON.parse(String(raw)) as Record<string, unknown>) : {};
+      } catch {
+        payload = {};
+      }
+      if (payload.design_40_finance_handling_mode !== "MANUAL_APPROVED") {
+        payload.design_40_finance_handling_mode = "MANUAL_APPROVED";
+        payload.design_40_finance_section = "APPROVED_HISTORY";
+        payload.design_40_finance_approved_by = user.name ?? "Finance";
+        payload.design_40_finance_approved_at = now.toISOString();
         await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
           JSON.stringify(payload),
           now,
           leadId,
         ]);
       }
-    } catch (syncErr) {
-      console.error("40p approval payload sync error (non-fatal)", syncErr);
+      await pool.query(
+        `INSERT INTO design_payment_case_summary
+         (lead_id, design_40_finance_mode, design_40_approved_at, cumulative_paid_percent, updated_at)
+         VALUES (?, 'MANUAL_APPROVED', ?, 60, ?)
+         ON DUPLICATE KEY UPDATE
+           design_40_finance_mode = 'MANUAL_APPROVED',
+           design_40_approved_at = COALESCE(design_40_approved_at, VALUES(design_40_approved_at)),
+           updated_at = VALUES(updated_at)`,
+        [leadId, now, now],
+      );
+    } catch (histErr) {
+      console.error("40p approval history stamp error (non-fatal)", histErr);
     }
 
     // Fire-and-forget: trigger 40% payment approval CX email (receipt)
@@ -15612,6 +15851,7 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
     const mailLoopState = readMailLoopChainState(parsedPayload);
     return res.json({
       ...rest,
+      hubPass: readHubPassEnabled(parsedPayload),
       contactNo: rest.contactNo || clientContact.primaryPhone,
       clientEmail: rest.clientEmail || clientContact.primaryEmail,
       clientEmails: clientContact.emails,

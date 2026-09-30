@@ -1266,6 +1266,8 @@ export type LeadQuotePaymentSummary = {
   totalPayableAmount: number;
   tenPercentAmount: number;
   fortyPercentAmount: number;
+  /** prolance/snapshot = live or DB quote; local = only when Prolance failed (case/payload/history). */
+  quoteDataSource: "prolance" | "snapshot" | "local";
 };
 
 export function formatQuoteInrAmount(amount: number): string {
@@ -1295,6 +1297,7 @@ export async function resolveLeadQuotePaymentSummary(
       : null;
 
   let quoteBody: unknown | null = null;
+  let quoteDataSource: "prolance" | "snapshot" | "local" = "prolance";
 
   const usableTotal = (body: unknown | null): number | null => {
     const n = extractTotalPayableAmount(body);
@@ -1311,12 +1314,14 @@ export async function resolveLeadQuotePaymentSummary(
       if (resolved) quoteId = Number(resolved);
       if (usableTotal(live) != null) {
         quoteBody = live;
+        quoteDataSource = "prolance";
       }
     }
     if (quoteBody == null && quoteId != null && quoteId >= 1) {
       const byId = await fetchQuoteBodyByQuoteId(quoteId, session);
       if (usableTotal(byId) != null) {
         quoteBody = byId;
+        quoteDataSource = "prolance";
       }
     }
   }
@@ -1342,6 +1347,7 @@ export async function resolveLeadQuotePaymentSummary(
           const parsed = JSON.parse(raw) as unknown;
           if (usableTotal(parsed) != null) {
             quoteBody = parsed;
+            quoteDataSource = "snapshot";
           }
         } catch {
           /* ignore */
@@ -1352,7 +1358,41 @@ export async function resolveLeadQuotePaymentSummary(
 
   const totalPayableAmount = usableTotal(quoteBody);
   if (totalPayableAmount == null) {
-    return null;
+    // 3) ONLY if Prolance + snapshot failed — use local case / payload / history.
+    const caseTotals = await readDesignCaseBucketTotals(pool, leadId);
+    const payload = readLeadPayloadRecord(lead.payload);
+    const nested =
+      payload.formData && typeof payload.formData === "object"
+        ? (payload.formData as Record<string, unknown>)
+        : payload.form_data && typeof payload.form_data === "object"
+          ? (payload.form_data as Record<string, unknown>)
+          : {};
+    const fromPayload =
+      parseLeadPayloadAmount(payload.quotation_total ?? nested.quotation_total) ??
+      parseLeadPayloadAmount(payload.total_payable_amount ?? nested.total_payable_amount) ??
+      parseLeadPayloadAmount(payload.quote_amount ?? nested.quote_amount);
+    const fromHistoryQuote = await readLatestDesignHistoryQuoteAmount(pool, leadId);
+    const fallbackTotal =
+      caseTotals.quoteAmount > 0
+        ? caseTotals.quoteAmount
+        : fromPayload != null && fromPayload > 0
+          ? fromPayload
+          : fromHistoryQuote > 0
+            ? fromHistoryQuote
+            : 0;
+    if (!(fallbackTotal > 0)) {
+      return null;
+    }
+    return {
+      quoteId: quoteId != null && quoteId >= 1 ? quoteId : null,
+      quoteNum: null,
+      totalPayableAmount: fallbackTotal,
+      tenPercentAmount:
+        caseTotals.d10Target > 0 ? caseTotals.d10Target : Math.round(fallbackTotal * 0.1),
+      fortyPercentAmount:
+        caseTotals.d40Target > 0 ? caseTotals.d40Target : Math.round(fallbackTotal * 0.4),
+      quoteDataSource: "local",
+    };
   }
 
   const row = normalizeQuotePricingRow(quoteBody);
@@ -1370,6 +1410,7 @@ export async function resolveLeadQuotePaymentSummary(
     totalPayableAmount,
     tenPercentAmount: Math.round(totalPayableAmount * 0.1),
     fortyPercentAmount: Math.round(totalPayableAmount * 0.4),
+    quoteDataSource,
   };
 }
 
@@ -1418,6 +1459,9 @@ export type LeadMilestonePaymentBreakdown = LeadQuotePaymentSummary & {
   design40Collected: number;
   design40Target: number;
   design40PercentPaid: number;
+  /** True when Design 10% bucket is fully collected / auto-approved. */
+  design10Complete: boolean;
+  design40Complete: boolean;
   quoteRevisionTopUp10: number;
   quoteRevisionTopUp40: number;
   remainingAfterTwentyPercent: number;
@@ -1425,33 +1469,103 @@ export type LeadMilestonePaymentBreakdown = LeadQuotePaymentSummary & {
   remainingAfterSixtyPercent: number;
 };
 
+async function readLatestDesignHistoryQuoteAmount(pool: Pool, leadId: number): Promise<number> {
+  try {
+    const [rows] = await pool.query(
+      `SELECT quote_amount AS quoteAmount
+       FROM design_payment_history
+       WHERE lead_id = ? AND quote_amount IS NOT NULL AND quote_amount > 0
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+      [leadId],
+    );
+    return Math.max(0, Number((rows as { quoteAmount?: unknown }[])[0]?.quoteAmount) || 0);
+  } catch {
+    return 0;
+  }
+}
+
+async function sumDesignBucketCollectedFromHistory(
+  pool: Pool,
+  leadId: number,
+  bucket: "DESIGN_10" | "DESIGN_40",
+): Promise<number> {
+  try {
+    const [rows] = await pool.query(
+      `SELECT COALESCE(SUM(amount), 0) AS total
+       FROM design_payment_history
+       WHERE lead_id = ? AND UPPER(bucket) = ?`,
+      [leadId, bucket],
+    );
+    return Math.max(0, Number((rows as { total?: unknown }[])[0]?.total) || 0);
+  } catch {
+    return 0;
+  }
+}
+
 async function readDesignCaseBucketTotals(
   pool: Pool,
   leadId: number,
-): Promise<{ d10Collected: number; d10Target: number; d40Collected: number; d40Target: number }> {
+): Promise<{
+  d10Collected: number;
+  d10Target: number;
+  d40Collected: number;
+  d40Target: number;
+  quoteAmount: number;
+  d10FinanceMode: string;
+  d40FinanceMode: string;
+}> {
   try {
     const [rows] = await pool.query(
-      `SELECT design_10_collected, design_10_target, design_40_collected, design_40_target
+      `SELECT quote_amount, design_10_collected, design_10_target, design_40_collected, design_40_target,
+              design_10_finance_mode, design_40_finance_mode
        FROM design_payment_case_summary WHERE lead_id = ? LIMIT 1`,
       [leadId],
     );
     const row = (rows as {
+      quote_amount?: unknown;
       design_10_collected?: unknown;
       design_10_target?: unknown;
       design_40_collected?: unknown;
       design_40_target?: unknown;
+      design_10_finance_mode?: unknown;
+      design_40_finance_mode?: unknown;
     }[])[0];
     if (!row) {
-      return { d10Collected: 0, d10Target: 0, d40Collected: 0, d40Target: 0 };
+      return {
+        d10Collected: 0,
+        d10Target: 0,
+        d40Collected: 0,
+        d40Target: 0,
+        quoteAmount: 0,
+        d10FinanceMode: "",
+        d40FinanceMode: "",
+      };
     }
+    // Collected must match payment history (source of truth), not a stale column.
+    const history10 = await sumDesignBucketCollectedFromHistory(pool, leadId, "DESIGN_10");
+    const history40 = await sumDesignBucketCollectedFromHistory(pool, leadId, "DESIGN_40");
+    const stored10 = Math.max(0, Number(row.design_10_collected) || 0);
+    const stored40 = Math.max(0, Number(row.design_40_collected) || 0);
     return {
-      d10Collected: Math.max(0, Number(row.design_10_collected) || 0),
+      d10Collected: Math.max(stored10, history10),
       d10Target: Math.max(0, Number(row.design_10_target) || 0),
-      d40Collected: Math.max(0, Number(row.design_40_collected) || 0),
+      d40Collected: Math.max(stored40, history40),
       d40Target: Math.max(0, Number(row.design_40_target) || 0),
+      quoteAmount: Math.max(0, Number(row.quote_amount) || 0),
+      d10FinanceMode: String(row.design_10_finance_mode || "").toUpperCase(),
+      d40FinanceMode: String(row.design_40_finance_mode || "").toUpperCase(),
     };
   } catch {
-    return { d10Collected: 0, d10Target: 0, d40Collected: 0, d40Target: 0 };
+    return {
+      d10Collected: 0,
+      d10Target: 0,
+      d40Collected: 0,
+      d40Target: 0,
+      quoteAmount: 0,
+      d10FinanceMode: "",
+      d40FinanceMode: "",
+    };
   }
 }
 
@@ -1487,8 +1601,29 @@ export async function resolveLeadMilestonePaymentBreakdown(
   pool: Pool,
   leadId: number,
 ): Promise<LeadMilestonePaymentBreakdown | null> {
-  const summary = await resolveLeadQuotePaymentSummary(pool, leadId);
+  const caseTotals = await readDesignCaseBucketTotals(pool, leadId);
+  let summary = await resolveLeadQuotePaymentSummary(pool, leadId);
+
+  // Local case quote ONLY when Prolance + snapshot already failed inside resolveLeadQuotePaymentSummary.
+  if (!summary && caseTotals.quoteAmount > 0) {
+    summary = {
+      quoteId: null,
+      quoteNum: null,
+      totalPayableAmount: caseTotals.quoteAmount,
+      tenPercentAmount:
+        caseTotals.d10Target > 0
+          ? caseTotals.d10Target
+          : Math.round(caseTotals.quoteAmount * 0.1),
+      fortyPercentAmount:
+        caseTotals.d40Target > 0
+          ? caseTotals.d40Target
+          : Math.round(caseTotals.quoteAmount * 0.4),
+      quoteDataSource: "local",
+    };
+  }
   if (!summary) return null;
+
+  const usedLocalQuote = summary.quoteDataSource === "local";
 
   const [leadRows] = await pool.query(`SELECT payload FROM leads WHERE id = ? LIMIT 1`, [leadId]);
   const payload = readLeadPayloadRecord((leadRows as { payload?: unknown }[])[0]?.payload);
@@ -1522,6 +1657,24 @@ export async function resolveLeadMilestonePaymentBreakdown(
   const twentyPercentTarget = Math.round(summary.totalPayableAmount * 0.2);
   const sixtyPercentTarget = Math.round(summary.totalPayableAmount * 0.6);
 
+  const design10Collected = caseTotals.d10Collected;
+  const design40Collected = caseTotals.d40Collected;
+
+  // Prolance/snapshot: targets from quote %. Local fallback only: prefer stamped case targets.
+  // If Design payments already recorded, keep stamped case target so remaining stays exact.
+  const design10Target =
+    usedLocalQuote && caseTotals.d10Target > 0
+      ? caseTotals.d10Target
+      : design10Collected > 0 && caseTotals.d10Target > 0
+        ? caseTotals.d10Target
+        : Math.round(summary.totalPayableAmount * 0.1);
+  const design40Target =
+    usedLocalQuote && caseTotals.d40Target > 0
+      ? caseTotals.d40Target
+      : design40Collected > 0 && caseTotals.d40Target > 0
+        ? caseTotals.d40Target
+        : Math.round(summary.totalPayableAmount * 0.4);
+
   const previousTenPercentTarget = parseLeadPayloadAmount(
     payload.ten_percent_target ?? nested.ten_percent_target,
   );
@@ -1543,30 +1696,21 @@ export async function resolveLeadMilestonePaymentBreakdown(
       : parseLeadPayloadAmount(payload.sixty_percent_target ?? nested.sixty_percent_target);
   const previousSixtyFromOldQuote = previousSixtyPercentTarget;
 
-  // Design 10% milestone: sales 10% + design 10% = 20% cumulative of latest quote.
-  const fromQuote10 = Math.max(0, twentyPercentTarget - totalPaidCumulative);
-  // 40% payment milestone: collect until 60% cumulative of latest quote.
-  const fromQuote40 = Math.max(0, sixtyPercentTarget - totalPaidCumulative);
-
-  // Easebuzz partials live in design_payment_case_summary — subtract so remaining auto-fills.
-  const caseTotals = await readDesignCaseBucketTotals(pool, leadId);
-  const design10Target =
-    caseTotals.d10Target > 0 ? caseTotals.d10Target : Math.round(summary.totalPayableAmount * 0.1);
-  const design40Target =
-    caseTotals.d40Target > 0 ? caseTotals.d40Target : Math.round(summary.totalPayableAmount * 0.4);
-  const design10Collected = caseTotals.d10Collected;
-  const design40Collected = caseTotals.d40Collected;
-
   const fromCase10 = Math.max(0, design10Target - design10Collected);
   const fromCase40 = Math.max(0, design40Target - design40Collected);
+  const fromQuote10 = Math.max(0, twentyPercentTarget - totalPaidCumulative);
+  const fromQuote40 = Math.max(0, sixtyPercentTarget - totalPaidCumulative);
 
-  // Prefer the tighter remaining so partial Easebuzz payments reduce "Amount to Collect Now".
-  const amountToCollect10 =
-    design10Collected > 0 || caseTotals.d10Target > 0
+  // Prolance OK → quote remaining, tightened by case collected for partials.
+  // Prolance failed (local) → exact case remaining only.
+  const amountToCollect10 = usedLocalQuote
+    ? fromCase10
+    : design10Collected > 0 || caseTotals.d10Target > 0
       ? Math.min(fromQuote10, fromCase10)
       : fromQuote10;
-  const amountToCollect40 =
-    design40Collected > 0 || caseTotals.d40Target > 0
+  const amountToCollect40 = usedLocalQuote
+    ? fromCase40
+    : design40Collected > 0 || caseTotals.d40Target > 0
       ? Math.min(fromQuote40, fromCase40)
       : fromQuote40;
 
@@ -1574,6 +1718,13 @@ export async function resolveLeadMilestonePaymentBreakdown(
     design10Target > 0 ? Math.min(100, Math.round((design10Collected / design10Target) * 100)) : 0;
   const design40PercentPaid =
     design40Target > 0 ? Math.min(100, Math.round((design40Collected / design40Target) * 100)) : 0;
+
+  const design10Done =
+    caseTotals.d10FinanceMode === "AUTO_APPROVED" ||
+    (design10Target > 0 && design10Collected + 0.009 >= design10Target);
+  const design40Done =
+    caseTotals.d40FinanceMode === "AUTO_APPROVED" ||
+    (design40Target > 0 && design40Collected + 0.009 >= design40Target);
 
   const quoteRevisionTopUp10 =
     previousTwentyPercentTarget != null && previousTwentyPercentTarget > 0
@@ -1586,6 +1737,9 @@ export async function resolveLeadMilestonePaymentBreakdown(
 
   return {
     ...summary,
+    totalPayableAmount: summary.totalPayableAmount,
+    tenPercentAmount: summary.tenPercentAmount,
+    fortyPercentAmount: summary.fortyPercentAmount,
     totalPaidCumulative,
     totalPaidToward10Percent,
     totalPaidToward40Percent,
@@ -1596,14 +1750,16 @@ export async function resolveLeadMilestonePaymentBreakdown(
     previousSixtyPercentTarget,
     previousFortyPercentTarget,
     quotationTotalAtLastPayment,
-    amountToCollect10,
-    amountToCollect40,
+    amountToCollect10: design10Done ? 0 : amountToCollect10,
+    amountToCollect40: design40Done ? 0 : amountToCollect40,
     design10Collected,
     design10Target,
-    design10PercentPaid,
+    design10PercentPaid: design10Done ? 100 : design10PercentPaid,
     design40Collected,
     design40Target,
-    design40PercentPaid,
+    design40PercentPaid: design40Done ? 100 : design40PercentPaid,
+    design10Complete: design10Done,
+    design40Complete: design40Done,
     quoteRevisionTopUp10,
     quoteRevisionTopUp40,
     remainingAfterTwentyPercent: Math.max(0, summary.totalPayableAmount - twentyPercentTarget),
@@ -2514,6 +2670,8 @@ function formatProlancePName(
         design40Collected: breakdown.design40Collected,
         design40Target: breakdown.design40Target,
         design40PercentPaid: breakdown.design40PercentPaid,
+        design10Complete: breakdown.design10Complete,
+        design40Complete: breakdown.design40Complete,
         quoteRevisionTopUp10: breakdown.quoteRevisionTopUp10,
         quoteRevisionTopUp40: breakdown.quoteRevisionTopUp40,
         remainingAfterTwentyPercent: breakdown.remainingAfterTwentyPercent,

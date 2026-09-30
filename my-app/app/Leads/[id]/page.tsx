@@ -86,6 +86,9 @@ export default function ProjectDetailPage() {
     const isDqcUser = ['dqc_manager', 'dqe'].includes((authUser?.role || '').toLowerCase());
     const canApproveDqc = ['dqc_manager', 'dqe', 'admin'].includes((authUser?.role || '').toLowerCase());
     const isDesigner = ['designer', 'design_manager'].includes((authUser?.role || '').toLowerCase());
+    const isHubPassAdmin = ['admin', 'super_admin', 'superadmin'].includes(
+        (authUser?.role || '').toLowerCase(),
+    );
     
     // State to track WHICH card is maximized (null = none)
     const [activeCard, setActiveCard] = useState<string | null>(null);
@@ -244,6 +247,8 @@ export default function ProjectDetailPage() {
     const [quoteDiscountSaveError, setQuoteDiscountSaveError] = useState<string | null>(null);
     const [prolanceProjectIdSaveBusy, setProlanceProjectIdSaveBusy] = useState(false);
     const [leadSettingsOpen, setLeadSettingsOpen] = useState(false);
+    const [hubPassBusy, setHubPassBusy] = useState(false);
+    const [bypassMilestoneBusy, setBypassMilestoneBusy] = useState(false);
     const [holdDate, setHoldDate] = useState<string>('');
     const [selectedHistoryEvent, setSelectedHistoryEvent] = useState<HistoryEvent | null>(null);
     const [uploadsVersion, setUploadsVersion] = useState(0);
@@ -882,6 +887,73 @@ export default function ProjectDetailPage() {
             }
         },
         [projectId, sessionId],
+    );
+
+    const persistHubPass = useCallback(
+        async (enabled: boolean): Promise<boolean> => {
+            if (projectId == null || !sessionId || !isHubPassAdmin) return false;
+            setHubPassBusy(true);
+            try {
+                const res = await fetch(`${API}/api/leads/${projectId}/hub-pass`, {
+                    method: 'PATCH',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${sessionId}`,
+                    },
+                    body: JSON.stringify({ enabled }),
+                });
+                if (!res.ok) return false;
+                setProject((prev) => (prev ? { ...prev, hubPass: enabled } : prev));
+                return true;
+            } catch {
+                return false;
+            } finally {
+                setHubPassBusy(false);
+            }
+        },
+        [projectId, sessionId, isHubPassAdmin],
+    );
+
+    const handleBypassMilestone = useCallback(
+        async (milestoneIndex: number) => {
+            if (projectId == null || !sessionId || !isHubPassAdmin || !project?.hubPass) return;
+            const milestone = MileStonesArray.MilestonesName.find((m) => m.id === milestoneIndex);
+            const name = milestone?.name ?? `Milestone ${milestoneIndex}`;
+            if (!window.confirm(`Hub Pass: bypass "${name}" and go to the next milestone?`)) return;
+            setBypassMilestoneBusy(true);
+            try {
+                const res = await fetch(`${API}/api/leads/${projectId}/hub-pass/bypass-milestone`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${sessionId}`,
+                    },
+                    body: JSON.stringify({ milestoneIndex }),
+                });
+                const data = await res.json().catch(() => null);
+                if (!res.ok) {
+                    setBlockedTaskMessage(
+                        (data && typeof data.message === 'string' && data.message) ||
+                            'Could not bypass milestone.',
+                    );
+                    setTimeout(() => setBlockedTaskMessage(null), 4000);
+                    return;
+                }
+                if (Array.isArray(data?.completions)) {
+                    hydrateCompletions(data.completions);
+                } else {
+                    refreshCompletions();
+                }
+                setSuccessToast(`Hub Pass: bypassed ${name}`);
+                setTimeout(() => setSuccessToast(null), 2500);
+            } catch {
+                setBlockedTaskMessage('Could not bypass milestone.');
+                setTimeout(() => setBlockedTaskMessage(null), 4000);
+            } finally {
+                setBypassMilestoneBusy(false);
+            }
+        },
+        [projectId, sessionId, isHubPassAdmin, project?.hubPass, hydrateCompletions, refreshCompletions],
     );
 
     const triggerProlanceCreate = useCallback(async () => {
@@ -2317,6 +2389,45 @@ export default function ProjectDetailPage() {
                                     variant="settings"
                                 />
                             </section>
+
+                            {isHubPassAdmin && (
+                                <section className="border-t border-slate-700/80 pt-3">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <div className="min-w-0">
+                                            <h3 className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                                Hub Pass
+                                            </h3>
+                                            <p className="text-[10px] leading-snug text-slate-600">
+                                                Temp · X on current milestone to skip
+                                            </p>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            role="switch"
+                                            aria-checked={Boolean(project?.hubPass)}
+                                            aria-label={project?.hubPass ? 'Disable Hub Pass' : 'Enable Hub Pass'}
+                                            disabled={hubPassBusy}
+                                            onClick={async () => {
+                                                const next = !project?.hubPass;
+                                                const ok = await persistHubPass(next);
+                                                if (!ok) {
+                                                    setBlockedTaskMessage('Could not update Hub Pass.');
+                                                    setTimeout(() => setBlockedTaskMessage(null), 4000);
+                                                }
+                                            }}
+                                            className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-40 ${
+                                                project?.hubPass ? 'bg-emerald-500' : 'bg-slate-600'
+                                            }`}
+                                        >
+                                            <span
+                                                className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                                                    project?.hubPass ? 'left-4' : 'left-0.5'
+                                                }`}
+                                            />
+                                        </button>
+                                    </div>
+                                </section>
+                            )}
                         </div>
                     </div>
                 </div>
@@ -2960,6 +3071,9 @@ export default function ProjectDetailPage() {
                         timelineAnchors={project?.timelineAnchors ?? {}}
                         taskCompletions={taskCompletions}
                         paymentSummaryRefreshKey={uploadsVersion}
+                        hubPassEnabled={Boolean(isHubPassAdmin && project?.hubPass)}
+                        onBypassMilestone={handleBypassMilestone}
+                        bypassBusy={bypassMilestoneBusy}
                     />
                 )}
 
@@ -3536,6 +3650,7 @@ export default function ProjectDetailPage() {
                             leadId={projectId}
                             apiBase={API}
                             sessionId={sessionId}
+                            customerName={project?.intakeCustomerName || project?.projectName}
                             onSuccess={() => {
                                 setCompletedTaskKeys((prev) => Array.from(new Set([...prev, taskKey(2, '10% payment collection')])));
                                 setUploadsVersion((v) => v + 1);
@@ -4316,6 +4431,7 @@ export default function ProjectDetailPage() {
                             leadId={projectId}
                             apiBase={API}
                             sessionId={sessionId}
+                            customerName={project?.intakeCustomerName || project?.projectName}
                             onClose={closePopup}
                             onSuccess={() => {
                                 recordTaskComplete(5, '40% collection', {
@@ -4330,6 +4446,8 @@ export default function ProjectDetailPage() {
                                     Array.from(
                                         new Set([
                                             ...prev,
+                                            taskKey(5, 'Design sign off'),
+                                            taskKey(5, 'meeting completed'),
                                             taskKey(5, '40% collection'),
                                             taskKey(5, '40% payment approval'),
                                         ]),

@@ -25,6 +25,8 @@ type Props = {
   sessionId: string | null;
   bucket: 'DESIGN_10' | 'DESIGN_40';
   defaultAmount?: number | null;
+  /** Lead / customer display name — plane flies toward this on send */
+  customerName?: string | null;
   onOfflineChosen: () => void;
   onOnlineSuccess?: () => void;
 };
@@ -96,6 +98,7 @@ export default function DesignPaymentMethodPanel({
   sessionId,
   bucket,
   defaultAmount,
+  customerName,
   onOfflineChosen,
   onOnlineSuccess,
 }: Props) {
@@ -110,9 +113,11 @@ export default function DesignPaymentMethodPanel({
   const [attempt, setAttempt] = useState<ActiveAttempt | null>(null);
   const [copied, setCopied] = useState(false);
   const [paidNotice, setPaidNotice] = useState(false);
+  const [linkSentPhase, setLinkSentPhase] = useState<'flying' | 'done' | null>(null);
   const paidNotified = useRef(false);
   const onOnlineSuccessRef = useRef(onOnlineSuccess);
   onOnlineSuccessRef.current = onOnlineSuccess;
+  const leadLabel = (customerName || '').trim() || 'Customer';
 
   const authHeaders = useCallback((): HeadersInit => {
     const h: HeadersInit = { 'Content-Type': 'application/json' };
@@ -165,6 +170,18 @@ export default function DesignPaymentMethodPanel({
     }
   }, [defaultAmount]);
 
+  useEffect(() => {
+    if (linkSentPhase !== 'flying') return;
+    const t = setTimeout(() => setLinkSentPhase('done'), 1500);
+    return () => clearTimeout(t);
+  }, [linkSentPhase]);
+
+  useEffect(() => {
+    if (linkSentPhase !== 'done') return;
+    const t = setTimeout(() => setLinkSentPhase(null), 2800);
+    return () => clearTimeout(t);
+  }, [linkSentPhase]);
+
   const createLink = async () => {
     if (!sessionId) {
       setError('Not signed in');
@@ -190,7 +207,7 @@ export default function DesignPaymentMethodPanel({
         return;
       }
       if (res.status === 503) {
-        setError(data?.message || 'Easebuzz unavailable. Please use Offline proof.');
+        setError(data?.message || 'Online payment unavailable. Please use Offline proof.');
         return;
       }
       if (!res.ok) throw new Error(data?.message || data?.error || 'Failed to create link');
@@ -198,6 +215,8 @@ export default function DesignPaymentMethodPanel({
       setMethod('online');
       if (data?.emailSent === false && typeof data?.message === 'string') {
         setError(data.message);
+      } else {
+        setLinkSentPhase('flying');
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to create payment link');
@@ -223,6 +242,7 @@ export default function DesignPaymentMethodPanel({
       if (!res.ok) throw new Error(data?.message || data?.error || `${action} failed`);
       if (action === 'switch-offline' || action === 'cancel') {
         setAttempt(null);
+        setLinkSentPhase(null);
         if (action === 'switch-offline') {
           setMethod('offline');
           onOfflineChosen();
@@ -232,6 +252,8 @@ export default function DesignPaymentMethodPanel({
       }
       if (data?.emailSent === false && typeof data?.message === 'string') {
         setError(data.message);
+      } else if (action === 'resend') {
+        setLinkSentPhase('flying');
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Action failed');
@@ -268,7 +290,7 @@ export default function DesignPaymentMethodPanel({
     return (
       <div className="animate-fadeInUp mb-5">
         <p className="mb-3 text-sm leading-relaxed text-[#32261C]/75">
-          Choose how to collect. Online sends an Easebuzz payment link by email. Offline uploads proof for Finance review.
+          Choose how to collect. Online emails a payment link (UPI, Card, and more). Offline uploads proof for Finance review.
         </p>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <button
@@ -280,9 +302,9 @@ export default function DesignPaymentMethodPanel({
             <span className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-[#00B0ED] text-white shadow-md shadow-[#00B0ED]/30 transition-transform duration-300 group-hover:scale-110 group-hover:rotate-[-4deg]">
               <IconMail className="h-5 w-5" />
             </span>
-            <p className="text-sm font-bold text-[#32261C]">Online · Easebuzz</p>
+            <p className="text-sm font-bold text-[#32261C]">Online · UPI &amp; Card</p>
             <p className="mt-1 text-xs leading-relaxed text-gray-500">
-              Email payment link. Auto-approves when the customer pays.
+              Email a payment link. Customer pays via UPI, Card, net banking, and more. Auto-approves when paid.
             </p>
             <span className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-[#00B0ED] transition-all group-hover:gap-2">
               Continue <span aria-hidden>→</span>
@@ -302,7 +324,7 @@ export default function DesignPaymentMethodPanel({
             </span>
             <p className="text-sm font-bold text-[#32261C]">Offline · Proof</p>
             <p className="mt-1 text-xs leading-relaxed text-gray-500">
-              Upload screenshots or PDF. Finance reviews and approves.
+              Upload bank transfer / UPI screenshots or PDF. Finance reviews and approves manually.
             </p>
             <span className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-[#32261C] transition-all group-hover:gap-2">
               Continue <span aria-hidden>→</span>
@@ -343,34 +365,18 @@ export default function DesignPaymentMethodPanel({
               <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-[#32261C]">
                 Amount
               </label>
-              <div className="flex flex-wrap items-stretch gap-2">
-                <div className="relative min-w-[180px] flex-1">
-                  <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-[#32261C]/45">
-                    ₹
-                  </span>
-                  <input
-                    type="number"
-                    min={1}
-                    className="w-full rounded-xl border border-[#DDCDC1] bg-[#F1F2F6]/50 py-2.5 pl-8 pr-3 text-sm font-semibold text-[#32261C] outline-none transition-all duration-200 focus:border-[#00B0ED] focus:bg-white focus:ring-4 focus:ring-[#00B0ED]/15"
-                    value={amount}
-                    placeholder="0"
-                    onChange={(e) => setAmount(e.target.value)}
-                  />
-                </div>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void createLink()}
-                  title="Send email link"
-                  aria-label="Send email link"
-                  className="inline-flex h-[42px] w-[42px] flex-shrink-0 items-center justify-center rounded-xl bg-[#00B0ED] text-white shadow-md shadow-[#00B0ED]/25 transition-all duration-200 hover:-translate-y-0.5 hover:bg-[#0099d1] hover:shadow-lg active:translate-y-0 disabled:pointer-events-none disabled:opacity-50"
-                >
-                  {busy ? (
-                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                  ) : (
-                    <IconSend className="h-5 w-5" />
-                  )}
-                </button>
+              <div className="relative">
+                <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-[#32261C]/45">
+                  ₹
+                </span>
+                <input
+                  type="number"
+                  min={1}
+                  className="w-full rounded-xl border border-[#DDCDC1] bg-[#F1F2F6]/50 py-2.5 pl-8 pr-3 text-sm font-semibold text-[#32261C] outline-none transition-all duration-200 focus:border-[#00B0ED] focus:bg-white focus:ring-4 focus:ring-[#00B0ED]/15"
+                  value={amount}
+                  placeholder="0"
+                  onChange={(e) => setAmount(e.target.value)}
+                />
               </div>
               {amountPreview ? (
                 <p className="mt-2 text-xs text-[#32261C]/55">
@@ -379,11 +385,98 @@ export default function DesignPaymentMethodPanel({
               ) : (
                 <p className="mt-2 text-xs text-gray-400">Enter the amount to collect, then send the link.</p>
               )}
+              <button
+                type="button"
+                disabled={busy || !amountPreview}
+                onClick={() => void createLink()}
+                aria-label="Send payment link by email"
+                className="group relative mt-3 flex w-full items-center justify-center gap-2.5 overflow-hidden rounded-xl bg-[#FF6B6B] px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-[#FF6B6B]/30 transition-all duration-300 hover:-translate-y-0.5 hover:bg-[#EF0101] hover:shadow-lg hover:shadow-[#EF0101]/30 active:translate-y-0 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-45"
+              >
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/25 to-transparent transition-transform duration-700 ease-out group-hover:translate-x-full"
+                />
+                {busy ? (
+                  <>
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                    <span>Sending link…</span>
+                  </>
+                ) : (
+                  <>
+                    <IconSend className="h-4 w-4 transition-transform duration-300 ease-out group-hover:translate-x-1 group-hover:-translate-y-0.5 group-hover:rotate-12 group-active:translate-x-3 group-active:-translate-y-2 group-active:opacity-0" />
+                    <span className="transition-transform duration-300 group-hover:tracking-wide">
+                      Send payment link
+                    </span>
+                  </>
+                )}
+              </button>
             </div>
           )}
 
           {attempt && (
             <div className="space-y-3 px-4 py-4">
+              {linkSentPhase && (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  className="animate-linkSentPop relative overflow-hidden rounded-xl border border-emerald-200 bg-gradient-to-br from-emerald-50 via-white to-emerald-50/70 px-4 py-4 shadow-sm"
+                >
+                  {linkSentPhase === 'flying' ? (
+                    <div className="space-y-3">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-emerald-800/70">
+                        Sending email to customer…
+                      </p>
+                      <div className="relative h-14 overflow-hidden rounded-lg bg-emerald-50/80">
+                        <span
+                          aria-hidden
+                          className="animate-linkPlaneTrail absolute left-[4%] top-1/2 h-[2px] -translate-y-1/2 rounded-full bg-gradient-to-r from-transparent via-emerald-400 to-emerald-500"
+                        />
+                        <span
+                          aria-hidden
+                          className="animate-linkPlaneToLead absolute top-1/2 z-10 text-emerald-600"
+                        >
+                          <IconSend className="h-5 w-5 drop-shadow-sm" />
+                        </span>
+                        <span className="animate-linkLeadPulse absolute right-2 top-1/2 z-20 flex max-w-[46%] -translate-y-1/2 items-center gap-1.5 truncate rounded-full border border-emerald-300 bg-white px-2.5 py-1.5 text-[11px] font-bold text-emerald-900 shadow-sm">
+                          <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-emerald-500 text-[10px] font-bold text-white">
+                            {leadLabel.charAt(0).toUpperCase()}
+                          </span>
+                          <span className="truncate">{leadLabel}</span>
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-3">
+                      <span className="relative flex h-12 w-12 flex-shrink-0 items-center justify-center">
+                        <span
+                          aria-hidden
+                          className="animate-linkSentRing absolute inset-0 rounded-full border-2 border-emerald-400"
+                        />
+                        <span className="relative flex h-11 w-11 items-center justify-center rounded-full bg-emerald-500 text-white shadow-md shadow-emerald-500/30">
+                          <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" aria-hidden>
+                            <path
+                              className="animate-linkSentCheck"
+                              d="M5 13l4 4L19 7"
+                              stroke="currentColor"
+                              strokeWidth="2.5"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
+                        </span>
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-emerald-900">
+                          Sent successfully to {leadLabel}!
+                        </p>
+                        <p className="mt-0.5 text-xs leading-relaxed text-emerald-800/90">
+                          Payment link emailed. Customer can pay via UPI, Card, and more.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
               <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm text-[#32261C]">
                 <span className="font-medium uppercase tracking-wide">
                   {String(attempt.status || 'PENDING').toUpperCase()}

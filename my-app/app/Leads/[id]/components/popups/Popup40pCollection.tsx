@@ -5,13 +5,14 @@ import { useAuth } from '@/app/auth/AuthContext';
 import { canUseEasebuzzOnline } from '@/app/lib/easebuzzAccess';
 import MilestonePaymentSummary, { type QuotePaymentSummary } from '../MilestonePaymentSummary';
 import { loadQuotePaymentSummary } from '../loadQuotePaymentSummary';
-import { clearCachedQuotePaymentSummary } from '../quotePaymentSummaryCache';
+import { getCachedQuotePaymentSummary } from '../quotePaymentSummaryCache';
 import DesignPaymentMethodPanel from './DesignPaymentMethodPanel';
 
 type Props = {
   leadId: number;
   apiBase: string;
   sessionId: string | null;
+  customerName?: string | null;
   onSuccess: () => void;
   onOnlineSuccess?: () => void;
   onClose: () => void;
@@ -24,6 +25,7 @@ export default function Popup40pCollection({
   leadId,
   apiBase,
   sessionId,
+  customerName,
   onSuccess,
   onOnlineSuccess,
   onClose,
@@ -33,8 +35,10 @@ export default function Popup40pCollection({
   const [files, setFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [paymentSummary, setPaymentSummary] = useState<QuotePaymentSummary | null>(null);
-  const [paymentSummaryLoading, setPaymentSummaryLoading] = useState(true);
+  const cachedAtOpen =
+    Number.isFinite(leadId) && leadId > 0 ? getCachedQuotePaymentSummary(leadId) : null;
+  const [paymentSummary, setPaymentSummary] = useState<QuotePaymentSummary | null>(cachedAtOpen);
+  const [paymentSummaryLoading, setPaymentSummaryLoading] = useState(!cachedAtOpen);
   const [paymentSummaryError, setPaymentSummaryError] = useState<string | null>(null);
   const [showOffline, setShowOffline] = useState(!allowOnline);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -51,19 +55,30 @@ export default function Popup40pCollection({
       return;
     }
     const controller = new AbortController();
-    clearCachedQuotePaymentSummary(leadId);
-    setPaymentSummaryLoading(true);
-    setPaymentSummaryError(null);
+    const existing = getCachedQuotePaymentSummary(leadId);
+    if (existing) {
+      setPaymentSummary(existing);
+      setPaymentSummaryError(null);
+      setPaymentSummaryLoading(false);
+    } else {
+      setPaymentSummaryLoading(true);
+      setPaymentSummaryError(null);
+    }
     (async () => {
       const result = await loadQuotePaymentSummary({
         leadId,
         apiBase,
         signal: controller.signal,
-        retries: 3,
+        retries: 1,
       });
       if (controller.signal.aborted) return;
-      setPaymentSummary(result.summary);
-      setPaymentSummaryError(result.message);
+      if (result.summary) {
+        setPaymentSummary(result.summary);
+        setPaymentSummaryError(null);
+      } else if (!existing) {
+        setPaymentSummary(null);
+        setPaymentSummaryError(result.message);
+      }
       setPaymentSummaryLoading(false);
     })();
     return () => controller.abort();
@@ -91,11 +106,13 @@ export default function Popup40pCollection({
 
   const collectionComplete =
     !!paymentSummary &&
-    !paymentSummaryLoading &&
-    (paymentSummary.amountToCollect40 <= 0 ||
+    (paymentSummary.design40Complete === true ||
+      paymentSummary.amountToCollect40 <= 0 ||
       (paymentSummary.design40PercentPaid || 0) >= 100 ||
       ((paymentSummary.design40Target || 0) > 0 &&
         (paymentSummary.design40Collected || 0) + 0.009 >= (paymentSummary.design40Target || 0)));
+
+  const showCollectOptions = !paymentSummaryLoading && !collectionComplete;
 
   const onSubmit = async () => {
     if (!sessionId) {
@@ -146,7 +163,7 @@ export default function Popup40pCollection({
             . Online and offline payment options are closed for this milestone.
           </p>
         </div>
-      ) : (
+      ) : showCollectOptions ? (
         <>
       {allowOnline && (
         <DesignPaymentMethodPanel
@@ -155,6 +172,7 @@ export default function Popup40pCollection({
           sessionId={sessionId}
           bucket="DESIGN_40"
           defaultAmount={paymentSummary?.amountToCollect40}
+          customerName={customerName}
           onOfflineChosen={() => setShowOffline(true)}
           onOnlineSuccess={onOnlineSuccess || onSuccess}
         />
@@ -227,7 +245,9 @@ export default function Popup40pCollection({
         </div>
       )}
         </>
-      )}
+      ) : paymentSummaryLoading ? (
+        <p className="mt-2 text-xs text-gray-500">Checking payment status…</p>
+      ) : null}
     </div>
   );
 }

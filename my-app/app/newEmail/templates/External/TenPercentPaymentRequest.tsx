@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Text, Section, Link } from '@react-email/components';
+import { Text, Section } from '@react-email/components';
 import { BaseLayout } from '../../component/layout/BaseLayout';
 import { StageBar } from '../../component/blocks/StageBar';
 import { DetailsList, DetailItem } from '../../component/blocks/DetailsList';
@@ -101,12 +101,7 @@ export default function TenPercentPaymentRequestEmail({
           <div className="text-center mt-6 mb-8">
             <Button text="PAY 10% NOW" href={payHref} />
             <Text className="m-0 mt-3 text-[12px] text-neutral-mediumGrey leading-relaxed">
-              If the button does not open, use this link:
-            </Text>
-            <Text className="m-0 mt-1 text-[12px] leading-relaxed break-all">
-              <Link href={payHref} target="_blank">
-                {payHref}
-              </Link>
+              Tap the button above to complete your payment securely.
             </Text>
             <Text className="m-0 mt-4 text-[12px] text-neutral-mediumGrey leading-relaxed max-w-[480px] mx-auto">
               You can also make a bank transfer using the above details and share the confirmation screenshot with your designer.

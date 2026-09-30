@@ -5,13 +5,14 @@ import { useAuth } from "@/app/auth/AuthContext";
 import { canUseEasebuzzOnline } from "@/app/lib/easebuzzAccess";
 import MilestonePaymentSummary, { type QuotePaymentSummary } from "../MilestonePaymentSummary";
 import { loadQuotePaymentSummary } from "../loadQuotePaymentSummary";
-import { clearCachedQuotePaymentSummary } from "../quotePaymentSummaryCache";
+import { getCachedQuotePaymentSummary } from "../quotePaymentSummaryCache";
 import DesignPaymentMethodPanel from "./DesignPaymentMethodPanel";
 
 type Props = {
   leadId: number;
   apiBase: string;
   sessionId: string | null;
+  customerName?: string | null;
   onSuccess: () => void;
   onOnlineSuccess?: () => void;
   onClose?: () => void;
@@ -24,6 +25,7 @@ export default function Popup10pPaymentCollection({
   leadId,
   apiBase,
   sessionId,
+  customerName,
   onSuccess,
   onOnlineSuccess,
 }: Props) {
@@ -32,8 +34,10 @@ export default function Popup10pPaymentCollection({
   const [files, setFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [paymentSummary, setPaymentSummary] = useState<QuotePaymentSummary | null>(null);
-  const [paymentSummaryLoading, setPaymentSummaryLoading] = useState(true);
+  const cachedAtOpen =
+    Number.isFinite(leadId) && leadId > 0 ? getCachedQuotePaymentSummary(leadId) : null;
+  const [paymentSummary, setPaymentSummary] = useState<QuotePaymentSummary | null>(cachedAtOpen);
+  const [paymentSummaryLoading, setPaymentSummaryLoading] = useState(!cachedAtOpen);
   const [paymentSummaryError, setPaymentSummaryError] = useState<string | null>(null);
   const [showOffline, setShowOffline] = useState(!allowOnline);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -50,20 +54,30 @@ export default function Popup10pPaymentCollection({
       return;
     }
     const controller = new AbortController();
-    // Always refetch when opening — partial payments must show remaining, not cached full target.
-    clearCachedQuotePaymentSummary(leadId);
-    setPaymentSummaryLoading(true);
-    setPaymentSummaryError(null);
+    const existing = getCachedQuotePaymentSummary(leadId);
+    if (existing) {
+      setPaymentSummary(existing);
+      setPaymentSummaryError(null);
+      setPaymentSummaryLoading(false);
+    } else {
+      setPaymentSummaryLoading(true);
+      setPaymentSummaryError(null);
+    }
     (async () => {
       const result = await loadQuotePaymentSummary({
         leadId,
         apiBase,
         signal: controller.signal,
-        retries: 3,
+        retries: 1,
       });
       if (controller.signal.aborted) return;
-      setPaymentSummary(result.summary);
-      setPaymentSummaryError(result.message);
+      if (result.summary) {
+        setPaymentSummary(result.summary);
+        setPaymentSummaryError(null);
+      } else if (!existing) {
+        setPaymentSummary(null);
+        setPaymentSummaryError(result.message);
+      }
       setPaymentSummaryLoading(false);
     })();
     return () => controller.abort();
@@ -91,11 +105,14 @@ export default function Popup10pPaymentCollection({
 
   const collectionComplete =
     !!paymentSummary &&
-    !paymentSummaryLoading &&
-    (paymentSummary.amountToCollect10 <= 0 ||
+    (paymentSummary.design10Complete === true ||
+      paymentSummary.amountToCollect10 <= 0 ||
       (paymentSummary.design10PercentPaid || 0) >= 100 ||
       ((paymentSummary.design10Target || 0) > 0 &&
         (paymentSummary.design10Collected || 0) + 0.009 >= (paymentSummary.design10Target || 0)));
+
+  // While loading with no cache, do not flash Online/Offline (looks like payment is open).
+  const showCollectOptions = !paymentSummaryLoading && !collectionComplete;
 
   const onSubmit = async () => {
     if (!files.length || !sessionId) {
@@ -143,7 +160,7 @@ export default function Popup10pPaymentCollection({
               . Online and offline payment options are closed for this milestone.
             </p>
           </div>
-        ) : (
+        ) : showCollectOptions ? (
           <>
         {allowOnline && (
           <DesignPaymentMethodPanel
@@ -152,6 +169,7 @@ export default function Popup10pPaymentCollection({
             sessionId={sessionId}
             bucket="DESIGN_10"
             defaultAmount={paymentSummary?.amountToCollect10}
+            customerName={customerName}
             onOfflineChosen={() => setShowOffline(true)}
             onOnlineSuccess={onOnlineSuccess || onSuccess}
           />
@@ -228,7 +246,9 @@ export default function Popup10pPaymentCollection({
           </div>
         )}
           </>
-        )}
+        ) : paymentSummaryLoading ? (
+          <p className="mt-2 text-xs text-gray-500">Checking payment status…</p>
+        ) : null}
       </div>
     </div>
   );

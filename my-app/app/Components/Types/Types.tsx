@@ -87,6 +87,8 @@ export type LeadshipTypes = {
     prolanceProjectId?: number | null;
     /** Last Prolance quotation ID from Get Quote (optional, for reference) */
     prolanceQuoteId?: number | null;
+    /** Temp testing: Hub Pass — admin can bypass milestones when enabled */
+    hubPass?: boolean;
     projectManagerName?: string | null;
     /** Sales closure experience center / branch (from lead payload) */
     experienceCenter?: string | null;

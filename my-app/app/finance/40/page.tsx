@@ -5,6 +5,9 @@ import { useAuth } from '../../auth/AuthContext';
 import { getApiBase } from '@/app/lib/apiBase';
 import FinanceRefundsNavLink from '../../Components/FinanceRefundsNavLink';
 import { isFinance40ApprovalOverdue, type QueueTimelineFields } from '@/app/Leads/[id]/lib/queueOverdueHighlight';
+import FinancePaymentDetailsCard, {
+  type FinancePaymentDetail,
+} from '../components/FinancePaymentDetailsCard';
 
 type FinanceLead = QueueTimelineFields & {
   id: number;
@@ -13,6 +16,7 @@ type FinanceLead = QueueTimelineFields & {
   canApprove: boolean;
   financeHandlingMode?: string;
   approvedAt?: string;
+  approvedBy?: string;
 };
 
 type UploadItem = {
@@ -38,8 +42,9 @@ export default function Finance40pPage() {
   const [targetLeadId, setTargetLeadId] = useState<number | null>(null);
   const [viewLeadId, setViewLeadId] = useState<number | null>(null);
   const [viewUploads, setViewUploads] = useState<UploadItem[]>([]);
+  const [viewPayments, setViewPayments] = useState<FinancePaymentDetail[]>([]);
   const [viewLoading, setViewLoading] = useState(false);
-  const [queueTab, setQueueTab] = useState<'pending' | 'auto_approved'>('pending');
+  const [queueTab, setQueueTab] = useState<'pending' | 'auto_approved' | 'approved_history'>('pending');
 
   const authHeaders = useMemo(() => {
     const headers: Record<string, string> = {};
@@ -63,7 +68,9 @@ export default function Finance40pPage() {
       const url =
         queueTab === 'auto_approved'
           ? `${getApiBase()}/api/design-payment/finance-queue?bucket=DESIGN_40&section=AUTO_APPROVED`
-          : `${getApiBase()}/api/leads/finance-40p-queue`;
+          : queueTab === 'approved_history'
+            ? `${getApiBase()}/api/design-payment/finance-queue?bucket=DESIGN_40&section=APPROVED_HISTORY`
+            : `${getApiBase()}/api/leads/finance-40p-queue`;
       const res = await fetch(url, { headers: { ...authHeaders } });
       const text = await res.text();
       const data = (() => {
@@ -116,15 +123,26 @@ export default function Finance40pPage() {
   const onViewScreenshots = async (leadId: number) => {
     setViewLeadId(leadId);
     setViewUploads([]);
+    setViewPayments([]);
     setViewLoading(true);
     try {
-      const res = await fetch(`${getApiBase()}/api/leads/${leadId}/uploads`, { headers: { ...authHeaders } });
-      const data = await res.json().catch(() => []);
+      const [uploadsRes, payRes] = await Promise.all([
+        fetch(`${getApiBase()}/api/leads/${leadId}/uploads`, { headers: { ...authHeaders } }),
+        fetch(
+          `${getApiBase()}/api/design-payment/cases/${leadId}/finance-view?bucket=DESIGN_40`,
+          { headers: { ...authHeaders } },
+        ),
+      ]);
+      const data = await uploadsRes.json().catch(() => []);
       const list = Array.isArray(data) ? data : [];
       const payment = list.filter((u: UploadItem) => u.uploadType === 'payment_40p');
       setViewUploads(payment);
+
+      const payData = await payRes.json().catch(() => null);
+      setViewPayments(Array.isArray(payData?.payments) ? payData.payments : []);
     } catch {
       setViewUploads([]);
+      setViewPayments([]);
     } finally {
       setViewLoading(false);
     }
@@ -205,7 +223,7 @@ export default function Finance40pPage() {
 
         {error && <div className="text-sm text-red-600 mt-4">{error}</div>}
 
-        <div className="mt-4 flex gap-2">
+        <div className="mt-4 flex flex-wrap gap-2">
           <button
             type="button"
             onClick={() => setQueueTab('pending')}
@@ -217,11 +235,22 @@ export default function Finance40pPage() {
           </button>
           <button
             type="button"
-            onClick={() => setQueueTab('auto_approved')}
+            onClick={() => setQueueTab('approved_history')}
             className={`px-3 py-1.5 rounded-lg text-sm font-semibold border ${
-              queueTab === 'auto_approved'
-                ? 'bg-emerald-700 text-white border-emerald-700'
+              queueTab === 'approved_history'
+                ? 'bg-[#32261C] text-white border-[#32261C]'
                 : 'bg-white text-gray-700 border-gray-300'
+            }`}
+          >
+            Approved history (manual)
+          </button>
+          <button
+            type="button"
+            onClick={() => setQueueTab('auto_approved')}
+            className={`px-3 py-1.5 rounded-lg text-sm font-semibold border transition-colors ${
+              queueTab === 'auto_approved'
+                ? 'bg-[#FF6B6B] text-white border-[#FF6B6B] hover:bg-[#EF0101] hover:border-[#EF0101]'
+                : 'bg-[#FFE4E4] text-[#C62828] border-[#FFB4B4] hover:bg-[#FF6B6B] hover:text-white hover:border-[#FF6B6B]'
             }`}
           >
             Auto-approved (Easebuzz)
@@ -231,11 +260,12 @@ export default function Finance40pPage() {
         <div className="mt-5 border border-gray-200 rounded-2xl overflow-hidden">
           <div className="grid grid-cols-12 bg-gray-50 px-4 py-3 text-xs font-semibold text-gray-600">
             <div className="col-span-2">Lead ID</div>
-            <div className="col-span-3">Lead name</div>
+            <div className="col-span-2">Lead name</div>
             <div className="col-span-2">Status</div>
+            <div className="col-span-2">Approved history (manual)</div>
             <div className="col-span-2 text-right">View</div>
             <div className="col-span-1 text-right">Upload</div>
-            <div className="col-span-2 text-right">Approve</div>
+            <div className="col-span-1 text-right">Approve</div>
           </div>
           {leads.length === 0 ? (
             <div className="px-4 py-6 text-sm text-gray-600">
@@ -243,15 +273,32 @@ export default function Finance40pPage() {
                 ? 'Loading…'
                 : queueTab === 'auto_approved'
                   ? 'No Easebuzz auto-approved Design 40% rows yet.'
-                  : 'No leads at 40% payment stage. Leads appear here after the 40% collection step is completed.'}
+                  : queueTab === 'approved_history'
+                    ? 'No offline / manually approved Design 40% history yet.'
+                    : 'No leads at 40% payment stage. Leads appear here after the 40% collection step is completed.'}
             </div>
           ) : (
             leads.map((l) => {
               const busyUpload = uploadingLeadId === l.id;
               const busyApprove = approvingLeadId === l.id;
               const isAuto = queueTab === 'auto_approved' || l.financeHandlingMode === 'AUTO_APPROVED';
+              const isHistory =
+                queueTab === 'approved_history' || l.financeHandlingMode === 'MANUAL_APPROVED';
               const approvalOverdue =
-                !isAuto && l.status === 'Pending approval' && isFinance40ApprovalOverdue(l);
+                !isAuto &&
+                !isHistory &&
+                l.status === 'Pending approval' &&
+                isFinance40ApprovalOverdue(l);
+              const approvedWhen = l.approvedAt
+                ? new Date(l.approvedAt).toLocaleString('en-IN', {
+                    day: '2-digit',
+                    month: 'short',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: true,
+                  })
+                : null;
               return (
                 <div
                   key={l.id}
@@ -264,21 +311,41 @@ export default function Finance40pPage() {
                       {l.id}
                     </a>
                   </div>
-                  <div className="col-span-3 text-sm text-gray-800 truncate" title={l.projectName}>{l.projectName}</div>
+                  <div className="col-span-2 text-sm text-gray-800 truncate" title={l.projectName}>{l.projectName}</div>
                   <div className="col-span-2 text-sm">
                     <span
                       className={
                         isAuto
                           ? 'text-emerald-700 font-medium'
-                          : approvalOverdue
-                            ? 'text-[#EF0101] font-semibold'
-                            : l.status === 'Pending approval'
-                              ? 'text-amber-700 font-medium'
-                              : 'text-gray-600'
+                          : isHistory
+                            ? 'text-[#32261C] font-medium'
+                            : approvalOverdue
+                              ? 'text-[#EF0101] font-semibold'
+                              : l.status === 'Pending approval'
+                                ? 'text-amber-700 font-medium'
+                                : 'text-gray-600'
                       }
                     >
-                      {isAuto ? 'AUTO_APPROVED' : approvalOverdue ? 'OVERDUE — approval pending' : l.status}
+                      {isAuto
+                        ? 'AUTO_APPROVED'
+                        : isHistory
+                          ? 'MANUAL_APPROVED'
+                          : approvalOverdue
+                            ? 'OVERDUE — approval pending'
+                            : l.status}
                     </span>
+                  </div>
+                  <div className="col-span-2 text-xs text-gray-700 leading-snug">
+                    {isAuto || isHistory ? (
+                      <>
+                        <div className="font-semibold text-gray-900">
+                          {l.approvedBy || (isAuto ? 'SYSTEM · Easebuzz' : 'Finance')}
+                        </div>
+                        <div className="text-gray-500">{approvedWhen || '—'}</div>
+                      </>
+                    ) : (
+                      <span className="text-gray-400">—</span>
+                    )}
                   </div>
                   <div className="col-span-2 text-right">
                     <button
@@ -286,11 +353,11 @@ export default function Finance40pPage() {
                       onClick={() => onViewScreenshots(l.id)}
                       className="px-3 py-2 rounded-lg border border-gray-300 text-gray-700 text-sm font-semibold hover:bg-gray-50"
                     >
-                      View screenshots
+                      {isAuto ? 'View' : 'View screenshots'}
                     </button>
                   </div>
                   <div className="col-span-1 text-right">
-                    {!isAuto && (
+                    {!isAuto && !isHistory && (
                       <button
                         type="button"
                         onClick={() => onUploadClick(l.id)}
@@ -301,9 +368,11 @@ export default function Finance40pPage() {
                       </button>
                     )}
                   </div>
-                  <div className="col-span-2 text-right">
+                  <div className="col-span-1 text-right">
                     {isAuto ? (
-                      <span className="text-xs text-emerald-700 font-medium">SYSTEM · Easebuzz</span>
+                      <span className="text-[10px] text-emerald-700 font-medium">Easebuzz</span>
+                    ) : isHistory ? (
+                      <span className="text-[10px] text-gray-500 font-medium">Done</span>
                     ) : (
                       <button
                         type="button"
@@ -311,7 +380,7 @@ export default function Finance40pPage() {
                         disabled={!l.canApprove || busyApprove || !sessionId}
                         className="px-3 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-semibold hover:bg-[#EF0101]/90 disabled:opacity-60 disabled:cursor-not-allowed"
                       >
-                        {busyApprove ? 'Approving…' : 'Approve'}
+                        {busyApprove ? '…' : 'Approve'}
                       </button>
                     )}
                   </div>
@@ -333,30 +402,48 @@ export default function Finance40pPage() {
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setViewLeadId(null)}>
             <div className="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[80vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
               <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-                <h2 className="text-lg font-bold text-gray-900">40% payment screenshots – Lead {viewLeadId}</h2>
+                <h2 className="text-lg font-bold text-gray-900">Payment details – Lead {viewLeadId}</h2>
                 <button type="button" onClick={() => setViewLeadId(null)} className="text-gray-500 hover:text-gray-700 text-2xl leading-none">&times;</button>
               </div>
-              <div className="p-4 overflow-auto flex-1">
+              <div className="p-4 overflow-auto flex-1 space-y-5">
                 {viewLoading ? (
                   <p className="text-sm text-gray-500">Loading…</p>
-                ) : viewUploads.length === 0 ? (
-                  <p className="text-sm text-gray-500">No 40% payment screenshots uploaded yet.</p>
                 ) : (
-                  <ul className="space-y-2">
-                    {viewUploads.map((u) => (
-                      <li key={u.id} className="flex items-center justify-between gap-2 py-2 border-b border-gray-100 last:border-0">
-                        <span className="text-sm text-gray-800 truncate flex-1" title={u.originalName}>{u.originalName}</span>
-                        <span className="text-xs text-gray-500 flex-shrink-0">{u.status}</span>
-                        <button
-                          type="button"
-                          onClick={() => downloadUpload(viewLeadId, u.id, u.originalName)}
-                          className="text-sm text-[#00B0ED] font-semibold hover:underline flex-shrink-0"
-                        >
-                          Download
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
+                  <>
+                    <section>
+                      <h3 className="mb-2 text-[11px] font-bold uppercase tracking-wide text-gray-500">
+                        Online / Easebuzz
+                      </h3>
+                      <FinancePaymentDetailsCard
+                        payments={viewPayments}
+                        emptyHint="No online payment recorded for this lead yet."
+                      />
+                    </section>
+                    <section>
+                      <h3 className="mb-2 text-[11px] font-bold uppercase tracking-wide text-gray-500">
+                        Offline screenshots
+                      </h3>
+                      {viewUploads.length === 0 ? (
+                        <p className="text-sm text-gray-500">No 40% payment screenshots uploaded yet.</p>
+                      ) : (
+                        <ul className="space-y-2">
+                          {viewUploads.map((u) => (
+                            <li key={u.id} className="flex items-center justify-between gap-2 py-2 border-b border-gray-100 last:border-0">
+                              <span className="text-sm text-gray-800 truncate flex-1" title={u.originalName}>{u.originalName}</span>
+                              <span className="text-xs text-gray-500 flex-shrink-0">{u.status}</span>
+                              <button
+                                type="button"
+                                onClick={() => downloadUpload(viewLeadId, u.id, u.originalName)}
+                                className="text-sm text-[#00B0ED] font-semibold hover:underline flex-shrink-0"
+                              >
+                                Download
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </section>
+                  </>
                 )}
               </div>
             </div>
