@@ -76,6 +76,7 @@ type ExtraCategory = {
   quoteDiscountKeys: string[];
   quoteFactorKeys: string[];
   optionPriceKeys: string[];
+  lineItemArrayKey?: string;
 };
 
 const EXTRA_CATEGORIES: ExtraCategory[] = [
@@ -86,6 +87,7 @@ const EXTRA_CATEGORIES: ExtraCategory[] = [
     quoteDiscountKeys: ['appliancesDiscount'],
     quoteFactorKeys: ['appliancesFactor'],
     optionPriceKeys: ['appliancesPrice'],
+    lineItemArrayKey: 'appliances',
   },
   {
     key: 'worktops',
@@ -93,7 +95,8 @@ const EXTRA_CATEGORIES: ExtraCategory[] = [
     quotePriceKeys: ['worktopsPrice', 'worktopPrice'],
     quoteDiscountKeys: ['worktopDiscount', 'worktopsDiscount'],
     quoteFactorKeys: ['worktopFactor'],
-    optionPriceKeys: ['worktopsPrice', 'worktopPrice'],
+    optionPriceKeys: ['worktopsPrice', 'worktopPrice', 'worktopAmount'],
+    lineItemArrayKey: 'worktops',
   },
   {
     key: 'decor',
@@ -120,7 +123,14 @@ function pickFrom(obj: Record<string, unknown>, keys: string[]): number | null {
 }
 
 function readHubCategoryPct(quoteObj: Record<string, unknown>, key: string): number | null {
-  const raw = quoteObj.hubCategoryDiscountPct;
+  let raw: unknown = quoteObj.hubCategoryDiscountPct;
+  if (typeof raw === 'string' && raw.trim()) {
+    try {
+      raw = JSON.parse(raw) as unknown;
+    } catch {
+      raw = null;
+    }
+  }
   if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
     return asNum((raw as Record<string, unknown>)[key]);
   }
@@ -154,27 +164,59 @@ function sumOptionPrices(optionDetails: unknown[], keys: string[]): number | nul
   return found ? sum : null;
 }
 
+function sumLineItemPrices(rooms: unknown[], arrayKey: string): number | null {
+  let sum = 0;
+  let found = false;
+  for (const item of rooms) {
+    if (!item || typeof item !== 'object') continue;
+    const list = (item as Record<string, unknown>)[arrayKey];
+    if (!Array.isArray(list)) continue;
+    for (const row of list) {
+      if (!row || typeof row !== 'object') continue;
+      const n =
+        asNum((row as Record<string, unknown>).price) ??
+        asNum((row as Record<string, unknown>).totalPrice) ??
+        asNum((row as Record<string, unknown>).amount);
+      if (n != null && n > 0) {
+        sum += n;
+        found = true;
+      }
+    }
+  }
+  return found ? sum : null;
+}
+
+function maxPositive(...vals: Array<number | null | undefined>): number | null {
+  const nums = vals.filter((n): n is number => n != null && n > 0);
+  return nums.length ? Math.max(...nums) : null;
+}
+
+/**
+ * Prefer the highest source: quote-level totals from the Quotes list are often
+ * already discounted, while FullDetails room rows still have gross prices.
+ * Always consider both optionDetails and quoteOptionsData — live merge can
+ * leave worktops on one array and not the other.
+ */
 function resolvePrice(
   quoteObj: Record<string, unknown>,
-  rooms: unknown[],
+  roomSets: unknown[][],
   quotePriceKeys: string[],
   roomCompute?: (o: Record<string, unknown>) => number,
   optionPriceKeys?: string[],
+  lineItemArrayKey?: string,
 ): number | null {
   const quotePrice = pickFrom(quoteObj, quotePriceKeys);
-  if (quotePrice != null && quotePrice > 0) return quotePrice;
+  const fromQuote = quotePrice != null && quotePrice > 0 ? quotePrice : null;
 
-  if (roomCompute) {
-    const fromRooms = sumRoomPrices(rooms, roomCompute);
-    if (fromRooms != null && fromRooms > 0) return fromRooms;
+  const fromRooms: Array<number | null> = [];
+  for (const rooms of roomSets) {
+    if (!rooms.length) continue;
+    if (roomCompute) fromRooms.push(sumRoomPrices(rooms, roomCompute));
+    if (optionPriceKeys?.length) fromRooms.push(sumOptionPrices(rooms, optionPriceKeys));
+    if (lineItemArrayKey) fromRooms.push(sumLineItemPrices(rooms, lineItemArrayKey));
   }
 
-  if (optionPriceKeys?.length) {
-    const fromOptions = sumOptionPrices(rooms, optionPriceKeys);
-    if (fromOptions != null && fromOptions > 0) return fromOptions;
-  }
-
-  return quotePrice ?? (roomCompute ? sumRoomPrices(rooms, roomCompute) : null);
+  return maxPositive(fromQuote, ...fromRooms) ?? fromQuote;
 }
 
 function buildRow(
@@ -187,24 +229,25 @@ function buildRow(
     hubPctKey?: string;
     roomPrice?: (o: Record<string, unknown>) => number;
     optionPriceKeys?: string[];
+    lineItemArrayKey?: string;
   },
   quoteObj: Record<string, unknown>,
-  rooms: unknown[],
+  roomSets: unknown[][],
   alwaysShow = false,
 ): QuoteDiscountBreakdownRow | null {
   const price = resolvePrice(
     quoteObj,
-    rooms,
+    roomSets,
     cat.quotePriceKeys,
     cat.roomPrice,
     cat.optionPriceKeys,
+    cat.lineItemArrayKey ?? (cat.key === 'services' ? 'services' : undefined),
   );
 
   const hubPct = cat.hubPctKey ? readHubCategoryPct(quoteObj, cat.hubPctKey) : null;
   const prolancePct = pickFrom(quoteObj, cat.quoteDiscountKeys);
   const factor = pickFrom(quoteObj, cat.quoteFactorKeys);
   const discountPct = hubPct ?? prolancePct ?? null;
-
   const effectivePct =
     discountPct != null ? discountPct : factor != null && factor > 0 ? factor : null;
 
@@ -240,16 +283,22 @@ export function buildQuoteDiscountBreakdown(
   optionDetails: unknown[],
   roomSummaries: unknown[] = [],
 ): QuoteDiscountBreakdownRow[] {
-  const rooms = optionDetails.length > 0 ? optionDetails : roomSummaries;
+  const extraFromQuote = [
+    Array.isArray(quoteObj.optionDetails) ? quoteObj.optionDetails : [],
+    Array.isArray(quoteObj.quoteOptionsData) ? quoteObj.quoteOptionsData : [],
+    Array.isArray(quoteObj.roomWiseSummary) ? quoteObj.roomWiseSummary : [],
+  ];
+  const roomSets = [optionDetails, roomSummaries, ...extraFromQuote].filter((arr) => arr.length > 0);
+  if (roomSets.length === 0) roomSets.push([]);
   const rows: QuoteDiscountBreakdownRow[] = [];
 
   for (const cat of GRANULAR_CATEGORIES) {
-    const row = buildRow(cat, quoteObj, rooms, true);
+    const row = buildRow(cat, quoteObj, roomSets, true);
     if (row) rows.push(row);
   }
 
   for (const cat of EXTRA_CATEGORIES) {
-    const row = buildRow(cat, quoteObj, rooms, false);
+    const row = buildRow(cat, quoteObj, roomSets, cat.key === 'worktops');
     if (row) rows.push(row);
   }
 

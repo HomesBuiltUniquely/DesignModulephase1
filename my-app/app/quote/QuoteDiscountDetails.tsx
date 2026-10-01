@@ -182,19 +182,27 @@ export function QuoteDiscountDetails({
             const preview = editable && isEditKey ? previewRow(row, draft) : null;
             const showPct = preview?.discountPct ?? row.discountPct ?? 0;
             const showDiscounted = preview?.discountedPrice ?? row.discountedPrice ?? row.price;
+            const original = row.price;
+            const showOriginal =
+              original != null &&
+              original > 0 &&
+              showDiscounted != null &&
+              original !== showDiscounted;
 
             return (
               <div
                 key={row.key}
-                className="rounded-lg border border-[#ece6df] bg-[#faf8f5] px-4 py-3 text-sm"
+                className="min-w-0 rounded-lg border border-[#ece6df] bg-[#faf8f5] px-3 py-3 text-sm sm:px-4"
               >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="font-semibold text-[#2a1d14]">{row.label}</span>
-                  <div className="flex flex-wrap items-center gap-4 tabular-nums">
-                    <span className="text-[#9a928c] line-through">{inrFull(row.price)}</span>
-                    <span className="font-bold text-[#2a1d14]">{inrFull(showDiscounted)}</span>
+                <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+                  <span className="shrink-0 font-semibold text-[#2a1d14]">{row.label}</span>
+                  <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1 tabular-nums sm:justify-end">
+                    {showOriginal ? (
+                      <span className="shrink-0 text-[#9a928c] line-through">{inrFull(original)}</span>
+                    ) : null}
+                    <span className="shrink-0 font-bold text-[#2a1d14]">{inrFull(showDiscounted)}</span>
                     {editable && isEditKey ? (
-                      <label className="flex items-center gap-1 font-semibold" style={{ color: QUOTE.red }}>
+                      <label className="flex shrink-0 items-center gap-1 font-semibold" style={{ color: QUOTE.red }}>
                         <input
                           type="number"
                           min={0}
@@ -211,7 +219,7 @@ export function QuoteDiscountDetails({
                         <span>%</span>
                       </label>
                     ) : (
-                      <span className="font-semibold" style={{ color: QUOTE.red }}>
+                      <span className="shrink-0 font-semibold" style={{ color: QUOTE.red }}>
                         {showPct > 0 ? `${showPct}%` : '0%'}
                       </span>
                     )}
@@ -224,7 +232,10 @@ export function QuoteDiscountDetails({
       ) : null}
 
       {extraRows.map((row) => (
-        <div key={row.key} className="flex justify-between rounded-lg border border-[#ece6df] bg-[#faf8f5] px-4 py-3 text-sm">
+        <div
+          key={row.key}
+          className="flex min-w-0 flex-col gap-1 rounded-lg border border-[#ece6df] bg-[#faf8f5] px-3 py-3 text-sm sm:flex-row sm:items-center sm:justify-between sm:px-4"
+        >
           <span className="font-medium text-[#2a1d14]">{row.label}</span>
           <span className="font-semibold tabular-nums text-[#2a1d14]">
             {inrFull(row.discountedPrice ?? row.price)}

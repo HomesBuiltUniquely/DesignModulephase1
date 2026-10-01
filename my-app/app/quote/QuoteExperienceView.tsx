@@ -405,7 +405,7 @@ export function QuoteExperienceView(props: Props) {
 
                       {/* Stats — 2 cols on mobile, 4 on sm+ */}
                       <div className="grid grid-cols-2 gap-px border-b border-[#ece6df] bg-[#ece6df] sm:grid-cols-4">
-                        {[
+                        {([
                           ['Units', room.unitsPrice],
                           ['Loft', room.loftsPrice],
                           ['Services', room.servicesPrice],
@@ -414,13 +414,16 @@ export function QuoteExperienceView(props: Props) {
                           ['Worktops', room.worktopsPrice],
                           ['Additional HW', room.additionalHWPrice],
                           ['Savings', saving],
-                        ].map(([label, value]) => (
-                          <div key={`${room.key}-${label}`} className="bg-[#faf8f5] px-3 py-2.5">
+                        ] as Array<[string, number | null]>).filter(([label, value]) => {
+                          if (label === 'Services' || label === 'Worktops' || label === 'Savings') return true;
+                          return value != null && value !== 0;
+                        }).map(([label, value]) => (
+                          <div key={`${room.key}-${label}`} className="min-w-0 bg-[#faf8f5] px-3 py-2.5">
                             <p className="text-[9px] font-semibold uppercase tracking-wide" style={{ color: QUOTE.muted }}>
                               {label}
                             </p>
                             <p
-                              className={`mt-0.5 text-xs font-bold tabular-nums sm:text-sm ${label === 'Savings' ? 'text-[#32261C]' : 'text-[#2a1d14]'}`}
+                              className={`mt-0.5 break-all text-xs font-bold tabular-nums sm:text-sm ${label === 'Savings' ? 'text-[#32261C]' : 'text-[#2a1d14]'}`}
                             >
                               {inr(value)}
                             </p>
