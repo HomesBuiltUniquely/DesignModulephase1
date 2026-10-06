@@ -1197,12 +1197,27 @@ export function registerDesignerXpRoutes(
 
       // Verify user is a designer
       const [userRows] = await pool.query(
-        "SELECT id, name, email, role, sub_role as subRole, profileImage, branch FROM users WHERE id = ? LIMIT 1",
+        `SELECT id, name, email, role, sub_role as subRole, profileImage, branch,
+                designer_inspiration_projects AS designerInspirationProjects
+         FROM users WHERE id = ? LIMIT 1`,
         [designerId],
       );
       const designer = (userRows as any[])[0];
       if (!designer || (designer.role || "").toLowerCase() !== "designer") {
         return res.status(404).json({ message: "Designer not found" });
+      }
+
+      let inspirationProjects: unknown[] = [];
+      if (typeof designer.designerInspirationProjects === "string" && designer.designerInspirationProjects.trim()) {
+        try {
+          const parsed = JSON.parse(designer.designerInspirationProjects);
+          if (Array.isArray(parsed)) inspirationProjects = parsed;
+        } catch (parseError) {
+          console.error("[designer-xp] invalid designer inspiration projects", {
+            designerId,
+            error: parseError,
+          });
+        }
       }
 
       // Compute lifetime total XP from transactions
@@ -1370,6 +1385,7 @@ export function registerDesignerXpRoutes(
           designation: designer.subRole || "Interior Designer",
           profileImage: designer.profileImage || null,
           branch: designer.branch || null,
+          inspirationProjects,
           isOnline: true,
         },
         gamification: {

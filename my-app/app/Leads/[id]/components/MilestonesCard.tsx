@@ -496,9 +496,7 @@ export default function MilestonesCard({
                       </div>
                       <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
                         <div
-                          className={`h-full rounded-full transition-all duration-300 ${
-                            progressPercent === 100 ? "bg-emerald-500" : "bg-[#00B0ED]"
-                          }`}
+                          className="h-full rounded-full transition-all duration-300 bg-red-500"
                           style={{ width: `${progressPercent}%` }}
                         />
                       </div>
@@ -572,9 +570,7 @@ export default function MilestonesCard({
                           >
                             <span className="flex-shrink-0 mt-0.5">
                               {status.icon === "completed" && (
-                                <span className={`w-6 h-6 rounded-full flex items-center justify-center ${
-                                  isLateCompleted ? "bg-amber-500" : "bg-emerald-500"
-                                }`}>
+                                <span className={`w-6 h-6 rounded-full flex items-center justify-center bg-red-500`}>
                                   <svg
                                     xmlns="http://www.w3.org/2000/svg"
                                     fill="none"
@@ -698,91 +694,100 @@ export default function MilestonesCard({
                                 </p>
                               )}
                             </div>
-                            <div className="flex items-center gap-1.5 flex-shrink-0">
-                              {taskXp && taskXp.isActive && taskXp.baseXp > 0 && (
-                                <div className="flex flex-col items-end gap-1 flex-shrink-0">
-                                  {/* Base or Earned XP Badge */}
-                                  {status.icon === "completed" && taskXp.earnedXp != null && taskXp.earnedXp > 0 ? (
-                                    <span
-                                      className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200/90 shadow-2xs"
-                                      title={`Earned: ${taskXp.earnedXp} XP`}
-                                    >
-                                      <span className="text-emerald-500 font-black">★</span>
-                                      <span>+{taskXp.earnedXp} XP</span>
-                                    </span>
-                                  ) : (
-                                    <span
-                                      className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md bg-purple-50 text-purple-800 border border-purple-200/90 shadow-2xs"
-                                      title={`Base XP: ${taskXp.baseXp} XP`}
-                                    >
-                                      <span className="text-purple-500 font-black">★</span>
-                                      <span>+{taskXp.baseXp} XP</span>
-                                      <span className="text-[9px] font-semibold text-purple-600/80">Base</span>
-                                    </span>
-                                  )}
-
-                                  {/* Daily Deduction Info (Only when this task is an earning task subject to daily deduction) */}
-                                  {taskXp.hasDailyDeduction && (
-                                    (taskXp.isDelayed || (taskXp.delayDays > 0) || (taskXp.overdueDays > 0) || (taskXp.penaltyXp > 0) || isActiveOverdue) ? (
+                            <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+                              {/* XP Badge and Status Tags on same line */}
+                              <div className="flex items-center gap-1.5">
+                                {taskXp && taskXp.isActive && taskXp.baseXp > 0 && (
+                                  <>
+                                    {/* Base or Earned XP Badge */}
+                                    {status.icon === "completed" && taskXp.earnedXp != null && taskXp.earnedXp > 0 ? (
                                       <div className="flex flex-col items-end gap-0.5">
                                         <span
-                                          className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-rose-50 text-rose-700 border border-rose-200 shadow-2xs"
-                                          title={`Daily deduction: -${taskXp.dailyDeductionRate || 2} XP/day (${taskXp.overdueDays || taskXp.delayDays || 1}d overdue)`}
+                                          className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md bg-blue-50 text-blue-800 border border-blue-200/90 shadow-2xs"
+                                          title={`Earned: ${taskXp.earnedXp} XP`}
                                         >
-                                          <span>−{taskXp.dailyDeductionRate || 2} XP/day</span>
-                                          <span className="text-[9px] font-medium text-rose-600">
-                                            ({taskXp.overdueDays || taskXp.delayDays || 1}d overdue)
-                                          </span>
+                                          <span className="text-[#00B0ED] font-black">★</span>
+                                          <span>+{taskXp.earnedXp} XP</span>
                                         </span>
-                                        {taskXp.finalXp != null && (
-                                          <span className="text-[10px] font-extrabold text-slate-700">
-                                            Current: {taskXp.finalXp} XP
+                                        {taskXp.isDelayed && (taskXp.delayDays > 0 || taskXp.overdueDays > 0) && (
+                                          <span className="text-[9px] text-slate-500 font-medium">
+                                            {taskXp.penaltyXp > 0 ? `−${taskXp.penaltyXp} XP` : ""} {taskXp.delayDays > 0 ? `(${taskXp.delayDays}d delayed)` : taskXp.overdueDays > 0 ? `(${taskXp.overdueDays}d overdue)` : ""}
                                           </span>
                                         )}
                                       </div>
                                     ) : (
                                       <span
-                                        className="text-[9px] font-medium text-slate-400"
-                                        title="Daily deduction applies if delayed"
+                                        className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md bg-purple-50 text-purple-800 border border-purple-200/90 shadow-2xs"
+                                        title={`Base XP: ${taskXp.baseXp} XP`}
                                       >
-                                        Daily: −{taskXp.dailyDeductionRate || 2} XP/day
+                                        <span className="text-purple-500 font-black">★</span>
+                                        <span>+{taskXp.baseXp} XP</span>
+                                        <span className="text-[9px] font-semibold text-purple-600/80">Base</span>
                                       </span>
-                                    )
-                                  )}
-                                </div>
-                              )}
-                              {(() => {
-                                const isCompleted = status.icon === "completed";
-                                let displayTags = tags.filter((t) => {
-                                  if (isCompleted) {
-                                    return t !== "CURRENT" && t !== "ACTION" && t !== "PENDING";
+                                    )}
+                                  </>
+                                )}
+                                {(() => {
+                                  const isCompleted = status.icon === "completed";
+                                  let displayTags = tags.filter((t) => {
+                                    if (isCompleted) {
+                                      return t !== "CURRENT" && t !== "ACTION" && t !== "PENDING";
+                                    }
+                                    return true;
+                                  });
+
+                                  if (isCompleted && displayTags.length === 0) {
+                                    displayTags = isLateCompleted ? ["LATE"] : ["ON-TIME"];
                                   }
-                                  return true;
-                                });
 
-                                if (isCompleted && displayTags.length === 0) {
-                                  displayTags = isLateCompleted ? ["LATE"] : ["ON-TIME"];
-                                }
-
-                                return displayTags.map((tag) => (
-                                  <span
-                                    key={tag}
-                                    className={`text-[10px] font-semibold px-2 py-0.5 rounded-md ${
-                                      tag === "ON-TIME"
-                                        ? "bg-[#DDCDC1] text-[#32261C] font-bold"
-                                        : tag === "LATE"
-                                          ? "bg-amber-100 text-amber-900 border border-amber-300/80 font-semibold"
-                                          : tag === "OVERDUE" || tag === "DELAYED"
-                                            ? "bg-[#EF0101]/15 text-[#EF0101] border border-[#EF0101]/30 font-bold"
-                                            : tag === "CURRENT" || tag === "ACTION"
-                                              ? "bg-[#00B0ED]/25 text-[#00B0ED] font-semibold"
-                                              : "bg-gray-100 border border-gray-300 text-gray-500"
+                                  return displayTags.map((tag) => (
+                                    <span
+                                      key={tag}
+                                      className={`text-[10px] font-semibold px-2 py-0.5 rounded-md ${
+                                        tag === "ON-TIME"
+                                          ? "bg-[#DDCDC1] text-[#32261C] font-bold"
+                                          : tag === "LATE"
+                                            ? "bg-amber-100 text-amber-900 border border-amber-300/80 font-semibold"
+                                            : tag === "OVERDUE" || tag === "DELAYED"
+                                              ? "bg-[#EF0101]/15 text-[#EF0101] border border-[#EF0101]/30 font-bold"
+                                              : tag === "CURRENT" || tag === "ACTION"
+                                                ? "bg-[#00B0ED]/25 text-[#00B0ED] font-semibold"
+                                                : "bg-gray-100 border border-gray-300 text-gray-500"
                                     }`}
                                   >
                                     {tag}
                                   </span>
                                 ));
                               })()}
+                              </div>
+                              {/* Daily Deduction Info below */}
+                              {taskXp && taskXp.hasDailyDeduction && (
+                                (taskXp.isDelayed || (taskXp.delayDays > 0) || (taskXp.overdueDays > 0) || (taskXp.penaltyXp > 0) || isActiveOverdue) ? (
+                                  <div className="flex flex-col items-end gap-0.5">
+                                    <span
+                                      className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-rose-50 text-rose-700 border border-rose-200 shadow-2xs"
+                                      title={`Daily deduction: -${taskXp.dailyDeductionRate || 2} XP/day (${taskXp.overdueDays || taskXp.delayDays || 1}d overdue)`}
+                                    >
+                                      <span>−{taskXp.dailyDeductionRate || 2} XP/day</span>
+                                      <span className="text-[9px] font-medium text-rose-600">
+                                        ({taskXp.overdueDays || taskXp.delayDays || 1}d overdue)
+                                      </span>
+                                    </span>
+                                    {taskXp.finalXp != null && (
+                                      <span className="text-[10px] font-extrabold text-slate-700">
+                                        Current: {taskXp.finalXp} XP
+                                      </span>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <span
+                                    className="text-[9px] font-medium text-slate-400"
+                                    title="Daily deduction applies if delayed"
+                                  >
+                                    Daily: −{taskXp.dailyDeductionRate || 2} XP/day
+                                  </span>
+                                )
+                              )}
                               <span
                                 role="button"
                                 tabIndex={0}

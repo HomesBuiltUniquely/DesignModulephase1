@@ -772,16 +772,7 @@ export const DesignerLeaderboardView: React.FC = () => {
             />
 
             {/* All Teams (Only shown if multiple team branches exist) */}
-            {teams.length > 2 && (
-              <CustomSelect
-                value={teamFilter}
-                onChange={(v) => setTeamFilter(v)}
-                options={teamOptions}
-                minWidth="8.5rem"
-                size="xs"
-                buttonClassName="rounded-2xl border border-slate-200/90 dark:border-slate-800 py-2.5 px-3.5 text-xs font-semibold text-slate-700 dark:text-slate-200 shadow-2xs hover:bg-slate-50 dark:hover:bg-slate-900/60 bg-white dark:bg-[#14171e]"
-              />
-            )}
+            {/* REMOVED - Teams dropdown not required */}
           </div>
         </div>
 
@@ -829,13 +820,16 @@ export const DesignerLeaderboardView: React.FC = () => {
                   {filteredDesigners.map((designer) => {
                     const isRank1 = designer.rank === 1;
                     const isSelected = activeShowcaseDesigner?.id === designer.id;
+                    const isLoggedInDesigner = user?.role?.toLowerCase() === "designer" && user?.id === designer.id;
 
                     return (
                       <tr
                         key={designer.id}
                         onClick={() => handleSelectShowcase(designer.id)}
                         className={`transition-colors cursor-pointer ${
-                          isSelected
+                          isLoggedInDesigner
+                            ? "bg-red-50/60 dark:bg-red-950/20 hover:bg-red-100/60 dark:hover:bg-red-950/30 border-l-4 border-red-500"
+                            : isSelected
                             ? "bg-blue-50/40 dark:bg-blue-950/20"
                             : isRank1
                             ? "bg-[#FFFDF3] dark:bg-amber-950/15 hover:bg-[#FFFBEB] dark:hover:bg-amber-950/25"
@@ -877,7 +871,7 @@ export const DesignerLeaderboardView: React.FC = () => {
                                 {designer.name}
                               </span>
                               <span className="text-xs text-slate-400 dark:text-slate-500 font-normal mt-0.5 block">
-                                {designer.subRole || "Interior Designer"}
+                                Designer
                                 {designer.branch ? ` · ${designer.branch}` : ""}
                               </span>
                             </div>
