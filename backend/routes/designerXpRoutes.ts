@@ -733,7 +733,7 @@ export function registerDesignerXpRoutes(
 
       // Query XP transactions specifically earned on this lead
       const [leadXpRows] = await pool.query(
-        "SELECT task_name, milestone_index, base_xp, penalty_xp, net_xp, delay_days FROM designer_xp_transactions WHERE lead_id = ?",
+        "SELECT task_name, milestone_index, transaction_type, base_xp, penalty_xp, net_xp, delay_days, meta, created_at FROM designer_xp_transactions WHERE lead_id = ?",
         [leadId],
       );
       const leadTransactions = leadXpRows as any[];
@@ -832,6 +832,9 @@ export function registerDesignerXpRoutes(
           delayDays = Number(tx.delay_days || 0);
           isDelayed = delayDays > 0 || (Number(tx.net_xp) <= 0 && Number(tx.penalty_xp) > 0);
         }
+        // For old/legacy projects: no tx yet but all steps are done.
+        // We cannot calculate delay without timing data, so we defer earnedXp to
+        // after allStepsCompleted is determined below — see the re-assignment after the loop.
 
         let metaObj: any = null;
         if (tx && tx.meta) {
@@ -929,6 +932,16 @@ export function registerDesignerXpRoutes(
           : (allStepsCompleted ? (isDelayed ? "OVERDUE" : "ON-TIME") : "IN_PROGRESS");
         const completionState = tx || allStepsCompleted ? "COMPLETED" : "INCOMPLETE";
 
+        // For old/legacy projects (no tx in DB but all steps done):
+        // earnedXp was null above (set only if tx exists). Fill it in now
+        // using the workflow reward. We cannot know exact delay without timing
+        // data, so we award full rewardXp as a best-effort display value.
+        // The reconcile-all endpoint will write accurate entries to the DB.
+        if (!tx && allStepsCompleted && earnedXp === null) {
+          earnedXp = wf.rewardXp;
+        }
+
+
         milestonesMap.set(wf.milestoneIndex, {
           milestoneIndex: wf.milestoneIndex,
           milestoneName: wf.milestoneName,
@@ -989,7 +1002,57 @@ export function registerDesignerXpRoutes(
   });
 
   // -------------------------------------------------------------------------
+  // 2a. POST /api/xp/admin/reconcile-all
+  //     Admin-only: backfills XP transactions for ALL leads (old/legacy projects).
+  //     Calls reconcileLeadXp for every lead that has task completions but no
+  //     workflow_completion transactions yet. Safe to run multiple times (idempotent).
+  // -------------------------------------------------------------------------
+  app.post("/api/xp/admin/reconcile-all", async (req: Request, res: Response) => {
+    try {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const userRole = (user.role || "").toLowerCase().trim();
+      if (!isRoleAdmin(userRole) && !isRoleTDM(userRole)) {
+        return res.status(403).json({ message: "Forbidden: Admin or TDM only" });
+      }
+
+      // Find all lead IDs that have at least one task completion
+      const [leadRows] = await pool.query(
+        `SELECT DISTINCT lead_id FROM lead_task_completions ORDER BY lead_id ASC`
+      );
+      const leadIds = (leadRows as any[]).map((r) => Number(r.lead_id));
+
+      let totalProcessed = 0;
+      let totalAwarded = 0;
+      const errors: { leadId: number; error: string }[] = [];
+
+      for (const leadId of leadIds) {
+        try {
+          const result = await reconcileLeadXp(pool, leadId);
+          totalProcessed++;
+          totalAwarded += result.awards.filter((a) => a.awarded).length;
+        } catch (err: any) {
+          errors.push({ leadId, error: err?.message || "Unknown error" });
+        }
+      }
+
+      console.log(`[designer-xp] reconcile-all done: ${totalProcessed} leads, ${totalAwarded} new awards, ${errors.length} errors`);
+      return res.json({
+        ok: true,
+        leadsProcessed: totalProcessed,
+        newAwards: totalAwarded,
+        errors: errors.length,
+        errorDetails: errors.slice(0, 20), // cap at 20 for response size
+      });
+    } catch (err: any) {
+      console.error("[designer-xp] reconcile-all error:", err);
+      return res.status(500).json({ message: "Reconcile failed", error: err?.message });
+    }
+  });
+
+  // -------------------------------------------------------------------------
   // 2. GET /api/xp/leaderboard
+
   //    Main designer leaderboard table with search, sort, and pagination
   // -------------------------------------------------------------------------
   app.get("/api/xp/leaderboard", async (req: Request, res: Response) => {

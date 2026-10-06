@@ -454,36 +454,53 @@ export default function MilestonesCard({
                               </svg>
                             </button>
                           )}
-                        {totalPossibleXp > 0 && (
-                          <div className="flex flex-col items-end">
-                            <span className="inline-flex items-center gap-1 text-xs font-black px-2.5 py-1 rounded-lg bg-amber-50 text-amber-900 border border-amber-200/80 shadow-2xs">
-                              <span className="text-amber-500 font-black">★</span>
-                              <span>{totalPossibleXp} XP</span>
-                              <span className="text-[10px] font-semibold text-amber-700/90 ml-0.5">Total Possible</span>
-                            </span>
+                        {totalPossibleXp > 0 && (() => {
+                            // Sync: check if any task in this milestone is actually LATE
+                            // (uses the real task deadline checker — not just the XP backend)
+                            const hasAnyLateTask = !isNextOrLater && taskList.some((_, taskIndex) => {
+                              const s = getTaskStatus(milestoneIndex, taskIndex, taskList);
+                              return s.tags.includes("LATE") || s.icon === "delayed";
+                            });
 
-                            {milestoneXp?.isWorkflowCompleted ? (
-                              milestoneXp.workflowStatus === "ON-TIME" ? (
-                                <span className="text-[10px] font-bold text-emerald-700 mt-1 flex items-center gap-1">
-                                  <span>✓ Earned:</span>
-                                  <span className="font-extrabold">+{earnedMilestoneXp} XP</span>
+                            // If the XP backend says ON-TIME but tasks show LATE → treat as LATE
+                            // (happens for old projects without DB transactions yet)
+                            const effectivelyLate =
+                              hasAnyLateTask ||
+                              (milestoneXp?.workflowStatus && milestoneXp.workflowStatus !== "ON-TIME");
+
+                            return (
+                              <div className="flex flex-col items-end">
+                                <span className="inline-flex items-center gap-1 text-xs font-black px-2.5 py-1 rounded-lg bg-amber-50 text-amber-900 border border-amber-200/80 shadow-2xs">
+                                  <span className="text-amber-500 font-black">★</span>
+                                  <span>{totalPossibleXp} XP</span>
+                                  <span className="text-[10px] font-semibold text-amber-700/90 ml-0.5">Total Possible</span>
                                 </span>
-                              ) : (
-                                <div className="flex flex-col items-end mt-1 text-[10px]">
-                                  <span className="font-bold text-rose-700 flex items-center gap-1">
-                                    <span>⚠ Overdue ({milestoneXp.overdueDays || milestoneXp.delayDays || 1}d):</span>
-                                    <span className="font-extrabold">{earnedMilestoneXp} XP</span>
-                                  </span>
-                                  {milestoneXp.penaltyXp > 0 && (
-                                    <span className="text-[9px] font-medium text-rose-600">
-                                      Deduction: −{milestoneXp.penaltyXp} XP (−2 XP/day)
+
+                                {milestoneXp?.isWorkflowCompleted ? (
+                                  !effectivelyLate ? (
+                                    <span className="text-[10px] font-bold text-emerald-700 mt-1 flex items-center gap-1">
+                                      <span>✓ Earned:</span>
+                                      <span className="font-extrabold">+{earnedMilestoneXp} XP</span>
                                     </span>
-                                  )}
-                                </div>
-                              )
-                            ) : null}
-                          </div>
-                        )}
+                                  ) : (
+                                    <div className="flex flex-col items-end mt-1 text-[10px]">
+                                      <span className="font-bold text-rose-700 flex items-center gap-1">
+                                        <span>✗ Earned:</span>
+                                        <span className="font-extrabold">0 XP</span>
+                                        <span className="font-normal text-rose-500">(completed late)</span>
+                                      </span>
+                                      {(milestoneXp.penaltyXp ?? 0) > 0 && (
+                                        <span className="text-[9px] font-medium text-rose-600">
+                                          Penalty: −{milestoneXp.penaltyXp} XP (−2 XP/day × {milestoneXp.overdueDays || milestoneXp.delayDays || 1}d)
+                                        </span>
+                                      )}
+                                    </div>
+                                  )
+                                ) : null}
+                              </div>
+                            );
+                          })()}
+
                       </div>
                     </div>
                     {/* Progress Bar & Counter */}
@@ -699,15 +716,27 @@ export default function MilestonesCard({
                               <div className="flex items-center gap-1.5">
                                 {taskXp && taskXp.isActive && taskXp.baseXp > 0 && (
                                   <>
-                                    {/* Show Negative XP for LATE tasks */}
-                                    {isLateCompleted && taskXp.penaltyXp > 0 ? (
-                                      <span
-                                        className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md bg-red-100 text-red-700 border border-red-300/80 shadow-2xs"
-                                        title={`Late penalty: -${taskXp.penaltyXp} XP`}
-                                      >
-                                        <span className="text-red-600 font-black">★</span>
-                                        <span>−{taskXp.penaltyXp} XP</span>
-                                      </span>
+                                    {/* LATE completed task: penalty if known, else always 0 XP */}
+                                    {isLateCompleted ? (
+                                      taskXp.penaltyXp > 0 ? (
+                                        <span
+                                          className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md bg-red-100 text-red-700 border border-red-300/80 shadow-2xs"
+                                          title={`Late penalty: -${taskXp.penaltyXp} XP`}
+                                        >
+                                          <span className="text-red-600 font-black">★</span>
+                                          <span>−{taskXp.penaltyXp} XP</span>
+                                        </span>
+                                      ) : (
+                                        /* No penalty data yet (old project) — clearly show 0 earned */
+                                        <span
+                                          className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md bg-red-50 text-red-600 border border-red-200/80 shadow-2xs"
+                                          title="Completed late — 0 XP earned"
+                                        >
+                                          <span className="text-red-500 font-black">★</span>
+                                          <span>0 XP</span>
+                                          <span className="text-[9px] font-semibold text-red-400">Late</span>
+                                        </span>
+                                      )
                                     ) : status.icon === "completed" && taskXp.earnedXp != null && taskXp.earnedXp > 0 ? (
                                       <div className="flex flex-col items-end gap-0.5">
                                         <span
@@ -730,6 +759,7 @@ export default function MilestonesCard({
                                     )}
                                   </>
                                 )}
+
                                 {(() => {
                                   const isCompleted = status.icon === "completed";
                                   let displayTags = tags.filter((t) => {
