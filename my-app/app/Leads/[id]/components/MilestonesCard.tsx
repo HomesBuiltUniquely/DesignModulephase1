@@ -699,8 +699,16 @@ export default function MilestonesCard({
                               <div className="flex items-center gap-1.5">
                                 {taskXp && taskXp.isActive && taskXp.baseXp > 0 && (
                                   <>
-                                    {/* Base or Earned XP Badge */}
-                                    {status.icon === "completed" && taskXp.earnedXp != null && taskXp.earnedXp > 0 ? (
+                                    {/* Show Negative XP for LATE tasks */}
+                                    {isLateCompleted && taskXp.penaltyXp > 0 ? (
+                                      <span
+                                        className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md bg-red-100 text-red-700 border border-red-300/80 shadow-2xs"
+                                        title={`Late penalty: -${taskXp.penaltyXp} XP`}
+                                      >
+                                        <span className="text-red-600 font-black">★</span>
+                                        <span>−{taskXp.penaltyXp} XP</span>
+                                      </span>
+                                    ) : status.icon === "completed" && taskXp.earnedXp != null && taskXp.earnedXp > 0 ? (
                                       <div className="flex flex-col items-end gap-0.5">
                                         <span
                                           className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md bg-blue-50 text-blue-800 border border-blue-200/90 shadow-2xs"
@@ -709,11 +717,6 @@ export default function MilestonesCard({
                                           <span className="text-[#00B0ED] font-black">★</span>
                                           <span>+{taskXp.earnedXp} XP</span>
                                         </span>
-                                        {taskXp.isDelayed && (taskXp.delayDays > 0 || taskXp.overdueDays > 0) && (
-                                          <span className="text-[9px] text-slate-500 font-medium">
-                                            {taskXp.penaltyXp > 0 ? `−${taskXp.penaltyXp} XP` : ""} {taskXp.delayDays > 0 ? `(${taskXp.delayDays}d delayed)` : taskXp.overdueDays > 0 ? `(${taskXp.overdueDays}d overdue)` : ""}
-                                          </span>
-                                        )}
                                       </div>
                                     ) : (
                                       <span

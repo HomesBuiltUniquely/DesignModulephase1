@@ -219,7 +219,7 @@ export async function evaluateAndAwardWorkflowXp(
 
     // 6. Calculate Net XP:
     // If on-time: base_xp = rewardXp, penalty_xp = 0, net_xp = rewardXp
-    // If overdue: base_xp = 0, penalty_xp = overdueDays * 2, net_xp = -penalty_xp
+    // If overdue: base_xp = 0, penalty_xp = overdueDays * 2, net_xp = -penalty_xp (NEGATIVE)
     const { base_xp, penalty_xp, net_xp } = calculateWorkflowNetXp(
       workflow.rewardXp,
       isDelayed,
