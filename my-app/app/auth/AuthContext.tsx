@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { getApiBase } from '@/app/lib/apiBase';
+import { redirectToExternalLogin } from '@/app/lib/externalLoginUrl';
 
 export type AuthRole = 'admin' | 'territorial_design_manager' | 'deputy_general_manager' | 'design_manager' | 'designer' | 'dqc_manager' | 'dqe' | 'mmt_manager' | 'mmt_executive' | 'finance' | 'project_manager' | 'senior_project_manager' | 'escalation_manager';
 
@@ -41,6 +42,7 @@ const AuthContext = createContext<{
   loading: boolean;
   login: (email: string, password: string) => Promise<{ success: true; user: AuthUser } | { success: false; message?: string }>;
   logout: () => Promise<void>;
+  logoutAndRedirectToLogin: () => Promise<void>;
   setUser: (u: AuthUser | null) => void;
   applySession: (u: AuthUser, sid: string) => void;
   refreshUser: () => Promise<void>;
@@ -112,6 +114,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.removeItem(STORAGE_KEY);
   }, [sessionId]);
 
+  const logoutAndRedirectToLogin = useCallback(async () => {
+    await logout();
+    redirectToExternalLogin();
+  }, [logout]);
+
   const refreshUser = useCallback(async () => {
     if (!sessionId) return;
     try {
@@ -135,7 +142,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [sessionId]);
 
   return (
-    <AuthContext.Provider value={{ user, sessionId, loading, login, logout, setUser, applySession, refreshUser }}>
+    <AuthContext.Provider value={{ user, sessionId, loading, login, logout, logoutAndRedirectToLogin, setUser, applySession, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );
