@@ -19,7 +19,7 @@ import {
 import { IncentivesNavLink, IncentivesSideRail, canShowIncentivesNav } from './IncentivesNavLink';
 import FinanceRefundsNavLink from './FinanceRefundsNavLink';
 import { formatUserRoleLabel } from '../lib/formatUserRoleLabel';
-import { redirectToExternalLogin } from '../lib/externalLoginUrl';
+import { redirectToLoginPage } from '../lib/externalLoginUrl';
 
 export default function DashboardGuard() {
   const router = useRouter();
@@ -36,7 +36,7 @@ export default function DashboardGuard() {
     if (loading) return;
     if (pathname === '/login' || pathname === '/auth/accept') return;
     if (!user) {
-      redirectToExternalLogin();
+      redirectToLoginPage();
       return;
     }
   }, [user, loading, pathname, router]);

@@ -3,7 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useAuth } from '../../auth/AuthContext';
-import { redirectToExternalLogin } from '@/app/lib/externalLoginUrl';
+import { redirectToLoginPage } from '@/app/lib/externalLoginUrl';
 import { BRANCH_OPTIONS } from '../../constants/branches';
 import CustomSelect from '@/app/Components/ui/CustomSelect';
 
@@ -31,7 +31,7 @@ export default function AdminCreateProjectManagerPage() {
   useEffect(() => {
     if (loading) return;
     if (!user) {
-      redirectToExternalLogin();
+      redirectToLoginPage();
       return;
     }
     if (!CAN_CREATE_PM.has((user.role || '').toLowerCase())) router.replace('/');

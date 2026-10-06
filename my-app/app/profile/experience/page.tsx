@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useAuth } from '../../auth/AuthContext';
-import { redirectToExternalLogin } from '@/app/lib/externalLoginUrl';
+import { redirectToLoginPage } from '@/app/lib/externalLoginUrl';
 import { getApiBase } from '@/app/lib/apiBase';
 
 const API = getApiBase();
@@ -26,7 +26,7 @@ export default function DesignerExperiencePage() {
   useEffect(() => {
     if (loading) return;
     if (!user) {
-      redirectToExternalLogin();
+      redirectToLoginPage();
       return;
     }
   }, [user, loading, router]);

@@ -3,7 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 import { useAuth } from '../auth/AuthContext';
-import { redirectToExternalLogin } from '@/app/lib/externalLoginUrl';
+import { redirectToLoginPage } from '@/app/lib/externalLoginUrl';
 
 export default function AdminPanelPage() {
   const router = useRouter();
@@ -12,7 +12,7 @@ export default function AdminPanelPage() {
   useEffect(() => {
     if (loading) return;
     if (!user) {
-      redirectToExternalLogin();
+      redirectToLoginPage();
       return;
     }
     if (user.role !== 'admin') router.replace('/');

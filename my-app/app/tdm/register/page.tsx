@@ -3,7 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useAuth } from '../../auth/AuthContext';
-import { redirectToExternalLogin } from '@/app/lib/externalLoginUrl';
+import { redirectToLoginPage } from '@/app/lib/externalLoginUrl';
 import { BRANCH_OPTIONS } from '../../constants/branches';
 import CustomSelect from '@/app/Components/ui/CustomSelect';
 
@@ -30,7 +30,7 @@ export default function TdmRegisterPage() {
   useEffect(() => {
     if (loading) return;
     if (!user) {
-      redirectToExternalLogin();
+      redirectToLoginPage();
       return;
     }
     if (user.role !== 'territorial_design_manager' && user.role !== 'deputy_general_manager') router.replace('/');
