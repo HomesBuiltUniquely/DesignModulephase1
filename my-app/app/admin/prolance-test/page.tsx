@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '../../auth/AuthContext';
-import { redirectToExternalLogin } from '@/app/lib/externalLoginUrl';
+import { redirectToLoginPage } from '@/app/lib/externalLoginUrl';
 import { getApiBase } from '@/app/lib/apiBase';
 
 const API = getApiBase();
@@ -80,7 +80,7 @@ export default function ProlanceTestPage() {
 
   useEffect(() => {
     if (loading) return;
-    if (!user) return redirectToExternalLogin();
+    if (!user) return redirectToLoginPage();
     if (user.role !== 'admin') return void router.replace('/');
   }, [loading, user, router]);
 

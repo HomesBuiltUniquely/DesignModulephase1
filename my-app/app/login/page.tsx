@@ -7,15 +7,24 @@ import { getApiBase } from "@/app/lib/apiBase";
 import { parseHandoffFromLocation, stripHandoffFromUrl } from "../auth/handoff";
 import { roleHomePath } from "../auth/roleHome";
 import {
-  getExternalLoginUrl,
-  redirectToExternalLogin,
+  getLoginPageUrl,
+  redirectToLoginPage,
+  usesLocalLoginPage,
 } from "@/app/lib/externalLoginUrl";
+import LocalLoginForm from "./LocalLoginForm";
 
 export default function LoginPage() {
   const router = useRouter();
   const { user, loading, applySession } = useAuth();
   const [error, setError] = useState("");
   const [acceptingHandoff, setAcceptingHandoff] = useState(false);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const localLogin = mounted && usesLocalLoginPage();
 
   useEffect(() => {
     if (loading || user) return;
@@ -63,17 +72,36 @@ export default function LoginPage() {
   }, [loading, user, applySession, router]);
 
   useEffect(() => {
-    if (loading || user) return;
-    if (acceptingHandoff || error) return;
+    if (!mounted || loading || user) return;
+    if (acceptingHandoff) return;
     if (typeof window === "undefined") return;
     if (parseHandoffFromLocation(window.location)) return;
-    redirectToExternalLogin();
-  }, [loading, user, acceptingHandoff, error]);
+    if (localLogin) return;
+    redirectToLoginPage();
+  }, [mounted, loading, user, acceptingHandoff, localLogin]);
 
   useEffect(() => {
     if (loading || !user) return;
     router.replace(roleHomePath(user.role));
   }, [user, loading, router]);
+
+  if (!mounted || loading || acceptingHandoff) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-white">
+        <p className="text-gray-500">
+          {acceptingHandoff
+            ? "Signing you into Design Module…"
+            : "Loading…"}
+        </p>
+      </div>
+    );
+  }
+
+  if (user) return null;
+
+  if (localLogin) {
+    return <LocalLoginForm initialError={error} />;
+  }
 
   if (error) {
     return (
@@ -81,10 +109,10 @@ export default function LoginPage() {
         <div className="max-w-sm text-center space-y-4">
           <p className="text-red-700 text-sm">{error}</p>
           <a
-            href={getExternalLoginUrl()}
+            href={getLoginPageUrl()}
             className="text-sm font-medium text-[#32261C] underline"
           >
-            Go to Hallway login
+            Go to login
           </a>
         </div>
       </div>
@@ -93,11 +121,7 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-white">
-      <p className="text-gray-500">
-        {acceptingHandoff
-          ? "Signing you into Design Module…"
-          : "Redirecting to login…"}
-      </p>
+      <p className="text-gray-500">Redirecting to Hallway login…</p>
     </div>
   );
 }

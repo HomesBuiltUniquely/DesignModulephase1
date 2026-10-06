@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { getApiBase } from '@/app/lib/apiBase';
-import { redirectToExternalLogin } from '@/app/lib/externalLoginUrl';
+import { redirectToLoginPage } from '@/app/lib/externalLoginUrl';
 
 export type AuthRole = 'admin' | 'territorial_design_manager' | 'deputy_general_manager' | 'design_manager' | 'designer' | 'dqc_manager' | 'dqe' | 'mmt_manager' | 'mmt_executive' | 'finance' | 'project_manager' | 'senior_project_manager' | 'escalation_manager';
 
@@ -116,7 +116,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logoutAndRedirectToLogin = useCallback(async () => {
     await logout();
-    redirectToExternalLogin();
+    redirectToLoginPage();
   }, [logout]);
 
   const refreshUser = useCallback(async () => {

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '../../auth/AuthContext';
-import { redirectToExternalLogin } from '@/app/lib/externalLoginUrl';
+import { redirectToLoginPage } from '@/app/lib/externalLoginUrl';
 import { getApiBase } from '@/app/lib/apiBase';
 
 const API = getApiBase();
@@ -47,7 +47,7 @@ export default function AdminManageUsersPage() {
   useEffect(() => {
     if (loading) return;
     if (!user) {
-      redirectToExternalLogin();
+      redirectToLoginPage();
       return;
     }
     if (user.role !== 'admin') router.replace('/');
