@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../../auth/AuthContext';
+import { redirectToExternalLogin } from '@/app/lib/externalLoginUrl';
 import { getApiBase } from '@/app/lib/apiBase';
 import CustomSelect from '@/app/Components/ui/CustomSelect';
 
@@ -32,7 +33,7 @@ function normalizeCategory(raw: unknown): Category {
 
 export default function InspirationProjectsPage() {
   const router = useRouter();
-  const { user, sessionId, loading, logout, refreshUser } = useAuth();
+  const { user, sessionId, loading, logoutAndRedirectToLogin, refreshUser } = useAuth();
   const [projects, setProjects] = useState<InspirationProject[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -41,7 +42,7 @@ export default function InspirationProjectsPage() {
   useEffect(() => {
     if (loading) return;
     if (!user) {
-      router.replace('/login');
+      redirectToExternalLogin();
       return;
     }
   }, [user, loading, router]);
@@ -165,7 +166,7 @@ export default function InspirationProjectsPage() {
           <span className="text-sm text-gray-600">{user.email}</span>
           <button
             type="button"
-            onClick={() => logout().then(() => router.replace('/login'))}
+            onClick={() => void logoutAndRedirectToLogin()}
             className="text-sm text-red-600 hover:underline"
           >
             Logout

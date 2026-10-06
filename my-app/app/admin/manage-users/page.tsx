@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '../../auth/AuthContext';
+import { redirectToExternalLogin } from '@/app/lib/externalLoginUrl';
 import { getApiBase } from '@/app/lib/apiBase';
 
 const API = getApiBase();
@@ -34,7 +35,7 @@ function roleLabel(role: ManageRole): string {
 
 export default function AdminManageUsersPage() {
   const router = useRouter();
-  const { user, sessionId, loading, logout } = useAuth();
+  const { user, sessionId, loading, logoutAndRedirectToLogin } = useAuth();
   const [activeRole, setActiveRole] = useState<ManageRole>('designer');
   const [rows, setRows] = useState<ManagedUser[]>([]);
   const [listLoading, setListLoading] = useState(false);
@@ -46,7 +47,7 @@ export default function AdminManageUsersPage() {
   useEffect(() => {
     if (loading) return;
     if (!user) {
-      router.replace('/login');
+      redirectToExternalLogin();
       return;
     }
     if (user.role !== 'admin') router.replace('/');
@@ -144,7 +145,7 @@ export default function AdminManageUsersPage() {
           <span className="text-sm text-gray-600">{user.email}</span>
           <button
             type="button"
-            onClick={() => logout().then(() => router.replace('/login'))}
+            onClick={() => void logoutAndRedirectToLogin()}
             className="text-sm text-red-600 hover:underline"
           >
             Logout

@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '../../auth/AuthContext';
+import { redirectToExternalLogin } from '@/app/lib/externalLoginUrl';
 import { getApiBase } from '@/app/lib/apiBase';
 
 const API = getApiBase();
@@ -60,7 +61,7 @@ function readProjectIdFromCreateResponse(data: unknown): number | null {
 
 export default function ProlanceTestPage() {
   const router = useRouter();
-  const { user, sessionId, loading, logout } = useAuth();
+  const { user, sessionId, loading, logoutAndRedirectToLogin } = useAuth();
 
   const [token, setToken] = useState('');
   const [sessionRef, setSessionRef] = useState('');
@@ -79,7 +80,7 @@ export default function ProlanceTestPage() {
 
   useEffect(() => {
     if (loading) return;
-    if (!user) return void router.replace('/login');
+    if (!user) return redirectToExternalLogin();
     if (user.role !== 'admin') return void router.replace('/');
   }, [loading, user, router]);
 
@@ -155,7 +156,7 @@ export default function ProlanceTestPage() {
         </div>
         <div className="flex items-center gap-4">
           <span className="text-sm text-gray-600">{user.email}</span>
-          <button type="button" onClick={() => logout().then(() => router.replace('/login'))} className="text-sm text-red-600 hover:underline">
+          <button type="button" onClick={() => void logoutAndRedirectToLogin()} className="text-sm text-red-600 hover:underline">
             Logout
           </button>
         </div>

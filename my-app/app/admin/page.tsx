@@ -3,15 +3,16 @@
 import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 import { useAuth } from '../auth/AuthContext';
+import { redirectToExternalLogin } from '@/app/lib/externalLoginUrl';
 
 export default function AdminPanelPage() {
   const router = useRouter();
-  const { user, loading, logout } = useAuth();
+  const { user, loading, logoutAndRedirectToLogin } = useAuth();
 
   useEffect(() => {
     if (loading) return;
     if (!user) {
-      router.replace('/login');
+      redirectToExternalLogin();
       return;
     }
     if (user.role !== 'admin') router.replace('/');
@@ -101,7 +102,7 @@ export default function AdminPanelPage() {
           <span className="text-sm text-gray-600">{user.email}</span>
           <button
             type="button"
-            onClick={() => logout().then(() => router.replace('/login'))}
+            onClick={() => void logoutAndRedirectToLogin()}
             className="text-sm text-red-600 hover:underline"
           >
             Logout

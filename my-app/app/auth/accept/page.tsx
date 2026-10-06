@@ -6,6 +6,10 @@ import { useAuth } from "../AuthContext";
 import { getApiBase } from "@/app/lib/apiBase";
 import { parseHandoffFromLocation, stripHandoffFromUrl } from "../handoff";
 import { roleHomePath } from "../roleHome";
+import {
+  getExternalLoginUrl,
+  redirectToExternalLogin,
+} from "@/app/lib/externalLoginUrl";
 
 export default function AuthAcceptPage() {
   const router = useRouter();
@@ -19,7 +23,7 @@ export default function AuthAcceptPage() {
       const handoff = parseHandoffFromLocation(window.location);
       stripHandoffFromUrl();
       if (!handoff) {
-        router.replace("/login");
+        redirectToExternalLogin();
         return;
       }
       try {
@@ -56,8 +60,8 @@ export default function AuthAcceptPage() {
       <div className="min-h-screen flex items-center justify-center bg-white p-6">
         <div className="max-w-sm text-center space-y-4">
           <p className="text-red-700 text-sm">{error}</p>
-          <a href="/login" className="text-sm font-medium text-[#32261C] underline">
-            Go to Design Module login
+          <a href={getExternalLoginUrl()} className="text-sm font-medium text-[#32261C] underline">
+            Go to Hallway login
           </a>
         </div>
       </div>
