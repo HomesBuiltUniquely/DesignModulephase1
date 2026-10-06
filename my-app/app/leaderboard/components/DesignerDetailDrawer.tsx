@@ -145,7 +145,7 @@ export const DesignerDetailDrawer: React.FC<DesignerDetailDrawerProps> = ({
             />
           </div>
           <p className="text-xs text-slate-400 dark:text-slate-400 font-medium truncate mt-0.5">
-            {designer?.designation || "Senior Designer"}
+            Designer
             {designer?.branch ? ` • ${designer.branch}` : ""}
           </p>
         </div>
@@ -230,10 +230,10 @@ export const DesignerDetailDrawer: React.FC<DesignerDetailDrawerProps> = ({
       {/* Bottom Link */}
       <div className="mt-5 pt-3 border-t border-slate-100 dark:border-slate-800">
         <Link
-          href="/profile"
+          href={`/leaderboard/designer/${designerId}/portfolio`}
           className="w-full border border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 rounded-xl py-2.5 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white flex items-center justify-center gap-1.5 transition-colors shadow-2xs bg-white dark:bg-[#14171e]"
         >
-          <span>View Full Profile</span>
+          <span>View Portfolio Projects</span>
           <span>→</span>
         </Link>
       </div>

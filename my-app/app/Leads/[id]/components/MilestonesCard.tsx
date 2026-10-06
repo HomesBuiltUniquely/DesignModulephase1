@@ -370,24 +370,55 @@ export default function MilestonesCard({
                   data-current-milestone={isCurrent ? "true" : undefined}
                   className={`flex min-h-0 w-[380px] min-w-0 flex-col xl:w-[550px] ${isMaximized ? "flex-shrink-0 snap-start" : "min-h-0 flex-1"}`}
                 >
-                  <div className="mb-4 flex flex-shrink-0 justify-between">
+                  <div className="mb-3 flex flex-shrink-0 items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`text-xs font-black uppercase tracking-wider ${
+                          isCurrent ? "text-[#32261C]" : isNextOrLater ? "text-gray-400" : "text-gray-600"
+                        }`}
+                      >
+                        MILESTONE {String(displayIndex).padStart(2, "0")}
+                      </span>
+                      <span
+                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                          progressPercent === 100 || milestoneXp?.isWorkflowCompleted
+                            ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                            : milestoneXp?.isDelayed
+                              ? "bg-rose-50 text-rose-700 border border-rose-200"
+                              : isCurrent
+                                ? "bg-sky-50 text-sky-700 border border-sky-200"
+                                : "bg-gray-100 text-gray-500 border border-gray-200"
+                        }`}
+                      >
+                        {progressPercent === 100 || milestoneXp?.isWorkflowCompleted
+                          ? "Completed"
+                          : milestoneXp?.isDelayed
+                            ? "Overdue"
+                            : isCurrent
+                              ? "In Progress"
+                              : "Pending"}
+                      </span>
+                    </div>
                     <span
-                      className={`text-xs font-bold uppercase tracking-wide ${isCurrent ? "text-[#32261C]" : isNextOrLater ? "text-gray-400" : "text-gray-500"}`}
-                    >
-                      Milestone {String(milestone.id === 7 ? 0 : milestone.id + 1).padStart(2, "0")}
-                    </span>
-                    <span
-                      className={`text-xs ml-2 ${isNextOrLater ? "text-[#32261C]/70" : "text-[#32261C]"}`}
+                      className={`text-xs font-semibold ${isNextOrLater ? "text-[#32261C]/60" : "text-[#32261C]"}`}
                     >
                       {dateRange}
                     </span>
                   </div>
                   <div
-                    className={`flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border p-4 shadow-sm transition-all ${isCurrent ? "bg-white border-[#EF0101] ring-2 ring-[#EF0101]/20" : isNextOrLater ? "bg-gray-100 border-gray-200 opacity-75" : "bg-white border-gray-200"}`}
+                    className={`flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border p-4 shadow-sm transition-all ${
+                      isCurrent
+                        ? "bg-white border-[#EF0101] ring-2 ring-[#EF0101]/20"
+                        : isNextOrLater
+                          ? "bg-gray-100 border-gray-200 opacity-75"
+                          : "bg-white border-gray-200"
+                    }`}
                   >
-                    <div className="flex items-center justify-between mb-3 flex-shrink-0 gap-2">
+                    <div className="flex items-start justify-between mb-2 flex-shrink-0 gap-3">
                       <h3
-                        className={`text-lg font-bold min-w-0 truncate ${isNextOrLater ? "text-gray-500" : "text-[#32261C]"}`}
+                        className={`text-lg font-bold min-w-0 truncate ${
+                          isNextOrLater ? "text-gray-500" : "text-[#32261C]"
+                        }`}
                       >
                         {milestone.name}
                       </h3>
@@ -424,29 +455,51 @@ export default function MilestonesCard({
                             </button>
                           )}
                         {totalPossibleXp > 0 && (
-                          milestoneXp?.isWorkflowCompleted ? (
-                            milestoneXp.workflowStatus === "ON-TIME" ? (
-                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                                +{earnedMilestoneXp} XP (ON-TIME)
-                              </span>
-                            ) : (
-                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200">
-                                {earnedMilestoneXp} XP (OVERDUE {milestoneXp.overdueDays || milestoneXp.delayDays || 1}d)
-                              </span>
-                            )
-                          ) : (
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 border border-purple-200">
-                              0/{totalPossibleXp} XP
+                          <div className="flex flex-col items-end">
+                            <span className="inline-flex items-center gap-1 text-xs font-black px-2.5 py-1 rounded-lg bg-amber-50 text-amber-900 border border-amber-200/80 shadow-2xs">
+                              <span className="text-amber-500 font-black">★</span>
+                              <span>{totalPossibleXp} XP</span>
+                              <span className="text-[10px] font-semibold text-amber-700/90 ml-0.5">Total Possible</span>
                             </span>
-                          )
+
+                            {milestoneXp?.isWorkflowCompleted ? (
+                              milestoneXp.workflowStatus === "ON-TIME" ? (
+                                <span className="text-[10px] font-bold text-emerald-700 mt-1 flex items-center gap-1">
+                                  <span>✓ Earned:</span>
+                                  <span className="font-extrabold">+{earnedMilestoneXp} XP</span>
+                                </span>
+                              ) : (
+                                <div className="flex flex-col items-end mt-1 text-[10px]">
+                                  <span className="font-bold text-rose-700 flex items-center gap-1">
+                                    <span>⚠ Overdue ({milestoneXp.overdueDays || milestoneXp.delayDays || 1}d):</span>
+                                    <span className="font-extrabold">{earnedMilestoneXp} XP</span>
+                                  </span>
+                                  {milestoneXp.penaltyXp > 0 && (
+                                    <span className="text-[9px] font-medium text-rose-600">
+                                      Deduction: −{milestoneXp.penaltyXp} XP (−2 XP/day)
+                                    </span>
+                                  )}
+                                </div>
+                              )
+                            ) : null}
+                          </div>
                         )}
                       </div>
                     </div>
-                    <div className="h-2 bg-gray-200 rounded-full overflow-hidden mb-4 flex-shrink-0">
-                      <div
-                        className="h-full bg-[#00B0ED] rounded-full transition-all"
-                        style={{ width: `${progressPercent}%` }}
-                      />
+                    {/* Progress Bar & Counter */}
+                    <div className="mb-3.5 flex-shrink-0">
+                      <div className="flex items-center justify-between text-xs font-semibold text-gray-500 mb-1">
+                        <span>Progress</span>
+                        <span className="font-bold text-[#32261C]">
+                          {progressPercent}% ({completedCount}/{taskList.length})
+                        </span>
+                      </div>
+                      <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+                        <div
+                          className="h-full rounded-full transition-all duration-300 bg-red-500"
+                          style={{ width: `${progressPercent}%` }}
+                        />
+                      </div>
                     </div>
                     <div className="flex min-h-0 flex-1 flex-col space-y-2 overflow-y-auto overflow-x-hidden overscroll-contain pr-1 [scrollbar-gutter:stable]">
                       {PAYMENT_MILESTONE_INDICES.has(milestoneIndex) && (
@@ -517,7 +570,7 @@ export default function MilestonesCard({
                           >
                             <span className="flex-shrink-0 mt-0.5">
                               {status.icon === "completed" && (
-                                <span className="w-6 h-6 rounded-full bg-[#EF0101]/80 flex items-center justify-center">
+                                <span className={`w-6 h-6 rounded-full flex items-center justify-center bg-red-500`}>
                                   <svg
                                     xmlns="http://www.w3.org/2000/svg"
                                     fill="none"
@@ -641,41 +694,103 @@ export default function MilestonesCard({
                                 </p>
                               )}
                             </div>
-                            <div className="flex items-center gap-1.5 flex-shrink-0">
-                              {taskXp && taskXp.isActive && taskXp.baseXp > 0 && (
-                                <span
-                                  className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
-                                    taskXp.earnedXp != null
-                                      ? taskXp.earnedXp > 0
-                                        ? "bg-emerald-100 text-emerald-800"
-                                        : "bg-gray-100 text-gray-500 border border-gray-200"
-                                      : "bg-purple-100 text-purple-800"
-                                  }`}
-                                  title={taskXp.earnedXp != null ? `Earned: ${taskXp.earnedXp} XP` : `Potential: ${taskXp.baseXp} XP`}
-                                >
-                                  +{taskXp.earnedXp != null ? taskXp.earnedXp : taskXp.baseXp} XP
-                                </span>
+                            <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+                              {/* XP Badge and Status Tags on same line */}
+                              <div className="flex items-center gap-1.5">
+                                {taskXp && taskXp.isActive && taskXp.baseXp > 0 && (
+                                  <>
+                                    {/* Show Negative XP for LATE tasks */}
+                                    {isLateCompleted && taskXp.penaltyXp > 0 ? (
+                                      <span
+                                        className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md bg-red-100 text-red-700 border border-red-300/80 shadow-2xs"
+                                        title={`Late penalty: -${taskXp.penaltyXp} XP`}
+                                      >
+                                        <span className="text-red-600 font-black">★</span>
+                                        <span>−{taskXp.penaltyXp} XP</span>
+                                      </span>
+                                    ) : status.icon === "completed" && taskXp.earnedXp != null && taskXp.earnedXp > 0 ? (
+                                      <div className="flex flex-col items-end gap-0.5">
+                                        <span
+                                          className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md bg-blue-50 text-blue-800 border border-blue-200/90 shadow-2xs"
+                                          title={`Earned: ${taskXp.earnedXp} XP`}
+                                        >
+                                          <span className="text-[#00B0ED] font-black">★</span>
+                                          <span>+{taskXp.earnedXp} XP</span>
+                                        </span>
+                                      </div>
+                                    ) : (
+                                      <span
+                                        className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md bg-purple-50 text-purple-800 border border-purple-200/90 shadow-2xs"
+                                        title={`Base XP: ${taskXp.baseXp} XP`}
+                                      >
+                                        <span className="text-purple-500 font-black">★</span>
+                                        <span>+{taskXp.baseXp} XP</span>
+                                        <span className="text-[9px] font-semibold text-purple-600/80">Base</span>
+                                      </span>
+                                    )}
+                                  </>
+                                )}
+                                {(() => {
+                                  const isCompleted = status.icon === "completed";
+                                  let displayTags = tags.filter((t) => {
+                                    if (isCompleted) {
+                                      return t !== "CURRENT" && t !== "ACTION" && t !== "PENDING";
+                                    }
+                                    return true;
+                                  });
+
+                                  if (isCompleted && displayTags.length === 0) {
+                                    displayTags = isLateCompleted ? ["LATE"] : ["ON-TIME"];
+                                  }
+
+                                  return displayTags.map((tag) => (
+                                    <span
+                                      key={tag}
+                                      className={`text-[10px] font-semibold px-2 py-0.5 rounded-md ${
+                                        tag === "ON-TIME"
+                                          ? "bg-[#DDCDC1] text-[#32261C] font-bold"
+                                          : tag === "LATE"
+                                            ? "bg-amber-100 text-amber-900 border border-amber-300/80 font-semibold"
+                                            : tag === "OVERDUE" || tag === "DELAYED"
+                                              ? "bg-[#EF0101]/15 text-[#EF0101] border border-[#EF0101]/30 font-bold"
+                                              : tag === "CURRENT" || tag === "ACTION"
+                                                ? "bg-[#00B0ED]/25 text-[#00B0ED] font-semibold"
+                                                : "bg-gray-100 border border-gray-300 text-gray-500"
+                                    }`}
+                                  >
+                                    {tag}
+                                  </span>
+                                ));
+                              })()}
+                              </div>
+                              {/* Daily Deduction Info below */}
+                              {taskXp && taskXp.hasDailyDeduction && (
+                                (taskXp.isDelayed || (taskXp.delayDays > 0) || (taskXp.overdueDays > 0) || (taskXp.penaltyXp > 0) || isActiveOverdue) ? (
+                                  <div className="flex flex-col items-end gap-0.5">
+                                    <span
+                                      className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-rose-50 text-rose-700 border border-rose-200 shadow-2xs"
+                                      title={`Daily deduction: -${taskXp.dailyDeductionRate || 2} XP/day (${taskXp.overdueDays || taskXp.delayDays || 1}d overdue)`}
+                                    >
+                                      <span>−{taskXp.dailyDeductionRate || 2} XP/day</span>
+                                      <span className="text-[9px] font-medium text-rose-600">
+                                        ({taskXp.overdueDays || taskXp.delayDays || 1}d overdue)
+                                      </span>
+                                    </span>
+                                    {taskXp.finalXp != null && (
+                                      <span className="text-[10px] font-extrabold text-slate-700">
+                                        Current: {taskXp.finalXp} XP
+                                      </span>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <span
+                                    className="text-[9px] font-medium text-slate-400"
+                                    title="Daily deduction applies if delayed"
+                                  >
+                                    Daily: −{taskXp.dailyDeductionRate || 2} XP/day
+                                  </span>
+                                )
                               )}
-                              {tags.map((tag) => (
-                                <span
-                                  key={tag}
-                                  className={`text-[10px] font-semibold px-2.5 py-1 rounded-md ${
-                                    tag === "ON-TIME"
-                                      ? "bg-[#DDCDC1] text-[#32261C] font-bold"
-                                      : tag === "LATE"
-                                        ? "bg-amber-100 text-amber-900 border border-amber-300/80 font-semibold"
-                                        : tag === "OVERDUE"
-                                          ? "bg-[#EF0101]/15 text-[#EF0101] border border-[#EF0101]/30"
-                                          : tag === "CURRENT" || tag === "ACTION"
-                                          ? "bg-[#00B0ED]/25 text-[#00B0ED]"
-                                          : tag === "DELAYED"
-                                            ? "bg-[#EF0101]/15 text-[#EF0101]"
-                                            : "bg-gray-100 border border-gray-300 text-gray-500"
-                                  }`}
-                                >
-                                  {tag}
-                                </span>
-                              ))}
                               <span
                                 role="button"
                                 tabIndex={0}

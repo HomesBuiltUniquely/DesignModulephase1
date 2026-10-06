@@ -76,7 +76,8 @@ export const DesignerLeaderboardView: React.FC = () => {
 
         if (list.length > 0) {
           if (isDesigner) {
-            setSelectedShowcaseDesignerId(list[0].id);
+            const me = list.find((d: any) => Number(d.id) === Number(user?.id));
+            setSelectedShowcaseDesignerId(me ? me.id : list[0].id);
           } else if (isDesignManager || isTDM) {
             setSelectedShowcaseDesignerId((prev) => (prev ? prev : list[0].id));
           }
@@ -93,15 +94,19 @@ export const DesignerLeaderboardView: React.FC = () => {
   }, []);
 
   const activeShowcaseDesigner = useMemo(() => {
-    if (isDesigner) return designers[0] || null;
     if (selectedShowcaseDesignerId) {
       return (
         designers.find((d) => d.id === selectedShowcaseDesignerId) ||
-        (isDesignManager || isTDM ? designers[0] : null)
+        designers[0] ||
+        null
       );
     }
-    return null;
-  }, [designers, isDesigner, isDesignManager, isTDM, selectedShowcaseDesignerId]);
+    if (isDesigner) {
+      const me = designers.find((d) => Number(d.id) === Number(user?.id));
+      return me || designers[0] || null;
+    }
+    return isDesignManager || isTDM ? designers[0] : null;
+  }, [designers, isDesigner, isDesignManager, isTDM, selectedShowcaseDesignerId, user?.id]);
 
   // Summary Metrics
   const totalDesigners = designers.length;
@@ -180,25 +185,13 @@ export const DesignerLeaderboardView: React.FC = () => {
     return list;
   }, [designers, search, levelFilter, teamFilter, sortBy]);
 
-  // Drawer authorization guard
+  // Drawer open handler
   const handleOpenDrawer = (designerId: number) => {
-    if (isDesigner && Number(designerId) !== Number(user?.id)) {
-      return;
-    }
-    if (isDesignManager || isTDM) {
-      const isInTeam = designers.some((d) => Number(d.id) === Number(designerId));
-      if (!isInTeam) return;
-    }
     setSelectedDesignerId(designerId);
     setShowDrawer(true);
   };
 
   const handleSelectShowcase = (designerId: number) => {
-    if (isDesigner) return;
-    if (isDesignManager || isTDM) {
-      const isInTeam = designers.some((d) => Number(d.id) === Number(designerId));
-      if (!isInTeam) return;
-    }
     setSelectedShowcaseDesignerId(designerId);
   };
 
@@ -558,7 +551,7 @@ export const DesignerLeaderboardView: React.FC = () => {
             </div>
 
             {/* Role-specific selector */}
-            {(isDesignManager || isTDM) && designers.length > 0 && (
+            {(isDesignManager || isTDM || isDesigner) && designers.length > 0 && (
               <div className="flex items-center gap-2">
                 <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 shrink-0">Selected Member:</span>
                 <CustomSelect
@@ -734,71 +727,54 @@ export const DesignerLeaderboardView: React.FC = () => {
         </div>
 
         {/* =================================================================== */}
-        {/* LEADERBOARD TABLE CONTROLS (Omitted for Designer)                  */}
+        {/* LEADERBOARD TABLE CONTROLS                                         */}
         {/* =================================================================== */}
-        {!isDesigner && (
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-            {/* Search Box */}
-            <div className="relative flex-1 max-w-sm">
-              <svg
-                className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-              <input
-                type="text"
-                placeholder={
-                  isDesignManager
-                    ? "Search managed designers..."
-                    : isTDM
-                    ? "Search territory designers..."
-                    : "Search designers..."
-                }
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="w-full pl-10 pr-4 py-2.5 text-xs md:text-sm bg-white dark:bg-[#0f1115] border border-slate-200/90 dark:border-slate-800 rounded-2xl placeholder-slate-400 dark:placeholder-slate-500 text-slate-700 dark:text-slate-200 shadow-2xs focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 font-medium"
-              />
-            </div>
-
-            {/* Filter Dropdowns */}
-            <div className="flex flex-wrap items-center gap-3">
-              {/* Sort by */}
-              <CustomSelect
-                value={sortBy}
-                onChange={(v) => setSortBy(v as any)}
-                options={sortOptions}
-                minWidth="10.5rem"
-                size="xs"
-                buttonClassName="rounded-2xl border border-slate-200/90 dark:border-slate-800 py-2.5 px-3.5 text-xs font-semibold text-slate-700 dark:text-slate-200 shadow-2xs hover:bg-slate-50 dark:hover:bg-slate-900/60 bg-white dark:bg-[#14171e]"
-              />
-
-              {/* All Levels */}
-              <CustomSelect
-                value={levelFilter}
-                onChange={(v) => setLevelFilter(v)}
-                options={levelOptions}
-                minWidth="8.5rem"
-                size="xs"
-                buttonClassName="rounded-2xl border border-slate-200/90 dark:border-slate-800 py-2.5 px-3.5 text-xs font-semibold text-slate-700 dark:text-slate-200 shadow-2xs hover:bg-slate-50 dark:hover:bg-slate-900/60 bg-white dark:bg-[#14171e]"
-              />
-
-              {/* All Teams (Only shown if multiple team branches exist) */}
-              {teams.length > 2 && (
-                <CustomSelect
-                  value={teamFilter}
-                  onChange={(v) => setTeamFilter(v)}
-                  options={teamOptions}
-                  minWidth="8.5rem"
-                  size="xs"
-                  buttonClassName="rounded-2xl border border-slate-200/90 dark:border-slate-800 py-2.5 px-3.5 text-xs font-semibold text-slate-700 dark:text-slate-200 shadow-2xs hover:bg-slate-50 dark:hover:bg-slate-900/60 bg-white dark:bg-[#14171e]"
-                />
-              )}
-            </div>
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+          {/* Search Box */}
+          <div className="relative flex-1 max-w-sm">
+            <svg
+              className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <input
+              type="text"
+              placeholder="Search designers..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full pl-10 pr-4 py-2.5 text-xs md:text-sm bg-white dark:bg-[#0f1115] border border-slate-200/90 dark:border-slate-800 rounded-2xl placeholder-slate-400 dark:placeholder-slate-500 text-slate-700 dark:text-slate-200 shadow-2xs focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 font-medium"
+            />
           </div>
-        )}
+
+          {/* Filter Dropdowns */}
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Sort by */}
+            <CustomSelect
+              value={sortBy}
+              onChange={(v) => setSortBy(v as any)}
+              options={sortOptions}
+              minWidth="10.5rem"
+              size="xs"
+              buttonClassName="rounded-2xl border border-slate-200/90 dark:border-slate-800 py-2.5 px-3.5 text-xs font-semibold text-slate-700 dark:text-slate-200 shadow-2xs hover:bg-slate-50 dark:hover:bg-slate-900/60 bg-white dark:bg-[#14171e]"
+            />
+
+            {/* All Levels */}
+            <CustomSelect
+              value={levelFilter}
+              onChange={(v) => setLevelFilter(v)}
+              options={levelOptions}
+              minWidth="8.5rem"
+              size="xs"
+              buttonClassName="rounded-2xl border border-slate-200/90 dark:border-slate-800 py-2.5 px-3.5 text-xs font-semibold text-slate-700 dark:text-slate-200 shadow-2xs hover:bg-slate-50 dark:hover:bg-slate-900/60 bg-white dark:bg-[#14171e]"
+            />
+
+            {/* All Teams (Only shown if multiple team branches exist) */}
+            {/* REMOVED - Teams dropdown not required */}
+          </div>
+        </div>
 
         {/* =================================================================== */}
         {/* LEADERBOARD TABLE CARD                                              */}
@@ -823,13 +799,7 @@ export const DesignerLeaderboardView: React.FC = () => {
           ) : filteredDesigners.length === 0 ? (
             <div className="py-16 text-center text-slate-500 dark:text-slate-400">
               <p className="text-sm font-medium">
-                {isDesignManager
-                  ? "No designers are currently assigned to your team."
-                  : isTDM
-                  ? "No designers are currently assigned to your territory."
-                  : isDesigner
-                  ? "No personal XP data found."
-                  : "No designers matched your search."}
+                No designers matched your search.
               </p>
             </div>
           ) : (
@@ -850,13 +820,16 @@ export const DesignerLeaderboardView: React.FC = () => {
                   {filteredDesigners.map((designer) => {
                     const isRank1 = designer.rank === 1;
                     const isSelected = activeShowcaseDesigner?.id === designer.id;
+                    const isLoggedInDesigner = user?.role?.toLowerCase() === "designer" && user?.id === designer.id;
 
                     return (
                       <tr
                         key={designer.id}
                         onClick={() => handleSelectShowcase(designer.id)}
                         className={`transition-colors cursor-pointer ${
-                          isSelected && !isDesigner
+                          isLoggedInDesigner
+                            ? "bg-red-50/60 dark:bg-red-950/20 hover:bg-red-100/60 dark:hover:bg-red-950/30 border-l-4 border-red-500"
+                            : isSelected
                             ? "bg-blue-50/40 dark:bg-blue-950/20"
                             : isRank1
                             ? "bg-[#FFFDF3] dark:bg-amber-950/15 hover:bg-[#FFFBEB] dark:hover:bg-amber-950/25"
@@ -898,7 +871,7 @@ export const DesignerLeaderboardView: React.FC = () => {
                                 {designer.name}
                               </span>
                               <span className="text-xs text-slate-400 dark:text-slate-500 font-normal mt-0.5 block">
-                                {designer.subRole || "Interior Designer"}
+                                Designer
                                 {designer.branch ? ` · ${designer.branch}` : ""}
                               </span>
                             </div>
