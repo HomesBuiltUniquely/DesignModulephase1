@@ -44,6 +44,14 @@ export async function ensureDesignerXpTable(pool: Pool): Promise<void> {
       CONSTRAINT fk_xp_designer FOREIGN KEY (designer_id) REFERENCES users(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
+
+  // Clean up any historical negative downselling transactions to ensure penalty is strictly 0
+  try {
+    await pool.query(
+      `DELETE FROM designer_xp_transactions
+       WHERE transaction_type = 'upsell' AND (net_xp < 0 OR penalty_xp > 0)`
+    );
+  } catch {}
 }
 
 export interface AwardWorkflowParams {
@@ -492,15 +500,10 @@ export async function awardUpsellXp(
       taskName = "Quotation Upsell Revision";
       baseXp = netXp;
       penaltyXp = 0;
-    } else if (delta <= -100000) {
-      // Decrease: -20 XP per complete ₹1 Lakh decrease
-      completeLakhs = Math.floor(Math.abs(delta) / 100000);
-      netXp = -(completeLakhs * COMMERCIAL_XP_RULES.upsell.xpPerLakh);
-      taskName = "Quotation Revision Deduction";
-      baseXp = 0;
-      penaltyXp = completeLakhs * COMMERCIAL_XP_RULES.upsell.xpPerLakh;
     } else {
-      return { awarded: false, reason: "Revision delta is below 1 Lakh" };
+      // Downselling rule: Reducing quotation amounts must NOT create negative XP.
+      // If a quotation is reduced: XP penalty = 0. Do not create negative XP records.
+      return { awarded: false, reason: "Quotation reduction or delta below 1 Lakh yields 0 XP penalty (down-selling penalty = 0)" };
     }
 
     const [leadRows] = await pool.query(
@@ -629,28 +632,13 @@ async function canViewDesignerXp(
   pool: Pool,
 ): Promise<boolean> {
   const viewerRole = viewer.role;
-  if (isRoleAdmin(viewerRole)) {
+  if (
+    isRoleAdmin(viewerRole) ||
+    isRoleTDM(viewerRole) ||
+    isRoleDesignManager(viewerRole) ||
+    isRoleDesigner(viewerRole)
+  ) {
     return true;
-  }
-  if (isRoleDesigner(viewerRole)) {
-    return Number(viewer.id) === Number(targetDesignerId);
-  }
-  if (isRoleDesignManager(viewerRole)) {
-    const [dmRows] = await pool.query(
-      "SELECT 1 FROM users WHERE id = ? AND design_manager_id = ? LIMIT 1",
-      [targetDesignerId, viewer.id],
-    );
-    return (dmRows as any[]).length > 0;
-  }
-  if (isRoleTDM(viewerRole)) {
-    const [tdmRows] = await pool.query(
-      `SELECT 1 FROM users u
-       LEFT JOIN users dm ON dm.id = u.design_manager_id
-       WHERE u.id = ? AND (u.territorial_design_manager_id = ? OR dm.territorial_design_manager_id = ?)
-       LIMIT 1`,
-      [targetDesignerId, viewer.id, viewer.id],
-    );
-    return (tdmRows as any[]).length > 0;
   }
   return false;
 }
@@ -700,48 +688,6 @@ export function registerDesignerXpRoutes(
       if (!lead) return res.status(404).json({ message: "Lead not found" });
 
       const designerId = lead.assigned_designer_id ? Number(lead.assigned_designer_id) : null;
-
-      // Scope validation
-      if (isRoleDesigner(userRole)) {
-        if (!designerId || designerId !== Number(user.id)) {
-          return res.status(403).json({
-            message: "Forbidden: Designers can only access XP summary for leads assigned to them",
-          });
-        }
-      } else if (isRoleDesignManager(userRole)) {
-        if (!designerId) {
-          return res.status(403).json({
-            message: "Forbidden: Lead has no assigned designer in your team",
-          });
-        }
-        const [dmCheck] = await pool.query(
-          "SELECT 1 FROM users WHERE id = ? AND design_manager_id = ? LIMIT 1",
-          [designerId, user.id],
-        );
-        if ((dmCheck as any[]).length === 0) {
-          return res.status(403).json({
-            message: "Forbidden: Lead's designer is not in your managed team",
-          });
-        }
-      } else if (isRoleTDM(userRole)) {
-        if (!designerId) {
-          return res.status(403).json({
-            message: "Forbidden: Lead has no assigned designer in your territory",
-          });
-        }
-        const [tdmCheck] = await pool.query(
-          `SELECT 1 FROM users u
-           LEFT JOIN users dm ON dm.id = u.design_manager_id
-           WHERE u.id = ? AND (u.territorial_design_manager_id = ? OR dm.territorial_design_manager_id = ?)
-           LIMIT 1`,
-          [designerId, user.id, user.id],
-        );
-        if ((tdmCheck as any[]).length === 0) {
-          return res.status(403).json({
-            message: "Forbidden: Lead's designer is not in your territory team",
-          });
-        }
-      }
 
       // Non-fatal quotation revision XP check
       if (designerId) {
@@ -821,6 +767,7 @@ export function registerDesignerXpRoutes(
         isWorkflowCompleted: boolean;
         isDelayed: boolean;
         delayDays: number;
+        dailyDeductionRate?: number;
         overdueDays?: number;
         allowedDurationDays?: number;
         actualDurationDays?: number | null;
@@ -832,9 +779,14 @@ export function registerDesignerXpRoutes(
           aliases?: string[];
           baseXp: number;
           earnedXp: number | null;
+          hasDailyDeduction?: boolean;
+          dailyDeductionRate?: number;
+          penaltyXp?: number;
           status: "completed" | "current" | "pending";
           isDelayed: boolean;
           delayDays: number;
+          overdueDays?: number;
+          finalXp?: number | null;
           tag: string;
           isActive: boolean;
         }>;
@@ -871,41 +823,6 @@ export function registerDesignerXpRoutes(
           (t) => t.milestone_index === wf.milestoneIndex && t.transaction_type === "workflow_completion",
         );
 
-        let allStepsCompleted = true;
-        const taskDetails = wf.steps.map((step) => {
-          let isCompleted = completedSet.has(`${wf.milestoneIndex}::${step.stepName.trim().toLowerCase()}`);
-          if (!isCompleted && step.aliases) {
-            for (const alias of step.aliases) {
-              if (completedSet.has(`${wf.milestoneIndex}::${alias.trim().toLowerCase()}`)) {
-                isCompleted = true;
-                break;
-              }
-            }
-          }
-          if (!isCompleted) {
-            allStepsCompleted = false;
-          }
-
-          let tag = "PENDING";
-          let status: "completed" | "current" | "pending" = "pending";
-          if (isCompleted) {
-            status = "completed";
-            tag = "ON-TIME";
-          }
-
-          return {
-            taskName: step.stepName,
-            aliases: step.aliases || [],
-            baseXp: 0,
-            earnedXp: null,
-            status,
-            isDelayed: false,
-            delayDays: 0,
-            tag,
-            isActive: false,
-          };
-        });
-
         let earnedXp: number | null = null;
         let isDelayed = false;
         let delayDays = 0;
@@ -914,14 +831,6 @@ export function registerDesignerXpRoutes(
           earnedXp = Number(tx.net_xp);
           delayDays = Number(tx.delay_days || 0);
           isDelayed = delayDays > 0 || (Number(tx.net_xp) <= 0 && Number(tx.penalty_xp) > 0);
-          if (isDelayed) {
-            taskDetails.forEach((t) => {
-              if (t.status === "completed") {
-                t.isDelayed = true;
-                t.tag = "OVERDUE";
-              }
-            });
-          }
         }
 
         let metaObj: any = null;
@@ -931,24 +840,109 @@ export function registerDesignerXpRoutes(
           } catch {}
         }
 
+        let allStepsCompleted = true;
+        for (const step of wf.steps) {
+          let stepDone = completedSet.has(`${wf.milestoneIndex}::${step.stepName.trim().toLowerCase()}`);
+          if (!stepDone && step.aliases) {
+            for (const alias of step.aliases) {
+              if (completedSet.has(`${wf.milestoneIndex}::${alias.trim().toLowerCase()}`)) {
+                stepDone = true;
+                break;
+              }
+            }
+          }
+          if (!stepDone) {
+            allStepsCompleted = false;
+            break;
+          }
+        }
+
+        // Include all tasks from TASK_XP_RULES for this milestone, ensuring wf.steps are included
+        const milestoneRules = TASK_XP_RULES.filter((r) => r.milestoneIndex === wf.milestoneIndex);
+        const taskListToMap: Array<{ taskName: string; aliases: string[]; baseXp: number; isActive: boolean }> = [];
+        milestoneRules.forEach((r) => {
+          taskListToMap.push({
+            taskName: r.taskName,
+            aliases: r.aliases || [],
+            baseXp: r.baseXp,
+            isActive: r.isActive,
+          });
+        });
+        wf.steps.forEach((s) => {
+          if (!taskListToMap.some((t) => t.taskName.toLowerCase() === s.stepName.toLowerCase())) {
+            taskListToMap.push({
+              taskName: s.stepName,
+              aliases: s.aliases || [],
+              baseXp: 0,
+              isActive: true,
+            });
+          }
+        });
+
+        const taskDetails = taskListToMap.map((taskItem) => {
+          let isCompleted = completedSet.has(`${wf.milestoneIndex}::${taskItem.taskName.trim().toLowerCase()}`);
+          if (!isCompleted && taskItem.aliases) {
+            for (const alias of taskItem.aliases) {
+              if (completedSet.has(`${wf.milestoneIndex}::${alias.trim().toLowerCase()}`)) {
+                isCompleted = true;
+                break;
+              }
+            }
+          }
+
+          let tag = "PENDING";
+          let status: "completed" | "current" | "pending" = "pending";
+          if (isCompleted) {
+            status = "completed";
+            tag = isDelayed ? "OVERDUE" : "ON-TIME";
+          }
+
+          const hasDailyDeduction = taskItem.baseXp > 0;
+          const taskPenalty = isDelayed && hasDailyDeduction ? delayDays * 2 : 0;
+          const taskEarned = tx
+            ? (isDelayed ? 0 : taskItem.baseXp)
+            : (allStepsCompleted ? (isDelayed ? 0 : taskItem.baseXp) : null);
+          const taskFinal = tx
+            ? Number(tx.net_xp)
+            : (allStepsCompleted ? (isDelayed ? -taskPenalty : taskItem.baseXp) : null);
+
+          return {
+            taskName: taskItem.taskName,
+            aliases: taskItem.aliases,
+            baseXp: taskItem.baseXp,
+            earnedXp: taskEarned,
+            hasDailyDeduction,
+            dailyDeductionRate: hasDailyDeduction ? 2 : 0,
+            penaltyXp: taskPenalty,
+            delayDays: isDelayed ? delayDays : 0,
+            overdueDays: isDelayed ? delayDays : 0,
+            finalXp: taskFinal,
+            status,
+            isDelayed,
+            tag,
+            isActive: taskItem.isActive,
+          };
+        });
+
         const workflowStatus = tx
           ? (isDelayed ? "OVERDUE" : "ON-TIME")
-          : "IN_PROGRESS";
-        const completionState = tx ? "COMPLETED" : "INCOMPLETE";
+          : (allStepsCompleted ? (isDelayed ? "OVERDUE" : "ON-TIME") : "IN_PROGRESS");
+        const completionState = tx || allStepsCompleted ? "COMPLETED" : "INCOMPLETE";
 
         milestonesMap.set(wf.milestoneIndex, {
           milestoneIndex: wf.milestoneIndex,
           milestoneName: wf.milestoneName,
           workflowName: wf.workflowName,
           totalPossibleXp: wf.rewardXp,
-          baseXp: tx ? Number(tx.base_xp || 0) : (allStepsCompleted ? (isDelayed ? 0 : wf.rewardXp) : 0),
-          penaltyXp: tx ? Number(tx.penalty_xp || 0) : 0,
+          baseXp: tx ? Number(tx.base_xp || 0) : (allStepsCompleted ? (isDelayed ? 0 : wf.rewardXp) : wf.rewardXp),
+          penaltyXp: tx ? Number(tx.penalty_xp || 0) : (isDelayed ? delayDays * 2 : 0),
           earnedXp,
           netXp: earnedXp,
           finalXp: earnedXp,
+          dailyDeductionRate: 2,
           workflowStatus,
           completionState,
-          isWorkflowCompleted: Boolean(tx),
+          isWorkflowCompleted: Boolean(tx || allStepsCompleted),
           isDelayed,
           delayDays,
           overdueDays: delayDays,
@@ -1041,24 +1035,9 @@ export function registerDesignerXpRoutes(
         overallRankMap.set(d.id, idx + 1);
       });
 
-      // Role-based scoping:
-      // Admin: all designers
-      // TDM: designers where designer or their DM has territorial_design_manager_id = user.id
-      // Design Manager: only designers where design_manager_id = user.id
-      // Designer: only self (u.id = user.id)
+      // All design managers, designers, TDM, and admin see all designers (no RBAC scoping)
       let filterClause = "WHERE LOWER(u.role) = 'designer'";
       const queryParams: any[] = [];
-
-      if (isRoleTDM(userRole)) {
-        filterClause += " AND (u.territorial_design_manager_id = ? OR dm.territorial_design_manager_id = ?)";
-        queryParams.push(user.id, user.id);
-      } else if (isRoleDesignManager(userRole)) {
-        filterClause += " AND u.design_manager_id = ?";
-        queryParams.push(user.id);
-      } else if (isRoleDesigner(userRole)) {
-        filterClause += " AND u.id = ?";
-        queryParams.push(user.id);
-      }
 
       // Query scoped designers
       const [designerRows] = await pool.query(
