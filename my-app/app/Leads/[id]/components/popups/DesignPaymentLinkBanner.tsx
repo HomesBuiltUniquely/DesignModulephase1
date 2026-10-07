@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useAuth } from '@/app/auth/AuthContext';
 import { canUseEasebuzzOnline } from '@/app/lib/easebuzzAccess';
+import PaymentLinkActionModal, {
+  type PaymentLinkActionMode,
+} from '@/app/Components/PaymentLinkActionModal';
 import LinkExpiryProgress from './LinkExpiryProgress';
 
 export type DesignPaymentAttempt = {
@@ -135,6 +138,7 @@ export default function DesignPaymentLinkBanner({
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [actionModal, setActionModal] = useState<PaymentLinkActionMode | null>(null);
   const paidNotified = useRef(false);
   const onPaidRef = useRef(onPaid);
   onPaidRef.current = onPaid;
@@ -287,11 +291,7 @@ export default function DesignPaymentLinkBanner({
             <IconChip
               label="Edit amount"
               disabled={busy}
-              onClick={() => {
-                const next = window.prompt('New amount (₹)', String(attempt.amount ?? ''));
-                if (!next) return;
-                void run('edit', { amount: Number(next) });
-              }}
+              onClick={() => setActionModal('edit')}
             >
               <IconEdit className="h-3.5 w-3.5" />
             </IconChip>
@@ -299,12 +299,28 @@ export default function DesignPaymentLinkBanner({
             <TextChip disabled={busy} onClick={() => void run('switch-offline')}>
               Switch offline
             </TextChip>
-            <TextChip tone="danger" disabled={busy} onClick={() => void run('cancel')}>
+            <TextChip tone="danger" disabled={busy} onClick={() => setActionModal('cancel')}>
               Cancel
             </TextChip>
           </div>
         </div>
       </div>
+
+      <PaymentLinkActionModal
+        open={actionModal != null}
+        mode={actionModal ?? 'cancel'}
+        busy={busy}
+        amount={attempt.amount}
+        onClose={() => setActionModal(null)}
+        onEditSave={(nextAmount) => {
+          setActionModal(null);
+          void run('edit', { amount: nextAmount });
+        }}
+        onCancelConfirm={(notifyCustomer) => {
+          setActionModal(null);
+          void run('cancel', { notifyCustomer });
+        }}
+      />
     </div>
   );
 }

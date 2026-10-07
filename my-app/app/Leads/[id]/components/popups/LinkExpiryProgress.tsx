@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from 'react';
 
-/** Default Easebuzz link TTL when createdAt is missing (matches backend EASEBUZZ_LINK_TTL_HOURS=24). */
-const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
+/** Default Easebuzz link TTL when createdAt is missing (matches backend EASEBUZZ_LINK_TTL_HOURS=48). */
+const DEFAULT_TTL_MS = 48 * 60 * 60 * 1000;
 
 export function parseExpiryDate(expiresAt?: string | Date | null): Date | null {
   if (!expiresAt) return null;

@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useAuth } from '@/app/auth/AuthContext';
 import { canUseEasebuzzOnline } from '@/app/lib/easebuzzAccess';
+import PaymentLinkActionModal, {
+  type PaymentLinkActionMode,
+} from '@/app/Components/PaymentLinkActionModal';
 import LinkExpiryProgress from './LinkExpiryProgress';
 
 type ActiveAttempt = {
@@ -114,6 +117,7 @@ export default function DesignPaymentMethodPanel({
   const [copied, setCopied] = useState(false);
   const [paidNotice, setPaidNotice] = useState(false);
   const [linkSentPhase, setLinkSentPhase] = useState<'flying' | 'done' | null>(null);
+  const [actionModal, setActionModal] = useState<PaymentLinkActionMode | null>(null);
   const paidNotified = useRef(false);
   const onOnlineSuccessRef = useRef(onOnlineSuccess);
   onOnlineSuccessRef.current = onOnlineSuccess;
@@ -537,11 +541,7 @@ export default function DesignPaymentMethodPanel({
                   disabled={busy}
                   title="Edit amount"
                   aria-label="Edit amount"
-                  onClick={() => {
-                    const next = window.prompt('New amount (₹)', String(attempt.amount ?? amount));
-                    if (!next) return;
-                    void runAction('edit', { amount: Number(next) });
-                  }}
+                  onClick={() => setActionModal('edit')}
                   className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[#DDCDC1] bg-white text-[#32261C] transition-all duration-200 hover:-translate-y-0.5 hover:border-[#32261C]/40 hover:bg-[#F7F4F1] disabled:pointer-events-none disabled:opacity-45"
                 >
                   <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
@@ -553,7 +553,7 @@ export default function DesignPaymentMethodPanel({
                 <ActionChip disabled={busy} onClick={() => void runAction('switch-offline')}>
                   Switch offline
                 </ActionChip>
-                <ActionChip tone="danger" disabled={busy} onClick={() => void runAction('cancel')}>
+                <ActionChip tone="danger" disabled={busy} onClick={() => setActionModal('cancel')}>
                   Cancel
                 </ActionChip>
               </div>
@@ -570,6 +570,22 @@ export default function DesignPaymentMethodPanel({
           {error}
         </p>
       )}
+
+      <PaymentLinkActionModal
+        open={actionModal != null}
+        mode={actionModal ?? 'cancel'}
+        busy={busy}
+        amount={attempt?.amount ?? (Number(amount) || null)}
+        onClose={() => setActionModal(null)}
+        onEditSave={(nextAmount) => {
+          setActionModal(null);
+          void runAction('edit', { amount: nextAmount });
+        }}
+        onCancelConfirm={(notifyCustomer) => {
+          setActionModal(null);
+          void runAction('cancel', { notifyCustomer });
+        }}
+      />
     </div>
   );
 }
