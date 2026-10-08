@@ -2291,9 +2291,9 @@ function formatProlancePName(
     }
   });
 
-  async function loadQuoteVersionsForLeadPublic(leadId: number): Promise<Array<{ quoteId: number; createdAt: string }>> {
+  async function loadQuoteVersionsForLeadPublic(leadId: number): Promise<Array<{ quoteId: number; createdAt: string; createdBy?: string }>> {
     const [rows] = await pool.query(
-      `SELECT quote_id AS quoteId, created_at AS createdAt
+      `SELECT quote_id AS quoteId, created_at AS createdAt, created_by AS createdBy
        FROM lead_prolance_quote_versions
        WHERE lead_id = ?
        ORDER BY created_at ASC, id ASC`,
@@ -2301,15 +2301,16 @@ function formatProlancePName(
     );
     const toIso = (d: unknown) =>
       d instanceof Date ? d.toISOString() : typeof d === "string" ? d : new Date().toISOString();
-    const list = (rows as { quoteId: unknown; createdAt: unknown }[]).map((r) => ({
+    const list = (rows as { quoteId: unknown; createdAt: unknown; createdBy?: unknown }[]).map((r) => ({
       quoteId: Number(r.quoteId),
       createdAt: toIso(r.createdAt),
+      createdBy: r.createdBy ? String(r.createdBy) : undefined,
     }));
     const [lr] = await pool.query(`SELECT prolance_quote_id, update_at FROM leads WHERE id = ? LIMIT 1`, [leadId]);
     const pq = (lr as { prolance_quote_id?: unknown }[])[0]?.prolance_quote_id;
     if (pq != null && Number(pq) > 0 && !list.some((x) => x.quoteId === Number(pq))) {
       const u = (lr as { update_at?: unknown }[])[0]?.update_at;
-      list.push({ quoteId: Number(pq), createdAt: toIso(u) });
+      list.push({ quoteId: Number(pq), createdAt: toIso(u), createdBy: undefined });
       list.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
     }
     return list;

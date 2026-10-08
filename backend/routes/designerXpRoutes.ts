@@ -1119,6 +1119,10 @@ export function registerDesignerXpRoutes(
          LEFT JOIN (
            SELECT assigned_designer_id, COUNT(*) as projectCount
            FROM leads
+           WHERE LOWER(TRIM(COALESCE(project_stage, ''))) IN ('10-20%', '20-60%', '10-60%', 'active')
+              OR LOWER(TRIM(COALESCE(project_stage, ''))) LIKE '%10-20%'
+              OR LOWER(TRIM(COALESCE(project_stage, ''))) LIKE '%20-60%'
+              OR LOWER(TRIM(COALESCE(project_stage, ''))) LIKE '%10-60%'
            GROUP BY assigned_designer_id
          ) proj ON proj.assigned_designer_id = u.id
          LEFT JOIN (
@@ -1354,7 +1358,7 @@ export function registerDesignerXpRoutes(
 
       const onTimeDeliveryPct = taskCount > 0 ? Math.round((onTimeTaskCount / taskCount) * 1000) / 10 : 100.0;
 
-      // Projects list with earned XP
+      // Projects list with earned XP (filtered to 10-60% projects)
       const [projRows] = await pool.query(
         `SELECT l.id, l.pid, l.project_name as projectName, l.project_stage as projectStage,
                 COALESCE(SUM(t.net_xp), 0) as earnedXp,
@@ -1363,6 +1367,12 @@ export function registerDesignerXpRoutes(
          FROM leads l
          LEFT JOIN designer_xp_transactions t ON t.lead_id = l.id AND t.designer_id = ?
          WHERE l.assigned_designer_id = ?
+           AND (
+             LOWER(TRIM(COALESCE(l.project_stage, ''))) IN ('10-20%', '20-60%', '10-60%', 'active')
+             OR LOWER(TRIM(COALESCE(l.project_stage, ''))) LIKE '%10-20%'
+             OR LOWER(TRIM(COALESCE(l.project_stage, ''))) LIKE '%20-60%'
+             OR LOWER(TRIM(COALESCE(l.project_stage, ''))) LIKE '%10-60%'
+           )
          GROUP BY l.id
          ORDER BY l.update_at DESC`,
         [designerId, designerId],
