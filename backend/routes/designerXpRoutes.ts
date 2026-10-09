@@ -632,13 +632,28 @@ async function canViewDesignerXp(
   pool: Pool,
 ): Promise<boolean> {
   const viewerRole = viewer.role;
-  if (
-    isRoleAdmin(viewerRole) ||
-    isRoleTDM(viewerRole) ||
-    isRoleDesignManager(viewerRole) ||
-    isRoleDesigner(viewerRole)
-  ) {
+  if (isRoleAdmin(viewerRole)) {
     return true;
+  }
+  if (isRoleDesigner(viewerRole)) {
+    return Number(viewer.id) === Number(targetDesignerId);
+  }
+  if (isRoleDesignManager(viewerRole)) {
+    const [dmRows] = await pool.query(
+      "SELECT 1 FROM users WHERE id = ? AND design_manager_id = ? LIMIT 1",
+      [targetDesignerId, viewer.id],
+    );
+    return (dmRows as any[]).length > 0;
+  }
+  if (isRoleTDM(viewerRole)) {
+    const [tdmRows] = await pool.query(
+      `SELECT 1 FROM users u
+       LEFT JOIN users dm ON dm.id = u.design_manager_id
+       WHERE u.id = ? AND (u.territorial_design_manager_id = ? OR dm.territorial_design_manager_id = ?)
+       LIMIT 1`,
+      [targetDesignerId, viewer.id, viewer.id],
+    );
+    return (tdmRows as any[]).length > 0;
   }
   return false;
 }
@@ -688,6 +703,48 @@ export function registerDesignerXpRoutes(
       if (!lead) return res.status(404).json({ message: "Lead not found" });
 
       const designerId = lead.assigned_designer_id ? Number(lead.assigned_designer_id) : null;
+
+      // Scope validation
+      if (isRoleDesigner(userRole)) {
+        if (!designerId || designerId !== Number(user.id)) {
+          return res.status(403).json({
+            message: "Forbidden: Designers can only access XP summary for leads assigned to them",
+          });
+        }
+      } else if (isRoleDesignManager(userRole)) {
+        if (!designerId) {
+          return res.status(403).json({
+            message: "Forbidden: Lead has no assigned designer in your team",
+          });
+        }
+        const [dmCheck] = await pool.query(
+          "SELECT 1 FROM users WHERE id = ? AND design_manager_id = ? LIMIT 1",
+          [designerId, user.id],
+        );
+        if ((dmCheck as any[]).length === 0) {
+          return res.status(403).json({
+            message: "Forbidden: Lead's designer is not in your managed team",
+          });
+        }
+      } else if (isRoleTDM(userRole)) {
+        if (!designerId) {
+          return res.status(403).json({
+            message: "Forbidden: Lead has no assigned designer in your territory",
+          });
+        }
+        const [tdmCheck] = await pool.query(
+          `SELECT 1 FROM users u
+           LEFT JOIN users dm ON dm.id = u.design_manager_id
+           WHERE u.id = ? AND (u.territorial_design_manager_id = ? OR dm.territorial_design_manager_id = ?)
+           LIMIT 1`,
+          [designerId, user.id, user.id],
+        );
+        if ((tdmCheck as any[]).length === 0) {
+          return res.status(403).json({
+            message: "Forbidden: Lead's designer is not in your territory team",
+          });
+        }
+      }
 
       // Non-fatal quotation revision XP check
       if (designerId) {
@@ -1098,9 +1155,19 @@ export function registerDesignerXpRoutes(
         overallRankMap.set(d.id, idx + 1);
       });
 
-      // All design managers, designers, TDM, and admin see all designers (no RBAC scoping)
       let filterClause = "WHERE LOWER(u.role) = 'designer'";
       const queryParams: any[] = [];
+
+      if (isRoleTDM(userRole)) {
+        filterClause += " AND (u.territorial_design_manager_id = ? OR dm.territorial_design_manager_id = ?)";
+        queryParams.push(user.id, user.id);
+      } else if (isRoleDesignManager(userRole)) {
+        filterClause += " AND u.design_manager_id = ?";
+        queryParams.push(user.id);
+      } else if (isRoleDesigner(userRole)) {
+        filterClause += " AND u.id = ?";
+        queryParams.push(user.id);
+      }
 
       // Query scoped designers
       const [designerRows] = await pool.query(

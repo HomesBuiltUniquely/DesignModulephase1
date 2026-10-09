@@ -2963,21 +2963,45 @@ function canViewAllHubCalendarEvents(role: string | null | undefined) {
 
 async function getCalendarVisibleUsers(currentUser: { id: number; email: string; name: string; role: string }) {
   const role = (currentUser.role || "").toLowerCase();
-  const allowed = [
-    "admin",
-    "deputy_general_manager",
-    "territorial_design_manager",
-    "design_manager",
-    "designer",
-  ];
 
-  if (allowed.includes(role)) {
+  if (role === "admin" || role === "deputy_general_manager") {
     const [rows] = await pool.query(
       `SELECT DISTINCT u.id, u.email, u.name, u.role
        FROM users u
        INNER JOIN google_calendar_connections gcc ON gcc.user_id = u.id
        WHERE gcc.active = 1
        ORDER BY u.name ASC`,
+    );
+    return rows as { id: number; email: string; name: string; role: string }[];
+  }
+
+  if (role === "territorial_design_manager") {
+    const [rows] = await pool.query(
+      `SELECT DISTINCT u.id, u.email, u.name, u.role
+       FROM users u
+       INNER JOIN google_calendar_connections gcc ON gcc.user_id = u.id
+       LEFT JOIN users dm ON dm.id = u.design_manager_id
+       WHERE gcc.active = 1
+         AND (
+           u.id = ?
+           OR (u.role = 'design_manager' AND u.territorial_design_manager_id = ?)
+           OR (u.role = 'designer' AND dm.territorial_design_manager_id = ?)
+         )
+       ORDER BY u.name ASC`,
+      [currentUser.id, currentUser.id, currentUser.id],
+    );
+    return rows as { id: number; email: string; name: string; role: string }[];
+  }
+
+  if (role === "design_manager") {
+    const [rows] = await pool.query(
+      `SELECT DISTINCT u.id, u.email, u.name, u.role
+       FROM users u
+       INNER JOIN google_calendar_connections gcc ON gcc.user_id = u.id
+       WHERE gcc.active = 1
+         AND (u.id = ? OR (u.role = 'designer' AND u.design_manager_id = ?))
+       ORDER BY u.name ASC`,
+      [currentUser.id, currentUser.id],
     );
     return rows as { id: number; email: string; name: string; role: string }[];
   }
@@ -2991,21 +3015,47 @@ async function getPersonalAppointmentVisibleUsers(
   currentUser: { id: number; name: string; role: string },
 ): Promise<AppointmentUserRow[]> {
   const role = (currentUser.role || "").toLowerCase();
-  const allowed = [
-    "admin",
-    "deputy_general_manager",
-    "territorial_design_manager",
-    "design_manager",
-    "designer",
-  ];
 
-  if (allowed.includes(role)) {
+  if (role === "admin" || role === "deputy_general_manager") {
     const [rows] = await pool.query(
       `SELECT id, name, role, email FROM users
        WHERE role IN ('designer','design_manager')
        ORDER BY name ASC`,
     );
     return rows as AppointmentUserRow[];
+  }
+
+  if (role === "territorial_design_manager") {
+    const [rows] = await pool.query(
+      `SELECT DISTINCT u.id, u.name, u.role, u.email
+       FROM users u
+       LEFT JOIN users dm ON dm.id = u.design_manager_id
+       WHERE u.role IN ('designer','design_manager')
+         AND (
+           u.id = ?
+           OR (u.role = 'design_manager' AND u.territorial_design_manager_id = ?)
+           OR (u.role = 'designer' AND dm.territorial_design_manager_id = ?)
+         )
+       ORDER BY u.name ASC`,
+      [currentUser.id, currentUser.id, currentUser.id],
+    );
+    return rows as AppointmentUserRow[];
+  }
+
+  if (role === "design_manager") {
+    const [rows] = await pool.query(
+      `SELECT DISTINCT u.id, u.name, u.role, u.email
+       FROM users u
+       WHERE u.role IN ('designer','design_manager')
+         AND (u.id = ? OR (u.role = 'designer' AND u.design_manager_id = ?))
+       ORDER BY u.name ASC`,
+      [currentUser.id, currentUser.id],
+    );
+    return rows as AppointmentUserRow[];
+  }
+
+  if (role === "designer") {
+    return [{ id: currentUser.id, name: currentUser.name, role: "designer" }];
   }
 
   return [];
@@ -7034,6 +7084,16 @@ app.post("/api/leads/import-excel/commit", async (req: Request, res: Response) =
       );
       const designer = (designerRows as any[])[0];
       if (!designer) return res.status(400).json({ message: "Invalid default designer selected" });
+
+      const role = (user.role || "").toLowerCase();
+      if (role === "design_manager") {
+        const allowed =
+          (designer.role === "design_manager" && Number(designer.id) === Number(user.id)) ||
+          (designer.role === "designer" && Number(designer.design_manager_id) === Number(user.id));
+        if (!allowed) {
+          return res.status(403).json({ message: "You can assign only to yourself or your designers" });
+        }
+      }
 
       defaultDesignerName = String(designer.name || "");
     }
@@ -15197,9 +15257,13 @@ app.get("/api/designers", async (req: Request, res: Response) => {
                         COALESCE(m.name, '') as leadName
                  FROM users u
                  LEFT JOIN users m ON u.design_manager_id = m.id
-                 WHERE u.role = 'designer'
-                 ORDER BY u.name ASC`;
+                 WHERE u.role = 'designer'`;
     const params: number[] = [];
+    if (currentRole === "territorial_design_manager" && currentUser) {
+      query += ` AND m.territorial_design_manager_id = ?`;
+      params.push(currentUser.id);
+    }
+    query += " ORDER BY u.name ASC";
 
     console.log("[GET /api/designers] running query...");
     const [rows] = await pool.query(query, params);
@@ -15221,15 +15285,23 @@ app.get("/api/designers/assignable", async (req: Request, res: Response) => {
     const user = await getUserFromSession(req);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
     const role = (user.role || "").toLowerCase();
-    const allowedRoles = [
-      "admin",
-      "deputy_general_manager",
-      "territorial_design_manager",
-      "design_manager",
-      "designer",
-    ];
-    if (!allowedRoles.includes(role)) {
-      return res.status(403).json({ message: "Only admin, TDM, design manager, or designer can access assignable designers" });
+    if (!canAssignLeads(role)) {
+      return res.status(403).json({ message: "Only admin, TDM, or design manager can reassign leads" });
+    }
+
+    if (role === "design_manager") {
+      const [rows] = await pool.query(
+        `SELECT id, name, role, sub_role AS subRole
+         FROM users
+         WHERE role = 'design_manager' AND id = ?
+         UNION
+         SELECT id, name, role, sub_role AS subRole
+         FROM users
+         WHERE role = 'designer' AND design_manager_id = ?
+         ORDER BY name ASC`,
+        [user.id, user.id],
+      );
+      return res.json(rows);
     }
 
     const [rows] = await pool.query(
@@ -15286,6 +15358,15 @@ app.post("/api/leads/:id/assign-designer", async (req: Request, res: Response) =
     );
     const designer = (designerRows as any[])[0];
     if (!designer) return res.status(400).json({ message: "Invalid designer selected" });
+
+    if (role === "design_manager") {
+      const allowed =
+        (designer.role === "design_manager" && designer.id === user.id) ||
+        (designer.role === "designer" && Number(designer.design_manager_id) === Number(user.id));
+      if (!allowed) {
+        return res.status(403).json({ message: "You can assign only to yourself or your designers" });
+      }
+    }
 
     const oldDesignerId = Number(lead.assigned_designer_id) || 0;
     let oldDesignerName = "";
@@ -15359,6 +15440,15 @@ app.post("/api/leads/assign-designer/bulk", async (req: Request, res: Response) 
     );
     const designer = (designerRows as any[])[0];
     if (!designer) return res.status(400).json({ message: "Invalid designer selected" });
+
+    if (role === "design_manager") {
+      const allowed =
+        (designer.role === "design_manager" && designer.id === user.id) ||
+        (designer.role === "designer" && Number(designer.design_manager_id) === Number(user.id));
+      if (!allowed) {
+        return res.status(403).json({ message: "You can assign only to yourself or your designers" });
+      }
+    }
 
     const updatedLeadIds: number[] = [];
     for (const leadId of leadIds) {

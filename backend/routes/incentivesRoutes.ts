@@ -271,14 +271,17 @@ export function registerIncentivesRoutes(
   ): Promise<boolean> => {
     const role = (viewer.role || "").toLowerCase();
     if (viewer.id === designerId) return true;
-    if (
-      role === "admin" ||
-      role === "deputy_general_manager" ||
-      role === "territorial_design_manager" ||
-      role === "design_manager" ||
-      role === "designer"
-    ) {
+    if (role === "admin" || role === "deputy_general_manager" || role === "territorial_design_manager") {
       return true;
+    }
+    if (role === "design_manager") {
+      const [rows] = await pool.query(
+        `SELECT id FROM users
+         WHERE id = ? AND (id = ? OR design_manager_id = ?)
+         LIMIT 1`,
+        [designerId, viewer.id, viewer.id],
+      );
+      return (rows as { id: number }[]).length > 0;
     }
     return false;
   };
@@ -546,7 +549,6 @@ export function registerIncentivesRoutes(
       if (!user) return res.status(401).json({ message: "Unauthorized" });
       const role = (user.role || "").toLowerCase();
       const allowed =
-        role === "designer" ||
         role === "design_manager" ||
         role === "territorial_design_manager" ||
         role === "deputy_general_manager" ||
@@ -559,12 +561,26 @@ export function registerIncentivesRoutes(
           ? Number(cycleIndexRaw)
           : getCurrentCycleIndex();
 
-      const [rows] = await pool.query(
-        `SELECT id, name, role, sub_role AS subRole FROM users
-         WHERE role IN ('designer', 'design_manager')
-         ORDER BY name ASC`,
-      );
-      const designers = rows as { id: number; name: string; role: string; subRole: string | null }[];
+      let designers: { id: number; name: string; role: string; subRole: string | null }[] = [];
+      if (role === "design_manager") {
+        const [rows] = await pool.query(
+          `SELECT id, name, role, sub_role AS subRole FROM users
+           WHERE role = 'design_manager' AND id = ?
+           UNION
+           SELECT id, name, role, sub_role AS subRole FROM users
+           WHERE role = 'designer' AND design_manager_id = ?
+           ORDER BY name ASC`,
+          [user.id, user.id],
+        );
+        designers = rows as typeof designers;
+      } else {
+        const [rows] = await pool.query(
+          `SELECT id, name, role, sub_role AS subRole FROM users
+           WHERE role IN ('designer', 'design_manager')
+           ORDER BY name ASC`,
+        );
+        designers = rows as typeof designers;
+      }
 
       return res.json({
         cycleIndex,
