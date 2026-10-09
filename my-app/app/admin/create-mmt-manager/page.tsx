@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useAuth } from '../../auth/AuthContext';
+import { redirectToLoginPage } from '@/app/lib/externalLoginUrl';
 import { BRANCH_OPTIONS } from '../../constants/branches';
 import CustomSelect from '@/app/Components/ui/CustomSelect';
 
@@ -11,7 +12,7 @@ const API = getApiBase();
 
 export default function AdminCreateMmtManagerPage() {
   const router = useRouter();
-  const { user, sessionId, loading, logout } = useAuth();
+  const { user, sessionId, loading, logoutAndRedirectToLogin } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
@@ -23,7 +24,7 @@ export default function AdminCreateMmtManagerPage() {
   useEffect(() => {
     if (loading) return;
     if (!user) {
-      router.replace('/login');
+      redirectToLoginPage();
       return;
     }
     if (user.role !== 'admin') router.replace('/');
@@ -82,7 +83,7 @@ export default function AdminCreateMmtManagerPage() {
           <span className="text-sm text-gray-600">{user.email}</span>
           <button
             type="button"
-            onClick={() => logout().then(() => router.replace('/login'))}
+            onClick={() => void logoutAndRedirectToLogin()}
             className="text-sm text-red-600 hover:underline"
           >
             Logout

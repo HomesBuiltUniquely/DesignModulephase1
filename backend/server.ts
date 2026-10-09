@@ -1551,11 +1551,44 @@ async function initDb() {
         lead_id INT NOT NULL,
         quote_id INT NOT NULL,
         created_at DATETIME NOT NULL,
-        UNIQUE KEY uniq_lead_quote (lead_id, quote_id),
+        created_by VARCHAR(255) NULL,
+        created_by_id INT NULL,
         KEY idx_lpqv_quote (quote_id),
-        KEY idx_lpqv_lead (lead_id)
+        KEY idx_lpqv_lead (lead_id),
+        KEY idx_lpqv_lead_quote (lead_id, quote_id)
       );
     `);
+    try {
+      const [cols] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_prolance_quote_versions' AND COLUMN_NAME = 'created_by'",
+      );
+      if ((cols as any[]).length === 0) {
+        await conn.query("ALTER TABLE lead_prolance_quote_versions ADD COLUMN created_by VARCHAR(255) NULL");
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      const [cols] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_prolance_quote_versions' AND COLUMN_NAME = 'created_by_id'",
+      );
+      if ((cols as any[]).length === 0) {
+        await conn.query("ALTER TABLE lead_prolance_quote_versions ADD COLUMN created_by_id INT NULL");
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      const [idx] = await conn.query(
+        "SELECT 1 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_prolance_quote_versions' AND INDEX_NAME = 'uniq_lead_quote'",
+      );
+      if ((idx as any[]).length > 0) {
+        await conn.query("ALTER TABLE lead_prolance_quote_versions DROP INDEX uniq_lead_quote");
+        await conn.query("ALTER TABLE lead_prolance_quote_versions ADD INDEX idx_lpqv_lead_quote (lead_id, quote_id)");
+      }
+    } catch {
+      // ignore
+    }
     try {
       await conn.query(`
         INSERT IGNORE INTO lead_prolance_quote_versions (lead_id, quote_id, created_at)
@@ -2733,7 +2766,7 @@ async function getLeadAccessRowForUser(
     res.status(404).json({ message: "Lead not found" });
     return { ok: false };
   }
-  const role = (user.role ?? "").toLowerCase();
+  const role = (user.role ?? "").trim().toLowerCase();
 
   if (role === "mmt_executive") {
     const [assignRows] = await pool.query(
@@ -2775,10 +2808,10 @@ async function getLeadAccessRowForUser(
 }
 
 async function loadProlanceQuoteVersionsForLead(leadId: number): Promise<
-  Array<{ quoteId: number; createdAt: string }>
+  Array<{ quoteId: number; createdAt: string; createdBy?: string }>
 > {
   const [rows] = await pool.query(
-    `SELECT quote_id AS quoteId, created_at AS createdAt
+    `SELECT quote_id AS quoteId, created_at AS createdAt, created_by AS createdBy
      FROM lead_prolance_quote_versions
      WHERE lead_id = ?
      ORDER BY created_at ASC, id ASC`,
@@ -2789,6 +2822,7 @@ async function loadProlanceQuoteVersionsForLead(leadId: number): Promise<
   const list = (rows as any[]).map((r) => ({
     quoteId: Number(r.quoteId),
     createdAt: toIso(r.createdAt),
+    createdBy: r.createdBy ? String(r.createdBy) : undefined,
   }));
   const [lr] = await pool.query(`SELECT prolance_quote_id, update_at FROM leads WHERE id = ? LIMIT 1`, [leadId]);
   const pq = (lr as any[])[0]?.prolance_quote_id;
@@ -2797,6 +2831,7 @@ async function loadProlanceQuoteVersionsForLead(leadId: number): Promise<
     list.push({
       quoteId: Number(pq),
       createdAt: toIso(u),
+      createdBy: undefined,
     });
     list.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   }
@@ -6504,13 +6539,46 @@ async function resolveMilestonePaymentAmounts(
   };
 }
 
-/** Design-module caps: woodwork 35%, all other work categories 5%. */
-const WOODWORK_MAX_DISCOUNT_PCT = 35;
+/** Design-module caps: woodwork 40%, all other work categories 5%. */
+const WOODWORK_MAX_DISCOUNT_PCT = 40;
 const OTHER_CATEGORY_MAX_DISCOUNT_PCT = 5;
+const ADDITIONAL_DISCOUNT_MAX_PCT = 3;
 
-function clampQuoteCategoryDiscountPct(key: string, value: unknown): number {
+function quotePayableAmount(payload: Record<string, unknown>): number | null {
+  const data = payload.data ?? payload.Data;
+  const dataObject =
+    data && typeof data === "object" && !Array.isArray(data)
+      ? (data as Record<string, unknown>)
+      : Array.isArray(data) && data[0] && typeof data[0] === "object"
+        ? (data[0] as Record<string, unknown>)
+        : null;
+  const sources = [payload, dataObject].filter(
+    (source): source is Record<string, unknown> => source != null,
+  );
+  for (const key of [
+    "totalPayableAmount",
+    "quotation_total",
+    "quotationTotal",
+    "finalTotalPrice",
+    "finalPrice",
+    "totalPrice",
+  ]) {
+    for (const source of sources) {
+      const amount = parseFiniteNumber(source[key]);
+      if (amount != null && amount > 0) return amount;
+    }
+  }
+  return null;
+}
+
+function clampQuoteCategoryDiscountPct(key: string, value: unknown, unrestricted = false): number {
   const n = parseFiniteNumber(value) ?? 0;
-  const max = key === "woodwork" ? WOODWORK_MAX_DISCOUNT_PCT : OTHER_CATEGORY_MAX_DISCOUNT_PCT;
+  if (key === "constructionHw") return 0;
+  const max = unrestricted
+    ? 100
+    : key === "woodwork"
+      ? WOODWORK_MAX_DISCOUNT_PCT
+      : OTHER_CATEGORY_MAX_DISCOUNT_PCT;
   return Math.max(0, Math.min(max, Math.round(n * 100) / 100));
 }
 
@@ -6518,14 +6586,15 @@ function buildHubCategoryDiscountMeta(
   categoryPct: Record<string, unknown>,
   amount: number,
   additionalDiscountAmount: number = 0,
+  unrestricted = false,
 ): Record<string, unknown> {
   const additional = Math.max(0, Math.round(additionalDiscountAmount));
   return {
     hubCategoryDiscountPct: {
-      woodwork: clampQuoteCategoryDiscountPct("woodwork", categoryPct.woodwork),
-      accessories: clampQuoteCategoryDiscountPct("accessories", categoryPct.accessories),
-      constructionHw: clampQuoteCategoryDiscountPct("constructionHw", categoryPct.constructionHw),
-      services: clampQuoteCategoryDiscountPct("services", categoryPct.services),
+      woodwork: clampQuoteCategoryDiscountPct("woodwork", categoryPct.woodwork, unrestricted),
+      accessories: clampQuoteCategoryDiscountPct("accessories", categoryPct.accessories, unrestricted),
+      constructionHw: clampQuoteCategoryDiscountPct("constructionHw", categoryPct.constructionHw, unrestricted),
+      services: clampQuoteCategoryDiscountPct("services", categoryPct.services, unrestricted),
     },
     hubCategoryDiscountAmount: amount,
     /** Flat rupee discount on top of category % discounts (not a percentage). */
@@ -6850,6 +6919,12 @@ app.patch("/api/crm/leads/:leadId/quotes/:quoteId/discount", async (req: Request
       hubFlatDiscountAmount: amount,
     };
   } else if (categoryPct && typeof categoryPct === "object") {
+    const constructionHwPct = parseFiniteNumber(
+      (categoryPct as Record<string, unknown>).constructionHw,
+    );
+    if (constructionHwPct != null && constructionHwPct > 0) {
+      return res.status(400).json({ message: "Construction Hardware discounts are not supported" });
+    }
     if (amount == null || amount < 0) {
       return res.status(400).json({ message: "amount (number) is required" });
     }
@@ -7019,6 +7094,7 @@ app.post("/api/leads/import-excel/commit", async (req: Request, res: Response) =
           return res.status(403).json({ message: "You can assign only to yourself or your designers" });
         }
       }
+
       defaultDesignerName = String(designer.name || "");
     }
 
@@ -15203,7 +15279,7 @@ app.get("/api/designers", async (req: Request, res: Response) => {
   }
 });
 
-// Assignable designers for lead reassignment (admin/TDM/design_manager).
+// Assignable designers for lead reassignment and designer directory.
 app.get("/api/designers/assignable", async (req: Request, res: Response) => {
   try {
     const user = await getUserFromSession(req);
@@ -16301,9 +16377,24 @@ app.patch("/api/leads/:id/prolance-ids", async (req: Request, res: Response) => 
       Number(prolanceQuoteId) > 0
     ) {
       try {
+        const roleLabel = String(user.role ?? "")
+          .split("_")
+          .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+          .join(" ");
+        const creatorName = user.name
+          ? roleLabel
+            ? `${user.name} (${roleLabel})`
+            : user.name
+          : user.email
+            ? roleLabel
+              ? `${user.email} (${roleLabel})`
+              : user.email
+            : "User";
         await pool.query(
-          `INSERT IGNORE INTO lead_prolance_quote_versions (lead_id, quote_id, created_at) VALUES (?, ?, ?)`,
-          [id, prolanceQuoteId, new Date()],
+          `INSERT IGNORE INTO lead_prolance_quote_versions
+            (lead_id, quote_id, created_at, created_by, created_by_id)
+           VALUES (?, ?, ?, ?, ?)`,
+          [id, prolanceQuoteId, new Date(), creatorName, user.id],
         );
         void evaluateLeadQuotationRevisionXp(pool, id);
       } catch (verErr) {
@@ -16404,7 +16495,7 @@ app.get("/api/leads/prolance-quote-versions/by-quote/:quoteId", async (req: Requ
 });
 
 // Design module: designers set per-category discount on a frozen quote snapshot.
-// Caps: woodwork max 35%, accessories / construction hardware / services max 5%.
+// Design Managers, TDMs, and Admins can override designer discount caps.
 app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: Response) => {
   const leadId = Number(req.params.id);
   const quoteId = Number(req.params.quoteId);
@@ -16412,8 +16503,31 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
   if (!Number.isFinite(quoteId) || quoteId < 1) return res.status(400).json({ message: "Invalid quoteId" });
 
   const user = await getUserFromSession(req);
+  if (!user) return res.status(401).json({ message: "Unauthorized" });
+  const role = (user.role ?? "").trim().toLowerCase();
+  if (!["designer", "design_manager", "territorial_design_manager", "admin"].includes(role)) {
+    return res.status(403).json({ message: "You are not allowed to edit quote discounts" });
+  }
+
   const access = await getLeadAccessRowForUser(res, user, leadId);
   if (!access.ok) return;
+
+  if (role === "territorial_design_manager") {
+    const [tdmRows] = await pool.query(
+      `SELECT 1
+       FROM users d
+       INNER JOIN users dm ON dm.id = d.design_manager_id
+       WHERE d.id = ?
+         AND d.role = 'designer'
+         AND dm.role = 'design_manager'
+         AND dm.territorial_design_manager_id = ?
+       LIMIT 1`,
+      [access.row.assigned_designer_id, user.id],
+    );
+    if ((tdmRows as any[]).length === 0) {
+      return res.status(404).json({ message: "Lead not found" });
+    }
+  }
 
   const body = (req.body || {}) as Record<string, unknown>;
   const categoryPct = (body.categoryPct ?? body.hubCategoryDiscountPct) as unknown;
@@ -16433,12 +16547,16 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
   if (additionalDiscount < 0) {
     return res.status(400).json({ message: "additionalDiscount must be >= 0" });
   }
+  const categoryValues = categoryPct as Record<string, unknown>;
+  const constructionHwPct = parseFiniteNumber(categoryValues.constructionHw);
+  if (constructionHwPct != null && constructionHwPct > 0) {
+    return res.status(400).json({ message: "Construction Hardware discounts are not supported" });
+  }
 
-  const discountMeta = buildHubCategoryDiscountMeta(
-    categoryPct as Record<string, unknown>,
-    amount,
-    additionalDiscount,
-  );
+  const unrestrictedDiscounts =
+    role === "admin" ||
+    role === "territorial_design_manager" ||
+    role === "design_manager";
 
   try {
     const [snapRows] = await pool.query(
@@ -16467,6 +16585,45 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       });
     }
 
+    if (!unrestrictedDiscounts) {
+      const limits: Record<string, number> = {
+        woodwork: WOODWORK_MAX_DISCOUNT_PCT,
+        accessories: OTHER_CATEGORY_MAX_DISCOUNT_PCT,
+        constructionHw: 0,
+        services: OTHER_CATEGORY_MAX_DISCOUNT_PCT,
+      };
+      for (const [key, limit] of Object.entries(limits)) {
+        const requestedPct = parseFiniteNumber(categoryValues[key]) ?? 0;
+        if (requestedPct > limit) {
+          return res.status(403).json({
+            message: `A design manager, TDM, or admin must approve discounts above ${limit}% for ${key}.`,
+          });
+        }
+      }
+
+      const payableAmount = quotePayableAmount(snapshotPayload);
+      if (payableAmount == null) {
+        return res.status(400).json({
+          message: "Unable to verify the quote total for the 3% additional discount limit.",
+        });
+      }
+      const maxAdditionalDiscount = Math.floor(
+        (payableAmount * ADDITIONAL_DISCOUNT_MAX_PCT) / 100,
+      );
+      if (additionalDiscount > maxAdditionalDiscount) {
+        return res.status(403).json({
+          message:
+            "A design manager, TDM, or admin must approve an additional discount above 3% of the quote total.",
+        });
+      }
+    }
+
+    const discountMeta = buildHubCategoryDiscountMeta(
+      categoryValues,
+      amount,
+      additionalDiscount,
+      unrestrictedDiscounts,
+    );
     const nextPayload = applyDiscountMetaToSnapshotPayload(snapshotPayload, discountMeta);
     const json = JSON.stringify(nextPayload);
     const [result] = await pool.query(
@@ -16476,6 +16633,42 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       [leadId, quoteId, json, new Date()],
     );
     const ins = result as mysql.ResultSetHeader;
+
+    // Record the authenticated account that saved the discount.
+    const roleLabel = user?.role
+      ? String(user.role)
+          .split("_")
+          .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+          .join(" ")
+      : "";
+    const sessionCreatorName = user?.name
+      ? (roleLabel ? `${user.name} (${roleLabel})` : user.name)
+      : null;
+
+    const creatorName = sessionCreatorName || "User";
+
+    // Ensure an initial version baseline exists for this quote if not present
+    const [existingVers] = await pool.query(
+      `SELECT id FROM lead_prolance_quote_versions WHERE lead_id = ? AND quote_id = ? LIMIT 1`,
+      [leadId, quoteId],
+    );
+    if ((existingVers as any[]).length === 0) {
+      await pool.query(
+        `INSERT INTO lead_prolance_quote_versions (lead_id, quote_id, created_at, created_by, created_by_id)
+         VALUES (?, ?, ?, ?, ?)`,
+        [leadId, quoteId, new Date(Date.now() - 30000), "Initial Estimate", null],
+      );
+    }
+
+    // Insert the new revision for this discount save
+    await pool.query(
+      `INSERT INTO lead_prolance_quote_versions (lead_id, quote_id, created_at, created_by, created_by_id)
+       VALUES (?, ?, ?, ?, ?)`,
+      [leadId, quoteId, new Date(), creatorName, user?.id ?? null],
+    );
+
+    const updatedVersions = await loadProlanceQuoteVersionsForLead(leadId);
+
     return res.json({
       ok: true,
       leadId,
@@ -16483,6 +16676,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       updated: ins.affectedRows > 0,
       discount: discountMeta,
       payload: nextPayload,
+      versions: updatedVersions,
     });
   } catch (err) {
     console.error("lead quote discount update error", err);

@@ -1,6 +1,6 @@
 /** Design-module quote discount caps by work category. */
 
-export const WOODWORK_MAX_DISCOUNT_PCT = 35;
+export const WOODWORK_MAX_DISCOUNT_PCT = 40;
 export const OTHER_CATEGORY_MAX_DISCOUNT_PCT = 5;
 
 export type DiscountCategoryKey =
@@ -10,17 +10,24 @@ export type DiscountCategoryKey =
   | 'services'
   | string;
 
-export function maxDiscountPctForCategory(key: DiscountCategoryKey): number {
-  return key === 'woodwork' ? WOODWORK_MAX_DISCOUNT_PCT : OTHER_CATEGORY_MAX_DISCOUNT_PCT;
+export function maxDiscountPctForCategory(key: DiscountCategoryKey, unrestricted = false): number {
+  if (key === 'constructionHw') return 0;
+  return unrestricted
+    ? 100
+    : key === 'woodwork'
+      ? WOODWORK_MAX_DISCOUNT_PCT
+      : OTHER_CATEGORY_MAX_DISCOUNT_PCT;
 }
 
 export function clampDiscountPctForCategory(
   key: DiscountCategoryKey,
   value: unknown,
+  unrestricted = false,
 ): number {
   const n = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(n)) return 0;
-  const max = maxDiscountPctForCategory(key);
+  if (key === 'constructionHw') return 0;
+  const max = maxDiscountPctForCategory(key, unrestricted);
   return Math.max(0, Math.min(max, Math.round(n * 100) / 100));
 }
 
@@ -42,7 +49,7 @@ export function clampCategoryDiscountPctMap(
   return {
     woodwork: clampDiscountPctForCategory('woodwork', src.woodwork),
     accessories: clampDiscountPctForCategory('accessories', src.accessories),
-    constructionHw: clampDiscountPctForCategory('constructionHw', src.constructionHw),
+    constructionHw: 0,
     services: clampDiscountPctForCategory('services', src.services),
   };
 }

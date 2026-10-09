@@ -249,7 +249,13 @@ function buildRow(
   const factor = pickFrom(quoteObj, cat.quoteFactorKeys);
   const discountPct = hubPct ?? prolancePct ?? null;
   const effectivePct =
-    discountPct != null ? discountPct : factor != null && factor > 0 ? factor : null;
+    cat.key === 'constructionHw'
+      ? 0
+      : discountPct != null
+        ? discountPct
+        : factor != null && factor > 0
+          ? factor
+          : null;
 
   const discountAmount =
     price != null && effectivePct != null && effectivePct > 0

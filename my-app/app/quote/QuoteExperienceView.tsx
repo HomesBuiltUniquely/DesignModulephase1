@@ -31,7 +31,7 @@ type QuoteView = {
   rooms: QuoteRoom[];
 };
 
-type VersionRow = { quoteId: number; createdAt: string };
+type VersionRow = { quoteId: number; createdAt: string; createdBy?: string };
 
 type Props = {
   quote: QuoteView;
@@ -55,6 +55,7 @@ type Props = {
   versionFetchId: string;
   internalVersionSuffix: string;
   discountEditable?: boolean;
+  unrestrictedDiscounts?: boolean;
   discountSaving?: boolean;
   discountSaveError?: string | null;
   additionalDiscount?: number | null;
@@ -135,6 +136,7 @@ export function QuoteExperienceView(props: Props) {
     versionFetchId,
     internalVersionSuffix,
     discountEditable = false,
+    unrestrictedDiscounts = false,
     discountSaving = false,
     discountSaveError = null,
     additionalDiscount = null,
@@ -333,7 +335,9 @@ export function QuoteExperienceView(props: Props) {
                   rows={quote.discountBreakdown}
                   totalDiscount={quote.discount}
                   additionalDiscount={additionalDiscount}
+                  totalPayableAmount={quote.totalPayableAmount}
                   editable={discountEditable}
+                  unrestrictedDiscounts={unrestrictedDiscounts}
                   saving={discountSaving}
                   saveError={discountSaveError}
                   onSave={onSaveDiscount}
@@ -578,7 +582,7 @@ export function QuoteExperienceView(props: Props) {
             {quoteVersionsError}
           </section>
         ) : null}
-        {!quoteVersionsLoading && !quoteVersionsError && quoteVersions.length > 1 ? (
+        {!quoteVersionsLoading && !quoteVersionsError && quoteVersions.length >= 1 ? (
           <section className="rounded-2xl border border-[#ece6df] bg-white p-6 shadow-sm">
             <div className="mb-2 flex items-center gap-2">
               <svg className="h-5 w-5" style={{ color: QUOTE.red }} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -591,7 +595,18 @@ export function QuoteExperienceView(props: Props) {
             </p>
             <div className="grid gap-4 sm:grid-cols-2">
               {quoteVersions.map((v, idx) => {
-                const isCurrent = String(v.quoteId) === String(versionFetchId);
+                const isCurrent = (() => {
+                  const matchingIndices = quoteVersions
+                    .map((ver, i) => (String(ver.quoteId) === String(versionFetchId) ? i : -1))
+                    .filter((i) => i >= 0);
+                  if (matchingIndices.length > 1) {
+                    return idx === matchingIndices[matchingIndices.length - 1];
+                  }
+                  if (matchingIndices.length === 1) {
+                    return idx === matchingIndices[0];
+                  }
+                  return idx === quoteVersions.length - 1;
+                })();
                 const href = `/quote/${encodeURIComponent(String(v.quoteId))}${internalVersionSuffix}`;
                 return (
                   <a
@@ -618,6 +633,14 @@ export function QuoteExperienceView(props: Props) {
                     <p className="mt-1 text-xs tabular-nums" style={{ color: QUOTE.muted }}>
                       ID {v.quoteId}
                     </p>
+                    {v.createdBy ? (
+                      <p className="mt-2 flex items-center gap-1.5 text-xs font-medium text-[#4a3f35]">
+                        <svg className="h-3.5 w-3.5 shrink-0 text-[#c1272d]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                        </svg>
+                        <span>Created by {v.createdBy.replace(/^(created by|by)[:\s]*/i, '')}</span>
+                      </p>
+                    ) : null}
                   </a>
                 );
               })}

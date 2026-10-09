@@ -3,13 +3,14 @@
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
+import { redirectToLoginPage } from '@/app/lib/externalLoginUrl';
 
 import { getApiBase } from '@/app/lib/apiBase';
 const API = getApiBase();
 
 export default function ChangePasswordPage() {
   const router = useRouter();
-  const { user, sessionId, loading, logout } = useAuth();
+  const { user, sessionId, loading, logoutAndRedirectToLogin } = useAuth();
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -19,7 +20,7 @@ export default function ChangePasswordPage() {
   useEffect(() => {
     if (loading) return;
     if (!user) {
-      router.replace('/login');
+      redirectToLoginPage();
       return;
     }
   }, [user, loading, router]);
@@ -82,7 +83,7 @@ export default function ChangePasswordPage() {
           <span className="text-sm text-gray-600">{user.email}</span>
           <button
             type="button"
-            onClick={() => logout().then(() => router.replace('/login'))}
+            onClick={() => void logoutAndRedirectToLogin()}
             className="text-sm text-red-600 hover:underline"
           >
             Logout

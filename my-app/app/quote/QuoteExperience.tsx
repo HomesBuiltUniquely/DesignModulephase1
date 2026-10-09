@@ -326,7 +326,7 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
   };
 }
 
-type QuoteVersionRow = { quoteId: number; createdAt: string };
+type QuoteVersionRow = { quoteId: number; createdAt: string; createdBy?: string };
 
 export type QuoteExperienceProps = {
   quoteId: string;
@@ -340,7 +340,7 @@ export type QuoteExperienceProps = {
 
 export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: QuoteExperienceProps) {
   const searchParams = useSearchParams();
-  const { sessionId } = useAuth();
+  const { sessionId, user } = useAuth();
   const isInternalMode = searchParams.get('internal') === '1';
   const leadIdParam = searchParams.get('leadId');
   const leadIdNum = leadIdParam && /^\d+$/.test(leadIdParam) ? Number(leadIdParam) : null;
@@ -472,7 +472,17 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
             const qid = asNum(o.quoteId);
             const ca = o.createdAt != null ? String(o.createdAt) : '';
             if (qid == null || qid < 1) return null;
-            return { quoteId: qid, createdAt: ca || new Date().toISOString() };
+            const createdBy =
+              o.createdBy != null
+                ? String(o.createdBy)
+                : o.createdByName != null
+                  ? String(o.createdByName)
+                  : o.userName != null
+                    ? String(o.userName)
+                    : o.designerName != null
+                      ? String(o.designerName)
+                      : undefined;
+            return { quoteId: qid, createdAt: ca || new Date().toISOString(), createdBy };
           })
           .filter(Boolean) as QuoteVersionRow[];
         if (!cancelled) setQuoteVersions(versions);
@@ -511,6 +521,10 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     q.set('internal', '1');
     const lid = searchParams.get('leadId');
     if (lid) q.set('leadId', lid);
+    const cu = searchParams.get('crmUser') || searchParams.get('userName');
+    if (cu) q.set('crmUser', cu);
+    const cr = searchParams.get('crmRole') || searchParams.get('userRole');
+    if (cr) q.set('crmRole', cr);
     return `?${q.toString()}`;
   }, [isInternalMode, searchParams]);
   useEffect(() => {
@@ -549,28 +563,88 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     (quote.customerName !== '-' ? quote.customerName.split(/\s+/)[0] : '') ||
     'Customer';
 
+  const crmUserParam = (searchParams.get('crmUser') || searchParams.get('userName') || '').trim();
+  const crmRoleParam = (searchParams.get('crmRole') || searchParams.get('userRole') || '').trim();
+
+  const crmUserStorage =
+    typeof window !== 'undefined'
+      ? (
+          window.localStorage.getItem('crm_user_name') ||
+          window.localStorage.getItem('crm_login_username') ||
+          ''
+        ).trim()
+      : '';
+  const crmRoleStorage =
+    typeof window !== 'undefined' ? (window.localStorage.getItem('crm_role') || '').trim() : '';
+
+  const effectiveCrmUser = crmUserParam || crmUserStorage;
+  const effectiveCrmRole = crmRoleParam || crmRoleStorage;
+
+  const formatRoleLabel = (roleStr: string) => {
+    if (!roleStr) return '';
+    return roleStr
+      .toLowerCase()
+      .replace(/^(role_|crm_)/i, '')
+      .split(/[\s_-]+/)
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ');
+  };
+
+  const resolvedRoleLabel = effectiveCrmRole
+    ? formatRoleLabel(effectiveCrmRole)
+    : user?.role
+      ? formatRoleLabel(user.role)
+      : '';
+
+  const currentUserName = user?.name
+    ? (formatRoleLabel(user.role) ? `${user.name} (${formatRoleLabel(user.role)})` : user.name)
+    : effectiveCrmUser
+      ? (resolvedRoleLabel ? `${effectiveCrmUser} (${resolvedRoleLabel})` : effectiveCrmUser)
+      : isInternalMode
+        ? 'CRM User'
+        : 'Designer';
+
+  const quoteRole = String(user?.role ?? '').trim().toLowerCase();
+  const quoteDesignManager = quoteRole === 'design_manager';
   const discountEditable =
-    isInternalMode && leadIdNum != null && leadIdNum > 0 && Boolean(sessionId) && Boolean(versionFetchId);
+    isInternalMode &&
+    leadIdNum != null &&
+    leadIdNum > 0 &&
+    Boolean(versionFetchId) &&
+    Boolean(sessionId) &&
+    (quoteRole === 'designer' ||
+      quoteDesignManager ||
+      quoteRole === 'territorial_design_manager' ||
+      quoteRole === 'admin');
+  const unrestrictedDiscounts =
+    quoteDesignManager ||
+    quoteRole === 'territorial_design_manager' ||
+    quoteRole === 'admin';
 
   const handleSaveDiscount = async (savePayload: QuoteCategoryDiscountSavePayload) => {
-    if (!sessionId || leadIdNum == null || !versionFetchId) return;
+    if (leadIdNum == null || !versionFetchId) return;
     setDiscountSaving(true);
     setDiscountSaveError(null);
     try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (sessionId) {
+        headers['Authorization'] = `Bearer ${sessionId}`;
+      }
       const res = await fetch(
         `${API}/api/leads/${leadIdNum}/quotes/${encodeURIComponent(versionFetchId)}/discount`,
         {
           method: 'PATCH',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${sessionId}`,
-          },
+          headers,
           credentials: 'include',
           body: JSON.stringify({
             categoryPct: savePayload.categoryPct,
             amount: savePayload.amount,
             additionalDiscount: savePayload.additionalDiscount,
             payload: payload ?? undefined,
+            createdBy: currentUserName,
           }),
         },
       );
@@ -609,6 +683,93 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       } else if (payload) {
         setPayload(applyDiscountMetaToLocalPayload(payload, discountMeta));
       }
+
+      // Task 5: Every time save discount is clicked, a new revision appears with creator details
+
+      const parseVersionsArray = (rawList: unknown): QuoteVersionRow[] => {
+        if (!Array.isArray(rawList)) return [];
+        return rawList
+          .map((row: unknown) => {
+            const o = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+            const qid = asNum(o.quoteId) ?? (versionFetchId ? Number(versionFetchId) : null);
+            const ca = o.createdAt != null ? String(o.createdAt) : '';
+            if (qid == null || qid < 1) return null;
+            const createdBy =
+              o.createdBy != null
+                ? String(o.createdBy)
+                : o.createdByName != null
+                  ? String(o.createdByName)
+                  : o.userName != null
+                    ? String(o.userName)
+                    : o.designerName != null
+                      ? String(o.designerName)
+                      : undefined;
+            return { quoteId: qid, createdAt: ca || new Date().toISOString(), createdBy };
+          })
+          .filter(Boolean) as QuoteVersionRow[];
+      };
+
+      // 1. If backend returned updated versions in response:
+      const bodyObj = body && typeof body === 'object' ? (body as Record<string, unknown>) : null;
+      let appliedVersions: QuoteVersionRow[] | null = null;
+      if (bodyObj && Array.isArray(bodyObj.versions) && bodyObj.versions.length > 0) {
+        const parsed = parseVersionsArray(bodyObj.versions);
+        if (parsed.length > 0) {
+          if (!parsed[parsed.length - 1].createdBy) {
+            parsed[parsed.length - 1].createdBy = currentUserName;
+          }
+          appliedVersions = parsed;
+          setQuoteVersions(parsed);
+        }
+      }
+
+      // 2. Fetch fresh quote revisions from public endpoint
+      if (versionFetchId) {
+        (async () => {
+          try {
+            setQuoteVersionsLoading(true);
+            const vRes = await fetch(
+              `${API}/api/prolance-test/public/quote-revisions/${encodeURIComponent(versionFetchId)}?t=${Date.now()}`,
+              { cache: 'no-store' },
+            );
+            const vTxt = await vRes.text();
+            let vBody: { versions?: unknown; message?: unknown } = {};
+            try { vBody = vTxt ? JSON.parse(vTxt) : {}; } catch { vBody = {}; }
+            if (vRes.ok && Array.isArray(vBody.versions)) {
+              const fetched = parseVersionsArray(vBody.versions);
+              if (fetched.length > 0) {
+                const prevCount = quoteVersions.length;
+                if (fetched.length <= prevCount) {
+                  fetched.push({
+                    quoteId: Number(versionFetchId),
+                    createdAt: new Date().toISOString(),
+                    createdBy: currentUserName,
+                  });
+                } else if (!fetched[fetched.length - 1].createdBy) {
+                  fetched[fetched.length - 1].createdBy = currentUserName;
+                }
+                setQuoteVersions(fetched);
+                return;
+              }
+            }
+          } catch {
+            // Silently ignore re-fetch errors — existing versions remain visible
+          } finally {
+            setQuoteVersionsLoading(false);
+          }
+
+          if (!appliedVersions) {
+            setQuoteVersions((prev) => [
+              ...prev,
+              {
+                quoteId: Number(versionFetchId),
+                createdAt: new Date().toISOString(),
+                createdBy: currentUserName,
+              },
+            ]);
+          }
+        })();
+      }
     } catch (e) {
       setDiscountSaveError(e instanceof Error ? e.message : 'Failed to save discount');
     } finally {
@@ -639,6 +800,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       versionFetchId={versionFetchId}
       internalVersionSuffix={internalVersionSuffix}
       discountEditable={discountEditable}
+      unrestrictedDiscounts={unrestrictedDiscounts}
       discountSaving={discountSaving}
       discountSaveError={discountSaveError}
       additionalDiscount={(() => {
@@ -660,4 +822,3 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     />
   );
 }
-

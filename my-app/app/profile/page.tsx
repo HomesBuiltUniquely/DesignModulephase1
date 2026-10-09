@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
+import { redirectToLoginPage } from '@/app/lib/externalLoginUrl';
 
 import { getApiBase } from '@/app/lib/apiBase';
 const API = getApiBase();
@@ -28,7 +29,7 @@ function splitName(fullName: string): { firstName: string; lastName: string } {
 
 export default function ProfilePage() {
   const router = useRouter();
-  const { user, sessionId, loading, logout, refreshUser } = useAuth();
+  const { user, sessionId, loading, logoutAndRedirectToLogin, refreshUser } = useAuth();
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [firstName, setFirstName] = useState('');
@@ -40,7 +41,7 @@ export default function ProfilePage() {
   useEffect(() => {
     if (loading) return;
     if (!user) {
-      router.replace('/login');
+      redirectToLoginPage();
       return;
     }
   }, [user, loading, router]);
@@ -158,7 +159,7 @@ export default function ProfilePage() {
           <span className="text-sm text-gray-600">{user.email}</span>
           <button
             type="button"
-            onClick={() => logout().then(() => router.replace('/login'))}
+            onClick={() => void logoutAndRedirectToLogin()}
             className="text-sm text-red-600 hover:underline"
           >
             Logout

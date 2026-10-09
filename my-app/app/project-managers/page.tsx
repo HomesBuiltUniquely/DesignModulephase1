@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '../auth/AuthContext';
+import { redirectToLoginPage } from '@/app/lib/externalLoginUrl';
 import { BRANCH_OPTIONS } from '../constants/branches';
 import CustomSelect from '@/app/Components/ui/CustomSelect';
 import { getApiBase } from '@/app/lib/apiBase';
@@ -26,7 +27,7 @@ type ProjectManagerRow = {
 
 export default function ProjectManagersPage() {
   const router = useRouter();
-  const { user, sessionId, loading, logout } = useAuth();
+  const { user, sessionId, loading, logoutAndRedirectToLogin } = useAuth();
   const role = (user?.role || '').toLowerCase();
 
   const [rows, setRows] = useState<ProjectManagerRow[]>([]);
@@ -48,7 +49,7 @@ export default function ProjectManagersPage() {
   useEffect(() => {
     if (loading) return;
     if (!user) {
-      router.replace('/login');
+      redirectToLoginPage();
       return;
     }
     if (!CAN_ACCESS.has(role)) router.replace('/');
@@ -173,7 +174,7 @@ export default function ProjectManagersPage() {
           <span className="text-sm text-gray-600">{user.email}</span>
           <button
             type="button"
-            onClick={() => logout().then(() => router.replace('/login'))}
+            onClick={() => void logoutAndRedirectToLogin()}
             className="text-sm text-red-600 hover:underline"
           >
             Logout

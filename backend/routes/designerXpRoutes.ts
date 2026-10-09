@@ -44,6 +44,14 @@ export async function ensureDesignerXpTable(pool: Pool): Promise<void> {
       CONSTRAINT fk_xp_designer FOREIGN KEY (designer_id) REFERENCES users(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
+
+  // Clean up any historical negative downselling transactions to ensure penalty is strictly 0
+  try {
+    await pool.query(
+      `DELETE FROM designer_xp_transactions
+       WHERE transaction_type = 'upsell' AND (net_xp < 0 OR penalty_xp > 0)`
+    );
+  } catch {}
 }
 
 export interface AwardWorkflowParams {
@@ -211,7 +219,7 @@ export async function evaluateAndAwardWorkflowXp(
 
     // 6. Calculate Net XP:
     // If on-time: base_xp = rewardXp, penalty_xp = 0, net_xp = rewardXp
-    // If overdue: base_xp = 0, penalty_xp = overdueDays * 2, net_xp = -penalty_xp
+    // If overdue: base_xp = 0, penalty_xp = overdueDays * 2, net_xp = -penalty_xp (NEGATIVE)
     const { base_xp, penalty_xp, net_xp } = calculateWorkflowNetXp(
       workflow.rewardXp,
       isDelayed,
@@ -492,15 +500,10 @@ export async function awardUpsellXp(
       taskName = "Quotation Upsell Revision";
       baseXp = netXp;
       penaltyXp = 0;
-    } else if (delta <= -100000) {
-      // Decrease: -20 XP per complete ₹1 Lakh decrease
-      completeLakhs = Math.floor(Math.abs(delta) / 100000);
-      netXp = -(completeLakhs * COMMERCIAL_XP_RULES.upsell.xpPerLakh);
-      taskName = "Quotation Revision Deduction";
-      baseXp = 0;
-      penaltyXp = completeLakhs * COMMERCIAL_XP_RULES.upsell.xpPerLakh;
     } else {
-      return { awarded: false, reason: "Revision delta is below 1 Lakh" };
+      // Downselling rule: Reducing quotation amounts must NOT create negative XP.
+      // If a quotation is reduced: XP penalty = 0. Do not create negative XP records.
+      return { awarded: false, reason: "Quotation reduction or delta below 1 Lakh yields 0 XP penalty (down-selling penalty = 0)" };
     }
 
     const [leadRows] = await pool.query(
@@ -787,7 +790,7 @@ export function registerDesignerXpRoutes(
 
       // Query XP transactions specifically earned on this lead
       const [leadXpRows] = await pool.query(
-        "SELECT task_name, milestone_index, base_xp, penalty_xp, net_xp, delay_days FROM designer_xp_transactions WHERE lead_id = ?",
+        "SELECT task_name, milestone_index, transaction_type, base_xp, penalty_xp, net_xp, delay_days, meta, created_at FROM designer_xp_transactions WHERE lead_id = ?",
         [leadId],
       );
       const leadTransactions = leadXpRows as any[];
@@ -821,6 +824,7 @@ export function registerDesignerXpRoutes(
         isWorkflowCompleted: boolean;
         isDelayed: boolean;
         delayDays: number;
+        dailyDeductionRate?: number;
         overdueDays?: number;
         allowedDurationDays?: number;
         actualDurationDays?: number | null;
@@ -832,9 +836,14 @@ export function registerDesignerXpRoutes(
           aliases?: string[];
           baseXp: number;
           earnedXp: number | null;
+          hasDailyDeduction?: boolean;
+          dailyDeductionRate?: number;
+          penaltyXp?: number;
           status: "completed" | "current" | "pending";
           isDelayed: boolean;
           delayDays: number;
+          overdueDays?: number;
+          finalXp?: number | null;
           tag: string;
           isActive: boolean;
         }>;
@@ -871,41 +880,6 @@ export function registerDesignerXpRoutes(
           (t) => t.milestone_index === wf.milestoneIndex && t.transaction_type === "workflow_completion",
         );
 
-        let allStepsCompleted = true;
-        const taskDetails = wf.steps.map((step) => {
-          let isCompleted = completedSet.has(`${wf.milestoneIndex}::${step.stepName.trim().toLowerCase()}`);
-          if (!isCompleted && step.aliases) {
-            for (const alias of step.aliases) {
-              if (completedSet.has(`${wf.milestoneIndex}::${alias.trim().toLowerCase()}`)) {
-                isCompleted = true;
-                break;
-              }
-            }
-          }
-          if (!isCompleted) {
-            allStepsCompleted = false;
-          }
-
-          let tag = "PENDING";
-          let status: "completed" | "current" | "pending" = "pending";
-          if (isCompleted) {
-            status = "completed";
-            tag = "ON-TIME";
-          }
-
-          return {
-            taskName: step.stepName,
-            aliases: step.aliases || [],
-            baseXp: 0,
-            earnedXp: null,
-            status,
-            isDelayed: false,
-            delayDays: 0,
-            tag,
-            isActive: false,
-          };
-        });
-
         let earnedXp: number | null = null;
         let isDelayed = false;
         let delayDays = 0;
@@ -914,15 +888,10 @@ export function registerDesignerXpRoutes(
           earnedXp = Number(tx.net_xp);
           delayDays = Number(tx.delay_days || 0);
           isDelayed = delayDays > 0 || (Number(tx.net_xp) <= 0 && Number(tx.penalty_xp) > 0);
-          if (isDelayed) {
-            taskDetails.forEach((t) => {
-              if (t.status === "completed") {
-                t.isDelayed = true;
-                t.tag = "OVERDUE";
-              }
-            });
-          }
         }
+        // For old/legacy projects: no tx yet but all steps are done.
+        // We cannot calculate delay without timing data, so we defer earnedXp to
+        // after allStepsCompleted is determined below — see the re-assignment after the loop.
 
         let metaObj: any = null;
         if (tx && tx.meta) {
@@ -931,24 +900,119 @@ export function registerDesignerXpRoutes(
           } catch {}
         }
 
+        let allStepsCompleted = true;
+        for (const step of wf.steps) {
+          let stepDone = completedSet.has(`${wf.milestoneIndex}::${step.stepName.trim().toLowerCase()}`);
+          if (!stepDone && step.aliases) {
+            for (const alias of step.aliases) {
+              if (completedSet.has(`${wf.milestoneIndex}::${alias.trim().toLowerCase()}`)) {
+                stepDone = true;
+                break;
+              }
+            }
+          }
+          if (!stepDone) {
+            allStepsCompleted = false;
+            break;
+          }
+        }
+
+        // Include all tasks from TASK_XP_RULES for this milestone, ensuring wf.steps are included
+        const milestoneRules = TASK_XP_RULES.filter((r) => r.milestoneIndex === wf.milestoneIndex);
+        const taskListToMap: Array<{ taskName: string; aliases: string[]; baseXp: number; isActive: boolean }> = [];
+        milestoneRules.forEach((r) => {
+          taskListToMap.push({
+            taskName: r.taskName,
+            aliases: r.aliases || [],
+            baseXp: r.baseXp,
+            isActive: r.isActive,
+          });
+        });
+        wf.steps.forEach((s) => {
+          if (!taskListToMap.some((t) => t.taskName.toLowerCase() === s.stepName.toLowerCase())) {
+            taskListToMap.push({
+              taskName: s.stepName,
+              aliases: s.aliases || [],
+              baseXp: 0,
+              isActive: true,
+            });
+          }
+        });
+
+        const taskDetails = taskListToMap.map((taskItem) => {
+          let isCompleted = completedSet.has(`${wf.milestoneIndex}::${taskItem.taskName.trim().toLowerCase()}`);
+          if (!isCompleted && taskItem.aliases) {
+            for (const alias of taskItem.aliases) {
+              if (completedSet.has(`${wf.milestoneIndex}::${alias.trim().toLowerCase()}`)) {
+                isCompleted = true;
+                break;
+              }
+            }
+          }
+
+          let tag = "PENDING";
+          let status: "completed" | "current" | "pending" = "pending";
+          if (isCompleted) {
+            status = "completed";
+            tag = isDelayed ? "OVERDUE" : "ON-TIME";
+          }
+
+          const hasDailyDeduction = taskItem.baseXp > 0;
+          const taskPenalty = isDelayed && hasDailyDeduction ? delayDays * 2 : 0;
+          const taskEarned = tx
+            ? (isDelayed ? 0 : taskItem.baseXp)
+            : (allStepsCompleted ? (isDelayed ? 0 : taskItem.baseXp) : null);
+          const taskFinal = tx
+            ? Number(tx.net_xp)
+            : (allStepsCompleted ? (isDelayed ? -taskPenalty : taskItem.baseXp) : null);
+
+          return {
+            taskName: taskItem.taskName,
+            aliases: taskItem.aliases,
+            baseXp: taskItem.baseXp,
+            earnedXp: taskEarned,
+            hasDailyDeduction,
+            dailyDeductionRate: hasDailyDeduction ? 2 : 0,
+            penaltyXp: taskPenalty,
+            delayDays: isDelayed ? delayDays : 0,
+            overdueDays: isDelayed ? delayDays : 0,
+            finalXp: taskFinal,
+            status,
+            isDelayed,
+            tag,
+            isActive: taskItem.isActive,
+          };
+        });
+
         const workflowStatus = tx
           ? (isDelayed ? "OVERDUE" : "ON-TIME")
-          : "IN_PROGRESS";
-        const completionState = tx ? "COMPLETED" : "INCOMPLETE";
+          : (allStepsCompleted ? (isDelayed ? "OVERDUE" : "ON-TIME") : "IN_PROGRESS");
+        const completionState = tx || allStepsCompleted ? "COMPLETED" : "INCOMPLETE";
+
+        // For old/legacy projects (no tx in DB but all steps done):
+        // earnedXp was null above (set only if tx exists). Fill it in now
+        // using the workflow reward. We cannot know exact delay without timing
+        // data, so we award full rewardXp as a best-effort display value.
+        // The reconcile-all endpoint will write accurate entries to the DB.
+        if (!tx && allStepsCompleted && earnedXp === null) {
+          earnedXp = wf.rewardXp;
+        }
+
 
         milestonesMap.set(wf.milestoneIndex, {
           milestoneIndex: wf.milestoneIndex,
           milestoneName: wf.milestoneName,
           workflowName: wf.workflowName,
           totalPossibleXp: wf.rewardXp,
-          baseXp: tx ? Number(tx.base_xp || 0) : (allStepsCompleted ? (isDelayed ? 0 : wf.rewardXp) : 0),
-          penaltyXp: tx ? Number(tx.penalty_xp || 0) : 0,
+          baseXp: tx ? Number(tx.base_xp || 0) : (allStepsCompleted ? (isDelayed ? 0 : wf.rewardXp) : wf.rewardXp),
+          penaltyXp: tx ? Number(tx.penalty_xp || 0) : (isDelayed ? delayDays * 2 : 0),
           earnedXp,
           netXp: earnedXp,
           finalXp: earnedXp,
+          dailyDeductionRate: 2,
           workflowStatus,
           completionState,
-          isWorkflowCompleted: Boolean(tx),
+          isWorkflowCompleted: Boolean(tx || allStepsCompleted),
           isDelayed,
           delayDays,
           overdueDays: delayDays,
@@ -995,7 +1059,57 @@ export function registerDesignerXpRoutes(
   });
 
   // -------------------------------------------------------------------------
+  // 2a. POST /api/xp/admin/reconcile-all
+  //     Admin-only: backfills XP transactions for ALL leads (old/legacy projects).
+  //     Calls reconcileLeadXp for every lead that has task completions but no
+  //     workflow_completion transactions yet. Safe to run multiple times (idempotent).
+  // -------------------------------------------------------------------------
+  app.post("/api/xp/admin/reconcile-all", async (req: Request, res: Response) => {
+    try {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      const userRole = (user.role || "").toLowerCase().trim();
+      if (!isRoleAdmin(userRole) && !isRoleTDM(userRole)) {
+        return res.status(403).json({ message: "Forbidden: Admin or TDM only" });
+      }
+
+      // Find all lead IDs that have at least one task completion
+      const [leadRows] = await pool.query(
+        `SELECT DISTINCT lead_id FROM lead_task_completions ORDER BY lead_id ASC`
+      );
+      const leadIds = (leadRows as any[]).map((r) => Number(r.lead_id));
+
+      let totalProcessed = 0;
+      let totalAwarded = 0;
+      const errors: { leadId: number; error: string }[] = [];
+
+      for (const leadId of leadIds) {
+        try {
+          const result = await reconcileLeadXp(pool, leadId);
+          totalProcessed++;
+          totalAwarded += result.awards.filter((a) => a.awarded).length;
+        } catch (err: any) {
+          errors.push({ leadId, error: err?.message || "Unknown error" });
+        }
+      }
+
+      console.log(`[designer-xp] reconcile-all done: ${totalProcessed} leads, ${totalAwarded} new awards, ${errors.length} errors`);
+      return res.json({
+        ok: true,
+        leadsProcessed: totalProcessed,
+        newAwards: totalAwarded,
+        errors: errors.length,
+        errorDetails: errors.slice(0, 20), // cap at 20 for response size
+      });
+    } catch (err: any) {
+      console.error("[designer-xp] reconcile-all error:", err);
+      return res.status(500).json({ message: "Reconcile failed", error: err?.message });
+    }
+  });
+
+  // -------------------------------------------------------------------------
   // 2. GET /api/xp/leaderboard
+
   //    Main designer leaderboard table with search, sort, and pagination
   // -------------------------------------------------------------------------
   app.get("/api/xp/leaderboard", async (req: Request, res: Response) => {
@@ -1041,11 +1155,6 @@ export function registerDesignerXpRoutes(
         overallRankMap.set(d.id, idx + 1);
       });
 
-      // Role-based scoping:
-      // Admin: all designers
-      // TDM: designers where designer or their DM has territorial_design_manager_id = user.id
-      // Design Manager: only designers where design_manager_id = user.id
-      // Designer: only self (u.id = user.id)
       let filterClause = "WHERE LOWER(u.role) = 'designer'";
       const queryParams: any[] = [];
 
@@ -1077,6 +1186,10 @@ export function registerDesignerXpRoutes(
          LEFT JOIN (
            SELECT assigned_designer_id, COUNT(*) as projectCount
            FROM leads
+           WHERE LOWER(TRIM(COALESCE(project_stage, ''))) IN ('10-20%', '20-60%', '10-60%', 'active')
+              OR LOWER(TRIM(COALESCE(project_stage, ''))) LIKE '%10-20%'
+              OR LOWER(TRIM(COALESCE(project_stage, ''))) LIKE '%20-60%'
+              OR LOWER(TRIM(COALESCE(project_stage, ''))) LIKE '%10-60%'
            GROUP BY assigned_designer_id
          ) proj ON proj.assigned_designer_id = u.id
          LEFT JOIN (
@@ -1218,12 +1331,27 @@ export function registerDesignerXpRoutes(
 
       // Verify user is a designer
       const [userRows] = await pool.query(
-        "SELECT id, name, email, role, sub_role as subRole, profileImage, branch FROM users WHERE id = ? LIMIT 1",
+        `SELECT id, name, email, role, sub_role as subRole, profileImage, branch,
+                designer_inspiration_projects AS designerInspirationProjects
+         FROM users WHERE id = ? LIMIT 1`,
         [designerId],
       );
       const designer = (userRows as any[])[0];
       if (!designer || (designer.role || "").toLowerCase() !== "designer") {
         return res.status(404).json({ message: "Designer not found" });
+      }
+
+      let inspirationProjects: unknown[] = [];
+      if (typeof designer.designerInspirationProjects === "string" && designer.designerInspirationProjects.trim()) {
+        try {
+          const parsed = JSON.parse(designer.designerInspirationProjects);
+          if (Array.isArray(parsed)) inspirationProjects = parsed;
+        } catch (parseError) {
+          console.error("[designer-xp] invalid designer inspiration projects", {
+            designerId,
+            error: parseError,
+          });
+        }
       }
 
       // Compute lifetime total XP from transactions
@@ -1297,7 +1425,7 @@ export function registerDesignerXpRoutes(
 
       const onTimeDeliveryPct = taskCount > 0 ? Math.round((onTimeTaskCount / taskCount) * 1000) / 10 : 100.0;
 
-      // Projects list with earned XP
+      // Projects list with earned XP (filtered to 10-60% projects)
       const [projRows] = await pool.query(
         `SELECT l.id, l.pid, l.project_name as projectName, l.project_stage as projectStage,
                 COALESCE(SUM(t.net_xp), 0) as earnedXp,
@@ -1306,6 +1434,12 @@ export function registerDesignerXpRoutes(
          FROM leads l
          LEFT JOIN designer_xp_transactions t ON t.lead_id = l.id AND t.designer_id = ?
          WHERE l.assigned_designer_id = ?
+           AND (
+             LOWER(TRIM(COALESCE(l.project_stage, ''))) IN ('10-20%', '20-60%', '10-60%', 'active')
+             OR LOWER(TRIM(COALESCE(l.project_stage, ''))) LIKE '%10-20%'
+             OR LOWER(TRIM(COALESCE(l.project_stage, ''))) LIKE '%20-60%'
+             OR LOWER(TRIM(COALESCE(l.project_stage, ''))) LIKE '%10-60%'
+           )
          GROUP BY l.id
          ORDER BY l.update_at DESC`,
         [designerId, designerId],
@@ -1391,6 +1525,7 @@ export function registerDesignerXpRoutes(
           designation: designer.subRole || "Interior Designer",
           profileImage: designer.profileImage || null,
           branch: designer.branch || null,
+          inspirationProjects,
           isOnline: true,
         },
         gamification: {

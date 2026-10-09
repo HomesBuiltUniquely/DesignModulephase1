@@ -19,11 +19,12 @@ import {
 import { IncentivesNavLink, IncentivesSideRail, canShowIncentivesNav } from './IncentivesNavLink';
 import FinanceRefundsNavLink from './FinanceRefundsNavLink';
 import { formatUserRoleLabel } from '../lib/formatUserRoleLabel';
+import { redirectToLoginPage } from '../lib/externalLoginUrl';
 
 export default function DashboardGuard() {
   const router = useRouter();
   const pathname = usePathname();
-  const { user, loading, logout, sessionId } = useAuth();
+  const { user, loading, logoutAndRedirectToLogin, sessionId } = useAuth();
   const [consoleOpen, setConsoleOpen] = useState(false);
   const [badgeUnread, setBadgeUnread] = useState(false);
   const [showAppointmentModal, setShowAppointmentModal] = useState(false);
@@ -33,9 +34,9 @@ export default function DashboardGuard() {
   const apiBase = getApiBase();
   useEffect(() => {
     if (loading) return;
-    if (pathname === '/login') return;
+    if (pathname === '/login' || pathname === '/auth/accept') return;
     if (!user) {
-      router.replace('/login');
+      redirectToLoginPage();
       return;
     }
   }, [user, loading, pathname, router]);
@@ -671,7 +672,7 @@ export default function DashboardGuard() {
             </div>
             <span className="text-sm text-gray-600 hidden md:inline">{user.name} ({formatUserRoleLabel(user.role)})</span>
           </div>
-          <button type="button" onClick={() => logout().then(() => router.replace('/login'))} className="text-sm font-semibold text-red-500 hover:text-red-700 transition-colors">Logout</button>
+          <button type="button" onClick={() => void logoutAndRedirectToLogin()} className="text-sm font-semibold text-red-500 hover:text-red-700 transition-colors">Logout</button>
         </div>
       </header>
       <main>
