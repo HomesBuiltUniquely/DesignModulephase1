@@ -2906,6 +2906,14 @@ function formatGoogleDateTime(meetingDate?: string | null, meetingTime?: string 
   return parsed.toISOString();
 }
 
+/** Wall-clock `YYYY-MM-DDTHH:mm:ss` (Hub/ERP) → Google Calendar API ISO (Asia/Kolkata). */
+function hubWallClockToGoogleDateTimeIso(raw: string): string | null {
+  const parts = parseHubLocalDateTimeParts(String(raw || "").trim());
+  if (!parts) return null;
+  const hm = `${String(parts.hour).padStart(2, "0")}:${String(parts.minute).padStart(2, "0")}`;
+  return formatGoogleDateTime(parts.dateIso, hm);
+}
+
 function addHoursToIso(iso: string, hours: number) {
   const parsed = new Date(iso);
   parsed.setHours(parsed.getHours() + hours);
@@ -3239,6 +3247,41 @@ async function getDesignerBusyBlocksForDate(
   return { leaveReason: null, busy };
 }
 
+/** Fields for Java CRM `/v1/Appointment` so the appointment table shows the correct client/project (not a stale CRM lead lookup). */
+function buildDesignModuleErpAppointmentFields(opts: {
+  leadId: number;
+  projectId: string;
+  projectName?: string | null;
+  customerName: string;
+  customerEmail?: string | null;
+  meetingType: string;
+  meetingSummary: string;
+}): Record<string, unknown> {
+  const projectName = (opts.projectName || "").trim();
+  const customerName =
+    (opts.customerName || "").trim() ||
+    projectName ||
+    opts.projectId ||
+    `Lead ${opts.leadId}`;
+  const description = [
+    opts.meetingSummary,
+    projectName ? `Project: ${projectName}` : null,
+    `PID: ${opts.projectId}`,
+    `Lead ID: ${opts.leadId}`,
+  ]
+    .filter(Boolean)
+    .join(" — ");
+
+  return {
+    customerName,
+    ...(opts.customerEmail ? { customerEmail: opts.customerEmail } : {}),
+    ...(projectName ? { projectName } : {}),
+    projectId: opts.projectId,
+    meetingType: opts.meetingType,
+    description,
+  };
+}
+
 async function assertDesignerSlotFree(opts: {
   designerName: string;
   dateIso: string;
@@ -3262,12 +3305,9 @@ async function assertDesignerSlotFree(opts: {
       conflictCount: conflicts.length,
     };
   } catch (err) {
-    console.error("[assertDesignerSlotFree] failed", designerName, err);
-    return {
-      ok: false,
-      message: "Could not verify designer availability — booking blocked to prevent overlap",
-      conflictCount: 1,
-    };
+    // Fail open when ERP/calendar sync is down — UI slot picker also cannot load busy blocks.
+    console.error("[assertDesignerSlotFree] availability check skipped (ERP error)", designerName, err);
+    return { ok: true };
   }
 }
 
@@ -4270,6 +4310,76 @@ function mergeHubCalendarEventsById(...groups: any[][]) {
   return Array.from(byId.values());
 }
 
+function erpPersonalRowToHubCalendarEvent(
+  raw: unknown,
+  owner: { id: number; email: string; name: string; role: string },
+): ReturnType<typeof mapGoogleCalendarEvent> | null {
+  if (!raw || typeof raw !== "object") return null;
+  if (!isPersonalAppointmentErpRow(raw) || isFullDayLeaveErpRow(raw) || isCancelledErpAppointment(raw)) {
+    return null;
+  }
+  const o = raw as Record<string, unknown>;
+  const startRaw = String(o.startTime ?? o.start ?? "").trim();
+  const endRaw = String(o.endTime ?? o.end ?? "").trim();
+  if (!startRaw) return null;
+  const startIso = hubWallClockToGoogleDateTimeIso(startRaw) || startRaw;
+  const endIso = endRaw
+    ? hubWallClockToGoogleDateTimeIso(endRaw) || endRaw
+    : startIso;
+  const gcalId = o.googleEventId ?? o.google_event_id;
+  const erpId = o.id ?? o.appointmentId;
+  const id = gcalId != null && String(gcalId).trim()
+    ? String(gcalId).trim()
+    : `erp-personal-${String(erpId ?? startRaw)}`;
+  const description = String(o.description ?? "").trim() || "Personal block";
+  return {
+    id,
+    summary: `Personal block – ${owner.name}`,
+    description,
+    htmlLink: typeof o.googleHtmlLink === "string" ? o.googleHtmlLink : "",
+    status: "confirmed",
+    location: "",
+    start: startIso,
+    end: endIso,
+    attendees: [],
+    ownerUserId: owner.id,
+    ownerName: owner.name,
+    ownerEmail: owner.email,
+    ownerRole: owner.role,
+    connectedGoogleEmail: null,
+    hubSource: "erp_personal",
+  };
+}
+
+async function fetchErpPersonalBlocksAsCalendarEvents(
+  owners: Array<{ id: number; email: string; name: string; role: string }>,
+  timeMin?: string | null,
+  timeMax?: string | null,
+) {
+  const minMs = timeMin ? new Date(timeMin).getTime() : null;
+  const maxMs = timeMax ? new Date(timeMax).getTime() : null;
+  const events: ReturnType<typeof mapGoogleCalendarEvent>[] = [];
+
+  for (const owner of owners) {
+    try {
+      const appointments = await fetchDesignerErpAppointments(owner.name);
+      for (const row of appointments) {
+        const mapped = erpPersonalRowToHubCalendarEvent(row, owner);
+        if (!mapped) continue;
+        const startMs = new Date(String(mapped.start || "")).getTime();
+        if (!Number.isNaN(startMs)) {
+          if (minMs != null && startMs < minMs) continue;
+          if (maxMs != null && startMs > maxMs) continue;
+        }
+        events.push(mapped);
+      }
+    } catch (err) {
+      console.error("[hub-calendar] ERP personal blocks load failed", { designer: owner.name, err });
+    }
+  }
+  return events;
+}
+
 async function createGoogleCalendarEventForUser(args: {
   userId: number;
   summary: string;
@@ -4282,7 +4392,9 @@ async function createGoogleCalendarEventForUser(args: {
   const connection = await ensureValidGoogleConnection(args.userId);
   if (!connection) return null;
 
-  const response = await fetch(`${GOOGLE_EVENTS_URI}?sendUpdates=all`, {
+  const attendeeList = (args.attendees || []).map((email) => ({ email }));
+  const sendUpdates = attendeeList.length > 0 ? "all" : "none";
+  const response = await fetch(`${GOOGLE_EVENTS_URI}?sendUpdates=${sendUpdates}`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${connection.access_token}`,
@@ -4294,7 +4406,7 @@ async function createGoogleCalendarEventForUser(args: {
       ...(args.location ? { location: args.location } : {}),
       start: { dateTime: args.startDateTimeIso, timeZone: GOOGLE_TIME_ZONE },
       end: { dateTime: args.endDateTimeIso, timeZone: GOOGLE_TIME_ZONE },
-      attendees: (args.attendees || []).map((email) => ({ email })),
+      attendees: attendeeList,
       extendedProperties: {
         shared: {
           [GOOGLE_SHARED_EVENT_PROPERTY_KEY]: GOOGLE_SHARED_EVENT_PROPERTY_VALUE,
@@ -4925,9 +5037,20 @@ app.get("/api/google-calendar/status", async (req: Request, res: Response) => {
       return res.status(403).json({ message: "You do not have access to HUB Calendar." });
     }
     const connection = await getGoogleConnectionByUserId(user.id);
+    let tokenHealthy = false;
+    let tokenError: string | null = null;
+    if (connection) {
+      try {
+        tokenHealthy = Boolean(await ensureValidGoogleConnection(user.id));
+      } catch (err: any) {
+        tokenError = err?.message || "Google token could not be refreshed";
+      }
+    }
     return res.json({
       configured: isGoogleCalendarConfigured(),
       connected: Boolean(connection),
+      tokenHealthy,
+      tokenError,
       googleEmail: connection?.google_email || null,
       expiresAt: connection?.expires_at || null,
     });
@@ -4969,11 +5092,14 @@ app.get("/api/google-calendar/my-events", async (req: Request, res: Response) =>
       user_name: visibleUser.name,
       user_role: visibleUser.role,
     }));
-    const allEvents = await gatherHubCalendarEventsForConnections(
-      connectionRows,
-      (req.query.timeMin as string | undefined) || null,
-      (req.query.timeMax as string | undefined) || null,
-    );
+    const timeMin = (req.query.timeMin as string | undefined) || null;
+    const timeMax = (req.query.timeMax as string | undefined) || null;
+
+    const [googleEvents, erpPersonalEvents] = await Promise.all([
+      gatherHubCalendarEventsForConnections(connectionRows, timeMin, timeMax),
+      fetchErpPersonalBlocksAsCalendarEvents(visibleUsers, timeMin, timeMax),
+    ]);
+    const allEvents = mergeHubCalendarEventsById(googleEvents, erpPersonalEvents);
 
     allEvents.sort((a, b) => String(a.start || "").localeCompare(String(b.start || "")));
     return res.json({ events: allEvents });
@@ -5010,14 +5136,22 @@ app.get("/api/google-calendar/all-events", async (req: Request, res: Response) =
       user_role: row.user_role,
     }));
 
-    const [crmEvents, localEvents] = await Promise.all([
+    const ownerRows = connectionRows.map((row) => ({
+      id: row.user_id,
+      email: row.user_email,
+      name: row.user_name,
+      role: row.user_role,
+    }));
+
+    const [crmEvents, localEvents, erpPersonalEvents] = await Promise.all([
       fetchErpCrmHubCalendarEvents(timeMin, timeMax).catch((err) => {
         console.error("hub calendar CRM aggregate failed", err);
         return [] as any[];
       }),
       gatherHubCalendarEventsForConnections(connectionRows, timeMin, timeMax),
+      fetchErpPersonalBlocksAsCalendarEvents(ownerRows, timeMin, timeMax),
     ]);
-    const allEvents = mergeHubCalendarEventsById(crmEvents, localEvents);
+    const allEvents = mergeHubCalendarEventsById(crmEvents, localEvents, erpPersonalEvents);
 
     allEvents.sort((a, b) => String(a.start || "").localeCompare(String(b.start || "")));
     return res.json({
@@ -12314,8 +12448,10 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
     if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
 
     const role = (actingUser.role || "").toLowerCase();
-    const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
-    if (!allowed.includes(role)) {
+    const canScheduleMeeting =
+      ["designer", "design_manager", "territorial_design_manager", "admin"].includes(role) ||
+      isHubPassAdminRole(role);
+    if (!canScheduleMeeting) {
       return res.status(403).json({ message: "Not allowed to send meeting invites" });
     }
 
@@ -12381,7 +12517,12 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       payload?.form?.customer_name ||
       row.projectName ||
       "Customer";
-    const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
+    const designerName =
+      row.designerName ||
+      formData.designer_name ||
+      formData.designerName ||
+      (role === "designer" && actingUser.name ? String(actingUser.name).trim() : "") ||
+      "Designer";
     const designerInviteEmail =
       (typeof row.designerEmail === "string" && row.designerEmail.trim()) ||
       (await lookupDesignModuleUserEmailByName(designerName)) ||
@@ -12578,6 +12719,16 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       (await lookupDesignModuleUserEmailByName(designerName)) ||
       null;
 
+    const erpAppointmentMeta = buildDesignModuleErpAppointmentFields({
+      leadId,
+      projectId,
+      projectName: row.projectName,
+      customerName,
+      customerEmail,
+      meetingType: String(meetingType),
+      meetingSummary: summary || `Design meeting`,
+    });
+
     // Register slot + Google event details in Java CRM (non-fatal — GCal event and email already sent)
     if (slotId && meetingDate) {
       try {
@@ -12589,8 +12740,8 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
             date: meetingDate,
             slotId,
             source: "DESIGN_MODULE",
-            description: `Design meeting - Lead ID: ${leadId}`,
             leadId,
+            ...erpAppointmentMeta,
             // Pass the GCal event details so Java stores them without a second sync attempt
             googleEventId: gcalEventId,
             googleHtmlLink: gcalHtmlLink,
@@ -12611,8 +12762,8 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
             startTime,
             endTime,
             source: "DESIGN_MODULE",
-            description: `Design meeting - Lead ID: ${leadId}`,
             leadId,
+            ...erpAppointmentMeta,
             googleEventId: gcalEventId,
             googleHtmlLink: gcalHtmlLink,
             googleSyncStatus: gcalEventId ? "SYNCED" : "DM_GCAL_FAILED",
@@ -18423,26 +18574,41 @@ app.post("/api/appointment/personal", async (req: Request, res: Response) => {
       }
     }
 
-    const eventStart = formatGoogleDateTime(meetingDate, meetingTime) || startParsed.toISOString();
+    const eventStart =
+      hubWallClockToGoogleDateTimeIso(String(startTime)) ||
+      formatGoogleDateTime(meetingDate, meetingTime) ||
+      startParsed.toISOString();
     const eventEnd =
-      formatGoogleDateTime(meetingDate, meetingEndTime) || new Date(endTime).toISOString();
+      hubWallClockToGoogleDateTimeIso(String(endTime)) ||
+      formatGoogleDateTime(meetingDate, meetingEndTime) ||
+      new Date(endTime).toISOString();
 
     let gcalEventId: string | null = null;
     let gcalHtmlLink: string | null = null;
+    let googleSyncError: string | null = null;
     try {
-      const gcalResult = await createGoogleCalendarEventForUser({
-        userId: actingUser.id,
-        summary: `Personal block – ${designerName}`,
-        description: trimmedReason,
-        startDateTimeIso: eventStart,
-        endDateTimeIso: eventEnd,
-        attendees: [],
-      });
-      if (gcalResult) {
-        gcalEventId = (gcalResult as any).id ?? null;
-        gcalHtmlLink = (gcalResult as any).htmlLink ?? null;
+      const connection = await ensureValidGoogleConnection(actingUser.id);
+      if (!connection) {
+        googleSyncError =
+          "HUB Calendar is not connected for your account. Connect the same Google email as your login under HUB Calendar.";
+      } else {
+        const gcalResult = await createGoogleCalendarEventForUser({
+          userId: actingUser.id,
+          summary: `Personal block – ${designerName}`,
+          description: trimmedReason,
+          startDateTimeIso: eventStart,
+          endDateTimeIso: eventEnd,
+          attendees: [],
+        });
+        if (gcalResult) {
+          gcalEventId = (gcalResult as any).id ?? null;
+          gcalHtmlLink = (gcalResult as any).htmlLink ?? null;
+        } else {
+          googleSyncError = "Google Calendar event was not created. Please reconnect HUB Calendar.";
+        }
       }
-    } catch (calendarErr) {
+    } catch (calendarErr: any) {
+      googleSyncError = calendarErr?.message || "Failed to create Google Calendar event";
       console.error("[personal-block] Google event create error (non-fatal)", calendarErr);
     }
 
@@ -18499,7 +18665,13 @@ app.post("/api/appointment/personal", async (req: Request, res: Response) => {
       });
     }
 
-    return res.status(201).json({ ok: true, appointment: erpData, googleEventId: gcalEventId });
+    return res.status(201).json({
+      ok: true,
+      appointment: erpData,
+      googleEventId: gcalEventId,
+      googleSyncStatus: gcalEventId ? "SYNCED" : "DM_GCAL_FAILED",
+      googleSyncError,
+    });
   } catch (err: any) {
     console.error("personal appointment create error", err);
     return res.status(500).json({ message: err?.message || "Failed to book personal appointment" });

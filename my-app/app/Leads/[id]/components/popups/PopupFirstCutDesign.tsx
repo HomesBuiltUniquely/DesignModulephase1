@@ -34,7 +34,7 @@ type MeetingMeta = {
   endTime?: string;
 };
 
-type InviteSubmitResult = { ok: boolean; mailSent?: boolean };
+type InviteSubmitResult = { ok: boolean; mailSent?: boolean; message?: string };
 
 type Props = {
   designUploadFiles: File[];
@@ -158,7 +158,7 @@ export default function PopupFirstCutDesign({
     try {
       const result = await onSubmit(buildMeta());
       if (result && result.ok === false) {
-        setInviteError("Failed to send invite. Please try again.");
+        setInviteError(result.message || "Failed to send invite. Please try again.");
         return;
       }
       if (result?.mailSent === false) {

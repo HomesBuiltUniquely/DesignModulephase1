@@ -6,6 +6,8 @@ export type AppointmentSuccessPayload = {
   kind: "partial" | "full_day";
   dateLabel: string;
   timeLabel?: string;
+  /** Shown when ERP block saved but Google Calendar sync failed */
+  calendarWarning?: string | null;
 };
 
 type Props = {
@@ -45,6 +47,11 @@ export function AppointmentSuccessToast({ payload, onDismiss }: Props) {
           <div className="min-w-0 flex-1">
             <p className="text-sm font-bold text-gray-900">{title}</p>
             <p className="mt-1 text-sm leading-relaxed text-gray-600">{subtitle}</p>
+            {payload.calendarWarning ? (
+              <p className="mt-2 text-xs leading-relaxed text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">
+                {payload.calendarWarning}
+              </p>
+            ) : null}
           </div>
           <button
             type="button"
