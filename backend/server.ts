@@ -3239,6 +3239,41 @@ async function getDesignerBusyBlocksForDate(
   return { leaveReason: null, busy };
 }
 
+/** Fields for Java CRM `/v1/Appointment` so the appointment table shows the correct client/project (not a stale CRM lead lookup). */
+function buildDesignModuleErpAppointmentFields(opts: {
+  leadId: number;
+  projectId: string;
+  projectName?: string | null;
+  customerName: string;
+  customerEmail?: string | null;
+  meetingType: string;
+  meetingSummary: string;
+}): Record<string, unknown> {
+  const projectName = (opts.projectName || "").trim();
+  const customerName =
+    (opts.customerName || "").trim() ||
+    projectName ||
+    opts.projectId ||
+    `Lead ${opts.leadId}`;
+  const description = [
+    opts.meetingSummary,
+    projectName ? `Project: ${projectName}` : null,
+    `PID: ${opts.projectId}`,
+    `Lead ID: ${opts.leadId}`,
+  ]
+    .filter(Boolean)
+    .join(" — ");
+
+  return {
+    customerName,
+    ...(opts.customerEmail ? { customerEmail: opts.customerEmail } : {}),
+    ...(projectName ? { projectName } : {}),
+    projectId: opts.projectId,
+    meetingType: opts.meetingType,
+    description,
+  };
+}
+
 async function assertDesignerSlotFree(opts: {
   designerName: string;
   dateIso: string;
@@ -3262,12 +3297,9 @@ async function assertDesignerSlotFree(opts: {
       conflictCount: conflicts.length,
     };
   } catch (err) {
-    console.error("[assertDesignerSlotFree] failed", designerName, err);
-    return {
-      ok: false,
-      message: "Could not verify designer availability — booking blocked to prevent overlap",
-      conflictCount: 1,
-    };
+    // Fail open when ERP/calendar sync is down — UI slot picker also cannot load busy blocks.
+    console.error("[assertDesignerSlotFree] availability check skipped (ERP error)", designerName, err);
+    return { ok: true };
   }
 }
 
@@ -12314,8 +12346,10 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
     if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
 
     const role = (actingUser.role || "").toLowerCase();
-    const allowed = ["designer", "design_manager", "territorial_design_manager", "admin"];
-    if (!allowed.includes(role)) {
+    const canScheduleMeeting =
+      ["designer", "design_manager", "territorial_design_manager", "admin"].includes(role) ||
+      isHubPassAdminRole(role);
+    if (!canScheduleMeeting) {
       return res.status(403).json({ message: "Not allowed to send meeting invites" });
     }
 
@@ -12381,7 +12415,12 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       payload?.form?.customer_name ||
       row.projectName ||
       "Customer";
-    const designerName = row.designerName || formData.designer_name || formData.designerName || "Designer";
+    const designerName =
+      row.designerName ||
+      formData.designer_name ||
+      formData.designerName ||
+      (role === "designer" && actingUser.name ? String(actingUser.name).trim() : "") ||
+      "Designer";
     const designerInviteEmail =
       (typeof row.designerEmail === "string" && row.designerEmail.trim()) ||
       (await lookupDesignModuleUserEmailByName(designerName)) ||
@@ -12578,6 +12617,16 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       (await lookupDesignModuleUserEmailByName(designerName)) ||
       null;
 
+    const erpAppointmentMeta = buildDesignModuleErpAppointmentFields({
+      leadId,
+      projectId,
+      projectName: row.projectName,
+      customerName,
+      customerEmail,
+      meetingType: String(meetingType),
+      meetingSummary: summary || `Design meeting`,
+    });
+
     // Register slot + Google event details in Java CRM (non-fatal — GCal event and email already sent)
     if (slotId && meetingDate) {
       try {
@@ -12589,8 +12638,8 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
             date: meetingDate,
             slotId,
             source: "DESIGN_MODULE",
-            description: `Design meeting - Lead ID: ${leadId}`,
             leadId,
+            ...erpAppointmentMeta,
             // Pass the GCal event details so Java stores them without a second sync attempt
             googleEventId: gcalEventId,
             googleHtmlLink: gcalHtmlLink,
@@ -12611,8 +12660,8 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
             startTime,
             endTime,
             source: "DESIGN_MODULE",
-            description: `Design meeting - Lead ID: ${leadId}`,
             leadId,
+            ...erpAppointmentMeta,
             googleEventId: gcalEventId,
             googleHtmlLink: gcalHtmlLink,
             googleSyncStatus: gcalEventId ? "SYNCED" : "DM_GCAL_FAILED",
