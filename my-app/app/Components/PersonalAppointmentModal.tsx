@@ -141,6 +141,12 @@ export function PersonalAppointmentModal({
       kind: "partial",
       dateLabel: formatAppointmentDateLabel(meetingDate),
       timeLabel: formatHubTimeRange(selectedStartMin, endMin),
+      calendarWarning:
+        data?.googleSyncStatus === "DM_GCAL_FAILED" && data?.googleSyncError
+          ? String(data.googleSyncError)
+          : data?.googleSyncStatus === "DM_GCAL_FAILED"
+            ? "Block saved in appointments, but Google Calendar sync failed. Open HUB Calendar and reconnect your Google account."
+            : null,
     };
     onSuccess(successPayload);
     onClose();
