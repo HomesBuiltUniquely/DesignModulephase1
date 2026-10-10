@@ -3085,7 +3085,269 @@ function isPersonalAppointmentErpRow(raw: unknown): boolean {
 
 const HUB_DAY_START_TIME = "11:00";
 const HUB_DAY_END_TIME = "19:00";
+const HUB_DAY_START_MIN = 11 * 60;
+const HUB_DAY_END_MIN = 19 * 60;
+const HUB_DEFAULT_MEETING_DURATION_MIN = 90;
 const FULL_DAY_LEAVE_DESC_PREFIX = "FULL_DAY_LEAVE:";
+
+/** Parse wall-clock local datetime `YYYY-MM-DDTHH:mm[:ss]` without timezone drift. */
+function parseHubLocalDateTimeParts(raw: string): {
+  dateIso: string;
+  hour: number;
+  minute: number;
+  second: number;
+} | null {
+  const m = String(raw || "")
+    .trim()
+    .match(/^(\d{4}-\d{2}-\d{2})[T ](\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (!m) return null;
+  const dateIso = m[1];
+  const hour = Number(m[2]);
+  const minute = Number(m[3]);
+  const second = m[4] != null ? Number(m[4]) : 0;
+  if (
+    !Number.isFinite(hour) ||
+    !Number.isFinite(minute) ||
+    !Number.isFinite(second) ||
+    hour < 0 ||
+    hour > 23 ||
+    minute < 0 ||
+    minute > 59 ||
+    second < 0 ||
+    second > 59
+  ) {
+    return null;
+  }
+  return { dateIso, hour, minute, second };
+}
+
+function hubLocalPartsToMinutes(parts: { hour: number; minute: number }): number {
+  return parts.hour * 60 + parts.minute;
+}
+
+function minutesToHubLabel(totalMin: number): string {
+  const h24 = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  const period = h24 >= 12 ? "PM" : "AM";
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return `${h12}:${String(m).padStart(2, "0")} ${period}`;
+}
+
+function formatHubLocalDateTime(dateIso: string, totalMin: number): string {
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return `${dateIso}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00`;
+}
+
+function rangesOverlapMin(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {
+  return aStart < bEnd && aEnd > bStart;
+}
+
+type HubBusyBlock = { startMin: number; endMin: number; label: string };
+
+/** Minutes on `dateIso` from ERP datetime — wall-clock first, then local Date fallback (Z). */
+function erpDateTimeToMinutesOnDate(rawIso: string, dateIso: string): number | null {
+  const trimmed = String(rawIso || "").trim();
+  if (!trimmed) return null;
+  const parts = parseHubLocalDateTimeParts(trimmed);
+  if (parts && parts.dateIso === dateIso) {
+    return hubLocalPartsToMinutes(parts);
+  }
+  const d = new Date(trimmed);
+  if (Number.isNaN(d.getTime())) return null;
+  const localDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  if (localDate !== dateIso) return null;
+  return d.getHours() * 60 + d.getMinutes();
+}
+
+function isCancelledErpAppointment(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  const o = raw as Record<string, unknown>;
+  const status = String(o.status ?? o.appointmentStatus ?? o.state ?? "")
+    .trim()
+    .toUpperCase();
+  if (!status) return false;
+  return (
+    status === "CANCELLED" ||
+    status === "CANCELED" ||
+    status === "DELETED" ||
+    status === "INACTIVE" ||
+    status.includes("CANCEL")
+  );
+}
+
+function erpAppointmentToBusyBlock(raw: unknown, dateIso: string): HubBusyBlock | null {
+  if (!raw || typeof raw !== "object") return null;
+  if (isCancelledErpAppointment(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  const startRaw = String(o.startTime ?? o.start ?? "").trim();
+  const endRaw = String(o.endTime ?? o.end ?? "").trim();
+  const startMin = erpDateTimeToMinutesOnDate(startRaw, dateIso);
+  const endMinRaw = erpDateTimeToMinutesOnDate(endRaw, dateIso);
+  if (startMin == null) return null;
+  let endMin = endMinRaw;
+  if (endMin == null) {
+    // Some rows only have start + durationMinutes
+    const dur = Number(o.durationMinutes ?? o.duration);
+    if (Number.isFinite(dur) && dur > 0) endMin = startMin + Math.round(dur);
+  }
+  if (endMin == null || endMin <= startMin) return null;
+  const customer =
+    typeof o.customerName === "string" && o.customerName.trim() ? o.customerName.trim() : "";
+  const desc = typeof o.description === "string" ? o.description.trim() : "";
+  const label =
+    customer ||
+    (desc.toUpperCase().startsWith(FULL_DAY_LEAVE_DESC_PREFIX)
+      ? "Full-day leave"
+      : desc.replace(/\s+/g, " ").slice(0, 48) || "Existing meeting");
+  return { startMin, endMin, label };
+}
+
+/**
+ * True overlap only (adjacent end==start is OK — no double-book).
+ * Returns conflict blocks that intersect [startMin, endMin).
+ */
+function findOverlappingBusyBlocks(
+  busy: HubBusyBlock[],
+  startMin: number,
+  endMin: number,
+): HubBusyBlock[] {
+  return busy.filter((b) => rangesOverlapMin(startMin, endMin, b.startMin, b.endMin));
+}
+
+async function getDesignerBusyBlocksForDate(
+  designerName: string,
+  dateIso: string,
+): Promise<{ leaveReason: string | null; busy: HubBusyBlock[] }> {
+  const leave = await getActiveFullDayBlock(designerName, dateIso);
+  if (leave && (leave.status === "pending" || leave.status === "approved")) {
+    const leaveReason =
+      leave.status === "pending"
+        ? `Full-day leave pending on ${dateIso}`
+        : `Full-day leave approved on ${dateIso}`;
+    return {
+      leaveReason,
+      busy: [{ startMin: HUB_DAY_START_MIN, endMin: HUB_DAY_END_MIN, label: "Full-day leave" }],
+    };
+  }
+  const appointments = await fetchDesignerErpAppointments(designerName);
+  const busy: HubBusyBlock[] = [];
+  for (const row of appointments) {
+    const block = erpAppointmentToBusyBlock(row, dateIso);
+    if (block) busy.push(block);
+  }
+  return { leaveReason: null, busy };
+}
+
+async function assertDesignerSlotFree(opts: {
+  designerName: string;
+  dateIso: string;
+  startMin: number;
+  endMin: number;
+}): Promise<{ ok: true } | { ok: false; message: string; conflictCount: number }> {
+  const { designerName, dateIso, startMin, endMin } = opts;
+  try {
+    const { leaveReason, busy } = await getDesignerBusyBlocksForDate(designerName, dateIso);
+    if (leaveReason) {
+      return { ok: false, message: leaveReason, conflictCount: 1 };
+    }
+    const conflicts = findOverlappingBusyBlocks(busy, startMin, endMin);
+    if (conflicts.length === 0) return { ok: true };
+    const first = conflicts[0];
+    return {
+      ok: false,
+      message: `Slot overlaps existing meeting ${minutesToHubLabel(first.startMin)}–${minutesToHubLabel(first.endMin)}${
+        first.label && first.label !== "Existing meeting" ? ` — ${first.label}` : ""
+      }. Overlapping bookings are not allowed.`,
+      conflictCount: conflicts.length,
+    };
+  } catch (err) {
+    console.error("[assertDesignerSlotFree] failed", designerName, err);
+    return {
+      ok: false,
+      message: "Could not verify designer availability — booking blocked to prevent overlap",
+      conflictCount: 1,
+    };
+  }
+}
+
+const HUB_SLOT_STEP_MIN = 30;
+
+function listHubFreeStartMinutes(
+  busy: HubBusyBlock[],
+  durationMin = HUB_DEFAULT_MEETING_DURATION_MIN,
+): number[] {
+  const free: number[] = [];
+  for (
+    let m = HUB_DAY_START_MIN;
+    m + durationMin <= HUB_DAY_END_MIN;
+    m += HUB_SLOT_STEP_MIN
+  ) {
+    if (findOverlappingBusyBlocks(busy, m, m + durationMin).length === 0) {
+      free.push(m);
+    }
+  }
+  return free;
+}
+
+function eachDateIsoInclusive(fromIso: string, toIso: string): string[] {
+  const out: string[] = [];
+  const start = new Date(`${fromIso}T00:00:00`);
+  const end = new Date(`${toIso}T00:00:00`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) return out;
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    out.push(
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`,
+    );
+  }
+  return out;
+}
+
+function mapErpAppointmentForMe(raw: unknown, designerName: string): Record<string, unknown> | null {
+  if (!raw || typeof raw !== "object") return null;
+  if (isCancelledErpAppointment(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  const startTime = String(o.startTime ?? o.start ?? "").trim();
+  const endTime = String(o.endTime ?? o.end ?? "").trim();
+  if (!startTime) return null;
+  const leadId = o.leadId ?? o.lead_id ?? null;
+  const customerName =
+    typeof o.customerName === "string" && o.customerName.trim()
+      ? o.customerName.trim()
+      : null;
+  const desc = typeof o.description === "string" ? o.description.trim() : "";
+  const isPersonal = isPersonalAppointmentErpRow(raw);
+  const isLeave = isFullDayLeaveErpRow(raw);
+  return {
+    id: o.id ?? o.appointmentId ?? null,
+    leadId,
+    customerName,
+    designerName,
+    startTime,
+    endTime,
+    meetingType: isLeave ? "FULL_DAY_LEAVE" : isPersonal ? "PERSONAL_BLOCK" : o.meetingType ?? "CLIENT_MEETING",
+    status: String(o.status ?? "ACTIVE"),
+    description: desc || null,
+    personal: isPersonal,
+  };
+}
+
+async function mapPoolLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
 
 type FullDayRequestRow = {
   id: number;
@@ -12130,6 +12392,62 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       return res.status(400).json({ message: "Invalid meeting date/time" });
     }
 
+    // Overlaps never allowed (adjacent end==start OK). Check before GCal / CRM write.
+    if (meetingDateIso && startTime && endTime) {
+      const sp = parseHubLocalDateTimeParts(String(startTime));
+      const ep = parseHubLocalDateTimeParts(String(endTime));
+      if (sp && ep && sp.dateIso === meetingDateIso && ep.dateIso === meetingDateIso) {
+        const free = await assertDesignerSlotFree({
+          designerName,
+          dateIso: meetingDateIso,
+          startMin: hubLocalPartsToMinutes(sp),
+          endMin: hubLocalPartsToMinutes(ep),
+        });
+        if (!free.ok) {
+          return res.status(409).json({
+            conflict: true,
+            message: free.message,
+            unavailable: true,
+            unavailableReason: free.message,
+            conflictCount: free.conflictCount,
+          });
+        }
+      }
+    } else if (meetingDateIso && meetingTime) {
+      const startParts = parseHubLocalDateTimeParts(
+        `${meetingDateIso}T${String(meetingTime).trim().length <= 5 ? `${String(meetingTime).trim()}:00` : String(meetingTime).trim()}`,
+      );
+      if (startParts && startParts.dateIso === meetingDateIso) {
+        const sMin = hubLocalPartsToMinutes(startParts);
+        let eMin = sMin + HUB_DEFAULT_MEETING_DURATION_MIN;
+        if (meetingEndTime) {
+          const endParts = parseHubLocalDateTimeParts(
+            `${meetingDateIso}T${String(meetingEndTime).trim().length <= 5 ? `${String(meetingEndTime).trim()}:00` : String(meetingEndTime).trim()}`,
+          );
+          if (endParts && endParts.dateIso === meetingDateIso) {
+            eMin = hubLocalPartsToMinutes(endParts);
+          }
+        }
+        if (eMin > sMin) {
+          const free = await assertDesignerSlotFree({
+            designerName,
+            dateIso: meetingDateIso,
+            startMin: sMin,
+            endMin: eMin,
+          });
+          if (!free.ok) {
+            return res.status(409).json({
+              conflict: true,
+              message: free.message,
+              unavailable: true,
+              unavailableReason: free.message,
+              conflictCount: free.conflictCount,
+            });
+          }
+        }
+      }
+    }
+
     let summary = "";
     let description = "";
     let emailRoutePath = "";
@@ -17284,6 +17602,528 @@ app.get("/api/appointment/designer/:designerName", async (req: Request, res: Res
   }
 });
 
+/**
+ * P0 — Sales: date/time → which designers are free (rich objects).
+ * GET /api/appointment/available-designers
+ *   ?date=YYYY-MM-DD
+ *   &startTime=YYYY-MM-DDTHH:mm:ss
+ *   &endTime=YYYY-MM-DDTHH:mm:ss   (or durationMinutes=90)
+ *   &meetingType=SHOWROOM_VISIT    (optional, echoed)
+ *
+ * Auth: Design Module session, or EXTERNAL_LEAD_INGEST_API_KEY / HUB_SYNC_API_KEY (CRM sales).
+ * Accuracy: calendar day from `date` (required); times parsed as local wall-clock (no TZ drift).
+ * Conflicts: ERP appointments for that designer on that date + Design Module full-day leave.
+ */
+app.get("/api/appointment/available-designers", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    const expectedKey =
+      (process.env.EXTERNAL_LEAD_INGEST_API_KEY || "").trim() ||
+      (process.env.HUB_SYNC_API_KEY || "").trim();
+    const providedKey = String(
+      req.headers["x-api-key"] ||
+        req.headers["x-external-api-key"] ||
+        String(req.headers.authorization || "").replace(/^Bearer\s+/i, ""),
+    ).trim();
+    const apiKeyOk = Boolean(expectedKey && providedKey && providedKey === expectedKey);
+
+    if (!actingUser && !apiKeyOk) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+    if (actingUser) {
+      const role = (actingUser.role || "").toLowerCase();
+      const allowedRoles = [
+        "admin",
+        "deputy_general_manager",
+        "territorial_design_manager",
+        "design_manager",
+        "designer",
+        "finance",
+      ];
+      if (!allowedRoles.includes(role)) {
+        return res.status(403).json({ message: "Not allowed to query designer availability" });
+      }
+    }
+
+    const dateIso = normalizeBlockDateIso(req.query.date);
+    if (!dateIso) {
+      return res.status(400).json({
+        message: "date is required as YYYY-MM-DD",
+      });
+    }
+
+    const startRaw = String(req.query.startTime || "").trim();
+    const endRaw = String(req.query.endTime || "").trim();
+    const durationRaw = Number(req.query.durationMinutes);
+    const meetingType =
+      String(req.query.meetingType || "").trim() || undefined;
+
+    if (!startRaw) {
+      return res.status(400).json({
+        message: "startTime is required (YYYY-MM-DDTHH:mm:ss)",
+      });
+    }
+
+    const startParts = parseHubLocalDateTimeParts(startRaw);
+    if (!startParts) {
+      return res.status(400).json({
+        message: "startTime must be YYYY-MM-DDTHH:mm:ss (local wall-clock)",
+      });
+    }
+    // Canonical day is `date` — reject mismatched start date to avoid silent wrong-day booking
+    if (startParts.dateIso !== dateIso) {
+      return res.status(400).json({
+        message: `startTime date (${startParts.dateIso}) must match date (${dateIso})`,
+      });
+    }
+
+    const startMin = hubLocalPartsToMinutes(startParts);
+    let endMin: number;
+    let endTimeOut: string;
+
+    if (endRaw) {
+      const endParts = parseHubLocalDateTimeParts(endRaw);
+      if (!endParts) {
+        return res.status(400).json({
+          message: "endTime must be YYYY-MM-DDTHH:mm:ss (local wall-clock)",
+        });
+      }
+      if (endParts.dateIso !== dateIso) {
+        return res.status(400).json({
+          message: `endTime date (${endParts.dateIso}) must match date (${dateIso})`,
+        });
+      }
+      endMin = hubLocalPartsToMinutes(endParts);
+      endTimeOut = formatHubLocalDateTime(dateIso, endMin);
+    } else {
+      const durationMin =
+        Number.isFinite(durationRaw) && durationRaw > 0
+          ? Math.round(durationRaw)
+          : HUB_DEFAULT_MEETING_DURATION_MIN;
+      endMin = startMin + durationMin;
+      endTimeOut = formatHubLocalDateTime(dateIso, endMin);
+    }
+
+    if (endMin <= startMin) {
+      return res.status(400).json({ message: "endTime must be after startTime" });
+    }
+
+    // Hub window: 11:00–19:00
+    if (startMin < HUB_DAY_START_MIN || endMin > HUB_DAY_END_MIN) {
+      return res.status(400).json({
+        message: `Meeting must fall within Hub window ${HUB_DAY_START_TIME}–${HUB_DAY_END_TIME}`,
+        hubWindow: { start: HUB_DAY_START_TIME, end: HUB_DAY_END_TIME },
+        requested: {
+          startTime: formatHubLocalDateTime(dateIso, startMin),
+          endTime: endTimeOut,
+        },
+      });
+    }
+
+    // Default: only free designers (overlapping never offered to sales).
+    // Pass includeUnavailable=true to also see busy designers + reasons.
+    const includeUnavailable =
+      String(req.query.includeUnavailable || "").trim().toLowerCase() === "true" ||
+      String(req.query.includeUnavailable || "").trim() === "1";
+
+    const [designerRows] = await pool.query(
+      `SELECT id, name, email
+       FROM users
+       WHERE role = 'designer'
+         AND name IS NOT NULL
+         AND TRIM(name) <> ''
+       ORDER BY name ASC`,
+    );
+    const designers = designerRows as { id: number; name: string; email: string | null }[];
+
+    type DesignerAvailability = {
+      id: number;
+      name: string;
+      email: string;
+      available: boolean;
+      conflictCount: number;
+      conflictReason?: string;
+    };
+
+    const results = await mapPoolLimit(designers, 5, async (d): Promise<DesignerAvailability> => {
+      const email = String(d.email || "").trim();
+      const base = { id: Number(d.id), name: d.name, email };
+
+      try {
+        const check = await assertDesignerSlotFree({
+          designerName: d.name,
+          dateIso,
+          startMin,
+          endMin,
+        });
+        if (check.ok) {
+          return { ...base, available: true, conflictCount: 0 };
+        }
+        return {
+          ...base,
+          available: false,
+          conflictCount: check.conflictCount,
+          conflictReason: check.message,
+        };
+      } catch (err) {
+        console.error("[available-designers] designer check failed", d.name, err);
+        return {
+          ...base,
+          available: false,
+          conflictCount: 1,
+          conflictReason: "Availability check failed",
+        };
+      }
+    });
+
+    const freeOnly = includeUnavailable ? results : results.filter((d) => d.available);
+
+    freeOnly.sort((a, b) => {
+      if (a.available !== b.available) return a.available ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    return res.json({
+      date: dateIso,
+      startTime: formatHubLocalDateTime(dateIso, startMin),
+      endTime: endTimeOut,
+      durationMinutes: endMin - startMin,
+      hubWindow: { start: HUB_DAY_START_TIME, end: HUB_DAY_END_TIME },
+      ...(meetingType ? { meetingType } : {}),
+      onlyAvailable: !includeUnavailable,
+      designers: freeOnly,
+    });
+  } catch (err: any) {
+    console.error("available-designers error", err);
+    return res.status(500).json({
+      message: "Failed to fetch available designers",
+      error: err?.message,
+    });
+  }
+});
+
+/**
+ * P1 — Sales day overview: each designer + free 90-min starts / busy blocks.
+ * GET /api/appointment/availability-by-date?date=YYYY-MM-DD&durationMinutes=90
+ */
+app.get("/api/appointment/availability-by-date", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    const expectedKey =
+      (process.env.EXTERNAL_LEAD_INGEST_API_KEY || "").trim() ||
+      (process.env.HUB_SYNC_API_KEY || "").trim();
+    const providedKey = String(
+      req.headers["x-api-key"] ||
+        req.headers["x-external-api-key"] ||
+        String(req.headers.authorization || "").replace(/^Bearer\s+/i, ""),
+    ).trim();
+    const apiKeyOk = Boolean(expectedKey && providedKey && providedKey === expectedKey);
+    if (!actingUser && !apiKeyOk) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const dateIso = normalizeBlockDateIso(req.query.date);
+    if (!dateIso) {
+      return res.status(400).json({ message: "date is required as YYYY-MM-DD" });
+    }
+    const durationRaw = Number(req.query.durationMinutes);
+    const durationMin =
+      Number.isFinite(durationRaw) && durationRaw > 0
+        ? Math.round(durationRaw)
+        : HUB_DEFAULT_MEETING_DURATION_MIN;
+
+    const [designerRows] = await pool.query(
+      `SELECT id, name, email
+       FROM users
+       WHERE role = 'designer'
+         AND name IS NOT NULL
+         AND TRIM(name) <> ''
+       ORDER BY name ASC`,
+    );
+    const designers = designerRows as { id: number; name: string; email: string | null }[];
+
+    const rows = await mapPoolLimit(designers, 5, async (d) => {
+      const email = String(d.email || "").trim();
+      try {
+        const { leaveReason, busy } = await getDesignerBusyBlocksForDate(d.name, dateIso);
+        if (leaveReason) {
+          return {
+            id: Number(d.id),
+            name: d.name,
+            email,
+            available: false,
+            fullDayBlocked: true,
+            blockReason: leaveReason,
+            freeStarts: [] as string[],
+            busyBlocks: busy.map((b) => ({
+              startTime: formatHubLocalDateTime(dateIso, b.startMin),
+              endTime: formatHubLocalDateTime(dateIso, Math.min(b.endMin, HUB_DAY_END_MIN)),
+              label: b.label,
+            })),
+          };
+        }
+        const freeMins = listHubFreeStartMinutes(busy, durationMin);
+        return {
+          id: Number(d.id),
+          name: d.name,
+          email,
+          available: freeMins.length > 0,
+          fullDayBlocked: false,
+          freeStarts: freeMins.map((m) => formatHubLocalDateTime(dateIso, m)),
+          busyBlocks: busy.map((b) => ({
+            startTime: formatHubLocalDateTime(dateIso, b.startMin),
+            endTime: formatHubLocalDateTime(dateIso, Math.min(b.endMin, HUB_DAY_END_MIN)),
+            label: b.label,
+          })),
+        };
+      } catch (err) {
+        console.error("[availability-by-date] failed", d.name, err);
+        return {
+          id: Number(d.id),
+          name: d.name,
+          email,
+          available: false,
+          fullDayBlocked: false,
+          freeStarts: [] as string[],
+          busyBlocks: [] as { startTime: string; endTime: string; label: string }[],
+          error: "Could not load calendar",
+        };
+      }
+    });
+
+    rows.sort((a, b) => {
+      if (a.available !== b.available) return a.available ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    return res.json({
+      date: dateIso,
+      durationMinutes: durationMin,
+      hubWindow: { start: HUB_DAY_START_TIME, end: HUB_DAY_END_TIME },
+      slotStepMinutes: HUB_SLOT_STEP_MIN,
+      designers: rows,
+    });
+  } catch (err: any) {
+    console.error("availability-by-date error", err);
+    return res.status(500).json({
+      message: "Failed to fetch availability by date",
+      error: err?.message,
+    });
+  }
+});
+
+/**
+ * P1 — Designer calendar (auth-scoped): my appointments for a date range.
+ * GET /api/appointment/me?from=YYYY-MM-DD&to=YYYY-MM-DD
+ */
+app.get("/api/appointment/me", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+    const role = (actingUser.role || "").toLowerCase();
+    if (!["designer", "design_manager", "territorial_design_manager", "admin"].includes(role)) {
+      return res.status(403).json({ message: "Not allowed" });
+    }
+
+    const fromIso = normalizeBlockDateIso(req.query.from) || normalizeBlockDateIso(req.query.date);
+    const toIso = normalizeBlockDateIso(req.query.to) || fromIso;
+    if (!fromIso || !toIso) {
+      return res.status(400).json({ message: "from (and optional to) required as YYYY-MM-DD" });
+    }
+    if (fromIso > toIso) {
+      return res.status(400).json({ message: "from must be on or before to" });
+    }
+
+    const designerName = actingUser.name;
+    const appointments = await fetchDesignerErpAppointments(designerName);
+    const dateSet = new Set(eachDateIsoInclusive(fromIso, toIso));
+    const list = appointments
+      .map((row) => mapErpAppointmentForMe(row, designerName))
+      .filter((row): row is Record<string, unknown> => {
+        if (!row) return false;
+        const start = String(row.startTime || "");
+        const day = start.slice(0, 10);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(day)) return dateSet.has(day);
+        // Fallback: check each day via erpAppointmentOnDate
+        for (const d of dateSet) {
+          if (erpAppointmentOnDate(row, d)) return true;
+        }
+        return false;
+      })
+      .sort((a, b) => String(a.startTime).localeCompare(String(b.startTime)));
+
+    return res.json({
+      designer: {
+        id: actingUser.id,
+        name: designerName,
+        email: actingUser.email || "",
+      },
+      from: fromIso,
+      to: toIso,
+      appointments: list,
+    });
+  } catch (err: any) {
+    console.error("appointment/me error", err);
+    return res.status(500).json({ message: "Failed to load my appointments", error: err?.message });
+  }
+});
+
+/**
+ * P2 — Designer free slots for a date (auth = current user, no designerName).
+ * GET /api/appointment/me/available-slots?date=YYYY-MM-DD&durationMinutes=90
+ */
+app.get("/api/appointment/me/available-slots", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+    const role = (actingUser.role || "").toLowerCase();
+    if (!["designer", "design_manager"].includes(role)) {
+      return res.status(403).json({ message: "Only designers / design managers" });
+    }
+
+    const dateIso = normalizeBlockDateIso(req.query.date);
+    if (!dateIso) {
+      return res.status(400).json({ message: "date is required as YYYY-MM-DD" });
+    }
+    const durationRaw = Number(req.query.durationMinutes);
+    const durationMin =
+      Number.isFinite(durationRaw) && durationRaw > 0
+        ? Math.round(durationRaw)
+        : HUB_DEFAULT_MEETING_DURATION_MIN;
+
+    const designerName = actingUser.name;
+    const { leaveReason, busy } = await getDesignerBusyBlocksForDate(designerName, dateIso);
+    if (leaveReason) {
+      return res.json({
+        date: dateIso,
+        designerName,
+        durationMinutes: durationMin,
+        availableSlots: [],
+        unavailable: true,
+        unavailableReason: leaveReason,
+      });
+    }
+
+    const freeMins = listHubFreeStartMinutes(busy, durationMin);
+    const availableSlots = freeMins.map((startMin) => ({
+      startTime: formatHubLocalDateTime(dateIso, startMin),
+      endTime: formatHubLocalDateTime(dateIso, startMin + durationMin),
+      startLabel: minutesToHubLabel(startMin),
+      endLabel: minutesToHubLabel(startMin + durationMin),
+    }));
+
+    return res.json({
+      date: dateIso,
+      designerName,
+      durationMinutes: durationMin,
+      hubWindow: { start: HUB_DAY_START_TIME, end: HUB_DAY_END_TIME },
+      availableSlots,
+      unavailable: false,
+    });
+  } catch (err: any) {
+    console.error("appointment/me/available-slots error", err);
+    return res.status(500).json({ message: "Failed to load my available slots", error: err?.message });
+  }
+});
+
+/**
+ * P2 — Designer busy/leave block (auth-scoped alias).
+ * POST /api/appointment/me/blocks
+ * Body: { date, startTime, endTime, reason }  → personal block
+ *        { date, reason, fullDay: true }      → full-day leave request
+ */
+app.post("/api/appointment/me/blocks", async (req: Request, res: Response) => {
+  const actingUser = await getUserFromSession(req);
+  if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+  const role = (actingUser.role || "").toLowerCase();
+  if (!["designer", "design_manager"].includes(role)) {
+    return res.status(403).json({ message: "Only designers / design managers" });
+  }
+
+  const body = req.body || {};
+  const fullDay = Boolean(body.fullDay || body.full_day);
+  const dateIso = normalizeBlockDateIso(body.date || body.blockDate || body.meetingDate);
+  const reason = String(body.reason || "").trim();
+
+  if (fullDay) {
+    // Reuse full-day leave flow by forwarding shape
+    req.body = {
+      blockDate: dateIso,
+      reason: reason || "Leave",
+      reasonPreset: body.reasonPreset || body.reason_preset || "Leave",
+    };
+    // Fall through: call existing handler logic via internal redirect is messy —
+    // invoke same validations inline by reusing POST /api/appointment/full-day path.
+    return res.status(400).json({
+      message:
+        "For full-day leave use POST /api/appointment/full-day { blockDate, reason }. For partial busy use startTime+endTime on this endpoint.",
+      hint: { fullDay: "POST /api/appointment/full-day", partial: "POST /api/appointment/me/blocks with startTime+endTime" },
+    });
+  }
+
+  const startTime = String(body.startTime || "").trim();
+  const endTime = String(body.endTime || "").trim();
+  if (!startTime || !endTime) {
+    return res.status(400).json({ message: "startTime and endTime are required (or fullDay:true → use /api/appointment/full-day)" });
+  }
+  if (!reason) {
+    return res.status(400).json({ message: "reason is required" });
+  }
+
+  // Overlap guard
+  const startParts = parseHubLocalDateTimeParts(startTime);
+  const endParts = parseHubLocalDateTimeParts(endTime);
+  const day = dateIso || startParts?.dateIso || null;
+  if (day && startParts && endParts) {
+    const free = await assertDesignerSlotFree({
+      designerName: actingUser.name,
+      dateIso: day,
+      startMin: hubLocalPartsToMinutes(startParts),
+      endMin: hubLocalPartsToMinutes(endParts),
+    });
+    if (!free.ok) {
+      return res.status(409).json({
+        conflict: true,
+        message: free.message,
+        unavailableReason: free.message,
+      });
+    }
+  }
+
+  try {
+    const startParsed = new Date(startTime);
+    if (Number.isNaN(startParsed.getTime())) {
+      return res.status(400).json({ message: "Invalid startTime" });
+    }
+    const designerName = actingUser.name;
+    const designerEmail = await lookupDesignModuleUserEmailByName(designerName);
+    const erpData = await callErpApi("/v1/Appointment", {
+      method: "POST",
+      body: JSON.stringify({
+        designerName,
+        ...(designerEmail ? { designerEmail } : {}),
+        startTime,
+        endTime,
+        source: "DESIGN_MODULE",
+        description: reason,
+        leadId: null,
+      }),
+    });
+    return res.status(201).json({
+      ok: true,
+      blockType: "PERSONAL",
+      date: day,
+      startTime,
+      endTime,
+      reason,
+      appointment: erpData,
+    });
+  } catch (err: any) {
+    console.error("appointment/me/blocks error", err);
+    return res.status(500).json({ message: "Failed to create block", error: err?.message });
+  }
+});
+
 // GET /api/appointment/available-slots — proxy to Java CRM
 app.get("/api/appointment/available-slots", async (req: Request, res: Response) => {
   const { date, designerName } = req.query as { date?: string; designerName?: string };
@@ -17336,6 +18176,35 @@ app.post("/api/appointment", async (req: Request, res: Response) => {
     }
   }
 
+  // Optional explicit window — reject true overlaps (adjacent end==start allowed)
+  const bodyStart = String((req.body || {}).startTime || "").trim();
+  const bodyEnd = String((req.body || {}).endTime || "").trim();
+  if (dateIso && bodyStart && bodyEnd) {
+    const sp = parseHubLocalDateTimeParts(bodyStart);
+    const ep = parseHubLocalDateTimeParts(bodyEnd);
+    if (sp && ep && sp.dateIso === dateIso && ep.dateIso === dateIso) {
+      const sMin = hubLocalPartsToMinutes(sp);
+      const eMin = hubLocalPartsToMinutes(ep);
+      if (eMin > sMin) {
+        const free = await assertDesignerSlotFree({
+          designerName: String(designerName),
+          dateIso,
+          startMin: sMin,
+          endMin: eMin,
+        });
+        if (!free.ok) {
+          return res.status(409).json({
+            conflict: true,
+            message: free.message,
+            unavailable: true,
+            unavailableReason: free.message,
+            conflictCount: free.conflictCount,
+          });
+        }
+      }
+    }
+  }
+
   try {
     const designerEmail = await lookupDesignModuleUserEmailByName(designerName);
     const data = await callErpApi("/v1/Appointment", {
@@ -17348,6 +18217,8 @@ app.post("/api/appointment", async (req: Request, res: Response) => {
         source: "DESIGN_MODULE",
         description: `Design Module meeting - Lead ID: ${leadId ?? "N/A"}`,
         leadId: leadId ?? null,
+        ...(bodyStart ? { startTime: bodyStart } : {}),
+        ...(bodyEnd ? { endTime: bodyEnd } : {}),
       }),
     });
     return res.status(201).json(data);
