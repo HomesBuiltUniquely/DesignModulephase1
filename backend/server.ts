@@ -11068,13 +11068,21 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
     const wasAlreadyIn1020 =
       stageBefore.includes("10-20") || stageBefore.includes("10–20");
 
+    // Offline / finance approve must close BOTH milestone-2 tasks. UI unlocks D2 only when
+    // every task in the milestone is complete — collection was sometimes missing (no upload row).
+    await pool.query(
+      `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
+       VALUES (?, 2, '10% payment collection', ?)
+       ON DUPLICATE KEY UPDATE completed_at = COALESCE(completed_at, VALUES(completed_at))`,
+      [leadId, now],
+    );
     await pool.query(
       `INSERT INTO lead_task_completions (lead_id, milestone_index, task_name, completed_at)
        VALUES (?, 2, '10% payment approval', ?)
        ON DUPLICATE KEY UPDATE completed_at = VALUES(completed_at)`,
       [leadId, now]
     );
-    // 10% PAYMENT milestone completes on finance approval (collection already done on upload)
+    // 10% PAYMENT milestone completes on finance approval (collection implied if proof was offline)
     void maybeNotifyMilestoneCompleted(leadId, 2, { taskName: "10% payment approval" });
     await pool.query(
       "UPDATE lead_uploads SET status = 'approved' WHERE lead_id = ? AND upload_type = 'payment_10p' AND status = 'pending'",

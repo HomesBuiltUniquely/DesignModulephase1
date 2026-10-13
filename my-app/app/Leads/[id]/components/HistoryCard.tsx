@@ -5,16 +5,16 @@ import type { HistoryEvent, HistoryEventType } from '../types';
 import DqcDesignerFeedbackCard from './DqcDesignerFeedbackCard';
 
 type Props = {
-  cardClass: string;
-  onToggleMaximize: () => void;
-  isMaximized: boolean;
-  historyEvents: HistoryEvent[];
-  onViewTaskDetails: (event: HistoryEvent) => void;
-  currentMilestoneIndex: number;
-  totalMilestones: number;
-  showDqcFeedback?: boolean;
-  leadId?: number | null;
-  sessionId?: string | null;
+    cardClass: string;
+    onToggleMaximize: () => void;
+    isMaximized: boolean;
+    historyEvents: HistoryEvent[];
+    onViewTaskDetails: (event: HistoryEvent) => void;
+    currentMilestoneIndex: number;
+    totalMilestones: number;
+    showDqcFeedback?: boolean;
+    leadId?: number | null;
+    sessionId?: string | null;
 };
 
 /** Top-level history filters (maximized only). */
@@ -22,16 +22,16 @@ type MainFilter = 'all' | 'payment' | 'dqc';
 type PaymentSubFilter = 'all' | 'link' | 'received' | 'failed' | 'offline' | 'cancelled';
 
 function formatRelativeTime(iso: string): string {
-  const d = new Date(iso);
-  const now = new Date();
-  const diffMs = now.getTime() - d.getTime();
-  const diffMins = Math.floor(diffMs / (60 * 1000));
-  const diffHours = Math.floor(diffMs / (60 * 60 * 1000));
-  const diffDays = Math.floor(diffMs / (24 * 60 * 60 * 1000));
+    const d = new Date(iso);
+    const now = new Date();
+    const diffMs = now.getTime() - d.getTime();
+    const diffMins = Math.floor(diffMs / (60 * 1000));
+    const diffHours = Math.floor(diffMs / (60 * 60 * 1000));
+    const diffDays = Math.floor(diffMs / (24 * 60 * 60 * 1000));
   if (diffMins < 60) return `${Math.max(0, diffMins)} min ago`;
-  if (diffHours < 24) return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
-  if (diffDays === 1) return 'Yesterday, ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    if (diffHours < 24) return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
+    if (diffDays === 1) return 'Yesterday, ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 export function sanitizeHistoryDescription(raw: string): string {
@@ -110,8 +110,8 @@ function eventTypeBadge(type: HistoryEventType, paymentCat: string | null): { la
   if (paymentCat === 'cancelled') return { label: 'CANCELLED', className: 'bg-gray-100 text-gray-700' };
   if (paymentCat === 'offline') return { label: 'OFFLINE', className: 'bg-[#DDCDC1]/40 text-[#32261C]' };
   if (paymentCat === 'link') return { label: 'LINK', className: 'bg-[#F1F2F6] text-[#32261C]' };
-  if (!type) return { label: 'EVENT', className: 'bg-gray-100 text-gray-700' };
-  switch (type) {
+    if (!type) return { label: 'EVENT', className: 'bg-gray-100 text-gray-700' };
+    switch (type) {
     case 'completed':
       return { label: 'COMPLETED', className: 'bg-[#DDCDC1]/40 text-[#32261C]' };
     case 'delayed':
@@ -134,20 +134,20 @@ function EventIcon({ type, paymentCat }: { type: HistoryEventType; paymentCat: s
   if (paymentCat === 'link') return <div className={`${base} bg-[#F1F2F6] text-[#32261C]`}>↗</div>;
   if (paymentCat === 'offline') return <div className={`${base} bg-[#DDCDC1]/40 text-[#32261C]`}>⬆</div>;
   if (paymentCat === 'cancelled') return <div className={`${base} bg-gray-100 text-gray-600`}>×</div>;
-  switch (type) {
-    case 'completed':
-      return <div className={`${base} bg-[#DDCDC1]/40 text-[#32261C]`}>✓</div>;
-    case 'delayed':
+    switch (type) {
+        case 'completed':
+            return <div className={`${base} bg-[#DDCDC1]/40 text-[#32261C]`}>✓</div>;
+        case 'delayed':
       return <div className={`${base} bg-red-50 text-[#EF0101]`}>⚠</div>;
-    case 'note':
+        case 'note':
       return <div className={`${base} bg-[#F1F2F6] text-[#32261C]`}>·</div>;
-    case 'owner_change':
+        case 'owner_change':
       return <div className={`${base} bg-gray-100 text-gray-700`}>👥</div>;
-    case 'file_upload':
-      return <div className={`${base} bg-[#DDCDC1]/40 text-[#32261C]`}>📄</div>;
-    default:
-      return <div className={`${base} bg-gray-100 text-gray-600`}>•</div>;
-  }
+        case 'file_upload':
+            return <div className={`${base} bg-[#DDCDC1]/40 text-[#32261C]`}>📄</div>;
+        default:
+            return <div className={`${base} bg-gray-100 text-gray-600`}>•</div>;
+    }
 }
 
 const PAYMENT_SUBS: { id: PaymentSubFilter; label: string }[] = [
@@ -160,21 +160,21 @@ const PAYMENT_SUBS: { id: PaymentSubFilter; label: string }[] = [
 ];
 
 export default function HistoryCard({
-  cardClass,
-  onToggleMaximize,
-  isMaximized,
-  historyEvents,
-  onViewTaskDetails,
-  currentMilestoneIndex,
-  totalMilestones,
-  showDqcFeedback = false,
-  leadId = null,
-  sessionId = null,
+    cardClass,
+    onToggleMaximize,
+    isMaximized,
+    historyEvents,
+    onViewTaskDetails,
+    currentMilestoneIndex,
+    totalMilestones,
+    showDqcFeedback = false,
+    leadId = null,
+    sessionId = null,
 }: Props) {
-  const [mounted, setMounted] = useState(false);
+    const [mounted, setMounted] = useState(false);
   const [mainFilter, setMainFilter] = useState<MainFilter>('all');
   const [paymentSub, setPaymentSub] = useState<PaymentSubFilter>('all');
-  useEffect(() => setMounted(true), []);
+    useEffect(() => setMounted(true), []);
 
   const progressPct =
     totalMilestones > 0 ? Math.round((currentMilestoneIndex / (totalMilestones - 1)) * 100) : 0;
@@ -229,7 +229,7 @@ export default function HistoryCard({
       !payCat;
 
     if (compact) {
-      return (
+    return (
         <div
           key={`${ev.id}-${index}`}
           className="flex items-start gap-2 rounded-lg border border-[#DDCDC1] bg-white p-2 transition-colors duration-150 hover:border-[#32261C]/35 hover:bg-[#FBF8F4]"
@@ -237,18 +237,18 @@ export default function HistoryCard({
           <EventIcon type={ev.type} paymentCat={payCat} />
           <div className="min-w-0 flex-1">
             <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-medium ${badge.className}`}>
-              {badge.label}
-            </span>
+                                                {badge.label}
+                                            </span>
             <p className="mt-1 line-clamp-2 text-xs text-[#32261C]/85">{description}</p>
             <p className="mt-0.5 text-[10px] text-gray-400">
               {relativeTime(ev.timestamp)} · {ev.user?.name ?? 'System'}
             </p>
-          </div>
-        </div>
-      );
+                                        </div>
+                                    </div>
+                                );
     }
 
-    return (
+                            return (
       <div
         key={`${ev.id}-${index}`}
         className="history-card-in flex gap-3 rounded-xl border border-[#DDCDC1] bg-white p-4 transition-all duration-200 hover:-translate-y-0.5 hover:border-[#32261C]/30 hover:shadow-[0_8px_20px_rgba(50,38,28,0.06)]"
@@ -258,31 +258,31 @@ export default function HistoryCard({
         <div className="min-w-0 flex-1">
           <span className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${badge.className}`}>
             {badge.label} · {relativeTime(ev.timestamp)}
-          </span>
+                                        </span>
           <p className="mt-2 text-sm text-[#32261C]/90">{description}</p>
           {showQuote && (
             <div className="mt-2 rounded-lg border border-[#DDCDC1] bg-[#F7F4F1] p-2 text-sm text-gray-700">
               {noteText}
-            </div>
-          )}
+                                            </div>
+                                        )}
           {ev.type === 'file_upload' && ev.details && (ev.details as { kind?: string }).kind === 'file_upload' && (
-            <div className="mt-2 flex items-center gap-2 text-sm text-gray-600">
-              <span>📄</span>
+                                            <div className="mt-2 flex items-center gap-2 text-sm text-gray-600">
+                                                <span>📄</span>
               <span>{(ev.details as { fileName: string }).fileName}</span>
-            </div>
-          )}
-          {showViewDetails && (
-            <button
-              type="button"
-              onClick={() => onViewTaskDetails(ev)}
+                                            </div>
+                                        )}
+                                        {showViewDetails && (
+                                            <button
+                                                type="button"
+                                                onClick={() => onViewTaskDetails(ev)}
               className="mt-2 text-sm font-medium text-[#00B0ED] transition-colors hover:text-[#0077a3] hover:underline"
-            >
-              View Task Details →
-            </button>
-          )}
-        </div>
+                                            >
+                                                View Task Details →
+                                            </button>
+                                        )}
+                                    </div>
         <div className="flex flex-shrink-0 flex-col items-end">
-          {ev.user?.avatar ? (
+                                        {ev.user?.avatar ? (
             <img src={ev.user.avatar} alt="" className="h-8 w-8 rounded-full object-cover" title={ev.user.name} />
           ) : (
             <div
@@ -290,12 +290,12 @@ export default function HistoryCard({
               title={ev.user?.name}
             >
               {(ev.user?.name || 'S').slice(0, 1).toUpperCase()}
-            </div>
-          )}
+                                            </div>
+                                        )}
           <span className="mt-1 max-w-[80px] truncate text-xs text-gray-500">{ev.user?.name ?? 'System'}</span>
-        </div>
-      </div>
-    );
+                                    </div>
+                                </div>
+                            );
   };
 
   const chipBase =
@@ -461,8 +461,8 @@ export default function HistoryCard({
               </p>
             ) : (
               listEvents.map((ev, index) => renderEventCard(ev, index, false))
-            )}
-          </div>
+                        )}
+                    </div>
 
           {/* Slim progress footer */}
           <div className="mt-2 flex flex-shrink-0 items-center gap-3 rounded-lg bg-[#EF0101]/90 px-3 py-2 text-white">
@@ -479,16 +479,16 @@ export default function HistoryCard({
                   style={{ width: `${Math.min(100, Math.max(0, progressPct))}%` }}
                 />
               </div>
-            </div>
+                        </div>
             <button
               type="button"
               className="flex-shrink-0 rounded-full bg-white px-3 py-1 text-xs font-medium text-[#32261C] transition-colors hover:bg-[#DDCDC1]/30"
             >
-              Generate Report
-            </button>
-          </div>
+                            Generate Report
+                        </button>
+                    </div>
+                </div>
+            )}
         </div>
-      )}
-    </div>
-  );
+    );
 }

@@ -23,9 +23,18 @@ import { stampEntered1020At } from "../leadTimelineAnchors";
 
 type SessionUser = { id: number; name?: string | null; email?: string | null; role?: string | null };
 
+/** Online Easebuzz links: admin + design team (same as frontend canUseEasebuzzOnline). */
 function isEasebuzzAdmin(user: SessionUser | null): boolean {
   const r = String(user?.role || "").trim().toLowerCase();
-  return r === "admin" || r === "super_admin" || r === "superadmin";
+  return (
+    r === "admin" ||
+    r === "super_admin" ||
+    r === "superadmin" ||
+    r === "designer" ||
+    r === "design_manager" ||
+    r === "territorial_design_manager" ||
+    r === "deputy_general_manager"
+  );
 }
 
 type Deps = {
@@ -1151,7 +1160,7 @@ export function registerDesignPaymentRoutes(app: Express, deps: Deps): void {
       return null;
     }
     if (!isEasebuzzAdmin(user)) {
-      res.status(403).json({ message: "Only super admin can manage Easebuzz payment links." });
+      res.status(403).json({ message: "Only admin or design team can manage Easebuzz payment links." });
       return null;
     }
     return user;
