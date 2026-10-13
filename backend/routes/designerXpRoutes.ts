@@ -1130,7 +1130,7 @@ export function registerDesignerXpRoutes(
       const sortBy = typeof req.query.sortBy === "string" ? req.query.sortBy.toLowerCase() : "xp";
       const order = typeof req.query.order === "string" && req.query.order.toLowerCase() === "asc" ? "asc" : "desc";
       const page = Math.max(1, Number(req.query.page || 1));
-      const limit = Math.min(100, Math.max(1, Number(req.query.limit || 50)));
+      const limit = Math.min(500, Math.max(1, Number(req.query.limit || 50)));
 
       // Org-wide rank calculation so designers and managers have real rankings
       const [allXpRows] = await pool.query(
@@ -1161,17 +1161,13 @@ export function registerDesignerXpRoutes(
       if (isRoleTDM(userRole)) {
         filterClause += " AND (u.territorial_design_manager_id = ? OR dm.territorial_design_manager_id = ?)";
         queryParams.push(user.id, user.id);
-      } else if (isRoleDesignManager(userRole)) {
-        filterClause += " AND u.design_manager_id = ?";
-        queryParams.push(user.id);
-      } else if (isRoleDesigner(userRole)) {
-        filterClause += " AND u.id = ?";
-        queryParams.push(user.id);
       }
+      // Design managers and designers see org-wide leaderboard rows (team/self flagged below).
+      // TDM / admin scoping unchanged.
 
-      // Query scoped designers
       const [designerRows] = await pool.query(
         `SELECT u.id, u.name, u.email, u.role, u.sub_role as subRole, u.profileImage, u.branch,
+                u.design_manager_id as designManagerId,
                 COALESCE(xp.totalXp, 0) as currentXp,
                 COALESCE(proj.projectCount, 0) as projectsCount,
                 COALESCE(ontime.onTimeCount, 0) as onTimeTasksCount,
@@ -1223,6 +1219,10 @@ export function registerDesignerXpRoutes(
         const onTimeTasks = Number(d.onTimeTasksCount || 0);
         const onTimeDeliveryPct = totalTasks > 0 ? Math.round((onTimeTasks / totalTasks) * 1000) / 10 : 100.0;
 
+        const isTeamMember =
+          isRoleDesignManager(userRole) && Number(d.designManagerId) === Number(user.id);
+        const isSelf = isRoleDesigner(userRole) && designerId === Number(user.id);
+
         return {
           id: designerId,
           name: d.name || "Unnamed Designer",
@@ -1231,6 +1231,8 @@ export function registerDesignerXpRoutes(
           subRole: d.subRole || "Interior Designer",
           profileImage: d.profileImage || null,
           branch: d.branch || null,
+          isTeamMember,
+          isSelf,
           isOnline: true,
           currentXp,
           level: badge.name,
@@ -1258,24 +1260,32 @@ export function registerDesignerXpRoutes(
         );
       }
 
-      // Sort by chosen metric
-      designers.sort((a, b) => {
+      const compareByMetric = (a: (typeof designers)[0], b: (typeof designers)[0]) => {
         let diff = 0;
         if (sortBy === "projects") {
           diff = a.projectsCount - b.projectsCount;
         } else {
-          // default: xp
           diff = a.currentXp - b.currentXp;
         }
         return order === "asc" ? diff : -diff;
-      });
+      };
+
+      // Design manager: team block first, then all other designers (each block sorted)
+      if (isRoleDesignManager(userRole)) {
+        const team = designers.filter((d) => d.isTeamMember).sort(compareByMetric);
+        const rest = designers.filter((d) => !d.isTeamMember).sort(compareByMetric);
+        designers = [...team, ...rest];
+      } else {
+        designers.sort(compareByMetric);
+      }
 
       // Assign ranks:
-      // Designer: org-wide rank
-      // Admin / TDM / DM: rank in current table view
+      // Designer / DM (org motivation list): org-wide rank
+      // Admin / TDM: rank in scoped table view
       designers = designers.map((d, index) => ({
         ...d,
-        rank: isRoleDesigner(userRole) ? d.orgRank : index + 1,
+        rank:
+          isRoleDesigner(userRole) || isRoleDesignManager(userRole) ? d.orgRank : index + 1,
       }));
 
       const total = designers.length;

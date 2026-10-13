@@ -72,6 +72,17 @@ import { getTaskTimelineLabel } from './lib/taskDeadlineConfig';
 
 const API = getApiBase();
 
+async function readScheduleInviteFailure(
+    res: Response,
+): Promise<{ ok: false; message: string }> {
+    const data = await res.json().catch(() => ({}));
+    const msg =
+        (data as { message?: string }).message ||
+        (data as { unavailableReason?: string }).unavailableReason ||
+        `Meeting invite failed (${res.status})`;
+    return { ok: false, message: msg };
+}
+
 export default function ProjectDetailPage() {
     const params = useParams();
     const searchParams = useSearchParams();
@@ -3417,7 +3428,7 @@ export default function ProjectDetailPage() {
                             onDesignDragOver={onDesignDragOver}
                             removeDesignFile={removeDesignFile}
                             ecLocation={getLeadBranchName(project)}
-                            designerName={authUser?.name}
+                            designerName={project?.designerName?.trim() || authUser?.name}
                             apiBase={API}
                             sessionId={sessionId}
                             initialDate={(() => {
@@ -3491,7 +3502,7 @@ export default function ProjectDetailPage() {
                                         }),
                                     });
                                     if (!inviteRes.ok) {
-                                        return { ok: false };
+                                        return await readScheduleInviteFailure(inviteRes);
                                     }
                                     addHistoryEvent({
                                         type: 'note',
@@ -3878,7 +3889,7 @@ export default function ProjectDetailPage() {
                             onDesignDragOver={onDesignDragOver}
                             removeDesignFile={removeDesignFile}
                             ecLocation={getLeadBranchName(project)}
-                            designerName={authUser?.name}
+                            designerName={project?.designerName?.trim() || authUser?.name}
                             apiBase={API}
                             sessionId={sessionId}
                             initialDate={(() => {
@@ -3946,7 +3957,7 @@ export default function ProjectDetailPage() {
                                         }),
                                     });
                                     if (!inviteRes.ok) {
-                                        return { ok: false };
+                                        return await readScheduleInviteFailure(inviteRes);
                                     }
                                     addHistoryEvent({
                                         type: 'note',
@@ -4204,7 +4215,7 @@ export default function ProjectDetailPage() {
                             onDesignDragOver={onDesignDragOver}
                             removeDesignFile={removeDesignFile}
                             ecLocation={getLeadBranchName(project)}
-                            designerName={authUser?.name}
+                            designerName={project?.designerName?.trim() || authUser?.name}
                             apiBase={API}
                             sessionId={sessionId}
                             hideDesignCompletion
@@ -4273,7 +4284,7 @@ export default function ProjectDetailPage() {
                                         }),
                                     });
                                     if (!inviteRes.ok) {
-                                        return { ok: false };
+                                        return await readScheduleInviteFailure(inviteRes);
                                     }
                                     addHistoryEvent({
                                         type: 'note',

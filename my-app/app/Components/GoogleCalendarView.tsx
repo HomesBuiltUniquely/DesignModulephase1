@@ -297,7 +297,13 @@ function EventDetailsPopover({
 
 export default function GoogleCalendarView() {
   const { user, sessionId } = useAuth();
-  const [status, setStatus] = useState<{ connected: boolean; googleEmail?: string | null; configured?: boolean }>({
+  const [status, setStatus] = useState<{
+    connected: boolean;
+    tokenHealthy?: boolean;
+    tokenError?: string | null;
+    googleEmail?: string | null;
+    configured?: boolean;
+  }>({
     connected: false,
   });
   const [events, setEvents] = useState<CalendarEventItem[]>([]);
@@ -662,7 +668,11 @@ export default function GoogleCalendarView() {
                   }}
                   className="inline-flex max-w-[260px] items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 text-sm transition hover:bg-gray-50"
                 >
-                  <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
+                  <span
+                    className={`h-2 w-2 shrink-0 rounded-full ${
+                      status.tokenHealthy === false ? "bg-amber-500" : "bg-emerald-500"
+                    }`}
+                  />
                   <span className="truncate text-gray-800">{status.googleEmail || 'Connected'}</span>
                   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4 shrink-0 text-gray-500">
                     <path d="M7 10l5 5 5-5z" />

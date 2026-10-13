@@ -59,9 +59,12 @@ export const DesignerLeaderboardView: React.FC = () => {
     setLoading(true);
     setError(null);
 
-    fetch(`${getApiBase()}/api/xp/leaderboard?sortBy=${sortBy === "projects" ? "projects" : "xp"}`, {
-      headers: buildAuthHeaders(),
-    })
+    fetch(
+      `${getApiBase()}/api/xp/leaderboard?sortBy=${sortBy === "projects" ? "projects" : "xp"}&limit=500`,
+      {
+        headers: buildAuthHeaders(),
+      },
+    )
       .then(async (res) => {
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
@@ -76,9 +79,16 @@ export const DesignerLeaderboardView: React.FC = () => {
 
         if (list.length > 0) {
           if (isDesigner) {
-            const me = list.find((d: any) => Number(d.id) === Number(user?.id));
+            const me = list.find((d: any) => d.isSelf || Number(d.id) === Number(user?.id));
             setSelectedShowcaseDesignerId(me ? me.id : list[0].id);
-          } else if (isDesignManager || isTDM) {
+          } else if (isDesignManager) {
+            const team = list.filter((d: any) => d.isTeamMember);
+            const firstTeam = team[0] || list[0];
+            setSelectedShowcaseDesignerId((prev) => {
+              if (prev && team.some((d: any) => d.id === prev)) return prev;
+              return firstTeam.id;
+            });
+          } else if (isTDM) {
             setSelectedShowcaseDesignerId((prev) => (prev ? prev : list[0].id));
           }
         }
@@ -93,32 +103,62 @@ export const DesignerLeaderboardView: React.FC = () => {
     fetchLeaderboard();
   }, []);
 
+  const teamDesigners = useMemo(
+    () => (isDesignManager ? designers.filter((d) => d.isTeamMember) : []),
+    [designers, isDesignManager],
+  );
+
+  const showcaseDesignerPool = useMemo(() => {
+    if (isDesignManager) return teamDesigners;
+    if (isDesigner) {
+      const me = designers.find((d) => d.isSelf || Number(d.id) === Number(user?.id));
+      return me ? [me] : [];
+    }
+    return designers;
+  }, [designers, isDesignManager, isDesigner, teamDesigners, user?.id]);
+
   const activeShowcaseDesigner = useMemo(() => {
     if (selectedShowcaseDesignerId) {
-      return (
-        designers.find((d) => d.id === selectedShowcaseDesignerId) ||
-        designers[0] ||
-        null
-      );
+      const fromPool =
+        showcaseDesignerPool.find((d) => d.id === selectedShowcaseDesignerId) ||
+        designers.find((d) => d.id === selectedShowcaseDesignerId);
+      return fromPool || showcaseDesignerPool[0] || null;
     }
     if (isDesigner) {
-      const me = designers.find((d) => Number(d.id) === Number(user?.id));
-      return me || designers[0] || null;
+      return showcaseDesignerPool[0] || null;
     }
-    return isDesignManager || isTDM ? designers[0] : null;
-  }, [designers, isDesigner, isDesignManager, isTDM, selectedShowcaseDesignerId, user?.id]);
+    return isDesignManager || isTDM ? showcaseDesignerPool[0] || designers[0] : null;
+  }, [
+    designers,
+    isDesigner,
+    isDesignManager,
+    isTDM,
+    selectedShowcaseDesignerId,
+    showcaseDesignerPool,
+  ]);
+
+  const canViewDesignerDetails = (designer: { id: number; isTeamMember?: boolean; isSelf?: boolean }) => {
+    if (isAdmin || isTDM) return true;
+    if (isDesignManager) return Boolean(designer.isTeamMember);
+    if (isDesigner) return Boolean(designer.isSelf) || Number(designer.id) === Number(user?.id);
+    return true;
+  };
+
+  const statsDesigners = isDesignManager ? teamDesigners : isDesigner ? showcaseDesignerPool : designers;
 
   // Summary Metrics
-  const totalDesigners = designers.length;
+  const totalDesigners = statsDesigners.length;
   const totalTeamXp = useMemo(
-    () => designers.reduce((sum, d) => sum + (Number(d.currentXp) || 0), 0),
-    [designers]
+    () => statsDesigners.reduce((sum, d) => sum + (Number(d.currentXp) || 0), 0),
+    [statsDesigners],
   );
   const topLevel = useMemo(() => {
-    if (!designers.length) return "Rookie";
-    const sorted = [...designers].sort((a, b) => (Number(b.currentXp) || 0) - (Number(a.currentXp) || 0));
+    if (!statsDesigners.length) return "Rookie";
+    const sorted = [...statsDesigners].sort(
+      (a, b) => (Number(b.currentXp) || 0) - (Number(a.currentXp) || 0),
+    );
     return sorted[0]?.level || "Rookie";
-  }, [designers]);
+  }, [statsDesigners]);
   const avgXp = useMemo(() => {
     return totalDesigners > 0 ? Math.round(totalTeamXp / totalDesigners) : 0;
   }, [totalDesigners, totalTeamXp]);
@@ -174,24 +214,46 @@ export const DesignerLeaderboardView: React.FC = () => {
       list = list.filter((d) => (d.branch || "").toLowerCase() === teamFilter.toLowerCase());
     }
 
-    // Sorting
-    list.sort((a, b) => {
-      if (sortBy === "projects") return b.projectsCount - a.projectsCount;
-      if (sortBy === "name") return a.name.localeCompare(b.name);
-      if (sortBy === "rank") return a.rank - b.rank;
-      return b.currentXp - a.currentXp; // default "xp"
-    });
+    const sortList = (items: typeof list) => {
+      const sorted = [...items];
+      sorted.sort((a, b) => {
+        if (sortBy === "projects") return b.projectsCount - a.projectsCount;
+        if (sortBy === "name") return a.name.localeCompare(b.name);
+        if (sortBy === "rank") return a.rank - b.rank;
+        return b.currentXp - a.currentXp;
+      });
+      return sorted;
+    };
 
-    return list;
-  }, [designers, search, levelFilter, teamFilter, sortBy]);
+    if (isDesignManager) {
+      const team = sortList(list.filter((d) => d.isTeamMember));
+      const rest = sortList(list.filter((d) => !d.isTeamMember));
+      return [...team, ...rest];
+    }
+
+    return sortList(list);
+  }, [designers, search, levelFilter, teamFilter, sortBy, isDesignManager]);
+
+  const filteredTeamDesigners = useMemo(
+    () => filteredDesigners.filter((d) => d.isTeamMember),
+    [filteredDesigners],
+  );
+  const filteredOtherDesigners = useMemo(
+    () => filteredDesigners.filter((d) => !d.isTeamMember),
+    [filteredDesigners],
+  );
 
   // Drawer open handler
   const handleOpenDrawer = (designerId: number) => {
+    const row = designers.find((d) => d.id === designerId);
+    if (row && !canViewDesignerDetails(row)) return;
     setSelectedDesignerId(designerId);
     setShowDrawer(true);
   };
 
   const handleSelectShowcase = (designerId: number) => {
+    const row = designers.find((d) => d.id === designerId);
+    if (row && !canViewDesignerDetails(row)) return;
     setSelectedShowcaseDesignerId(designerId);
   };
 
@@ -229,6 +291,123 @@ export const DesignerLeaderboardView: React.FC = () => {
     }
     return <span className="font-bold text-sm text-slate-400">#{rank}</span>;
   };
+
+  const renderDesignerRow = (designer: any) => {
+    const isRank1 = designer.rank === 1;
+    const isSelected = activeShowcaseDesigner?.id === designer.id;
+    const isLoggedInDesigner =
+      user?.role?.toLowerCase() === "designer" &&
+      (designer.isSelf || Number(user?.id) === Number(designer.id));
+    const detailsAllowed = canViewDesignerDetails(designer);
+
+    return (
+      <tr
+        key={designer.id}
+        onClick={() => detailsAllowed && handleSelectShowcase(designer.id)}
+        className={`transition-colors ${detailsAllowed ? "cursor-pointer" : "cursor-default"} ${
+          isLoggedInDesigner
+            ? "bg-red-50/60 dark:bg-red-950/20 hover:bg-red-100/60 dark:hover:bg-red-950/30 border-l-4 border-red-500"
+            : isSelected
+            ? "bg-blue-50/40 dark:bg-blue-950/20"
+            : isRank1
+            ? "bg-[#FFFDF3] dark:bg-amber-950/15 hover:bg-[#FFFBEB] dark:hover:bg-amber-950/25"
+            : "bg-white dark:bg-[#14171e] hover:bg-slate-50/60 dark:hover:bg-slate-800/40"
+        }`}
+      >
+        <td className="py-4 px-6 text-center">{renderRank(designer.rank)}</td>
+        <td className="py-4 px-6">
+          <div className="flex items-center gap-3.5">
+            <div className="relative shrink-0">
+              <div className="w-11 h-11 rounded-full bg-[#E0E7FF]/70 dark:bg-indigo-950/60 text-slate-700 dark:text-indigo-300 font-bold text-sm flex items-center justify-center ring-2 ring-white dark:ring-slate-800">
+                {designer.profileImage ? (
+                  <img
+                    src={designer.profileImage}
+                    alt={designer.name}
+                    className="w-full h-full object-cover rounded-full"
+                  />
+                ) : (
+                  designer.name.charAt(0).toUpperCase()
+                )}
+              </div>
+              <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-slate-900" />
+            </div>
+            <div>
+              <span
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (detailsAllowed) handleOpenDrawer(designer.id);
+                }}
+                className={`font-bold text-sm block ${
+                  detailsAllowed ? "hover:underline cursor-pointer" : "cursor-default"
+                } ${isRank1 ? "text-[#0070F3] dark:text-sky-400" : "text-slate-900 dark:text-slate-100"}`}
+              >
+                {designer.name}
+                {isLoggedInDesigner ? (
+                  <span className="ml-2 text-[10px] font-extrabold uppercase tracking-wide text-red-600 dark:text-red-400">
+                    You
+                  </span>
+                ) : null}
+              </span>
+              <span className="text-xs text-slate-400 dark:text-slate-500 font-normal mt-0.5 block">
+                Designer
+                {designer.branch ? ` · ${designer.branch}` : ""}
+              </span>
+            </div>
+          </div>
+        </td>
+        <td className="py-4 px-6">
+          <div className="flex items-center gap-2.5">
+            <BadgeIcon badgeKey={designer.badgeKey} size={32} />
+            <span className="font-bold text-sm text-slate-800 dark:text-slate-200">{designer.level}</span>
+          </div>
+        </td>
+        <td className="py-4 px-6 font-bold text-sm text-slate-900 dark:text-white">
+          {Number(designer.currentXp).toLocaleString()}
+        </td>
+        <td className="py-4 px-6">
+          <div className="space-y-1">
+            <div className="w-40 h-2 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+              <div
+                className="bg-emerald-500 h-full rounded-full transition-all duration-500"
+                style={{ width: `${Math.max(6, designer.progressPct)}%` }}
+              />
+            </div>
+            <span className="text-xs text-slate-400 dark:text-slate-500 font-medium block">
+              {designer.nextLevel
+                ? `${designer.xpToNextLevel.toLocaleString()} XP to ${designer.nextLevel}`
+                : "Max Level"}
+            </span>
+          </div>
+        </td>
+        <td className="py-4 px-6 text-center font-bold text-sm text-slate-900 dark:text-white">
+          {designer.projectsCount}
+        </td>
+        <td className="py-4 px-6 text-center">
+          {detailsAllowed ? (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleOpenDrawer(designer.id);
+              }}
+              className="px-4 py-1.5 bg-white dark:bg-[#1e232d] border border-slate-200/90 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-200 shadow-2xs hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              View
+            </button>
+          ) : (
+            <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500">—</span>
+          )}
+        </td>
+      </tr>
+    );
+  };
+
+  const renderSectionHeader = (label: string) => (
+    <tr key={label} className="bg-slate-50/90 dark:bg-slate-900/60">
+      <td colSpan={7} className="py-3 px-6 text-xs font-extrabold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+        {label}
+      </td>
+    </tr>
+  );
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] dark:bg-[#0d0e11] p-4 md:p-8">
@@ -551,13 +730,13 @@ export const DesignerLeaderboardView: React.FC = () => {
             </div>
 
             {/* Role-specific selector */}
-            {(isDesignManager || isTDM || isDesigner) && designers.length > 0 && (
+            {(isDesignManager || isTDM) && showcaseDesignerPool.length > 0 && (
               <div className="flex items-center gap-2">
                 <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 shrink-0">Selected Member:</span>
                 <CustomSelect
-                  value={String(activeShowcaseDesigner?.id || designers[0]?.id)}
+                  value={String(activeShowcaseDesigner?.id || showcaseDesignerPool[0]?.id)}
                   onChange={(v) => handleSelectShowcase(Number(v))}
-                  options={designers.map((d) => ({
+                  options={showcaseDesignerPool.map((d) => ({
                     value: String(d.id),
                     label: `${d.name} (${d.level} · ${Number(d.currentXp).toLocaleString()} XP)`,
                   }))}
@@ -726,6 +905,19 @@ export const DesignerLeaderboardView: React.FC = () => {
           </div>
         </div>
 
+        {(isDesigner || isDesignManager) && (
+          <div className="space-y-1">
+            <h2 className="text-lg md:text-xl font-extrabold text-slate-900 dark:text-white tracking-tight">
+              {isDesigner ? "All Designers Leaderboard" : "Team & Organization Leaderboard"}
+            </h2>
+            <p className="text-xs md:text-sm text-slate-500 dark:text-slate-400 font-medium">
+              {isDesigner
+                ? "See how you rank org-wide by XP and level — higher XP appears first"
+                : "Your team is listed first, followed by all other designers ranked by XP"}
+            </p>
+          </div>
+        )}
+
         {/* =================================================================== */}
         {/* LEADERBOARD TABLE CONTROLS                                         */}
         {/* =================================================================== */}
@@ -817,119 +1009,24 @@ export const DesignerLeaderboardView: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800/80">
-                  {filteredDesigners.map((designer) => {
-                    const isRank1 = designer.rank === 1;
-                    const isSelected = activeShowcaseDesigner?.id === designer.id;
-                    const isLoggedInDesigner = user?.role?.toLowerCase() === "designer" && user?.id === designer.id;
-
-                    return (
-                      <tr
-                        key={designer.id}
-                        onClick={() => handleSelectShowcase(designer.id)}
-                        className={`transition-colors cursor-pointer ${
-                          isLoggedInDesigner
-                            ? "bg-red-50/60 dark:bg-red-950/20 hover:bg-red-100/60 dark:hover:bg-red-950/30 border-l-4 border-red-500"
-                            : isSelected
-                            ? "bg-blue-50/40 dark:bg-blue-950/20"
-                            : isRank1
-                            ? "bg-[#FFFDF3] dark:bg-amber-950/15 hover:bg-[#FFFBEB] dark:hover:bg-amber-950/25"
-                            : "bg-white dark:bg-[#14171e] hover:bg-slate-50/60 dark:hover:bg-slate-800/40"
-                        }`}
-                      >
-                        {/* Rank # */}
-                        <td className="py-4 px-6 text-center">
-                          {renderRank(designer.rank)}
-                        </td>
-
-                        {/* Designer */}
-                        <td className="py-4 px-6">
-                          <div className="flex items-center gap-3.5">
-                            <div className="relative shrink-0">
-                              <div className="w-11 h-11 rounded-full bg-[#E0E7FF]/70 dark:bg-indigo-950/60 text-slate-700 dark:text-indigo-300 font-bold text-sm flex items-center justify-center ring-2 ring-white dark:ring-slate-800">
-                                {designer.profileImage ? (
-                                  <img
-                                    src={designer.profileImage}
-                                    alt={designer.name}
-                                    className="w-full h-full object-cover rounded-full"
-                                  />
-                                ) : (
-                                  designer.name.charAt(0).toUpperCase()
-                                )}
-                              </div>
-                              <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-slate-900" />
-                            </div>
-                            <div>
-                              <span
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleOpenDrawer(designer.id);
-                                }}
-                                className={`font-bold text-sm block hover:underline ${
-                                  isRank1 ? "text-[#0070F3] dark:text-sky-400" : "text-slate-900 dark:text-slate-100"
-                                }`}
-                              >
-                                {designer.name}
-                              </span>
-                              <span className="text-xs text-slate-400 dark:text-slate-500 font-normal mt-0.5 block">
-                                Designer
-                                {designer.branch ? ` · ${designer.branch}` : ""}
-                              </span>
-                            </div>
-                          </div>
-                        </td>
-
-                        {/* Level */}
-                        <td className="py-4 px-6">
-                          <div className="flex items-center gap-2.5">
-                            <BadgeIcon badgeKey={designer.badgeKey} size={32} />
-                            <span className="font-bold text-sm text-slate-800 dark:text-slate-200">
-                              {designer.level}
-                            </span>
-                          </div>
-                        </td>
-
-                        {/* XP */}
-                        <td className="py-4 px-6 font-bold text-sm text-slate-900 dark:text-white">
-                          {Number(designer.currentXp).toLocaleString()}
-                        </td>
-
-                        {/* Progress */}
-                        <td className="py-4 px-6">
-                          <div className="space-y-1">
-                            <div className="w-40 h-2 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                              <div
-                                className="bg-emerald-500 h-full rounded-full transition-all duration-500"
-                                style={{ width: `${Math.max(6, designer.progressPct)}%` }}
-                              />
-                            </div>
-                            <span className="text-xs text-slate-400 dark:text-slate-500 font-medium block">
-                              {designer.nextLevel
-                                ? `${designer.xpToNextLevel.toLocaleString()} XP to ${designer.nextLevel}`
-                                : "Max Level"}
-                            </span>
-                          </div>
-                        </td>
-
-                        {/* Projects */}
-                        <td className="py-4 px-6 text-center font-bold text-sm text-slate-900 dark:text-white">
-                          {designer.projectsCount}
-                        </td>
-
-                        {/* Actions */}
-                        <td className="py-4 px-6 text-center">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleOpenDrawer(designer.id);
-                            }}
-                            className="px-4 py-1.5 bg-white dark:bg-[#1e232d] border border-slate-200/90 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-200 shadow-2xs hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer"
-                          >
-                            View
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                  {isDesignManager ? (
+                    <>
+                      {filteredTeamDesigners.length > 0 && (
+                        <>
+                          {renderSectionHeader("Your team")}
+                          {filteredTeamDesigners.map((designer) => renderDesignerRow(designer))}
+                        </>
+                      )}
+                      {filteredOtherDesigners.length > 0 && (
+                        <>
+                          {renderSectionHeader("All other designers")}
+                          {filteredOtherDesigners.map((designer) => renderDesignerRow(designer))}
+                        </>
+                      )}
+                    </>
+                  ) : (
+                    filteredDesigners.map((designer) => renderDesignerRow(designer))
+                  )}
                 </tbody>
               </table>
             </div>
