@@ -3691,9 +3691,16 @@ export default function ProjectDetailPage() {
                             userRole={authUser?.role}
                             kind="10p"
                             taskLabel="10% payment approval"
+                            alreadyCompleted={completedTaskKeys.includes(taskKey(2, '10% payment approval'))}
                             onApproved={() => {
                                 setCompletedTaskKeys((prev) =>
-                                    Array.from(new Set([...prev, taskKey(2, '10% payment approval')])),
+                                    Array.from(
+                                        new Set([
+                                            ...prev,
+                                            taskKey(2, '10% payment collection'),
+                                            taskKey(2, '10% payment approval'),
+                                        ]),
+                                    ),
                                 );
                                 setUploadsVersion((v) => v + 1);
                             }}
@@ -4343,9 +4350,16 @@ export default function ProjectDetailPage() {
                             userRole={authUser?.role}
                             kind="40p"
                             taskLabel="40% payment approval"
+                            alreadyCompleted={completedTaskKeys.includes(taskKey(5, '40% payment approval'))}
                             onApproved={() => {
                                 setCompletedTaskKeys((prev) =>
-                                    Array.from(new Set([...prev, taskKey(5, '40% payment approval')])),
+                                    Array.from(
+                                        new Set([
+                                            ...prev,
+                                            taskKey(5, '40% collection'),
+                                            taskKey(5, '40% payment approval'),
+                                        ]),
+                                    ),
                                 );
                                 setUploadsVersion((v) => v + 1);
                             }}
