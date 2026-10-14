@@ -6,6 +6,7 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import multer from "multer";
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import AdmZip from "adm-zip";
@@ -120,7 +121,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   res.setHeader("Access-Control-Allow-Methods", "GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Prolance-Token, X-Prolance-Origin-Session, X-Prolance-Api-Key, X-External-Api-Key, x-api-key, X-Api-Key",
+    "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Prolance-Token, X-Prolance-Origin-Session, X-Prolance-Api-Key, X-External-Api-Key, x-api-key, X-Api-Key, X-Design-Service-Key",
   );
   res.setHeader("Access-Control-Max-Age", "86400");
   res.setHeader("Vary", "Origin");
@@ -149,6 +150,7 @@ app.use(
       "X-External-Api-Key",
       "x-api-key",
       "X-Api-Key",
+      "X-Design-Service-Key",
     ],
     optionsSuccessStatus: 204,
   })
@@ -156,6 +158,15 @@ app.use(
 // Allow large DQC submissions and uploads (drawing + quotation can be big)
 app.use(express.json({ limit: "200mb" }));
 app.use(express.urlencoded({ extended: true, limit: "200mb" }));
+
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (!requestUsesDesignServiceToken(req)) return next();
+  const method = req.method.toUpperCase();
+  if (method === "GET" || method === "HEAD" || method === "OPTIONS") return next();
+  return res.status(403).json({
+    message: "Service API token is read-only. POST, PATCH, PUT, and DELETE are not allowed.",
+  });
+});
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
@@ -2683,7 +2694,59 @@ function normalizeUserBranch(raw: unknown): string | null {
   return s.slice(0, 128);
 }
 
+function readDesignServiceTokenCandidates(req: Request): string[] {
+  const out: string[] = [];
+  const headerKey = String(req.headers["x-design-service-key"] ?? "").trim();
+  if (headerKey) out.push(headerKey);
+  const auth = req.headers.authorization;
+  if (typeof auth === "string") {
+    const bearer = auth.replace(/^Bearer\s+/i, "").trim();
+    if (bearer) out.push(bearer);
+  }
+  return out;
+}
+
+function tokensEqual(a: string, b: string): boolean {
+  const ba = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ba.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ba, bb);
+}
+
+function isDesignServiceApiToken(presented: string): boolean {
+  const expected = (process.env.DESIGN_SERVICE_API_KEY || "").trim();
+  if (!expected || !presented) return false;
+  return tokensEqual(presented, expected);
+}
+
+function requestUsesDesignServiceToken(req: Request): boolean {
+  return readDesignServiceTokenCandidates(req).some(isDesignServiceApiToken);
+}
+
+const SERVICE_READONLY_USER = {
+  id: 0,
+  email: "shophub-api@hubinterior.com",
+  name: "ShopHub Service",
+  role: "service_readonly",
+  profileImage: null as string | null,
+  phone: "",
+  branch: null as string | null,
+  subRole: null as string | null,
+  designerTitle: null as string | null,
+  designerExperience: null as string | null,
+  designerProjects: null as string | null,
+  designerSpecialty: null as string | null,
+  designerQuote: null as string | null,
+  designerSqft: null as string | null,
+  designerAwards: null as string | null,
+  designerSatisfaction: null as string | null,
+  designerInspirationProjects: [] as unknown[],
+};
+
 async function getUserFromSession(req: Request) {
+  if (requestUsesDesignServiceToken(req)) {
+    return SERVICE_READONLY_USER;
+  }
   const auth = req.headers.authorization;
   const token = auth?.replace(/^Bearer\s+/i, "");
   if (!token) return null;
@@ -2740,6 +2803,10 @@ async function getUserFromSession(req: Request) {
 
 type SessionUser = Awaited<ReturnType<typeof getUserFromSession>>;
 
+function isServiceReadonlyUser(user: SessionUser | null): boolean {
+  return (user?.role ?? "").toLowerCase() === "service_readonly";
+}
+
 type LeadAccessRow = {
   id: number;
   assigned_designer_id: number | null;
@@ -2767,6 +2834,10 @@ async function getLeadAccessRowForUser(
     return { ok: false };
   }
   const role = (user.role ?? "").trim().toLowerCase();
+
+  if (role === "service_readonly") {
+    return { ok: true, row };
+  }
 
   if (role === "mmt_executive") {
     const [assignRows] = await pool.query(
@@ -2806,6 +2877,20 @@ async function getLeadAccessRowForUser(
 
   return { ok: true, row };
 }
+
+app.get("/api/service/whoami", async (req: Request, res: Response) => {
+  const user = await getUserFromSession(req);
+  if (!isServiceReadonlyUser(user)) {
+    return res.status(401).json({ message: "Invalid or missing service API token" });
+  }
+  return res.json({
+    ok: true,
+    email: user!.email,
+    role: user!.role,
+    readOnly: true,
+    scope: "all_leads",
+  });
+});
 
 async function loadProlanceQuoteVersionsForLead(leadId: number): Promise<
   Array<{ quoteId: number; createdAt: string; createdBy?: string }>
@@ -15237,7 +15322,8 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
       const canD2Queue =
         role === "senior_project_manager" ||
         role === "project_manager" ||
-        role === "admin";
+        role === "admin" ||
+        role === "service_readonly";
       if (!canD2Queue) return res.json([]);
       if (role === "project_manager" && user?.id) {
         const [rows] = await pool.query(
@@ -16306,48 +16392,50 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
     const row = (rows as any[])[0];
     if (!row) return res.status(404).json({ message: "Lead not found" });
 
-    if (role === "mmt_executive" && user) {
-      const [assignRows] = await pool.query(
-        "SELECT 1 FROM lead_d1_assignments WHERE lead_id = ? AND assigned_to_user_id = ?",
-        [id, user.id],
-      );
-      if ((assignRows as any[]).length === 0) {
-        return res.status(404).json({ message: "Lead not found" });
+    if (!isServiceReadonlyUser(user)) {
+      if (role === "mmt_executive" && user) {
+        const [assignRows] = await pool.query(
+          "SELECT 1 FROM lead_d1_assignments WHERE lead_id = ? AND assigned_to_user_id = ?",
+          [id, user.id],
+        );
+        if ((assignRows as any[]).length === 0) {
+          return res.status(404).json({ message: "Lead not found" });
+        }
       }
-    }
 
-    // Visibility rules for designers / design managers
-    if (user && role === "designer") {
-      if (!row.assigned_designer_id || row.assigned_designer_id !== user.id) {
-        return res.status(404).json({ message: "Lead not found" });
+      // Visibility rules for designers / design managers
+      if (user && role === "designer") {
+        if (!row.assigned_designer_id || row.assigned_designer_id !== user.id) {
+          return res.status(404).json({ message: "Lead not found" });
+        }
       }
-    }
 
-    if (user && role === "design_manager") {
-      const [dmCheck] = await pool.query(
-        `SELECT 1
-         FROM users d
-         WHERE d.id = ? AND d.design_manager_id = ?`,
-        [row.assigned_designer_id, user.id],
-      );
-      if ((dmCheck as any[]).length === 0) {
-        return res.status(404).json({ message: "Lead not found" });
+      if (user && role === "design_manager") {
+        const [dmCheck] = await pool.query(
+          `SELECT 1
+           FROM users d
+           WHERE d.id = ? AND d.design_manager_id = ?`,
+          [row.assigned_designer_id, user.id],
+        );
+        if ((dmCheck as any[]).length === 0) {
+          return res.status(404).json({ message: "Lead not found" });
+        }
       }
-    }
 
-    if (user && role === "project_manager") {
-      if (!row.assigned_project_manager_id || row.assigned_project_manager_id !== user.id) {
-        return res.status(404).json({ message: "Lead not found" });
+      if (user && role === "project_manager") {
+        if (!row.assigned_project_manager_id || row.assigned_project_manager_id !== user.id) {
+          return res.status(404).json({ message: "Lead not found" });
+        }
       }
-    }
 
-    if (user && role === "senior_project_manager") {
-      const [d2Rows] = await pool.query(
-        "SELECT 1 FROM lead_d2_assignments WHERE lead_id = ? LIMIT 1",
-        [id],
-      );
-      if ((d2Rows as any[]).length === 0) {
-        return res.status(404).json({ message: "Lead not found" });
+      if (user && role === "senior_project_manager") {
+        const [d2Rows] = await pool.query(
+          "SELECT 1 FROM lead_d2_assignments WHERE lead_id = ? LIMIT 1",
+          [id],
+        );
+        if ((d2Rows as any[]).length === 0) {
+          return res.status(404).json({ message: "Lead not found" });
+        }
       }
     }
 
@@ -16903,7 +16991,19 @@ app.get("/api/leads/:id/latest-quote-link", async (req: Request, res: Response) 
   try {
     const latest = await resolveLatestQuoteLinkForLead(id);
     if (!latest) {
-      return res.json({ ok: true, quoteId: null, customerQuoteUrl: null, internalQuoteUrl: null });
+      return res.json({
+        ok: true,
+        quoteId: null,
+        customerQuoteUrl: null,
+        ...(isServiceReadonlyUser(user) ? {} : { internalQuoteUrl: null }),
+      });
+    }
+    if (isServiceReadonlyUser(user)) {
+      return res.json({
+        ok: true,
+        quoteId: latest.quoteId,
+        customerQuoteUrl: latest.customerQuoteUrl,
+      });
     }
     return res.json({
       ok: true,
