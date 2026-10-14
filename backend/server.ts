@@ -3248,14 +3248,115 @@ async function getDesignerBusyBlocksForDate(
 }
 
 /** Fields for Java CRM `/v1/Appointment` so the appointment table shows the correct client/project (not a stale CRM lead lookup). */
+/** CRM Appointment API accepts only these meetingType values. */
+type CrmAppointmentMeetingType = "SHOWROOM_VISIT" | "VIRTUAL_MEETING" | "SITE_VISIT";
+
+/**
+ * Short Design milestone / stage label (for human display).
+ * Examples: first-cut, material-selection, design-signoff
+ */
+function mapDesignMeetingToMilestoneLabel(meetingType: string | null | undefined): string {
+  const t = String(meetingType || "").trim().toLowerCase();
+  if (!t) return "hub-meeting";
+  if (t.includes("first_cut") || t.includes("first-cut") || t.includes("firstcut") || t === "dqc1_first_cut") {
+    return "first-cut";
+  }
+  if (t.includes("material") || t === "dqc2_material_selection") {
+    return "material-selection";
+  }
+  if (t.includes("signoff") || t.includes("sign_off") || t.includes("sign-off") || t === "design_signoff") {
+    return "design-signoff";
+  }
+  if (t.includes("mmt") || t.includes("measurement")) return "site-measurement";
+  if (t.includes("masking")) return "site-masking";
+  // fallback: slug of raw type
+  return t.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "hub-meeting";
+}
+
+/**
+ * Map Design Module meeting stage / mode → CRM Appointment.meetingType (enum only).
+ */
+function mapDesignMeetingToCrmMeetingType(
+  meetingType: string | null | undefined,
+  meetingMode?: string | null,
+): CrmAppointmentMeetingType {
+  const mode = String(meetingMode || "").trim().toLowerCase();
+  const t = String(meetingType || "").trim().toLowerCase();
+
+  if (
+    mode === "online" ||
+    mode === "virtual" ||
+    mode === "virtual_meeting" ||
+    t.includes("virtual") ||
+    t.includes("online")
+  ) {
+    return "VIRTUAL_MEETING";
+  }
+  if (
+    mode === "site" ||
+    mode === "site_visit" ||
+    t.includes("site") ||
+    t.includes("mmt") ||
+    t.includes("measurement") ||
+    t.includes("masking")
+  ) {
+    return "SITE_VISIT";
+  }
+  // Showroom / EC: first cut, material selection, design sign-off, default offline hub visit
+  return "SHOWROOM_VISIT";
+}
+
+/**
+ * Combined label: milestone + CRM type.
+ * Example: "first-cut (SHOWROOM_VISIT)"
+ */
+function buildMilestoneMeetingLabel(
+  designMeetingType: string | null | undefined,
+  meetingMode?: string | null,
+): { milestone: string; crmMeetingType: CrmAppointmentMeetingType; label: string } {
+  const milestone = mapDesignMeetingToMilestoneLabel(designMeetingType);
+  const crmMeetingType = mapDesignMeetingToCrmMeetingType(designMeetingType, meetingMode);
+  return {
+    milestone,
+    crmMeetingType,
+    label: `${milestone} (${crmMeetingType})`,
+  };
+}
+
+/** CRM lead id + type from Design Module lead payload (not Design Module numeric id). */
+function resolveCrmLeadRefFromPayload(payload: Record<string, unknown> | null | undefined): {
+  crmLeadId: number | null;
+  leadType: string | null;
+} {
+  if (!payload || typeof payload !== "object") return { crmLeadId: null, leadType: null };
+  const crmLeadId = Number(
+    payload.crmLeadId ?? payload.crm_lead_id ?? payload.CRMLeadId ?? payload.crmLeadID,
+  );
+  const leadTypeRaw = String(
+    payload.leadType ?? payload.lead_type ?? payload.crmLeadType ?? payload.crm_lead_type ?? "",
+  ).trim();
+  return {
+    crmLeadId: Number.isFinite(crmLeadId) && crmLeadId > 0 ? crmLeadId : null,
+    leadType: leadTypeRaw || null,
+  };
+}
+
+/**
+ * Fields CRM expects on POST /v1/Appointment so customerName/email are filled via lead lookup.
+ * Sends CRM meetingType + leadType + CRM leadId (not Design Module lead id alone).
+ */
 function buildDesignModuleErpAppointmentFields(opts: {
+  /** Design Module lead id (for description / audit only). */
   leadId: number;
   projectId: string;
   projectName?: string | null;
   customerName: string;
   customerEmail?: string | null;
+  /** Design Module stage key e.g. dqc1_first_cut — mapped to CRM enum. */
   meetingType: string;
+  meetingMode?: string | null;
   meetingSummary: string;
+  leadPayload?: Record<string, unknown> | null;
 }): Record<string, unknown> {
   const projectName = (opts.projectName || "").trim();
   const customerName =
@@ -3263,23 +3364,52 @@ function buildDesignModuleErpAppointmentFields(opts: {
     projectName ||
     opts.projectId ||
     `Lead ${opts.leadId}`;
+  const { milestone, crmMeetingType, label: milestoneMeetingLabel } = buildMilestoneMeetingLabel(
+    opts.meetingType,
+    opts.meetingMode,
+  );
+  const { crmLeadId, leadType } = resolveCrmLeadRefFromPayload(opts.leadPayload);
+
+  // Human-readable: "first-cut (SHOWROOM_VISIT)" — CRM enum stays in meetingType field only
   const description = [
+    milestoneMeetingLabel,
     opts.meetingSummary,
     projectName ? `Project: ${projectName}` : null,
     `PID: ${opts.projectId}`,
-    `Lead ID: ${opts.leadId}`,
+    `HubLeadId: ${opts.leadId}`,
+    crmLeadId != null ? `CrmLeadId: ${crmLeadId}` : null,
   ]
     .filter(Boolean)
     .join(" — ");
 
-  return {
-    customerName,
-    ...(opts.customerEmail ? { customerEmail: opts.customerEmail } : {}),
+  const fields: Record<string, unknown> = {
+    // CRM API: only SHOWROOM_VISIT | VIRTUAL_MEETING | SITE_VISIT
+    meetingType: crmMeetingType,
+    // Milestone + type for display / search (CRM may store on description / notes)
+    meetingLabel: milestoneMeetingLabel,
+    designMilestone: milestone,
+    title: milestoneMeetingLabel,
+    description,
     ...(projectName ? { projectName } : {}),
     projectId: opts.projectId,
-    meetingType: opts.meetingType,
-    description,
+    hubLeadId: opts.leadId,
   };
+
+  // CRM fills customerName/email from lead when leadType + leadId are present.
+  if (crmLeadId != null && leadType) {
+    fields.leadId = crmLeadId;
+    fields.leadType = leadType;
+  } else if (crmLeadId != null) {
+    // Still send CRM id; leadType default formlead (most common Hub intake)
+    fields.leadId = crmLeadId;
+    fields.leadType = "formlead";
+  } else {
+    // Fallback: no CRM link — CRM may leave customer null; keep names in description
+    fields.leadId = opts.leadId;
+    fields.leadType = leadType || "design_module";
+  }
+
+  return fields;
 }
 
 async function assertDesignerSlotFree(opts: {
@@ -12734,21 +12864,23 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
       customerName,
       customerEmail,
       meetingType: String(meetingType),
+      meetingMode: meetingMode != null ? String(meetingMode) : null,
       meetingSummary: summary || `Design meeting`,
+      leadPayload: payload && typeof payload === "object" ? (payload as Record<string, unknown>) : null,
     });
 
     // Register slot + Google event details in Java CRM (non-fatal — GCal event and email already sent)
+    // CRM needs: meetingType (SHOWROOM_VISIT|VIRTUAL_MEETING|SITE_VISIT) + leadType + CRM leadId
     if (slotId && meetingDate) {
       try {
         await callErpApi("/v1/Appointment", {
           method: "POST",
           body: JSON.stringify({
+            source: "DESIGN_MODULE",
             designerName,
             ...(erpDesignerEmail ? { designerEmail: erpDesignerEmail } : {}),
             date: meetingDate,
             slotId,
-            source: "DESIGN_MODULE",
-            leadId,
             ...erpAppointmentMeta,
             // Pass the GCal event details so Java stores them without a second sync attempt
             googleEventId: gcalEventId,
@@ -12756,7 +12888,11 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
             googleSyncStatus: gcalEventId ? "SYNCED" : "DM_GCAL_FAILED",
           }),
         });
-        console.log(`[SlotSync] Slot ${slotId} blocked in Java for ${designerName} on ${meetingDate} (gcal=${gcalEventId ?? "none"})`);
+        console.log(`[SlotSync] Slot ${slotId} blocked in Java for ${designerName} on ${meetingDate} (gcal=${gcalEventId ?? "none"})`, {
+          crmMeetingType: erpAppointmentMeta.meetingType,
+          crmLeadId: erpAppointmentMeta.leadId,
+          leadType: erpAppointmentMeta.leadType,
+        });
       } catch (slotErr) {
         console.error("[SlotSync] Java appointment registration failed (non-fatal)", slotErr);
       }
@@ -12765,19 +12901,22 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
         await callErpApi("/v1/Appointment", {
           method: "POST",
           body: JSON.stringify({
+            source: "DESIGN_MODULE",
             designerName,
             ...(erpDesignerEmail ? { designerEmail: erpDesignerEmail } : {}),
             startTime,
             endTime,
-            source: "DESIGN_MODULE",
-            leadId,
             ...erpAppointmentMeta,
             googleEventId: gcalEventId,
             googleHtmlLink: gcalHtmlLink,
             googleSyncStatus: gcalEventId ? "SYNCED" : "DM_GCAL_FAILED",
           }),
         });
-        console.log(`[SlotSync] Dynamic window ${startTime}–${endTime} blocked in Java for ${designerName} (gcal=${gcalEventId ?? "none"})`);
+        console.log(`[SlotSync] Dynamic window ${startTime}–${endTime} blocked in Java for ${designerName}`, {
+          crmMeetingType: erpAppointmentMeta.meetingType,
+          crmLeadId: erpAppointmentMeta.leadId,
+          leadType: erpAppointmentMeta.leadType,
+        });
       } catch (slotErr) {
         console.error("[SlotSync] Java dynamic appointment registration failed (non-fatal)", slotErr);
       }
@@ -18366,16 +18505,70 @@ app.post("/api/appointment", async (req: Request, res: Response) => {
 
   try {
     const designerEmail = await lookupDesignModuleUserEmailByName(designerName);
+    const bodyMeetingType = String((req.body || {}).meetingType || "").trim();
+    const bodyMeetingMode = String((req.body || {}).meetingMode || "").trim() || null;
+    const hubLeadId = Number(leadId);
+    let erpMeta: Record<string, unknown> = {
+      meetingType: mapDesignMeetingToCrmMeetingType(bodyMeetingType || "SHOWROOM_VISIT", bodyMeetingMode),
+      description: `Design Module meeting - Lead ID: ${leadId ?? "N/A"}`,
+    };
+    if (Number.isFinite(hubLeadId) && hubLeadId > 0) {
+      try {
+        const [lr] = await pool.query(
+          `SELECT pid, project_name as projectName, client_email as clientEmail, payload FROM leads WHERE id = ? LIMIT 1`,
+          [hubLeadId],
+        );
+        const leadRow = (lr as {
+          pid?: string;
+          projectName?: string;
+          clientEmail?: string;
+          payload?: string | null;
+        }[])[0];
+        let payload: Record<string, unknown> = {};
+        try {
+          payload = leadRow?.payload ? (JSON.parse(String(leadRow.payload)) as Record<string, unknown>) : {};
+        } catch {
+          payload = {};
+        }
+        const formData =
+          (payload.formData && typeof payload.formData === "object"
+            ? (payload.formData as Record<string, unknown>)
+            : null) ||
+          (payload.form && typeof payload.form === "object"
+            ? (payload.form as Record<string, unknown>)
+            : {}) ||
+          {};
+        const customerName = String(
+          formData.customer_name || payload.customer_name || leadRow?.projectName || `Lead ${hubLeadId}`,
+        );
+        const customerEmail = String(
+          leadRow?.clientEmail || formData.email || payload.email || "",
+        ).trim();
+        erpMeta = buildDesignModuleErpAppointmentFields({
+          leadId: hubLeadId,
+          projectId: leadRow?.pid || `HUB-${hubLeadId}`,
+          projectName: leadRow?.projectName || null,
+          customerName,
+          customerEmail: customerEmail || null,
+          meetingType: bodyMeetingType || "hub_meeting",
+          meetingMode: bodyMeetingMode,
+          meetingSummary: `Design Module meeting`,
+          leadPayload: payload,
+        });
+      } catch (leadErr) {
+        console.warn("[appointment] lead lookup for CRM fields failed (non-fatal)", leadErr);
+      }
+    }
+
     const data = await callErpApi("/v1/Appointment", {
       method: "POST",
       body: JSON.stringify({
+        source: "DESIGN_MODULE",
         designerName,
         ...(designerEmail ? { designerEmail } : {}),
         date,
         slotId,
-        source: "DESIGN_MODULE",
-        description: `Design Module meeting - Lead ID: ${leadId ?? "N/A"}`,
-        leadId: leadId ?? null,
+        ...erpMeta,
         ...(bodyStart ? { startTime: bodyStart } : {}),
         ...(bodyEnd ? { endTime: bodyEnd } : {}),
       }),
