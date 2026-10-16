@@ -21,6 +21,7 @@ import {
 import { registerMsg91InboundRoutes } from "./routes/msg91InboundApi";
 import {
   registerProlanceRoutes,
+  extractTotalPayableAmount,
   formatQuoteInrAmount,
   resolveLeadMilestonePaymentBreakdown,
 } from "./routes/prolanceApi";
@@ -174,7 +175,7 @@ app.get("/api/health", (_req, res) => {
 
 // ----- MySQL setup -----
 const pool = mysql.createPool({
-  host: process.env.DB_HOST || "database-1.cl002gu0o5ft.ap-south-2.rds.amazonaws.com",
+ host: process.env.DB_HOST || "database-1.cl002gu0o5ft.ap-south-2.rds.amazonaws.com",
   user: process.env.DB_USER || "admin",
   password: process.env.DB_PASSWORD || "Hubinterior2019",
   database: process.env.DB_NAME || "DesignMod",
@@ -7168,10 +7169,14 @@ function quotePayableAmount(payload: Record<string, unknown>): number | null {
   );
   for (const key of [
     "totalPayableAmount",
+    "totalPayable",
     "quotation_total",
     "quotationTotal",
+    "grandTotal",
+    "netPayable",
     "finalTotalPrice",
     "finalPrice",
+    "totalAmount",
     "totalPrice",
   ]) {
     for (const source of sources) {
@@ -17317,7 +17322,8 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
         }
       }
 
-      const payableAmount = quotePayableAmount(snapshotPayload);
+      const payableAmount =
+        quotePayableAmount(snapshotPayload) ?? extractTotalPayableAmount(snapshotPayload);
       if (payableAmount == null) {
         return res.status(400).json({
           message: "Unable to verify the quote total for the 3% additional discount limit.",

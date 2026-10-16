@@ -2783,6 +2783,7 @@ export default function ProjectDetailPage() {
                                                                 rows={view.totals.discountBreakdown}
                                                                 totalDiscount={view.totals.discount}
                                                                 additionalDiscount={hubAdditionalDiscountAmount}
+                                                                totalPayableAmount={displayPayableModal}
                                                                 editable={
                                                                     Boolean(sessionId) &&
                                                                     projectId != null &&
