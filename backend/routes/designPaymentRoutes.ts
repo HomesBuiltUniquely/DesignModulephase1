@@ -290,6 +290,124 @@ async function loadLeadContact(
   };
 }
 
+/** Assigned designer (and optional DM) for this lead only — for internal payment-received mail. */
+async function loadLeadProjectTeam(
+  pool: Pool,
+  leadId: number,
+): Promise<{
+  pid: string;
+  customerName: string;
+  designerName: string;
+  designerEmail: string;
+  designManagerEmail: string;
+}> {
+  const [rows] = await pool.query(
+    `SELECT l.pid, l.project_name as projectName, l.payload, l.assigned_designer_id,
+            u.email as designerEmail, u.name as designerName, u.role as designerRole,
+            dm.email as designManagerEmail
+     FROM leads l
+     LEFT JOIN users u ON u.id = l.assigned_designer_id
+     LEFT JOIN users dm ON dm.id = u.design_manager_id
+     WHERE l.id = ? LIMIT 1`,
+    [leadId],
+  );
+  const row = (rows as RowDataPacket[])[0];
+  if (!row) {
+    return {
+      pid: `HUB-${leadId}`,
+      customerName: "Customer",
+      designerName: "Designer",
+      designerEmail: "",
+      designManagerEmail: "",
+    };
+  }
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = row.payload ? (JSON.parse(String(row.payload)) as Record<string, unknown>) : {};
+  } catch {
+    payload = {};
+  }
+  const form = (payload.formData || payload.form_data || payload.form || {}) as Record<string, unknown>;
+  let designerEmail = pickStr(row.designerEmail);
+  let designerName = pickStr(row.designerName, "Designer");
+  if (!designerEmail) {
+    const dn = pickStr(form.designer_name, form.designerName, payload.designer_name, payload.designerName);
+    if (dn) {
+      const [uRows] = await pool.query(
+        `SELECT email, name FROM users
+         WHERE (name = ? OR email = ?) AND LOWER(role) IN ('designer', 'design_manager')
+         LIMIT 1`,
+        [dn, dn],
+      );
+      const u = (uRows as RowDataPacket[])[0];
+      if (u) {
+        designerEmail = pickStr(u.email);
+        designerName = pickStr(u.name, designerName);
+      }
+    }
+  }
+  return {
+    pid: String(row.pid || `HUB-${leadId}`),
+    customerName: pickStr(form.customer_name, payload.customer_name, row.projectName, "Customer"),
+    designerName,
+    designerEmail,
+    designManagerEmail: pickStr(row.designManagerEmail),
+  };
+}
+
+async function notifyInternalPaymentReceived(
+  deps: Deps,
+  leadId: number,
+  args: {
+    milestoneIndex: number;
+    taskName: string;
+    milestoneLabel: string;
+    amountPaid: number;
+    isPartial?: boolean;
+    amountAchieved?: number;
+    milestoneTarget?: number;
+    remainingMilestone?: number;
+    paymentDate: string;
+  },
+): Promise<void> {
+  if (!deps.triggerMailRouteWithLog) return;
+  const team = await loadLeadProjectTeam(deps.pool, leadId);
+  if (!team.designerEmail) {
+    console.warn("[design-payment] internal payment-received skipped: no designer email", { leadId });
+    return;
+  }
+  const cc =
+    team.designManagerEmail &&
+    team.designManagerEmail.toLowerCase() !== team.designerEmail.toLowerCase()
+      ? [team.designManagerEmail]
+      : undefined;
+  await deps.triggerMailRouteWithLog({
+    leadId,
+    milestoneIndex: args.milestoneIndex,
+    taskName: args.taskName,
+    route: "/api/email/send-payment-received-internal",
+    visibility: "internal",
+    payload: {
+      to: team.designerEmail,
+      ...(cc ? { cc } : {}),
+      customerName: team.customerName,
+      designerName: team.designerName,
+      projectId: team.pid,
+      milestoneLabel: args.milestoneLabel,
+      amountPaid: String(Math.round(args.amountPaid)),
+      amountAchieved:
+        args.amountAchieved != null ? String(Math.round(args.amountAchieved)) : "",
+      milestoneTarget:
+        args.milestoneTarget != null ? String(Math.round(args.milestoneTarget)) : "",
+      remainingMilestone:
+        args.remainingMilestone != null ? String(Math.round(args.remainingMilestone)) : "",
+      paymentMode: "Easebuzz (Online)",
+      paymentDate: args.paymentDate,
+      isPartial: Boolean(args.isPartial),
+    },
+  });
+}
+
 async function upsertSummaryFromBreakdown(pool: Pool, leadId: number): Promise<void> {
   const breakdown = await resolveLeadMilestonePaymentBreakdown(pool, leadId);
   const now = new Date();
@@ -771,6 +889,7 @@ async function applyDesignAutoApprove(
 
   try {
     const contact = await loadLeadContact(pool, leadId);
+    const dateStr = now.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
     if (!isCrm10 && contact.email && deps.triggerMailRouteWithLog) {
       deps.triggerMailRouteWithLog({
         leadId,
@@ -792,11 +911,22 @@ async function applyDesignAutoApprove(
           extraAppliedNote: is10
             ? "Extra amount credited toward your next (Design 40%) payment."
             : "Extra amount held as advance toward your next project payment.",
-          paymentDate: now.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }),
-          dateOfReceipt: now.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }),
+          paymentDate: dateStr,
+          dateOfReceipt: dateStr,
           paymentMode: "Easebuzz (Online)",
           modeOfPayment: "Easebuzz (Online)",
         },
+      });
+    }
+    if (!isCrm10) {
+      await notifyInternalPaymentReceived(deps, leadId, {
+        milestoneIndex: meta.milestoneIndex,
+        taskName: meta.taskApproval,
+        milestoneLabel: is10 ? "Design 10%" : "Design 40%",
+        amountPaid: collected,
+        paymentDate: dateStr,
+        isPartial: false,
+        milestoneTarget: target,
       });
     }
   } catch (mailErr) {
@@ -842,12 +972,12 @@ async function applyPartialPaymentRecorded(
   // Same receipt look as full approval — with target / achieved / remaining for this milestone.
   try {
     const contact = await loadLeadContact(pool, leadId);
+    const dateStr = now.toLocaleDateString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    });
     if (contact.email && deps.triggerMailRouteWithLog) {
-      const dateStr = now.toLocaleDateString("en-IN", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-      });
       deps.triggerMailRouteWithLog({
         leadId,
         milestoneIndex: is10 ? 2 : 5,
@@ -876,6 +1006,17 @@ async function applyPartialPaymentRecorded(
         },
       });
     }
+    await notifyInternalPaymentReceived(deps, leadId, {
+      milestoneIndex: is10 ? 2 : 5,
+      taskName: is10 ? "10% payment collection" : "40% collection",
+      milestoneLabel: is10 ? "Design 10%" : "Design 40%",
+      amountPaid: paidThisTxn,
+      amountAchieved: collected,
+      milestoneTarget: target,
+      remainingMilestone: remaining,
+      paymentDate: dateStr,
+      isPartial: true,
+    });
   } catch (mailErr) {
     console.warn("[design-payment] partial confirmation email failed (non-fatal)", mailErr);
   }
