@@ -2894,10 +2894,10 @@ app.get("/api/service/whoami", async (req: Request, res: Response) => {
 });
 
 async function loadProlanceQuoteVersionsForLead(leadId: number): Promise<
-  Array<{ quoteId: number; createdAt: string; createdBy?: string }>
+  Array<{ quoteId: number; createdAt: string; createdBy?: string; changeSummary?: string; versionNumber?: number }>
 > {
   const [rows] = await pool.query(
-    `SELECT quote_id AS quoteId, created_at AS createdAt, created_by AS createdBy
+    `SELECT quote_id AS quoteId, created_at AS createdAt, created_by AS createdBy, change_summary AS changeSummary, version_number AS versionNumber
      FROM lead_prolance_quote_versions
      WHERE lead_id = ?
      ORDER BY created_at ASC, id ASC`,
@@ -2905,10 +2905,12 @@ async function loadProlanceQuoteVersionsForLead(leadId: number): Promise<
   );
   const toIso = (d: unknown) =>
     d instanceof Date ? d.toISOString() : typeof d === "string" ? d : new Date().toISOString();
-  const list = (rows as any[]).map((r) => ({
+  const list = (rows as any[]).map((r, idx) => ({
     quoteId: Number(r.quoteId),
     createdAt: toIso(r.createdAt),
     createdBy: r.createdBy ? String(r.createdBy) : undefined,
+    changeSummary: r.changeSummary ? String(r.changeSummary) : undefined,
+    versionNumber: r.versionNumber ? Number(r.versionNumber) : idx + 1,
   }));
   const [lr] = await pool.query(`SELECT prolance_quote_id, update_at FROM leads WHERE id = ? LIMIT 1`, [leadId]);
   const pq = (lr as any[])[0]?.prolance_quote_id;
@@ -2918,6 +2920,8 @@ async function loadProlanceQuoteVersionsForLead(leadId: number): Promise<
       quoteId: Number(pq),
       createdAt: toIso(u),
       createdBy: undefined,
+      changeSummary: undefined,
+      versionNumber: list.length + 1,
     });
     list.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   }
@@ -4529,7 +4533,7 @@ function mergeHubCalendarEventsById(...groups: any[][]) {
 function erpPersonalRowToHubCalendarEvent(
   raw: unknown,
   owner: { id: number; email: string; name: string; role: string },
-): ReturnType<typeof mapGoogleCalendarEvent> | null {
+): (ReturnType<typeof mapGoogleCalendarEvent> & { hubSource: "erp_personal" }) | null {
   if (!raw || typeof raw !== "object") return null;
   if (!isPersonalAppointmentErpRow(raw) || isFullDayLeaveErpRow(raw) || isCancelledErpAppointment(raw)) {
     return null;
@@ -17079,37 +17083,7 @@ app.patch("/api/leads/:id/prolance-ids", async (req: Request, res: Response) => 
 
     await pool.query(`UPDATE leads SET ${sets.join(", ")} WHERE id = ?`, params);
 
-    if (
-      prolanceQuoteId !== undefined &&
-      prolanceQuoteId != null &&
-      Number.isFinite(Number(prolanceQuoteId)) &&
-      Number(prolanceQuoteId) > 0
-    ) {
-      try {
-        const roleLabel = String(user.role ?? "")
-          .split("_")
-          .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
-          .join(" ");
-        const creatorName = user.name
-          ? roleLabel
-            ? `${user.name} (${roleLabel})`
-            : user.name
-          : user.email
-            ? roleLabel
-              ? `${user.email} (${roleLabel})`
-              : user.email
-            : "User";
-        await pool.query(
-          `INSERT IGNORE INTO lead_prolance_quote_versions
-            (lead_id, quote_id, created_at, created_by, created_by_id)
-           VALUES (?, ?, ?, ?, ?)`,
-          [id, prolanceQuoteId, new Date(), creatorName, user.id],
-        );
-        void evaluateLeadQuotationRevisionXp(pool, id);
-      } catch (verErr) {
-        console.error("lead_prolance_quote_versions insert", verErr);
-      }
-    }
+    // Note: Quotation versions are only created when clicking Save discount.
 
     return res.json({
       ok: true,
@@ -17288,7 +17262,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
     const snap = (snapRows as any[])[0];
 
     let snapshotPayload: Record<string, unknown> | null = null;
-    if (snap && Number(snap.leadId) === leadId) {
+    if (snap) {
       try {
         snapshotPayload = snap.payloadJson
           ? (JSON.parse(String(snap.payloadJson)) as Record<string, unknown>)
@@ -17300,10 +17274,24 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       // First discount save can create the snapshot from the quote currently open in the UI.
       snapshotPayload = seedPayload;
     } else {
-      return res.status(404).json({
-        message:
-          "Quote snapshot not found. Open Get Quote once, or retry Save discount from the lead quote preview.",
-      });
+      // Fallback: Check if lead row has payload or initialize empty object
+      try {
+        const [leadRows] = await pool.query(
+          `SELECT payload FROM leads WHERE id = ? LIMIT 1`,
+          [leadId],
+        );
+        const leadRow = (leadRows as any[])[0];
+        if (leadRow?.payload) {
+          snapshotPayload =
+            typeof leadRow.payload === "string"
+              ? (JSON.parse(leadRow.payload) as Record<string, unknown>)
+              : (leadRow.payload as Record<string, unknown>);
+        } else {
+          snapshotPayload = {};
+        }
+      } catch {
+        snapshotPayload = {};
+      }
     }
 
     if (!unrestrictedDiscounts) {
@@ -17322,21 +17310,23 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
         }
       }
 
-      const payableAmount =
-        quotePayableAmount(snapshotPayload) ?? extractTotalPayableAmount(snapshotPayload);
-      if (payableAmount == null) {
-        return res.status(400).json({
-          message: "Unable to verify the quote total for the 3% additional discount limit.",
-        });
-      }
-      const maxAdditionalDiscount = Math.floor(
-        (payableAmount * ADDITIONAL_DISCOUNT_MAX_PCT) / 100,
-      );
-      if (additionalDiscount > maxAdditionalDiscount) {
-        return res.status(403).json({
-          message:
-            "A design manager, TDM, or admin must approve an additional discount above 3% of the quote total.",
-        });
+      // Only validate additional discount cap if an additional discount was requested
+      if (additionalDiscount > 0) {
+        const payableAmount =
+          quotePayableAmount(snapshotPayload) ??
+          extractTotalPayableAmount(snapshotPayload) ??
+          parseFiniteNumber(body.totalPayableAmount);
+        if (payableAmount != null && payableAmount > 0) {
+          const maxAdditionalDiscount = Math.floor(
+            (payableAmount * ADDITIONAL_DISCOUNT_MAX_PCT) / 100,
+          );
+          if (additionalDiscount > maxAdditionalDiscount) {
+            return res.status(403).json({
+              message:
+                "A design manager, TDM, or admin must approve an additional discount above 3% of the quote total.",
+            });
+          }
+        }
       }
     }
 
@@ -17369,25 +17359,193 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
 
     const creatorName = sessionCreatorName || "User";
 
-    // Ensure an initial version baseline exists for this quote if not present
+    // 1. Read previous discount state from the last saved revision in lead_prolance_quote_versions (immune to snapshot overwrites)
+    const [lastVersionRows] = await pool.query(
+      `SELECT id, discount_snapshot, updated_values, change_summary, version_number AS versionNumber
+       FROM lead_prolance_quote_versions
+       WHERE lead_id = ? AND quote_id = ?
+       ORDER BY id DESC LIMIT 1`,
+      [leadId, quoteId],
+    );
+    const lastVersion = (lastVersionRows as any[])[0];
+
+    let previousDiscountState = {
+      woodwork: 0,
+      accessories: 0,
+      constructionHw: 0,
+      services: 0,
+      amount: 0,
+      additionalDiscount: 0,
+    };
+
+    if (lastVersion?.discount_snapshot) {
+      try {
+        const parsed = JSON.parse(lastVersion.discount_snapshot);
+        previousDiscountState = {
+          woodwork: parseFiniteNumber(parsed.woodwork) ?? 0,
+          accessories: parseFiniteNumber(parsed.accessories) ?? 0,
+          constructionHw: parseFiniteNumber(parsed.constructionHw) ?? 0,
+          services: parseFiniteNumber(parsed.services) ?? 0,
+          amount: Math.round(parseFiniteNumber(parsed.amount) ?? 0),
+          additionalDiscount: Math.round(parseFiniteNumber(parsed.additionalDiscount) ?? 0),
+        };
+      } catch {}
+    } else if (lastVersion?.updated_values) {
+      try {
+        const parsed = typeof lastVersion.updated_values === "string" ? JSON.parse(lastVersion.updated_values) : lastVersion.updated_values;
+        previousDiscountState = {
+          woodwork: parseFiniteNumber(parsed.woodwork) ?? 0,
+          accessories: parseFiniteNumber(parsed.accessories) ?? 0,
+          constructionHw: parseFiniteNumber(parsed.constructionHw) ?? 0,
+          services: parseFiniteNumber(parsed.services) ?? 0,
+          amount: Math.round(parseFiniteNumber(parsed.amount) ?? 0),
+          additionalDiscount: Math.round(parseFiniteNumber(parsed.additionalDiscount) ?? 0),
+        };
+      } catch {}
+    } else {
+      // Fallback: Read previous discount state from the existing snapshot
+      const prevDiscount = readDiscountMetaFromSnapshot(snapshotPayload);
+      const prevRoot = snapshotPayload;
+      const prevData = prevRoot.data ?? prevRoot.Data;
+      const prevD0 =
+        prevData && typeof prevData === "object" && !Array.isArray(prevData)
+          ? (prevData as Record<string, unknown>)
+          : Array.isArray(prevData) && prevData[0] && typeof prevData[0] === "object"
+            ? (prevData[0] as Record<string, unknown>)
+            : null;
+      const prevAdditional =
+        parseFiniteNumber(prevRoot.hubAdditionalDiscountAmount) ??
+        (prevD0 ? parseFiniteNumber((prevD0 as Record<string, unknown>).hubAdditionalDiscountAmount) : null) ??
+        0;
+
+      const prevCat =
+        prevDiscount.categoryPct && typeof prevDiscount.categoryPct === "object"
+          ? (prevDiscount.categoryPct as Record<string, unknown>)
+          : {};
+
+      previousDiscountState = {
+        woodwork: parseFiniteNumber(prevCat.woodwork) ?? 0,
+        accessories: parseFiniteNumber(prevCat.accessories) ?? 0,
+        constructionHw: parseFiniteNumber(prevCat.constructionHw) ?? 0,
+        services: parseFiniteNumber(prevCat.services) ?? 0,
+        amount: Math.round(parseFiniteNumber(prevDiscount.amount) ?? 0),
+        additionalDiscount: Math.round(prevAdditional),
+      };
+    }
+
+    const targetDiscountState = {
+      woodwork: parseFiniteNumber(categoryValues.woodwork) ?? 0,
+      accessories: parseFiniteNumber(categoryValues.accessories) ?? 0,
+      constructionHw: parseFiniteNumber(categoryValues.constructionHw) ?? 0,
+      services: parseFiniteNumber(categoryValues.services) ?? 0,
+      amount: Math.round(amount),
+      additionalDiscount: Math.round(additionalDiscount),
+    };
+
+    const isSameWoodwork = previousDiscountState.woodwork === targetDiscountState.woodwork;
+    const isSameAccessories = previousDiscountState.accessories === targetDiscountState.accessories;
+    const isSameServices = previousDiscountState.services === targetDiscountState.services;
+    const isSameConstructionHw = previousDiscountState.constructionHw === targetDiscountState.constructionHw;
+    const isSameAmount = previousDiscountState.amount === targetDiscountState.amount;
+    const isSameAdditional = previousDiscountState.additionalDiscount === targetDiscountState.additionalDiscount;
+
+    const isSameWithPrevious =
+      isSameWoodwork &&
+      isSameAccessories &&
+      isSameServices &&
+      isSameConstructionHw &&
+      isSameAmount &&
+      isSameAdditional;
+
+    // Check existing versions in lead_prolance_quote_versions
     const [existingVers] = await pool.query(
       `SELECT id FROM lead_prolance_quote_versions WHERE lead_id = ? AND quote_id = ? LIMIT 1`,
       [leadId, quoteId],
     );
-    if ((existingVers as any[]).length === 0) {
-      await pool.query(
-        `INSERT INTO lead_prolance_quote_versions (lead_id, quote_id, created_at, created_by, created_by_id)
-         VALUES (?, ?, ?, ?, ?)`,
-        [leadId, quoteId, new Date(Date.now() - 30000), "Initial Estimate", null],
-      );
-    }
+    const hasExistingVersions = (existingVers as any[]).length > 0;
 
-    // Insert the new revision for this discount save
-    await pool.query(
-      `INSERT INTO lead_prolance_quote_versions (lead_id, quote_id, created_at, created_by, created_by_id)
-       VALUES (?, ?, ?, ?, ?)`,
-      [leadId, quoteId, new Date(), creatorName, user?.id ?? null],
-    );
+    // Build changes summary list for lead_history and version record
+    const changesList: string[] = [];
+    if (previousDiscountState.woodwork !== targetDiscountState.woodwork) {
+      changesList.push(`Woodwork: ${previousDiscountState.woodwork}% -> ${targetDiscountState.woodwork}%`);
+    }
+    if (previousDiscountState.accessories !== targetDiscountState.accessories) {
+      changesList.push(`Accessories: ${previousDiscountState.accessories}% -> ${targetDiscountState.accessories}%`);
+    }
+    if (previousDiscountState.services !== targetDiscountState.services) {
+      changesList.push(`Services: ${previousDiscountState.services}% -> ${targetDiscountState.services}%`);
+    }
+    if (previousDiscountState.amount !== targetDiscountState.amount) {
+      changesList.push(`Category discount amount: ₹${previousDiscountState.amount.toLocaleString("en-IN")} -> ₹${targetDiscountState.amount.toLocaleString("en-IN")}`);
+    }
+    if (previousDiscountState.additionalDiscount !== targetDiscountState.additionalDiscount) {
+      changesList.push(`Additional discount: ₹${previousDiscountState.additionalDiscount.toLocaleString("en-IN")} -> ₹${targetDiscountState.additionalDiscount.toLocaleString("en-IN")}`);
+    }
+    const changeSummary = changesList.length > 0 ? changesList.join("; ") : "No changes";
+
+    const isNewVersionCreated = !hasExistingVersions || !isSameWithPrevious;
+
+    // Condition:
+    // 1. Version is only created when clicking Save discount.
+    // 2. If the version is the same with its previous one, then new version shouldn't be created.
+    if (isNewVersionCreated) {
+      const [maxRow] = await pool.query(
+        `SELECT MAX(version_number) AS maxVer, COUNT(*) AS countAll FROM lead_prolance_quote_versions WHERE lead_id = ?`,
+        [leadId],
+      );
+      const maxVer = (maxRow as any[])[0]?.maxVer;
+      const countAll = (maxRow as any[])[0]?.countAll ?? 0;
+      const nextVersionNumber = Math.max(Number(maxVer) || 0, Number(countAll) || 0) + 1;
+
+      await pool.query(
+        `INSERT INTO lead_prolance_quote_versions
+          (lead_id, quote_id, created_at, created_by, created_by_id, created_by_role,
+           version_number, source_module, change_summary, previous_values, updated_values, discount_snapshot)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          leadId,
+          quoteId,
+          new Date(),
+          creatorName,
+          user?.id ?? null,
+          user?.role ?? null,
+          nextVersionNumber,
+          "Design Module",
+          changeSummary,
+          JSON.stringify(previousDiscountState),
+          JSON.stringify(targetDiscountState),
+          JSON.stringify(targetDiscountState),
+        ],
+      );
+      void evaluateLeadQuotationRevisionXp(pool, leadId);
+
+      // Record event into lead_history so it appears in the Lead's History card
+      try {
+        await addLeadHistoryEvent(leadId, {
+          id: `quote-discount-${Date.now()}`,
+          meta: {
+            changes: changesList,
+            quoteId,
+            versionNumber: nextVersionNumber,
+            eventCategory: "quote_discount",
+          },
+          type: "note",
+          user: {
+            name: creatorName,
+          },
+          details: {
+            kind: "note",
+            noteText: changesList.join("\n"),
+          },
+          taskName: "Quote discount",
+          timestamp: new Date().toISOString(),
+          description: `Quote ${quoteId} discount updated: ${changeSummary}.`,
+          milestoneName: "Quote",
+        });
+      } catch (hErr) {
+        console.error("addLeadHistoryEvent error", hErr);
+      }
+    }
 
     const updatedVersions = await loadProlanceQuoteVersionsForLead(leadId);
 
@@ -17396,6 +17554,8 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       leadId,
       quoteId,
       updated: ins.affectedRows > 0,
+      alreadyExists: !isNewVersionCreated,
+      message: !isNewVersionCreated ? "This version is already created" : undefined,
       discount: discountMeta,
       payload: nextPayload,
       versions: updatedVersions,

@@ -31,7 +31,13 @@ type QuoteView = {
   rooms: QuoteRoom[];
 };
 
-type VersionRow = { quoteId: number; createdAt: string; createdBy?: string };
+type VersionRow = {
+  quoteId: number;
+  createdAt: string;
+  createdBy?: string;
+  changeSummary?: string;
+  versionNumber?: number;
+};
 
 type Props = {
   quote: QuoteView;
@@ -630,9 +636,14 @@ export function QuoteExperienceView(props: Props) {
                     <p className="mt-2 text-xs" style={{ color: QUOTE.muted }}>
                       Created on {formatVersionDate(v.createdAt)}
                     </p>
-                    <p className="mt-1 text-xs tabular-nums" style={{ color: QUOTE.muted }}>
-                      ID {v.quoteId}
+                    <p className="mt-1 text-xs tabular-nums font-medium text-[#786c5f]">
+                      Quote #{v.quoteId}
                     </p>
+                    {v.changeSummary ? (
+                      <p className="mt-2 text-xs font-medium text-[#854d0e] bg-[#fef9c3] rounded-md px-2.5 py-1 inline-block border border-[#fef08a]">
+                        {v.changeSummary}
+                      </p>
+                    ) : null}
                     {v.createdBy ? (
                       <p className="mt-2 flex items-center gap-1.5 text-xs font-medium text-[#4a3f35]">
                         <svg className="h-3.5 w-3.5 shrink-0 text-[#c1272d]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

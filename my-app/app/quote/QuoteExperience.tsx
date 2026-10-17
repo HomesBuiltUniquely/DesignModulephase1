@@ -326,7 +326,13 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
   };
 }
 
-type QuoteVersionRow = { quoteId: number; createdAt: string; createdBy?: string };
+type QuoteVersionRow = {
+  quoteId: number;
+  createdAt: string;
+  createdBy?: string;
+  changeSummary?: string;
+  versionNumber?: number;
+};
 
 export type QuoteExperienceProps = {
   quoteId: string;
@@ -480,9 +486,9 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                   : o.userName != null
                     ? String(o.userName)
                     : o.designerName != null
-                      ? String(o.designerName)
-                      : undefined;
-            return { quoteId: qid, createdAt: ca || new Date().toISOString(), createdBy };
+            const changeSummary = o.changeSummary != null ? String(o.changeSummary) : undefined;
+            const versionNumber = asNum(o.versionNumber) ?? undefined;
+            return { quoteId: qid, createdAt: ca || new Date().toISOString(), createdBy, changeSummary, versionNumber };
           })
           .filter(Boolean) as QuoteVersionRow[];
         if (!cancelled) setQuoteVersions(versions);
@@ -643,6 +649,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
             categoryPct: savePayload.categoryPct,
             amount: savePayload.amount,
             additionalDiscount: savePayload.additionalDiscount,
+            totalPayableAmount: quote.totalPayableAmount ?? quote.totalPrice ?? undefined,
             payload: payload ?? undefined,
             createdBy: currentUserName,
           }),
@@ -684,8 +691,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
         setPayload(applyDiscountMetaToLocalPayload(payload, discountMeta));
       }
 
-      // Task 5: Every time save discount is clicked, a new revision appears with creator details
-
+      // Updated quote revisions from backend response:
       const parseVersionsArray = (rawList: unknown): QuoteVersionRow[] => {
         if (!Array.isArray(rawList)) return [];
         return rawList
@@ -704,27 +710,26 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                     : o.designerName != null
                       ? String(o.designerName)
                       : undefined;
-            return { quoteId: qid, createdAt: ca || new Date().toISOString(), createdBy };
+            const changeSummary = o.changeSummary != null ? String(o.changeSummary) : undefined;
+            const versionNumber = asNum(o.versionNumber) ?? undefined;
+            return { quoteId: qid, createdAt: ca || new Date().toISOString(), createdBy, changeSummary, versionNumber };
           })
           .filter(Boolean) as QuoteVersionRow[];
       };
 
-      // 1. If backend returned updated versions in response:
+      // 1. If backend returned updated versions in response, use them directly:
       const bodyObj = body && typeof body === 'object' ? (body as Record<string, unknown>) : null;
       let appliedVersions: QuoteVersionRow[] | null = null;
       if (bodyObj && Array.isArray(bodyObj.versions) && bodyObj.versions.length > 0) {
         const parsed = parseVersionsArray(bodyObj.versions);
         if (parsed.length > 0) {
-          if (!parsed[parsed.length - 1].createdBy) {
-            parsed[parsed.length - 1].createdBy = currentUserName;
-          }
           appliedVersions = parsed;
           setQuoteVersions(parsed);
         }
       }
 
-      // 2. Fetch fresh quote revisions from public endpoint
-      if (versionFetchId) {
+      // 2. Otherwise fetch fresh quote revisions from public endpoint
+      if (!appliedVersions && versionFetchId) {
         (async () => {
           try {
             setQuoteVersionsLoading(true);
@@ -738,18 +743,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
             if (vRes.ok && Array.isArray(vBody.versions)) {
               const fetched = parseVersionsArray(vBody.versions);
               if (fetched.length > 0) {
-                const prevCount = quoteVersions.length;
-                if (fetched.length <= prevCount) {
-                  fetched.push({
-                    quoteId: Number(versionFetchId),
-                    createdAt: new Date().toISOString(),
-                    createdBy: currentUserName,
-                  });
-                } else if (!fetched[fetched.length - 1].createdBy) {
-                  fetched[fetched.length - 1].createdBy = currentUserName;
-                }
                 setQuoteVersions(fetched);
-                return;
               }
             }
           } catch {
@@ -757,19 +751,12 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           } finally {
             setQuoteVersionsLoading(false);
           }
-
-          if (!appliedVersions) {
-            setQuoteVersions((prev) => [
-              ...prev,
-              {
-                quoteId: Number(versionFetchId),
-                createdAt: new Date().toISOString(),
-                createdBy: currentUserName,
-              },
-            ]);
-          }
         })();
       }
+      return {
+        alreadyExists: Boolean(bodyObj?.alreadyExists),
+        message: bodyObj?.message ? String(bodyObj.message) : undefined,
+      };
     } catch (e) {
       setDiscountSaveError(e instanceof Error ? e.message : 'Failed to save discount');
     } finally {

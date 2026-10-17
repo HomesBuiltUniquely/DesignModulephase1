@@ -2809,6 +2809,13 @@ export default function ProjectDetailPage() {
                                                                                     categoryPct: savePayload.categoryPct,
                                                                                     amount: savePayload.amount,
                                                                                     additionalDiscount: savePayload.additionalDiscount,
+                                                                                    totalPayableAmount:
+                                                                                        latestQuoteResponse &&
+                                                                                        typeof latestQuoteResponse === 'object'
+                                                                                            ? (latestQuoteResponse as any).totalPayableAmount ??
+                                                                                              (latestQuoteResponse as any).totalPrice ??
+                                                                                              undefined
+                                                                                            : undefined,
                                                                                     payload:
                                                                                         latestQuoteResponse &&
                                                                                         typeof latestQuoteResponse === 'object'
@@ -2866,6 +2873,11 @@ export default function ProjectDetailPage() {
                                                                                 ),
                                                                             );
                                                                         }
+                                                                        const bodyObj = body && typeof body === 'object' ? (body as Record<string, unknown>) : null;
+                                                                        return {
+                                                                            alreadyExists: Boolean(bodyObj?.alreadyExists),
+                                                                            message: bodyObj?.message ? String(bodyObj.message) : undefined,
+                                                                        };
                                                                     } catch (e) {
                                                                         setQuoteDiscountSaveError(
                                                                             e instanceof Error ? e.message : 'Failed to save discount',
