@@ -3464,8 +3464,19 @@ function mapDesignMeetingToCrmMeetingType(
   return "SHOWROOM_VISIT";
 }
 
+/** Client meetings only: stored in CRM MeetingLabel, e.g. first-cut-meeting-online */
+function buildCrmMeetingLabelWithChannel(
+  designMeetingType: string | null | undefined,
+  meetingMode?: string | null,
+): string {
+  const milestone = mapDesignMeetingToMilestoneLabel(designMeetingType);
+  const crmMeetingType = mapDesignMeetingToCrmMeetingType(designMeetingType, meetingMode);
+  const channel = crmMeetingType === "VIRTUAL_MEETING" ? "online" : "offline";
+  return `${milestone}-meeting-${channel}`;
+}
+
 /**
- * Combined label: milestone + CRM type.
+ * Combined label for titles / description (not CRM MeetingLabel column).
  * Example: "first-cut (SHOWROOM_VISIT)"
  */
 function buildMilestoneMeetingLabel(
@@ -3526,6 +3537,7 @@ function buildDesignModuleErpAppointmentFields(opts: {
     opts.meetingType,
     opts.meetingMode,
   );
+  const crmMeetingLabel = buildCrmMeetingLabelWithChannel(opts.meetingType, opts.meetingMode);
   const { crmLeadId, leadType } = resolveCrmLeadRefFromPayload(opts.leadPayload);
 
   // Human-readable: "first-cut (SHOWROOM_VISIT)" — CRM enum stays in meetingType field only
@@ -3543,11 +3555,13 @@ function buildDesignModuleErpAppointmentFields(opts: {
   const fields: Record<string, unknown> = {
     // CRM API: only SHOWROOM_VISIT | VIRTUAL_MEETING | SITE_VISIT
     meetingType: crmMeetingType,
-    // Milestone + type for display / search (CRM may store on description / notes)
-    meetingLabel: milestoneMeetingLabel,
+    // CRM MeetingLabel: milestone + online/offline (not used for personal-block)
+    meetingLabel: crmMeetingLabel,
     designMilestone: milestone,
     title: milestoneMeetingLabel,
     description,
+    customerName,
+    ...(opts.customerEmail ? { customerEmail: String(opts.customerEmail).trim() } : {}),
     ...(projectName ? { projectName } : {}),
     projectId: opts.projectId,
     hubLeadId: opts.leadId,
@@ -3562,9 +3576,9 @@ function buildDesignModuleErpAppointmentFields(opts: {
     fields.leadId = crmLeadId;
     fields.leadType = "formlead";
   } else {
-    // Fallback: no CRM link — CRM may leave customer null; keep names in description
-    fields.leadId = opts.leadId;
-    fields.leadType = leadType || "design_module";
+    // No CRM lead id — do not send Hub lead id as leadId (CRM fallback lookup would pick wrong customer).
+    fields.leadId = null;
+    fields.leadType = null;
   }
 
   return fields;
@@ -18776,6 +18790,7 @@ app.post("/api/appointment/me/blocks", async (req: Request, res: Response) => {
         endTime,
         source: "DESIGN_MODULE",
         description: reason,
+        meetingLabel: "personal-block",
         leadId: null,
       }),
     });
@@ -19195,6 +19210,7 @@ app.post("/api/appointment/personal", async (req: Request, res: Response) => {
           endTime,
           source: "DESIGN_MODULE",
           description: trimmedReason,
+          meetingLabel: "personal-block",
           leadId: null,
           googleEventId: gcalEventId,
           googleHtmlLink: gcalHtmlLink,
@@ -19619,6 +19635,7 @@ app.post("/api/appointment/full-day/:id/approve", async (req: Request, res: Resp
           endTime,
           source: "DESIGN_MODULE",
           description: erpDescription,
+          meetingLabel: "personal-block",
           leadId: null,
           googleEventId: gcalEventId,
           googleHtmlLink: gcalHtmlLink,
