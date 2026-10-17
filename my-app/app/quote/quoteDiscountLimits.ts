@@ -1,7 +1,10 @@
 /** Design-module quote discount caps by work category. */
 
 export const WOODWORK_MAX_DISCOUNT_PCT = 40;
+export const CRM_ELEVATED_WOODWORK_MAX_DISCOUNT_PCT = 45;
 export const OTHER_CATEGORY_MAX_DISCOUNT_PCT = 5;
+
+export type DiscountCapProfile = 'standard' | 'crm-elevated' | 'unrestricted';
 
 export type DiscountCategoryKey =
   | 'woodwork'
@@ -10,24 +13,32 @@ export type DiscountCategoryKey =
   | 'services'
   | string;
 
-export function maxDiscountPctForCategory(key: DiscountCategoryKey, unrestricted = false): number {
+function normalizeCapProfile(profile: DiscountCapProfile | boolean): DiscountCapProfile {
+  if (profile === true) return 'unrestricted';
+  if (profile === false) return 'standard';
+  return profile;
+}
+
+export function maxDiscountPctForCategory(
+  key: DiscountCategoryKey,
+  profile: DiscountCapProfile | boolean = 'standard',
+): number {
   if (key === 'constructionHw') return 0;
-  return unrestricted
-    ? 100
-    : key === 'woodwork'
-      ? WOODWORK_MAX_DISCOUNT_PCT
-      : OTHER_CATEGORY_MAX_DISCOUNT_PCT;
+  const p = normalizeCapProfile(profile);
+  if (p === 'unrestricted') return 100;
+  if (p === 'crm-elevated' && key === 'woodwork') return CRM_ELEVATED_WOODWORK_MAX_DISCOUNT_PCT;
+  return key === 'woodwork' ? WOODWORK_MAX_DISCOUNT_PCT : OTHER_CATEGORY_MAX_DISCOUNT_PCT;
 }
 
 export function clampDiscountPctForCategory(
   key: DiscountCategoryKey,
   value: unknown,
-  unrestricted = false,
+  profile: DiscountCapProfile | boolean = 'standard',
 ): number {
   const n = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(n)) return 0;
   if (key === 'constructionHw') return 0;
-  const max = maxDiscountPctForCategory(key, unrestricted);
+  const max = maxDiscountPctForCategory(key, profile);
   return Math.max(0, Math.min(max, Math.round(n * 100) / 100));
 }
 

@@ -5,11 +5,10 @@ import type { QuoteDiscountBreakdownRow } from './quoteDiscountBreakdown';
 import {
   clampDiscountPctForCategory,
   maxDiscountPctForCategory,
+  type DiscountCapProfile,
 } from './quoteDiscountLimits';
 import { inrFull, QUOTE } from './quoteStyles';
 
-/** Designer woodwork limit; higher-authority roles can override it. */
-const WOODWORK_SOFT_MAX = 40;
 /** Designer additional flat discount cap as a % of total payable amount. */
 const ADDITIONAL_DISCOUNT_MAX_PCT = 3;
 
@@ -42,6 +41,8 @@ type Props = {
   editable?: boolean;
   /** Removes designer discount caps for Design Managers, TDMs, and Admins. */
   unrestrictedDiscounts?: boolean;
+  /** CRM Super/Sales Admin: woodwork up to 45%. Overrides unrestrictedDiscounts when set. */
+  discountCapProfile?: DiscountCapProfile;
   saving?: boolean;
   saveError?: string | null;
   onSave?: (payload: QuoteCategoryDiscountSavePayload) => void | Promise<QuoteDiscountSaveResult | void> | QuoteDiscountSaveResult;
@@ -51,7 +52,7 @@ const EDITABLE_KEYS = ['woodwork', 'accessories', 'services'] as const;
 
 function pctFromRows(
   rows: QuoteDiscountBreakdownRow[],
-  unrestricted = false,
+  capProfile: DiscountCapProfile,
 ): Record<(typeof EDITABLE_KEYS)[number], number> {
   const out = {
     woodwork: 0,
@@ -61,7 +62,7 @@ function pctFromRows(
   };
   for (const key of EDITABLE_KEYS) {
     const row = rows.find((r) => r.key === key);
-    out[key] = clampDiscountPctForCategory(key, row?.discountPct ?? 0, unrestricted);
+    out[key] = clampDiscountPctForCategory(key, row?.discountPct ?? 0, capProfile);
   }
   return out;
 }
@@ -81,10 +82,10 @@ function additionalFromRows(rows: QuoteDiscountBreakdownRow[], fallback: number 
 function previewRow(
   row: QuoteDiscountBreakdownRow,
   draftPct: number,
-  unrestricted = false,
+  capProfile: DiscountCapProfile,
 ): { discountedPrice: number; discountAmount: number; discountPct: number } {
   const price = row.price ?? 0;
-  const pct = clampDiscountPctForCategory(row.key, draftPct, unrestricted);
+  const pct = clampDiscountPctForCategory(row.key, draftPct, capProfile);
   const discountAmount = price > 0 && pct > 0 ? Math.round((price * pct) / 100) : 0;
   return {
     discountPct: pct,
@@ -100,11 +101,15 @@ export function QuoteDiscountDetails({
   totalPayableAmount = null,
   editable = false,
   unrestrictedDiscounts = false,
+  discountCapProfile,
   saving = false,
   saveError = null,
   onSave,
 }: Props) {
-  const [draftPct, setDraftPct] = useState(() => pctFromRows(rows, unrestrictedDiscounts));
+  const capProfile: DiscountCapProfile =
+    discountCapProfile ?? (unrestrictedDiscounts ? 'unrestricted' : 'standard');
+  const woodworkCap = maxDiscountPctForCategory('woodwork', capProfile);
+  const [draftPct, setDraftPct] = useState(() => pctFromRows(rows, capProfile));
   const [draftAdditional, setDraftAdditional] = useState(() =>
     additionalFromRows(rows, additionalDiscount),
   );
@@ -115,10 +120,10 @@ export function QuoteDiscountDetails({
 
   useEffect(() => {
     if (!dirty) {
-      setDraftPct(pctFromRows(rows, unrestrictedDiscounts));
+      setDraftPct(pctFromRows(rows, capProfile));
       setDraftAdditional(additionalFromRows(rows, additionalDiscount));
     }
-  }, [rows, additionalDiscount, dirty, unrestrictedDiscounts]);
+  }, [rows, additionalDiscount, dirty, capProfile]);
 
   const granularRows = rows.filter((r) => r.alwaysShow);
   const extraRows = rows.filter(
@@ -130,10 +135,10 @@ export function QuoteDiscountDetails({
     return EDITABLE_KEYS.reduce((sum, key) => {
       const row = rows.find((r) => r.key === key);
       if (!row) return sum;
-      if (editable) return sum + previewRow(row, draftPct[key], unrestrictedDiscounts).discountAmount;
+      if (editable) return sum + previewRow(row, draftPct[key], capProfile).discountAmount;
       return sum + (row.discountAmount ?? 0);
     }, 0);
-  }, [editable, rows, draftPct, unrestrictedDiscounts]);
+  }, [editable, rows, draftPct, capProfile]);
 
   const previewTotal = useMemo(() => {
     if (!editable) return totalDiscount ?? categoryTotal + (savedAdditionalRow?.discountAmount ?? 0);
@@ -147,14 +152,13 @@ export function QuoteDiscountDetails({
   const handlePctChange = (key: (typeof EDITABLE_KEYS)[number], raw: string) => {
     const n = Number(raw);
     const val = Number.isFinite(n) ? n : 0;
-    if (!unrestrictedDiscounts && key === 'woodwork' && val > WOODWORK_SOFT_MAX) {
-      // Show popup but do NOT clamp — let user see the warning; don't apply the value
+    if (capProfile !== 'unrestricted' && key === 'woodwork' && val > woodworkCap) {
       setWoodworkPopup(val);
       return;
     }
     setDraftPct((prev) => ({
       ...prev,
-      [key]: clampDiscountPctForCategory(key, val, unrestrictedDiscounts),
+      [key]: clampDiscountPctForCategory(key, val, capProfile),
     }));
     setDirty(true);
   };
@@ -165,7 +169,7 @@ export function QuoteDiscountDetails({
       totalPayableAmount != null && totalPayableAmount > 0
         ? Math.floor((totalPayableAmount * ADDITIONAL_DISCOUNT_MAX_PCT) / 100)
         : null;
-    if (!unrestrictedDiscounts && maxAllowed != null && val > maxAllowed) {
+    if (capProfile !== 'unrestricted' && maxAllowed != null && val > maxAllowed) {
       setAdditionalPopup(val);
       return;
     }
@@ -178,7 +182,7 @@ export function QuoteDiscountDetails({
     const amount = EDITABLE_KEYS.reduce((sum, key) => {
       const row = rows.find((r) => r.key === key);
       if (!row) return sum;
-      return sum + previewRow(row, draftPct[key], unrestrictedDiscounts).discountAmount;
+      return sum + previewRow(row, draftPct[key], capProfile).discountAmount;
     }, 0);
     const result = await onSave({
       categoryPct: {
@@ -233,7 +237,7 @@ export function QuoteDiscountDetails({
         </div>
       ) : null}
       {/* Woodwork > 40% popup */}
-      {!unrestrictedDiscounts && woodworkPopup !== null ? (
+      {capProfile !== 'unrestricted' && woodworkPopup !== null ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-sm rounded-2xl border border-[#ece6df] bg-white p-6 shadow-xl">
             <div className="mb-3 flex items-center gap-2">
@@ -250,7 +254,7 @@ export function QuoteDiscountDetails({
             <p className="text-sm text-[#5c5650]">
               Contact your higher authority for a{' '}
               <span className="font-bold text-[#c1272d]">{woodworkPopup}%</span> woodwork discount.
-              Maximum allowed without approval is {WOODWORK_SOFT_MAX}%.
+              Maximum allowed for your role is {woodworkCap}%.
             </p>
             <div className="mt-4 flex justify-end">
               <button
@@ -267,7 +271,7 @@ export function QuoteDiscountDetails({
       ) : null}
 
       {/* Additional discount > 3% popup */}
-      {!unrestrictedDiscounts && additionalPopup !== null ? (
+      {capProfile !== 'unrestricted' && additionalPopup !== null ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-sm rounded-2xl border border-[#ece6df] bg-white p-6 shadow-xl">
             <div className="mb-3 flex items-center gap-2">
@@ -318,7 +322,7 @@ export function QuoteDiscountDetails({
                 : isEditKey
                 ? draftPct[row.key as (typeof EDITABLE_KEYS)[number]]
                 : row.discountPct ?? 0;
-              const preview = canEdit ? previewRow(row, draft, unrestrictedDiscounts) : null;
+              const preview = canEdit ? previewRow(row, draft, capProfile) : null;
               const showPct = isConstructionHw ? 0 : preview?.discountPct ?? row.discountPct ?? 0;
               const showDiscounted = isConstructionHw
                 ? row.price ?? row.discountedPrice
@@ -347,7 +351,7 @@ export function QuoteDiscountDetails({
                           <input
                             type="number"
                             min={0}
-                            max={maxDiscountPctForCategory(row.key, unrestrictedDiscounts)}
+                            max={maxDiscountPctForCategory(row.key, capProfile)}
                             step={0.1}
                             value={draft}
                             disabled={saving}

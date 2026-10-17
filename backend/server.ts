@@ -7253,8 +7253,62 @@ async function resolveMilestonePaymentAmounts(
 
 /** Design-module caps: woodwork 40%, all other work categories 5%. */
 const WOODWORK_MAX_DISCOUNT_PCT = 40;
+const CRM_ELEVATED_WOODWORK_MAX_DISCOUNT_PCT = 45;
 const OTHER_CATEGORY_MAX_DISCOUNT_PCT = 5;
 const ADDITIONAL_DISCOUNT_MAX_PCT = 3;
+
+type QuoteDiscountCapMode = "standard" | "crm_elevated" | "unrestricted";
+
+function maxQuoteCategoryDiscountPct(key: string, mode: QuoteDiscountCapMode): number {
+  if (key === "constructionHw") return 0;
+  if (mode === "unrestricted") return 100;
+  if (mode === "crm_elevated" && key === "woodwork") return CRM_ELEVATED_WOODWORK_MAX_DISCOUNT_PCT;
+  return key === "woodwork" ? WOODWORK_MAX_DISCOUNT_PCT : OTHER_CATEGORY_MAX_DISCOUNT_PCT;
+}
+
+function resolveQuoteDiscountCapMode(role: string, fromCrmModule: boolean): QuoteDiscountCapMode {
+  const elevatedCrm =
+    fromCrmModule &&
+    (role === "super_admin" || role === "superadmin" || role === "sales_admin");
+  if (elevatedCrm) return "crm_elevated";
+  if (
+    !fromCrmModule &&
+    (role === "admin" ||
+      role === "territorial_design_manager" ||
+      role === "deputy_general_manager" ||
+      role === "design_manager")
+  ) {
+    return "unrestricted";
+  }
+  return "standard";
+}
+
+async function resolveLeadIdForProlanceQuoteId(quoteId: number): Promise<number | null> {
+  const [vRows] = await pool.query(
+    `SELECT lead_id AS leadId FROM lead_prolance_quote_versions WHERE quote_id = ? LIMIT 1`,
+    [quoteId],
+  );
+  const fromVersion = (vRows as { leadId?: unknown }[])[0]?.leadId;
+  if (fromVersion != null && Number.isFinite(Number(fromVersion)) && Number(fromVersion) > 0) {
+    return Number(fromVersion);
+  }
+  const [sRows] = await pool.query(
+    `SELECT lead_id AS leadId FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
+    [quoteId],
+  );
+  const fromSnap = (sRows as { leadId?: unknown }[])[0]?.leadId;
+  if (fromSnap != null && Number.isFinite(Number(fromSnap)) && Number(fromSnap) > 0) {
+    return Number(fromSnap);
+  }
+  const [lRows] = await pool.query(`SELECT id AS leadId FROM leads WHERE prolance_quote_id = ? LIMIT 1`, [
+    quoteId,
+  ]);
+  const fromLead = (lRows as { leadId?: unknown }[])[0]?.leadId;
+  if (fromLead != null && Number.isFinite(Number(fromLead)) && Number(fromLead) > 0) {
+    return Number(fromLead);
+  }
+  return null;
+}
 
 function quotePayableAmount(payload: Record<string, unknown>): number | null {
   const data = payload.data ?? payload.Data;
@@ -7287,14 +7341,14 @@ function quotePayableAmount(payload: Record<string, unknown>): number | null {
   return null;
 }
 
-function clampQuoteCategoryDiscountPct(key: string, value: unknown, unrestricted = false): number {
+function clampQuoteCategoryDiscountPct(
+  key: string,
+  value: unknown,
+  capMode: QuoteDiscountCapMode = "standard",
+): number {
   const n = parseFiniteNumber(value) ?? 0;
   if (key === "constructionHw") return 0;
-  const max = unrestricted
-    ? 100
-    : key === "woodwork"
-      ? WOODWORK_MAX_DISCOUNT_PCT
-      : OTHER_CATEGORY_MAX_DISCOUNT_PCT;
+  const max = maxQuoteCategoryDiscountPct(key, capMode);
   return Math.max(0, Math.min(max, Math.round(n * 100) / 100));
 }
 
@@ -7302,15 +7356,15 @@ function buildHubCategoryDiscountMeta(
   categoryPct: Record<string, unknown>,
   amount: number,
   additionalDiscountAmount: number = 0,
-  unrestricted = false,
+  capMode: QuoteDiscountCapMode = "standard",
 ): Record<string, unknown> {
   const additional = Math.max(0, Math.round(additionalDiscountAmount));
   return {
     hubCategoryDiscountPct: {
-      woodwork: clampQuoteCategoryDiscountPct("woodwork", categoryPct.woodwork, unrestricted),
-      accessories: clampQuoteCategoryDiscountPct("accessories", categoryPct.accessories, unrestricted),
-      constructionHw: clampQuoteCategoryDiscountPct("constructionHw", categoryPct.constructionHw, unrestricted),
-      services: clampQuoteCategoryDiscountPct("services", categoryPct.services, unrestricted),
+      woodwork: clampQuoteCategoryDiscountPct("woodwork", categoryPct.woodwork, capMode),
+      accessories: clampQuoteCategoryDiscountPct("accessories", categoryPct.accessories, capMode),
+      constructionHw: clampQuoteCategoryDiscountPct("constructionHw", categoryPct.constructionHw, capMode),
+      services: clampQuoteCategoryDiscountPct("services", categoryPct.services, capMode),
     },
     hubCategoryDiscountAmount: amount,
     /** Flat rupee discount on top of category % discounts (not a percentage). */
@@ -17281,8 +17335,27 @@ app.get("/api/leads/prolance-quote-versions/by-quote/:quoteId", async (req: Requ
       return res.json({ leadId: null, versions: [] });
     }
 
-    const access = await getLeadAccessRowForUser(res, user, leadId);
-    if (!access.ok) return;
+    const roleNorm = String(user.role || "")
+      .trim()
+      .toLowerCase()
+      .replace(/^(role_|crm_)/i, "");
+    const crmQuoteViewer = [
+      "super_admin",
+      "superadmin",
+      "admin",
+      "sales_admin",
+      "sales_manager",
+      "sales_executive",
+    ].includes(roleNorm);
+    if (!crmQuoteViewer) {
+      const access = await getLeadAccessRowForUser(res, user, leadId);
+      if (!access.ok) return;
+    } else {
+      const [exists] = await pool.query(`SELECT id FROM leads WHERE id = ? LIMIT 1`, [leadId]);
+      if ((exists as any[]).length === 0) {
+        return res.json({ leadId: null, versions: [] });
+      }
+    }
 
     const versions = await loadProlanceQuoteVersionsForLead(leadId);
     return res.json({ leadId, versions });
@@ -17348,29 +17421,29 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
     req.headers["x-crm-role"] || body.crmRole || body.userRole || "",
   ).trim();
 
-  if (user) {
+  const fromCrmModuleEarly =
+    String(body.sourceModule || body.source_module || "")
+      .trim()
+      .toUpperCase() === "CRM";
+  const crmHeadersPresent = isCrmDiscountRole(crmRoleHeader) && Boolean(crmUserHeader);
+
+  if (crmHeadersPresent) {
+    // Prefer CRM headers when present (even if a design-session cookie exists).
+    viaCrmInternal = true;
+    role = crmRoleHeader;
+    editorRoleStored = crmRoleRaw || crmRoleHeader.toUpperCase();
+    const roleLabel = crmRoleHeader
+      .split(/[\s_-]+/)
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(" ");
+    editorLabel = roleLabel
+      ? `${crmUserHeader} (${roleLabel}) · CRM`
+      : `${crmUserHeader} · CRM`;
+  } else if (user) {
     role = normalizeDiscountRole(user.role);
     if (!isDesignDiscountRole(role)) {
       return res.status(403).json({ message: "You are not allowed to edit quote discounts" });
-    }
-    const access = await getLeadAccessRowForUser(res, user, leadId);
-    if (!access.ok) return;
-
-    if (role === "territorial_design_manager") {
-      const [tdmRows] = await pool.query(
-        `SELECT 1
-         FROM users d
-         INNER JOIN users dm ON dm.id = d.design_manager_id
-         WHERE d.id = ?
-           AND d.role = 'designer'
-           AND dm.role = 'design_manager'
-           AND dm.territorial_design_manager_id = ?
-         LIMIT 1`,
-        [access.row.assigned_designer_id, user.id],
-      );
-      if ((tdmRows as any[]).length === 0) {
-        return res.status(404).json({ message: "Lead not found" });
-      }
     }
     const roleLabel = user.role
       ? String(user.role)
@@ -17380,20 +17453,6 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       : "";
     editorRoleStored = user.role ? String(user.role) : null;
     editorLabel = user.name ? (roleLabel ? `${user.name} (${roleLabel})` : user.name) : null;
-  } else if (isCrmDiscountRole(crmRoleHeader) && crmUserHeader) {
-    // CRM opened /quote/:id?internal=1&crmUser=…&crmRole=SUPER_ADMIN
-    viaCrmInternal = true;
-    role = crmRoleHeader;
-    editorRoleStored = crmRoleRaw || crmRoleHeader.toUpperCase();
-    const roleLabel = crmRoleHeader
-      .split(/[\s_-]+/)
-      .filter(Boolean)
-      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-      .join(" ");
-    // Activity / revision: username + role + CRM module
-    editorLabel = roleLabel
-      ? `${crmUserHeader} (${roleLabel}) · CRM`
-      : `${crmUserHeader} · CRM`;
   } else {
     return res.status(401).json({ message: "Unauthorized" });
   }
@@ -17421,25 +17480,48 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
     return res.status(400).json({ message: "Construction Hardware discounts are not supported" });
   }
 
-  // CRM SUPER_ADMIN and SALES_ADMIN can exceed designer caps (same as Design Module superadmin).
-  // Other CRM roles stay on designer caps (woodwork ≤40%, others ≤5%, additional ≤3%).
-  // Unrestricted override is also Design Module DM / TDM / DGM / admin.
-  const elevatedDiscountRole =
-    role === "super_admin" || role === "superadmin" || role === "sales_admin";
-  const fromCrmModule =
-    viaCrmInternal ||
-    String(body.sourceModule || body.source_module || "")
-      .trim()
-      .toUpperCase() === "CRM";
-  const designModuleUnrestrictedRole =
-    role === "admin" ||
-    role === "territorial_design_manager" ||
-    role === "deputy_general_manager" ||
-    role === "design_manager";
-  const unrestrictedDiscounts =
-    elevatedDiscountRole || (!fromCrmModule && designModuleUnrestrictedRole);
+  const fromCrmModule = viaCrmInternal || fromCrmModuleEarly;
+  const discountCapMode = resolveQuoteDiscountCapMode(role, fromCrmModule);
 
   try {
+    let effectiveLeadId = leadId;
+    const canonicalLeadId = await resolveLeadIdForProlanceQuoteId(quoteId);
+    if (canonicalLeadId != null && canonicalLeadId > 0) {
+      effectiveLeadId = canonicalLeadId;
+    }
+
+    const [leadExistsRows] = await pool.query(`SELECT id FROM leads WHERE id = ? LIMIT 1`, [
+      effectiveLeadId,
+    ]);
+    if ((leadExistsRows as any[]).length === 0) {
+      return res.status(404).json({
+        message: "Lead not found for this quote. Refresh the page or open the quote from the lead again.",
+      });
+    }
+
+    const skipDesignLeadScope = fromCrmModule && isCrmDiscountRole(role);
+    if (user && !skipDesignLeadScope) {
+      const access = await getLeadAccessRowForUser(res, user, effectiveLeadId);
+      if (!access.ok) return;
+
+      if (role === "territorial_design_manager") {
+        const [tdmRows] = await pool.query(
+          `SELECT 1
+           FROM users d
+           INNER JOIN users dm ON dm.id = d.design_manager_id
+           WHERE d.id = ?
+             AND d.role = 'designer'
+             AND dm.role = 'design_manager'
+             AND dm.territorial_design_manager_id = ?
+           LIMIT 1`,
+          [access.row.assigned_designer_id, user.id],
+        );
+        if ((tdmRows as any[]).length === 0) {
+          return res.status(404).json({ message: "Lead not found" });
+        }
+      }
+    }
+
     const [snapRows] = await pool.query(
       `SELECT lead_id AS leadId, payload_json AS payloadJson
        FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
@@ -17464,7 +17546,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       try {
         const [leadRows] = await pool.query(
           `SELECT payload FROM leads WHERE id = ? LIMIT 1`,
-          [leadId],
+          [effectiveLeadId],
         );
         const leadRow = (leadRows as any[])[0];
         if (leadRow?.payload) {
@@ -17480,18 +17562,19 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       }
     }
 
-    if (!unrestrictedDiscounts) {
-      const limits: Record<string, number> = {
-        woodwork: WOODWORK_MAX_DISCOUNT_PCT,
-        accessories: OTHER_CATEGORY_MAX_DISCOUNT_PCT,
-        constructionHw: 0,
-        services: OTHER_CATEGORY_MAX_DISCOUNT_PCT,
-      };
-      for (const [key, limit] of Object.entries(limits)) {
+    if (discountCapMode !== "unrestricted") {
+      for (const key of ["woodwork", "accessories", "constructionHw", "services"]) {
+        const limit = maxQuoteCategoryDiscountPct(key, discountCapMode);
         const requestedPct = parseFiniteNumber(categoryValues[key]) ?? 0;
         if (requestedPct > limit) {
+          const crmWoodworkMsg =
+            discountCapMode === "crm_elevated" && key === "woodwork"
+              ? `Maximum woodwork discount in CRM is ${limit}% for Super Admin and Sales Admin.`
+              : null;
           return res.status(403).json({
-            message: `A design manager, TDM, or admin must approve discounts above ${limit}% for ${key}.`,
+            message:
+              crmWoodworkMsg ??
+              `A design manager, TDM, or admin must approve discounts above ${limit}% for ${key}.`,
           });
         }
       }
@@ -17520,7 +17603,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       categoryValues,
       amount,
       additionalDiscount,
-      unrestrictedDiscounts,
+      discountCapMode,
     );
     const nextPayload = applyDiscountMetaToSnapshotPayload(snapshotPayload, discountMeta);
     const json = JSON.stringify(nextPayload);
@@ -17528,7 +17611,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       `INSERT INTO lead_prolance_quote_snapshots (lead_id, quote_id, payload_json, created_at)
        VALUES (?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE payload_json = VALUES(payload_json), created_at = VALUES(created_at)`,
-      [leadId, quoteId, json, new Date()],
+      [effectiveLeadId, quoteId, json, new Date()],
     );
     const ins = result as mysql.ResultSetHeader;
 
@@ -17541,7 +17624,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
        FROM lead_prolance_quote_versions
        WHERE lead_id = ? AND quote_id = ?
        ORDER BY id DESC LIMIT 1`,
-      [leadId, quoteId],
+      [effectiveLeadId, quoteId],
     );
     const lastVersion = (lastVersionRows as any[])[0];
 
@@ -17641,7 +17724,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
     // Check existing versions in lead_prolance_quote_versions
     const [existingVers] = await pool.query(
       `SELECT id FROM lead_prolance_quote_versions WHERE lead_id = ? AND quote_id = ? LIMIT 1`,
-      [leadId, quoteId],
+      [effectiveLeadId, quoteId],
     );
     const hasExistingVersions = (existingVers as any[]).length > 0;
 
@@ -17672,7 +17755,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
     if (isNewVersionCreated) {
       const [maxRow] = await pool.query(
         `SELECT MAX(version_number) AS maxVer, COUNT(*) AS countAll FROM lead_prolance_quote_versions WHERE lead_id = ?`,
-        [leadId],
+        [effectiveLeadId],
       );
       const maxVer = (maxRow as any[])[0]?.maxVer;
       const countAll = (maxRow as any[])[0]?.countAll ?? 0;
@@ -17685,7 +17768,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
            version_number, source_module, change_summary, previous_values, updated_values, discount_snapshot)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          leadId,
+          effectiveLeadId,
           quoteId,
           new Date(),
           creatorName,
@@ -17699,7 +17782,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
           JSON.stringify(targetDiscountState),
         ],
       );
-      void evaluateLeadQuotationRevisionXp(pool, leadId);
+      void evaluateLeadQuotationRevisionXp(pool, effectiveLeadId);
 
       // Record event into lead_history so it appears in the Lead's History card
       try {
@@ -17709,7 +17792,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
             : user?.name || creatorName
           : user?.name || creatorName;
         const actorRole = editorRoleStored || (viaCrmInternal ? crmRoleRaw : user?.role) || null;
-        await addLeadHistoryEvent(leadId, {
+        await addLeadHistoryEvent(effectiveLeadId, {
           id: `quote-discount-${Date.now()}`,
           meta: {
             changes: changesList,
@@ -17752,11 +17835,11 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       }
     }
 
-    const updatedVersions = await loadProlanceQuoteVersionsForLead(leadId);
+    const updatedVersions = await loadProlanceQuoteVersionsForLead(effectiveLeadId);
 
     return res.json({
       ok: true,
-      leadId,
+      leadId: effectiveLeadId,
       quoteId,
       updated: ins.affectedRows > 0,
       alreadyExists: !isNewVersionCreated,

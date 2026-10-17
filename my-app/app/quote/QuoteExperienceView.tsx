@@ -64,7 +64,7 @@ type Props = {
   versionFetchId: string;
   internalVersionSuffix: string;
   discountEditable?: boolean;
-  unrestrictedDiscounts?: boolean;
+  discountCapProfile?: import('./quoteDiscountLimits').DiscountCapProfile;
   discountSaving?: boolean;
   discountSaveError?: string | null;
   additionalDiscount?: number | null;
@@ -147,7 +147,7 @@ export function QuoteExperienceView(props: Props) {
     versionFetchId,
     internalVersionSuffix,
     discountEditable = false,
-    unrestrictedDiscounts = false,
+    discountCapProfile = 'standard',
     discountSaving = false,
     discountSaveError = null,
     additionalDiscount = null,
@@ -348,7 +348,7 @@ export function QuoteExperienceView(props: Props) {
                   additionalDiscount={additionalDiscount}
                   totalPayableAmount={quote.totalPayableAmount}
                   editable={discountEditable}
-                  unrestrictedDiscounts={unrestrictedDiscounts}
+                  discountCapProfile={discountCapProfile}
                   saving={discountSaving}
                   saveError={discountSaveError}
                   onSave={onSaveDiscount}
