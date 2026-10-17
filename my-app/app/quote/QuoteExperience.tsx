@@ -443,7 +443,37 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
               : `Failed to load quote (HTTP ${res.status})`;
           throw new Error(msg);
         }
-        if (!cancelled) setPayload((body && typeof body === 'object' ? (body as Record<string, unknown>) : null));
+        let nextPayload =
+          body && typeof body === 'object' ? (body as Record<string, unknown>) : null;
+        if (nextPayload) {
+          try {
+            const hubRes = await fetch(
+              `${API}/api/prolance-test/public/quotes/${encodeURIComponent(q)}/hub-discount?t=${Date.now()}`,
+              { cache: 'no-store' },
+            );
+            if (hubRes.ok) {
+              const hubBody = (await hubRes.json().catch(() => ({}))) as {
+                discount?: Record<string, unknown>;
+              };
+              const discount = hubBody.discount;
+              if (discount && typeof discount === 'object' && !Array.isArray(discount)) {
+                const amt = Number(discount.hubCategoryDiscountAmount);
+                const add = Number(discount.hubAdditionalDiscountAmount);
+                const pct = discount.hubCategoryDiscountPct;
+                const hasPct =
+                  pct &&
+                  typeof pct === 'object' &&
+                  Object.values(pct as Record<string, unknown>).some((v) => Number(v) > 0);
+                if ((Number.isFinite(amt) && amt > 0) || (Number.isFinite(add) && add > 0) || hasPct) {
+                  nextPayload = applyDiscountMetaToLocalPayload(nextPayload, discount);
+                }
+              }
+            }
+          } catch {
+            /* share payload still usable without overlay */
+          }
+        }
+        if (!cancelled) setPayload(nextPayload);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load quote');
       } finally {

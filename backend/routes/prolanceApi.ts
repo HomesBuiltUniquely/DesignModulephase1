@@ -1360,9 +1360,10 @@ function normalizeQuotePricingRow(data: unknown): Record<string, unknown> | null
 export function extractTotalPayableAmount(data: unknown): number | null {
   const row = normalizeQuotePricingRow(data);
   if (!row) return null;
+  const root = data && typeof data === "object" && !Array.isArray(data) ? (data as Record<string, unknown>) : null;
   const pick = (...keys: string[]): number | null => {
     for (const k of keys) {
-      const n = parseFiniteNum(row[k]);
+      const n = parseFiniteNum(row[k]) ?? (root ? parseFiniteNum(root[k]) : null);
       if (n != null) return n;
     }
     return null;
@@ -2580,6 +2581,16 @@ function formatProlancePName(
         );
       };
 
+      // Customer + internal share must show the saved Hub discount. Live Prolance
+      // does not include it; prefer the snapshot we wrote on Save discount.
+      if (snapshotPayload && payloadHasHubDiscount(hubMetaForQuote)) {
+        const response = finalizePublicQuotePayload(snapshotPayload);
+        res.setHeader("X-Quote-Data-Source", "snapshot-hub-discount");
+        res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+        send(res, 200, response);
+        return;
+      }
+
       const apiKey = readApiKey(req);
       if (!apiKey) {
         if (snapshotPayload) {
@@ -2761,6 +2772,22 @@ function formatProlancePName(
 
   app.get(`${TEST_PREFIX}/quotes/share/:quoteId`, handlePublicQuoteView);
   app.get(`${TEST_PREFIX}/public/quotes/view/:quoteId`, handlePublicQuoteView);
+
+  app.get(`${TEST_PREFIX}/public/quotes/:quoteId/hub-discount`, async (req: Request, res: Response): Promise<void> => {
+    const quoteId = Number(String(req.params.quoteId || "").trim());
+    if (!Number.isFinite(quoteId) || quoteId < 1) {
+      res.status(400).json({ message: "Invalid quoteId" });
+      return;
+    }
+    try {
+      const discount = await loadHubDiscountMetaForQuote(quoteId);
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+      res.json({ ok: true, discount });
+    } catch (err) {
+      console.error("public hub-discount error", err);
+      res.status(500).json({ message: asErrorMessage(err) });
+    }
+  });
 
   // Collection: GET {{base_url}}/Origin/Quotes/{{project_id}}
   app.get(`${TEST_PREFIX}/quotes/:projectId`, async (req: Request, res: Response) => {
