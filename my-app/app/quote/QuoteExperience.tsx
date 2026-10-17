@@ -649,7 +649,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
             categoryPct: savePayload.categoryPct,
             amount: savePayload.amount,
             additionalDiscount: savePayload.additionalDiscount,
-            totalPayableAmount: quote.totalPayableAmount ?? quote.totalPrice ?? undefined,
+            totalPayableAmount: quote.totalPayableAmount ?? undefined,
             payload: payload ?? undefined,
             createdBy: currentUserName,
           }),
