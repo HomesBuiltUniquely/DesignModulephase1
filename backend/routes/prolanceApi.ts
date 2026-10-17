@@ -2354,15 +2354,21 @@ function formatProlancePName(
         leadId = lid3 != null && Number.isFinite(Number(lid3)) ? Number(lid3) : null;
       }
       if (leadId == null || leadId < 1) {
-        res.json({ versions: [{ quoteId: seed, createdAt: new Date().toISOString() }] });
+        res.json({
+          leadId: null,
+          versions: [{ quoteId: seed, createdAt: new Date().toISOString() }],
+        });
         return;
       }
       const versions = await loadQuoteVersionsForLeadPublic(leadId);
       if (versions.length === 0) {
-        res.json({ versions: [{ quoteId: seed, createdAt: new Date().toISOString() }] });
+        res.json({
+          leadId,
+          versions: [{ quoteId: seed, createdAt: new Date().toISOString() }],
+        });
         return;
       }
-      res.json({ versions });
+      res.json({ leadId, versions });
     } catch (err) {
       console.error("public quote-revisions error", err);
       res.status(500).json({ message: asErrorMessage(err) });

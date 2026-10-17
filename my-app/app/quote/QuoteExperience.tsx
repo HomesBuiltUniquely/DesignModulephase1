@@ -380,6 +380,10 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       .replace(/^(role_|crm_)/i, '');
 
   const quoteRoleEarly = normalizeQuoteRole(user?.role);
+  const isCrmSalesQuoteRole =
+    quoteRoleEarly === 'sales_admin' ||
+    quoteRoleEarly === 'sales_manager' ||
+    quoteRoleEarly === 'sales_executive';
   const canEditDiscountByDesignRole =
     quoteRoleEarly === 'designer' ||
     quoteRoleEarly === 'design_manager' ||
@@ -387,9 +391,9 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     quoteRoleEarly === 'deputy_general_manager' ||
     quoteRoleEarly === 'admin' ||
     quoteRoleEarly === 'super_admin' ||
-    quoteRoleEarly === 'superadmin';
-  // Used by leadId resolve effect (Design Module session only).
-  const canEditDiscountByRole = canEditDiscountByDesignRole;
+    quoteRoleEarly === 'superadmin' ||
+    (isInternalMode && isCrmSalesQuoteRole);
+  const canEditDiscountByRole = canEditDiscountByDesignRole || (isInternalMode && isCrmSalesQuoteRole);
 
   useEffect(() => {
     setResolvedLeadId(leadIdNum);
@@ -469,18 +473,32 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
 
   useEffect(() => {
     if (leadIdNum != null && leadIdNum > 0) return;
-    if (!sessionId || !versionFetchId || !canEditDiscountByRole) return;
+    if (!versionFetchId) return;
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(
-          `${API}/api/leads/prolance-quote-versions/by-quote/${encodeURIComponent(versionFetchId)}`,
-          { headers: { Authorization: `Bearer ${sessionId}` } },
+        if (sessionId && canEditDiscountByRole) {
+          const res = await fetch(
+            `${API}/api/leads/prolance-quote-versions/by-quote/${encodeURIComponent(versionFetchId)}`,
+            { headers: { Authorization: `Bearer ${sessionId}` } },
+          );
+          if (res.ok) {
+            const body = (await res.json().catch(() => ({}))) as { leadId?: unknown };
+            const lid = Number(body.leadId);
+            if (!cancelled && Number.isFinite(lid) && lid > 0) {
+              setResolvedLeadId(lid);
+              return;
+            }
+          }
+        }
+        const pubRes = await fetch(
+          `${API}/api/prolance-test/public/quote-revisions/${encodeURIComponent(versionFetchId)}`,
+          { cache: 'no-store' },
         );
-        if (!res.ok) return;
-        const body = (await res.json().catch(() => ({}))) as { leadId?: unknown };
-        const lid = Number(body.leadId);
-        if (!cancelled && Number.isFinite(lid) && lid > 0) setResolvedLeadId(lid);
+        if (!pubRes.ok) return;
+        const pubBody = (await pubRes.json().catch(() => ({}))) as { leadId?: unknown };
+        const pubLid = Number(pubBody.leadId);
+        if (!cancelled && Number.isFinite(pubLid) && pubLid > 0) setResolvedLeadId(pubLid);
       } catch {
         /* optional resolve */
       }
@@ -653,8 +671,15 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
   const crmRoleStorage =
     typeof window !== 'undefined' ? (window.localStorage.getItem('crm_role') || '').trim() : '';
 
-  const effectiveCrmUser = crmUserParam || crmUserStorage;
-  const effectiveCrmRole = crmRoleParam || crmRoleStorage;
+  const effectiveCrmUser =
+    crmUserParam ||
+    crmUserStorage ||
+    (isInternalMode && user?.name ? String(user.name).trim() : '') ||
+    (isInternalMode && user?.email ? String(user.email).trim() : '');
+  const effectiveCrmRole =
+    crmRoleParam ||
+    crmRoleStorage ||
+    (isInternalMode && user?.role ? String(user.role).trim() : '');
 
   const formatRoleLabel = (roleStr: string) => {
     if (!roleStr) return '';
@@ -702,23 +727,33 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     resolvedLeadId > 0;
   // CRM SUPER_ADMIN and SALES_ADMIN match Design Module superadmin (woodwork above 40%, e.g. 45%).
   // Other CRM roles stay on designer caps. Design Module DM / TDM / DGM / admin stay unrestricted.
-  const crmUnrestrictedDiscount =
-    viaCrmDiscountEdit &&
-    (crmRoleNormalized === 'super_admin' ||
-      crmRoleNormalized === 'superadmin' ||
-      crmRoleNormalized === 'sales_admin');
+  const elevatedQuoteDiscountRole =
+    crmRoleNormalized === 'super_admin' ||
+    crmRoleNormalized === 'superadmin' ||
+    crmRoleNormalized === 'sales_admin' ||
+    quoteRoleEarly === 'super_admin' ||
+    quoteRoleEarly === 'superadmin' ||
+    quoteRoleEarly === 'sales_admin';
+  const fromCrmQuoteContext = isInternalMode || viaCrmDiscountEdit || isCrmSalesQuoteRole;
   const unrestrictedDiscounts =
-    crmUnrestrictedDiscount ||
-    (!viaCrmDiscountEdit &&
+    elevatedQuoteDiscountRole ||
+    (!fromCrmQuoteContext &&
       (quoteDesignManager ||
         quoteRoleEarly === 'territorial_design_manager' ||
         quoteRoleEarly === 'deputy_general_manager' ||
-        quoteRoleEarly === 'admin' ||
-        quoteRoleEarly === 'super_admin' ||
-        quoteRoleEarly === 'superadmin'));
+        quoteRoleEarly === 'admin'));
 
   const handleSaveDiscount = async (savePayload: QuoteCategoryDiscountSavePayload) => {
-    if (resolvedLeadId == null || !versionFetchId) return;
+    if (!versionFetchId) {
+      setDiscountSaveError('Quote ID is missing — cannot save discount.');
+      return;
+    }
+    if (resolvedLeadId == null || resolvedLeadId < 1) {
+      setDiscountSaveError(
+        'Lead ID is missing. Open the quote from CRM with ?leadId=… or refresh after the page loads.',
+      );
+      return;
+    }
     setDiscountSaving(true);
     setDiscountSaveError(null);
     try {
@@ -744,6 +779,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
             totalPayableAmount: quote.totalPayableAmount ?? undefined,
             payload: payload ?? undefined,
             createdBy: currentUserName,
+            ...(isInternalMode || viaCrmDiscountEdit ? { sourceModule: 'CRM' } : {}),
             ...(viaCrmDiscountEdit
               ? { crmRole: effectiveCrmRole, crmUser: effectiveCrmUser }
               : {}),
@@ -835,12 +871,10 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       // 1. If backend returned updated versions in response, use them directly:
       const bodyObj = body && typeof body === 'object' ? (body as Record<string, unknown>) : null;
       let appliedVersions: QuoteVersionRow[] | null = null;
-      if (bodyObj && Array.isArray(bodyObj.versions) && bodyObj.versions.length > 0) {
+      if (bodyObj && Array.isArray(bodyObj.versions)) {
         const parsed = parseVersionsArray(bodyObj.versions);
-        if (parsed.length > 0) {
-          appliedVersions = parsed;
-          setQuoteVersions(parsed);
-        }
+        appliedVersions = parsed;
+        setQuoteVersions(parsed);
       }
 
       // 2. Otherwise fetch fresh quote revisions from public endpoint

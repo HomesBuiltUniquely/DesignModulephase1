@@ -17265,6 +17265,13 @@ app.get("/api/leads/prolance-quote-versions/by-quote/:quoteId", async (req: Requ
     );
     let leadId: number | null = (vRows as any[])[0]?.leadId ?? null;
     if (leadId == null) {
+      const [sRows] = await pool.query(
+        `SELECT lead_id AS leadId FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
+        [quoteIdNum],
+      );
+      leadId = (sRows as any[])[0]?.leadId ?? null;
+    }
+    if (leadId == null) {
       const [lRows] = await pool.query(`SELECT id AS id FROM leads WHERE prolance_quote_id = ? LIMIT 1`, [
         quoteIdNum,
       ]);
@@ -17309,6 +17316,9 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       "admin",
       "super_admin",
       "superadmin",
+      "sales_admin",
+      "sales_manager",
+      "sales_executive",
     ].includes(role);
 
   /** CRM internal quote link roles (?crmRole=SUPER_ADMIN|SALES_ADMIN|…) */
@@ -17414,18 +17424,20 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
   // CRM SUPER_ADMIN and SALES_ADMIN can exceed designer caps (same as Design Module superadmin).
   // Other CRM roles stay on designer caps (woodwork ≤40%, others ≤5%, additional ≤3%).
   // Unrestricted override is also Design Module DM / TDM / DGM / admin.
-  const crmUnrestrictedDiscount =
-    viaCrmInternal &&
-    (role === "super_admin" || role === "superadmin" || role === "sales_admin");
+  const elevatedDiscountRole =
+    role === "super_admin" || role === "superadmin" || role === "sales_admin";
+  const fromCrmModule =
+    viaCrmInternal ||
+    String(body.sourceModule || body.source_module || "")
+      .trim()
+      .toUpperCase() === "CRM";
+  const designModuleUnrestrictedRole =
+    role === "admin" ||
+    role === "territorial_design_manager" ||
+    role === "deputy_general_manager" ||
+    role === "design_manager";
   const unrestrictedDiscounts =
-    crmUnrestrictedDiscount ||
-    (!viaCrmInternal &&
-      (role === "admin" ||
-        role === "super_admin" ||
-        role === "superadmin" ||
-        role === "territorial_design_manager" ||
-        role === "deputy_general_manager" ||
-        role === "design_manager"));
+    elevatedDiscountRole || (!fromCrmModule && designModuleUnrestrictedRole);
 
   try {
     const [snapRows] = await pool.query(
@@ -17597,11 +17609,16 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       };
     }
 
+    const savedPct =
+      discountMeta.hubCategoryDiscountPct &&
+      typeof discountMeta.hubCategoryDiscountPct === "object"
+        ? (discountMeta.hubCategoryDiscountPct as Record<string, unknown>)
+        : categoryValues;
     const targetDiscountState = {
-      woodwork: parseFiniteNumber(categoryValues.woodwork) ?? 0,
-      accessories: parseFiniteNumber(categoryValues.accessories) ?? 0,
-      constructionHw: parseFiniteNumber(categoryValues.constructionHw) ?? 0,
-      services: parseFiniteNumber(categoryValues.services) ?? 0,
+      woodwork: parseFiniteNumber(savedPct.woodwork) ?? 0,
+      accessories: parseFiniteNumber(savedPct.accessories) ?? 0,
+      constructionHw: parseFiniteNumber(savedPct.constructionHw) ?? 0,
+      services: parseFiniteNumber(savedPct.services) ?? 0,
       amount: Math.round(amount),
       additionalDiscount: Math.round(additionalDiscount),
     };
@@ -17661,7 +17678,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       const countAll = (maxRow as any[])[0]?.countAll ?? 0;
       const nextVersionNumber = Math.max(Number(maxVer) || 0, Number(countAll) || 0) + 1;
 
-      const sourceModule = viaCrmInternal ? "CRM" : "Design Module";
+      const sourceModule = fromCrmModule ? "CRM" : "Design Module";
       await pool.query(
         `INSERT INTO lead_prolance_quote_versions
           (lead_id, quote_id, created_at, created_by, created_by_id, created_by_role,
@@ -17686,7 +17703,11 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
 
       // Record event into lead_history so it appears in the Lead's History card
       try {
-        const actorName = viaCrmInternal ? crmUserHeader : user?.name || creatorName;
+        const actorName = fromCrmModule
+          ? viaCrmInternal
+            ? crmUserHeader
+            : user?.name || creatorName
+          : user?.name || creatorName;
         const actorRole = editorRoleStored || (viaCrmInternal ? crmRoleRaw : user?.role) || null;
         await addLeadHistoryEvent(leadId, {
           id: `quote-discount-${Date.now()}`,
@@ -17721,7 +17742,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
           },
           taskName: "Quote discount",
           timestamp: new Date().toISOString(),
-          description: viaCrmInternal
+          description: fromCrmModule
             ? `Quote ${quoteId} discount updated via CRM by ${actorName}${actorRole ? ` (${actorRole})` : ""}: ${changeSummary}.`
             : `Quote ${quoteId} discount updated: ${changeSummary}.`,
           milestoneName: "Quote",
