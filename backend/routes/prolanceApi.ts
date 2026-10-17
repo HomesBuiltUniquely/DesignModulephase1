@@ -1079,6 +1079,38 @@ const HUB_DISCOUNT_META_KEYS = [
   "hubAdditionalDiscountAmount",
 ] as const;
 
+function parseSnapshotJson(raw: unknown): Record<string, unknown> | null {
+  if (raw == null) return null;
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(raw)) {
+    const s = raw.toString("utf8").trim();
+    if (!s) return null;
+    try {
+      const parsed = JSON.parse(s) as unknown;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof raw === "object" && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>;
+  }
+  if (typeof raw === "string") {
+    const s = raw.trim();
+    if (!s || s === "[object Object]") return null;
+    try {
+      const parsed = JSON.parse(s) as unknown;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 function extractHubDiscountMeta(payload: Record<string, unknown> | null | undefined): Record<string, unknown> {
   if (!payload || typeof payload !== "object") return {};
   const meta: Record<string, unknown> = {};
@@ -1101,7 +1133,14 @@ function payloadHasHubDiscount(meta: Record<string, unknown>): boolean {
   const add = parseFiniteNum(meta.hubAdditionalDiscountAmount) ?? 0;
   if (amt != null && amt > 0) return true;
   if (add > 0) return true;
-  const pct = meta.hubCategoryDiscountPct;
+  let pct: unknown = meta.hubCategoryDiscountPct;
+  if (typeof pct === "string" && pct.trim()) {
+    try {
+      pct = JSON.parse(pct) as unknown;
+    } catch {
+      pct = null;
+    }
+  }
   if (pct && typeof pct === "object" && !Array.isArray(pct)) {
     for (const v of Object.values(pct as Record<string, unknown>)) {
       const n = parseFiniteNum(v);
@@ -1145,8 +1184,8 @@ async function loadHubDiscountMetaForQuote(quoteId: number): Promise<Record<stri
       [quoteId],
     );
     const raw = (snapRows as { payload_json?: unknown }[])[0]?.payload_json;
-    if (raw != null && String(raw).length > 0) {
-      const parsed = JSON.parse(String(raw)) as Record<string, unknown>;
+    const parsed = parseSnapshotJson(raw);
+    if (parsed) {
       const meta = extractHubDiscountMeta(parsed);
       if (payloadHasHubDiscount(meta)) return meta;
     }
@@ -2513,26 +2552,38 @@ function formatProlancePName(
             [snapshotQid],
           );
           const row = (rows as { payload_json?: unknown }[])[0];
-          const raw = row?.payload_json != null ? String(row.payload_json) : "";
-          if (raw.length > 0) {
-            const parsed = JSON.parse(raw) as unknown;
-            if (parsed && typeof parsed === "object") {
-              snapshotPayload = parsed as Record<string, unknown>;
-            }
-          }
+          snapshotPayload = parseSnapshotJson(row?.payload_json);
           hubMetaForQuote = extractHubDiscountMeta(snapshotPayload);
-          if (!payloadHasHubDiscount(hubMetaForQuote)) {
-            hubMetaForQuote = await loadHubDiscountMetaForQuote(snapshotQid);
-          }
         } catch (snapErr) {
           console.error("quote snapshot read error", snapErr);
         }
+        if (!payloadHasHubDiscount(hubMetaForQuote)) {
+          hubMetaForQuote = await loadHubDiscountMetaForQuote(snapshotQid);
+        }
       }
+
+      const finalizePublicQuotePayload = (base: Record<string, unknown>): Record<string, unknown> => {
+        if (!payloadHasHubDiscount(hubMetaForQuote)) return base;
+        const snapForOverlay =
+          snapshotPayload != null
+            ? applyHubDiscountMetaToPayload(snapshotPayload, hubMetaForQuote)
+            : applyHubDiscountMetaToPayload(base, hubMetaForQuote);
+        const withHub = applyHubDiscountMetaToPayload(
+          snapshotPayload != null ? applyHubDiscountOverlay(base, snapForOverlay) : base,
+          hubMetaForQuote,
+        );
+        const payable = extractTotalPayableAmount(withHub);
+        if (payable == null) return withHub;
+        return applyHubDiscountMetaToPayload(
+          { ...withHub, totalPayableAmount: payable, finalTotalPrice: payable },
+          hubMetaForQuote,
+        );
+      };
 
       const apiKey = readApiKey(req);
       if (!apiKey) {
         if (snapshotPayload) {
-          send(res, 200, snapshotPayload);
+          send(res, 200, finalizePublicQuotePayload(snapshotPayload));
           return;
         }
         res.status(500).json({ message: "Origin API key is not configured" });
@@ -2543,7 +2594,7 @@ function formatProlancePName(
       const password = asString(envTrim("PROLANCE_PASSWORD"));
       if (!username || !password) {
         if (snapshotPayload) {
-          send(res, 200, snapshotPayload);
+          send(res, 200, finalizePublicQuotePayload(snapshotPayload));
           return;
         }
         res.status(500).json({ message: "Prolance API credentials are not configured" });
@@ -2685,47 +2736,11 @@ function formatProlancePName(
         console.error("live prolance quote fetch error", liveErr);
       }
 
-      const finalizePublicQuotePayload = (base: Record<string, unknown>): Record<string, unknown> => {
-        if (!payloadHasHubDiscount(hubMetaForQuote)) return base;
-        const snapForOverlay =
-          snapshotPayload != null
-            ? applyHubDiscountMetaToPayload(snapshotPayload, hubMetaForQuote)
-            : applyHubDiscountMetaToPayload(base, hubMetaForQuote);
-        return applyHubDiscountMetaToPayload(
-          snapshotPayload != null ? applyHubDiscountOverlay(base, snapForOverlay) : base,
-          hubMetaForQuote,
-        );
-      };
-
       if (livePayload) {
         const response = finalizePublicQuotePayload(livePayload);
         res.setHeader("X-Quote-Data-Source", "prolance-live");
         res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
         send(res, 200, response);
-
-        // Refresh BOQ prices from Prolance but never drop CRM hub discount metadata.
-        if (Number.isFinite(snapshotQid) && snapshotQid > 0) {
-          try {
-            const [leadRows] = await pool.query(
-              "SELECT lead_id AS leadId FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1",
-              [snapshotQid],
-            );
-            const leadId = (leadRows as { leadId?: unknown }[])[0]?.leadId;
-            if (leadId != null && Number.isFinite(Number(leadId))) {
-              const toPersist = payloadHasHubDiscount(hubMetaForQuote)
-                ? applyHubDiscountMetaToPayload(response, hubMetaForQuote)
-                : response;
-              await pool.query(
-                `INSERT INTO lead_prolance_quote_snapshots (lead_id, quote_id, payload_json, created_at)
-                 VALUES (?, ?, ?, ?)
-                 ON DUPLICATE KEY UPDATE payload_json = VALUES(payload_json), created_at = VALUES(created_at)`,
-                [Number(leadId), snapshotQid, JSON.stringify(toPersist), new Date()],
-              );
-            }
-          } catch (snapWriteErr) {
-            console.error("quote snapshot refresh error", snapWriteErr);
-          }
-        }
         return;
       }
 
