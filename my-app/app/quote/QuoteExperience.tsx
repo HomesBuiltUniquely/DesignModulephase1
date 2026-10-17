@@ -369,6 +369,29 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
   const [quoteVersionsError, setQuoteVersionsError] = useState<string | null>(null);
   const [discountSaving, setDiscountSaving] = useState(false);
   const [discountSaveError, setDiscountSaveError] = useState<string | null>(null);
+  const [resolvedLeadId, setResolvedLeadId] = useState<number | null>(leadIdNum);
+
+  const normalizeQuoteRole = (raw: unknown): string =>
+    String(raw || '')
+      .trim()
+      .toLowerCase()
+      .replace(/^(role_|crm_)/i, '');
+
+  const quoteRoleEarly = normalizeQuoteRole(user?.role);
+  const canEditDiscountByDesignRole =
+    quoteRoleEarly === 'designer' ||
+    quoteRoleEarly === 'design_manager' ||
+    quoteRoleEarly === 'territorial_design_manager' ||
+    quoteRoleEarly === 'deputy_general_manager' ||
+    quoteRoleEarly === 'admin' ||
+    quoteRoleEarly === 'super_admin' ||
+    quoteRoleEarly === 'superadmin';
+  // Used by leadId resolve effect (Design Module session only).
+  const canEditDiscountByRole = canEditDiscountByDesignRole;
+
+  useEffect(() => {
+    setResolvedLeadId(leadIdNum);
+  }, [leadIdNum]);
 
   useEffect(() => {
     if (preloadedPayload !== undefined) return;
@@ -441,6 +464,29 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     if (/^\d+$/.test(shown) && Number(shown) > 0) return shown;
     return '';
   }, [quoteIdProp, payload, quote.quotationId]);
+
+  useEffect(() => {
+    if (leadIdNum != null && leadIdNum > 0) return;
+    if (!sessionId || !versionFetchId || !canEditDiscountByRole) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          `${API}/api/leads/prolance-quote-versions/by-quote/${encodeURIComponent(versionFetchId)}`,
+          { headers: { Authorization: `Bearer ${sessionId}` } },
+        );
+        if (!res.ok) return;
+        const body = (await res.json().catch(() => ({}))) as { leadId?: unknown };
+        const lid = Number(body.leadId);
+        if (!cancelled && Number.isFinite(lid) && lid > 0) setResolvedLeadId(lid);
+      } catch {
+        /* optional resolve */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [leadIdNum, sessionId, versionFetchId, canEditDiscountByRole]);
 
   useEffect(() => {
     if (!versionFetchId) {
@@ -611,25 +657,35 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
         ? 'CRM User'
         : 'Designer';
 
-  const quoteRole = String(user?.role ?? '').trim().toLowerCase();
+  // Design Module session OR CRM internal link with admin/super_admin.
+  const crmRoleNormalized = normalizeQuoteRole(effectiveCrmRole);
+  const canEditDiscountByCrmRole =
+    crmRoleNormalized === 'super_admin' ||
+    crmRoleNormalized === 'superadmin' ||
+    crmRoleNormalized === 'admin' ||
+    crmRoleNormalized === 'sales_admin' ||
+    crmRoleNormalized === 'sales_manager' ||
+    crmRoleNormalized === 'sales_executive';
+  const quoteRole = quoteRoleEarly || crmRoleNormalized;
   const quoteDesignManager = quoteRole === 'design_manager';
+  const viaCrmDiscountEdit =
+    isInternalMode && canEditDiscountByCrmRole && Boolean(effectiveCrmUser);
   const discountEditable =
-    isInternalMode &&
-    leadIdNum != null &&
-    leadIdNum > 0 &&
+    (canEditDiscountByDesignRole || viaCrmDiscountEdit) &&
+    (Boolean(sessionId) || viaCrmDiscountEdit) &&
     Boolean(versionFetchId) &&
-    Boolean(sessionId) &&
-    (quoteRole === 'designer' ||
-      quoteDesignManager ||
-      quoteRole === 'territorial_design_manager' ||
-      quoteRole === 'admin');
+    resolvedLeadId != null &&
+    resolvedLeadId > 0;
   const unrestrictedDiscounts =
     quoteDesignManager ||
     quoteRole === 'territorial_design_manager' ||
-    quoteRole === 'admin';
+    quoteRole === 'deputy_general_manager' ||
+    quoteRole === 'admin' ||
+    quoteRole === 'super_admin' ||
+    quoteRole === 'superadmin';
 
   const handleSaveDiscount = async (savePayload: QuoteCategoryDiscountSavePayload) => {
-    if (leadIdNum == null || !versionFetchId) return;
+    if (resolvedLeadId == null || !versionFetchId) return;
     setDiscountSaving(true);
     setDiscountSaveError(null);
     try {
@@ -638,9 +694,12 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       };
       if (sessionId) {
         headers['Authorization'] = `Bearer ${sessionId}`;
+      } else if (viaCrmDiscountEdit) {
+        headers['X-Crm-Role'] = effectiveCrmRole;
+        headers['X-Crm-User'] = effectiveCrmUser;
       }
       const res = await fetch(
-        `${API}/api/leads/${leadIdNum}/quotes/${encodeURIComponent(versionFetchId)}/discount`,
+        `${API}/api/leads/${resolvedLeadId}/quotes/${encodeURIComponent(versionFetchId)}/discount`,
         {
           method: 'PATCH',
           headers,
@@ -652,6 +711,9 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
             totalPayableAmount: quote.totalPayableAmount ?? undefined,
             payload: payload ?? undefined,
             createdBy: currentUserName,
+            ...(viaCrmDiscountEdit
+              ? { crmRole: effectiveCrmRole, crmUser: effectiveCrmUser }
+              : {}),
           }),
         },
       );

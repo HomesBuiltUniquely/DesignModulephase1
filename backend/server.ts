@@ -17279,34 +17279,92 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
   if (!Number.isFinite(leadId) || leadId < 1) return res.status(400).json({ message: "Invalid id" });
   if (!Number.isFinite(quoteId) || quoteId < 1) return res.status(400).json({ message: "Invalid quoteId" });
 
-  const user = await getUserFromSession(req);
-  if (!user) return res.status(401).json({ message: "Unauthorized" });
-  const role = (user.role ?? "").trim().toLowerCase();
-  if (!["designer", "design_manager", "territorial_design_manager", "admin"].includes(role)) {
-    return res.status(403).json({ message: "You are not allowed to edit quote discounts" });
-  }
-
-  const access = await getLeadAccessRowForUser(res, user, leadId);
-  if (!access.ok) return;
-
-  if (role === "territorial_design_manager") {
-    const [tdmRows] = await pool.query(
-      `SELECT 1
-       FROM users d
-       INNER JOIN users dm ON dm.id = d.design_manager_id
-       WHERE d.id = ?
-         AND d.role = 'designer'
-         AND dm.role = 'design_manager'
-         AND dm.territorial_design_manager_id = ?
-       LIMIT 1`,
-      [access.row.assigned_designer_id, user.id],
-    );
-    if ((tdmRows as any[]).length === 0) {
-      return res.status(404).json({ message: "Lead not found" });
-    }
-  }
-
   const body = (req.body || {}) as Record<string, unknown>;
+  const normalizeDiscountRole = (raw: unknown): string =>
+    String(raw || "")
+      .trim()
+      .toLowerCase()
+      .replace(/^(role_|crm_)/i, "");
+
+  const isDesignDiscountRole = (role: string): boolean =>
+    [
+      "designer",
+      "design_manager",
+      "territorial_design_manager",
+      "deputy_general_manager",
+      "admin",
+      "super_admin",
+      "superadmin",
+    ].includes(role);
+
+  /** CRM internal quote link roles (?crmRole=SUPER_ADMIN|SALES_ADMIN|…) */
+  const isCrmDiscountRole = (role: string): boolean =>
+    [
+      "super_admin",
+      "superadmin",
+      "admin",
+      "sales_admin",
+      "sales_manager",
+      "sales_executive",
+    ].includes(role);
+
+  const user = await getUserFromSession(req);
+  const crmRoleHeader = normalizeDiscountRole(
+    req.headers["x-crm-role"] || body.crmRole || body.userRole,
+  );
+  const crmUserHeader = String(
+    req.headers["x-crm-user"] || body.crmUser || body.userName || "",
+  ).trim();
+
+  let role = "";
+  let editorLabel: string | null = null;
+  let viaCrmInternal = false;
+
+  if (user) {
+    role = normalizeDiscountRole(user.role);
+    if (!isDesignDiscountRole(role)) {
+      return res.status(403).json({ message: "You are not allowed to edit quote discounts" });
+    }
+    const access = await getLeadAccessRowForUser(res, user, leadId);
+    if (!access.ok) return;
+
+    if (role === "territorial_design_manager") {
+      const [tdmRows] = await pool.query(
+        `SELECT 1
+         FROM users d
+         INNER JOIN users dm ON dm.id = d.design_manager_id
+         WHERE d.id = ?
+           AND d.role = 'designer'
+           AND dm.role = 'design_manager'
+           AND dm.territorial_design_manager_id = ?
+         LIMIT 1`,
+        [access.row.assigned_designer_id, user.id],
+      );
+      if ((tdmRows as any[]).length === 0) {
+        return res.status(404).json({ message: "Lead not found" });
+      }
+    }
+    const roleLabel = user.role
+      ? String(user.role)
+          .split("_")
+          .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+          .join(" ")
+      : "";
+    editorLabel = user.name ? (roleLabel ? `${user.name} (${roleLabel})` : user.name) : null;
+  } else if (isCrmDiscountRole(crmRoleHeader) && crmUserHeader) {
+    // CRM opened /quote/:id?internal=1&crmUser=…&crmRole=SUPER_ADMIN
+    viaCrmInternal = true;
+    role = crmRoleHeader;
+    const roleLabel = crmRoleHeader
+      .split(/[\s_-]+/)
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(" ");
+    editorLabel = roleLabel ? `${crmUserHeader} (${roleLabel})` : crmUserHeader;
+  } else {
+    return res.status(401).json({ message: "Unauthorized" });
+  }
+
   const categoryPct = (body.categoryPct ?? body.hubCategoryDiscountPct) as unknown;
   const amount = parseFiniteNumber(body.amount ?? body.hubCategoryDiscountAmount);
   const additionalDiscount =
@@ -17332,8 +17390,14 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
 
   const unrestrictedDiscounts =
     role === "admin" ||
+    role === "super_admin" ||
+    role === "superadmin" ||
     role === "territorial_design_manager" ||
-    role === "design_manager";
+    role === "deputy_general_manager" ||
+    role === "design_manager" ||
+    // CRM ADMIN / SUPER_ADMIN only — sales roles edit with normal caps
+    (viaCrmInternal &&
+      (role === "admin" || role === "super_admin" || role === "superadmin"));
 
   try {
     const [snapRows] = await pool.query(
@@ -17428,18 +17492,8 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
     );
     const ins = result as mysql.ResultSetHeader;
 
-    // Record the authenticated account that saved the discount.
-    const roleLabel = user?.role
-      ? String(user.role)
-          .split("_")
-          .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-          .join(" ")
-      : "";
-    const sessionCreatorName = user?.name
-      ? (roleLabel ? `${user.name} (${roleLabel})` : user.name)
-      : null;
-
-    const creatorName = sessionCreatorName || "User";
+    // Record who saved the discount (Design Module session or CRM internal link).
+    const creatorName = editorLabel || "User";
 
     // 1. Read previous discount state from the last saved revision in lead_prolance_quote_versions (immune to snapshot overwrites)
     const [lastVersionRows] = await pool.query(
