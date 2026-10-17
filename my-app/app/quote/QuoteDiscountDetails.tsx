@@ -37,7 +37,7 @@ type Props = {
   additionalDiscount?: number | null;
   /** Total payable amount used to cap designer additional discount at 3%. */
   totalPayableAmount?: number | null;
-  /** When set, designers can edit per-category % (woodwork ≤40%, others ≤5%). */
+  /** When set, designers can edit per-category % (woodwork ≤45%, others ≤5%). */
   editable?: boolean;
   /** Removes designer discount caps for Design Managers, TDMs, and Admins. */
   unrestrictedDiscounts?: boolean;
@@ -236,7 +236,7 @@ export function QuoteDiscountDetails({
           </div>
         </div>
       ) : null}
-      {/* Woodwork > 40% popup */}
+      {/* Woodwork over cap popup */}
       {capProfile !== 'unrestricted' && woodworkPopup !== null ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-sm rounded-2xl border border-[#ece6df] bg-white p-6 shadow-xl">

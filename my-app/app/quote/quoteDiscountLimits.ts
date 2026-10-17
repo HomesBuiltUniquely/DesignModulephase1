@@ -1,6 +1,6 @@
 /** Design-module quote discount caps by work category. */
 
-export const WOODWORK_MAX_DISCOUNT_PCT = 40;
+export const WOODWORK_MAX_DISCOUNT_PCT = 45;
 export const CRM_ELEVATED_WOODWORK_MAX_DISCOUNT_PCT = 45;
 export const OTHER_CATEGORY_MAX_DISCOUNT_PCT = 5;
 

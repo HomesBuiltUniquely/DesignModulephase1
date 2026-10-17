@@ -7251,8 +7251,8 @@ async function resolveMilestonePaymentAmounts(
   };
 }
 
-/** Design-module caps: woodwork 40%, all other work categories 5%. */
-const WOODWORK_MAX_DISCOUNT_PCT = 40;
+/** Design-module caps: woodwork 45%, all other work categories 5%. */
+const WOODWORK_MAX_DISCOUNT_PCT = 45;
 const CRM_ELEVATED_WOODWORK_MAX_DISCOUNT_PCT = 45;
 const OTHER_CATEGORY_MAX_DISCOUNT_PCT = 5;
 const ADDITIONAL_DISCOUNT_MAX_PCT = 3;
