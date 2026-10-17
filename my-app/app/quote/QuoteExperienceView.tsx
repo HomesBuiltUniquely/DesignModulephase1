@@ -36,6 +36,8 @@ type VersionRow = {
   quoteId: number;
   createdAt: string;
   createdBy?: string;
+  createdByRole?: string;
+  sourceModule?: string;
   changeSummary?: string;
   versionNumber?: number;
 };
@@ -647,12 +649,22 @@ export function QuoteExperienceView(props: Props) {
                         {v.changeSummary}
                       </p>
                     ) : null}
-                    {v.createdBy ? (
-                      <p className="mt-2 flex items-center gap-1.5 text-xs font-medium text-[#4a3f35]">
-                        <svg className="h-3.5 w-3.5 shrink-0 text-[#c1272d]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    {v.createdBy || v.sourceModule || v.createdByRole ? (
+                      <p className="mt-2 flex items-start gap-1.5 text-xs font-medium text-[#4a3f35]">
+                        <svg className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#c1272d]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                           <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                         </svg>
-                        <span>Created by {v.createdBy.replace(/^(created by|by)[:\s]*/i, '')}</span>
+                        <span>
+                          {v.createdBy
+                            ? `Created by ${v.createdBy.replace(/^(created by|by)[:\s]*/i, '')}`
+                            : 'Created by —'}
+                          {v.createdByRole && !String(v.createdBy || '').toLowerCase().includes(String(v.createdByRole).toLowerCase())
+                            ? ` · ${v.createdByRole}`
+                            : ''}
+                          {v.sourceModule && !String(v.createdBy || '').toLowerCase().includes(String(v.sourceModule).toLowerCase())
+                            ? ` · ${v.sourceModule}`
+                            : ''}
+                        </span>
                       </p>
                     ) : null}
                   </a>

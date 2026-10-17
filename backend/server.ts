@@ -2976,10 +2976,20 @@ function dedupeProlanceQuoteVersionRows(
 }
 
 async function loadProlanceQuoteVersionsForLead(leadId: number): Promise<
-  Array<{ quoteId: number; createdAt: string; createdBy?: string; changeSummary?: string; versionNumber?: number }>
+  Array<{
+    quoteId: number;
+    createdAt: string;
+    createdBy?: string;
+    createdByRole?: string;
+    sourceModule?: string;
+    changeSummary?: string;
+    versionNumber?: number;
+  }>
 > {
   const [rows] = await pool.query(
-    `SELECT quote_id AS quoteId, created_at AS createdAt, created_by AS createdBy, change_summary AS changeSummary, version_number AS versionNumber
+    `SELECT quote_id AS quoteId, created_at AS createdAt, created_by AS createdBy,
+            created_by_role AS createdByRole, source_module AS sourceModule,
+            change_summary AS changeSummary, version_number AS versionNumber
      FROM lead_prolance_quote_versions
      WHERE lead_id = ?
      ORDER BY created_at ASC, id ASC`,
@@ -2991,6 +3001,8 @@ async function loadProlanceQuoteVersionsForLead(leadId: number): Promise<
     quoteId: Number(r.quoteId),
     createdAt: toIso(r.createdAt),
     createdBy: r.createdBy ? String(r.createdBy) : undefined,
+    createdByRole: r.createdByRole ? String(r.createdByRole) : undefined,
+    sourceModule: r.sourceModule ? String(r.sourceModule) : undefined,
     changeSummary: r.changeSummary ? String(r.changeSummary) : undefined,
     versionNumber: r.versionNumber ? Number(r.versionNumber) : undefined,
   }));
@@ -17320,7 +17332,11 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
 
   let role = "";
   let editorLabel: string | null = null;
+  let editorRoleStored: string | null = null;
   let viaCrmInternal = false;
+  const crmRoleRaw = String(
+    req.headers["x-crm-role"] || body.crmRole || body.userRole || "",
+  ).trim();
 
   if (user) {
     role = normalizeDiscountRole(user.role);
@@ -17352,17 +17368,22 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
           .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
           .join(" ")
       : "";
+    editorRoleStored = user.role ? String(user.role) : null;
     editorLabel = user.name ? (roleLabel ? `${user.name} (${roleLabel})` : user.name) : null;
   } else if (isCrmDiscountRole(crmRoleHeader) && crmUserHeader) {
     // CRM opened /quote/:id?internal=1&crmUser=…&crmRole=SUPER_ADMIN
     viaCrmInternal = true;
     role = crmRoleHeader;
+    editorRoleStored = crmRoleRaw || crmRoleHeader.toUpperCase();
     const roleLabel = crmRoleHeader
       .split(/[\s_-]+/)
       .filter(Boolean)
       .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
       .join(" ");
-    editorLabel = roleLabel ? `${crmUserHeader} (${roleLabel})` : crmUserHeader;
+    // Activity / revision: username + role + CRM module
+    editorLabel = roleLabel
+      ? `${crmUserHeader} (${roleLabel}) · CRM`
+      : `${crmUserHeader} · CRM`;
   } else {
     return res.status(401).json({ message: "Unauthorized" });
   }
@@ -17635,6 +17656,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       const countAll = (maxRow as any[])[0]?.countAll ?? 0;
       const nextVersionNumber = Math.max(Number(maxVer) || 0, Number(countAll) || 0) + 1;
 
+      const sourceModule = viaCrmInternal ? "CRM" : "Design Module";
       await pool.query(
         `INSERT INTO lead_prolance_quote_versions
           (lead_id, quote_id, created_at, created_by, created_by_id, created_by_role,
@@ -17646,9 +17668,9 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
           new Date(),
           creatorName,
           user?.id ?? null,
-          user?.role ?? null,
+          editorRoleStored,
           nextVersionNumber,
-          "Design Module",
+          sourceModule,
           changeSummary,
           JSON.stringify(previousDiscountState),
           JSON.stringify(targetDiscountState),
@@ -17659,6 +17681,8 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
 
       // Record event into lead_history so it appears in the Lead's History card
       try {
+        const actorName = viaCrmInternal ? crmUserHeader : user?.name || creatorName;
+        const actorRole = editorRoleStored || (viaCrmInternal ? crmRoleRaw : user?.role) || null;
         await addLeadHistoryEvent(leadId, {
           id: `quote-discount-${Date.now()}`,
           meta: {
@@ -17666,18 +17690,35 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
             quoteId,
             versionNumber: nextVersionNumber,
             eventCategory: "quote_discount",
+            sourceModule,
+            module: sourceModule,
+            role: actorRole,
+            userName: actorName,
+            crmUser: viaCrmInternal ? crmUserHeader : undefined,
+            crmRole: viaCrmInternal ? actorRole : undefined,
           },
           type: "note",
           user: {
             name: creatorName,
+            role: actorRole,
+            module: sourceModule,
           },
           details: {
             kind: "note",
-            noteText: changesList.join("\n"),
+            noteText: [
+              `Module: ${sourceModule}`,
+              actorRole ? `Role: ${actorRole}` : null,
+              `User: ${actorName}`,
+              ...changesList,
+            ]
+              .filter(Boolean)
+              .join("\n"),
           },
           taskName: "Quote discount",
           timestamp: new Date().toISOString(),
-          description: `Quote ${quoteId} discount updated: ${changeSummary}.`,
+          description: viaCrmInternal
+            ? `Quote ${quoteId} discount updated via CRM by ${actorName}${actorRole ? ` (${actorRole})` : ""}: ${changeSummary}.`
+            : `Quote ${quoteId} discount updated: ${changeSummary}.`,
           milestoneName: "Quote",
         });
       } catch (hErr) {

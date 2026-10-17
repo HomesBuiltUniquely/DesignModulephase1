@@ -330,6 +330,8 @@ type QuoteVersionRow = {
   quoteId: number;
   createdAt: string;
   createdBy?: string;
+  createdByRole?: string;
+  sourceModule?: string;
   changeSummary?: string;
   versionNumber?: number;
 };
@@ -532,9 +534,31 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                   : o.userName != null
                     ? String(o.userName)
                     : o.designerName != null
+                      ? String(o.designerName)
+                      : undefined;
+            const createdByRole =
+              o.createdByRole != null
+                ? String(o.createdByRole)
+                : o.role != null
+                  ? String(o.role)
+                  : undefined;
+            const sourceModule =
+              o.sourceModule != null
+                ? String(o.sourceModule)
+                : o.module != null
+                  ? String(o.module)
+                  : undefined;
             const changeSummary = o.changeSummary != null ? String(o.changeSummary) : undefined;
             const versionNumber = asNum(o.versionNumber) ?? undefined;
-            return { quoteId: qid, createdAt: ca || new Date().toISOString(), createdBy, changeSummary, versionNumber };
+            return {
+              quoteId: qid,
+              createdAt: ca || new Date().toISOString(),
+              createdBy,
+              createdByRole,
+              sourceModule,
+              changeSummary,
+              versionNumber,
+            };
           })
           .filter(Boolean) as QuoteVersionRow[];
         if (!cancelled) setQuoteVersions(versions);
@@ -772,9 +796,29 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                     : o.designerName != null
                       ? String(o.designerName)
                       : undefined;
+            const createdByRole =
+              o.createdByRole != null
+                ? String(o.createdByRole)
+                : o.role != null
+                  ? String(o.role)
+                  : undefined;
+            const sourceModule =
+              o.sourceModule != null
+                ? String(o.sourceModule)
+                : o.module != null
+                  ? String(o.module)
+                  : undefined;
             const changeSummary = o.changeSummary != null ? String(o.changeSummary) : undefined;
             const versionNumber = asNum(o.versionNumber) ?? undefined;
-            return { quoteId: qid, createdAt: ca || new Date().toISOString(), createdBy, changeSummary, versionNumber };
+            return {
+              quoteId: qid,
+              createdAt: ca || new Date().toISOString(),
+              createdBy,
+              createdByRole,
+              sourceModule,
+              changeSummary,
+              versionNumber,
+            };
           })
           .filter(Boolean) as QuoteVersionRow[];
       };
