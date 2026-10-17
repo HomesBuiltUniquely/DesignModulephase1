@@ -41,7 +41,7 @@ type Props = {
   editable?: boolean;
   /** Removes designer discount caps for Design Managers, TDMs, and Admins. */
   unrestrictedDiscounts?: boolean;
-  /** CRM Super/Sales Admin: woodwork up to 45%. Overrides unrestrictedDiscounts when set. */
+  /** CRM editors: woodwork up to 45% inclusive. Overrides unrestrictedDiscounts when set. */
   discountCapProfile?: DiscountCapProfile;
   saving?: boolean;
   saveError?: string | null;

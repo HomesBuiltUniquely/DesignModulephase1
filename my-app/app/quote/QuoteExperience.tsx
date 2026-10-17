@@ -730,13 +730,9 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     Boolean(versionFetchId) &&
     resolvedLeadId != null &&
     resolvedLeadId > 0;
-  // CRM SUPER_ADMIN and SALES_ADMIN match Design Module superadmin (woodwork cap 45%).
-  // Other CRM roles stay on designer caps. Design Module DM / TDM / DGM / admin stay unrestricted.
-  const capRole = crmRoleNormalized || quoteRoleEarly;
-  const crmElevatedDiscountRole =
-    capRole === 'super_admin' || capRole === 'superadmin' || capRole === 'sales_admin';
+  // CRM (any editor role): woodwork up to 45% inclusive. Design Module DM / TDM / DGM / admin stay unrestricted.
   const fromCrmQuoteContext = isInternalMode || viaCrmDiscountEdit || isCrmSalesQuoteRole;
-  const discountCapProfile: DiscountCapProfile = crmElevatedDiscountRole && fromCrmQuoteContext
+  const discountCapProfile: DiscountCapProfile = fromCrmQuoteContext && canEditDiscountByCrmRole
     ? 'crm-elevated'
     : !fromCrmQuoteContext &&
         (quoteDesignManager ||

@@ -100,9 +100,14 @@ export default function ProjectDetailPage() {
     const isHubPassAdmin = ['admin', 'super_admin', 'superadmin'].includes(
         (authUser?.role || '').toLowerCase(),
     );
-    const quoteDiscountCapProfile = ['super_admin', 'superadmin', 'sales_admin'].includes(
-        (authUser?.role || '').toLowerCase(),
-    )
+    const quoteDiscountCapProfile = [
+        'super_admin',
+        'superadmin',
+        'admin',
+        'sales_admin',
+        'sales_manager',
+        'sales_executive',
+    ].includes((authUser?.role || '').toLowerCase())
         ? ('crm-elevated' as const)
         : ('standard' as const);
     

@@ -7267,16 +7267,13 @@ function maxQuoteCategoryDiscountPct(key: string, mode: QuoteDiscountCapMode): n
 }
 
 function resolveQuoteDiscountCapMode(role: string, fromCrmModule: boolean): QuoteDiscountCapMode {
-  const elevatedCrm =
-    fromCrmModule &&
-    (role === "super_admin" || role === "superadmin" || role === "sales_admin");
-  if (elevatedCrm) return "crm_elevated";
+  // CRM (any sales/admin role): woodwork up to 45% inclusive. Above 45% needs Design DM/TDM/admin.
+  if (fromCrmModule) return "crm_elevated";
   if (
-    !fromCrmModule &&
-    (role === "admin" ||
-      role === "territorial_design_manager" ||
-      role === "deputy_general_manager" ||
-      role === "design_manager")
+    role === "admin" ||
+    role === "territorial_design_manager" ||
+    role === "deputy_general_manager" ||
+    role === "design_manager"
   ) {
     return "unrestricted";
   }
@@ -7707,6 +7704,7 @@ app.patch("/api/crm/leads/:leadId/quotes/:quoteId/discount", async (req: Request
       categoryPct as Record<string, unknown>,
       amount,
       additionalDiscount,
+      "crm_elevated",
     );
   } else {
     return res.status(400).json({ message: "flatDiscountPct (number) or categoryPct (object) is required" });
@@ -17565,16 +17563,11 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
     if (discountCapMode !== "unrestricted") {
       for (const key of ["woodwork", "accessories", "constructionHw", "services"]) {
         const limit = maxQuoteCategoryDiscountPct(key, discountCapMode);
-        const requestedPct = parseFiniteNumber(categoryValues[key]) ?? 0;
+        const requestedPct = Math.round((parseFiniteNumber(categoryValues[key]) ?? 0) * 100) / 100;
+        // Inclusive cap: 45% woodwork is allowed; only values strictly above the cap need approval.
         if (requestedPct > limit) {
-          const crmWoodworkMsg =
-            discountCapMode === "crm_elevated" && key === "woodwork"
-              ? `Maximum woodwork discount in CRM is ${limit}% for Super Admin and Sales Admin.`
-              : null;
           return res.status(403).json({
-            message:
-              crmWoodworkMsg ??
-              `A design manager, TDM, or admin must approve discounts above ${limit}% for ${key}.`,
+            message: `A design manager, TDM, or admin must approve discounts above ${limit}% for ${key}.`,
           });
         }
       }
