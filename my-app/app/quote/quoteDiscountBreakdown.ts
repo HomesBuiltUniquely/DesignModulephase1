@@ -123,16 +123,26 @@ function pickFrom(obj: Record<string, unknown>, keys: string[]): number | null {
 }
 
 function readHubCategoryPct(quoteObj: Record<string, unknown>, key: string): number | null {
-  let raw: unknown = quoteObj.hubCategoryDiscountPct;
-  if (typeof raw === 'string' && raw.trim()) {
-    try {
-      raw = JSON.parse(raw) as unknown;
-    } catch {
-      raw = null;
-    }
+  const sources = [quoteObj];
+  const data = quoteObj.data ?? quoteObj.Data;
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    sources.push(data as Record<string, unknown>);
+  } else if (Array.isArray(data) && data[0] && typeof data[0] === 'object') {
+    sources.push(data[0] as Record<string, unknown>);
   }
-  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-    return asNum((raw as Record<string, unknown>)[key]);
+  for (const src of sources) {
+    let raw: unknown = src.hubCategoryDiscountPct;
+    if (typeof raw === 'string' && raw.trim()) {
+      try {
+        raw = JSON.parse(raw) as unknown;
+      } catch {
+        raw = null;
+      }
+    }
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      const n = asNum((raw as Record<string, unknown>)[key]);
+      if (n != null) return n;
+    }
   }
   return null;
 }
@@ -342,14 +352,29 @@ export function sumDiscountBreakdownAmounts(rows: QuoteDiscountBreakdownRow[]): 
   return rows.reduce((sum, row) => sum + (row.discountAmount ?? 0), 0);
 }
 
+function readHubDiscountAmount(quoteObj: Record<string, unknown>, key: string): number | null {
+  const sources = [quoteObj];
+  const data = quoteObj.data ?? quoteObj.Data;
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    sources.push(data as Record<string, unknown>);
+  } else if (Array.isArray(data) && data[0] && typeof data[0] === 'object') {
+    sources.push(data[0] as Record<string, unknown>);
+  }
+  for (const src of sources) {
+    const n = asNum(src[key]);
+    if (n != null) return n;
+  }
+  return null;
+}
+
 export function resolveTotalDiscount(
   quoteObj: Record<string, unknown>,
   breakdownRows: QuoteDiscountBreakdownRow[],
   interiorAmount: number | null,
   payableAmount: number | null,
 ): number | null {
-  const hubCategoryAmount = asNum(quoteObj.hubCategoryDiscountAmount);
-  const hubAdditionalAmount = Math.max(0, asNum(quoteObj.hubAdditionalDiscountAmount) ?? 0);
+  const hubCategoryAmount = readHubDiscountAmount(quoteObj, 'hubCategoryDiscountAmount');
+  const hubAdditionalAmount = Math.max(0, readHubDiscountAmount(quoteObj, 'hubAdditionalDiscountAmount') ?? 0);
   if (hubCategoryAmount != null || hubAdditionalAmount > 0) {
     return Math.max(0, (hubCategoryAmount ?? 0) + hubAdditionalAmount);
   }
