@@ -159,7 +159,7 @@ export function QuoteDiscountDetails({
   const handlePctChange = (key: (typeof EDITABLE_KEYS)[number], raw: string) => {
     const n = Number(raw);
     const val = Number.isFinite(n) ? n : 0;
-    if (capProfile !== 'unrestricted' && key === 'woodwork' && val > woodworkCap) {
+    if (capProfile !== 'unrestricted' && key === 'woodwork' && val > 45) {
       setWoodworkPopup(val);
       return;
     }

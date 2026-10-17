@@ -17634,12 +17634,16 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
 
     if (discountCapMode !== "unrestricted") {
       for (const key of ["woodwork", "accessories", "constructionHw", "services"]) {
-        const limit = maxQuoteCategoryDiscountPct(key, discountCapMode);
         const requestedPct = Math.round((parseFiniteNumber(categoryValues[key]) ?? 0) * 100) / 100;
-        // Inclusive cap: 45% woodwork is allowed; only values strictly above the cap need approval.
+        // Woodwork: 45% inclusive is allowed. Do not interpolate an older 40% cap.
+        const limit =
+          key === "woodwork" ? WOODWORK_MAX_DISCOUNT_PCT : maxQuoteCategoryDiscountPct(key, discountCapMode);
         if (requestedPct > limit) {
           return res.status(403).json({
-            message: `A design manager, TDM, or admin must approve discounts above ${limit}% for ${key}.`,
+            message:
+              key === "woodwork"
+                ? "A design manager, TDM, or admin must approve discounts above 45% for woodwork."
+                : `A design manager, TDM, or admin must approve discounts above ${limit}% for ${key}.`,
           });
         }
       }
