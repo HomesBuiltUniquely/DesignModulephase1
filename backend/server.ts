@@ -1565,6 +1565,13 @@ async function initDb() {
         created_at DATETIME NOT NULL,
         created_by VARCHAR(255) NULL,
         created_by_id INT NULL,
+        created_by_role VARCHAR(50) NULL,
+        version_number INT NULL,
+        source_module VARCHAR(100) NULL,
+        change_summary TEXT NULL,
+        previous_values LONGTEXT NULL,
+        updated_values LONGTEXT NULL,
+        discount_snapshot LONGTEXT NULL,
         KEY idx_lpqv_quote (quote_id),
         KEY idx_lpqv_lead (lead_id),
         KEY idx_lpqv_lead_quote (lead_id, quote_id)
@@ -1589,6 +1596,26 @@ async function initDb() {
       }
     } catch {
       // ignore
+    }
+    const quoteVersionColumns: Array<[string, string]> = [
+      ["created_by_role", "VARCHAR(50) NULL"],
+      ["version_number", "INT NULL"],
+      ["source_module", "VARCHAR(100) NULL"],
+      ["change_summary", "TEXT NULL"],
+      ["previous_values", "LONGTEXT NULL"],
+      ["updated_values", "LONGTEXT NULL"],
+      ["discount_snapshot", "LONGTEXT NULL"],
+    ];
+    for (const [columnName, columnDefinition] of quoteVersionColumns) {
+      const [cols] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_prolance_quote_versions' AND COLUMN_NAME = ?",
+        [columnName],
+      );
+      if ((cols as any[]).length === 0) {
+        await conn.query(
+          `ALTER TABLE lead_prolance_quote_versions ADD COLUMN ${columnName} ${columnDefinition}`,
+        );
+      }
     }
     try {
       const [idx] = await conn.query(
