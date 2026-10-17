@@ -6,6 +6,7 @@ import { QuoteBrandLogo } from './QuoteBrandLogo';
 import {
   QuoteDiscountDetails,
   type QuoteCategoryDiscountSavePayload,
+  type QuoteDiscountSaveResult,
 } from './QuoteDiscountDetails';
 import { QuoteTermsAndConditions } from './hubQuoteTermsPanel';
 import { inr, QUOTE } from './quoteStyles';
@@ -65,7 +66,9 @@ type Props = {
   discountSaving?: boolean;
   discountSaveError?: string | null;
   additionalDiscount?: number | null;
-  onSaveDiscount?: (payload: QuoteCategoryDiscountSavePayload) => void | Promise<void>;
+  onSaveDiscount?: (
+    payload: QuoteCategoryDiscountSavePayload,
+  ) => void | Promise<QuoteDiscountSaveResult | void> | QuoteDiscountSaveResult;
 };
 
 function LinkIcon() {
