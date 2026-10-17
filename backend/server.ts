@@ -1673,6 +1673,16 @@ async function initDb() {
     `);
 
     await conn.query(`
+      CREATE TABLE IF NOT EXISTS lead_quote_hub_discounts (
+        quote_id INT NOT NULL PRIMARY KEY,
+        lead_id INT NOT NULL,
+        meta_json TEXT NOT NULL,
+        updated_at DATETIME NOT NULL,
+        KEY idx_lqhd_lead (lead_id)
+      );
+    `);
+
+    await conn.query(`
       CREATE TABLE IF NOT EXISTS checklists (
         id INT AUTO_INCREMENT PRIMARY KEY,
         type VARCHAR(50) NOT NULL,
@@ -7385,6 +7395,23 @@ function sumQuoteCategoryPrice(
   return max;
 }
 
+async function persistQuoteHubDiscountMeta(
+  quoteId: number,
+  leadId: number,
+  meta: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await pool.query(
+      `INSERT INTO lead_quote_hub_discounts (quote_id, lead_id, meta_json, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE lead_id = VALUES(lead_id), meta_json = VALUES(meta_json), updated_at = VALUES(updated_at)`,
+      [quoteId, leadId, JSON.stringify(meta), new Date()],
+    );
+  } catch (err) {
+    console.error("persistQuoteHubDiscountMeta", err);
+  }
+}
+
 function computeHubCategoryDiscountAmount(
   payload: Record<string, unknown> | null | undefined,
   pct: { woodwork: number; accessories: number; services: number },
@@ -7812,6 +7839,7 @@ app.patch("/api/crm/leads/:leadId/quotes/:quoteId/discount", async (req: Request
       [leadId, quoteId, json, new Date()],
     );
     const ins = result as mysql.ResultSetHeader;
+    await persistQuoteHubDiscountMeta(quoteId, leadId, discountMeta);
     return res.json({
       ok: true,
       leadId,
@@ -17691,6 +17719,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       [effectiveLeadId, quoteId, json, new Date()],
     );
     const ins = result as mysql.ResultSetHeader;
+    await persistQuoteHubDiscountMeta(quoteId, effectiveLeadId, discountMeta);
 
     // Record who saved the discount (Design Module session or CRM internal link).
     const creatorName = editorLabel || "User";

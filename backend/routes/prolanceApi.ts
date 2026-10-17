@@ -1177,7 +1177,37 @@ function applyHubDiscountMetaToPayload(
   return nextPayload;
 }
 
+function hubMetaFromVersionRow(ds: Record<string, unknown>): Record<string, unknown> {
+  const fromHubKeys = extractHubDiscountMeta(ds);
+  if (payloadHasHubDiscount(fromHubKeys)) return fromHubKeys;
+  return {
+    hubCategoryDiscountPct: {
+      woodwork: parseFiniteNum(ds.woodwork) ?? 0,
+      accessories: parseFiniteNum(ds.accessories) ?? 0,
+      constructionHw: parseFiniteNum(ds.constructionHw) ?? 0,
+      services: parseFiniteNum(ds.services) ?? 0,
+    },
+    hubCategoryDiscountAmount: Math.round(parseFiniteNum(ds.amount) ?? 0),
+    hubAdditionalDiscountAmount: Math.round(parseFiniteNum(ds.additionalDiscount) ?? 0),
+    hubFlatDiscountPct: 0,
+    hubFlatDiscountAmount: 0,
+  };
+}
+
 async function loadHubDiscountMetaForQuote(quoteId: number): Promise<Record<string, unknown>> {
+  try {
+    const [hubRows] = await pool.query(
+      "SELECT meta_json FROM lead_quote_hub_discounts WHERE quote_id = ? LIMIT 1",
+      [quoteId],
+    );
+    const stored = parseSnapshotJson((hubRows as { meta_json?: unknown }[])[0]?.meta_json);
+    if (stored) {
+      const meta = payloadHasHubDiscount(stored) ? stored : extractHubDiscountMeta(stored);
+      if (payloadHasHubDiscount(meta)) return meta;
+    }
+  } catch {
+    /* table may not exist yet */
+  }
   try {
     const [snapRows] = await pool.query(
       "SELECT payload_json FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1",
@@ -1201,22 +1231,10 @@ async function loadHubDiscountMetaForQuote(quoteId: number): Promise<Record<stri
        LIMIT 1`,
       [quoteId],
     );
-    const ver = (verRows as { discount_snapshot?: string; updated_values?: string }[])[0];
-    const rawSnap = ver?.discount_snapshot || ver?.updated_values;
-    if (!rawSnap) return {};
-    const ds = JSON.parse(String(rawSnap)) as Record<string, unknown>;
-    const meta: Record<string, unknown> = {
-      hubCategoryDiscountPct: {
-        woodwork: parseFiniteNum(ds.woodwork) ?? 0,
-        accessories: parseFiniteNum(ds.accessories) ?? 0,
-        constructionHw: parseFiniteNum(ds.constructionHw) ?? 0,
-        services: parseFiniteNum(ds.services) ?? 0,
-      },
-      hubCategoryDiscountAmount: Math.round(parseFiniteNum(ds.amount) ?? 0),
-      hubAdditionalDiscountAmount: Math.round(parseFiniteNum(ds.additionalDiscount) ?? 0),
-      hubFlatDiscountPct: 0,
-      hubFlatDiscountAmount: 0,
-    };
+    const ver = (verRows as { discount_snapshot?: unknown; updated_values?: unknown }[])[0];
+    const ds = parseSnapshotJson(ver?.discount_snapshot) ?? parseSnapshotJson(ver?.updated_values);
+    if (!ds) return {};
+    const meta = hubMetaFromVersionRow(ds);
     return payloadHasHubDiscount(meta) ? meta : {};
   } catch {
     return {};
