@@ -1330,6 +1330,9 @@ export function extractTotalPayableAmount(data: unknown): number | null {
   };
   const pickedPayable = pick("totalPayableAmount", "finalTotalPrice", "finalPrice");
   const discount = pick("discount", "discountAmount") ?? 0;
+  const hubCategory = pick("hubCategoryDiscountAmount") ?? 0;
+  const hubAdditional = pick("hubAdditionalDiscountAmount") ?? 0;
+  const hubDisc = Math.max(0, hubCategory + hubAdditional);
   const options = row.quoteOptionsData;
   if (Array.isArray(options) && options.length > 0) {
     let sumRoomTotals = 0;
@@ -1345,20 +1348,24 @@ export function extractTotalPayableAmount(data: unknown): number | null {
     }
     if (sumRoomTotals > 0) {
       const tolerance = Math.max(500, sumRoomTotals * 0.02);
+      const fees = pick("designAndManagementFees") ?? 0;
+      let base: number;
       if (
         pickedPayable != null &&
         pickedPayable >= sumRoomTotals - discount - tolerance &&
         (Math.abs(pickedPayable - sumRoomTotals) <= tolerance || pickedPayable >= sumRoomTotals - discount)
       ) {
-        return pickedPayable;
+        base = pickedPayable;
+      } else {
+        base = sumRoomTotals + fees - discount;
       }
-      const fees = pick("designAndManagementFees") ?? 0;
-      return sumRoomTotals + fees - discount;
+      return hubDisc > 0 ? Math.max(0, base - hubDisc) : base;
     }
   }
-  return (
-    pickedPayable ?? pick("interiorProjectAmount", "projectAmount", "subTotal", "totalPrice")
-  );
+  const fallback =
+    pickedPayable ?? pick("interiorProjectAmount", "projectAmount", "subTotal", "totalPrice");
+  if (fallback == null) return null;
+  return hubDisc > 0 ? Math.max(0, fallback - hubDisc) : fallback;
 }
 
 type ProlanceServerSession = { token: string; originSessionId: string; apiKey: string };

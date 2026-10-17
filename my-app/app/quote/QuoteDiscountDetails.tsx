@@ -46,6 +46,8 @@ type Props = {
   saving?: boolean;
   saveError?: string | null;
   onSave?: (payload: QuoteCategoryDiscountSavePayload) => void | Promise<QuoteDiscountSaveResult | void> | QuoteDiscountSaveResult;
+  /** Live rupee discount (category % + additional) so the quote total can update before save. */
+  onPreviewDiscountChange?: (discountAmount: number) => void;
 };
 
 const EDITABLE_KEYS = ['woodwork', 'accessories', 'services'] as const;
@@ -105,6 +107,7 @@ export function QuoteDiscountDetails({
   saving = false,
   saveError = null,
   onSave,
+  onPreviewDiscountChange,
 }: Props) {
   const capProfile: DiscountCapProfile =
     discountCapProfile ?? (unrestrictedDiscounts ? 'unrestricted' : 'standard');
@@ -144,6 +147,10 @@ export function QuoteDiscountDetails({
     if (!editable) return totalDiscount ?? categoryTotal + (savedAdditionalRow?.discountAmount ?? 0);
     return categoryTotal + draftAdditional;
   }, [editable, totalDiscount, categoryTotal, draftAdditional, savedAdditionalRow]);
+
+  useEffect(() => {
+    onPreviewDiscountChange?.(previewTotal);
+  }, [previewTotal, onPreviewDiscountChange]);
 
   if (!rows.length && totalDiscount == null && !(additionalDiscount != null && additionalDiscount > 0)) {
     return null;

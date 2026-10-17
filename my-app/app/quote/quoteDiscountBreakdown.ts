@@ -352,6 +352,16 @@ export function sumDiscountBreakdownAmounts(rows: QuoteDiscountBreakdownRow[]): 
   return rows.reduce((sum, row) => sum + (row.discountAmount ?? 0), 0);
 }
 
+const HUB_PAYABLE_DISCOUNT_KEYS = new Set(['woodwork', 'accessories', 'services', 'additionalDiscount']);
+
+/** Rupee discounts that should reduce Total Payable (Hub category % + additional). */
+export function sumHubEditableDiscountAmounts(rows: QuoteDiscountBreakdownRow[]): number {
+  return rows.reduce((sum, row) => {
+    if (!HUB_PAYABLE_DISCOUNT_KEYS.has(row.key)) return sum;
+    return sum + (row.discountAmount ?? 0);
+  }, 0);
+}
+
 function readHubDiscountAmount(quoteObj: Record<string, unknown>, key: string): number | null {
   const sources = [quoteObj];
   const data = quoteObj.data ?? quoteObj.Data;
@@ -375,8 +385,11 @@ export function resolveTotalDiscount(
 ): number | null {
   const hubCategoryAmount = readHubDiscountAmount(quoteObj, 'hubCategoryDiscountAmount');
   const hubAdditionalAmount = Math.max(0, readHubDiscountAmount(quoteObj, 'hubAdditionalDiscountAmount') ?? 0);
-  if (hubCategoryAmount != null || hubAdditionalAmount > 0) {
-    return Math.max(0, (hubCategoryAmount ?? 0) + hubAdditionalAmount);
+  const fromHubRows = sumHubEditableDiscountAmounts(breakdownRows);
+  const hubStored = Math.max(0, (hubCategoryAmount ?? 0) + hubAdditionalAmount);
+  // Prefer rupees implied by Hub % (so 45% woodwork still reduces the total if stored amount is 0/stale).
+  if (hubStored > 0 || fromHubRows > 0) {
+    return Math.max(hubStored, fromHubRows);
   }
 
   const fromBreakdown = sumDiscountBreakdownAmounts(breakdownRows);

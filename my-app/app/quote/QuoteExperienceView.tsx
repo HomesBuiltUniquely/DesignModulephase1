@@ -1,5 +1,6 @@
 'use client';
 
+import { useCallback, useMemo, useState } from 'react';
 import Image from 'next/image';
 import type { QuoteDiscountBreakdownRow } from './quoteDiscountBreakdown';
 import { QuoteBrandLogo } from './QuoteBrandLogo';
@@ -154,6 +155,17 @@ export function QuoteExperienceView(props: Props) {
     onSaveDiscount,
   } = props;
 
+  const savedDiscount = Math.max(0, quote.discount ?? 0);
+  const [previewDiscount, setPreviewDiscount] = useState<number | null>(null);
+  const handlePreviewDiscountChange = useCallback((amount: number) => {
+    setPreviewDiscount((prev) => (prev === amount ? prev : amount));
+  }, []);
+  const displayPayable = useMemo(() => {
+    if (quote.totalPayableAmount == null) return null;
+    const liveDiscount = previewDiscount ?? savedDiscount;
+    return Math.max(0, quote.totalPayableAmount + savedDiscount - liveDiscount);
+  }, [quote.totalPayableAmount, previewDiscount, savedDiscount]);
+
   return (
     <div className="min-h-screen" style={{ backgroundColor: QUOTE.beige }}>
       <header className="px-4 py-4 sm:px-6" style={{ backgroundColor: QUOTE.brown }}>
@@ -219,7 +231,7 @@ export function QuoteExperienceView(props: Props) {
                   Estimated Total
                 </p>
                 <p className="mt-1 text-3xl font-bold tabular-nums" style={{ color: QUOTE.red }}>
-                  {inr(quote.totalPayableAmount)}
+                  {inr(displayPayable)}
                 </p>
                 <p className="mt-1 text-xs" style={{ color: QUOTE.muted }}>
                   Inclusive of all taxes
@@ -236,7 +248,7 @@ export function QuoteExperienceView(props: Props) {
                     Estimated Total
                   </p>
                   <p className="mt-2 text-3xl font-bold tabular-nums" style={{ color: QUOTE.red }}>
-                    {inr(quote.totalPayableAmount)}
+                    {inr(displayPayable)}
                   </p>
                   <p className="mt-1 text-xs" style={{ color: QUOTE.muted }}>
                     Inclusive of all taxes
@@ -352,6 +364,7 @@ export function QuoteExperienceView(props: Props) {
                   saving={discountSaving}
                   saveError={discountSaveError}
                   onSave={onSaveDiscount}
+                  onPreviewDiscountChange={handlePreviewDiscountChange}
                 />
               </div>
 
@@ -363,7 +376,7 @@ export function QuoteExperienceView(props: Props) {
                   <p className="quote-heading text-base font-bold sm:text-lg">Total Payable Amount</p>
                   <p className="text-xs text-white/70">Inclusive of all tax and discount</p>
                 </div>
-                <p className="text-2xl font-bold tabular-nums sm:text-3xl">{inr(quote.totalPayableAmount)}</p>
+                <p className="text-2xl font-bold tabular-nums sm:text-3xl">{inr(displayPayable)}</p>
               </div>
 
               <p className="flex items-center gap-2 text-xs" style={{ color: QUOTE.muted }}>

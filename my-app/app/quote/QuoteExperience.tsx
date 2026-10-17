@@ -11,6 +11,7 @@ import type { DiscountCapProfile } from '@/app/quote/quoteDiscountLimits';
 import {
   buildQuoteDiscountBreakdown,
   resolveTotalDiscount,
+  sumHubEditableDiscountAmounts,
   type QuoteDiscountBreakdownRow,
 } from '@/app/quote/quoteDiscountBreakdown';
 import type { QuoteRoom } from '@/app/quote/quoteTypes';
@@ -255,11 +256,15 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
   const discount = asNum(pick('discount', 'discountAmount'));
   const hubCategoryAmount = asNum(pick('hubCategoryDiscountAmount'));
   const hubAdditionalAmount = Math.max(0, asNum(pick('hubAdditionalDiscountAmount')) ?? 0);
-  const hubTotalDiscount =
+  const breakdownSource = { ...rootTop, ...root, ...quoteObj };
+  const discountBreakdown = buildQuoteDiscountBreakdown(breakdownSource, optionDetailsRaw, summaryRows);
+  const hubFromRows = sumHubEditableDiscountAmounts(discountBreakdown);
+  const hubStored =
     hubCategoryAmount != null || hubAdditionalAmount > 0
       ? Math.max(0, (hubCategoryAmount ?? 0) + hubAdditionalAmount)
-      : null;
-  const disc = (hubTotalDiscount != null ? hubTotalDiscount : discount) || 0;
+      : 0;
+  const hubDisc = Math.max(hubStored, hubFromRows);
+  const disc = hubDisc > 0 ? hubDisc : discount || 0;
 
   let interiorProjectAmount: number | null;
   let totalPayableAmount: number | null;
@@ -269,11 +274,16 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
     const tolerance = Math.max(500, sumRoomTotals * 0.02);
     const apiPayable = pickedPayable;
     const apiPlausible =
-      hubTotalDiscount == null &&
+      hubDisc <= 0 &&
       apiPayable != null &&
       apiPayable >= sumRoomTotals - disc - tolerance &&
       (Math.abs(apiPayable - sumRoomTotals) <= tolerance || apiPayable >= sumRoomTotals - disc);
-    if (apiPlausible) {
+    if (hubDisc > 0) {
+      const fees = pickedFeesExplicit ?? 0;
+      const base =
+        apiPayable != null && apiPayable > 0 ? apiPayable : sumRoomTotals + fees;
+      totalPayableAmount = Math.max(0, base - hubDisc);
+    } else if (apiPlausible) {
       totalPayableAmount = apiPayable;
     } else {
       const fees = pickedFeesExplicit ?? 0;
@@ -282,15 +292,15 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
   } else if (rooms.length > 0) {
     interiorProjectAmount = pickedInterior ?? pickedTotalPrice ?? null;
     totalPayableAmount =
-      hubTotalDiscount != null && interiorProjectAmount != null
-        ? Math.max(0, interiorProjectAmount + (pickedFeesExplicit ?? 0) - hubTotalDiscount)
+      hubDisc > 0 && interiorProjectAmount != null
+        ? Math.max(0, interiorProjectAmount + (pickedFeesExplicit ?? 0) - hubDisc)
         : pickedPayable ?? pickedTotalPrice ?? interiorProjectAmount;
   } else {
     interiorProjectAmount =
       pickedInterior ?? pickedTotalPrice ?? (sumRoomTotals > 0 ? sumRoomTotals : null);
     totalPayableAmount =
-      hubTotalDiscount != null && interiorProjectAmount != null
-        ? Math.max(0, interiorProjectAmount + (pickedFeesExplicit ?? 0) - hubTotalDiscount)
+      hubDisc > 0 && interiorProjectAmount != null
+        ? Math.max(0, interiorProjectAmount + (pickedFeesExplicit ?? 0) - hubDisc)
         : pickedPayable ?? pickedTotalPrice ?? (sumRoomTotals > 0 ? sumRoomTotals : null);
   }
 
@@ -299,8 +309,6 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
       ? totalPayableAmount - interiorProjectAmount + disc
       : pickedFeesExplicit;
 
-  const breakdownSource = { ...rootTop, ...root, ...quoteObj };
-  const discountBreakdown = buildQuoteDiscountBreakdown(breakdownSource, optionDetailsRaw, summaryRows);
   const resolvedDiscount =
     resolveTotalDiscount(breakdownSource, discountBreakdown, interiorProjectAmount, totalPayableAmount) ??
     discount;

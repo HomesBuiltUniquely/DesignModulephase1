@@ -7338,6 +7338,63 @@ function quotePayableAmount(payload: Record<string, unknown>): number | null {
   return null;
 }
 
+function roomCategoryGrossPrice(room: Record<string, unknown>, category: "woodwork" | "accessories" | "services"): number {
+  if (category === "woodwork") {
+    return (
+      parseFiniteNumber(room.woodWorkPrice) ??
+      (parseFiniteNumber(room.unitsPrice) ?? 0) + (parseFiniteNumber(room.loftsPrice) ?? 0)
+    );
+  }
+  if (category === "accessories") return parseFiniteNumber(room.accessoriesPrice) ?? 0;
+  return parseFiniteNumber(room.servicesPrice) ?? 0;
+}
+
+function sumRoomsCategoryPrice(rooms: unknown, category: "woodwork" | "accessories" | "services"): number {
+  if (!Array.isArray(rooms)) return 0;
+  let sum = 0;
+  for (const item of rooms) {
+    if (!item || typeof item !== "object") continue;
+    sum += roomCategoryGrossPrice(item as Record<string, unknown>, category);
+  }
+  return sum;
+}
+
+function quotePayloadHosts(payload: Record<string, unknown>): Record<string, unknown>[] {
+  const hosts: Record<string, unknown>[] = [payload];
+  const data = payload.data ?? payload.Data;
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    hosts.push(data as Record<string, unknown>);
+  } else if (Array.isArray(data) && data[0] && typeof data[0] === "object") {
+    hosts.push(data[0] as Record<string, unknown>);
+  }
+  return hosts;
+}
+
+/** Gross category price from snapshot rooms — used so 45% always has a rupee amount. */
+function sumQuoteCategoryPrice(
+  payload: Record<string, unknown> | null | undefined,
+  category: "woodwork" | "accessories" | "services",
+): number {
+  if (!payload) return 0;
+  let max = 0;
+  for (const host of quotePayloadHosts(payload)) {
+    for (const key of ["optionDetails", "quoteOptionsData", "roomWiseSummary"] as const) {
+      max = Math.max(max, sumRoomsCategoryPrice(host[key], category));
+    }
+  }
+  return max;
+}
+
+function computeHubCategoryDiscountAmount(
+  payload: Record<string, unknown> | null | undefined,
+  pct: { woodwork: number; accessories: number; services: number },
+): number {
+  const ww = sumQuoteCategoryPrice(payload, "woodwork");
+  const acc = sumQuoteCategoryPrice(payload, "accessories");
+  const svc = sumQuoteCategoryPrice(payload, "services");
+  return Math.round((ww * pct.woodwork + acc * pct.accessories + svc * pct.services) / 100);
+}
+
 function clampQuoteCategoryDiscountPct(
   key: string,
   value: unknown,
@@ -7728,6 +7785,21 @@ app.patch("/api/crm/leads/:leadId/quotes/:quoteId/discount", async (req: Request
         return {};
       }
     })();
+
+    const pctObj = discountMeta.hubCategoryDiscountPct;
+    if (pctObj && typeof pctObj === "object" && !Array.isArray(pctObj)) {
+      const p = pctObj as Record<string, unknown>;
+      const computedAmount = computeHubCategoryDiscountAmount(snapshotPayload, {
+        woodwork: parseFiniteNumber(p.woodwork) ?? 0,
+        accessories: parseFiniteNumber(p.accessories) ?? 0,
+        services: parseFiniteNumber(p.services) ?? 0,
+      });
+      const storedAmt = parseFiniteNumber(discountMeta.hubCategoryDiscountAmount) ?? 0;
+      discountMeta = {
+        ...discountMeta,
+        hubCategoryDiscountAmount: Math.max(Math.round(storedAmt), computedAmount),
+      };
+    }
 
     // Persist discount metadata without overriding Prolance totals.
     const nextPayload = applyDiscountMetaToSnapshotPayload(snapshotPayload, discountMeta);
@@ -17592,9 +17664,17 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       }
     }
 
+    const clampedPct = {
+      woodwork: clampQuoteCategoryDiscountPct("woodwork", categoryValues.woodwork, discountCapMode),
+      accessories: clampQuoteCategoryDiscountPct("accessories", categoryValues.accessories, discountCapMode),
+      constructionHw: 0,
+      services: clampQuoteCategoryDiscountPct("services", categoryValues.services, discountCapMode),
+    };
+    const computedAmount = computeHubCategoryDiscountAmount(snapshotPayload, clampedPct);
+    const amountToStore = Math.max(Math.round(amount), computedAmount);
     const discountMeta = buildHubCategoryDiscountMeta(
-      categoryValues,
-      amount,
+      clampedPct,
+      amountToStore,
       additionalDiscount,
       discountCapMode,
     );
