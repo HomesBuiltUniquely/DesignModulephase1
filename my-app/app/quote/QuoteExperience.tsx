@@ -700,15 +700,22 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     Boolean(versionFetchId) &&
     resolvedLeadId != null &&
     resolvedLeadId > 0;
-  // Same caps as designer for all CRM roles (incl. SUPER_ADMIN). Unrestricted only for Design Module managers/admins.
+  // CRM SUPER_ADMIN and SALES_ADMIN match Design Module superadmin (woodwork above 40%, e.g. 45%).
+  // Other CRM roles stay on designer caps. Design Module DM / TDM / DGM / admin stay unrestricted.
+  const crmUnrestrictedDiscount =
+    viaCrmDiscountEdit &&
+    (crmRoleNormalized === 'super_admin' ||
+      crmRoleNormalized === 'superadmin' ||
+      crmRoleNormalized === 'sales_admin');
   const unrestrictedDiscounts =
-    !viaCrmDiscountEdit &&
-    (quoteDesignManager ||
-      quoteRoleEarly === 'territorial_design_manager' ||
-      quoteRoleEarly === 'deputy_general_manager' ||
-      quoteRoleEarly === 'admin' ||
-      quoteRoleEarly === 'super_admin' ||
-      quoteRoleEarly === 'superadmin');
+    crmUnrestrictedDiscount ||
+    (!viaCrmDiscountEdit &&
+      (quoteDesignManager ||
+        quoteRoleEarly === 'territorial_design_manager' ||
+        quoteRoleEarly === 'deputy_general_manager' ||
+        quoteRoleEarly === 'admin' ||
+        quoteRoleEarly === 'super_admin' ||
+        quoteRoleEarly === 'superadmin'));
 
   const handleSaveDiscount = async (savePayload: QuoteCategoryDiscountSavePayload) => {
     if (resolvedLeadId == null || !versionFetchId) return;
