@@ -418,7 +418,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           setError(null);
         }
         const res = await fetch(
-          `${API}/api/prolance-test/quotes/share/${encodeURIComponent(q)}?live=1`,
+          `${API}/api/prolance-test/quotes/share/${encodeURIComponent(q)}?live=1&t=${Date.now()}`,
           { cache: 'no-store' },
         );
         const txt = await res.text();
