@@ -17411,16 +17411,16 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
     return res.status(400).json({ message: "Construction Hardware discounts are not supported" });
   }
 
+  // CRM internal edits always use designer caps (woodwork ≤40%, others ≤5%, additional ≤3%).
+  // Unrestricted override is Design Module DM / TDM / DGM / admin only.
   const unrestrictedDiscounts =
-    role === "admin" ||
-    role === "super_admin" ||
-    role === "superadmin" ||
-    role === "territorial_design_manager" ||
-    role === "deputy_general_manager" ||
-    role === "design_manager" ||
-    // CRM ADMIN / SUPER_ADMIN only — sales roles edit with normal caps
-    (viaCrmInternal &&
-      (role === "admin" || role === "super_admin" || role === "superadmin"));
+    !viaCrmInternal &&
+    (role === "admin" ||
+      role === "super_admin" ||
+      role === "superadmin" ||
+      role === "territorial_design_manager" ||
+      role === "deputy_general_manager" ||
+      role === "design_manager");
 
   try {
     const [snapRows] = await pool.query(
