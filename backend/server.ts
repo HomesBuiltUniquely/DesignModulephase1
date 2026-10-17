@@ -1629,10 +1629,30 @@ async function initDb() {
       // ignore
     }
     try {
+      // Idempotent backfill — unique index was dropped, so INSERT IGNORE cannot dedupe.
       await conn.query(`
-        INSERT IGNORE INTO lead_prolance_quote_versions (lead_id, quote_id, created_at)
-        SELECT id, prolance_quote_id, COALESCE(update_at, create_at, NOW()) FROM leads
-        WHERE prolance_quote_id IS NOT NULL AND prolance_quote_id > 0
+        INSERT INTO lead_prolance_quote_versions (lead_id, quote_id, created_at)
+        SELECT l.id, l.prolance_quote_id, COALESCE(l.update_at, l.create_at, NOW())
+        FROM leads l
+        WHERE l.prolance_quote_id IS NOT NULL AND l.prolance_quote_id > 0
+          AND NOT EXISTS (
+            SELECT 1 FROM lead_prolance_quote_versions v
+            WHERE v.lead_id = l.id AND v.quote_id = l.prolance_quote_id
+          )
+      `);
+    } catch {
+      // ignore
+    }
+    try {
+      // Collapse accidental duplicate base rows (same lead + quote, no version_number).
+      await conn.query(`
+        DELETE v1 FROM lead_prolance_quote_versions v1
+        INNER JOIN lead_prolance_quote_versions v2
+          ON v1.lead_id = v2.lead_id
+         AND v1.quote_id = v2.quote_id
+         AND v1.id > v2.id
+        WHERE (v1.version_number IS NULL OR v1.version_number = 0)
+          AND (v2.version_number IS NULL OR v2.version_number = 0)
       `);
     } catch {
       // ignore
@@ -2920,6 +2940,39 @@ app.get("/api/service/whoami", async (req: Request, res: Response) => {
   });
 });
 
+function dedupeProlanceQuoteVersionRows(
+  list: Array<{
+    quoteId: number;
+    createdAt: string;
+    createdBy?: string;
+    changeSummary?: string;
+    versionNumber?: number;
+  }>,
+): Array<{
+  quoteId: number;
+  createdAt: string;
+  createdBy?: string;
+  changeSummary?: string;
+  versionNumber?: number;
+}> {
+  const seen = new Set<string>();
+  const out: typeof list = [];
+  for (const item of list) {
+    // Real discount revisions keep version_number; bootstrap/dupes often share quoteId with null/0.
+    const key =
+      item.versionNumber && item.versionNumber > 0
+        ? `${item.quoteId}:v${item.versionNumber}`
+        : `${item.quoteId}:base`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out.map((item, idx) => ({
+    ...item,
+    versionNumber: item.versionNumber && item.versionNumber > 0 ? item.versionNumber : idx + 1,
+  }));
+}
+
 async function loadProlanceQuoteVersionsForLead(leadId: number): Promise<
   Array<{ quoteId: number; createdAt: string; createdBy?: string; changeSummary?: string; versionNumber?: number }>
 > {
@@ -2932,27 +2985,15 @@ async function loadProlanceQuoteVersionsForLead(leadId: number): Promise<
   );
   const toIso = (d: unknown) =>
     d instanceof Date ? d.toISOString() : typeof d === "string" ? d : new Date().toISOString();
-  const list = (rows as any[]).map((r, idx) => ({
+  const list = (rows as any[]).map((r) => ({
     quoteId: Number(r.quoteId),
     createdAt: toIso(r.createdAt),
     createdBy: r.createdBy ? String(r.createdBy) : undefined,
     changeSummary: r.changeSummary ? String(r.changeSummary) : undefined,
-    versionNumber: r.versionNumber ? Number(r.versionNumber) : idx + 1,
+    versionNumber: r.versionNumber ? Number(r.versionNumber) : undefined,
   }));
-  const [lr] = await pool.query(`SELECT prolance_quote_id, update_at FROM leads WHERE id = ? LIMIT 1`, [leadId]);
-  const pq = (lr as any[])[0]?.prolance_quote_id;
-  if (pq != null && Number(pq) > 0 && !list.some((x) => x.quoteId === Number(pq))) {
-    const u = (lr as any[])[0]?.update_at;
-    list.push({
-      quoteId: Number(pq),
-      createdAt: toIso(u),
-      createdBy: undefined,
-      changeSummary: undefined,
-      versionNumber: list.length + 1,
-    });
-    list.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-  }
-  return list;
+  // Current lead quote id is persisted as a real version row on first snapshot — do not invent extras.
+  return dedupeProlanceQuoteVersionRows(list);
 }
 
 type GoogleCalendarConnectionRow = {
@@ -17624,6 +17665,44 @@ app.post("/api/leads/:id/prolance-quote-snapshots", async (req: Request, res: Re
     const updated = ins.affectedRows > 1;
 
     void evaluateLeadQuotationRevisionXp(pool, id);
+
+    // One revision row per new Prolance quote id (Get Quote). Discount saves may add more later.
+    if (inserted) {
+      try {
+        const [existingVers] = await pool.query(
+          `SELECT id FROM lead_prolance_quote_versions WHERE lead_id = ? AND quote_id = ? LIMIT 1`,
+          [id, quoteId],
+        );
+        if ((existingVers as any[]).length === 0) {
+          const [maxRow] = await pool.query(
+            `SELECT MAX(version_number) AS maxVer, COUNT(*) AS countAll FROM lead_prolance_quote_versions WHERE lead_id = ?`,
+            [id],
+          );
+          const maxVer = (maxRow as any[])[0]?.maxVer;
+          const countAll = (maxRow as any[])[0]?.countAll ?? 0;
+          const nextVersionNumber = Math.max(Number(maxVer) || 0, Number(countAll) || 0) + 1;
+          await pool.query(
+            `INSERT INTO lead_prolance_quote_versions
+              (lead_id, quote_id, created_at, created_by, created_by_id, created_by_role,
+               version_number, source_module, change_summary)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              id,
+              quoteId,
+              new Date(),
+              user?.name || user?.email || "System",
+              user?.id ?? null,
+              user?.role ?? null,
+              nextVersionNumber,
+              "Design Module",
+              "Quote generated",
+            ],
+          );
+        }
+      } catch (verErr) {
+        console.warn("[quote-snapshot] version row ensure failed (non-fatal)", verErr);
+      }
+    }
 
     if (inserted) {
       try {

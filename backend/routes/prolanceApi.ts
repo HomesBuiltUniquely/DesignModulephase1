@@ -2301,21 +2301,29 @@ function formatProlancePName(
     );
     const toIso = (d: unknown) =>
       d instanceof Date ? d.toISOString() : typeof d === "string" ? d : new Date().toISOString();
-    const list = (rows as { quoteId: unknown; createdAt: unknown; createdBy?: unknown; changeSummary?: unknown; versionNumber?: unknown }[]).map((r, idx) => ({
+    const raw = (rows as { quoteId: unknown; createdAt: unknown; createdBy?: unknown; changeSummary?: unknown; versionNumber?: unknown }[]).map((r) => ({
       quoteId: Number(r.quoteId),
       createdAt: toIso(r.createdAt),
       createdBy: r.createdBy ? String(r.createdBy) : undefined,
       changeSummary: r.changeSummary ? String(r.changeSummary) : undefined,
-      versionNumber: r.versionNumber ? Number(r.versionNumber) : idx + 1,
+      versionNumber: r.versionNumber ? Number(r.versionNumber) : undefined,
     }));
-    const [lr] = await pool.query(`SELECT prolance_quote_id, update_at FROM leads WHERE id = ? LIMIT 1`, [leadId]);
-    const pq = (lr as { prolance_quote_id?: unknown }[])[0]?.prolance_quote_id;
-    if (pq != null && Number(pq) > 0 && !list.some((x) => x.quoteId === Number(pq))) {
-      const u = (lr as { update_at?: unknown }[])[0]?.update_at;
-      list.push({ quoteId: Number(pq), createdAt: toIso(u), createdBy: undefined, changeSummary: undefined, versionNumber: list.length + 1 });
-      list.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    // Drop duplicate base rows (same quoteId, no real version_number). Keep real discount revisions.
+    const seen = new Set<string>();
+    const list: typeof raw = [];
+    for (const item of raw) {
+      const key =
+        item.versionNumber && item.versionNumber > 0
+          ? `${item.quoteId}:v${item.versionNumber}`
+          : `${item.quoteId}:base`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      list.push(item);
     }
-    return list;
+    return list.map((item, idx) => ({
+      ...item,
+      versionNumber: item.versionNumber && item.versionNumber > 0 ? item.versionNumber : idx + 1,
+    }));
   }
 
   // Public: quotation revisions for the same lead (customers can open older quote links). No login.
