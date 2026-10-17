@@ -116,7 +116,7 @@ export function QuoteDiscountDetails({
   const [dirty, setDirty] = useState(false);
   const [woodworkPopup, setWoodworkPopup] = useState<number | null>(null);
   const [additionalPopup, setAdditionalPopup] = useState<number | null>(null);
-  const [alreadyExistsPopup, setAlreadyExistsPopup] = useState(false);
+  const [alreadyExistsPopup, setAlreadyExistsPopup] = useState<string | null>(null);
 
   useEffect(() => {
     if (!dirty) {
@@ -195,7 +195,10 @@ export function QuoteDiscountDetails({
       additionalDiscount: draftAdditional,
     });
     if (result && typeof result === 'object' && (result as QuoteDiscountSaveResult).alreadyExists) {
-      setAlreadyExistsPopup(true);
+      const msg =
+        (result as QuoteDiscountSaveResult).message?.trim() ||
+        'Discount is already saved at these values. The customer quote link uses this discount; no new revision was added.';
+      setAlreadyExistsPopup(msg);
     }
     setDirty(false);
   };
@@ -208,25 +211,27 @@ export function QuoteDiscountDetails({
       {/* Already created popup */}
       {alreadyExistsPopup ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="w-full max-w-sm rounded-2xl border border-[#ece6df] bg-white p-6 shadow-xl">
+          <div className="w-full max-w-md rounded-2xl border border-[#ece6df] bg-white p-6 shadow-xl">
             <div className="mb-3 flex items-center gap-2">
               <span
                 className="inline-flex h-9 w-9 items-center justify-center rounded-full text-white"
-                style={{ backgroundColor: QUOTE.red }}
+                style={{ backgroundColor: QUOTE.brown }}
               >
                 <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                 </svg>
               </span>
-              <h3 className="font-bold text-[#2a1d14]">Quote Version</h3>
+              <h3 className="font-bold text-[#2a1d14]">Discount already saved</h3>
             </div>
-            <p className="text-sm text-[#5c5650]">
-              This version is already created.
+            <p className="text-sm text-[#5c5650]">{alreadyExistsPopup}</p>
+            <p className="mt-2 text-xs text-[#786c5f]">
+              To add a new revision, change the discount % or amount, then save again. Share the customer link
+              (without <span className="font-mono">internal=1</span>) for the discounted quote.
             </p>
             <div className="mt-4 flex justify-end">
               <button
                 type="button"
-                onClick={() => setAlreadyExistsPopup(false)}
+                onClick={() => setAlreadyExistsPopup(null)}
                 className="rounded-lg px-4 py-2 text-sm font-semibold text-white"
                 style={{ backgroundColor: QUOTE.brown }}
               >

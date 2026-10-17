@@ -17843,7 +17843,10 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       quoteId,
       updated: ins.affectedRows > 0,
       alreadyExists: !isNewVersionCreated,
-      message: !isNewVersionCreated ? "This version is already created" : undefined,
+      snapshotUpdated: ins.affectedRows > 0,
+      message: !isNewVersionCreated
+        ? "Discount saved on this quote. No new revision was added because these values match the last saved discount."
+        : undefined,
       discount: discountMeta,
       payload: nextPayload,
       versions: updatedVersions,
