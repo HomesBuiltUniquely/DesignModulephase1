@@ -100,6 +100,9 @@ export default function ProjectDetailPage() {
     const isHubPassAdmin = ['admin', 'super_admin', 'superadmin'].includes(
         (authUser?.role || '').toLowerCase(),
     );
+    const quoteDiscountUnrestricted = ['super_admin', 'superadmin', 'sales_admin'].includes(
+        (authUser?.role || '').toLowerCase(),
+    );
     
     // State to track WHICH card is maximized (null = none)
     const [activeCard, setActiveCard] = useState<string | null>(null);
@@ -2784,6 +2787,7 @@ export default function ProjectDetailPage() {
                                                                 totalDiscount={view.totals.discount}
                                                                 additionalDiscount={hubAdditionalDiscountAmount}
                                                                 totalPayableAmount={displayPayableModal}
+                                                                unrestrictedDiscounts={quoteDiscountUnrestricted}
                                                                 editable={
                                                                     Boolean(sessionId) &&
                                                                     projectId != null &&
@@ -2806,6 +2810,7 @@ export default function ProjectDetailPage() {
                                                                                 },
                                                                                 credentials: 'include',
                                                                                 body: JSON.stringify({
+                                                                                    sourceModule: 'CRM',
                                                                                     categoryPct: savePayload.categoryPct,
                                                                                     amount: savePayload.amount,
                                                                                     additionalDiscount: savePayload.additionalDiscount,

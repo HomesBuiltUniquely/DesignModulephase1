@@ -88,9 +88,22 @@ export async function persistProlanceQuoteIdsAndSnapshot(options: {
 export function openInternalQuoteInNewTab(quoteId: number, leadId: number): void {
     if (typeof window === "undefined") return;
     const origin = window.location.origin;
-    const leadQs = `&leadId=${encodeURIComponent(String(leadId))}`;
+    const q = new URLSearchParams();
+    q.set("internal", "1");
+    q.set("leadId", String(leadId));
+    try {
+        const crmUser =
+            window.localStorage.getItem("crm_user_name") ||
+            window.localStorage.getItem("crm_login_username") ||
+            "";
+        const crmRole = window.localStorage.getItem("crm_role") || "";
+        if (crmUser.trim()) q.set("crmUser", crmUser.trim());
+        if (crmRole.trim()) q.set("crmRole", crmRole.trim());
+    } catch {
+        /* ignore */
+    }
     window.open(
-        `${origin}/quote/${encodeURIComponent(String(quoteId))}?internal=1${leadQs}`,
+        `${origin}/quote/${encodeURIComponent(String(quoteId))}?${q.toString()}`,
         "_blank",
         "noopener,noreferrer",
     );
