@@ -518,6 +518,33 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           } catch {
             /* share payload still usable without overlay */
           }
+          if (!payloadHasHubDiscountFields(nextPayload)) {
+            try {
+              const revRes = await fetch(
+                `${API}/api/prolance-test/public/quote-revisions/${encodeURIComponent(q)}?${cacheBust}`,
+                { cache: 'no-store' },
+              );
+              if (revRes.ok) {
+                const revBody = (await revRes.json().catch(() => ({}))) as { versions?: unknown };
+                const rawVers = Array.isArray(revBody.versions) ? revBody.versions : [];
+                const hints = rawVers.map((row: unknown) => {
+                  const o = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+                  return {
+                    quoteId: asNum(o.quoteId) ?? undefined,
+                    changeSummary: o.changeSummary != null ? String(o.changeSummary) : undefined,
+                    discountSnapshot: o.discountSnapshot ?? o.discount_snapshot,
+                    updatedValues: o.updatedValues ?? o.updated_values,
+                  };
+                });
+                const fromVersions = discountMetaFromVersionHints(hints, q);
+                if (fromVersions) {
+                  nextPayload = applyDiscountMetaToLocalPayload(nextPayload, fromVersions);
+                }
+              }
+            } catch {
+              /* revisions overlay is best-effort */
+            }
+          }
         }
         if (!cancelled) setPayload(nextPayload);
       } catch (e) {
@@ -688,10 +715,10 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
   useEffect(() => {
     if (!payload || quoteVersions.length === 0) return;
     if (payloadHasHubDiscountFields(payload)) return;
-    const meta = discountMetaFromVersionHints(quoteVersions);
+    const meta = discountMetaFromVersionHints(quoteVersions, quoteIdProp);
     if (!meta) return;
     setPayload(applyDiscountMetaToLocalPayload(payload, meta));
-  }, [payload, quoteVersions]);
+  }, [payload, quoteVersions, quoteIdProp]);
 
   const customerLinkSlug =
     versionFetchId || (quote.quotationId !== '-' ? quote.quotationId : '');

@@ -1,6 +1,7 @@
 /** Rebuild Hub discount meta from quote revision rows when the live payload has none. */
 
 export type HubDiscountVersionHint = {
+  quoteId?: number;
   changeSummary?: string;
   discountSnapshot?: unknown;
   updatedValues?: unknown;
@@ -37,63 +38,34 @@ function metaHasDiscount(meta: Record<string, unknown>): boolean {
   return false;
 }
 
-function metaFromDiscountRow(ds: Record<string, unknown>): Record<string, unknown> {
-  const nested = ds.hubCategoryDiscountPct;
-  if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
-    return {
-      hubCategoryDiscountPct: nested,
-      hubCategoryDiscountAmount: Math.round(
-        asNum(ds.hubCategoryDiscountAmount) || asNum(ds.amount),
-      ),
-      hubAdditionalDiscountAmount: Math.round(
-        asNum(ds.hubAdditionalDiscountAmount) || asNum(ds.additionalDiscount),
-      ),
-      hubFlatDiscountPct: 0,
-      hubFlatDiscountAmount: 0,
-    };
-  }
-  return {
-    hubCategoryDiscountPct: {
-      woodwork: asNum(ds.woodwork),
-      accessories: asNum(ds.accessories),
-      constructionHw: asNum(ds.constructionHw),
-      services: asNum(ds.services),
-    },
-    hubCategoryDiscountAmount: Math.round(asNum(ds.amount)),
-    hubAdditionalDiscountAmount: Math.round(asNum(ds.additionalDiscount)),
-    hubFlatDiscountPct: 0,
-    hubFlatDiscountAmount: 0,
-  };
+type AccumPct = {
+  woodwork: number;
+  accessories: number;
+  constructionHw: number;
+  services: number;
+};
+
+function pickPctIfPresent(text: string, label: string): number | undefined {
+  const m = text.match(new RegExp(`${label}:\\s*[\\d.]+%\\s*->\\s*([\\d.]+)%`, 'i'));
+  if (!m) return undefined;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : undefined;
 }
 
-function metaFromChangeSummary(summary: string): Record<string, unknown> | null {
-  const text = summary.trim();
-  if (!text || /^no changes$/i.test(text)) return null;
-  const pickPct = (label: string): number => {
-    const re = new RegExp(`${label}:\\s*[\\d.]+%\\s*->\\s*([\\d.]+)%`, 'i');
-    const m = text.match(re);
-    return m ? Number(m[1]) : 0;
-  };
-  const pickAmount = (label: string): number => {
-    const re = new RegExp(`${label}:[^;]*->\\s*₹\\s*([\\d,]+)`, 'i');
-    const m = text.match(re);
-    if (!m) return 0;
-    const n = Number(String(m[1]).replace(/,/g, ''));
-    return Number.isFinite(n) ? Math.round(n) : 0;
-  };
-  const meta: Record<string, unknown> = {
-    hubCategoryDiscountPct: {
-      woodwork: pickPct('Woodwork'),
-      accessories: pickPct('Accessories'),
-      constructionHw: pickPct('Construction Hardware'),
-      services: pickPct('Services'),
-    },
-    hubCategoryDiscountAmount: pickAmount('Category discount amount'),
-    hubAdditionalDiscountAmount: pickAmount('Additional discount'),
-    hubFlatDiscountPct: 0,
-    hubFlatDiscountAmount: 0,
-  };
-  return metaHasDiscount(meta) ? meta : null;
+function pickAmountIfPresent(text: string, label: string): number | undefined {
+  const m = text.match(new RegExp(`${label}:[^;]*->\\s*₹\\s*([\\d,]+)`, 'i'));
+  if (!m) return undefined;
+  const n = Number(String(m[1]).replace(/,/g, ''));
+  return Number.isFinite(n) ? Math.round(n) : undefined;
+}
+
+function mergeDefinedPct(target: AccumPct, src: Record<string, unknown> | null | undefined): void {
+  if (!src) return;
+  for (const key of ['woodwork', 'accessories', 'constructionHw', 'services'] as const) {
+    if (src[key] == null || src[key] === '') continue;
+    const n = asNum(src[key]);
+    target[key] = n;
+  }
 }
 
 export function payloadHasHubDiscountFields(payload: Record<string, unknown> | null | undefined): boolean {
@@ -118,18 +90,60 @@ export function payloadHasHubDiscountFields(payload: Record<string, unknown> | n
   return false;
 }
 
-export function discountMetaFromVersionHints(versions: HubDiscountVersionHint[]): Record<string, unknown> | null {
-  for (let i = versions.length - 1; i >= 0; i -= 1) {
-    const row = versions[i];
+/** Fold every revision into one Hub discount (later rows win, missing fields keep earlier values). */
+export function discountMetaFromVersionHints(
+  versions: HubDiscountVersionHint[],
+  quoteId?: string | number | null,
+): Record<string, unknown> | null {
+  const wanted = quoteId != null && String(quoteId).trim() ? Number(quoteId) : null;
+  const rows =
+    wanted != null && Number.isFinite(wanted) && wanted > 0
+      ? versions.filter((row) => row.quoteId == null || Number(row.quoteId) === wanted)
+      : versions;
+  const walk = rows.length > 0 ? rows : versions;
+
+  const pct: AccumPct = { woodwork: 0, accessories: 0, constructionHw: 0, services: 0 };
+  let amount = 0;
+  let additional = 0;
+  let any = false;
+
+  for (const row of walk) {
     const ds = asObj(row.discountSnapshot) || asObj(row.updatedValues);
     if (ds) {
-      const meta = metaFromDiscountRow(ds);
-      if (metaHasDiscount(meta)) return meta;
+      const nested = asObj(ds.hubCategoryDiscountPct);
+      mergeDefinedPct(pct, nested ?? ds);
+      if (ds.hubCategoryDiscountAmount != null || ds.amount != null) {
+        amount = Math.round(asNum(ds.hubCategoryDiscountAmount) || asNum(ds.amount));
+      }
+      if (ds.hubAdditionalDiscountAmount != null || ds.additionalDiscount != null) {
+        additional = Math.round(asNum(ds.hubAdditionalDiscountAmount) || asNum(ds.additionalDiscount));
+      }
+      any = true;
     }
-    if (row.changeSummary) {
-      const fromSummary = metaFromChangeSummary(row.changeSummary);
-      if (fromSummary) return fromSummary;
-    }
+    const summary = String(row.changeSummary ?? '').trim();
+    if (!summary || /^no changes$/i.test(summary)) continue;
+    const woodwork = pickPctIfPresent(summary, 'Woodwork');
+    const accessories = pickPctIfPresent(summary, 'Accessories');
+    const constructionHw = pickPctIfPresent(summary, 'Construction Hardware');
+    const services = pickPctIfPresent(summary, 'Services');
+    const nextAmount = pickAmountIfPresent(summary, 'Category discount amount');
+    const nextAdditional = pickAmountIfPresent(summary, 'Additional discount');
+    if (woodwork != null) pct.woodwork = woodwork;
+    if (accessories != null) pct.accessories = accessories;
+    if (constructionHw != null) pct.constructionHw = constructionHw;
+    if (services != null) pct.services = services;
+    if (nextAmount != null) amount = nextAmount;
+    if (nextAdditional != null) additional = nextAdditional;
+    any = true;
   }
-  return null;
+
+  if (!any) return null;
+  const meta: Record<string, unknown> = {
+    hubCategoryDiscountPct: pct,
+    hubCategoryDiscountAmount: amount,
+    hubAdditionalDiscountAmount: additional,
+    hubFlatDiscountPct: 0,
+    hubFlatDiscountAmount: 0,
+  };
+  return metaHasDiscount(meta) ? meta : null;
 }

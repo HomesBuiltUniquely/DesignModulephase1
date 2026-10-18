@@ -1203,35 +1203,76 @@ function applyHubDiscountMetaToPayload(
   return nextPayload;
 }
 
-function metaFromChangeSummary(summary: unknown): Record<string, unknown> | null {
-  const text = String(summary ?? "").trim();
-  if (!text || /^no changes$/i.test(text)) return null;
-  const pickPct = (label: string): number => {
-    const re = new RegExp(`${label}:\\s*[\\d.]+%\\s*->\\s*([\\d.]+)%`, "i");
-    const m = text.match(re);
-    const n = m ? Number(m[1]) : 0;
-    return Number.isFinite(n) ? n : 0;
+function pickPctIfPresent(text: string, label: string): number | null {
+  const m = text.match(new RegExp(`${label}:\\s*[\\d.]+%\\s*->\\s*([\\d.]+)%`, "i"));
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
+function pickAmountIfPresent(text: string, label: string): number | null {
+  const m = text.match(new RegExp(`${label}:[^;]*->\\s*₹\\s*([\\d,]+)`, "i"));
+  if (!m) return null;
+  const n = Number(String(m[1]).replace(/,/g, ""));
+  return Number.isFinite(n) ? Math.round(n) : null;
+}
+
+function accumulateHubMetaFromVersionRows(
+  rows: { discount_snapshot?: unknown; updated_values?: unknown; changeSummary?: unknown }[],
+): Record<string, unknown> {
+  const pct: Record<string, number> = {
+    woodwork: 0,
+    accessories: 0,
+    constructionHw: 0,
+    services: 0,
   };
-  const pickAmount = (label: string): number => {
-    const re = new RegExp(`${label}:[^;]*->\\s*₹\\s*([\\d,]+)`, "i");
-    const m = text.match(re);
-    if (!m) return 0;
-    const n = Number(String(m[1]).replace(/,/g, ""));
-    return Number.isFinite(n) ? Math.round(n) : 0;
-  };
+  let amount = 0;
+  let additional = 0;
+  let any = false;
+  for (const ver of rows) {
+    const ds = parseSnapshotJson(ver.discount_snapshot) || parseSnapshotJson(ver.updated_values);
+    if (ds) {
+      const nested = ds.hubCategoryDiscountPct;
+      const src =
+        nested && typeof nested === "object" && !Array.isArray(nested)
+          ? (nested as Record<string, unknown>)
+          : ds;
+      for (const key of ["woodwork", "accessories", "constructionHw", "services"] as const) {
+        if (src[key] == null) continue;
+        const n = parseFiniteNum(src[key]);
+        if (n != null) pct[key] = n;
+      }
+      const nextAmt = parseFiniteNum(ds.hubCategoryDiscountAmount) ?? parseFiniteNum(ds.amount);
+      if (nextAmt != null) amount = Math.round(nextAmt);
+      const nextAdd = parseFiniteNum(ds.hubAdditionalDiscountAmount) ?? parseFiniteNum(ds.additionalDiscount);
+      if (nextAdd != null) additional = Math.round(nextAdd);
+      any = true;
+    }
+    const summary = String(ver.changeSummary ?? "").trim();
+    if (!summary || /^no changes$/i.test(summary)) continue;
+    const woodwork = pickPctIfPresent(summary, "Woodwork");
+    const accessories = pickPctIfPresent(summary, "Accessories");
+    const constructionHw = pickPctIfPresent(summary, "Construction Hardware");
+    const services = pickPctIfPresent(summary, "Services");
+    const nextAmount = pickAmountIfPresent(summary, "Category discount amount");
+    const nextAdditional = pickAmountIfPresent(summary, "Additional discount");
+    if (woodwork != null) pct.woodwork = woodwork;
+    if (accessories != null) pct.accessories = accessories;
+    if (constructionHw != null) pct.constructionHw = constructionHw;
+    if (services != null) pct.services = services;
+    if (nextAmount != null) amount = nextAmount;
+    if (nextAdditional != null) additional = nextAdditional;
+    any = true;
+  }
+  if (!any) return {};
   const meta: Record<string, unknown> = {
-    hubCategoryDiscountPct: {
-      woodwork: pickPct("Woodwork"),
-      accessories: pickPct("Accessories"),
-      constructionHw: pickPct("Construction Hardware"),
-      services: pickPct("Services"),
-    },
-    hubCategoryDiscountAmount: pickAmount("Category discount amount"),
-    hubAdditionalDiscountAmount: pickAmount("Additional discount"),
+    hubCategoryDiscountPct: pct,
+    hubCategoryDiscountAmount: amount,
+    hubAdditionalDiscountAmount: additional,
     hubFlatDiscountPct: 0,
     hubFlatDiscountAmount: 0,
   };
-  return payloadHasHubDiscount(meta) ? meta : null;
+  return payloadHasHubDiscount(meta) ? meta : {};
 }
 
 function metaFromDiscountRow(ds: Record<string, unknown>): Record<string, unknown> {
@@ -1277,23 +1318,28 @@ async function loadHubDiscountMetaForQuote(quoteId: number): Promise<Record<stri
     const [verRows] = await pool.query(
       `SELECT discount_snapshot, updated_values, change_summary AS changeSummary
        FROM lead_prolance_quote_versions
-       WHERE quote_id = ? OR (? IS NOT NULL AND lead_id = ?)
-       ORDER BY id DESC
-       LIMIT 40`,
-      [quoteId, leadId, leadId],
+       WHERE quote_id = ?
+       ORDER BY id ASC
+       LIMIT 80`,
+      [quoteId],
     );
-    for (const ver of verRows as {
-      discount_snapshot?: unknown;
-      updated_values?: unknown;
-      changeSummary?: unknown;
-    }[]) {
-      const ds = parseSnapshotJson(ver.discount_snapshot) || parseSnapshotJson(ver.updated_values);
-      if (ds) {
-        const meta = metaFromDiscountRow(ds);
-        if (payloadHasHubDiscount(meta)) return meta;
-      }
-      const fromSummary = metaFromChangeSummary(ver.changeSummary);
-      if (fromSummary) return fromSummary;
+    const fromQuote = accumulateHubMetaFromVersionRows(
+      verRows as { discount_snapshot?: unknown; updated_values?: unknown; changeSummary?: unknown }[],
+    );
+    if (payloadHasHubDiscount(fromQuote)) return fromQuote;
+    if (leadId != null && Number.isFinite(leadId) && leadId > 0) {
+      const [leadVers] = await pool.query(
+        `SELECT discount_snapshot, updated_values, change_summary AS changeSummary
+         FROM lead_prolance_quote_versions
+         WHERE lead_id = ? AND quote_id = ?
+         ORDER BY id ASC
+         LIMIT 80`,
+        [leadId, quoteId],
+      );
+      const fromLeadQuote = accumulateHubMetaFromVersionRows(
+        leadVers as { discount_snapshot?: unknown; updated_values?: unknown; changeSummary?: unknown }[],
+      );
+      if (payloadHasHubDiscount(fromLeadQuote)) return fromLeadQuote;
     }
   } catch {
     /* fall through */
@@ -1303,23 +1349,13 @@ async function loadHubDiscountMetaForQuote(quoteId: number): Promise<Record<stri
       `SELECT discount_snapshot, updated_values, change_summary AS changeSummary
        FROM lead_prolance_quote_versions
        WHERE quote_id = ?
-       ORDER BY id DESC
-       LIMIT 40`,
+       ORDER BY id ASC
+       LIMIT 80`,
       [quoteId],
     );
-    for (const ver of verRows as {
-      discount_snapshot?: unknown;
-      updated_values?: unknown;
-      changeSummary?: unknown;
-    }[]) {
-      const ds = parseSnapshotJson(ver.discount_snapshot) || parseSnapshotJson(ver.updated_values);
-      if (ds) {
-        const meta = metaFromDiscountRow(ds);
-        if (payloadHasHubDiscount(meta)) return meta;
-      }
-      const fromSummary = metaFromChangeSummary(ver.changeSummary);
-      if (fromSummary) return fromSummary;
-    }
+    return accumulateHubMetaFromVersionRows(
+      verRows as { discount_snapshot?: unknown; updated_values?: unknown; changeSummary?: unknown }[],
+    );
   } catch {
     /* ignore */
   }
