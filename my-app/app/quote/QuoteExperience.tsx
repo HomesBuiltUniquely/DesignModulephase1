@@ -17,6 +17,10 @@ import {
 import type { QuoteRoom } from '@/app/quote/quoteTypes';
 import { extractLineItemPrice, extractUnitDisplayPrice, mergeQuoteLineItemArrays } from '@/app/quote/quoteLineItems';
 import { applyDiscountMetaToLocalPayload } from '@/app/quote/applyQuoteDiscountLocally';
+import {
+  discountMetaFromVersionHints,
+  payloadHasHubDiscountFields,
+} from '@/app/quote/hubDiscountFromVersions';
 
 const API = getApiBase();
 
@@ -373,6 +377,8 @@ type QuoteVersionRow = {
   sourceModule?: string;
   changeSummary?: string;
   versionNumber?: number;
+  discountSnapshot?: unknown;
+  updatedValues?: unknown;
 };
 
 export type QuoteExperienceProps = {
@@ -659,6 +665,8 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
               sourceModule,
               changeSummary,
               versionNumber,
+              discountSnapshot: o.discountSnapshot ?? o.discount_snapshot,
+              updatedValues: o.updatedValues ?? o.updated_values,
             };
           })
           .filter(Boolean) as QuoteVersionRow[];
@@ -676,6 +684,14 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       cancelled = true;
     };
   }, [versionFetchId]);
+
+  useEffect(() => {
+    if (!payload || quoteVersions.length === 0) return;
+    if (payloadHasHubDiscountFields(payload)) return;
+    const meta = discountMetaFromVersionHints(quoteVersions);
+    if (!meta) return;
+    setPayload(applyDiscountMetaToLocalPayload(payload, meta));
+  }, [payload, quoteVersions]);
 
   const customerLinkSlug =
     versionFetchId || (quote.quotationId !== '-' ? quote.quotationId : '');
@@ -942,6 +958,8 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
               sourceModule,
               changeSummary,
               versionNumber,
+              discountSnapshot: o.discountSnapshot ?? o.discount_snapshot,
+              updatedValues: o.updatedValues ?? o.updated_values,
             };
           })
           .filter(Boolean) as QuoteVersionRow[];

@@ -7526,18 +7526,52 @@ async function loadLatestVersionHubMeta(
 ): Promise<Record<string, unknown>> {
   try {
     const [verRows] = await pool.query(
-      `SELECT discount_snapshot, updated_values
+      `SELECT discount_snapshot, updated_values, change_summary AS changeSummary
        FROM lead_prolance_quote_versions
        WHERE quote_id = ? OR (? IS NOT NULL AND lead_id = ?)
        ORDER BY id DESC
-       LIMIT 8`,
+       LIMIT 40`,
       [quoteId, leadId ?? null, leadId ?? null],
     );
-    for (const ver of verRows as { discount_snapshot?: unknown; updated_values?: unknown }[]) {
+    for (const ver of verRows as {
+      discount_snapshot?: unknown;
+      updated_values?: unknown;
+      changeSummary?: unknown;
+    }[]) {
       const ds = parseStoredJsonObject(ver.discount_snapshot) || parseStoredJsonObject(ver.updated_values);
-      if (!ds) continue;
-      const meta = hubMetaFromDiscountState(ds);
-      if (hubMetaHasDiscount(meta)) return meta;
+      if (ds) {
+        const meta = hubMetaFromDiscountState(ds);
+        if (hubMetaHasDiscount(meta)) return meta;
+      }
+      const summary = String(ver.changeSummary ?? "").trim();
+      if (summary && !/^no changes$/i.test(summary)) {
+        const pickPct = (label: string): number => {
+          const re = new RegExp(`${label}:\\s*[\\d.]+%\\s*->\\s*([\\d.]+)%`, "i");
+          const m = summary.match(re);
+          const n = m ? Number(m[1]) : 0;
+          return Number.isFinite(n) ? n : 0;
+        };
+        const pickAmount = (label: string): number => {
+          const re = new RegExp(`${label}:[^;]*->\\s*₹\\s*([\\d,]+)`, "i");
+          const m = summary.match(re);
+          if (!m) return 0;
+          const n = Number(String(m[1]).replace(/,/g, ""));
+          return Number.isFinite(n) ? Math.round(n) : 0;
+        };
+        const meta = {
+          hubCategoryDiscountPct: {
+            woodwork: pickPct("Woodwork"),
+            accessories: pickPct("Accessories"),
+            constructionHw: pickPct("Construction Hardware"),
+            services: pickPct("Services"),
+          },
+          hubCategoryDiscountAmount: pickAmount("Category discount amount"),
+          hubAdditionalDiscountAmount: pickAmount("Additional discount"),
+          hubFlatDiscountPct: 0,
+          hubFlatDiscountAmount: 0,
+        };
+        if (hubMetaHasDiscount(meta)) return meta;
+      }
     }
   } catch {
     /* ignore */

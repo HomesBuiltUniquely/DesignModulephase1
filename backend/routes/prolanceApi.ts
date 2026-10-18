@@ -1203,6 +1203,37 @@ function applyHubDiscountMetaToPayload(
   return nextPayload;
 }
 
+function metaFromChangeSummary(summary: unknown): Record<string, unknown> | null {
+  const text = String(summary ?? "").trim();
+  if (!text || /^no changes$/i.test(text)) return null;
+  const pickPct = (label: string): number => {
+    const re = new RegExp(`${label}:\\s*[\\d.]+%\\s*->\\s*([\\d.]+)%`, "i");
+    const m = text.match(re);
+    const n = m ? Number(m[1]) : 0;
+    return Number.isFinite(n) ? n : 0;
+  };
+  const pickAmount = (label: string): number => {
+    const re = new RegExp(`${label}:[^;]*->\\s*₹\\s*([\\d,]+)`, "i");
+    const m = text.match(re);
+    if (!m) return 0;
+    const n = Number(String(m[1]).replace(/,/g, ""));
+    return Number.isFinite(n) ? Math.round(n) : 0;
+  };
+  const meta: Record<string, unknown> = {
+    hubCategoryDiscountPct: {
+      woodwork: pickPct("Woodwork"),
+      accessories: pickPct("Accessories"),
+      constructionHw: pickPct("Construction Hardware"),
+      services: pickPct("Services"),
+    },
+    hubCategoryDiscountAmount: pickAmount("Category discount amount"),
+    hubAdditionalDiscountAmount: pickAmount("Additional discount"),
+    hubFlatDiscountPct: 0,
+    hubFlatDiscountAmount: 0,
+  };
+  return payloadHasHubDiscount(meta) ? meta : null;
+}
+
 function metaFromDiscountRow(ds: Record<string, unknown>): Record<string, unknown> {
   const nested = ds.hubCategoryDiscountPct;
   if (nested && typeof nested === "object" && !Array.isArray(nested)) {
@@ -1244,36 +1275,50 @@ async function loadHubDiscountMetaForQuote(quoteId: number): Promise<Record<stri
     }
     const leadId = snap?.leadId != null ? Number(snap.leadId) : null;
     const [verRows] = await pool.query(
-      `SELECT discount_snapshot, updated_values
+      `SELECT discount_snapshot, updated_values, change_summary AS changeSummary
        FROM lead_prolance_quote_versions
        WHERE quote_id = ? OR (? IS NOT NULL AND lead_id = ?)
        ORDER BY id DESC
-       LIMIT 8`,
+       LIMIT 40`,
       [quoteId, leadId, leadId],
     );
-    for (const ver of verRows as { discount_snapshot?: unknown; updated_values?: unknown }[]) {
+    for (const ver of verRows as {
+      discount_snapshot?: unknown;
+      updated_values?: unknown;
+      changeSummary?: unknown;
+    }[]) {
       const ds = parseSnapshotJson(ver.discount_snapshot) || parseSnapshotJson(ver.updated_values);
-      if (!ds) continue;
-      const meta = metaFromDiscountRow(ds);
-      if (payloadHasHubDiscount(meta)) return meta;
+      if (ds) {
+        const meta = metaFromDiscountRow(ds);
+        if (payloadHasHubDiscount(meta)) return meta;
+      }
+      const fromSummary = metaFromChangeSummary(ver.changeSummary);
+      if (fromSummary) return fromSummary;
     }
   } catch {
     /* fall through */
   }
   try {
     const [verRows] = await pool.query(
-      `SELECT discount_snapshot, updated_values
+      `SELECT discount_snapshot, updated_values, change_summary AS changeSummary
        FROM lead_prolance_quote_versions
        WHERE quote_id = ?
        ORDER BY id DESC
-       LIMIT 8`,
+       LIMIT 40`,
       [quoteId],
     );
-    for (const ver of verRows as { discount_snapshot?: unknown; updated_values?: unknown }[]) {
+    for (const ver of verRows as {
+      discount_snapshot?: unknown;
+      updated_values?: unknown;
+      changeSummary?: unknown;
+    }[]) {
       const ds = parseSnapshotJson(ver.discount_snapshot) || parseSnapshotJson(ver.updated_values);
-      if (!ds) continue;
-      const meta = metaFromDiscountRow(ds);
-      if (payloadHasHubDiscount(meta)) return meta;
+      if (ds) {
+        const meta = metaFromDiscountRow(ds);
+        if (payloadHasHubDiscount(meta)) return meta;
+      }
+      const fromSummary = metaFromChangeSummary(ver.changeSummary);
+      if (fromSummary) return fromSummary;
     }
   } catch {
     /* ignore */
