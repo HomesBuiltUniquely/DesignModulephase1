@@ -184,28 +184,49 @@ export function QuoteDiscountDetails({
     setDirty(true);
   };
 
-  const handleSave = async () => {
+  const persistDiscount = async (fromButton: boolean) => {
     if (!onSave) return;
     const amount = EDITABLE_KEYS.reduce((sum, key) => {
       const row = rows.find((r) => r.key === key);
       if (!row) return sum;
       return sum + previewRow(row, draftPct[key], capProfile).discountAmount;
     }, 0);
-    const result = await onSave({
-      categoryPct: {
-        woodwork: draftPct.woodwork,
-        accessories: draftPct.accessories,
-        constructionHw: 0,
-        services: draftPct.services,
-      },
-      amount,
-      additionalDiscount: draftAdditional,
-    });
-    if (result && typeof result === 'object' && (result as QuoteDiscountSaveResult).alreadyExists) {
-      setAlreadyExistsPopup(true);
+    try {
+      const result = await onSave({
+        categoryPct: {
+          woodwork: draftPct.woodwork,
+          accessories: draftPct.accessories,
+          constructionHw: 0,
+          services: draftPct.services,
+        },
+        amount,
+        additionalDiscount: draftAdditional,
+      });
+      if (
+        fromButton &&
+        result &&
+        typeof result === 'object' &&
+        (result as QuoteDiscountSaveResult).alreadyExists
+      ) {
+        setAlreadyExistsPopup(true);
+      }
+      setDirty(false);
+    } catch {
+      /* keep dirty so autosave can retry */
     }
-    setDirty(false);
   };
+
+  const handleSave = async () => persistDiscount(true);
+
+  useEffect(() => {
+    if (!editable || !onSave || !dirty) return;
+    const timer = window.setTimeout(() => {
+      void persistDiscount(false);
+    }, 800);
+    return () => window.clearTimeout(timer);
+    // Persist so the customer share link matches the internal preview.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- save from latest draft after typing pauses
+  }, [dirty, draftPct, draftAdditional, editable]);
 
   const showAdditionalReadOnly =
     !editable && (savedAdditionalRow?.discountAmount ?? additionalDiscount ?? 0) > 0;

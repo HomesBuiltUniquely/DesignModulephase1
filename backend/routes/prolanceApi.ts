@@ -1114,17 +1114,23 @@ function parseSnapshotJson(raw: unknown): Record<string, unknown> | null {
 function extractHubDiscountMeta(payload: Record<string, unknown> | null | undefined): Record<string, unknown> {
   if (!payload || typeof payload !== "object") return {};
   const meta: Record<string, unknown> = {};
-  const data = payload.data ?? payload.Data;
-  const nested =
-    data && typeof data === "object" && !Array.isArray(data)
-      ? (data as Record<string, unknown>)
-      : Array.isArray(data) && data[0] && typeof data[0] === "object"
-        ? (data[0] as Record<string, unknown>)
+  const visit = (node: unknown, depth: number) => {
+    if (node == null || depth > 4) return;
+    const rec = Array.isArray(node)
+      ? node[0] && typeof node[0] === "object"
+        ? (node[0] as Record<string, unknown>)
+        : null
+      : typeof node === "object"
+        ? (node as Record<string, unknown>)
         : null;
-  for (const k of HUB_DISCOUNT_META_KEYS) {
-    if (payload[k] != null) meta[k] = payload[k];
-    else if (nested && nested[k] != null) meta[k] = nested[k];
-  }
+    if (!rec) return;
+    for (const k of HUB_DISCOUNT_META_KEYS) {
+      if (meta[k] == null && rec[k] != null) meta[k] = rec[k];
+    }
+    visit(rec.data, depth + 1);
+    visit(rec.Data, depth + 1);
+  };
+  visit(payload, 0);
   return meta;
 }
 
@@ -1177,37 +1183,7 @@ function applyHubDiscountMetaToPayload(
   return nextPayload;
 }
 
-function hubMetaFromVersionRow(ds: Record<string, unknown>): Record<string, unknown> {
-  const fromHubKeys = extractHubDiscountMeta(ds);
-  if (payloadHasHubDiscount(fromHubKeys)) return fromHubKeys;
-  return {
-    hubCategoryDiscountPct: {
-      woodwork: parseFiniteNum(ds.woodwork) ?? 0,
-      accessories: parseFiniteNum(ds.accessories) ?? 0,
-      constructionHw: parseFiniteNum(ds.constructionHw) ?? 0,
-      services: parseFiniteNum(ds.services) ?? 0,
-    },
-    hubCategoryDiscountAmount: Math.round(parseFiniteNum(ds.amount) ?? 0),
-    hubAdditionalDiscountAmount: Math.round(parseFiniteNum(ds.additionalDiscount) ?? 0),
-    hubFlatDiscountPct: 0,
-    hubFlatDiscountAmount: 0,
-  };
-}
-
 async function loadHubDiscountMetaForQuote(quoteId: number): Promise<Record<string, unknown>> {
-  try {
-    const [hubRows] = await pool.query(
-      "SELECT meta_json FROM lead_quote_hub_discounts WHERE quote_id = ? LIMIT 1",
-      [quoteId],
-    );
-    const stored = parseSnapshotJson((hubRows as { meta_json?: unknown }[])[0]?.meta_json);
-    if (stored) {
-      const meta = payloadHasHubDiscount(stored) ? stored : extractHubDiscountMeta(stored);
-      if (payloadHasHubDiscount(meta)) return meta;
-    }
-  } catch {
-    /* table may not exist yet */
-  }
   try {
     const [snapRows] = await pool.query(
       "SELECT payload_json FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1",
@@ -1232,9 +1208,22 @@ async function loadHubDiscountMetaForQuote(quoteId: number): Promise<Record<stri
       [quoteId],
     );
     const ver = (verRows as { discount_snapshot?: unknown; updated_values?: unknown }[])[0];
-    const ds = parseSnapshotJson(ver?.discount_snapshot) ?? parseSnapshotJson(ver?.updated_values);
+    const ds =
+      parseSnapshotJson(ver?.discount_snapshot) ||
+      parseSnapshotJson(ver?.updated_values);
     if (!ds) return {};
-    const meta = hubMetaFromVersionRow(ds);
+    const meta: Record<string, unknown> = {
+      hubCategoryDiscountPct: {
+        woodwork: parseFiniteNum(ds.woodwork) ?? 0,
+        accessories: parseFiniteNum(ds.accessories) ?? 0,
+        constructionHw: parseFiniteNum(ds.constructionHw) ?? 0,
+        services: parseFiniteNum(ds.services) ?? 0,
+      },
+      hubCategoryDiscountAmount: Math.round(parseFiniteNum(ds.amount) ?? 0),
+      hubAdditionalDiscountAmount: Math.round(parseFiniteNum(ds.additionalDiscount) ?? 0),
+      hubFlatDiscountPct: 0,
+      hubFlatDiscountAmount: 0,
+    };
     return payloadHasHubDiscount(meta) ? meta : {};
   } catch {
     return {};
