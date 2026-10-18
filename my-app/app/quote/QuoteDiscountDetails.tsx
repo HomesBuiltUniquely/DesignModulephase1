@@ -184,7 +184,7 @@ export function QuoteDiscountDetails({
     setDirty(true);
   };
 
-  const persistDiscount = async (fromButton: boolean) => {
+  const persistDiscount = async (_fromButton: boolean) => {
     if (!onSave) return;
     const amount = EDITABLE_KEYS.reduce((sum, key) => {
       const row = rows.find((r) => r.key === key);
@@ -192,7 +192,7 @@ export function QuoteDiscountDetails({
       return sum + previewRow(row, draftPct[key], capProfile).discountAmount;
     }, 0);
     try {
-      const result = await onSave({
+      await onSave({
         categoryPct: {
           woodwork: draftPct.woodwork,
           accessories: draftPct.accessories,
@@ -202,14 +202,6 @@ export function QuoteDiscountDetails({
         amount,
         additionalDiscount: draftAdditional,
       });
-      if (
-        fromButton &&
-        result &&
-        typeof result === 'object' &&
-        (result as QuoteDiscountSaveResult).alreadyExists
-      ) {
-        setAlreadyExistsPopup(true);
-      }
       setDirty(false);
     } catch {
       /* keep dirty so autosave can retry */

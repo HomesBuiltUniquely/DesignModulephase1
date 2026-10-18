@@ -17832,11 +17832,11 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
     }
     const changeSummary = changesList.length > 0 ? changesList.join("; ") : "No changes";
 
-    const isNewVersionCreated = !hasExistingVersions || !isSameWithPrevious;
-
-    // Condition:
-    // 1. Version is only created when clicking Save discount.
-    // 2. If the version is the same with its previous one, then new version shouldn't be created.
+    // Temporarily always write a new version so the same discount can be re-saved
+    // after the customer-link error (duplicate-version popup blocked Save).
+    const isNewVersionCreated = true;
+    void hasExistingVersions;
+    void isSameWithPrevious;
     if (isNewVersionCreated) {
       const [maxRow] = await pool.query(
         `SELECT MAX(version_number) AS maxVer, COUNT(*) AS countAll FROM lead_prolance_quote_versions WHERE lead_id = ?`,
@@ -17927,8 +17927,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       leadId: effectiveLeadId,
       quoteId,
       updated: ins.affectedRows > 0,
-      alreadyExists: !isNewVersionCreated,
-      message: !isNewVersionCreated ? "This version is already created" : undefined,
+      alreadyExists: false,
       discount: discountMeta,
       payload: nextPayload,
       versions: updatedVersions,
