@@ -7429,6 +7429,122 @@ function buildHubCategoryDiscountMeta(
   };
 }
 
+function parseStoredJsonObject(raw: unknown): Record<string, unknown> | null {
+  if (raw == null) return null;
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(raw)) {
+    const s = raw.toString("utf8").trim();
+    if (!s) return null;
+    try {
+      const parsed = JSON.parse(s) as unknown;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof raw === "object" && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>;
+  }
+  if (typeof raw === "string") {
+    const s = raw.trim();
+    if (!s || s === "[object Object]") return null;
+    try {
+      const parsed = JSON.parse(s) as unknown;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function quotePayloadHasRooms(payload: Record<string, unknown> | null | undefined): boolean {
+  if (!payload) return false;
+  const hosts: Record<string, unknown>[] = [payload];
+  const data = payload.data ?? payload.Data;
+  if (data && typeof data === "object") {
+    if (Array.isArray(data) && data[0] && typeof data[0] === "object") {
+      hosts.push(data[0] as Record<string, unknown>);
+    } else if (!Array.isArray(data)) {
+      hosts.push(data as Record<string, unknown>);
+    }
+  }
+  for (const host of hosts) {
+    for (const key of ["quoteOptionsData", "optionDetails", "roomWiseSummary"] as const) {
+      const v = host[key];
+      if (Array.isArray(v) && v.length > 0) return true;
+    }
+  }
+  return false;
+}
+
+function hubMetaFromDiscountState(ds: Record<string, unknown>): Record<string, unknown> {
+  const nested = ds.hubCategoryDiscountPct;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    return {
+      hubCategoryDiscountPct: nested,
+      hubCategoryDiscountAmount:
+        Math.round(parseFiniteNumber(ds.hubCategoryDiscountAmount) ?? parseFiniteNumber(ds.amount) ?? 0),
+      hubAdditionalDiscountAmount:
+        Math.round(
+          parseFiniteNumber(ds.hubAdditionalDiscountAmount) ?? parseFiniteNumber(ds.additionalDiscount) ?? 0,
+        ),
+      hubFlatDiscountPct: 0,
+      hubFlatDiscountAmount: 0,
+    };
+  }
+  return {
+    hubCategoryDiscountPct: {
+      woodwork: parseFiniteNumber(ds.woodwork) ?? 0,
+      accessories: parseFiniteNumber(ds.accessories) ?? 0,
+      constructionHw: parseFiniteNumber(ds.constructionHw) ?? 0,
+      services: parseFiniteNumber(ds.services) ?? 0,
+    },
+    hubCategoryDiscountAmount: Math.round(parseFiniteNumber(ds.amount) ?? 0),
+    hubAdditionalDiscountAmount: Math.round(parseFiniteNumber(ds.additionalDiscount) ?? 0),
+    hubFlatDiscountPct: 0,
+    hubFlatDiscountAmount: 0,
+  };
+}
+
+function hubMetaHasDiscount(meta: Record<string, unknown>): boolean {
+  if ((parseFiniteNumber(meta.hubCategoryDiscountAmount) ?? 0) > 0) return true;
+  if ((parseFiniteNumber(meta.hubAdditionalDiscountAmount) ?? 0) > 0) return true;
+  const pct = meta.hubCategoryDiscountPct;
+  if (pct && typeof pct === "object" && !Array.isArray(pct)) {
+    return Object.values(pct as Record<string, unknown>).some((v) => (parseFiniteNumber(v) ?? 0) > 0);
+  }
+  return false;
+}
+
+async function loadLatestVersionHubMeta(
+  quoteId: number,
+  leadId?: number | null,
+): Promise<Record<string, unknown>> {
+  try {
+    const [verRows] = await pool.query(
+      `SELECT discount_snapshot, updated_values
+       FROM lead_prolance_quote_versions
+       WHERE quote_id = ? OR (? IS NOT NULL AND lead_id = ?)
+       ORDER BY id DESC
+       LIMIT 8`,
+      [quoteId, leadId ?? null, leadId ?? null],
+    );
+    for (const ver of verRows as { discount_snapshot?: unknown; updated_values?: unknown }[]) {
+      const ds = parseStoredJsonObject(ver.discount_snapshot) || parseStoredJsonObject(ver.updated_values);
+      if (!ds) continue;
+      const meta = hubMetaFromDiscountState(ds);
+      if (hubMetaHasDiscount(meta)) return meta;
+    }
+  } catch {
+    /* ignore */
+  }
+  return {};
+}
+
 function applyDiscountMetaToSnapshotPayload(
   snapshotPayload: Record<string, unknown>,
   discountMeta: Record<string, unknown>,
@@ -7689,13 +7805,7 @@ app.get("/api/crm/leads/:leadId/quotes/:quoteId", async (req: Request, res: Resp
       return res.status(404).json({ message: "Quote snapshot not found" });
     }
 
-    const snapshotPayload: Record<string, unknown> = (() => {
-      try {
-        return snap.payloadJson ? (JSON.parse(String(snap.payloadJson)) as Record<string, unknown>) : {};
-      } catch {
-        return {};
-      }
-    })();
+    const snapshotPayload: Record<string, unknown> = parseStoredJsonObject(snap.payloadJson) ?? {};
 
     const links = {
       customerQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}`,
@@ -7778,13 +7888,7 @@ app.patch("/api/crm/leads/:leadId/quotes/:quoteId/discount", async (req: Request
       return res.status(404).json({ message: "Quote snapshot not found" });
     }
 
-    const snapshotPayload: Record<string, unknown> = (() => {
-      try {
-        return snap.payloadJson ? (JSON.parse(String(snap.payloadJson)) as Record<string, unknown>) : {};
-      } catch {
-        return {};
-      }
-    })();
+    const snapshotPayload: Record<string, unknown> = parseStoredJsonObject(snap.payloadJson) ?? {};
 
     const pctObj = discountMeta.hubCategoryDiscountPct;
     if (pctObj && typeof pctObj === "object" && !Array.isArray(pctObj)) {
@@ -17599,34 +17703,21 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
     );
     const snap = (snapRows as any[])[0];
 
-    let snapshotPayload: Record<string, unknown> | null = null;
-    if (snap) {
-      try {
-        snapshotPayload = snap.payloadJson
-          ? (JSON.parse(String(snap.payloadJson)) as Record<string, unknown>)
-          : {};
-      } catch {
-        snapshotPayload = {};
-      }
-    } else if (seedPayload) {
-      // First discount save can create the snapshot from the quote currently open in the UI.
+    let snapshotPayload: Record<string, unknown> | null = snap
+      ? parseStoredJsonObject(snap.payloadJson)
+      : null;
+    if (!quotePayloadHasRooms(snapshotPayload) && seedPayload && quotePayloadHasRooms(seedPayload)) {
       snapshotPayload = seedPayload;
-    } else {
-      // Fallback: Check if lead row has payload or initialize empty object
+    } else if (!snapshotPayload && seedPayload) {
+      snapshotPayload = seedPayload;
+    } else if (!snapshotPayload) {
       try {
         const [leadRows] = await pool.query(
           `SELECT payload FROM leads WHERE id = ? LIMIT 1`,
           [effectiveLeadId],
         );
         const leadRow = (leadRows as any[])[0];
-        if (leadRow?.payload) {
-          snapshotPayload =
-            typeof leadRow.payload === "string"
-              ? (JSON.parse(leadRow.payload) as Record<string, unknown>)
-              : (leadRow.payload as Record<string, unknown>);
-        } else {
-          snapshotPayload = {};
-        }
+        snapshotPayload = parseStoredJsonObject(leadRow?.payload) ?? {};
       } catch {
         snapshotPayload = {};
       }
@@ -17675,7 +17766,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       services: clampQuoteCategoryDiscountPct("services", categoryValues.services, discountCapMode),
     };
     const computedAmount = computeHubCategoryDiscountAmount(snapshotPayload, clampedPct);
-    const amountToStore = Math.max(Math.round(amount), computedAmount);
+    const amountToStore = Math.max(Math.round(amount ?? 0), computedAmount);
     const discountMeta = buildHubCategoryDiscountMeta(
       clampedPct,
       amountToStore,
@@ -17724,7 +17815,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
 
     if (lastVersion?.discount_snapshot) {
       try {
-        const parsed = JSON.parse(lastVersion.discount_snapshot);
+        const parsed = parseStoredJsonObject(lastVersion.discount_snapshot) ?? {};
         previousDiscountState = {
           woodwork: parseFiniteNumber(parsed.woodwork) ?? 0,
           accessories: parseFiniteNumber(parsed.accessories) ?? 0,
@@ -17787,7 +17878,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       accessories: parseFiniteNumber(savedPct.accessories) ?? 0,
       constructionHw: parseFiniteNumber(savedPct.constructionHw) ?? 0,
       services: parseFiniteNumber(savedPct.services) ?? 0,
-      amount: Math.round(amount),
+      amount: Math.round(amountToStore),
       additionalDiscount: Math.round(additionalDiscount),
     };
 
@@ -17957,7 +18048,47 @@ app.post("/api/leads/:id/prolance-quote-snapshots", async (req: Request, res: Re
   }
 
   try {
-    const json = JSON.stringify(payload);
+    const incoming = payload as Record<string, unknown>;
+    let nextPayload = incoming;
+    try {
+      const [existingRows] = await pool.query(
+        `SELECT payload_json AS payloadJson FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
+        [quoteId],
+      );
+      const existing = parseStoredJsonObject(
+        (existingRows as { payloadJson?: unknown }[])[0]?.payloadJson,
+      );
+      const existingHub: Record<string, unknown> = {};
+      if (existing) {
+        for (const k of [
+          "hubCategoryDiscountPct",
+          "hubCategoryDiscountAmount",
+          "hubAdditionalDiscountAmount",
+          "hubFlatDiscountPct",
+          "hubFlatDiscountAmount",
+        ] as const) {
+          if (existing[k] != null) existingHub[k] = existing[k];
+        }
+      }
+      if (!hubMetaHasDiscount(existingHub)) {
+        const fromVersions = await loadLatestVersionHubMeta(quoteId, id);
+        Object.assign(existingHub, fromVersions);
+      }
+      if (hubMetaHasDiscount(existingHub)) {
+        nextPayload = applyDiscountMetaToSnapshotPayload(incoming, existingHub);
+        const payable = extractTotalPayableAmount(nextPayload);
+        if (payable != null && payable >= 0) {
+          nextPayload = applyDiscountMetaToSnapshotPayload(nextPayload, {
+            ...existingHub,
+            totalPayableAmount: payable,
+            finalTotalPrice: payable,
+          });
+        }
+      }
+    } catch (preserveErr) {
+      console.warn("[quote-snapshot] preserve hub discount failed (non-fatal)", preserveErr);
+    }
+    const json = JSON.stringify(nextPayload);
     const [result] = await pool.query(
       `INSERT INTO lead_prolance_quote_snapshots (lead_id, quote_id, payload_json, created_at)
        VALUES (?, ?, ?, ?)

@@ -1157,6 +1157,26 @@ function payloadHasHubDiscount(meta: Record<string, unknown>): boolean {
   return flat != null && flat > 0;
 }
 
+function quoteSnapshotHasLineItems(payload: Record<string, unknown> | null | undefined): boolean {
+  if (!payload) return false;
+  const hosts: Record<string, unknown>[] = [payload];
+  const data = payload.data ?? payload.Data;
+  if (data && typeof data === "object") {
+    if (Array.isArray(data) && data[0] && typeof data[0] === "object") {
+      hosts.push(data[0] as Record<string, unknown>);
+    } else if (!Array.isArray(data)) {
+      hosts.push(data as Record<string, unknown>);
+    }
+  }
+  for (const host of hosts) {
+    for (const key of ["quoteOptionsData", "optionDetails", "roomWiseSummary"] as const) {
+      const v = host[key];
+      if (Array.isArray(v) && v.length > 0) return true;
+    }
+  }
+  return false;
+}
+
 function applyHubDiscountMetaToPayload(
   snapshotPayload: Record<string, unknown>,
   discountMeta: Record<string, unknown>,
@@ -1183,16 +1203,58 @@ function applyHubDiscountMetaToPayload(
   return nextPayload;
 }
 
+function metaFromDiscountRow(ds: Record<string, unknown>): Record<string, unknown> {
+  const nested = ds.hubCategoryDiscountPct;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    return {
+      hubCategoryDiscountPct: nested,
+      hubCategoryDiscountAmount:
+        Math.round(parseFiniteNum(ds.hubCategoryDiscountAmount) ?? parseFiniteNum(ds.amount) ?? 0),
+      hubAdditionalDiscountAmount:
+        Math.round(parseFiniteNum(ds.hubAdditionalDiscountAmount) ?? parseFiniteNum(ds.additionalDiscount) ?? 0),
+      hubFlatDiscountPct: 0,
+      hubFlatDiscountAmount: 0,
+    };
+  }
+  return {
+    hubCategoryDiscountPct: {
+      woodwork: parseFiniteNum(ds.woodwork) ?? 0,
+      accessories: parseFiniteNum(ds.accessories) ?? 0,
+      constructionHw: parseFiniteNum(ds.constructionHw) ?? 0,
+      services: parseFiniteNum(ds.services) ?? 0,
+    },
+    hubCategoryDiscountAmount: Math.round(parseFiniteNum(ds.amount) ?? 0),
+    hubAdditionalDiscountAmount: Math.round(parseFiniteNum(ds.additionalDiscount) ?? 0),
+    hubFlatDiscountPct: 0,
+    hubFlatDiscountAmount: 0,
+  };
+}
+
 async function loadHubDiscountMetaForQuote(quoteId: number): Promise<Record<string, unknown>> {
   try {
     const [snapRows] = await pool.query(
-      "SELECT payload_json FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1",
+      "SELECT payload_json, lead_id AS leadId FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1",
       [quoteId],
     );
-    const raw = (snapRows as { payload_json?: unknown }[])[0]?.payload_json;
-    const parsed = parseSnapshotJson(raw);
+    const snap = (snapRows as { payload_json?: unknown; leadId?: unknown }[])[0];
+    const parsed = parseSnapshotJson(snap?.payload_json);
     if (parsed) {
       const meta = extractHubDiscountMeta(parsed);
+      if (payloadHasHubDiscount(meta)) return meta;
+    }
+    const leadId = snap?.leadId != null ? Number(snap.leadId) : null;
+    const [verRows] = await pool.query(
+      `SELECT discount_snapshot, updated_values
+       FROM lead_prolance_quote_versions
+       WHERE quote_id = ? OR (? IS NOT NULL AND lead_id = ?)
+       ORDER BY id DESC
+       LIMIT 8`,
+      [quoteId, leadId, leadId],
+    );
+    for (const ver of verRows as { discount_snapshot?: unknown; updated_values?: unknown }[]) {
+      const ds = parseSnapshotJson(ver.discount_snapshot) || parseSnapshotJson(ver.updated_values);
+      if (!ds) continue;
+      const meta = metaFromDiscountRow(ds);
       if (payloadHasHubDiscount(meta)) return meta;
     }
   } catch {
@@ -1204,30 +1266,19 @@ async function loadHubDiscountMetaForQuote(quoteId: number): Promise<Record<stri
        FROM lead_prolance_quote_versions
        WHERE quote_id = ?
        ORDER BY id DESC
-       LIMIT 1`,
+       LIMIT 8`,
       [quoteId],
     );
-    const ver = (verRows as { discount_snapshot?: unknown; updated_values?: unknown }[])[0];
-    const ds =
-      parseSnapshotJson(ver?.discount_snapshot) ||
-      parseSnapshotJson(ver?.updated_values);
-    if (!ds) return {};
-    const meta: Record<string, unknown> = {
-      hubCategoryDiscountPct: {
-        woodwork: parseFiniteNum(ds.woodwork) ?? 0,
-        accessories: parseFiniteNum(ds.accessories) ?? 0,
-        constructionHw: parseFiniteNum(ds.constructionHw) ?? 0,
-        services: parseFiniteNum(ds.services) ?? 0,
-      },
-      hubCategoryDiscountAmount: Math.round(parseFiniteNum(ds.amount) ?? 0),
-      hubAdditionalDiscountAmount: Math.round(parseFiniteNum(ds.additionalDiscount) ?? 0),
-      hubFlatDiscountPct: 0,
-      hubFlatDiscountAmount: 0,
-    };
-    return payloadHasHubDiscount(meta) ? meta : {};
+    for (const ver of verRows as { discount_snapshot?: unknown; updated_values?: unknown }[]) {
+      const ds = parseSnapshotJson(ver.discount_snapshot) || parseSnapshotJson(ver.updated_values);
+      if (!ds) continue;
+      const meta = metaFromDiscountRow(ds);
+      if (payloadHasHubDiscount(meta)) return meta;
+    }
   } catch {
-    return {};
+    /* ignore */
   }
+  return {};
 }
 
 function applyHubDiscountOverlay(
@@ -2078,6 +2129,49 @@ export function registerProlanceRoutes(
   });
 
   const TEST_PREFIX = "/api/prolance-test";
+
+  const buildCustomerQuotePayload = async (
+    quoteId: number,
+  ): Promise<Record<string, unknown> | null> => {
+    const [rows] = await pool.query(
+      "SELECT payload_json FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1",
+      [quoteId],
+    );
+    const snapshotPayload = parseSnapshotJson(
+      (rows as { payload_json?: unknown }[])[0]?.payload_json,
+    );
+    const hubMeta = await loadHubDiscountMetaForQuote(quoteId);
+    if (!quoteSnapshotHasLineItems(snapshotPayload)) return null;
+    if (!payloadHasHubDiscount(hubMeta)) return snapshotPayload;
+    const withHub = applyHubDiscountMetaToPayload(snapshotPayload, hubMeta);
+    const payable = extractTotalPayableAmount(withHub);
+    if (payable == null) return withHub;
+    return applyHubDiscountMetaToPayload(
+      { ...withHub, totalPayableAmount: payable, finalTotalPrice: payable },
+      hubMeta,
+    );
+  };
+
+  app.get("/api/public/quote/:quoteId", async (req: Request, res: Response): Promise<void> => {
+    const quoteId = Number(String(req.params.quoteId || "").trim());
+    if (!Number.isFinite(quoteId) || quoteId < 1) {
+      res.status(400).json({ message: "Invalid quoteId" });
+      return;
+    }
+    try {
+      const payload = await buildCustomerQuotePayload(quoteId);
+      if (!payload) {
+        res.status(404).json({ message: "Quote snapshot not found" });
+        return;
+      }
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+      res.setHeader("X-Quote-Data-Source", "hub-snapshot");
+      send(res, 200, payload);
+    } catch (err) {
+      console.error("public quote snapshot error", err);
+      res.status(500).json({ message: asErrorMessage(err) });
+    }
+  });
   const requireUser = async (req: Request, res: Response): Promise<SessionUser | null> => {
     const user = await getUserFromSession(req);
     if (!user) {
@@ -2588,9 +2682,13 @@ function formatProlancePName(
         );
       };
 
-      // Customer + internal share must show the saved Hub discount. Live Prolance
-      // does not include it; prefer the snapshot we wrote on Save discount.
-      if (snapshotPayload && payloadHasHubDiscount(hubMetaForQuote)) {
+      // Prefer a full Hub snapshot (rooms + saved discount). A hub-only / empty
+      // snapshot must not hide live Prolance rooms on refresh.
+      if (
+        snapshotPayload &&
+        quoteSnapshotHasLineItems(snapshotPayload) &&
+        payloadHasHubDiscount(hubMetaForQuote)
+      ) {
         const response = finalizePublicQuotePayload(snapshotPayload);
         res.setHeader("X-Quote-Data-Source", "snapshot-hub-discount");
         res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");

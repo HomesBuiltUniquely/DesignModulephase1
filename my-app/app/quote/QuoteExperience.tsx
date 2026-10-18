@@ -36,6 +36,26 @@ function asObj(v: unknown): Record<string, unknown> {
   return v && typeof v === 'object' ? (v as Record<string, unknown>) : {};
 }
 
+function quoteBodyHasRooms(payload: Record<string, unknown> | null | undefined): boolean {
+  if (!payload) return false;
+  const hosts: Record<string, unknown>[] = [payload];
+  const data = payload.data ?? payload.Data;
+  if (data && typeof data === 'object') {
+    if (Array.isArray(data) && data[0] && typeof data[0] === 'object') {
+      hosts.push(data[0] as Record<string, unknown>);
+    } else if (!Array.isArray(data)) {
+      hosts.push(data as Record<string, unknown>);
+    }
+  }
+  for (const host of hosts) {
+    for (const key of ['quoteOptionsData', 'optionDetails', 'roomWiseSummary'] as const) {
+      const v = host[key];
+      if (Array.isArray(v) && v.length > 0) return true;
+    }
+  }
+  return false;
+}
+
 function deepFindByKeys(obj: unknown, keys: string[]): unknown {
   if (!obj || typeof obj !== 'object') return null;
   const root = obj as Record<string, unknown>;
@@ -280,9 +300,19 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
       (Math.abs(apiPayable - sumRoomTotals) <= tolerance || apiPayable >= sumRoomTotals - disc);
     if (hubDisc > 0) {
       const fees = pickedFeesExplicit ?? 0;
-      const base =
-        apiPayable != null && apiPayable > 0 ? apiPayable : sumRoomTotals + fees;
-      totalPayableAmount = Math.max(0, base - hubDisc);
+      const grossFromRooms = sumRoomTotals + fees;
+      if (apiPayable != null && apiPayable > 0) {
+        const looksNet =
+          grossFromRooms > 0 &&
+          Math.abs(apiPayable - (grossFromRooms - hubDisc)) <= Math.max(500, hubDisc * 0.08);
+        const looksGross =
+          grossFromRooms > 0 &&
+          Math.abs(apiPayable - grossFromRooms) <= Math.max(500, grossFromRooms * 0.02);
+        totalPayableAmount =
+          looksNet && !looksGross ? apiPayable : Math.max(0, apiPayable - hubDisc);
+      } else {
+        totalPayableAmount = Math.max(0, grossFromRooms - hubDisc);
+      }
     } else if (apiPlausible) {
       totalPayableAmount = apiPayable;
     } else {
@@ -425,16 +455,28 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           setLoading(true);
           setError(null);
         }
-        const res = await fetch(
-          `${API}/api/prolance-test/quotes/share/${encodeURIComponent(q)}?t=${Date.now()}`,
-          { cache: 'no-store' },
-        );
-        const txt = await res.text();
-        let body: unknown = null;
-        try {
-          body = txt ? JSON.parse(txt) : null;
-        } catch {
-          body = txt;
+        const cacheBust = `t=${Date.now()}`;
+        const parseBody = async (response: Response): Promise<unknown> => {
+          const txt = await response.text();
+          try {
+            return txt ? JSON.parse(txt) : null;
+          } catch {
+            return txt;
+          }
+        };
+        let res = await fetch(`${API}/api/public/quote/${encodeURIComponent(q)}?${cacheBust}`, {
+          cache: 'no-store',
+        });
+        let body = await parseBody(res);
+        let nextPayload =
+          body && typeof body === 'object' ? (body as Record<string, unknown>) : null;
+        if (!res.ok || !quoteBodyHasRooms(nextPayload)) {
+          res = await fetch(
+            `${API}/api/prolance-test/quotes/share/${encodeURIComponent(q)}?${cacheBust}`,
+            { cache: 'no-store' },
+          );
+          body = await parseBody(res);
+          nextPayload = body && typeof body === 'object' ? (body as Record<string, unknown>) : null;
         }
         if (!res.ok) {
           const msg =
@@ -443,8 +485,6 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
               : `Failed to load quote (HTTP ${res.status})`;
           throw new Error(msg);
         }
-        let nextPayload =
-          body && typeof body === 'object' ? (body as Record<string, unknown>) : null;
         if (nextPayload) {
           try {
             const hubRes = await fetch(
