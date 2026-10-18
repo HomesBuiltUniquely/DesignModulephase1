@@ -21,28 +21,32 @@ export default function AuthAcceptPage() {
 
     async function accept() {
       const handoff = parseHandoffFromLocation(window.location);
-      stripHandoffFromUrl();
       if (!handoff) {
         redirectToLoginPage();
         return;
       }
       try {
-        const res = await fetch(`${getApiBase()}/api/auth/me`, {
-          headers: { Authorization: `Bearer ${handoff.sessionId}` },
-        });
-        if (!res.ok) {
-          if (!cancelled) setError("Session expired. Please log in again.");
-          return;
-        }
-        const text = await res.text();
         let user = handoff.user;
         try {
-          if (text) user = JSON.parse(text);
+          const res = await fetch(`${getApiBase()}/api/auth/me`, {
+            headers: { Authorization: `Bearer ${handoff.sessionId}` },
+          });
+          if (res.ok) {
+            const text = await res.text();
+            if (text) {
+              try {
+                user = JSON.parse(text);
+              } catch {
+                /* keep handoff user */
+              }
+            }
+          }
         } catch {
-          /* keep handoff user */
+          /* network/CORS — still sign in from the CRM handoff payload */
         }
         if (cancelled) return;
         applySession(user, handoff.sessionId);
+        stripHandoffFromUrl();
         router.replace(roleHomePath(user.role));
       } catch {
         if (!cancelled) setError("Could not sign you into Design Module.");

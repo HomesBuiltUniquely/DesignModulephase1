@@ -2,9 +2,20 @@
  * Backend API base URL. Set NEXT_PUBLIC_API_URL in production (e.g. in AWS).
  * Defaults to local backend for development.
  */
-export const getApiBase = (): string =>
-  (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_API_URL) ||
-  "http://localhost:3001";
+export const getApiBase = (): string => {
+  const fromEnv =
+    typeof process !== "undefined" && process.env?.NEXT_PUBLIC_API_URL
+      ? String(process.env.NEXT_PUBLIC_API_URL).replace(/\/$/, "")
+      : "";
+  if (fromEnv) return fromEnv;
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname.toLowerCase();
+    if (host === "design.hubinterior.com" || host.endsWith(".hubinterior.com")) {
+      return "https://api.hubinterior.com";
+    }
+  }
+  return "http://localhost:3001";
+};
 
 export const buildAuthHeaders = (
   sessionId?: string | null,
