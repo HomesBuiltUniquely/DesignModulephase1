@@ -46,6 +46,20 @@ export const getApiBase = (): string => {
   return "http://localhost:3001";
 };
 
+/** Server-side / Vercel proxy target. Never the Next.js frontend origin. */
+export function resolveBackendApiBase(): string {
+  const raw =
+    (typeof process !== "undefined" &&
+      (process.env.API_BASE_URL || process.env.NEXT_PUBLIC_API_URL)) ||
+    "";
+  const normalized = normalizeApiBase(String(raw));
+  if (normalized && !/design\.hubinterior\.com/i.test(normalized)) {
+    if (normalized.includes("localhost") && process.env.VERCEL) return PROD_API_BASE;
+    return normalized;
+  }
+  return PROD_API_BASE;
+}
+
 export const apiUrl = (path: string): string => {
   const base = getApiBase();
   const p = path.startsWith("/") ? path : `/${path}`;

@@ -5153,7 +5153,9 @@ async function persistLeadMeetingWizCompleted(
 // ----- Auth -----
 
 app.post("/api/auth/login", async (req: Request, res: Response) => {
-  const { email, password } = req.body || {};
+  const body = (req.body || {}) as Record<string, unknown>;
+  const email = String(body.email || body.username || body.user || body.login || "").trim();
+  const password = String(body.password || body.pass || "").trim();
   if (!email || !password) {
     return res.status(400).json({ message: "Email and password are required" });
   }
