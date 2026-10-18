@@ -20295,6 +20295,7 @@ const server = app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
   console.log("Auth create/register routes: create-mmt-manager, register-mmt-executive, create-tdm, create-admin, create-dqc-manager, create-escalation-manager, create-project-manager, create-senior-project-manager, create-finance, register-dqe, register (TDM designer/design_manager)");
 });
+notify.attachInboxWebSocketProxy(server);
 
 server.on("error", (err) => {
   console.error("Server listen error:", err);

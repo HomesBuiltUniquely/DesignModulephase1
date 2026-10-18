@@ -337,8 +337,8 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
     const scheduleReconnect = (fatal = false) => {
       wsLiveRef.current = false;
       if (!active || fatal) return;
-      if (reconnectAttempt >= 8) return;
-      const delay = Math.min(1000 * 2 ** reconnectAttempt, 15000);
+      if (reconnectAttempt >= 2) return;
+      const delay = Math.min(1000 * 2 ** reconnectAttempt, 8000);
       reconnectAttempt += 1;
       reconnectTimer = setTimeout(connect, delay);
     };
@@ -376,14 +376,22 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
           }
           if (!active) return;
 
-          const rawWsUrl =
-            typeof res.ws_url === 'string' && res.ws_url
-              ? res.ws_url
-              : `ws://localhost:8080/v1/design/inbox/ws?ticket=${encodeURIComponent(res.ticket)}`;
-          const wsUrl =
-            window.location.protocol === 'https:' && rawWsUrl.startsWith('ws://')
-              ? `wss://${rawWsUrl.slice('ws://'.length)}`
-              : rawWsUrl;
+          const ticket = String(res.ticket);
+          let wsUrl = '';
+          try {
+            const apiUrl = new URL(apiBase.includes('://') ? apiBase : `https://${apiBase}`);
+            const wsProto = apiUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+            wsUrl = `${wsProto}//${apiUrl.host}/v1/design/inbox/ws?ticket=${encodeURIComponent(ticket)}`;
+          } catch {
+            const rawWsUrl =
+              typeof res.ws_url === 'string' && res.ws_url
+                ? res.ws_url
+                : `ws://localhost:8080/v1/design/inbox/ws?ticket=${encodeURIComponent(ticket)}`;
+            wsUrl =
+              window.location.protocol === 'https:' && rawWsUrl.startsWith('ws://')
+                ? `wss://${rawWsUrl.slice('ws://'.length)}`
+                : rawWsUrl;
+          }
 
           try {
             socket = new WebSocket(wsUrl);
@@ -413,11 +421,14 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
           };
 
           socket.onerror = () => {
-            console.warn('[notification] WebSocket error');
+            if (reconnectAttempt === 0) {
+              console.warn('[notification] WebSocket error — inbox will keep polling');
+            }
           };
 
-          socket.onclose = () => {
-            scheduleReconnect();
+          socket.onclose = (event) => {
+            const refused = event.code === 1006;
+            scheduleReconnect(refused && reconnectAttempt >= 1);
           };
         })
         .catch((err) => {

@@ -37,6 +37,8 @@
 
 import type { Pool } from "mysql2/promise";
 import type { Request, Response, Application } from "express";
+import type { Server as HttpServer } from "http";
+import { WebSocket, WebSocketServer } from "ws";
 
 // ── Database & Audience Configuration ──────────────────────────────────────────
 
@@ -474,28 +476,69 @@ function notifyApiBase(): string {
   return (process.env.NOTIFY_API_URL || "https://notify.hubinterior.com").replace(/\/$/, "");
 }
 
-function isLocalNotifyHost(host: string): boolean {
-  const h = host.toLowerCase();
-  return h === "localhost" || h === "127.0.0.1" || h === "0.0.0.0" || h.endsWith(".local");
-}
-
-function notifyWebSocketBase(): string {
+/** Socket URL used server-side to reach NotifyProject (HTTP on notify.hubinterior.com). */
+function notifyUpstreamWebSocketBase(): string {
   const explicit = (process.env.NOTIFY_WS_URL || "").trim();
-  if (explicit) {
-    const base = explicit.replace(/\/$/, "");
-    if (base.startsWith("ws://") && !isLocalNotifyHost(base.slice(5).split("/")[0] || "")) {
-      return `wss://${base.slice(5)}`;
-    }
-    return base;
-  }
+  if (explicit) return explicit.replace(/\/$/, "");
   const http = notifyApiBase();
   if (http.startsWith("https://")) return `wss://${http.slice(8)}`;
-  if (http.startsWith("http://")) {
-    const rest = http.slice(7);
-    const host = rest.split("/")[0] || "";
-    return `${isLocalNotifyHost(host) ? "ws" : "wss"}://${rest}`;
-  }
-  return `${isLocalNotifyHost(http.split("/")[0] || "") ? "ws" : "wss"}://${http}`;
+  if (http.startsWith("http://")) return `ws://${http.slice(7)}`;
+  return `ws://${http}`;
+}
+
+function inboxBrowserWebSocketUrl(req: Request, ticket: string): string {
+  const xfProto = String(req.headers["x-forwarded-proto"] || "")
+    .split(",")[0]
+    .trim();
+  const proto = xfProto === "https" || Boolean(req.secure) ? "wss" : "ws";
+  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "")
+    .split(",")[0]
+    .trim();
+  const path = `/v1/design/inbox/ws?ticket=${encodeURIComponent(ticket)}`;
+  if (!host) return `${notifyUpstreamWebSocketBase()}${path}`;
+  return `${proto}://${host}${path}`;
+}
+
+/** Browser talks to this API over WSS; we forward to NotifyProject over ws://. */
+export function attachInboxWebSocketProxy(server: HttpServer): void {
+  const wss = new WebSocketServer({ noServer: true });
+  server.on("upgrade", (req, socket, head) => {
+    const pathname = String(req.url || "").split("?")[0];
+    if (pathname !== "/v1/design/inbox/ws") return;
+    wss.handleUpgrade(req, socket, head, (client) => {
+      const url = new URL(req.url || "", "http://localhost");
+      const ticket = url.searchParams.get("ticket") || "";
+      const target = `${notifyUpstreamWebSocketBase()}/v1/design/inbox/ws?ticket=${encodeURIComponent(ticket)}`;
+      const upstream = new WebSocket(target);
+      const closeBoth = () => {
+        try {
+          if (client.readyState === WebSocket.OPEN) client.close();
+        } catch {
+          /* ignore */
+        }
+        try {
+          if (upstream.readyState === WebSocket.OPEN) upstream.close();
+        } catch {
+          /* ignore */
+        }
+      };
+      upstream.on("open", () => {
+        client.on("message", (data, isBinary) => {
+          if (upstream.readyState === WebSocket.OPEN) upstream.send(data, { binary: isBinary });
+        });
+        upstream.on("message", (data, isBinary) => {
+          if (client.readyState === WebSocket.OPEN) client.send(data, { binary: isBinary });
+        });
+      });
+      upstream.on("error", (err) => {
+        console.warn("[notify] upstream inbox ws error", (err as Error)?.message || err);
+        closeBoth();
+      });
+      client.on("error", closeBoth);
+      upstream.on("close", closeBoth);
+      client.on("close", closeBoth);
+    });
+  });
 }
 
 function notifyApiHeaders(extra: Record<string, string> = {}): Record<string, string> {
@@ -628,7 +671,7 @@ export function registerInboxRoutes(app: Application, authResolver?: InboxAuthRe
       });
       const json = await resp.json();
       if (resp.ok && json.ticket) {
-        json.ws_url = `${notifyWebSocketBase()}/v1/design/inbox/ws?ticket=${encodeURIComponent(json.ticket)}`;
+        json.ws_url = inboxBrowserWebSocketUrl(req, String(json.ticket));
       }
       return res.status(resp.status).json(json);
     } catch (err: any) {
