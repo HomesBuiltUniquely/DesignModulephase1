@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useAuth } from "../auth/AuthContext";
-import { getApiBase } from "@/app/lib/apiBase";
+import { apiUrl } from "@/app/lib/apiBase";
 import { parseHandoffFromLocation, stripHandoffFromUrl } from "../auth/handoff";
 import { roleHomePath } from "../auth/roleHome";
 import {
@@ -38,7 +38,7 @@ export default function LoginPage() {
 
     (async () => {
       try {
-        const res = await fetch(`${getApiBase()}/api/auth/me`, {
+        const res = await fetch(apiUrl("/api/auth/me"), {
           headers: { Authorization: `Bearer ${handoff.sessionId}` },
         });
         if (!res.ok) {

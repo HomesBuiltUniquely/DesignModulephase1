@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import { getApiBase } from '@/app/lib/apiBase';
+import { apiUrl } from '@/app/lib/apiBase';
 import { redirectToLoginPage } from '@/app/lib/externalLoginUrl';
 
 export type AuthRole = 'admin' | 'territorial_design_manager' | 'deputy_general_manager' | 'design_manager' | 'designer' | 'dqc_manager' | 'dqe' | 'mmt_manager' | 'mmt_executive' | 'finance' | 'project_manager' | 'senior_project_manager' | 'escalation_manager';
@@ -79,7 +79,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   
 
   const login = useCallback(async (email: string, password: string): Promise<{ success: true; user: AuthUser } | { success: false; message: string }> => {
-    const res = await fetch(`${getApiBase()}/api/auth/login`, {
+    const res = await fetch(apiUrl('/api/auth/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password }),
@@ -103,7 +103,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = useCallback(async () => {
     if (sessionId) {
       try {
-        await fetch(`${getApiBase()}/api/auth/logout`, {
+        await fetch(apiUrl('/api/auth/logout'), {
           method: 'POST',
           headers: { Authorization: `Bearer ${sessionId}` },
         });
@@ -122,7 +122,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const refreshUser = useCallback(async () => {
     if (!sessionId) return;
     try {
-      const res = await fetch(`${getApiBase()}/api/auth/me`, {
+      const res = await fetch(apiUrl('/api/auth/me'), {
         headers: { Authorization: `Bearer ${sessionId}` },
       });
       if (!res.ok) return;

@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useAuth } from "../AuthContext";
-import { getApiBase } from "@/app/lib/apiBase";
+import { apiUrl } from "@/app/lib/apiBase";
 import { parseHandoffFromLocation, stripHandoffFromUrl } from "../handoff";
 import { roleHomePath } from "../roleHome";
 import {
@@ -28,7 +28,7 @@ export default function AuthAcceptPage() {
       try {
         let user = handoff.user;
         try {
-          const res = await fetch(`${getApiBase()}/api/auth/me`, {
+          const res = await fetch(apiUrl("/api/auth/me"), {
             headers: { Authorization: `Bearer ${handoff.sessionId}` },
           });
           if (res.ok) {
