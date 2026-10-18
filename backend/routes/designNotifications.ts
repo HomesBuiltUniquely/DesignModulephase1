@@ -4,7 +4,7 @@
  *
  * All 16 notification events are defined here as individual, named async functions.
  * Each function corresponds to one POST endpoint on the NotifyProject microservice
- * (http://notify.hubinterior.com / NOTIFY_API_URL env var).
+ * (https://notify.hubinterior.com / NOTIFY_API_URL env var).
  *
  * Usage in server.ts:
  *   import * as notify from "./routes/designNotifications.js";
@@ -471,16 +471,31 @@ export async function resolveNotificationRecipients(args: {
 // ── NotifyProject HTTP helpers ─────────────────────────────────────────────────
 
 function notifyApiBase(): string {
-  return (process.env.NOTIFY_API_URL || "http://notify.hubinterior.com").replace(/\/$/, "");
+  return (process.env.NOTIFY_API_URL || "https://notify.hubinterior.com").replace(/\/$/, "");
+}
+
+function isLocalNotifyHost(host: string): boolean {
+  const h = host.toLowerCase();
+  return h === "localhost" || h === "127.0.0.1" || h === "0.0.0.0" || h.endsWith(".local");
 }
 
 function notifyWebSocketBase(): string {
   const explicit = (process.env.NOTIFY_WS_URL || "").trim();
-  if (explicit) return explicit.replace(/\/$/, "");
+  if (explicit) {
+    const base = explicit.replace(/\/$/, "");
+    if (base.startsWith("ws://") && !isLocalNotifyHost(base.slice(5).split("/")[0] || "")) {
+      return `wss://${base.slice(5)}`;
+    }
+    return base;
+  }
   const http = notifyApiBase();
   if (http.startsWith("https://")) return `wss://${http.slice(8)}`;
-  if (http.startsWith("http://")) return `ws://${http.slice(7)}`;
-  return `ws://${http}`;
+  if (http.startsWith("http://")) {
+    const rest = http.slice(7);
+    const host = rest.split("/")[0] || "";
+    return `${isLocalNotifyHost(host) ? "ws" : "wss"}://${rest}`;
+  }
+  return `${isLocalNotifyHost(http.split("/")[0] || "") ? "ws" : "wss"}://${http}`;
 }
 
 function notifyApiHeaders(extra: Record<string, string> = {}): Record<string, string> {

@@ -334,9 +334,10 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
     let reconnectAttempt = 0;
     let active = true;
 
-    const scheduleReconnect = () => {
+    const scheduleReconnect = (fatal = false) => {
       wsLiveRef.current = false;
-      if (!active) return;
+      if (!active || fatal) return;
+      if (reconnectAttempt >= 8) return;
       const delay = Math.min(1000 * 2 ** reconnectAttempt, 15000);
       reconnectAttempt += 1;
       reconnectTimer = setTimeout(connect, delay);
@@ -375,12 +376,22 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
           }
           if (!active) return;
 
-          const wsUrl =
+          const rawWsUrl =
             typeof res.ws_url === 'string' && res.ws_url
               ? res.ws_url
               : `ws://localhost:8080/v1/design/inbox/ws?ticket=${encodeURIComponent(res.ticket)}`;
+          const wsUrl =
+            window.location.protocol === 'https:' && rawWsUrl.startsWith('ws://')
+              ? `wss://${rawWsUrl.slice('ws://'.length)}`
+              : rawWsUrl;
 
-          socket = new WebSocket(wsUrl);
+          try {
+            socket = new WebSocket(wsUrl);
+          } catch (err) {
+            console.warn('[notification] WebSocket setup failed:', err);
+            scheduleReconnect(true);
+            return;
+          }
           wsRef.current = socket;
 
           socket.onopen = () => {
@@ -411,7 +422,9 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
         })
         .catch((err) => {
           console.warn('[notification] WebSocket setup failed:', err);
-          scheduleReconnect();
+          const message = err instanceof Error ? err.message : String(err);
+          const mixedContent = /insecure WebSocket|mixed content|must be available over WSS/i.test(message);
+          scheduleReconnect(mixedContent);
         });
     };
 
