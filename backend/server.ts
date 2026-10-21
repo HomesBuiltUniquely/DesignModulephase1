@@ -3400,7 +3400,8 @@ function meetingSlotToBusyBlock(slot: string | null): HubBusyBlock | null {
 function isCancelledErpAppointment(raw: unknown): boolean {
   if (!raw || typeof raw !== "object") return false;
   const o = raw as Record<string, unknown>;
-  const status = String(o.status ?? o.appointmentStatus ?? o.state ?? "")
+  // CRM stores the live state on meetingStatus. A rescheduled visit leaves the old row as CANCELLED.
+  const status = String(o.meetingStatus ?? o.status ?? o.appointmentStatus ?? o.state ?? "")
     .trim()
     .toUpperCase();
   if (!status) return false;
