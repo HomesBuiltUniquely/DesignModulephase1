@@ -24,6 +24,8 @@ import {
   extractTotalPayableAmount,
   formatQuoteInrAmount,
   resolveLeadMilestonePaymentBreakdown,
+  loadHubDiscountMetaForQuote,
+  applyHubDiscountMetaToPayload,
 } from "./routes/prolanceApi";
 import { registerCrmHubBookingRoutes, notifyHubFinanceReview, getHubBookingSyncForLead, buildFinance10pQueueList, buildCrmSalesClosureQueueRows, buildCrmSalesClosureLeadDetail, leadHasDqc1Approval, isCrmBookingFinanceApproved } from "./routes/crmHubBookingRoutes";
 import { readCrmFinanceHandlingMode } from "./routes/crmEasebuzzAutoFinance";
@@ -1671,6 +1673,18 @@ async function initDb() {
         KEY idx_lpqs_lead (lead_id)
       );
     `);
+    try {
+      const [sharedCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_prolance_quote_snapshots' AND COLUMN_NAME = 'customer_shared_version_number'",
+      );
+      if ((sharedCol as any[]).length === 0) {
+        await conn.query(
+          "ALTER TABLE lead_prolance_quote_snapshots ADD COLUMN customer_shared_version_number INT NULL",
+        );
+      }
+    } catch {
+      // ignore
+    }
 
     await conn.query(`
       CREATE TABLE IF NOT EXISTS checklists (
@@ -18062,6 +18076,113 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
   } catch (err) {
     console.error("lead quote discount update error", err);
     return res.status(500).json({ message: "Failed to update quote discount" });
+  }
+});
+
+// Designers pick one revision to expose on the customer /quote/:id link.
+app.patch("/api/leads/:id/quotes/:quoteId/customer-share", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  const quoteId = Number(req.params.quoteId);
+  if (!Number.isFinite(leadId) || leadId < 1) return res.status(400).json({ message: "Invalid id" });
+  if (!Number.isFinite(quoteId) || quoteId < 1) return res.status(400).json({ message: "Invalid quoteId" });
+
+  const body = (req.body || {}) as Record<string, unknown>;
+  const versionNumber = Number(body.versionNumber ?? body.sharedVersionNumber);
+  if (!Number.isFinite(versionNumber) || versionNumber < 1) {
+    return res.status(400).json({ message: "versionNumber is required" });
+  }
+
+  const normalizeShareRole = (raw: unknown): string =>
+    String(raw || "")
+      .trim()
+      .toLowerCase()
+      .replace(/^(role_|crm_)/i, "");
+  const canShareRole = (role: string): boolean =>
+    [
+      "designer",
+      "design_manager",
+      "territorial_design_manager",
+      "deputy_general_manager",
+      "admin",
+      "super_admin",
+      "superadmin",
+      "sales_admin",
+      "sales_manager",
+      "sales_executive",
+    ].includes(role);
+
+  const user = await getUserFromSession(req);
+  const crmRoleHeader = normalizeShareRole(req.headers["x-crm-role"] || body.crmRole || body.userRole);
+  const crmUserHeader = String(req.headers["x-crm-user"] || body.crmUser || body.userName || "").trim();
+  if (user) {
+    if (!canShareRole(normalizeShareRole(user.role))) {
+      return res.status(403).json({ message: "You are not allowed to choose the customer quote version" });
+    }
+  } else if (!(canShareRole(crmRoleHeader) && crmUserHeader)) {
+    return res.status(401).json({ message: "Unauthorized" });
+  }
+
+  try {
+    const [snapRows] = await pool.query(
+      `SELECT lead_id AS leadId, payload_json AS payloadJson
+       FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
+      [quoteId],
+    );
+    const snap = (snapRows as { leadId?: unknown; payloadJson?: unknown }[])[0];
+    if (!snap) return res.status(404).json({ message: "Quote snapshot not found" });
+    const snapLead = Number(snap.leadId);
+    if (Number.isFinite(snapLead) && snapLead > 0 && snapLead !== leadId) {
+      return res.status(404).json({ message: "Quote snapshot not found for this lead" });
+    }
+
+    const [verRows] = await pool.query(
+      `SELECT version_number AS versionNumber
+       FROM lead_prolance_quote_versions
+       WHERE quote_id = ?
+       ORDER BY id ASC`,
+      [quoteId],
+    );
+    const versionList = verRows as { versionNumber?: unknown }[];
+    const exactMatch = versionList.some(
+      (row) => Number(row.versionNumber) === versionNumber,
+    );
+    if (!exactMatch && versionList.length < versionNumber) {
+      return res.status(404).json({ message: "That quote version was not found" });
+    }
+
+    await pool.query(
+      `UPDATE lead_prolance_quote_snapshots
+       SET customer_shared_version_number = ?
+       WHERE quote_id = ?`,
+      [versionNumber, quoteId],
+    );
+
+    const hubMeta = await loadHubDiscountMetaForQuote(pool, quoteId, { applySharedVersion: true });
+    const existing = parseStoredJsonObject(snap.payloadJson) ?? {};
+    let nextPayload = applyHubDiscountMetaToPayload(existing, hubMeta);
+    const payable = extractTotalPayableAmount(nextPayload);
+    if (payable != null) {
+      nextPayload = applyHubDiscountMetaToPayload(
+        { ...nextPayload, totalPayableAmount: payable, finalTotalPrice: payable },
+        hubMeta,
+      );
+    }
+    await pool.query(
+      `UPDATE lead_prolance_quote_snapshots SET payload_json = ? WHERE quote_id = ?`,
+      [JSON.stringify(nextPayload), quoteId],
+    );
+
+    return res.json({
+      ok: true,
+      leadId,
+      quoteId,
+      sharedVersionNumber: versionNumber,
+      discount: hubMeta,
+      payload: nextPayload,
+    });
+  } catch (err) {
+    console.error("customer-share quote version error", err);
+    return res.status(500).json({ message: "Failed to share quote version with customer" });
   }
 });
 

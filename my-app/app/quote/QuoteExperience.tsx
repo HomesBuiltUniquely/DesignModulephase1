@@ -417,6 +417,9 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
   const [discountSaving, setDiscountSaving] = useState(false);
   const [discountSaveError, setDiscountSaveError] = useState<string | null>(null);
   const [resolvedLeadId, setResolvedLeadId] = useState<number | null>(leadIdNum);
+  const [sharedVersionNumber, setSharedVersionNumber] = useState<number | null>(null);
+  const [shareVersionSaving, setShareVersionSaving] = useState(false);
+  const [shareVersionError, setShareVersionError] = useState<string | null>(null);
 
   const normalizeQuoteRole = (raw: unknown): string =>
     String(raw || '')
@@ -462,6 +465,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           setError(null);
         }
         const cacheBust = `t=${Date.now()}`;
+        const audienceQs = isInternalMode ? 'internal=1' : 'audience=customer';
         const parseBody = async (response: Response): Promise<unknown> => {
           const txt = await response.text();
           try {
@@ -470,15 +474,18 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
             return txt;
           }
         };
-        let res = await fetch(`${API}/api/public/quote/${encodeURIComponent(q)}?${cacheBust}`, {
-          cache: 'no-store',
-        });
+        let res = await fetch(
+          `${API}/api/public/quote/${encodeURIComponent(q)}?${cacheBust}&${audienceQs}`,
+          {
+            cache: 'no-store',
+          },
+        );
         let body = await parseBody(res);
         let nextPayload =
           body && typeof body === 'object' ? (body as Record<string, unknown>) : null;
         if (!res.ok || !quoteBodyHasRooms(nextPayload)) {
           res = await fetch(
-            `${API}/api/prolance-test/quotes/share/${encodeURIComponent(q)}?${cacheBust}`,
+            `${API}/api/prolance-test/quotes/share/${encodeURIComponent(q)}?${cacheBust}&${audienceQs}`,
             { cache: 'no-store' },
           );
           body = await parseBody(res);
@@ -494,7 +501,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
         if (nextPayload) {
           try {
             const hubRes = await fetch(
-              `${API}/api/prolance-test/public/quotes/${encodeURIComponent(q)}/hub-discount?t=${Date.now()}`,
+              `${API}/api/prolance-test/public/quotes/${encodeURIComponent(q)}/hub-discount?t=${Date.now()}&${audienceQs}`,
               { cache: 'no-store' },
             );
             if (hubRes.ok) {
@@ -521,7 +528,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           if (!payloadHasHubDiscountFields(nextPayload)) {
             try {
               const revRes = await fetch(
-                `${API}/api/prolance-test/public/quote-revisions/${encodeURIComponent(q)}?${cacheBust}`,
+                `${API}/api/prolance-test/public/quote-revisions/${encodeURIComponent(q)}?${cacheBust}&${audienceQs}`,
                 { cache: 'no-store' },
               );
               if (revRes.ok) {
@@ -556,7 +563,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     return () => {
       cancelled = true;
     };
-  }, [quoteIdProp, preloadedPayload]);
+  }, [quoteIdProp, preloadedPayload, isInternalMode]);
 
   const fallbackNormId = useMemo(() => {
     const t = quoteIdProp.trim();
@@ -636,11 +643,12 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       setQuoteVersionsLoading(true);
       setQuoteVersionsError(null);
       try {
+        const audienceQs = isInternalMode ? 'internal=1' : 'audience=customer';
         const res = await fetch(
-          `${API}/api/prolance-test/public/quote-revisions/${encodeURIComponent(versionFetchId)}`,
+          `${API}/api/prolance-test/public/quote-revisions/${encodeURIComponent(versionFetchId)}?${audienceQs}`,
         );
         const txt = await res.text();
-        let body: { versions?: unknown; message?: unknown } = {};
+        let body: { versions?: unknown; message?: unknown; sharedVersionNumber?: unknown } = {};
         try {
           body = txt ? JSON.parse(txt) : {};
         } catch {
@@ -697,7 +705,11 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
             };
           })
           .filter(Boolean) as QuoteVersionRow[];
-        if (!cancelled) setQuoteVersions(versions);
+        if (!cancelled) {
+          setQuoteVersions(versions);
+          const shared = asNum(body.sharedVersionNumber);
+          setSharedVersionNumber(shared != null && shared > 0 ? shared : null);
+        }
       } catch (e) {
         if (!cancelled) {
           setQuoteVersionsError(e instanceof Error ? e.message : 'Failed to load quote versions');
@@ -710,15 +722,16 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     return () => {
       cancelled = true;
     };
-  }, [versionFetchId]);
+  }, [versionFetchId, isInternalMode]);
 
   useEffect(() => {
+    if (!isInternalMode) return;
     if (!payload || quoteVersions.length === 0) return;
     if (payloadHasHubDiscountFields(payload)) return;
     const meta = discountMetaFromVersionHints(quoteVersions, quoteIdProp);
     if (!meta) return;
     setPayload(applyDiscountMetaToLocalPayload(payload, meta));
-  }, [payload, quoteVersions, quoteIdProp]);
+  }, [payload, quoteVersions, quoteIdProp, isInternalMode]);
 
   const customerLinkSlug =
     versionFetchId || (quote.quotationId !== '-' ? quote.quotationId : '');
@@ -1041,6 +1054,68 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     }
   };
 
+  const handleShareVersionWithCustomer = async (versionNumber: number) => {
+    if (!versionFetchId) {
+      setShareVersionError('Quote ID is missing — cannot share this version.');
+      return;
+    }
+    if (resolvedLeadId == null || resolvedLeadId < 1) {
+      setShareVersionError(
+        'Lead ID is missing. Open the quote from CRM with ?leadId=… or refresh after the page loads.',
+      );
+      return;
+    }
+    setShareVersionSaving(true);
+    setShareVersionError(null);
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (sessionId) {
+        headers['Authorization'] = `Bearer ${sessionId}`;
+      } else if (viaCrmDiscountEdit) {
+        headers['X-Crm-Role'] = effectiveCrmRole;
+        headers['X-Crm-User'] = effectiveCrmUser;
+      }
+      const res = await fetch(
+        `${API}/api/leads/${resolvedLeadId}/quotes/${encodeURIComponent(versionFetchId)}/customer-share`,
+        {
+          method: 'PATCH',
+          headers,
+          credentials: 'include',
+          body: JSON.stringify({
+            versionNumber,
+            ...(isInternalMode || viaCrmDiscountEdit ? { sourceModule: 'CRM' } : {}),
+            ...(viaCrmDiscountEdit
+              ? { crmRole: effectiveCrmRole, crmUser: effectiveCrmUser }
+              : {}),
+          }),
+        },
+      );
+      const txt = await res.text();
+      let body: unknown = null;
+      try {
+        body = txt ? JSON.parse(txt) : null;
+      } catch {
+        body = txt;
+      }
+      if (!res.ok) {
+        const msg =
+          body && typeof body === 'object' && (body as Record<string, unknown>).message
+            ? String((body as Record<string, unknown>).message)
+            : `Failed to share version (HTTP ${res.status})`;
+        throw new Error(msg);
+      }
+      const bodyObj = body && typeof body === 'object' ? (body as Record<string, unknown>) : null;
+      const shared = asNum(bodyObj?.sharedVersionNumber) ?? versionNumber;
+      setSharedVersionNumber(shared);
+    } catch (e) {
+      setShareVersionError(e instanceof Error ? e.message : 'Failed to share this version with the customer');
+    } finally {
+      setShareVersionSaving(false);
+    }
+  };
+
   return (
     <QuoteExperienceView
       quote={quote}
@@ -1083,6 +1158,14 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
         return n;
       })()}
       onSaveDiscount={discountEditable ? handleSaveDiscount : undefined}
+      sharedVersionNumber={sharedVersionNumber}
+      shareVersionSaving={shareVersionSaving}
+      shareVersionError={shareVersionError}
+      onShareVersionWithCustomer={
+        (Boolean(sessionId) || viaCrmDiscountEdit) && resolvedLeadId != null && resolvedLeadId > 0
+          ? handleShareVersionWithCustomer
+          : undefined
+      }
     />
   );
 }

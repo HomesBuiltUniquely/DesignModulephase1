@@ -1177,7 +1177,7 @@ function quoteSnapshotHasLineItems(payload: Record<string, unknown> | null | und
   return false;
 }
 
-function applyHubDiscountMetaToPayload(
+export function applyHubDiscountMetaToPayload(
   snapshotPayload: Record<string, unknown>,
   discountMeta: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -1275,6 +1275,21 @@ function accumulateHubMetaFromVersionRows(
   return payloadHasHubDiscount(meta) ? meta : {};
 }
 
+function sliceVersionRowsThroughShared<T extends { versionNumber?: unknown }>(
+  rows: T[],
+  sharedVersion: number | null,
+): T[] {
+  if (sharedVersion == null || !Number.isFinite(sharedVersion) || sharedVersion < 1) return rows;
+  let last = -1;
+  rows.forEach((row, i) => {
+    const n = Number(row.versionNumber);
+    if (Number.isFinite(n) && n === sharedVersion) last = i;
+  });
+  if (last < 0 && sharedVersion <= rows.length) last = sharedVersion - 1;
+  if (last < 0) return rows;
+  return rows.slice(0, last + 1);
+}
+
 function metaFromDiscountRow(ds: Record<string, unknown>): Record<string, unknown> {
   const nested = ds.hubCategoryDiscountPct;
   if (nested && typeof nested === "object" && !Array.isArray(nested)) {
@@ -1302,21 +1317,37 @@ function metaFromDiscountRow(ds: Record<string, unknown>): Record<string, unknow
   };
 }
 
-async function loadHubDiscountMetaForQuote(quoteId: number): Promise<Record<string, unknown>> {
+export async function loadHubDiscountMetaForQuote(
+  pool: Pool,
+  quoteId: number,
+  opts?: { applySharedVersion?: boolean },
+): Promise<Record<string, unknown>> {
+  const applyShared = opts?.applySharedVersion !== false;
+  let sharedVersion: number | null = null;
   try {
     const [snapRows] = await pool.query(
-      "SELECT payload_json, lead_id AS leadId FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1",
+      `SELECT payload_json, lead_id AS leadId, customer_shared_version_number AS sharedVersion
+       FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
       [quoteId],
     );
-    const snap = (snapRows as { payload_json?: unknown; leadId?: unknown }[])[0];
+    const snap = (snapRows as {
+      payload_json?: unknown;
+      leadId?: unknown;
+      sharedVersion?: unknown;
+    }[])[0];
+    sharedVersion =
+      applyShared && snap?.sharedVersion != null && Number.isFinite(Number(snap.sharedVersion))
+        ? Number(snap.sharedVersion)
+        : null;
     const parsed = parseSnapshotJson(snap?.payload_json);
-    if (parsed) {
+    if (parsed && sharedVersion == null) {
       const meta = extractHubDiscountMeta(parsed);
       if (payloadHasHubDiscount(meta)) return meta;
     }
     const leadId = snap?.leadId != null ? Number(snap.leadId) : null;
     const [verRows] = await pool.query(
-      `SELECT discount_snapshot, updated_values, change_summary AS changeSummary
+      `SELECT discount_snapshot, updated_values, change_summary AS changeSummary,
+              version_number AS versionNumber
        FROM lead_prolance_quote_versions
        WHERE quote_id = ?
        ORDER BY id ASC
@@ -1324,12 +1355,21 @@ async function loadHubDiscountMetaForQuote(quoteId: number): Promise<Record<stri
       [quoteId],
     );
     const fromQuote = accumulateHubMetaFromVersionRows(
-      verRows as { discount_snapshot?: unknown; updated_values?: unknown; changeSummary?: unknown }[],
+      sliceVersionRowsThroughShared(
+        verRows as {
+          discount_snapshot?: unknown;
+          updated_values?: unknown;
+          changeSummary?: unknown;
+          versionNumber?: unknown;
+        }[],
+        sharedVersion,
+      ),
     );
     if (payloadHasHubDiscount(fromQuote)) return fromQuote;
     if (leadId != null && Number.isFinite(leadId) && leadId > 0) {
       const [leadVers] = await pool.query(
-        `SELECT discount_snapshot, updated_values, change_summary AS changeSummary
+        `SELECT discount_snapshot, updated_values, change_summary AS changeSummary,
+                version_number AS versionNumber
          FROM lead_prolance_quote_versions
          WHERE lead_id = ? AND quote_id = ?
          ORDER BY id ASC
@@ -1337,7 +1377,15 @@ async function loadHubDiscountMetaForQuote(quoteId: number): Promise<Record<stri
         [leadId, quoteId],
       );
       const fromLeadQuote = accumulateHubMetaFromVersionRows(
-        leadVers as { discount_snapshot?: unknown; updated_values?: unknown; changeSummary?: unknown }[],
+        sliceVersionRowsThroughShared(
+          leadVers as {
+            discount_snapshot?: unknown;
+            updated_values?: unknown;
+            changeSummary?: unknown;
+            versionNumber?: unknown;
+          }[],
+          sharedVersion,
+        ),
       );
       if (payloadHasHubDiscount(fromLeadQuote)) return fromLeadQuote;
     }
@@ -1346,7 +1394,8 @@ async function loadHubDiscountMetaForQuote(quoteId: number): Promise<Record<stri
   }
   try {
     const [verRows] = await pool.query(
-      `SELECT discount_snapshot, updated_values, change_summary AS changeSummary
+      `SELECT discount_snapshot, updated_values, change_summary AS changeSummary,
+              version_number AS versionNumber
        FROM lead_prolance_quote_versions
        WHERE quote_id = ?
        ORDER BY id ASC
@@ -1354,7 +1403,15 @@ async function loadHubDiscountMetaForQuote(quoteId: number): Promise<Record<stri
       [quoteId],
     );
     return accumulateHubMetaFromVersionRows(
-      verRows as { discount_snapshot?: unknown; updated_values?: unknown; changeSummary?: unknown }[],
+      sliceVersionRowsThroughShared(
+        verRows as {
+          discount_snapshot?: unknown;
+          updated_values?: unknown;
+          changeSummary?: unknown;
+          versionNumber?: unknown;
+        }[],
+        sharedVersion,
+      ),
     );
   } catch {
     /* ignore */
@@ -2213,6 +2270,7 @@ export function registerProlanceRoutes(
 
   const buildCustomerQuotePayload = async (
     quoteId: number,
+    opts?: { applySharedVersion?: boolean },
   ): Promise<Record<string, unknown> | null> => {
     const [rows] = await pool.query(
       "SELECT payload_json FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1",
@@ -2221,7 +2279,7 @@ export function registerProlanceRoutes(
     const snapshotPayload = parseSnapshotJson(
       (rows as { payload_json?: unknown }[])[0]?.payload_json,
     );
-    const hubMeta = await loadHubDiscountMetaForQuote(quoteId);
+    const hubMeta = await loadHubDiscountMetaForQuote(pool, quoteId, opts);
     if (!quoteSnapshotHasLineItems(snapshotPayload)) return null;
     if (!payloadHasHubDiscount(hubMeta)) return snapshotPayload;
     const withHub = applyHubDiscountMetaToPayload(snapshotPayload, hubMeta);
@@ -2240,7 +2298,12 @@ export function registerProlanceRoutes(
       return;
     }
     try {
-      const payload = await buildCustomerQuotePayload(quoteId);
+      const internalView =
+        String(req.query.internal || "").trim() === "1" ||
+        String(req.query.audience || "").trim().toLowerCase() === "internal";
+      const payload = await buildCustomerQuotePayload(quoteId, {
+        applySharedVersion: !internalView,
+      });
       if (!payload) {
         res.status(404).json({ message: "Quote snapshot not found" });
         return;
@@ -2700,15 +2763,43 @@ function formatProlancePName(
         });
         return;
       }
-      const versions = await loadQuoteVersionsForLeadPublic(leadId);
+      let versions = await loadQuoteVersionsForLeadPublic(leadId);
+      let sharedVersionNumber: number | null = null;
+      try {
+        const [shareRows] = await pool.query(
+          `SELECT customer_shared_version_number AS sharedVersion
+           FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
+          [seed],
+        );
+        const sv = (shareRows as { sharedVersion?: unknown }[])[0]?.sharedVersion;
+        if (sv != null && Number.isFinite(Number(sv)) && Number(sv) > 0) {
+          sharedVersionNumber = Number(sv);
+        }
+      } catch {
+        /* optional column */
+      }
+      const forCustomer =
+        String(req.query.audience || "").trim().toLowerCase() === "customer" ||
+        String(req.query.internal || "").trim() === "0";
+      if (forCustomer && versions.length > 0) {
+        const sameQuote = versions.filter((v) => Number(v.quoteId) === seed);
+        const poolRows = sameQuote.length > 0 ? sameQuote : versions;
+        if (sharedVersionNumber != null) {
+          const match = poolRows.filter((v) => Number(v.versionNumber) === sharedVersionNumber);
+          versions = match.length > 0 ? [match[match.length - 1]] : [poolRows[poolRows.length - 1]];
+        } else {
+          versions = [poolRows[poolRows.length - 1]];
+        }
+      }
       if (versions.length === 0) {
         res.json({
           leadId,
           versions: [{ quoteId: seed, createdAt: new Date().toISOString() }],
+          sharedVersionNumber,
         });
         return;
       }
-      res.json({ leadId, versions });
+      res.json({ leadId, versions, sharedVersionNumber });
     } catch (err) {
       console.error("public quote-revisions error", err);
       res.status(500).json({ message: asErrorMessage(err) });
@@ -2728,6 +2819,9 @@ function formatProlancePName(
       let snapshotPayload: Record<string, unknown> | null = null;
       let hubMetaForQuote: Record<string, unknown> = {};
       const snapshotQid = Number(quoteId);
+      const internalView =
+        String(req.query.internal || "").trim() === "1" ||
+        String(req.query.audience || "").trim().toLowerCase() === "internal";
       if (Number.isFinite(snapshotQid) && snapshotQid > 0) {
         try {
           const [rows] = await pool.query(
@@ -2736,12 +2830,14 @@ function formatProlancePName(
           );
           const row = (rows as { payload_json?: unknown }[])[0];
           snapshotPayload = parseSnapshotJson(row?.payload_json);
-          hubMetaForQuote = extractHubDiscountMeta(snapshotPayload);
         } catch (snapErr) {
           console.error("quote snapshot read error", snapErr);
         }
-        if (!payloadHasHubDiscount(hubMetaForQuote)) {
-          hubMetaForQuote = await loadHubDiscountMetaForQuote(snapshotQid);
+        hubMetaForQuote = await loadHubDiscountMetaForQuote(pool, snapshotQid, {
+          applySharedVersion: !internalView,
+        });
+        if (!payloadHasHubDiscount(hubMetaForQuote) && snapshotPayload) {
+          hubMetaForQuote = extractHubDiscountMeta(snapshotPayload);
         }
       }
 
@@ -2966,7 +3062,12 @@ function formatProlancePName(
       return;
     }
     try {
-      const discount = await loadHubDiscountMetaForQuote(quoteId);
+      const internalView =
+        String(req.query.internal || "").trim() === "1" ||
+        String(req.query.audience || "").trim().toLowerCase() === "internal";
+      const discount = await loadHubDiscountMetaForQuote(pool, quoteId, {
+        applySharedVersion: !internalView,
+      });
       res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
       res.json({ ok: true, discount });
     } catch (err) {

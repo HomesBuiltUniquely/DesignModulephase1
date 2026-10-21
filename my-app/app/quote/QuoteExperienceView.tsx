@@ -72,6 +72,10 @@ type Props = {
   onSaveDiscount?: (
     payload: QuoteCategoryDiscountSavePayload,
   ) => void | Promise<QuoteDiscountSaveResult | void> | QuoteDiscountSaveResult;
+  sharedVersionNumber?: number | null;
+  shareVersionSaving?: boolean;
+  shareVersionError?: string | null;
+  onShareVersionWithCustomer?: (versionNumber: number) => void;
 };
 
 function LinkIcon() {
@@ -153,6 +157,10 @@ export function QuoteExperienceView(props: Props) {
     discountSaveError = null,
     additionalDiscount = null,
     onSaveDiscount,
+    sharedVersionNumber = null,
+    shareVersionSaving = false,
+    shareVersionError = null,
+    onShareVersionWithCustomer,
   } = props;
 
   const savedDiscount = Math.max(0, quote.discount ?? 0);
@@ -593,20 +601,25 @@ export function QuoteExperienceView(props: Props) {
           )}
         </section>
 
-        {/* Revision history */}
-        {quoteVersionsLoading ? (
+        {/* Revision history — internal only. Customers see the shared version, not every revision. */}
+        {isInternalMode && quoteVersionsLoading ? (
           <section className="rounded-2xl border border-[#ece6df] bg-white p-6 shadow-sm">
             <p className="text-sm" style={{ color: QUOTE.muted }}>
               Loading revision history…
             </p>
           </section>
         ) : null}
-        {quoteVersionsError ? (
+        {isInternalMode && quoteVersionsError ? (
           <section className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
             {quoteVersionsError}
           </section>
         ) : null}
-        {!quoteVersionsLoading && !quoteVersionsError && quoteVersions.length >= 1 ? (
+        {isInternalMode && shareVersionError ? (
+          <section className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            {shareVersionError}
+          </section>
+        ) : null}
+        {isInternalMode && !quoteVersionsLoading && !quoteVersionsError && quoteVersions.length >= 1 ? (
           <section className="rounded-2xl border border-[#ece6df] bg-white p-6 shadow-sm">
             <div className="mb-2 flex items-center gap-2">
               <svg className="h-5 w-5" style={{ color: QUOTE.red }} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -615,10 +628,13 @@ export function QuoteExperienceView(props: Props) {
               <h2 className="quote-heading text-lg font-bold text-[#2a1d14]">Revision History</h2>
             </div>
             <p className="mb-4 text-xs" style={{ color: QUOTE.muted }}>
-              Each revision is saved for your reference. Click a version to open it.
+              Choose one version to share on the customer link. Customers will not see the other revisions.
             </p>
             <div className="grid gap-4 sm:grid-cols-2">
               {quoteVersions.map((v, idx) => {
+                const versionNumber = v.versionNumber && v.versionNumber > 0 ? v.versionNumber : idx + 1;
+                const isShared =
+                  sharedVersionNumber != null && Number(sharedVersionNumber) === Number(versionNumber);
                 const isCurrent = (() => {
                   const matchingIndices = quoteVersions
                     .map((ver, i) => (String(ver.quoteId) === String(versionFetchId) ? i : -1))
@@ -633,54 +649,86 @@ export function QuoteExperienceView(props: Props) {
                 })();
                 const href = `/quote/${encodeURIComponent(String(v.quoteId))}${internalVersionSuffix}`;
                 return (
-                  <a
+                  <div
                     key={`qv-${v.quoteId}-${idx}`}
-                    href={href}
-                    className={`block rounded-xl border p-5 transition-shadow hover:shadow-md ${
-                      isCurrent
-                        ? 'border-[#f5c6cb] bg-[#fff5f5]'
-                        : 'border-[#ece6df] bg-white'
+                    className={`rounded-xl border p-5 ${
+                      isShared
+                        ? 'border-[#c9a84c] bg-[#fffbeb]'
+                        : isCurrent
+                          ? 'border-[#f5c6cb] bg-[#fff5f5]'
+                          : 'border-[#ece6df] bg-white'
                     }`}
-                    style={isCurrent ? { borderLeftWidth: 4, borderLeftColor: QUOTE.red } : undefined}
+                    style={
+                      isShared
+                        ? { borderLeftWidth: 4, borderLeftColor: QUOTE.gold }
+                        : isCurrent
+                          ? { borderLeftWidth: 4, borderLeftColor: QUOTE.red }
+                          : undefined
+                    }
                   >
-                    <p className="font-bold text-[#2a1d14]">
-                      Version {idx + 1}
-                      {isCurrent ? (
-                        <span className="ml-2 text-sm font-normal" style={{ color: QUOTE.red }}>
-                          (Current)
-                        </span>
+                    <a href={href} className="block transition-opacity hover:opacity-90">
+                      <p className="font-bold text-[#2a1d14]">
+                        Version {versionNumber}
+                        {isShared ? (
+                          <span className="ml-2 text-sm font-normal" style={{ color: QUOTE.gold }}>
+                            (Shared with customer)
+                          </span>
+                        ) : isCurrent ? (
+                          <span className="ml-2 text-sm font-normal" style={{ color: QUOTE.red }}>
+                            (Current)
+                          </span>
+                        ) : null}
+                      </p>
+                      <p className="mt-2 text-xs" style={{ color: QUOTE.muted }}>
+                        Created on {formatVersionDate(v.createdAt)}
+                      </p>
+                      <p className="mt-1 text-xs tabular-nums font-medium text-[#786c5f]">
+                        Quote #{v.quoteId}
+                      </p>
+                      {v.changeSummary ? (
+                        <p className="mt-2 text-xs font-medium text-[#854d0e] bg-[#fef9c3] rounded-md px-2.5 py-1 inline-block border border-[#fef08a]">
+                          {v.changeSummary}
+                        </p>
                       ) : null}
-                    </p>
-                    <p className="mt-2 text-xs" style={{ color: QUOTE.muted }}>
-                      Created on {formatVersionDate(v.createdAt)}
-                    </p>
-                    <p className="mt-1 text-xs tabular-nums font-medium text-[#786c5f]">
-                      Quote #{v.quoteId}
-                    </p>
-                    {v.changeSummary ? (
-                      <p className="mt-2 text-xs font-medium text-[#854d0e] bg-[#fef9c3] rounded-md px-2.5 py-1 inline-block border border-[#fef08a]">
-                        {v.changeSummary}
-                      </p>
+                      {v.createdBy || v.sourceModule || v.createdByRole ? (
+                        <p className="mt-2 flex items-start gap-1.5 text-xs font-medium text-[#4a3f35]">
+                          <svg className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#c1272d]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                          </svg>
+                          <span>
+                            {v.createdBy
+                              ? `Created by ${v.createdBy.replace(/^(created by|by)[:\s]*/i, '')}`
+                              : 'Created by —'}
+                            {v.createdByRole && !String(v.createdBy || '').toLowerCase().includes(String(v.createdByRole).toLowerCase())
+                              ? ` · ${v.createdByRole}`
+                              : ''}
+                            {v.sourceModule && !String(v.createdBy || '').toLowerCase().includes(String(v.sourceModule).toLowerCase())
+                              ? ` · ${v.sourceModule}`
+                              : ''}
+                          </span>
+                        </p>
+                      ) : null}
+                    </a>
+                    {onShareVersionWithCustomer ? (
+                      <button
+                        type="button"
+                        disabled={shareVersionSaving || isShared}
+                        onClick={() => onShareVersionWithCustomer(versionNumber)}
+                        className="mt-4 w-full rounded-md border px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                        style={
+                          isShared
+                            ? { borderColor: QUOTE.gold, color: QUOTE.gold, backgroundColor: '#fffbeb' }
+                            : { borderColor: QUOTE.brown, color: QUOTE.brown, backgroundColor: '#fff' }
+                        }
+                      >
+                        {isShared
+                          ? 'Shared on customer link'
+                          : shareVersionSaving
+                            ? 'Sharing…'
+                            : 'Share this version with customer'}
+                      </button>
                     ) : null}
-                    {v.createdBy || v.sourceModule || v.createdByRole ? (
-                      <p className="mt-2 flex items-start gap-1.5 text-xs font-medium text-[#4a3f35]">
-                        <svg className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#c1272d]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                        </svg>
-                        <span>
-                          {v.createdBy
-                            ? `Created by ${v.createdBy.replace(/^(created by|by)[:\s]*/i, '')}`
-                            : 'Created by —'}
-                          {v.createdByRole && !String(v.createdBy || '').toLowerCase().includes(String(v.createdByRole).toLowerCase())
-                            ? ` · ${v.createdByRole}`
-                            : ''}
-                          {v.sourceModule && !String(v.createdBy || '').toLowerCase().includes(String(v.sourceModule).toLowerCase())
-                            ? ` · ${v.sourceModule}`
-                            : ''}
-                        </span>
-                      </p>
-                    ) : null}
-                  </a>
+                  </div>
                 );
               })}
             </div>
