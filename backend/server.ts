@@ -18135,30 +18135,48 @@ app.patch("/api/leads/:id/quotes/:quoteId/customer-share", async (req: Request, 
       return res.status(404).json({ message: "Quote snapshot not found for this lead" });
     }
 
-    const [verRows] = await pool.query(
-      `SELECT version_number AS versionNumber
-       FROM lead_prolance_quote_versions
-       WHERE quote_id = ?
-       ORDER BY id ASC`,
-      [quoteId],
-    );
-    const versionList = verRows as { versionNumber?: unknown }[];
-    const exactMatch = versionList.some(
-      (row) => Number(row.versionNumber) === versionNumber,
-    );
-    if (!exactMatch && versionList.length < versionNumber) {
+    const selectedQuoteIdRaw = Number(body.selectedQuoteId ?? body.quoteId);
+    const selectedQuoteId =
+      Number.isFinite(selectedQuoteIdRaw) && selectedQuoteIdRaw > 0 ? selectedQuoteIdRaw : quoteId;
+
+    const leadVersions = await loadProlanceQuoteVersionsForLead(leadId);
+    const matched =
+      leadVersions.find(
+        (row) => Number(row.quoteId) === selectedQuoteId && Number(row.versionNumber) === versionNumber,
+      ) ||
+      leadVersions.find((row) => Number(row.versionNumber) === versionNumber) ||
+      leadVersions.find((_, idx) => idx + 1 === versionNumber) ||
+      null;
+
+    if (!matched && leadVersions.length > 0) {
       return res.status(404).json({ message: "That quote version was not found" });
     }
 
-    await pool.query(
-      `UPDATE lead_prolance_quote_snapshots
-       SET customer_shared_version_number = ?
-       WHERE quote_id = ?`,
-      [versionNumber, quoteId],
-    );
+    const persistQuoteId = matched?.quoteId && matched.quoteId > 0 ? matched.quoteId : quoteId;
+    const persistVersion =
+      matched?.versionNumber && matched.versionNumber > 0 ? matched.versionNumber : versionNumber;
 
-    const hubMeta = await loadHubDiscountMetaForQuote(pool, quoteId, { applySharedVersion: true });
-    const existing = parseStoredJsonObject(snap.payloadJson) ?? {};
+    const quoteIdsToStamp = Array.from(new Set([quoteId, persistQuoteId].filter((id) => id > 0)));
+    for (const qid of quoteIdsToStamp) {
+      await pool.query(
+        `UPDATE lead_prolance_quote_snapshots
+         SET customer_shared_version_number = ?
+         WHERE quote_id = ?`,
+        [persistVersion, qid],
+      );
+    }
+
+    const hubMeta = await loadHubDiscountMetaForQuote(pool, persistQuoteId, { applySharedVersion: true });
+    let payloadSource = snap.payloadJson;
+    if (persistQuoteId !== quoteId) {
+      const [persistSnaps] = await pool.query(
+        `SELECT payload_json AS payloadJson FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
+        [persistQuoteId],
+      );
+      const persistSnap = (persistSnaps as { payloadJson?: unknown }[])[0];
+      if (persistSnap?.payloadJson != null) payloadSource = persistSnap.payloadJson;
+    }
+    const existing = parseStoredJsonObject(payloadSource) ?? {};
     let nextPayload = applyHubDiscountMetaToPayload(existing, hubMeta);
     const payable = extractTotalPayableAmount(nextPayload);
     if (payable != null) {
@@ -18169,14 +18187,21 @@ app.patch("/api/leads/:id/quotes/:quoteId/customer-share", async (req: Request, 
     }
     await pool.query(
       `UPDATE lead_prolance_quote_snapshots SET payload_json = ? WHERE quote_id = ?`,
-      [JSON.stringify(nextPayload), quoteId],
+      [JSON.stringify(nextPayload), persistQuoteId],
     );
+    if (persistQuoteId !== quoteId) {
+      await pool.query(
+        `UPDATE lead_prolance_quote_snapshots SET payload_json = ? WHERE quote_id = ?`,
+        [JSON.stringify(nextPayload), quoteId],
+      );
+    }
 
     return res.json({
       ok: true,
       leadId,
-      quoteId,
-      sharedVersionNumber: versionNumber,
+      quoteId: persistQuoteId,
+      sharedQuoteId: persistQuoteId,
+      sharedVersionNumber: persistVersion,
       discount: hubMeta,
       payload: nextPayload,
     });

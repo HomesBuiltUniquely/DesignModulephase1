@@ -1157,7 +1157,9 @@ function payloadHasHubDiscount(meta: Record<string, unknown>): boolean {
   return flat != null && flat > 0;
 }
 
-function quoteSnapshotHasLineItems(payload: Record<string, unknown> | null | undefined): boolean {
+function quoteSnapshotHasLineItems(
+  payload: Record<string, unknown> | null | undefined,
+): payload is Record<string, unknown> {
   if (!payload) return false;
   const hosts: Record<string, unknown>[] = [payload];
   const data = payload.data ?? payload.Data;
@@ -1371,10 +1373,10 @@ export async function loadHubDiscountMetaForQuote(
         `SELECT discount_snapshot, updated_values, change_summary AS changeSummary,
                 version_number AS versionNumber
          FROM lead_prolance_quote_versions
-         WHERE lead_id = ? AND quote_id = ?
+         WHERE lead_id = ?${sharedVersion != null ? "" : " AND quote_id = ?"}
          ORDER BY id ASC
          LIMIT 80`,
-        [leadId, quoteId],
+        sharedVersion != null ? [leadId] : [leadId, quoteId],
       );
       const fromLeadQuote = accumulateHubMetaFromVersionRows(
         sliceVersionRowsThroughShared(

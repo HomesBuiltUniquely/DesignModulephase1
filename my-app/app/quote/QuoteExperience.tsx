@@ -1054,7 +1054,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     }
   };
 
-  const handleShareVersionWithCustomer = async (versionNumber: number) => {
+  const handleShareVersionWithCustomer = async (versionNumber: number, selectedQuoteId?: number) => {
     if (!versionFetchId) {
       setShareVersionError('Quote ID is missing — cannot share this version.');
       return;
@@ -1085,6 +1085,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           credentials: 'include',
           body: JSON.stringify({
             versionNumber,
+            selectedQuoteId: selectedQuoteId ?? Number(versionFetchId),
             ...(isInternalMode || viaCrmDiscountEdit ? { sourceModule: 'CRM' } : {}),
             ...(viaCrmDiscountEdit
               ? { crmRole: effectiveCrmRole, crmUser: effectiveCrmUser }

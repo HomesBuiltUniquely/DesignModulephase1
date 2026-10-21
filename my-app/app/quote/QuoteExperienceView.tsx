@@ -75,7 +75,7 @@ type Props = {
   sharedVersionNumber?: number | null;
   shareVersionSaving?: boolean;
   shareVersionError?: string | null;
-  onShareVersionWithCustomer?: (versionNumber: number) => void;
+  onShareVersionWithCustomer?: (versionNumber: number, quoteId: number) => void;
 };
 
 function LinkIcon() {
@@ -713,7 +713,7 @@ export function QuoteExperienceView(props: Props) {
                       <button
                         type="button"
                         disabled={shareVersionSaving || isShared}
-                        onClick={() => onShareVersionWithCustomer(versionNumber)}
+                        onClick={() => onShareVersionWithCustomer(versionNumber, v.quoteId)}
                         className="mt-4 w-full rounded-md border px-3 py-2 text-xs font-semibold disabled:opacity-60"
                         style={
                           isShared
