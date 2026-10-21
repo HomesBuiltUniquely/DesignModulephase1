@@ -3339,19 +3339,62 @@ function rangesOverlapMin(aStart: number, aEnd: number, bStart: number, bEnd: nu
 
 type HubBusyBlock = { startMin: number; endMin: number; label: string };
 
-/** Minutes on `dateIso` from ERP datetime — wall-clock first, then local Date fallback (Z). */
+/** Minutes on `dateIso` in Asia/Kolkata. Zoned values convert; plain wall-clock stays as written. */
 function erpDateTimeToMinutesOnDate(rawIso: string, dateIso: string): number | null {
   const trimmed = String(rawIso || "").trim();
   if (!trimmed) return null;
+  if (/([zZ]|[+-]\d{2}:?\d{2})$/.test(trimmed)) {
+    const instant = new Date(trimmed);
+    if (Number.isNaN(instant.getTime())) return null;
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Kolkata",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(instant);
+    const year = parts.find((part) => part.type === "year")?.value;
+    const month = parts.find((part) => part.type === "month")?.value;
+    const day = parts.find((part) => part.type === "day")?.value;
+    let hour = Number(parts.find((part) => part.type === "hour")?.value);
+    const minute = Number(parts.find((part) => part.type === "minute")?.value);
+    if (hour === 24) hour = 0;
+    if (`${year}-${month}-${day}` !== dateIso) return null;
+    if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+    return hour * 60 + minute;
+  }
   const parts = parseHubLocalDateTimeParts(trimmed);
   if (parts && parts.dateIso === dateIso) {
     return hubLocalPartsToMinutes(parts);
   }
-  const d = new Date(trimmed);
-  if (Number.isNaN(d.getTime())) return null;
-  const localDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  if (localDate !== dateIso) return null;
-  return d.getHours() * 60 + d.getMinutes();
+  return null;
+}
+
+function clockLabelToMinutes(token: string): number | null {
+  const match = token.trim().match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*([ap]m)?/i);
+  if (!match) return null;
+  let hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const mer = (match[3] || "").toLowerCase();
+  if (!Number.isFinite(hour) || !Number.isFinite(minute) || minute > 59) return null;
+  if (mer === "pm" && hour < 12) hour += 12;
+  if (mer === "am" && hour === 12) hour = 0;
+  if (!mer && (hour > 23 || hour < 0)) return null;
+  return hour * 60 + minute;
+}
+
+/** "2:00 PM – 3:30 PM" or "14:30" → busy minutes on the hub day. */
+function meetingSlotToBusyBlock(slot: string | null): HubBusyBlock | null {
+  const text = (slot || "").trim();
+  if (!text) return null;
+  const parts = text.split(/\s*[–—-]\s*/);
+  const startMin = clockLabelToMinutes(parts[0]);
+  if (startMin == null) return null;
+  const endParsed = parts[1] ? clockLabelToMinutes(parts[1]) : null;
+  const endMin = endParsed != null && endParsed > startMin ? endParsed : startMin + HUB_DEFAULT_MEETING_DURATION_MIN;
+  return { startMin, endMin, label: text };
 }
 
 function isCancelledErpAppointment(raw: unknown): boolean {
@@ -3430,7 +3473,58 @@ async function getDesignerBusyBlocksForDate(
     const block = erpAppointmentToBusyBlock(row, dateIso);
     if (block) busy.push(block);
   }
+  const leadBlocks = await leadScheduleBusyBlocksForDesigner(designerName, dateIso);
+  for (const block of leadBlocks) busy.push(block);
   return { leaveReason: null, busy };
+}
+
+/** Meetings saved on leads (design schedule or CRM schedule) for this designer and day. */
+async function leadScheduleBusyBlocksForDesigner(
+  designerName: string,
+  dateIso: string,
+): Promise<HubBusyBlock[]> {
+  const name = designerName.trim();
+  if (!name) return [];
+  const likeDate = `${dateIso}%`;
+  const [rows] = await pool.query(
+    `SELECT
+       JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.scheduledMeetingDate')) AS schedDate,
+       JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.scheduledMeetingSlot')) AS schedSlot,
+       JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.date')) AS designDate,
+       JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.time')) AS designTime,
+       JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.crmSchedule.date')) AS crmDate,
+       JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.crmSchedule.slot')) AS crmSlot
+     FROM leads l
+     LEFT JOIN users u ON u.id = l.assigned_designer_id
+     WHERE JSON_VALID(l.payload) = 1
+       AND (
+         LOWER(TRIM(u.name)) = LOWER(TRIM(?))
+         OR LOWER(TRIM(JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.connection.designerName')))) = LOWER(TRIM(?))
+         OR LOWER(TRIM(JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.designer_name')))) = LOWER(TRIM(?))
+       )
+       AND (
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.scheduledMeetingDate')) LIKE ?
+         OR JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.date')) LIKE ?
+         OR JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.crmSchedule.date')) LIKE ?
+       )`,
+    [name, name, name, likeDate, likeDate, likeDate],
+  );
+  const blocks: HubBusyBlock[] = [];
+  for (const row of rows as Record<string, unknown>[]) {
+    const designDate = meetingDateFromRaw(row.schedDate) || meetingDateFromRaw(row.designDate);
+    const crmDate = meetingDateFromRaw(row.crmDate);
+    const meetingDate = designDate || crmDate;
+    if (meetingDate !== dateIso) continue;
+    const designTime =
+      cleanScheduledMeetingText(row.schedSlot) || cleanScheduledMeetingText(row.designTime);
+    const crmTime =
+      crmDate === meetingDate
+        ? cleanScheduledMeetingText(row.crmSlot) || meetingTimeEmbeddedInDate(row.crmDate)
+        : null;
+    const block = meetingSlotToBusyBlock(designTime || crmTime);
+    if (block) blocks.push(block);
+  }
+  return blocks;
 }
 
 /** Fields for Java CRM `/v1/Appointment` so the appointment table shows the correct client/project (not a stale CRM lead lookup). */
