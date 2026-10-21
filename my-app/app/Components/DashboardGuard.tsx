@@ -10,6 +10,7 @@ import GoogleCalendarView from './GoogleCalendarView';
 import PersonalAppointmentsView from './PersonalAppointmentsView';
 import DesignerIncentivesView from './DesignerIncentivesView';
 import { DesignerLeaderboardView } from '../leaderboard/components/DesignerLeaderboardView';
+import MeetingManagementView, { canShowMeetingManagement } from './MeetingManagementView';
 import ThemeModeToggle from './ThemeModeToggle';
 import { PersonalAppointmentModal } from './PersonalAppointmentModal';
 import {
@@ -126,6 +127,8 @@ export default function DashboardGuard() {
     'designer',
   ].includes((user.role || '').toLowerCase());
 
+  const canAccessMeetingManagement = canShowMeetingManagement(user.role);
+
   const mainContent =
     pathname === '/google-calendar' ? (
       <GoogleCalendarView />
@@ -145,6 +148,14 @@ export default function DashboardGuard() {
       ) : (
         <div className="flex min-h-[40vh] items-center justify-center text-sm text-gray-500">
           Leaderboard and XP Levels & Badges are available to Admin, Territorial Design Manager, Design Manager, and Designer only.
+        </div>
+      )
+    ) : pathname === '/meeting-management' ? (
+      canAccessMeetingManagement ? (
+        <MeetingManagementView />
+      ) : (
+        <div className="flex min-h-[40vh] items-center justify-center text-sm text-gray-500">
+          Meeting Management is available to admin only.
         </div>
       )
     ) : (
@@ -493,6 +504,14 @@ export default function DashboardGuard() {
               className={navLinkClass('/leaderboard')}
             >
               Leaderboard
+            </a>
+          )}
+          {canAccessMeetingManagement && (
+            <a
+              href="/meeting-management"
+              className={navLinkClass('/meeting-management')}
+            >
+              Meeting Management
             </a>
           )}
         </div>

@@ -18712,6 +18712,199 @@ app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
 
 // ========== Slot Sync — New Endpoints ==========
 
+function canAccessMeetingManagement(role: string | null | undefined): boolean {
+  return String(role || "").trim().toLowerCase() === "admin";
+}
+
+function cleanScheduledMeetingText(value: unknown): string | null {
+  if (value == null) return null;
+  const text = String(value).trim();
+  if (!text || text.toLowerCase() === "null") return null;
+  return text;
+}
+
+function meetingDateFromRaw(value: unknown): string | null {
+  const text = cleanScheduledMeetingText(value);
+  if (!text) return null;
+  const match = text.match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : null;
+}
+
+/** Time stuck inside crmSchedule.date, e.g. "2026-10-21T05:00 PM - 06:00 PM". */
+function meetingTimeEmbeddedInDate(value: unknown): string | null {
+  const text = cleanScheduledMeetingText(value);
+  if (!text) return null;
+  const rest = text.replace(/^\d{4}-\d{2}-\d{2}[T\s]?/, "").trim();
+  if (!rest || !/[ap]m|\d{1,2}:\d{2}/i.test(rest)) return null;
+  return rest;
+}
+
+function meetingModeFromCrmType(value: unknown): string | null {
+  const text = (cleanScheduledMeetingText(value) || "").toUpperCase();
+  if (!text) return null;
+  if (text.includes("VIRTUAL")) return "online";
+  if (text.includes("SHOWROOM") || text.includes("SITE")) return "offline";
+  return null;
+}
+
+function isMeetingCompletionLabel(value: string | null): boolean {
+  if (!value) return false;
+  return /completed|wizard session/i.test(value);
+}
+
+/**
+ * All design-module meetings currently stored on leads.
+ * Visible to the admin role. Widen canAccessMeetingManagement when more roles should see it.
+ * GET /api/meetings/scheduled
+ */
+app.get("/api/meetings/scheduled", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+    if (!canAccessMeetingManagement(actingUser.role)) {
+      return res.status(403).json({ message: "Meeting management is available to admin only" });
+    }
+
+    const [rows] = await pool.query(
+      `SELECT
+         l.id AS leadId,
+         l.pid AS projectId,
+         l.project_name AS projectName,
+         l.project_stage AS projectStage,
+         l.contact_no AS contactNo,
+         l.is_on_hold AS isOnHold,
+         u.name AS assignedDesignerName,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.designer_name')) AS payloadDesignerName,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.designerName')) AS payloadDesignerNameAlt,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.connection.designerName')) AS connectionDesignerName,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.scheduledMeetingDate')) AS meetingDate,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.scheduledMeetingSlot')) AS meetingTime,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.date')) AS designDate,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.time')) AS meetingTimeAlt,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.meetingType')) AS meetingType,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.meetingMode')) AS meetingMode,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.crmSchedule.date')) AS crmDate,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.crmSchedule.slot')) AS crmSlot,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.connection.meetingType')) AS connectionMeetingType,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.meetingType')) AS rootMeetingType,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.customer_name')) AS customerName,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.customerName')) AS customerNameAlt,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.customer_name')) AS customerNameRoot,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.phone')) AS formPhone,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.mobile')) AS formMobile,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.contact_no')) AS formContact,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.sales_executive')) AS salesExec,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.salesExecutive')) AS salesExecAlt,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.salesExecutive')) AS salesExecRoot,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.sales_person')) AS salesPerson,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.discovery.budget')) AS discoveryBudget,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.budget')) AS formBudget,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.budget')) AS rootBudget,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.quotation_total')) AS quotationTotal,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.quotationTotal')) AS quotationTotalAlt
+       FROM leads l
+       LEFT JOIN users u ON u.id = l.assigned_designer_id
+       WHERE l.payload IS NOT NULL
+         AND JSON_VALID(l.payload) = 1
+         AND (
+           (
+             JSON_TYPE(JSON_EXTRACT(l.payload, '$.scheduledMeetingDate')) = 'STRING'
+             AND JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.scheduledMeetingDate')) NOT IN ('', 'null')
+           )
+           OR (
+             JSON_TYPE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.date')) = 'STRING'
+             AND JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.date')) NOT IN ('', 'null')
+           )
+           OR (
+             JSON_TYPE(JSON_EXTRACT(l.payload, '$.crmSchedule.date')) = 'STRING'
+             AND JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.crmSchedule.date')) NOT IN ('', 'null')
+           )
+         )`,
+    );
+
+    const meetings = (rows as Record<string, unknown>[])
+      .map((row) => {
+        const designDate =
+          meetingDateFromRaw(row.meetingDate) || meetingDateFromRaw(row.designDate);
+        const crmDate = meetingDateFromRaw(row.crmDate);
+        const meetingDate = designDate || crmDate;
+        if (!meetingDate) return null;
+        const designTime =
+          cleanScheduledMeetingText(row.meetingTime) ||
+          cleanScheduledMeetingText(row.meetingTimeAlt);
+        const crmSlot = cleanScheduledMeetingText(row.crmSlot);
+        const embeddedCrmTime = meetingTimeEmbeddedInDate(row.crmDate);
+        const crmTime =
+          crmDate && crmDate === meetingDate ? crmSlot || embeddedCrmTime : !designDate ? crmSlot || embeddedCrmTime : null;
+        const meetingTime = designTime || crmTime;
+        const designerName =
+          cleanScheduledMeetingText(row.assignedDesignerName) ||
+          cleanScheduledMeetingText(row.connectionDesignerName) ||
+          cleanScheduledMeetingText(row.payloadDesignerName) ||
+          cleanScheduledMeetingText(row.payloadDesignerNameAlt) ||
+          "Unassigned";
+        const rawMeetingType = cleanScheduledMeetingText(row.meetingType);
+        const meetingType = isMeetingCompletionLabel(rawMeetingType) ? null : rawMeetingType;
+        const meetingMode =
+          cleanScheduledMeetingText(row.meetingMode) ||
+          meetingModeFromCrmType(row.connectionMeetingType) ||
+          meetingModeFromCrmType(row.rootMeetingType);
+        const customerName =
+          cleanScheduledMeetingText(row.customerName) ||
+          cleanScheduledMeetingText(row.customerNameAlt) ||
+          cleanScheduledMeetingText(row.customerNameRoot) ||
+          cleanScheduledMeetingText(row.projectName) ||
+          "Customer";
+        return {
+          leadId: Number(row.leadId),
+          projectId: cleanScheduledMeetingText(row.projectId),
+          projectName: cleanScheduledMeetingText(row.projectName),
+          projectStage: cleanScheduledMeetingText(row.projectStage),
+          isOnHold: row.isOnHold === 1 || row.isOnHold === true || row.isOnHold === "1",
+          customerName,
+          phone:
+            cleanScheduledMeetingText(row.contactNo) ||
+            cleanScheduledMeetingText(row.formPhone) ||
+            cleanScheduledMeetingText(row.formMobile) ||
+            cleanScheduledMeetingText(row.formContact),
+          salesName:
+            cleanScheduledMeetingText(row.salesExec) ||
+            cleanScheduledMeetingText(row.salesExecAlt) ||
+            cleanScheduledMeetingText(row.salesExecRoot) ||
+            cleanScheduledMeetingText(row.salesPerson),
+          budget:
+            cleanScheduledMeetingText(row.discoveryBudget) ||
+            cleanScheduledMeetingText(row.formBudget) ||
+            cleanScheduledMeetingText(row.rootBudget),
+          quotationTotal:
+            cleanScheduledMeetingText(row.quotationTotal) ||
+            cleanScheduledMeetingText(row.quotationTotalAlt),
+          designerName,
+          meetingDate: meetingDate.slice(0, 10),
+          meetingTime: meetingTime || null,
+          meetingTimeLabel:
+            meetingTime && /[ap]m/i.test(meetingTime)
+              ? meetingTime
+              : formatTime12Hour(meetingTime) || meetingTime || null,
+          meetingType,
+          meetingMode,
+        };
+      })
+      .filter((row): row is NonNullable<typeof row> => row != null);
+
+    meetings.sort((a, b) => {
+      const byDate = a.meetingDate.localeCompare(b.meetingDate);
+      if (byDate !== 0) return byDate;
+      return String(a.meetingTime || "").localeCompare(String(b.meetingTime || ""));
+    });
+
+    return res.json({ meetings });
+  } catch (err) {
+    console.error("scheduled meetings list error", err);
+    return res.status(500).json({ message: "Failed to load scheduled meetings" });
+  }
+});
+
 // NOTE: GET /api/designers is defined earlier in this file (line ~9957) — do not re-register here.
 
 // GET /api/appointment/designer/:designerName — proxy to Java CRM (booked appointments)

@@ -1302,7 +1302,7 @@ function metaFromDiscountRow(ds: Record<string, unknown>): Record<string, unknow
   };
 }
 
-async function loadHubDiscountMetaForQuote(quoteId: number): Promise<Record<string, unknown>> {
+async function loadHubDiscountMetaForQuote(pool: Pool, quoteId: number): Promise<Record<string, unknown>> {
   try {
     const [snapRows] = await pool.query(
       "SELECT payload_json, lead_id AS leadId FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1",
@@ -2221,8 +2221,8 @@ export function registerProlanceRoutes(
     const snapshotPayload = parseSnapshotJson(
       (rows as { payload_json?: unknown }[])[0]?.payload_json,
     );
-    const hubMeta = await loadHubDiscountMetaForQuote(quoteId);
-    if (!quoteSnapshotHasLineItems(snapshotPayload)) return null;
+    const hubMeta = await loadHubDiscountMetaForQuote(pool, quoteId);
+    if (!snapshotPayload || !quoteSnapshotHasLineItems(snapshotPayload)) return null;
     if (!payloadHasHubDiscount(hubMeta)) return snapshotPayload;
     const withHub = applyHubDiscountMetaToPayload(snapshotPayload, hubMeta);
     const payable = extractTotalPayableAmount(withHub);
@@ -2741,7 +2741,7 @@ function formatProlancePName(
           console.error("quote snapshot read error", snapErr);
         }
         if (!payloadHasHubDiscount(hubMetaForQuote)) {
-          hubMetaForQuote = await loadHubDiscountMetaForQuote(snapshotQid);
+          hubMetaForQuote = await loadHubDiscountMetaForQuote(pool, snapshotQid);
         }
       }
 
@@ -2966,7 +2966,7 @@ function formatProlancePName(
       return;
     }
     try {
-      const discount = await loadHubDiscountMetaForQuote(quoteId);
+      const discount = await loadHubDiscountMetaForQuote(pool, quoteId);
       res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
       res.json({ ok: true, discount });
     } catch (err) {
