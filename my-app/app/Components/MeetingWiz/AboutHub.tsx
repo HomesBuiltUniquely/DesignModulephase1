@@ -14,6 +14,7 @@ function CompanyProfileModal({ onClose }: { onClose: () => void }) {
   const [iframeLoaded, setIframeLoaded] = useState(false);
   const [viewerUrl, setViewerUrl] = useState<string | null>(null);
   const modalRef = useRef<HTMLDivElement>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
 
   useEffect(() => {
     // Use local ppt-viewer.html — works on localhost, no external dependency
@@ -23,11 +24,23 @@ function CompanyProfileModal({ onClose }: { onClose: () => void }) {
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
+    const handleViewerMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type === "hub-profile-close") onClose();
+      if (event.data?.type === "hub-profile-minimize") setIsFullscreen(false);
+    };
     document.addEventListener("keydown", handleKey);
-    return () => document.removeEventListener("keydown", handleKey);
+    window.addEventListener("message", handleViewerMessage);
+    return () => {
+      document.removeEventListener("keydown", handleKey);
+      window.removeEventListener("message", handleViewerMessage);
+    };
   }, [onClose]);
 
-  const toggleFullscreen = () => setIsFullscreen((f) => !f);
+  const toggleFullscreen = () => {
+    const viewer = iframeRef.current?.contentWindow as (Window & { toggleFs?: () => void }) | null;
+    viewer?.toggleFs?.();
+  };
 
   return (
     <div
@@ -46,7 +59,7 @@ function CompanyProfileModal({ onClose }: { onClose: () => void }) {
         }}
       >
         {/* Modal Header */}
-        <div className="flex shrink-0 items-center justify-between border-b border-[var(--border-color)] bg-[var(--brand-surface)] px-6 py-3">
+        <div className="relative z-20 flex shrink-0 items-center justify-between border-b border-[var(--border-color)] bg-[var(--brand-surface)] px-6 py-3">
           <div className="flex items-center gap-3">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--brand-secondary)]">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--brand-primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -81,7 +94,8 @@ function CompanyProfileModal({ onClose }: { onClose: () => void }) {
             <button
               onClick={toggleFullscreen}
               className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--foreground)]/70 transition hover:bg-[var(--hover-bg)] hover:text-[var(--brand-dark)]"
-              title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+              title={isFullscreen ? "Minimize" : "Fullscreen"}
+              aria-label={isFullscreen ? "Minimize" : "Fullscreen"}
             >
               {isFullscreen ? (
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -99,6 +113,7 @@ function CompanyProfileModal({ onClose }: { onClose: () => void }) {
               onClick={onClose}
               className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--foreground)]/70 transition hover:bg-[var(--brand-primary)]/10 hover:text-[var(--brand-primary)]"
               title="Close"
+              aria-label="Close"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="18" y1="6" x2="6" y2="18" />
@@ -126,6 +141,7 @@ function CompanyProfileModal({ onClose }: { onClose: () => void }) {
         {/* Iframe viewer */}
         {viewerUrl && (
           <iframe
+            ref={iframeRef}
             src={viewerUrl}
             title="HUB Company Profile"
             className="flex-1 w-full border-0"
