@@ -487,7 +487,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
         }
         const cacheBust = `t=${Date.now()}`;
         const audienceQs = crmAudience
-          ? 'audience=crm'
+          ? 'audience=crm&internal=1'
           : isInternalMode
             ? `internal=1${viewingVersionNumber != null ? `&version=${viewingVersionNumber}` : ''}`
             : 'audience=customer';
@@ -963,7 +963,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
             totalPayableAmount: quote.totalPayableAmount ?? undefined,
             payload: payload ?? undefined,
             createdBy: currentUserName,
-            ...(isInternalMode || viaCrmDiscountEdit ? { sourceModule: 'CRM' } : {}),
+            ...(viaCrmDiscountEdit ? { sourceModule: 'CRM' } : {}),
             ...(viaCrmDiscountEdit
               ? { crmRole: effectiveCrmRole, crmUser: effectiveCrmUser }
               : {}),
@@ -1063,9 +1063,16 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       let appliedVersions: QuoteVersionRow[] | null = null;
       if (bodyObj && Array.isArray(bodyObj.versions)) {
         const parsed = parseVersionsArray(bodyObj.versions);
-        appliedVersions = crmAudience
-          ? versionsForCrmAudience(parsed, crmSharedVersionNumber)
-          : parsed;
+        let crmVer = crmSharedVersionNumber;
+        if (crmAudience && parsed.length > 0) {
+          const newest = parsed[parsed.length - 1];
+          const n = Number(newest.versionNumber);
+          if (Number.isFinite(n) && n > 0) {
+            crmVer = n;
+            setCrmSharedVersionNumber(n);
+          }
+        }
+        appliedVersions = crmAudience ? versionsForCrmAudience(parsed, crmVer) : parsed;
         setQuoteVersions(appliedVersions);
       }
 

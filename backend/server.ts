@@ -18400,6 +18400,19 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       );
       void evaluateLeadQuotationRevisionXp(pool, effectiveLeadId);
 
+      if (viaCrmInternal) {
+        try {
+          await pool.query(
+            `UPDATE lead_prolance_quote_snapshots
+             SET crm_shared_version_number = ?, crm_shared_quote_id = ?
+             WHERE lead_id = ?`,
+            [nextVersionNumber, quoteId, effectiveLeadId],
+          );
+        } catch (crmShareErr) {
+          console.error("crm-share stamp after CRM discount save failed", crmShareErr);
+        }
+      }
+
       // Record event into lead_history so it appears in the Lead's History card
       try {
         const actorName = fromCrmModule

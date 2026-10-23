@@ -2305,14 +2305,18 @@ export function registerProlanceRoutes(
       return;
     }
     try {
+      const audience = String(req.query.audience || "").trim().toLowerCase();
+      const crmView = audience === "crm";
       const internalView =
         String(req.query.internal || "").trim() === "1" ||
-        String(req.query.audience || "").trim().toLowerCase() === "internal";
+        audience === "internal";
       const viewVersionRaw = Number(req.query.version);
       const viewVersion =
-        internalView && Number.isFinite(viewVersionRaw) && viewVersionRaw > 0 ? viewVersionRaw : undefined;
+        internalView && !crmView && Number.isFinite(viewVersionRaw) && viewVersionRaw > 0
+          ? viewVersionRaw
+          : undefined;
       const payload = await buildCustomerQuotePayload(quoteId, {
-        applySharedVersion: !internalView,
+        applySharedVersion: !internalView && !crmView,
         forceSharedVersion: viewVersion,
       });
       if (!payload) {
@@ -3235,14 +3239,18 @@ function formatProlancePName(
       return;
     }
     try {
+      const audience = String(req.query.audience || "").trim().toLowerCase();
+      const crmView = audience === "crm";
       const internalView =
         String(req.query.internal || "").trim() === "1" ||
-        String(req.query.audience || "").trim().toLowerCase() === "internal";
+        audience === "internal";
       const viewVersionRaw = Number(req.query.version);
       const viewVersion =
-        internalView && Number.isFinite(viewVersionRaw) && viewVersionRaw > 0 ? viewVersionRaw : undefined;
+        internalView && !crmView && Number.isFinite(viewVersionRaw) && viewVersionRaw > 0
+          ? viewVersionRaw
+          : undefined;
       const discount = await loadHubDiscountMetaForQuote(pool, quoteId, {
-        applySharedVersion: !internalView,
+        applySharedVersion: !internalView && !crmView,
         forceSharedVersion: viewVersion,
       });
       res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
