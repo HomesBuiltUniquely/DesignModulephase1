@@ -1277,6 +1277,70 @@ function accumulateHubMetaFromVersionRows(
   return payloadHasHubDiscount(meta) ? meta : {};
 }
 
+export function parseCrmVisibleVersionNumbers(raw: unknown): number[] {
+  if (raw == null) return [];
+  let parsed: unknown = raw;
+  if (Buffer.isBuffer(raw)) parsed = raw.toString("utf8");
+  if (typeof parsed === "string") {
+    const t = parsed.trim();
+    if (!t) return [];
+    try {
+      parsed = JSON.parse(t);
+    } catch {
+      const n = Number(t);
+      return Number.isFinite(n) && n > 0 ? [Math.trunc(n)] : [];
+    }
+  }
+  if (typeof parsed === "number" && Number.isFinite(parsed) && parsed > 0) {
+    return [Math.trunc(parsed)];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const out: number[] = [];
+  const seen = new Set<number>();
+  for (const item of parsed) {
+    const n = Number(item);
+    if (!Number.isFinite(n) || n < 1) continue;
+    const v = Math.trunc(n);
+    if (seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  return out.sort((a, b) => a - b);
+}
+
+export function mergeCrmVisibleVersionNumbers(
+  existing: unknown,
+  ...add: Array<number | null | undefined>
+): string {
+  const set = new Set(parseCrmVisibleVersionNumbers(existing));
+  for (const n of add) {
+    if (n == null) continue;
+    const v = Number(n);
+    if (Number.isFinite(v) && v > 0) set.add(Math.trunc(v));
+  }
+  return JSON.stringify([...set].sort((a, b) => a - b));
+}
+
+export function filterQuoteVersionsForCrm<
+  T extends { versionNumber?: unknown; quoteId?: unknown; sourceModule?: unknown },
+>(
+  versions: T[],
+  opts: { quoteId?: number | null; latest?: number | null; visible?: number[] },
+): T[] {
+  const allowed = new Set((opts.visible ?? []).filter((n) => Number.isFinite(n) && n > 0));
+  if (allowed.size === 0 && opts.latest != null && opts.latest > 0) allowed.add(opts.latest);
+  if (allowed.size > 0) {
+    const matched = versions.filter((v) => allowed.has(Number(v.versionNumber)));
+    if (matched.length > 0) return matched;
+  }
+  const qid = opts.quoteId != null && opts.quoteId > 0 ? opts.quoteId : null;
+  return versions.filter((v) => {
+    if (qid != null && Number(v.quoteId) !== qid) return false;
+    const src = String(v.sourceModule || "").toLowerCase();
+    return src === "crm" || Number(v.versionNumber) === Number(opts.latest);
+  });
+}
+
 function sliceVersionRowsThroughShared<T extends { versionNumber?: unknown }>(
   rows: T[],
   sharedVersion: number | null,
@@ -2275,30 +2339,54 @@ export function registerProlanceRoutes(
 
   const TEST_PREFIX = "/api/prolance-test";
 
-  const loadCrmSharedVersionForQuote = async (quoteId: number): Promise<number | undefined> => {
+  const loadCrmShareMetaForQuote = async (
+    quoteId: number,
+  ): Promise<{ latest?: number; visible: number[] }> => {
     try {
       const [rows] = await pool.query(
-        `SELECT crm_shared_version_number AS v, lead_id AS leadId
+        `SELECT crm_shared_version_number AS v, crm_visible_version_numbers AS visible, lead_id AS leadId
          FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
         [quoteId],
       );
-      const row = (rows as { v?: unknown; leadId?: unknown }[])[0];
-      let v = row?.v != null ? Number(row.v) : NaN;
+      let row = (rows as { v?: unknown; visible?: unknown; leadId?: unknown }[])[0];
       const leadId = row?.leadId != null ? Number(row.leadId) : NaN;
-      if (!(Number.isFinite(v) && v > 0) && Number.isFinite(leadId) && leadId > 0) {
+      if (
+        (!(row?.v != null && Number(row.v) > 0) || parseCrmVisibleVersionNumbers(row?.visible).length === 0) &&
+        Number.isFinite(leadId) &&
+        leadId > 0
+      ) {
         const [leadRows] = await pool.query(
-          `SELECT crm_shared_version_number AS v
+          `SELECT crm_shared_version_number AS v, crm_visible_version_numbers AS visible
            FROM lead_prolance_quote_snapshots
-           WHERE lead_id = ? AND crm_shared_version_number IS NOT NULL AND crm_shared_version_number > 0
+           WHERE lead_id = ? AND crm_shared_quote_id IS NOT NULL AND crm_shared_quote_id > 0
            ORDER BY id DESC LIMIT 1`,
           [leadId],
         );
-        v = Number((leadRows as { v?: unknown }[])[0]?.v);
+        const leadRow = (leadRows as { v?: unknown; visible?: unknown }[])[0];
+        if (leadRow) row = { ...row, ...leadRow };
       }
-      return Number.isFinite(v) && v > 0 ? v : undefined;
+      const latest = row?.v != null && Number(row.v) > 0 ? Number(row.v) : undefined;
+      const visible = parseCrmVisibleVersionNumbers(row?.visible);
+      return { latest, visible: visible.length > 0 ? visible : latest != null ? [latest] : [] };
     } catch {
-      return undefined;
+      return { visible: [] };
     }
+  };
+
+  const loadCrmSharedVersionForQuote = async (quoteId: number): Promise<number | undefined> => {
+    const meta = await loadCrmShareMetaForQuote(quoteId);
+    return meta.latest;
+  };
+
+  const resolveCrmForceVersion = async (
+    quoteId: number,
+    requested: number,
+  ): Promise<number | undefined> => {
+    const meta = await loadCrmShareMetaForQuote(quoteId);
+    if (Number.isFinite(requested) && requested > 0 && meta.visible.includes(requested)) {
+      return requested;
+    }
+    return meta.latest;
   };
 
   const buildCustomerQuotePayload = async (
@@ -2341,7 +2429,7 @@ export function registerProlanceRoutes(
         internalView && !crmView && Number.isFinite(viewVersionRaw) && viewVersionRaw > 0
           ? viewVersionRaw
           : undefined;
-      const crmForce = crmView ? await loadCrmSharedVersionForQuote(quoteId) : undefined;
+      const crmForce = crmView ? await resolveCrmForceVersion(quoteId, viewVersionRaw) : undefined;
       const payload = await buildCustomerQuotePayload(quoteId, {
         applySharedVersion: !internalView && !crmView,
         forceSharedVersion: viewVersion ?? crmForce,
@@ -2736,9 +2824,10 @@ function formatProlancePName(
     }
   });
 
-  async function loadQuoteVersionsForLeadPublic(leadId: number): Promise<Array<{ quoteId: number; createdAt: string; createdBy?: string; changeSummary?: string; versionNumber?: number }>> {
+  async function loadQuoteVersionsForLeadPublic(leadId: number): Promise<Array<{ quoteId: number; createdAt: string; createdBy?: string; sourceModule?: string; changeSummary?: string; versionNumber?: number }>> {
     const [rows] = await pool.query(
-      `SELECT quote_id AS quoteId, created_at AS createdAt, created_by AS createdBy, change_summary AS changeSummary, version_number AS versionNumber
+      `SELECT quote_id AS quoteId, created_at AS createdAt, created_by AS createdBy,
+              source_module AS sourceModule, change_summary AS changeSummary, version_number AS versionNumber
        FROM lead_prolance_quote_versions
        WHERE lead_id = ?
        ORDER BY created_at ASC, id ASC`,
@@ -2746,10 +2835,11 @@ function formatProlancePName(
     );
     const toIso = (d: unknown) =>
       d instanceof Date ? d.toISOString() : typeof d === "string" ? d : new Date().toISOString();
-    const raw = (rows as { quoteId: unknown; createdAt: unknown; createdBy?: unknown; changeSummary?: unknown; versionNumber?: unknown }[]).map((r) => ({
+    const raw = (rows as { quoteId: unknown; createdAt: unknown; createdBy?: unknown; sourceModule?: unknown; changeSummary?: unknown; versionNumber?: unknown }[]).map((r) => ({
       quoteId: Number(r.quoteId),
       createdAt: toIso(r.createdAt),
       createdBy: r.createdBy ? String(r.createdBy) : undefined,
+      sourceModule: r.sourceModule ? String(r.sourceModule) : undefined,
       changeSummary: r.changeSummary ? String(r.changeSummary) : undefined,
       versionNumber: r.versionNumber ? Number(r.versionNumber) : undefined,
     }));
@@ -2813,11 +2903,13 @@ function formatProlancePName(
       let sharedVersionNumber: number | null = null;
       let crmSharedVersionNumber: number | null = null;
       let crmSharedQuoteId: number | null = null;
+      let crmVisibleVersionNumbers: number[] = [];
       try {
         const [shareRows] = await pool.query(
           `SELECT customer_shared_version_number AS sharedVersion,
                   crm_shared_version_number AS crmSharedVersion,
-                  crm_shared_quote_id AS crmSharedQuoteId
+                  crm_shared_quote_id AS crmSharedQuoteId,
+                  crm_visible_version_numbers AS crmVisibleVersions
            FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
           [seed],
         );
@@ -2825,6 +2917,7 @@ function formatProlancePName(
           sharedVersion?: unknown;
           crmSharedVersion?: unknown;
           crmSharedQuoteId?: unknown;
+          crmVisibleVersions?: unknown;
         }[])[0];
         const sv = share?.sharedVersion;
         if (sv != null && Number.isFinite(Number(sv)) && Number(sv) > 0) {
@@ -2838,25 +2931,33 @@ function formatProlancePName(
         if (csq != null && Number.isFinite(Number(csq)) && Number(csq) > 0) {
           crmSharedQuoteId = Number(csq);
         }
+        crmVisibleVersionNumbers = parseCrmVisibleVersionNumbers(share?.crmVisibleVersions);
       } catch {
         /* optional columns */
       }
       if (crmSharedQuoteId == null) {
         try {
           const [leadShare] = await pool.query(
-            `SELECT crm_shared_version_number AS crmSharedVersion, crm_shared_quote_id AS crmSharedQuoteId
+            `SELECT crm_shared_version_number AS crmSharedVersion, crm_shared_quote_id AS crmSharedQuoteId,
+                    crm_visible_version_numbers AS crmVisibleVersions
              FROM lead_prolance_quote_snapshots
              WHERE lead_id = ? AND crm_shared_quote_id IS NOT NULL AND crm_shared_quote_id > 0
              ORDER BY id DESC LIMIT 1`,
             [leadId],
           );
-          const row = (leadShare as { crmSharedVersion?: unknown; crmSharedQuoteId?: unknown }[])[0];
+          const row = (leadShare as {
+            crmSharedVersion?: unknown;
+            crmSharedQuoteId?: unknown;
+            crmVisibleVersions?: unknown;
+          }[])[0];
           if (row?.crmSharedQuoteId != null && Number(row.crmSharedQuoteId) > 0) {
             crmSharedQuoteId = Number(row.crmSharedQuoteId);
             crmSharedVersionNumber =
               row.crmSharedVersion != null && Number(row.crmSharedVersion) > 0
                 ? Number(row.crmSharedVersion)
                 : crmSharedVersionNumber;
+            const fromLead = parseCrmVisibleVersionNumbers(row?.crmVisibleVersions);
+            if (fromLead.length > 0) crmVisibleVersionNumbers = fromLead;
           }
         } catch {
           /* ignore */
@@ -2905,17 +3006,11 @@ function formatProlancePName(
       }
       if (forCrm) {
         if (crmSharedQuoteId != null && versions.length > 0) {
-          const byQuote = versions.filter((v) => Number(v.quoteId) === crmSharedQuoteId);
-          const byVersion =
-            crmSharedVersionNumber != null
-              ? byQuote.filter((v) => Number(v.versionNumber) === crmSharedVersionNumber)
-              : byQuote;
-          versions =
-            byVersion.length > 0
-              ? [byVersion[byVersion.length - 1]]
-              : byQuote.length > 0
-                ? [byQuote[byQuote.length - 1]]
-                : [];
+          versions = filterQuoteVersionsForCrm(versions, {
+            quoteId: crmSharedQuoteId,
+            latest: crmSharedVersionNumber,
+            visible: crmVisibleVersionNumbers,
+          });
         } else {
           versions = [];
         }
@@ -2927,6 +3022,7 @@ function formatProlancePName(
           sharedVersionNumber,
           crmSharedVersionNumber,
           crmSharedQuoteId,
+          crmVisibleVersionNumbers,
           isPre10,
         });
         return;
@@ -2937,6 +3033,7 @@ function formatProlancePName(
         sharedVersionNumber,
         crmSharedVersionNumber,
         crmSharedQuoteId,
+        crmVisibleVersionNumbers,
         isPre10,
       });
     } catch (err) {
@@ -3036,7 +3133,7 @@ function formatProlancePName(
           internalView && !crmAudience && Number.isFinite(viewVersionRaw) && viewVersionRaw > 0
             ? viewVersionRaw
             : undefined;
-        const crmForce = crmAudience ? await loadCrmSharedVersionForQuote(resolvedQid) : undefined;
+        const crmForce = crmAudience ? await resolveCrmForceVersion(resolvedQid, viewVersionRaw) : undefined;
         hubMetaForQuote = await loadHubDiscountMetaForQuote(pool, resolvedQid, {
           applySharedVersion: !internalView && !crmAudience,
           forceSharedVersion: viewVersion ?? crmForce,
@@ -3277,7 +3374,7 @@ function formatProlancePName(
         internalView && !crmView && Number.isFinite(viewVersionRaw) && viewVersionRaw > 0
           ? viewVersionRaw
           : undefined;
-      const crmForce = crmView ? await loadCrmSharedVersionForQuote(quoteId) : undefined;
+      const crmForce = crmView ? await resolveCrmForceVersion(quoteId, viewVersionRaw) : undefined;
       const discount = await loadHubDiscountMetaForQuote(pool, quoteId, {
         applySharedVersion: !internalView && !crmView,
         forceSharedVersion: viewVersion ?? crmForce,

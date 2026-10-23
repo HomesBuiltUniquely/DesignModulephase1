@@ -641,7 +641,7 @@ export function QuoteExperienceView(props: Props) {
             </div>
             <p className="mb-4 text-xs" style={{ color: QUOTE.muted }}>
               {crmLockedView
-                ? 'CRM can only see the version the designer selected.'
+                ? 'CRM sees the designer-selected version plus every discount version CRM has saved. Click a version to preview it. Saving a discount always creates a new version.'
                 : onSelectVersionForCrm
                   ? 'Click a version to preview it. Share to customer and Share to CRM each lock that version for that audience.'
                   : 'Click a version to preview it. Share to customer locks that version on the customer link — other revisions stay hidden from the client.'}
@@ -693,9 +693,8 @@ export function QuoteExperienceView(props: Props) {
                     }
                   >
                     <a
-                      href={crmLockedView ? undefined : href}
+                      href={href}
                       className="block transition-opacity hover:opacity-90"
-                      onClick={crmLockedView ? (e) => e.preventDefault() : undefined}
                     >
                       <p className="font-bold text-[#2a1d14]">
                         Version {versionNumber}

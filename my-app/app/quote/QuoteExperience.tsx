@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { getApiBase } from '@/app/lib/apiBase';
-import { useSearchParams } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/app/auth/AuthContext';
 import { extractQuoteIdFromBody } from '@/app/lib/prolanceApiGetQuote';
 import { QuoteExperienceView } from '@/app/quote/QuoteExperienceView';
@@ -384,13 +384,31 @@ type QuoteVersionRow = {
 function versionsForCrmAudience(
   versions: QuoteVersionRow[],
   crmSharedVersionNumber: number | null | undefined,
+  visibleVersionNumbers?: number[] | null,
 ): QuoteVersionRow[] {
   if (versions.length <= 1) return versions;
+  const allowed = new Set(
+    (visibleVersionNumbers ?? []).filter((n) => Number.isFinite(n) && n > 0).map((n) => Number(n)),
+  );
   if (crmSharedVersionNumber != null && crmSharedVersionNumber > 0) {
-    const match = versions.filter((v) => Number(v.versionNumber) === Number(crmSharedVersionNumber));
-    if (match.length > 0) return [match[match.length - 1]];
+    allowed.add(Number(crmSharedVersionNumber));
   }
-  return [versions[versions.length - 1]];
+  if (allowed.size > 0) {
+    const matched = versions.filter((v) => allowed.has(Number(v.versionNumber)));
+    if (matched.length > 0) return matched;
+  }
+  const crmCreated = versions.filter((v) => String(v.sourceModule || '').toLowerCase() === 'crm');
+  if (crmCreated.length > 0) {
+    const keep = new Set(crmCreated.map((v) => Number(v.versionNumber)));
+    if (crmSharedVersionNumber != null && crmSharedVersionNumber > 0) {
+      keep.add(Number(crmSharedVersionNumber));
+    }
+    const withBase = versions.filter((v) => keep.has(Number(v.versionNumber)));
+    return withBase.length > 0 ? withBase : crmCreated;
+  }
+  return crmSharedVersionNumber != null && crmSharedVersionNumber > 0
+    ? versions.filter((v) => Number(v.versionNumber) === Number(crmSharedVersionNumber))
+    : [versions[versions.length - 1]];
 }
 
 export type QuoteExperienceProps = {
@@ -405,6 +423,8 @@ export type QuoteExperienceProps = {
 
 export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: QuoteExperienceProps) {
   const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
   const { sessionId, user } = useAuth();
   const isInternalMode = searchParams.get('internal') === '1';
   const leadIdParam = searchParams.get('leadId');
@@ -431,6 +451,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
   const [resolvedLeadId, setResolvedLeadId] = useState<number | null>(leadIdNum);
   const [sharedVersionNumber, setSharedVersionNumber] = useState<number | null>(null);
   const [crmSharedVersionNumber, setCrmSharedVersionNumber] = useState<number | null>(null);
+  const [crmVisibleVersionNumbers, setCrmVisibleVersionNumbers] = useState<number[]>([]);
   const [isPre10Lead, setIsPre10Lead] = useState(false);
   const [shareVersionSaving, setShareVersionSaving] = useState(false);
   const [shareVersionError, setShareVersionError] = useState<string | null>(null);
@@ -487,7 +508,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
         }
         const cacheBust = `t=${Date.now()}`;
         const audienceQs = crmAudience
-          ? 'audience=crm&internal=1'
+          ? `audience=crm&internal=1${viewingVersionNumber != null ? `&version=${viewingVersionNumber}` : ''}`
           : isInternalMode
             ? `internal=1${viewingVersionNumber != null ? `&version=${viewingVersionNumber}` : ''}`
             : 'audience=customer';
@@ -683,6 +704,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           message?: unknown;
           sharedVersionNumber?: unknown;
           crmSharedVersionNumber?: unknown;
+          crmVisibleVersionNumbers?: unknown;
           isPre10?: unknown;
         } = {};
         try {
@@ -746,9 +768,13 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           setSharedVersionNumber(shared != null && shared > 0 ? shared : null);
           const crmShared = asNum(body.crmSharedVersionNumber);
           setCrmSharedVersionNumber(crmShared != null && crmShared > 0 ? crmShared : null);
+          const visibleNums = Array.isArray(body.crmVisibleVersionNumbers)
+            ? body.crmVisibleVersionNumbers.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n > 0)
+            : [];
+          setCrmVisibleVersionNumbers(visibleNums);
           setIsPre10Lead(body.isPre10 === true);
           setQuoteVersions(
-            crmAudience ? versionsForCrmAudience(versions, crmShared) : versions,
+            crmAudience ? versionsForCrmAudience(versions, crmShared, visibleNums) : versions,
           );
         }
       } catch (e) {
@@ -1073,8 +1099,19 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
             setCrmSharedVersionNumber(n);
           }
         }
-        appliedVersions = crmAudience ? versionsForCrmAudience(parsed, crmVer) : parsed;
+        const nextVisible = [...crmVisibleVersionNumbers];
+        if (crmVer != null && crmVer > 0 && !nextVisible.includes(crmVer)) nextVisible.push(crmVer);
+        if (crmSharedVersionNumber != null && crmSharedVersionNumber > 0 && !nextVisible.includes(crmSharedVersionNumber)) {
+          nextVisible.push(crmSharedVersionNumber);
+        }
+        setCrmVisibleVersionNumbers(nextVisible);
+        appliedVersions = crmAudience ? versionsForCrmAudience(parsed, crmVer, nextVisible) : parsed;
         setQuoteVersions(appliedVersions);
+        if (crmAudience && crmVer != null && crmVer > 0 && typeof window !== 'undefined') {
+          const q = new URLSearchParams(searchParams.toString());
+          q.set('version', String(crmVer));
+          router.replace(`${pathname}?${q.toString()}`, { scroll: false });
+        }
       }
 
       // 2. Otherwise fetch fresh quote revisions from public endpoint
@@ -1094,7 +1131,9 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
               const fetched = parseVersionsArray(vBody.versions);
               if (fetched.length > 0) {
                 setQuoteVersions(
-                  crmAudience ? versionsForCrmAudience(fetched, crmSharedVersionNumber) : fetched,
+                  crmAudience
+                    ? versionsForCrmAudience(fetched, crmSharedVersionNumber, crmVisibleVersionNumbers)
+                    : fetched,
                 );
               }
             }

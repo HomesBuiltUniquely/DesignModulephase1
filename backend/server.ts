@@ -26,6 +26,7 @@ import {
   resolveLeadMilestonePaymentBreakdown,
   loadHubDiscountMetaForQuote,
   applyHubDiscountMetaToPayload,
+  mergeCrmVisibleVersionNumbers,
 } from "./routes/prolanceApi";
 import { registerCrmHubBookingRoutes, notifyHubFinanceReview, getHubBookingSyncForLead, buildFinance10pQueueList, buildCrmSalesClosureQueueRows, buildCrmSalesClosureLeadDetail, leadHasDqc1Approval, isCrmBookingFinanceApproved } from "./routes/crmHubBookingRoutes";
 import { readCrmFinanceHandlingMode } from "./routes/crmEasebuzzAutoFinance";
@@ -1706,6 +1707,18 @@ async function initDb() {
       if ((crmQuoteCol as any[]).length === 0) {
         await conn.query(
           "ALTER TABLE lead_prolance_quote_snapshots ADD COLUMN crm_shared_quote_id INT NULL",
+        );
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      const [crmVisibleCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_prolance_quote_snapshots' AND COLUMN_NAME = 'crm_visible_version_numbers'",
+      );
+      if ((crmVisibleCol as any[]).length === 0) {
+        await conn.query(
+          "ALTER TABLE lead_prolance_quote_snapshots ADD COLUMN crm_visible_version_numbers TEXT NULL",
         );
       }
     } catch {
@@ -18404,12 +18417,27 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
 
       if (viaCrmInternal) {
         try {
+          const [shareRows] = await pool.query(
+            `SELECT crm_shared_version_number AS latest, crm_visible_version_numbers AS visible
+             FROM lead_prolance_quote_snapshots
+             WHERE lead_id = ? OR quote_id = ?
+             ORDER BY id DESC LIMIT 8`,
+            [effectiveLeadId, quoteId],
+          );
+          let prevLatest: number | null = null;
+          let visibleRaw: unknown;
+          for (const row of shareRows as { latest?: unknown; visible?: unknown }[]) {
+            if (visibleRaw == null && row.visible != null) visibleRaw = row.visible;
+            const n = Number(row.latest);
+            if (prevLatest == null && Number.isFinite(n) && n > 0) prevLatest = n;
+          }
+          const visibleJson = mergeCrmVisibleVersionNumbers(visibleRaw, prevLatest, nextVersionNumber);
           await pool.query(
             `UPDATE lead_prolance_quote_snapshots
              SET crm_shared_version_number = ?, crm_shared_quote_id = ?,
-                 customer_shared_version_number = ?
+                 customer_shared_version_number = ?, crm_visible_version_numbers = ?
              WHERE lead_id = ?`,
-            [nextVersionNumber, quoteId, nextVersionNumber, effectiveLeadId],
+            [nextVersionNumber, quoteId, nextVersionNumber, visibleJson, effectiveLeadId],
           );
         } catch (crmShareErr) {
           console.error("crm-share stamp after CRM discount save failed", crmShareErr);
@@ -18742,17 +18770,18 @@ const handleCrmShareQuoteVersion = async (req: Request, res: Response) => {
     const persistVersion =
       matched?.versionNumber && matched.versionNumber > 0 ? matched.versionNumber : versionNumber;
 
+    const crmVisibleJson = mergeCrmVisibleVersionNumbers(null, persistVersion);
     await pool.query(
       `UPDATE lead_prolance_quote_snapshots
-       SET crm_shared_version_number = ?, crm_shared_quote_id = ?
+       SET crm_shared_version_number = ?, crm_shared_quote_id = ?, crm_visible_version_numbers = ?
        WHERE lead_id = ?`,
-      [persistVersion, persistQuoteId, leadId],
+      [persistVersion, persistQuoteId, crmVisibleJson, leadId],
     );
     await pool.query(
       `UPDATE lead_prolance_quote_snapshots
-       SET crm_shared_version_number = ?, crm_shared_quote_id = ?
+       SET crm_shared_version_number = ?, crm_shared_quote_id = ?, crm_visible_version_numbers = ?
        WHERE quote_id IN (?, ?)`,
-      [persistVersion, persistQuoteId, quoteId, persistQuoteId],
+      [persistVersion, persistQuoteId, crmVisibleJson, quoteId, persistQuoteId],
     );
 
     const hubMeta = await loadHubDiscountMetaForQuote(pool, persistQuoteId, {
