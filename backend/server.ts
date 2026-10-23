@@ -18368,6 +18368,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
     if (!viaCrmInternal && changeSummary === "No changes") isDuplicateVersion = true;
 
     const isNewVersionCreated = !isDuplicateVersion;
+    let createdVersionNumber: number | null = null;
     if (isNewVersionCreated) {
       const [maxRow] = await pool.query(
         `SELECT MAX(version_number) AS maxVer, COUNT(*) AS countAll FROM lead_prolance_quote_versions WHERE lead_id = ?`,
@@ -18376,6 +18377,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       const maxVer = (maxRow as any[])[0]?.maxVer;
       const countAll = (maxRow as any[])[0]?.countAll ?? 0;
       const nextVersionNumber = Math.max(Number(maxVer) || 0, Number(countAll) || 0) + 1;
+      createdVersionNumber = nextVersionNumber;
 
       const sourceModule = fromCrmModule ? "CRM" : "Design Module";
       await pool.query(
@@ -18462,6 +18464,31 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
         });
       } catch (hErr) {
         console.error("addLeadHistoryEvent error", hErr);
+      }
+    }
+
+    if (viaCrmInternal && createdVersionNumber != null) {
+      try {
+        const hubMetaAfter = await loadHubDiscountMetaForQuote(pool, quoteId, {
+          applySharedVersion: false,
+          forceSharedVersion: createdVersionNumber,
+        });
+        if (hubMetaAfter && Object.keys(hubMetaAfter).length > 0) {
+          nextPayload = applyHubDiscountMetaToPayload(nextPayload, hubMetaAfter);
+          const payableAfter = extractTotalPayableAmount(nextPayload);
+          if (payableAfter != null) {
+            nextPayload = applyHubDiscountMetaToPayload(
+              { ...nextPayload, totalPayableAmount: payableAfter, finalTotalPrice: payableAfter },
+              hubMetaAfter,
+            );
+          }
+          await pool.query(`UPDATE lead_prolance_quote_snapshots SET payload_json = ? WHERE quote_id = ?`, [
+            JSON.stringify(nextPayload),
+            quoteId,
+          ]);
+        }
+      } catch (recomputeErr) {
+        console.error("CRM quote snapshot recompute after discount save failed", recomputeErr);
       }
     }
 

@@ -2275,6 +2275,32 @@ export function registerProlanceRoutes(
 
   const TEST_PREFIX = "/api/prolance-test";
 
+  const loadCrmSharedVersionForQuote = async (quoteId: number): Promise<number | undefined> => {
+    try {
+      const [rows] = await pool.query(
+        `SELECT crm_shared_version_number AS v, lead_id AS leadId
+         FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
+        [quoteId],
+      );
+      const row = (rows as { v?: unknown; leadId?: unknown }[])[0];
+      let v = row?.v != null ? Number(row.v) : NaN;
+      const leadId = row?.leadId != null ? Number(row.leadId) : NaN;
+      if (!(Number.isFinite(v) && v > 0) && Number.isFinite(leadId) && leadId > 0) {
+        const [leadRows] = await pool.query(
+          `SELECT crm_shared_version_number AS v
+           FROM lead_prolance_quote_snapshots
+           WHERE lead_id = ? AND crm_shared_version_number IS NOT NULL AND crm_shared_version_number > 0
+           ORDER BY id DESC LIMIT 1`,
+          [leadId],
+        );
+        v = Number((leadRows as { v?: unknown }[])[0]?.v);
+      }
+      return Number.isFinite(v) && v > 0 ? v : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
   const buildCustomerQuotePayload = async (
     quoteId: number,
     opts?: { applySharedVersion?: boolean; forceSharedVersion?: number },
@@ -2315,9 +2341,10 @@ export function registerProlanceRoutes(
         internalView && !crmView && Number.isFinite(viewVersionRaw) && viewVersionRaw > 0
           ? viewVersionRaw
           : undefined;
+      const crmForce = crmView ? await loadCrmSharedVersionForQuote(quoteId) : undefined;
       const payload = await buildCustomerQuotePayload(quoteId, {
         applySharedVersion: !internalView && !crmView,
-        forceSharedVersion: viewVersion,
+        forceSharedVersion: viewVersion ?? crmForce,
       });
       if (!payload) {
         res.status(404).json({ message: "Quote snapshot not found" });
@@ -3009,9 +3036,10 @@ function formatProlancePName(
           internalView && !crmAudience && Number.isFinite(viewVersionRaw) && viewVersionRaw > 0
             ? viewVersionRaw
             : undefined;
+        const crmForce = crmAudience ? await loadCrmSharedVersionForQuote(resolvedQid) : undefined;
         hubMetaForQuote = await loadHubDiscountMetaForQuote(pool, resolvedQid, {
           applySharedVersion: !internalView && !crmAudience,
-          forceSharedVersion: viewVersion,
+          forceSharedVersion: viewVersion ?? crmForce,
         });
         if (!payloadHasHubDiscount(hubMetaForQuote) && snapshotPayload) {
           hubMetaForQuote = extractHubDiscountMeta(snapshotPayload);
@@ -3249,9 +3277,10 @@ function formatProlancePName(
         internalView && !crmView && Number.isFinite(viewVersionRaw) && viewVersionRaw > 0
           ? viewVersionRaw
           : undefined;
+      const crmForce = crmView ? await loadCrmSharedVersionForQuote(quoteId) : undefined;
       const discount = await loadHubDiscountMetaForQuote(pool, quoteId, {
         applySharedVersion: !internalView && !crmView,
-        forceSharedVersion: viewVersion,
+        forceSharedVersion: viewVersion ?? crmForce,
       });
       res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
       res.json({ ok: true, discount });
