@@ -47,6 +47,36 @@ function RoomIcon() {
   );
 }
 
+function withoutExpress(value: string): string {
+  return value
+    .replace(/\(\s*express\s*\)/gi, "")
+    .replace(/\bexpress\b/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function formatHandover(lead: LeadshipTypes | null | undefined): { dateLabel: string; subLabel: string } {
+  const possession = lead?.intakePossessionDate?.trim();
+  const timeline = lead?.configScopeSummary?.expectedTimeline?.trim();
+  if (possession) {
+    const d = new Date(possession);
+    if (!Number.isNaN(d.getTime())) {
+      return {
+        dateLabel: d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }),
+        subLabel: timeline ? withoutExpress(timeline.toUpperCase()) : "POSSESSION TARGET",
+      };
+    }
+    return {
+      dateLabel: possession,
+      subLabel: timeline ? withoutExpress(timeline.toUpperCase()) : "POSSESSION TARGET",
+    };
+  }
+  if (timeline) {
+    return { dateLabel: withoutExpress(timeline), subLabel: "EXPECTED TIMELINE" };
+  }
+  return { dateLabel: "—", subLabel: "TO BE CONFIRMED" };
+}
+
 export default function FinalQuoteSum({
   onPrev,
   onNext: _onNext,
@@ -58,6 +88,7 @@ export default function FinalQuoteSum({
   const API = getApiBase();
   const timer = useMeetingWizTimer();
   const info = getMeetingWizLeadDisplay(lead);
+  const handover = formatHandover(lead);
 
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -491,25 +522,47 @@ export default function FinalQuoteSum({
               </div>
               <div
                 style={{
-                  fontSize: "15px",
+                  fontSize: "17px",
                   fontWeight: 800,
                   color: "var(--brand-dark)",
                   textAlign: "center",
-                  lineHeight: 1.25,
+                  lineHeight: 1.2,
                 }}
               >
-                45 DAYS FROM DESIGN SIGN-OFF
+                {handover.dateLabel}
               </div>
               <div
                 style={{
-                  fontSize: "11px",
-                  color: "color-mix(in srgb, var(--foreground) 55%, transparent)",
+                  fontSize: "10px",
+                  color: "color-mix(in srgb, var(--foreground) 50%, transparent)",
                   fontWeight: 500,
                   textAlign: "center",
-                  letterSpacing: "0.01em",
+                  letterSpacing: "0.04em",
                 }}
               >
-                Terms & Conditions apply
+                {handover.subLabel}
+              </div>
+              <div
+                style={{
+                  fontSize: "9px",
+                  color: "color-mix(in srgb, var(--foreground) 45%, transparent)",
+                  fontWeight: 500,
+                  textAlign: "center",
+                  lineHeight: 1.3,
+                }}
+              >
+                Starts from Design Sign-Off
+              </div>
+              <div
+                style={{
+                  fontSize: "9px",
+                  color: "var(--brand-primary)",
+                  fontWeight: 600,
+                  textAlign: "center",
+                  lineHeight: 1.3,
+                }}
+              >
+                T& C applied
               </div>
             </div>
 
