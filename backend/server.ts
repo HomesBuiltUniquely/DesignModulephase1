@@ -1685,6 +1685,30 @@ async function initDb() {
     } catch {
       // ignore
     }
+    try {
+      const [crmVerCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_prolance_quote_snapshots' AND COLUMN_NAME = 'crm_shared_version_number'",
+      );
+      if ((crmVerCol as any[]).length === 0) {
+        await conn.query(
+          "ALTER TABLE lead_prolance_quote_snapshots ADD COLUMN crm_shared_version_number INT NULL",
+        );
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      const [crmQuoteCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_prolance_quote_snapshots' AND COLUMN_NAME = 'crm_shared_quote_id'",
+      );
+      if ((crmQuoteCol as any[]).length === 0) {
+        await conn.query(
+          "ALTER TABLE lead_prolance_quote_snapshots ADD COLUMN crm_shared_quote_id INT NULL",
+        );
+      }
+    } catch {
+      // ignore
+    }
 
     await conn.query(`
       CREATE TABLE IF NOT EXISTS checklists (
@@ -7343,6 +7367,61 @@ async function resolveLatestQuoteLinkForLead(leadId: number): Promise<{
   };
 }
 
+type CrmShareSelection = {
+  versionNumber: number;
+  quoteId: number;
+};
+
+function crmQuoteInternalUrl(leadId: number, quoteId: number): string {
+  return `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}?internal=1&leadId=${encodeURIComponent(String(leadId))}&audience=crm`;
+}
+
+async function leadIsPre10Stage(leadId: number): Promise<boolean> {
+  try {
+    const [rows] = await pool.query(`SELECT project_stage AS projectStage FROM leads WHERE id = ? LIMIT 1`, [
+      leadId,
+    ]);
+    const stage = String((rows as { projectStage?: unknown }[])[0]?.projectStage || "").trim();
+    if (!stage) return true;
+    if (/^cancelled$/i.test(stage)) return false;
+    if (stage === "Inactive") return true;
+    if (stage === "Active") return false;
+    if (stage === "10-20%") return false;
+    if (stage === "20-60%" || stage === "20" || stage === "20-60") return false;
+    if (["SUBMITTED", "PAYMENT_PENDING", "D1_ACTIVATED", "CONDITIONAL_D1", "Pre 10%"].includes(stage)) return true;
+    if (stage.startsWith("10") && stage.includes("20")) return false;
+    if (stage.startsWith("20") || stage.includes("60")) return false;
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+async function loadCrmShareForLead(leadId: number): Promise<CrmShareSelection | null> {
+  try {
+    const [rows] = await pool.query(
+      `SELECT crm_shared_version_number AS versionNumber, crm_shared_quote_id AS quoteId
+       FROM lead_prolance_quote_snapshots
+       WHERE lead_id = ?
+         AND crm_shared_quote_id IS NOT NULL
+         AND crm_shared_quote_id > 0
+       ORDER BY id DESC
+       LIMIT 1`,
+      [leadId],
+    );
+    const row = (rows as { versionNumber?: unknown; quoteId?: unknown }[])[0];
+    const quoteId = row?.quoteId != null ? Number(row.quoteId) : NaN;
+    const versionNumber = row?.versionNumber != null ? Number(row.versionNumber) : NaN;
+    if (!Number.isFinite(quoteId) || quoteId < 1) return null;
+    return {
+      quoteId,
+      versionNumber: Number.isFinite(versionNumber) && versionNumber > 0 ? versionNumber : 1,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function appendLatestQuoteLinkToMinutes(minutes: string, quoteUrl: string): string {
   const trimmed = (minutes || "").trim();
   if (trimmed.includes(quoteUrl)) return trimmed;
@@ -7904,6 +7983,40 @@ async function handleCrmInternalLinkByExternalLeadId(req: Request, res: Response
     }
 
     const leadId = Number(lead.id);
+    const pre10 = await leadIsPre10Stage(leadId);
+    const selected = await loadCrmShareForLead(leadId);
+
+    if (pre10) {
+      if (!selected) {
+        res.json({
+          ok: true,
+          selectedForCrm: false,
+          externalLeadId,
+          leadId,
+          quoteId: null,
+          crmSharedQuoteId: null,
+          crmSharedVersionNumber: null,
+          internalQuoteUrl: null,
+          customerQuoteUrl: null,
+          message: "Designer has not selected a quote version for CRM yet",
+        });
+        return;
+      }
+      res.json({
+        ok: true,
+        selectedForCrm: true,
+        isPre10: true,
+        externalLeadId,
+        leadId,
+        quoteId: selected.quoteId,
+        crmSharedQuoteId: selected.quoteId,
+        crmSharedVersionNumber: selected.versionNumber,
+        internalQuoteUrl: crmQuoteInternalUrl(leadId, selected.quoteId),
+        customerQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(selected.quoteId))}`,
+      });
+      return;
+    }
+
     let quoteId =
       lead.prolanceQuoteId != null && Number.isFinite(Number(lead.prolanceQuoteId))
         ? Number(lead.prolanceQuoteId)
@@ -7956,11 +8069,15 @@ async function handleCrmInternalLinkByExternalLeadId(req: Request, res: Response
 
     res.json({
       ok: true,
+      selectedForCrm: selected != null,
+      isPre10: false,
       externalLeadId,
       leadId,
-      quoteId,
-      internalQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}?internal=1&leadId=${encodeURIComponent(String(leadId))}`,
-      customerQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}`,
+      quoteId: selected?.quoteId ?? quoteId,
+      crmSharedQuoteId: selected?.quoteId ?? null,
+      crmSharedVersionNumber: selected?.versionNumber ?? null,
+      internalQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(selected?.quoteId ?? quoteId))}?internal=1&leadId=${encodeURIComponent(String(leadId))}`,
+      customerQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(selected?.quoteId ?? quoteId))}`,
     });
   } catch (err) {
     console.error("crm internal quote link error", err);
@@ -7973,7 +8090,70 @@ app.get("/api/crm/quotes/internal-link/:externalLeadId", handleCrmInternalLinkBy
 // CRM compatibility alias (requested path pattern)
 app.get("/api/new-crm/quotes/internal-link/by-lead/:externalLeadId", handleCrmInternalLinkByExternalLeadId);
 
-// CRM: fetch internal/customer quote links + current discount (for CRM UI to open quote and edit discount there).
+async function sendCrmSelectedQuotePayload(
+  res: Response,
+  leadId: number,
+  requestedQuoteId?: number,
+): Promise<void> {
+  const selected = await loadCrmShareForLead(leadId);
+  if (!selected) {
+    res.status(404).json({
+      ok: false,
+      selectedForCrm: false,
+      message: "Designer has not selected a quote version for CRM yet",
+    });
+    return;
+  }
+  if (
+    requestedQuoteId != null &&
+    Number.isFinite(requestedQuoteId) &&
+    requestedQuoteId > 0 &&
+    requestedQuoteId !== selected.quoteId
+  ) {
+    res.status(404).json({
+      ok: false,
+      selectedForCrm: true,
+      quoteId: selected.quoteId,
+      crmSharedVersionNumber: selected.versionNumber,
+      message: "This quote version is not selected for CRM",
+    });
+    return;
+  }
+
+  const quoteId = selected.quoteId;
+  const [snapRows] = await pool.query(
+    `SELECT lead_id AS leadId, quote_id AS quoteId, payload_json AS payloadJson, created_at AS createdAt
+     FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
+    [quoteId],
+  );
+  const snap = (snapRows as any[])[0];
+  if (!snap || Number(snap.leadId) !== leadId) {
+    res.status(404).json({ message: "Quote snapshot not found" });
+    return;
+  }
+
+  const snapshotPayload: Record<string, unknown> = parseStoredJsonObject(snap.payloadJson) ?? {};
+  const links = {
+    customerQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}`,
+    internalQuoteUrl: crmQuoteInternalUrl(leadId, quoteId),
+  };
+  const discount = readDiscountMetaFromSnapshot(snapshotPayload);
+
+  res.json({
+    ok: true,
+    selectedForCrm: true,
+    leadId,
+    quoteId,
+    crmSharedQuoteId: quoteId,
+    crmSharedVersionNumber: selected.versionNumber,
+    createdAt: snap.createdAt,
+    links,
+    discount,
+    rawSnapshot: snapshotPayload,
+  });
+}
+
+// CRM: fetch only the designer-selected quote version (never other revisions).
 app.get("/api/crm/leads/:leadId/quotes/:quoteId", async (req: Request, res: Response) => {
   if (!requireExternalApiKey(req, res, "CRM quote access")) return;
   const leadId = Number(req.params.leadId);
@@ -7982,6 +8162,10 @@ app.get("/api/crm/leads/:leadId/quotes/:quoteId", async (req: Request, res: Resp
   if (!Number.isFinite(quoteId) || quoteId < 1) return res.status(400).json({ message: "Invalid quoteId" });
 
   try {
+    if (await leadIsPre10Stage(leadId)) {
+      await sendCrmSelectedQuotePayload(res, leadId, quoteId);
+      return;
+    }
     const [snapRows] = await pool.query(
       `SELECT lead_id AS leadId, quote_id AS quoteId, payload_json AS payloadJson, created_at AS createdAt
        FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
@@ -7991,27 +8175,42 @@ app.get("/api/crm/leads/:leadId/quotes/:quoteId", async (req: Request, res: Resp
     if (!snap || Number(snap.leadId) !== leadId) {
       return res.status(404).json({ message: "Quote snapshot not found" });
     }
-
     const snapshotPayload: Record<string, unknown> = parseStoredJsonObject(snap.payloadJson) ?? {};
-
-    const links = {
-      customerQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}`,
-      internalQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}?internal=1&leadId=${encodeURIComponent(String(leadId))}`,
-    };
-    const discount = readDiscountMetaFromSnapshot(snapshotPayload);
-
     return res.json({
       ok: true,
+      selectedForCrm: false,
+      isPre10: false,
       leadId,
       quoteId,
       createdAt: snap.createdAt,
-      links,
-      discount,
+      links: {
+        customerQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}`,
+        internalQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}?internal=1&leadId=${encodeURIComponent(String(leadId))}`,
+      },
+      discount: readDiscountMetaFromSnapshot(snapshotPayload),
       rawSnapshot: snapshotPayload,
     });
   } catch (err) {
     console.error("crm quote get error", err);
     return res.status(500).json({ message: "Failed to load quote snapshot" });
+  }
+});
+
+app.get("/api/crm/quotes/selected/:externalLeadId", async (req: Request, res: Response) => {
+  if (!requireExternalApiKey(req, res, "CRM selected quote")) return;
+  const externalLeadId = String(req.params.externalLeadId || "").trim();
+  if (!externalLeadId) {
+    return res.status(400).json({ message: "externalLeadId is required" });
+  }
+  try {
+    const lead = await findLeadRowForCrmQuoteLookup(externalLeadId);
+    if (!lead) {
+      return res.status(404).json({ message: "Lead not found for externalLeadId" });
+    }
+    await sendCrmSelectedQuotePayload(res, Number(lead.id));
+  } catch (err) {
+    console.error("crm selected quote error", err);
+    return res.status(500).json({ message: "Failed to load selected CRM quote" });
   }
 });
 
@@ -8022,6 +8221,17 @@ app.patch("/api/crm/leads/:leadId/quotes/:quoteId/discount", async (req: Request
   const quoteId = Number(req.params.quoteId);
   if (!Number.isFinite(leadId) || leadId < 1) return res.status(400).json({ message: "Invalid leadId" });
   if (!Number.isFinite(quoteId) || quoteId < 1) return res.status(400).json({ message: "Invalid quoteId" });
+
+  if (await leadIsPre10Stage(leadId)) {
+    const crmSelected = await loadCrmShareForLead(leadId);
+    if (!crmSelected || crmSelected.quoteId !== quoteId) {
+      return res.status(404).json({
+        message: crmSelected
+          ? "This quote version is not selected for CRM"
+          : "Designer has not selected a quote version for CRM yet",
+      });
+    }
+  }
 
   const body = (req.body || {}) as Record<string, unknown>;
   const flatDiscountPctRaw = parseFiniteNumber(body.flatDiscountPct ?? body.hubFlatDiscountPct);
@@ -18406,6 +18616,146 @@ const handleCustomerShareQuoteVersion = async (req: Request, res: Response) => {
 
 app.patch("/api/leads/:id/quotes/:quoteId/customer-share", handleCustomerShareQuoteVersion);
 app.post("/api/leads/:id/quotes/:quoteId/customer-share", handleCustomerShareQuoteVersion);
+
+// Designers pick one Pre-10 revision for CRM. Other versions are hidden from CRM APIs.
+const handleCrmShareQuoteVersion = async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  const quoteId = Number(req.params.quoteId);
+  if (!Number.isFinite(leadId) || leadId < 1) return res.status(400).json({ message: "Invalid id" });
+  if (!Number.isFinite(quoteId) || quoteId < 1) return res.status(400).json({ message: "Invalid quoteId" });
+
+  const body = (req.body || {}) as Record<string, unknown>;
+  const versionNumber = Number(body.versionNumber ?? body.crmSharedVersionNumber);
+  if (!Number.isFinite(versionNumber) || versionNumber < 1) {
+    return res.status(400).json({ message: "versionNumber is required" });
+  }
+
+  const normalizeShareRole = (raw: unknown): string =>
+    String(raw || "")
+      .trim()
+      .toLowerCase()
+      .replace(/^(role_|crm_)/i, "");
+  const canShareRole = (role: string): boolean =>
+    [
+      "designer",
+      "design_manager",
+      "territorial_design_manager",
+      "deputy_general_manager",
+      "admin",
+      "super_admin",
+      "superadmin",
+    ].includes(role);
+
+  const user = await getUserFromSession(req);
+  if (!user) return res.status(401).json({ message: "Unauthorized" });
+  if (!canShareRole(normalizeShareRole(user.role))) {
+    return res.status(403).json({ message: "You are not allowed to select a quote version for CRM" });
+  }
+
+  try {
+    const [snapRows] = await pool.query(
+      `SELECT lead_id AS leadId, payload_json AS payloadJson
+       FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
+      [quoteId],
+    );
+    let snap = (snapRows as { leadId?: unknown; payloadJson?: unknown }[])[0];
+    if (!snap) {
+      const [leadSnaps] = await pool.query(
+        `SELECT lead_id AS leadId, payload_json AS payloadJson
+         FROM lead_prolance_quote_snapshots WHERE lead_id = ? ORDER BY created_at DESC LIMIT 1`,
+        [leadId],
+      );
+      snap = (leadSnaps as { leadId?: unknown; payloadJson?: unknown }[])[0];
+    }
+    if (!snap) {
+      await pool.query(
+        `INSERT INTO lead_prolance_quote_snapshots (lead_id, quote_id, payload_json, created_at)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE lead_id = VALUES(lead_id)`,
+        [leadId, quoteId, JSON.stringify({}), new Date()],
+      );
+      snap = { leadId, payloadJson: {} };
+    }
+    const snapLead = Number(snap.leadId);
+    if (Number.isFinite(snapLead) && snapLead > 0 && snapLead !== leadId) {
+      return res.status(404).json({ message: "Quote snapshot not found for this lead" });
+    }
+
+    const selectedQuoteIdRaw = Number(body.selectedQuoteId ?? body.quoteId);
+    const selectedQuoteId =
+      Number.isFinite(selectedQuoteIdRaw) && selectedQuoteIdRaw > 0 ? selectedQuoteIdRaw : quoteId;
+
+    const leadVersions = await loadProlanceQuoteVersionsForLead(leadId);
+    const matched =
+      leadVersions.find(
+        (row) => Number(row.quoteId) === selectedQuoteId && Number(row.versionNumber) === versionNumber,
+      ) ||
+      leadVersions.find((row) => Number(row.quoteId) === selectedQuoteId) ||
+      leadVersions.find((row) => Number(row.versionNumber) === versionNumber) ||
+      leadVersions.find((_, idx) => idx + 1 === versionNumber) ||
+      (leadVersions.length > 0 ? leadVersions[leadVersions.length - 1] : null);
+
+    const persistQuoteId = matched?.quoteId && matched.quoteId > 0 ? matched.quoteId : quoteId;
+    const persistVersion =
+      matched?.versionNumber && matched.versionNumber > 0 ? matched.versionNumber : versionNumber;
+
+    await pool.query(
+      `UPDATE lead_prolance_quote_snapshots
+       SET crm_shared_version_number = ?, crm_shared_quote_id = ?
+       WHERE lead_id = ?`,
+      [persistVersion, persistQuoteId, leadId],
+    );
+    await pool.query(
+      `UPDATE lead_prolance_quote_snapshots
+       SET crm_shared_version_number = ?, crm_shared_quote_id = ?
+       WHERE quote_id IN (?, ?)`,
+      [persistVersion, persistQuoteId, quoteId, persistQuoteId],
+    );
+
+    const hubMeta = await loadHubDiscountMetaForQuote(pool, persistQuoteId, {
+      applySharedVersion: false,
+      forceSharedVersion: persistVersion,
+    });
+    let payloadSource = snap.payloadJson;
+    if (persistQuoteId !== quoteId) {
+      const [persistSnaps] = await pool.query(
+        `SELECT payload_json AS payloadJson FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
+        [persistQuoteId],
+      );
+      const persistSnap = (persistSnaps as { payloadJson?: unknown }[])[0];
+      if (persistSnap?.payloadJson != null) payloadSource = persistSnap.payloadJson;
+    }
+    const existing = parseStoredJsonObject(payloadSource) ?? {};
+    let nextPayload = applyHubDiscountMetaToPayload(existing, hubMeta);
+    const payable = extractTotalPayableAmount(nextPayload);
+    if (payable != null) {
+      nextPayload = applyHubDiscountMetaToPayload(
+        { ...nextPayload, totalPayableAmount: payable, finalTotalPrice: payable },
+        hubMeta,
+      );
+    }
+    await pool.query(`UPDATE lead_prolance_quote_snapshots SET payload_json = ? WHERE quote_id = ?`, [
+      JSON.stringify(nextPayload),
+      persistQuoteId,
+    ]);
+
+    return res.json({
+      ok: true,
+      leadId,
+      quoteId: persistQuoteId,
+      crmSharedQuoteId: persistQuoteId,
+      crmSharedVersionNumber: persistVersion,
+      discount: hubMeta,
+      payload: nextPayload,
+    });
+  } catch (err) {
+    console.error("crm-share quote version error", err);
+    res.status(500).json({ message: "Failed to select quote version for CRM" });
+  }
+};
+
+app.patch("/api/leads/:id/quotes/:quoteId/crm-share", handleCrmShareQuoteVersion);
+app.post("/api/leads/:id/quotes/:quoteId/crm-share", handleCrmShareQuoteVersion);
 
 // Freeze quote JSON at generation time so older /quote/:id links stay correct after Prolance revisions.
 app.post("/api/leads/:id/prolance-quote-snapshots", async (req: Request, res: Response) => {

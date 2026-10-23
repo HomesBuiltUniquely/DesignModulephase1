@@ -75,6 +75,8 @@ type Props = {
   sharedVersionNumber?: number | null;
   shareVersionSaving?: boolean;
   shareVersionError?: string | null;
+  shareAudience?: 'customer' | 'crm';
+  hideCustomerLink?: boolean;
   onShareVersionWithCustomer?: (versionNumber: number, quoteId: number) => void;
 };
 
@@ -160,8 +162,11 @@ export function QuoteExperienceView(props: Props) {
     sharedVersionNumber = null,
     shareVersionSaving = false,
     shareVersionError = null,
+    shareAudience = 'customer',
+    hideCustomerLink = false,
     onShareVersionWithCustomer,
   } = props;
+  const shareForCrm = shareAudience === 'crm';
 
   const savedDiscount = Math.max(0, quote.discount ?? 0);
   const [previewDiscount, setPreviewDiscount] = useState<number | null>(null);
@@ -187,6 +192,7 @@ export function QuoteExperienceView(props: Props) {
           </div>
           {isInternalMode ? (
             <div className="flex flex-wrap items-center gap-2">
+              {!hideCustomerLink ? (
               <button
                 type="button"
                 onClick={async () => {
@@ -200,6 +206,7 @@ export function QuoteExperienceView(props: Props) {
                 <LinkIcon />
                 {linkCopiedState === 'customer' ? 'Copied!' : 'Customer Link'}
               </button>
+              ) : null}
               <button
                 type="button"
                 onClick={async () => {
@@ -628,7 +635,9 @@ export function QuoteExperienceView(props: Props) {
               <h2 className="quote-heading text-lg font-bold text-[#2a1d14]">Revision History</h2>
             </div>
             <p className="mb-4 text-xs" style={{ color: QUOTE.muted }}>
-              Choose one version to share on the customer link. Customers will not see the other revisions.
+              {shareForCrm
+                ? 'Choose one version to send to CRM. CRM will only see this version — other revisions stay hidden.'
+                : 'Choose one version to share on the customer link. Customers will not see the other revisions.'}
             </p>
             <div className="grid gap-4 sm:grid-cols-2">
               {quoteVersions.map((v, idx) => {
@@ -671,7 +680,7 @@ export function QuoteExperienceView(props: Props) {
                         Version {versionNumber}
                         {isShared ? (
                           <span className="ml-2 text-sm font-normal" style={{ color: QUOTE.gold }}>
-                            (Shared with customer)
+                            {shareForCrm ? '(Selected for CRM)' : '(Shared with customer)'}
                           </span>
                         ) : isCurrent ? (
                           <span className="ml-2 text-sm font-normal" style={{ color: QUOTE.red }}>
@@ -722,10 +731,16 @@ export function QuoteExperienceView(props: Props) {
                         }
                       >
                         {isShared
-                          ? 'Shared on customer link'
+                          ? shareForCrm
+                            ? 'Selected for CRM'
+                            : 'Shared on customer link'
                           : shareVersionSaving
-                            ? 'Sharing…'
-                            : 'Share this version with customer'}
+                            ? shareForCrm
+                              ? 'Selecting…'
+                              : 'Sharing…'
+                            : shareForCrm
+                              ? 'Select for CRM'
+                              : 'Share this version with customer'}
                       </button>
                     ) : null}
                   </div>

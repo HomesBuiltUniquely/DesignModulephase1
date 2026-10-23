@@ -1322,10 +1322,13 @@ function metaFromDiscountRow(ds: Record<string, unknown>): Record<string, unknow
 export async function loadHubDiscountMetaForQuote(
   pool: Pool,
   quoteId: number,
-  opts?: { applySharedVersion?: boolean },
+  opts?: { applySharedVersion?: boolean; forceSharedVersion?: number },
 ): Promise<Record<string, unknown>> {
   const applyShared = opts?.applySharedVersion !== false;
-  let sharedVersion: number | null = null;
+  let sharedVersion: number | null =
+    opts?.forceSharedVersion != null && Number.isFinite(opts.forceSharedVersion) && opts.forceSharedVersion > 0
+      ? opts.forceSharedVersion
+      : null;
   try {
     const [snapRows] = await pool.query(
       `SELECT payload_json, lead_id AS leadId, customer_shared_version_number AS sharedVersion
@@ -1337,10 +1340,12 @@ export async function loadHubDiscountMetaForQuote(
       leadId?: unknown;
       sharedVersion?: unknown;
     }[])[0];
-    sharedVersion =
-      applyShared && snap?.sharedVersion != null && Number.isFinite(Number(snap.sharedVersion))
-        ? Number(snap.sharedVersion)
-        : null;
+    if (sharedVersion == null) {
+      sharedVersion =
+        applyShared && snap?.sharedVersion != null && Number.isFinite(Number(snap.sharedVersion))
+          ? Number(snap.sharedVersion)
+          : null;
+    }
     const parsed = parseSnapshotJson(snap?.payload_json);
     if (parsed && sharedVersion == null) {
       const meta = extractHubDiscountMeta(parsed);
@@ -2771,22 +2776,88 @@ function formatProlancePName(
       }
       let versions = await loadQuoteVersionsForLeadPublic(leadId);
       let sharedVersionNumber: number | null = null;
+      let crmSharedVersionNumber: number | null = null;
+      let crmSharedQuoteId: number | null = null;
       try {
         const [shareRows] = await pool.query(
-          `SELECT customer_shared_version_number AS sharedVersion
+          `SELECT customer_shared_version_number AS sharedVersion,
+                  crm_shared_version_number AS crmSharedVersion,
+                  crm_shared_quote_id AS crmSharedQuoteId
            FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
           [seed],
         );
-        const sv = (shareRows as { sharedVersion?: unknown }[])[0]?.sharedVersion;
+        const share = (shareRows as {
+          sharedVersion?: unknown;
+          crmSharedVersion?: unknown;
+          crmSharedQuoteId?: unknown;
+        }[])[0];
+        const sv = share?.sharedVersion;
         if (sv != null && Number.isFinite(Number(sv)) && Number(sv) > 0) {
           sharedVersionNumber = Number(sv);
         }
+        const csv = share?.crmSharedVersion;
+        if (csv != null && Number.isFinite(Number(csv)) && Number(csv) > 0) {
+          crmSharedVersionNumber = Number(csv);
+        }
+        const csq = share?.crmSharedQuoteId;
+        if (csq != null && Number.isFinite(Number(csq)) && Number(csq) > 0) {
+          crmSharedQuoteId = Number(csq);
+        }
       } catch {
-        /* optional column */
+        /* optional columns */
       }
-      const forCustomer =
-        String(req.query.audience || "").trim().toLowerCase() === "customer" ||
-        String(req.query.internal || "").trim() === "0";
+      if (crmSharedQuoteId == null) {
+        try {
+          const [leadShare] = await pool.query(
+            `SELECT crm_shared_version_number AS crmSharedVersion, crm_shared_quote_id AS crmSharedQuoteId
+             FROM lead_prolance_quote_snapshots
+             WHERE lead_id = ? AND crm_shared_quote_id IS NOT NULL AND crm_shared_quote_id > 0
+             ORDER BY id DESC LIMIT 1`,
+            [leadId],
+          );
+          const row = (leadShare as { crmSharedVersion?: unknown; crmSharedQuoteId?: unknown }[])[0];
+          if (row?.crmSharedQuoteId != null && Number(row.crmSharedQuoteId) > 0) {
+            crmSharedQuoteId = Number(row.crmSharedQuoteId);
+            crmSharedVersionNumber =
+              row.crmSharedVersion != null && Number(row.crmSharedVersion) > 0
+                ? Number(row.crmSharedVersion)
+                : crmSharedVersionNumber;
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      let isPre10 = true;
+      try {
+        const [leadRows] = await pool.query(
+          `SELECT project_stage AS projectStage FROM leads WHERE id = ? LIMIT 1`,
+          [leadId],
+        );
+        const stage = String((leadRows as { projectStage?: unknown }[])[0]?.projectStage || "").trim();
+        if (!stage) isPre10 = true;
+        else if (/^cancelled$/i.test(stage)) isPre10 = false;
+        else if (stage === "Inactive" || ["SUBMITTED", "PAYMENT_PENDING", "D1_ACTIVATED", "CONDITIONAL_D1", "Pre 10%"].includes(stage)) {
+          isPre10 = true;
+        } else if (
+          stage === "Active" ||
+          stage === "10-20%" ||
+          stage === "20-60%" ||
+          stage === "20" ||
+          stage === "20-60" ||
+          (stage.startsWith("10") && stage.includes("20")) ||
+          stage.startsWith("20") ||
+          stage.includes("60")
+        ) {
+          isPre10 = false;
+        } else {
+          isPre10 = true;
+        }
+      } catch {
+        /* default Pre 10 */
+      }
+      const audience = String(req.query.audience || "").trim().toLowerCase();
+      const forCustomer = audience === "customer" || String(req.query.internal || "").trim() === "0";
+      const forCrm = audience === "crm";
       if (forCustomer && versions.length > 0) {
         const sameQuote = versions.filter((v) => Number(v.quoteId) === seed);
         const poolRows = sameQuote.length > 0 ? sameQuote : versions;
@@ -2797,15 +2868,42 @@ function formatProlancePName(
           versions = [poolRows[poolRows.length - 1]];
         }
       }
+      if (forCrm) {
+        if (crmSharedQuoteId != null && versions.length > 0) {
+          const byQuote = versions.filter((v) => Number(v.quoteId) === crmSharedQuoteId);
+          const byVersion =
+            crmSharedVersionNumber != null
+              ? byQuote.filter((v) => Number(v.versionNumber) === crmSharedVersionNumber)
+              : byQuote;
+          versions =
+            byVersion.length > 0
+              ? [byVersion[byVersion.length - 1]]
+              : byQuote.length > 0
+                ? [byQuote[byQuote.length - 1]]
+                : [];
+        } else {
+          versions = [];
+        }
+      }
       if (versions.length === 0) {
         res.json({
           leadId,
-          versions: [{ quoteId: seed, createdAt: new Date().toISOString() }],
+          versions: forCrm ? [] : [{ quoteId: seed, createdAt: new Date().toISOString() }],
           sharedVersionNumber,
+          crmSharedVersionNumber,
+          crmSharedQuoteId,
+          isPre10,
         });
         return;
       }
-      res.json({ leadId, versions, sharedVersionNumber });
+      res.json({
+        leadId,
+        versions,
+        sharedVersionNumber,
+        crmSharedVersionNumber,
+        crmSharedQuoteId,
+        isPre10,
+      });
     } catch (err) {
       console.error("public quote-revisions error", err);
       res.status(500).json({ message: asErrorMessage(err) });
@@ -2825,22 +2923,81 @@ function formatProlancePName(
       let snapshotPayload: Record<string, unknown> | null = null;
       let hubMetaForQuote: Record<string, unknown> = {};
       const snapshotQid = Number(quoteId);
+      const audience = String(req.query.audience || "").trim().toLowerCase();
+      const crmAudience = audience === "crm";
       const internalView =
         String(req.query.internal || "").trim() === "1" ||
-        String(req.query.audience || "").trim().toLowerCase() === "internal";
+        audience === "internal";
       if (Number.isFinite(snapshotQid) && snapshotQid > 0) {
+        let resolvedQid = snapshotQid;
+        if (crmAudience) {
+          try {
+            const [crmRows] = await pool.query(
+              `SELECT lead_id AS leadId, crm_shared_quote_id AS crmQuoteId, crm_shared_version_number AS crmVersion
+               FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
+              [snapshotQid],
+            );
+            let crm = (crmRows as { leadId?: unknown; crmQuoteId?: unknown; crmVersion?: unknown }[])[0];
+            if (!crm?.crmQuoteId) {
+              const [byLead] = await pool.query(
+                `SELECT s.lead_id AS leadId, s.crm_shared_quote_id AS crmQuoteId, s.crm_shared_version_number AS crmVersion
+                 FROM lead_prolance_quote_snapshots s
+                 WHERE s.lead_id = (SELECT lead_id FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1)
+                   AND s.crm_shared_quote_id IS NOT NULL AND s.crm_shared_quote_id > 0
+                 ORDER BY s.id DESC LIMIT 1`,
+                [snapshotQid],
+              );
+              crm = (byLead as { leadId?: unknown; crmQuoteId?: unknown; crmVersion?: unknown }[])[0];
+            }
+            const crmQid = crm?.crmQuoteId != null ? Number(crm.crmQuoteId) : NaN;
+            if (Number.isFinite(crmQid) && crmQid > 0) {
+              resolvedQid = crmQid;
+            } else {
+              const leadIdForStage = crm?.leadId != null ? Number(crm.leadId) : NaN;
+              let pre10 = true;
+              if (Number.isFinite(leadIdForStage) && leadIdForStage > 0) {
+                try {
+                  const [st] = await pool.query(
+                    `SELECT project_stage AS projectStage FROM leads WHERE id = ? LIMIT 1`,
+                    [leadIdForStage],
+                  );
+                  const stage = String((st as { projectStage?: unknown }[])[0]?.projectStage || "").trim();
+                  pre10 = !(
+                    stage === "Active" ||
+                    stage === "10-20%" ||
+                    stage === "20-60%" ||
+                    (stage.startsWith("10") && stage.includes("20")) ||
+                    stage.startsWith("20") ||
+                    stage.includes("60")
+                  );
+                  if (!stage || stage === "Inactive" || stage === "Pre 10%") pre10 = true;
+                } catch {
+                  pre10 = true;
+                }
+              }
+              if (pre10) {
+                res.status(404).json({ message: "Designer has not selected a quote version for CRM yet" });
+                return;
+              }
+            }
+          } catch (crmErr) {
+            console.error("crm audience quote resolve error", crmErr);
+            res.status(404).json({ message: "Designer has not selected a quote version for CRM yet" });
+            return;
+          }
+        }
         try {
           const [rows] = await pool.query(
             "SELECT payload_json FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1",
-            [snapshotQid],
+            [resolvedQid],
           );
           const row = (rows as { payload_json?: unknown }[])[0];
           snapshotPayload = parseSnapshotJson(row?.payload_json);
         } catch (snapErr) {
           console.error("quote snapshot read error", snapErr);
         }
-        hubMetaForQuote = await loadHubDiscountMetaForQuote(pool, snapshotQid, {
-          applySharedVersion: !internalView,
+        hubMetaForQuote = await loadHubDiscountMetaForQuote(pool, resolvedQid, {
+          applySharedVersion: !internalView && !crmAudience,
         });
         if (!payloadHasHubDiscount(hubMetaForQuote) && snapshotPayload) {
           hubMetaForQuote = extractHubDiscountMeta(snapshotPayload);

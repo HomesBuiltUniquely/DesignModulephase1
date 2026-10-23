@@ -1,92 +1,114 @@
-# CRM Quote Link Integration Guide
+# CRM Quote Integration — Pre-10 selected version only
 
-This guide explains how the CRM can fetch quote links from Hub using `externalLeadId`.
+Copy this into the CRM module. Designers now pick **one** quotation version with **Select for CRM**. CRM must show that version only. Do not list, link, or fetch other Design Module revisions.
 
-## API endpoint
+## Auth
 
-- **Method:** `GET`
-- **URL:** `/api/crm/quotes/internal-link/:externalLeadId`
-- **Example:** `https://api.hubinterior.com/api/crm/quotes/internal-link/CRM-1234`
+Every CRM quote call needs the shared ingest key:
 
-## Authentication
-
-Use either:
-
-- `x-external-api-key: <EXTERNAL_LEAD_INGEST_API_KEY>`
+- Header: `x-external-api-key: <EXTERNAL_LEAD_INGEST_API_KEY>`
 - or `Authorization: Bearer <EXTERNAL_LEAD_INGEST_API_KEY>`
 
-The key must match Hub backend env var:
+Base URL (prod): `https://api.hubinterior.com`
 
-- `EXTERNAL_LEAD_INGEST_API_KEY`
+## 1) Resolve the CRM quote for a lead
 
-## What the API does
+**GET** `/api/crm/quotes/internal-link/:externalLeadId`
 
-Given `externalLeadId`, Hub:
+Alias: `/api/new-crm/quotes/internal-link/by-lead/:externalLeadId`
 
-1. Finds the lead by:
-   - `leads.pid = externalLeadId`, or
-   - `payload.externalReferenceId = externalLeadId`
-2. Resolves `quoteId` by:
-   - `leads.prolance_quote_id` first
-   - fallback to latest snapshot in `lead_prolance_quote_snapshots`
-3. Returns internal + customer quote links.
+`externalLeadId` is CRM pid / Hub `leads.pid` / `payload.externalReferenceId`.
 
-## Success response
+### Not selected yet (HTTP 200)
 
 ```json
 {
   "ok": true,
+  "selectedForCrm": false,
+  "externalLeadId": "CRM-1234",
+  "leadId": 36,
+  "quoteId": null,
+  "crmSharedQuoteId": null,
+  "crmSharedVersionNumber": null,
+  "internalQuoteUrl": null,
+  "customerQuoteUrl": null,
+  "message": "Designer has not selected a quote version for CRM yet"
+}
+```
+
+CRM UI: show waiting copy. **Do not** fall back to the latest quote.
+
+### Selected (HTTP 200)
+
+```json
+{
+  "ok": true,
+  "selectedForCrm": true,
   "externalLeadId": "CRM-1234",
   "leadId": 36,
   "quoteId": 67558,
-  "internalQuoteUrl": "https://app.hubinterior.com/quote/67558?internal=1&leadId=36",
+  "crmSharedQuoteId": 67558,
+  "crmSharedVersionNumber": 2,
+  "internalQuoteUrl": "https://app.hubinterior.com/quote/67558?internal=1&leadId=36&audience=crm",
   "customerQuoteUrl": "https://app.hubinterior.com/quote/67558"
 }
 ```
 
-## Error responses
+Use **only** `internalQuoteUrl` as returned. It includes `audience=crm` so Hub hides other versions. Do not build `/quote/:id?internal=1` yourself from a random quote id.
 
-- `400` - missing/invalid `externalLeadId`
-- `401` - invalid API key
-- `404` - lead not found or no quote exists yet
-- `503` - Hub external API key not configured
-- `500` - unexpected server error
+## 2) Fetch the selected quote payload (no other versions)
 
-## CRM implementation steps
+**GET** `/api/crm/quotes/selected/:externalLeadId`
 
-1. Store `externalLeadId` for each CRM lead.
-2. Call this endpoint when sales opens quote actions in CRM.
-3. Use:
-   - `internalQuoteUrl` for internal team access/edit flow.
-   - `customerQuoteUrl` to share with customer.
-4. Cache `quoteId` in CRM if needed for faster future lookups.
+Returns `rawSnapshot`, discount, and the same `links.internalQuoteUrl`.
 
-## Node.js example (CRM backend)
+HTTP 404 if nothing is selected:
 
-```js
-async function getHubQuoteLinks(externalLeadId) {
-  const res = await fetch(
-    `https://api.hubinterior.com/api/crm/quotes/internal-link/${encodeURIComponent(externalLeadId)}`,
-    {
-      method: "GET",
-      headers: {
-        "x-external-api-key": process.env.EXTERNAL_LEAD_INGEST_API_KEY,
-      },
-    }
-  );
-
-  const body = await res.json();
-  if (!res.ok) {
-    throw new Error(body?.message || `Hub quote link fetch failed (${res.status})`);
-  }
-  return body;
+```json
+{
+  "ok": false,
+  "selectedForCrm": false,
+  "message": "Designer has not selected a quote version for CRM yet"
 }
 ```
 
-## Postman quick test
+**GET** `/api/crm/leads/:leadId/quotes/:quoteId` — same payload, but **404** if `:quoteId` is not the selected CRM version.
 
-1. Method: `GET`
-2. URL: `https://api.hubinterior.com/api/crm/quotes/internal-link/<externalLeadId>`
-3. Header: `x-external-api-key: <your-key>`
-4. Send and verify `internalQuoteUrl` + `customerQuoteUrl` in response.
+## 3) CRM implementation rules
 
+1. Call `GET /api/crm/quotes/internal-link/:externalLeadId` (or `/selected`) when sales opens quotation.
+2. If `selectedForCrm !== true`, show: *Waiting for designer to select a quote version for CRM.* Stop. Do not scrape Design Module revision history.
+3. If selected, open `internalQuoteUrl` **or** render `rawSnapshot` from `/selected`. Never request other quote ids.
+4. Keep `quoteId` / `crmSharedVersionNumber` only as cache of the **selected** version. Refresh from Hub; the designer can change the selection.
+5. Pre-10 quotes have **no customer share**. Do not send `customerQuoteUrl` to the client until the lead is post-10% and a customer version is shared.
+
+## Node example
+
+```js
+async function getCrmQuote(externalLeadId) {
+  const res = await fetch(
+    `https://api.hubinterior.com/api/crm/quotes/internal-link/${encodeURIComponent(externalLeadId)}`,
+    { headers: { "x-external-api-key": process.env.EXTERNAL_LEAD_INGEST_API_KEY } },
+  );
+  const body = await res.json();
+  if (!res.ok) throw new Error(body?.message || `Hub quote link failed (${res.status})`);
+  if (!body.selectedForCrm) {
+    return { ready: false, message: body.message };
+  }
+  return {
+    ready: true,
+    leadId: body.leadId,
+    quoteId: body.quoteId,
+    versionNumber: body.crmSharedVersionNumber,
+    openUrl: body.internalQuoteUrl,
+  };
+}
+```
+
+## Errors
+
+- `400` — missing/invalid id
+- `401` — bad API key
+- `404` — lead not found, or this quote id is not the CRM-selected version
+- `503` — Hub key not configured
+- `500` — server error
