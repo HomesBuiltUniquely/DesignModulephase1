@@ -1289,10 +1289,11 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       viewingVersionNumber={viewingVersionNumber}
       shareVersionSaving={shareVersionSaving}
       shareVersionError={shareVersionError}
-      hideCustomerLink={crmAudience}
+      hideCustomerLink={crmAudience || isPre10Lead}
       crmLockedView={crmAudience}
       onShareVersionWithCustomer={
         !crmAudience &&
+        !isPre10Lead &&
         (Boolean(sessionId) || viaCrmDiscountEdit) &&
         resolvedLeadId != null &&
         resolvedLeadId > 0

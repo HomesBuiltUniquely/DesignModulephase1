@@ -642,6 +642,8 @@ export function QuoteExperienceView(props: Props) {
             <p className="mb-4 text-xs" style={{ color: QUOTE.muted }}>
               {crmLockedView
                 ? 'CRM sees the designer-selected version plus every discount version CRM has saved. Click a version to preview it. Saving a discount always creates a new version.'
+                : onSelectVersionForCrm && !onShareVersionWithCustomer
+                  ? 'Click a version to preview it. Share to CRM locks that version for CRM.'
                 : onSelectVersionForCrm
                   ? 'Click a version to preview it. Share to customer and Share to CRM each lock that version for that audience.'
                   : 'Click a version to preview it. Share to customer locks that version on the customer link — other revisions stay hidden from the client.'}
