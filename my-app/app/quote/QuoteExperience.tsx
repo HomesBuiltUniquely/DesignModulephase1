@@ -946,7 +946,8 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       };
       if (sessionId) {
         headers['Authorization'] = `Bearer ${sessionId}`;
-      } else if (viaCrmDiscountEdit) {
+      }
+      if (viaCrmDiscountEdit) {
         headers['X-Crm-Role'] = effectiveCrmRole;
         headers['X-Crm-User'] = effectiveCrmUser;
       }

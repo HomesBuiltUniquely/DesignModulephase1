@@ -18340,7 +18340,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       ].join("|");
 
     let isDuplicateVersion = isSameWithPrevious && hasExistingVersions;
-    if (!isDuplicateVersion) {
+    if (!viaCrmInternal && !isDuplicateVersion) {
       const [dupRows] = await pool.query(
         `SELECT discount_snapshot, updated_values
          FROM lead_prolance_quote_versions
@@ -18365,7 +18365,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
         }
       }
     }
-    if (changeSummary === "No changes") isDuplicateVersion = true;
+    if (!viaCrmInternal && changeSummary === "No changes") isDuplicateVersion = true;
 
     const isNewVersionCreated = !isDuplicateVersion;
     if (isNewVersionCreated) {
@@ -18404,9 +18404,10 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
         try {
           await pool.query(
             `UPDATE lead_prolance_quote_snapshots
-             SET crm_shared_version_number = ?, crm_shared_quote_id = ?
+             SET crm_shared_version_number = ?, crm_shared_quote_id = ?,
+                 customer_shared_version_number = ?
              WHERE lead_id = ?`,
-            [nextVersionNumber, quoteId, effectiveLeadId],
+            [nextVersionNumber, quoteId, nextVersionNumber, effectiveLeadId],
           );
         } catch (crmShareErr) {
           console.error("crm-share stamp after CRM discount save failed", crmShareErr);
