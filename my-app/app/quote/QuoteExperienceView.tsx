@@ -642,7 +642,9 @@ export function QuoteExperienceView(props: Props) {
             <p className="mb-4 text-xs" style={{ color: QUOTE.muted }}>
               {crmLockedView
                 ? 'CRM can only see the version the designer selected.'
-                : 'Click a version to preview it. Share with customer and Select for CRM each lock that version for that audience — other revisions stay hidden from them.'}
+                : onSelectVersionForCrm
+                  ? 'Click a version to preview it. Share to customer and Share to CRM each lock that version for that audience.'
+                  : 'Click a version to preview it. Share to customer locks that version on the customer link — other revisions stay hidden from the client.'}
             </p>
             <div className="grid gap-4 sm:grid-cols-2">
               {quoteVersions.map((v, idx) => {

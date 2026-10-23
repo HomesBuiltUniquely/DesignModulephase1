@@ -431,6 +431,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
   const [resolvedLeadId, setResolvedLeadId] = useState<number | null>(leadIdNum);
   const [sharedVersionNumber, setSharedVersionNumber] = useState<number | null>(null);
   const [crmSharedVersionNumber, setCrmSharedVersionNumber] = useState<number | null>(null);
+  const [isPre10Lead, setIsPre10Lead] = useState(false);
   const [shareVersionSaving, setShareVersionSaving] = useState(false);
   const [shareVersionError, setShareVersionError] = useState<string | null>(null);
   const crmAudience =
@@ -745,6 +746,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           setSharedVersionNumber(shared != null && shared > 0 ? shared : null);
           const crmShared = asNum(body.crmSharedVersionNumber);
           setCrmSharedVersionNumber(crmShared != null && crmShared > 0 ? crmShared : null);
+          setIsPre10Lead(body.isPre10 === true);
           setQuoteVersions(
             crmAudience ? versionsForCrmAudience(versions, crmShared) : versions,
           );
@@ -1251,7 +1253,11 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           : undefined
       }
       onSelectVersionForCrm={
-        !crmAudience && Boolean(sessionId) && resolvedLeadId != null && resolvedLeadId > 0
+        isPre10Lead &&
+        !crmAudience &&
+        Boolean(sessionId) &&
+        resolvedLeadId != null &&
+        resolvedLeadId > 0
           ? (versionNumber, quoteId) => handleShareQuoteVersion(versionNumber, quoteId, 'crm')
           : undefined
       }
