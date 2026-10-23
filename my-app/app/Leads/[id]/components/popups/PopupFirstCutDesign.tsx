@@ -15,6 +15,7 @@ import {
   buildHubMeetingDateTimeIso,
   formatHubTimeRange,
   HUB_MEETING_DURATION_MIN,
+  hubMeetingDurationForStart,
   minutesToHubTime24,
 } from "@/lib/hub-meeting-schedule";
 import CustomDatePicker from "@/app/Components/ui/CustomDatePicker";
@@ -127,7 +128,9 @@ export default function PopupFirstCutDesign({
 
   const buildMeta = (): MeetingMeta => {
     const endMin =
-      selectedStartMin !== null ? selectedStartMin + HUB_MEETING_DURATION_MIN : null;
+      selectedStartMin !== null
+        ? selectedStartMin + hubMeetingDurationForStart(selectedStartMin)
+        : null;
     const startTime24 =
       selectedStartMin !== null ? minutesToHubTime24(selectedStartMin) : meetingTime;
     const endTime24 = endMin !== null ? minutesToHubTime24(endMin) : undefined;
@@ -250,7 +253,10 @@ export default function PopupFirstCutDesign({
           ) : selectedStartMin !== null ? (
             <div className="flex max-w-sm items-center justify-between gap-3 rounded-md border border-gray-300 bg-gray-50 px-3 py-2.5">
               <p className="text-sm font-medium text-gray-900">
-                {formatHubTimeRange(selectedStartMin, selectedStartMin + HUB_MEETING_DURATION_MIN)}
+                {formatHubTimeRange(
+                  selectedStartMin,
+                  selectedStartMin + hubMeetingDurationForStart(selectedStartMin),
+                )}
               </p>
               <button
                 type="button"

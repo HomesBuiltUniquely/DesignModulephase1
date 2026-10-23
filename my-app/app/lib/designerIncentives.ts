@@ -172,9 +172,21 @@ export type DesignerIncentivesData = {
   /** Minimum meetings required to unlock incentives */
   meetingsRequired: number;
   meetingsEligible: boolean;
+  /** Meeting Wizard completions that make up meetingsCompleted */
+  meetings: IncentiveMeetingRow[];
   weightedBreakdown: WeightedRevenueBreakdown;
   deals: DealLedgerRow[];
   cycle: IncentiveCycleInfo;
+};
+
+export type IncentiveMeetingRow = {
+  leadId: number;
+  customerName: string;
+  projectName?: string | null;
+  completedAt: string;
+  meetingDate?: string | null;
+  startedAt?: string | null;
+  durationFormatted?: string | null;
 };
 
 export type TeamIncentiveRow = {
@@ -769,7 +781,7 @@ export function buildIncentivesFromDealInputs(
   cycle: IncentiveCycleInfo,
   dealInputs: IncentiveDealInput[],
   meetingsCompleted: number,
-  options?: { revenueDeltaPct?: number },
+  options?: { revenueDeltaPct?: number; meetings?: IncentiveMeetingRow[] },
 ): DesignerIncentivesData {
   const subRole = normalizeIncentiveSubRole(member.subRole);
   const monthlyTarget = getMonthlyTargetForSubRole(member.subRole);
@@ -886,6 +898,7 @@ export function buildIncentivesFromDealInputs(
     meetingsCompleted,
     meetingsRequired,
     meetingsEligible,
+    meetings: options?.meetings ?? [],
     weightedBreakdown,
     deals: finalDeals,
     cycle: cycleForMember,
@@ -1051,6 +1064,15 @@ export function buildDemoIncentivesForDesigner(
     meetingsCompleted,
     meetingsRequired,
     meetingsEligible,
+    meetings: Array.from({ length: meetingsCompleted }, (_, i) => ({
+      leadId: 1000 + i,
+      customerName: `Client ${i + 1}`,
+      projectName: null,
+      completedAt: `${cycle.startIso}T0${Math.min(9, 9 + i)}:30:00.000Z`,
+      meetingDate: cycle.startIso,
+      startedAt: `${cycle.startIso}T0${Math.min(8, 8 + i)}:00:00.000Z`,
+      durationFormatted: '1h 30m',
+    })),
     weightedBreakdown,
     deals: finalDeals,
     cycle: cycleForMember,

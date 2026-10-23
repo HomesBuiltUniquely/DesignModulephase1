@@ -1077,22 +1077,29 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
         headers['X-Crm-Role'] = effectiveCrmRole;
         headers['X-Crm-User'] = effectiveCrmUser;
       }
-      const res = await fetch(
-        `${API}/api/leads/${resolvedLeadId}/quotes/${encodeURIComponent(versionFetchId)}/customer-share`,
-        {
-          method: 'PATCH',
+      const shareUrl = `${API}/api/leads/${resolvedLeadId}/quotes/${encodeURIComponent(versionFetchId)}/customer-share`;
+      const shareBody = JSON.stringify({
+        versionNumber,
+        selectedQuoteId: selectedQuoteId ?? Number(versionFetchId),
+        ...(isInternalMode || viaCrmDiscountEdit ? { sourceModule: 'CRM' } : {}),
+        ...(viaCrmDiscountEdit
+          ? { crmRole: effectiveCrmRole, crmUser: effectiveCrmUser }
+          : {}),
+      });
+      let res = await fetch(shareUrl, {
+        method: 'PATCH',
+        headers,
+        credentials: 'include',
+        body: shareBody,
+      });
+      if (res.status === 404 || res.status === 405) {
+        res = await fetch(shareUrl, {
+          method: 'POST',
           headers,
           credentials: 'include',
-          body: JSON.stringify({
-            versionNumber,
-            selectedQuoteId: selectedQuoteId ?? Number(versionFetchId),
-            ...(isInternalMode || viaCrmDiscountEdit ? { sourceModule: 'CRM' } : {}),
-            ...(viaCrmDiscountEdit
-              ? { crmRole: effectiveCrmRole, crmUser: effectiveCrmUser }
-              : {}),
-          }),
-        },
-      );
+          body: shareBody,
+        });
+      }
       const txt = await res.text();
       let body: unknown = null;
       try {

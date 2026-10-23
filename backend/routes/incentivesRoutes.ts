@@ -71,6 +71,15 @@ function toIsoUtcDay(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
+function toIsoDateTime(v: unknown): string | null {
+  if (v instanceof Date && !Number.isNaN(v.getTime())) return v.toISOString();
+  if (typeof v === "string" && v.trim()) {
+    const t = Date.parse(v);
+    if (!Number.isNaN(t)) return new Date(t).toISOString();
+  }
+  return null;
+}
+
 function parsePayload(raw: unknown): Record<string, unknown> {
   if (!raw) return {};
   if (typeof raw === "object") return raw as Record<string, unknown>;
@@ -337,6 +346,7 @@ export function registerIncentivesRoutes(
           startIso,
           endIso,
           meetingsCompleted: 0,
+          meetings: [],
           deals: [],
         });
       }
@@ -375,7 +385,16 @@ export function registerIncentivesRoutes(
          ORDER BY created_at DESC`,
         leadIds,
       );
-      let meetingsCompleted = 0;
+      const leadById = new Map(leads.map((l) => [l.id, l]));
+      const meetings: Array<{
+        leadId: number;
+        customerName: string;
+        projectName: string | null;
+        completedAt: string;
+        meetingDate: string | null;
+        startedAt: string | null;
+        durationFormatted: string | null;
+      }> = [];
       for (const row of histRows as { leadId: number; event: unknown; createdAt: Date | string }[]) {
         let ev: Record<string, unknown> | null = null;
         if (row.event && typeof row.event === "object") {
@@ -389,12 +408,30 @@ export function registerIncentivesRoutes(
         }
         const taskName = asStr(ev?.taskName);
         if (!MEETING_TASKS.includes(taskName as (typeof MEETING_TASKS)[number])) continue;
-        const iso =
-          toDateIso(ev?.timestamp) ||
-          toDateIso((ev?.meta as Record<string, unknown> | undefined)?.completedAt) ||
-          toDateIso(row.createdAt);
-        if (inRange(iso, startIso, endIso)) meetingsCompleted += 1;
+        const meta =
+          ev?.meta && typeof ev.meta === "object" && !Array.isArray(ev.meta)
+            ? (ev.meta as Record<string, unknown>)
+            : {};
+        const completedAt =
+          toIsoDateTime(ev?.timestamp) ||
+          toIsoDateTime(meta.completedAt) ||
+          toIsoDateTime(row.createdAt);
+        const iso = completedAt ? completedAt.slice(0, 10) : toDateIso(row.createdAt);
+        if (!inRange(iso, startIso, endIso) || !completedAt) continue;
+        const lead = leadById.get(Number(row.leadId));
+        const payload = parsePayload(lead?.payload);
+        meetings.push({
+          leadId: Number(row.leadId),
+          customerName: customerNameFrom(payload, lead?.projectName ?? null),
+          projectName: lead?.projectName ?? null,
+          completedAt,
+          meetingDate: asStr(meta.meetingDate) || iso,
+          startedAt: toIsoDateTime(meta.startedAt),
+          durationFormatted: asStr(meta.durationFormatted) || null,
+        });
       }
+      meetings.sort((a, b) => a.completedAt.localeCompare(b.completedAt));
+      const meetingsCompleted = meetings.length;
 
       const deals: Array<Record<string, unknown>> = [];
 
@@ -535,6 +572,7 @@ export function registerIncentivesRoutes(
         startIso,
         endIso,
         meetingsCompleted,
+        meetings,
         deals,
       });
     } catch (err) {

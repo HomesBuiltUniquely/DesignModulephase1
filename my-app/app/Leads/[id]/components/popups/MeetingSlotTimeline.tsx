@@ -6,8 +6,11 @@ import {
   appointmentToBookedBlock,
   formatHubTimeRange,
   HUB_MEETING_DURATION_MIN,
+  HUB_MEETING_SLOT_STEP_MIN,
+  HUB_MEETING_STANDARD_GRID_START_MIN,
   HUB_MEETING_TIMELINE_END_MIN,
   HUB_MEETING_TIMELINE_START_MIN,
+  hubMeetingDurationForStart,
   isHubMeetingStartAvailable,
   isFullDayBlockedOnTimeline,
   listHubMeetingStartOptions,
@@ -17,6 +20,19 @@ import {
 
 const PX_PER_MIN = 0.95;
 const TIME_COL_WIDTH = 92;
+/** No 10:30 start — collapse that unused half-hour so 10:00 sits above 11:00. */
+const SKIPPED_EMPTY_MIN = 30;
+
+function timelineY(min: number): number {
+  const clamped = Math.max(min, HUB_MEETING_TIMELINE_START_MIN);
+  if (clamped <= HUB_MEETING_STANDARD_GRID_START_MIN) {
+    const t =
+      (clamped - HUB_MEETING_TIMELINE_START_MIN) /
+      (HUB_MEETING_STANDARD_GRID_START_MIN - HUB_MEETING_TIMELINE_START_MIN);
+    return t * HUB_MEETING_SLOT_STEP_MIN * PX_PER_MIN;
+  }
+  return (clamped - HUB_MEETING_TIMELINE_START_MIN - SKIPPED_EMPTY_MIN) * PX_PER_MIN;
+}
 
 type Props = {
   apiBase: string;
@@ -80,13 +96,19 @@ export default function MeetingSlotTimeline({
 
   const startOptions = useMemo(() => listHubMeetingStartOptions(durationMin), [durationMin]);
   const fullDayBlocked = useMemo(() => isFullDayBlockedOnTimeline(bookedBlocks), [bookedBlocks]);
+  const selectedDuration =
+    selectedStartMin !== null ? hubMeetingDurationForStart(selectedStartMin, durationMin) : durationMin;
   const selectedEndMin =
-    selectedStartMin !== null ? selectedStartMin + durationMin : null;
-  const timelineHeight = (HUB_MEETING_TIMELINE_END_MIN - HUB_MEETING_TIMELINE_START_MIN) * PX_PER_MIN;
+    selectedStartMin !== null ? selectedStartMin + selectedDuration : null;
+  const timelineHeight = timelineY(HUB_MEETING_TIMELINE_END_MIN);
 
   const hourMarks = useMemo(() => {
-    const marks: number[] = [];
-    for (let m = HUB_MEETING_TIMELINE_START_MIN; m <= HUB_MEETING_TIMELINE_END_MIN; m += 30) {
+    const marks: number[] = [HUB_MEETING_TIMELINE_START_MIN];
+    for (
+      let m = HUB_MEETING_STANDARD_GRID_START_MIN;
+      m <= HUB_MEETING_TIMELINE_END_MIN;
+      m += HUB_MEETING_SLOT_STEP_MIN
+    ) {
       marks.push(m);
     }
     return marks;
@@ -104,11 +126,11 @@ export default function MeetingSlotTimeline({
     <div className="w-full">
       {fullDayBlocked ? (
         <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-center text-xs text-amber-900">
-          Full-day leave is active for this date (11:00 AM – 7:00 PM). No slots available.
+          Full-day leave is active for this date (10:00 AM – 8:00 PM). No slots available.
         </p>
       ) : (
         <p className="mb-3 text-center text-xs text-gray-500">
-          Click a start time to book {durationMin} minutes (11:00 AM – 7:00 PM)
+          Click a start time (10:00–11:00 is 60 min; other slots are {durationMin} min, until 8:00 PM)
         </p>
       )}
 
@@ -119,7 +141,8 @@ export default function MeetingSlotTimeline({
           style={{ height: timelineHeight, width: TIME_COL_WIDTH }}
         >
           {startOptions.map((m) => {
-            const available = isHubMeetingStartAvailable(m, bookedBlocks, durationMin, meetingDate);
+            const slotDuration = hubMeetingDurationForStart(m, durationMin);
+            const available = isHubMeetingStartAvailable(m, bookedBlocks, slotDuration, meetingDate);
             const isSelected = selectedStartMin === m;
             return (
               <button
@@ -134,7 +157,7 @@ export default function MeetingSlotTimeline({
                       ? "text-[#32261C] hover:bg-[#DDCDC1]/30 hover:scale-105"
                       : "cursor-not-allowed text-gray-300"
                 }`}
-                style={{ top: (m - HUB_MEETING_TIMELINE_START_MIN) * PX_PER_MIN }}
+                style={{ top: timelineY(m) }}
               >
                 {minutesToHubTimeLabel(m)}
               </button>
@@ -151,18 +174,18 @@ export default function MeetingSlotTimeline({
             <div
               key={`line-${m}`}
               className="pointer-events-none absolute left-0 right-0 border-t border-dashed border-[#DDCDC1]"
-              style={{ top: (m - HUB_MEETING_TIMELINE_START_MIN) * PX_PER_MIN }}
+              style={{ top: timelineY(m) }}
             />
           ))}
 
           {bookedBlocks.map((block) => {
-            const top = (block.startMin - HUB_MEETING_TIMELINE_START_MIN) * PX_PER_MIN;
-            const height = (block.endMin - block.startMin) * PX_PER_MIN;
+            const top = timelineY(block.startMin);
+            const height = Math.max(timelineY(block.endMin) - top, 48);
             return (
               <div
                 key={block.id}
                 className="absolute left-0 box-border flex items-center gap-2 border border-[#DDCDC1] bg-[#F1F2F6] px-3 py-2"
-                style={{ top, height: Math.max(height, 48), width: "100%" }}
+                style={{ top, height, width: "100%" }}
               >
                 <span className="shrink-0 text-gray-400" aria-hidden>
                   🔒
@@ -178,15 +201,16 @@ export default function MeetingSlotTimeline({
           })}
 
           {startOptions.map((m) => {
-            const available = isHubMeetingStartAvailable(m, bookedBlocks, durationMin, meetingDate);
+            const slotDuration = hubMeetingDurationForStart(m, durationMin);
+            const available = isHubMeetingStartAvailable(m, bookedBlocks, slotDuration, meetingDate);
             if (!available) return null;
             return (
               <div
                 key={`hover-container-${m}`}
                 className="group absolute left-0 z-10 w-full cursor-pointer"
                 style={{
-                  top: (m - HUB_MEETING_TIMELINE_START_MIN) * PX_PER_MIN,
-                  height: 30 * PX_PER_MIN,
+                  top: timelineY(m),
+                  height: HUB_MEETING_SLOT_STEP_MIN * PX_PER_MIN,
                 }}
                 onClick={() => !disabled && onSelectStartMin(m)}
               >
@@ -194,7 +218,7 @@ export default function MeetingSlotTimeline({
                   className="pointer-events-none absolute left-0 w-full rounded-md border-2 border-transparent transition-all duration-200 group-hover:border-[#EF0101]/40 group-hover:bg-[#EF0101]/5 group-hover:shadow-sm"
                   style={{
                     top: 0,
-                    height: Math.max(durationMin * PX_PER_MIN, 48),
+                    height: Math.max(timelineY(m + slotDuration) - timelineY(m), 48),
                   }}
                 />
               </div>
@@ -205,8 +229,8 @@ export default function MeetingSlotTimeline({
             <div
               className="pointer-events-none absolute left-0 z-20 box-border overflow-hidden rounded-md border-2 border-[#EF0101] bg-[#EF0101]/10 px-3 py-2 shadow-md shadow-[#EF0101]/10 transition-all duration-300 animate-in zoom-in-95 fade-in"
               style={{
-                top: (selectedStartMin - HUB_MEETING_TIMELINE_START_MIN) * PX_PER_MIN,
-                height: Math.max((selectedEndMin - selectedStartMin) * PX_PER_MIN, 52),
+                top: timelineY(selectedStartMin),
+                height: Math.max(timelineY(selectedEndMin) - timelineY(selectedStartMin), 52),
                 width: "100%",
               }}
             >
@@ -220,7 +244,7 @@ export default function MeetingSlotTimeline({
                   </span>
                 </div>
                 <p className="text-xs font-semibold text-[#32261C]">
-                  {formatHubTimeRange(selectedStartMin, selectedEndMin)} ({durationMin} mins)
+                  {formatHubTimeRange(selectedStartMin, selectedEndMin)} ({selectedDuration} mins)
                 </p>
               </div>
             </div>

@@ -2713,14 +2713,18 @@ function formatProlancePName(
       changeSummary: r.changeSummary ? String(r.changeSummary) : undefined,
       versionNumber: r.versionNumber ? Number(r.versionNumber) : undefined,
     }));
-    // Drop duplicate base rows (same quoteId, no real version_number). Keep real discount revisions.
     const seen = new Set<string>();
     const list: typeof raw = [];
     for (const item of raw) {
-      const key =
-        item.versionNumber && item.versionNumber > 0
-          ? `${item.quoteId}:v${item.versionNumber}`
-          : `${item.quoteId}:base`;
+      const summary = String(item.changeSummary || "").trim();
+      if (/^no changes$/i.test(summary)) continue;
+      const key = /^quote generated$/i.test(summary)
+        ? `${item.quoteId}|generated`
+        : summary
+          ? `${item.quoteId}|${summary.toLowerCase()}`
+          : item.versionNumber && item.versionNumber > 0
+            ? `${item.quoteId}:v${item.versionNumber}`
+            : `${item.quoteId}:base`;
       if (seen.has(key)) continue;
       seen.add(key);
       list.push(item);

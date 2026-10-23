@@ -6,6 +6,7 @@ import MeetingSlotTimeline from "./MeetingSlotTimeline";
 import {
   formatHubTimeRange,
   HUB_MEETING_DURATION_MIN,
+  hubMeetingDurationForStart,
 } from "@/lib/hub-meeting-schedule";
 
 type Props = {
@@ -55,7 +56,10 @@ export default function MeetingSlotPickerModal({
   const canConfirm = draftStartMin !== null;
   const selectedRange =
     draftStartMin !== null
-      ? formatHubTimeRange(draftStartMin, draftStartMin + durationMin)
+      ? formatHubTimeRange(
+          draftStartMin,
+          draftStartMin + hubMeetingDurationForStart(draftStartMin, durationMin),
+        )
       : null;
 
   if (typeof document === "undefined") return null;

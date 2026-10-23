@@ -2956,6 +2956,18 @@ app.get("/api/service/whoami", async (req: Request, res: Response) => {
   });
 });
 
+function quoteVersionUniquenessKey(item: {
+  quoteId: number;
+  changeSummary?: string;
+  versionNumber?: number;
+}): string {
+  const summary = String(item.changeSummary || "").trim();
+  if (/^quote generated$/i.test(summary)) return `${item.quoteId}|generated`;
+  if (summary && !/^no changes$/i.test(summary)) return `${item.quoteId}|${summary.toLowerCase()}`;
+  if (item.versionNumber && item.versionNumber > 0) return `${item.quoteId}:v${item.versionNumber}`;
+  return `${item.quoteId}:base`;
+}
+
 function dedupeProlanceQuoteVersionRows(
   list: Array<{
     quoteId: number;
@@ -2974,11 +2986,9 @@ function dedupeProlanceQuoteVersionRows(
   const seen = new Set<string>();
   const out: typeof list = [];
   for (const item of list) {
-    // Real discount revisions keep version_number; bootstrap/dupes often share quoteId with null/0.
-    const key =
-      item.versionNumber && item.versionNumber > 0
-        ? `${item.quoteId}:v${item.versionNumber}`
-        : `${item.quoteId}:base`;
+    const summary = String(item.changeSummary || "").trim();
+    if (/^no changes$/i.test(summary)) continue;
+    const key = quoteVersionUniquenessKey(item);
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(item);
@@ -3277,11 +3287,13 @@ function isPersonalAppointmentErpRow(raw: unknown): boolean {
   return Boolean(desc);
 }
 
-const HUB_DAY_START_TIME = "11:00";
-const HUB_DAY_END_TIME = "19:00";
-const HUB_DAY_START_MIN = 11 * 60;
-const HUB_DAY_END_MIN = 19 * 60;
+const HUB_DAY_START_TIME = "10:00";
+const HUB_DAY_END_TIME = "20:00";
+const HUB_DAY_START_MIN = 10 * 60;
+const HUB_DAY_END_MIN = 20 * 60;
+const HUB_DAY_STANDARD_GRID_START_MIN = 11 * 60;
 const HUB_DEFAULT_MEETING_DURATION_MIN = 90;
+const HUB_EARLY_SLOT_DURATION_MIN = 60;
 const FULL_DAY_LEAVE_DESC_PREFIX = "FULL_DAY_LEAVE:";
 
 /** Parse wall-clock local datetime `YYYY-MM-DDTHH:mm[:ss]` without timezone drift. */
@@ -3643,17 +3655,47 @@ async function assertDesignerSlotFree(opts: {
 
 const HUB_SLOT_STEP_MIN = 30;
 
-function listHubFreeStartMinutes(
-  busy: HubBusyBlock[],
+function hubMeetingDurationForStart(
+  startMin: number,
   durationMin = HUB_DEFAULT_MEETING_DURATION_MIN,
-): number[] {
-  const free: number[] = [];
+): number {
+  if (startMin === HUB_DAY_START_MIN && durationMin === HUB_DEFAULT_MEETING_DURATION_MIN) {
+    return HUB_EARLY_SLOT_DURATION_MIN;
+  }
+  return durationMin;
+}
+
+function listHubStartMinutes(durationMin = HUB_DEFAULT_MEETING_DURATION_MIN): number[] {
+  const starts: number[] = [];
+  if (durationMin === HUB_DEFAULT_MEETING_DURATION_MIN) {
+    starts.push(HUB_DAY_START_MIN);
+    for (
+      let m = HUB_DAY_STANDARD_GRID_START_MIN;
+      m + hubMeetingDurationForStart(m, durationMin) <= HUB_DAY_END_MIN;
+      m += HUB_SLOT_STEP_MIN
+    ) {
+      starts.push(m);
+    }
+    return starts;
+  }
   for (
     let m = HUB_DAY_START_MIN;
     m + durationMin <= HUB_DAY_END_MIN;
     m += HUB_SLOT_STEP_MIN
   ) {
-    if (findOverlappingBusyBlocks(busy, m, m + durationMin).length === 0) {
+    starts.push(m);
+  }
+  return starts;
+}
+
+function listHubFreeStartMinutes(
+  busy: HubBusyBlock[],
+  durationMin = HUB_DEFAULT_MEETING_DURATION_MIN,
+): number[] {
+  const free: number[] = [];
+  for (const m of listHubStartMinutes(durationMin)) {
+    const dur = hubMeetingDurationForStart(m, durationMin);
+    if (findOverlappingBusyBlocks(busy, m, m + dur).length === 0) {
       free.push(m);
     }
   }
@@ -17973,11 +18015,52 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
     }
     const changeSummary = changesList.length > 0 ? changesList.join("; ") : "No changes";
 
-    // Temporarily always write a new version so the same discount can be re-saved
-    // after the customer-link error (duplicate-version popup blocked Save).
-    const isNewVersionCreated = true;
-    void hasExistingVersions;
-    void isSameWithPrevious;
+    const discountFingerprint = (state: {
+      woodwork: number;
+      accessories: number;
+      constructionHw: number;
+      services: number;
+      amount: number;
+      additionalDiscount: number;
+    }) =>
+      [
+        state.woodwork,
+        state.accessories,
+        state.constructionHw,
+        state.services,
+        Math.round(state.amount),
+        Math.round(state.additionalDiscount),
+      ].join("|");
+
+    let isDuplicateVersion = isSameWithPrevious && hasExistingVersions;
+    if (!isDuplicateVersion) {
+      const [dupRows] = await pool.query(
+        `SELECT discount_snapshot, updated_values
+         FROM lead_prolance_quote_versions
+         WHERE lead_id = ? AND quote_id = ?`,
+        [effectiveLeadId, quoteId],
+      );
+      const targetFp = discountFingerprint(targetDiscountState);
+      for (const row of dupRows as { discount_snapshot?: unknown; updated_values?: unknown }[]) {
+        const parsed = parseStoredJsonObject(row.discount_snapshot) || parseStoredJsonObject(row.updated_values);
+        if (!parsed) continue;
+        const existingFp = discountFingerprint({
+          woodwork: parseFiniteNumber(parsed.woodwork) ?? 0,
+          accessories: parseFiniteNumber(parsed.accessories) ?? 0,
+          constructionHw: parseFiniteNumber(parsed.constructionHw) ?? 0,
+          services: parseFiniteNumber(parsed.services) ?? 0,
+          amount: Math.round(parseFiniteNumber(parsed.amount) ?? 0),
+          additionalDiscount: Math.round(parseFiniteNumber(parsed.additionalDiscount) ?? 0),
+        });
+        if (existingFp === targetFp) {
+          isDuplicateVersion = true;
+          break;
+        }
+      }
+    }
+    if (changeSummary === "No changes") isDuplicateVersion = true;
+
+    const isNewVersionCreated = !isDuplicateVersion;
     if (isNewVersionCreated) {
       const [maxRow] = await pool.query(
         `SELECT MAX(version_number) AS maxVer, COUNT(*) AS countAll FROM lead_prolance_quote_versions WHERE lead_id = ?`,
@@ -18068,7 +18151,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       leadId: effectiveLeadId,
       quoteId,
       updated: ins.affectedRows > 0,
-      alreadyExists: false,
+      alreadyExists: isDuplicateVersion,
       discount: discountMeta,
       payload: nextPayload,
       versions: updatedVersions,
@@ -18080,7 +18163,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
 });
 
 // Designers pick one revision to expose on the customer /quote/:id link.
-app.patch("/api/leads/:id/quotes/:quoteId/customer-share", async (req: Request, res: Response) => {
+const handleCustomerShareQuoteVersion = async (req: Request, res: Response) => {
   const leadId = Number(req.params.id);
   const quoteId = Number(req.params.quoteId);
   if (!Number.isFinite(leadId) || leadId < 1) return res.status(400).json({ message: "Invalid id" });
@@ -18128,8 +18211,24 @@ app.patch("/api/leads/:id/quotes/:quoteId/customer-share", async (req: Request, 
        FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
       [quoteId],
     );
-    const snap = (snapRows as { leadId?: unknown; payloadJson?: unknown }[])[0];
-    if (!snap) return res.status(404).json({ message: "Quote snapshot not found" });
+    let snap = (snapRows as { leadId?: unknown; payloadJson?: unknown }[])[0];
+    if (!snap) {
+      const [leadSnaps] = await pool.query(
+        `SELECT lead_id AS leadId, payload_json AS payloadJson
+         FROM lead_prolance_quote_snapshots WHERE lead_id = ? ORDER BY created_at DESC LIMIT 1`,
+        [leadId],
+      );
+      snap = (leadSnaps as { leadId?: unknown; payloadJson?: unknown }[])[0];
+    }
+    if (!snap) {
+      await pool.query(
+        `INSERT INTO lead_prolance_quote_snapshots (lead_id, quote_id, payload_json, created_at)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE lead_id = VALUES(lead_id)`,
+        [leadId, quoteId, JSON.stringify({}), new Date()],
+      );
+      snap = { leadId, payloadJson: {} };
+    }
     const snapLead = Number(snap.leadId);
     if (Number.isFinite(snapLead) && snapLead > 0 && snapLead !== leadId) {
       return res.status(404).json({ message: "Quote snapshot not found for this lead" });
@@ -18144,13 +18243,12 @@ app.patch("/api/leads/:id/quotes/:quoteId/customer-share", async (req: Request, 
       leadVersions.find(
         (row) => Number(row.quoteId) === selectedQuoteId && Number(row.versionNumber) === versionNumber,
       ) ||
+      leadVersions.find(
+        (row) => Number(row.quoteId) === selectedQuoteId,
+      ) ||
       leadVersions.find((row) => Number(row.versionNumber) === versionNumber) ||
       leadVersions.find((_, idx) => idx + 1 === versionNumber) ||
-      null;
-
-    if (!matched && leadVersions.length > 0) {
-      return res.status(404).json({ message: "That quote version was not found" });
-    }
+      (leadVersions.length > 0 ? leadVersions[leadVersions.length - 1] : null);
 
     const persistQuoteId = matched?.quoteId && matched.quoteId > 0 ? matched.quoteId : quoteId;
     const persistVersion =
@@ -18207,9 +18305,12 @@ app.patch("/api/leads/:id/quotes/:quoteId/customer-share", async (req: Request, 
     });
   } catch (err) {
     console.error("customer-share quote version error", err);
-    return res.status(500).json({ message: "Failed to share quote version with customer" });
+    res.status(500).json({ message: "Failed to share quote version with customer" });
   }
-});
+};
+
+app.patch("/api/leads/:id/quotes/:quoteId/customer-share", handleCustomerShareQuoteVersion);
+app.post("/api/leads/:id/quotes/:quoteId/customer-share", handleCustomerShareQuoteVersion);
 
 // Freeze quote JSON at generation time so older /quote/:id links stay correct after Prolance revisions.
 app.post("/api/leads/:id/prolance-quote-snapshots", async (req: Request, res: Response) => {
@@ -18987,7 +19088,7 @@ app.get("/api/appointment/available-designers", async (req: Request, res: Respon
         Number.isFinite(durationRaw) && durationRaw > 0
           ? Math.round(durationRaw)
           : HUB_DEFAULT_MEETING_DURATION_MIN;
-      endMin = startMin + durationMin;
+      endMin = startMin + hubMeetingDurationForStart(startMin, durationMin);
       endTimeOut = formatHubLocalDateTime(dateIso, endMin);
     }
 
@@ -18995,7 +19096,7 @@ app.get("/api/appointment/available-designers", async (req: Request, res: Respon
       return res.status(400).json({ message: "endTime must be after startTime" });
     }
 
-    // Hub window: 11:00–19:00
+    // Hub window: 10:00–20:00
     if (startMin < HUB_DAY_START_MIN || endMin > HUB_DAY_END_MIN) {
       return res.status(400).json({
         message: `Meeting must fall within Hub window ${HUB_DAY_START_TIME}–${HUB_DAY_END_TIME}`,
@@ -19292,12 +19393,15 @@ app.get("/api/appointment/me/available-slots", async (req: Request, res: Respons
     }
 
     const freeMins = listHubFreeStartMinutes(busy, durationMin);
-    const availableSlots = freeMins.map((startMin) => ({
-      startTime: formatHubLocalDateTime(dateIso, startMin),
-      endTime: formatHubLocalDateTime(dateIso, startMin + durationMin),
-      startLabel: minutesToHubLabel(startMin),
-      endLabel: minutesToHubLabel(startMin + durationMin),
-    }));
+    const availableSlots = freeMins.map((startMin) => {
+      const dur = hubMeetingDurationForStart(startMin, durationMin);
+      return {
+        startTime: formatHubLocalDateTime(dateIso, startMin),
+        endTime: formatHubLocalDateTime(dateIso, startMin + dur),
+        startLabel: minutesToHubLabel(startMin),
+        endLabel: minutesToHubLabel(startMin + dur),
+      };
+    });
 
     return res.json({
       date: dateIso,

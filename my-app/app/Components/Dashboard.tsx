@@ -1234,14 +1234,7 @@ export default function Dashboard() {
                                                     </div>
                                                 </td>
                                                 <td className="py-3 px-2 text-xs text-gray-700" title={timeSlotLabel}>
-                                                    <div className="flex flex-col items-start gap-1">
-                                                        <span className="whitespace-nowrap">{timeSlotLabel}</span>
-                                                        {canShowStartMeetingButton(row) ? (
-                                                            <StartMeetingButton
-                                                                onClick={() => openMeetingWizForLead(row)}
-                                                            />
-                                                        ) : null}
-                                                    </div>
+                                                    <span className="whitespace-nowrap">{timeSlotLabel}</span>
                                                 </td>
                                                 {canImportLeads && (
                                                     <td className="py-3 px-2 min-w-[160px]">

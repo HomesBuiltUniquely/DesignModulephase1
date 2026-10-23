@@ -119,7 +119,6 @@ export function QuoteDiscountDetails({
   const [dirty, setDirty] = useState(false);
   const [woodworkPopup, setWoodworkPopup] = useState<number | null>(null);
   const [additionalPopup, setAdditionalPopup] = useState<number | null>(null);
-  const [alreadyExistsPopup, setAlreadyExistsPopup] = useState(false);
 
   useEffect(() => {
     if (!dirty) {
@@ -184,7 +183,7 @@ export function QuoteDiscountDetails({
     setDirty(true);
   };
 
-  const persistDiscount = async (_fromButton: boolean) => {
+  const handleSave = async () => {
     if (!onSave) return;
     const amount = EDITABLE_KEYS.reduce((sum, key) => {
       const row = rows.find((r) => r.key === key);
@@ -204,58 +203,15 @@ export function QuoteDiscountDetails({
       });
       setDirty(false);
     } catch {
-      /* keep dirty so autosave can retry */
+      /* keep dirty so the user can press Save again */
     }
   };
-
-  const handleSave = async () => persistDiscount(true);
-
-  useEffect(() => {
-    if (!editable || !onSave || !dirty) return;
-    const timer = window.setTimeout(() => {
-      void persistDiscount(false);
-    }, 800);
-    return () => window.clearTimeout(timer);
-    // Persist so the customer share link matches the internal preview.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- save from latest draft after typing pauses
-  }, [dirty, draftPct, draftAdditional, editable]);
 
   const showAdditionalReadOnly =
     !editable && (savedAdditionalRow?.discountAmount ?? additionalDiscount ?? 0) > 0;
 
   return (
     <>
-      {/* Already created popup */}
-      {alreadyExistsPopup ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="w-full max-w-sm rounded-2xl border border-[#ece6df] bg-white p-6 shadow-xl">
-            <div className="mb-3 flex items-center gap-2">
-              <span
-                className="inline-flex h-9 w-9 items-center justify-center rounded-full text-white"
-                style={{ backgroundColor: QUOTE.red }}
-              >
-                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-                </svg>
-              </span>
-              <h3 className="font-bold text-[#2a1d14]">Quote Version</h3>
-            </div>
-            <p className="text-sm text-[#5c5650]">
-              This version is already created.
-            </p>
-            <div className="mt-4 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setAlreadyExistsPopup(false)}
-                className="rounded-lg px-4 py-2 text-sm font-semibold text-white"
-                style={{ backgroundColor: QUOTE.brown }}
-              >
-                OK
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
       {/* Woodwork over cap popup */}
       {capProfile !== 'unrestricted' && woodworkPopup !== null ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -458,7 +414,7 @@ export function QuoteDiscountDetails({
             {saveError ? <p className="text-xs text-[#c1272d]">{saveError}</p> : null}
             <button
               type="button"
-              disabled={saving}
+              disabled={saving || !dirty}
               onClick={() => void handleSave()}
               className="rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
               style={{ backgroundColor: QUOTE.brown }}

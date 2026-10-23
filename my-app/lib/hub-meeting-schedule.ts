@@ -1,7 +1,20 @@
-export const HUB_MEETING_TIMELINE_START_MIN = 11 * 60;
-export const HUB_MEETING_TIMELINE_END_MIN = 19 * 60;
+export const HUB_MEETING_TIMELINE_START_MIN = 10 * 60;
+export const HUB_MEETING_TIMELINE_END_MIN = 20 * 60;
+export const HUB_MEETING_STANDARD_GRID_START_MIN = 11 * 60;
 export const HUB_MEETING_DURATION_MIN = 90;
+export const HUB_MEETING_EARLY_SLOT_DURATION_MIN = 60;
 export const HUB_MEETING_SLOT_STEP_MIN = 30;
+
+/** 10:00–11:00 is a 60-minute slot; all other client starts are 90 minutes. */
+export function hubMeetingDurationForStart(
+  startMin: number,
+  durationMin = HUB_MEETING_DURATION_MIN,
+): number {
+  if (startMin === HUB_MEETING_TIMELINE_START_MIN && durationMin === HUB_MEETING_DURATION_MIN) {
+    return HUB_MEETING_EARLY_SLOT_DURATION_MIN;
+  }
+  return durationMin;
+}
 
 export type BookedTimelineBlock = {
   id: string;
@@ -31,6 +44,17 @@ export function formatHubTimeRange(startMin: number, endMin: number): string {
 
 export function listHubMeetingStartOptions(durationMin = HUB_MEETING_DURATION_MIN): number[] {
   const options: number[] = [];
+  if (durationMin === HUB_MEETING_DURATION_MIN) {
+    options.push(HUB_MEETING_TIMELINE_START_MIN);
+    for (
+      let m = HUB_MEETING_STANDARD_GRID_START_MIN;
+      m + hubMeetingDurationForStart(m, durationMin) <= HUB_MEETING_TIMELINE_END_MIN;
+      m += HUB_MEETING_SLOT_STEP_MIN
+    ) {
+      options.push(m);
+    }
+    return options;
+  }
   for (
     let m = HUB_MEETING_TIMELINE_START_MIN;
     m + durationMin <= HUB_MEETING_TIMELINE_END_MIN;
@@ -69,7 +93,7 @@ export function isHubMeetingStartAvailable(
   durationMin = HUB_MEETING_DURATION_MIN,
   dateIso?: string,
 ): boolean {
-  const endMin = startMin + durationMin;
+  const endMin = startMin + hubMeetingDurationForStart(startMin, durationMin);
   if (endMin > HUB_MEETING_TIMELINE_END_MIN) return false;
   if (dateIso && isHubMeetingStartInPast(dateIso, startMin)) return false;
   return !booked.some((b) => rangesOverlap(startMin, endMin, b.startMin, b.endMin));
@@ -187,7 +211,9 @@ export function findEarliestAvailableStart(
   dateIso?: string,
 ): number | null {
   for (const start of listHubMeetingStartOptions(durationMin)) {
-    if (isHubMeetingStartAvailable(start, booked, durationMin, dateIso)) return start;
+    if (isHubMeetingStartAvailable(start, booked, hubMeetingDurationForStart(start, durationMin), dateIso)) {
+      return start;
+    }
   }
   return null;
 }

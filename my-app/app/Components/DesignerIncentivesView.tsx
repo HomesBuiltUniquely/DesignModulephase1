@@ -20,6 +20,7 @@ import {
   type DealLedgerRow,
   type DesignerIncentivesData,
   type IncentiveDealInput,
+  type IncentiveMeetingRow,
   type IncentiveMember,
   type IncentiveWeightStageId,
   type TeamIncentiveRow,
@@ -272,6 +273,30 @@ function exportTeamCsv(team: TeamIncentivesSummary) {
   URL.revokeObjectURL(url);
 }
 
+function formatIstDate(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const day = iso.length <= 10 ? `${iso}T12:00:00+05:30` : iso;
+  const d = new Date(day);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
+function formatIstTime(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleTimeString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
 function IndividualIncentivesPanel({
   data,
   subtitle,
@@ -282,6 +307,7 @@ function IndividualIncentivesPanel({
   selectedDate: string | null;
 }) {
   const [selectedPart, setSelectedPart] = useState<WeightedPartFilter | null>(null);
+  const [meetingsOpen, setMeetingsOpen] = useState(false);
   const visibleDeals = filterDealsByDate(data.deals, selectedDate);
   const dayActivity = selectedDate ? buildDayActivitySummary(data.deals, selectedDate) : null;
   const totalClosures = data.sameDayClosures + data.fortyEightHourClosures;
@@ -290,6 +316,7 @@ function IndividualIncentivesPanel({
 
   useEffect(() => {
     setSelectedPart(null);
+    setMeetingsOpen(false);
   }, [data.designerId, data.cycle.cycleIndex, selectedDate]);
 
   const partLeads = selectedPart ? dealsForWeightedPart(visibleDeals, selectedPart) : [];
@@ -359,7 +386,12 @@ function IndividualIncentivesPanel({
             : 'border-amber-200 bg-amber-50/70'
         }`}
       >
-        <div className="flex flex-wrap items-center justify-between gap-3">
+        <button
+          type="button"
+          onClick={() => setMeetingsOpen((open) => !open)}
+          className="flex w-full flex-wrap items-center justify-between gap-3 text-left"
+          aria-expanded={meetingsOpen}
+        >
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
               Fortnight meetings
@@ -375,6 +407,9 @@ function IndividualIncentivesPanel({
               {data.meetingsEligible
                 ? 'Meeting gate cleared — incentives are unlocked for this fortnight.'
                 : `Complete at least ${data.meetingsRequired} meetings in this fortnight to unlock incentives.`}
+              <span className="ml-1 font-medium text-[#32261C]">
+                {meetingsOpen ? 'Hide meeting list' : 'Click to view meeting details'}
+              </span>
             </p>
           </div>
           <span
@@ -386,7 +421,7 @@ function IndividualIncentivesPanel({
           >
             {data.meetingsEligible ? 'Eligible' : 'Locked'}
           </span>
-        </div>
+        </button>
         <div className="mt-3 h-2 rounded-full bg-white/80">
           <div
             className={`h-2 rounded-full ${data.meetingsEligible ? 'bg-emerald-500' : 'bg-amber-400'}`}
@@ -398,6 +433,47 @@ function IndividualIncentivesPanel({
             }}
           />
         </div>
+        {meetingsOpen ? (
+          <div className="mt-4 overflow-hidden rounded-lg border border-[#ece6df] bg-white">
+            {data.meetings.length === 0 ? (
+              <p className="px-4 py-3 text-sm text-gray-600">
+                No completed meetings recorded in this fortnight yet.
+              </p>
+            ) : (
+              <table className="w-full text-left text-sm">
+                <thead className="bg-[#faf8f5] text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                  <tr>
+                    <th className="px-3 py-2">Client</th>
+                    <th className="px-3 py-2">Date</th>
+                    <th className="px-3 py-2">Time</th>
+                    <th className="px-3 py-2">Duration</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.meetings.map((m: IncentiveMeetingRow, idx: number) => (
+                    <tr key={`${m.leadId}-${m.completedAt}-${idx}`} className="border-t border-[#ece6df]">
+                      <td className="px-3 py-2 font-medium text-gray-900">
+                        {m.customerName}
+                        {m.projectName && m.projectName !== m.customerName ? (
+                          <span className="mt-0.5 block text-xs font-normal text-gray-500">
+                            {m.projectName}
+                          </span>
+                        ) : null}
+                      </td>
+                      <td className="px-3 py-2 text-gray-700">
+                        {formatIstDate(m.meetingDate || m.completedAt)}
+                      </td>
+                      <td className="px-3 py-2 text-gray-700">
+                        {formatIstTime(m.startedAt || m.completedAt)}
+                      </td>
+                      <td className="px-3 py-2 text-gray-700">{m.durationFormatted || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        ) : null}
       </section>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6">
@@ -1124,13 +1200,16 @@ export default function DesignerIncentivesView() {
       const body = await res.json();
       const deals = (Array.isArray(body?.deals) ? body.deals : []) as IncentiveDealInput[];
       const meetingsCompleted = Number(body?.meetingsCompleted) || 0;
+      const meetings = (Array.isArray(body?.meetings) ? body.meetings : []) as IncentiveMeetingRow[];
       const resolvedMember: IncentiveMember = {
         id: Number(body?.designer?.id) || member.id,
         name: String(body?.designer?.name || member.name),
         role: String(body?.designer?.role || member.role),
         subRole: body?.designer?.subRole ?? body?.designer?.sub_role ?? member.subRole ?? null,
       };
-      return buildIncentivesFromDealInputs(resolvedMember, cycle, deals, meetingsCompleted);
+      return buildIncentivesFromDealInputs(resolvedMember, cycle, deals, meetingsCompleted, {
+        meetings,
+      });
     },
     [apiBase, cycle, cycleIndex, sessionId],
   );
