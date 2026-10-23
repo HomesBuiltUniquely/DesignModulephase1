@@ -93,6 +93,8 @@ function buildAllowedOrigins(): string[] {
     "http://127.0.0.1:3000",
     "http://localhost:3002",
     "http://127.0.0.1:3002",
+    "https://hallway-liart.vercel.app",
+    "http://hallway-liart.vercel.app",
   ];
   const set = new Set<string>([...defaults, ...fromEnv]);
   const fe = (process.env.FRONTEND_BASE_URL || "").replace(/\/$/, "");

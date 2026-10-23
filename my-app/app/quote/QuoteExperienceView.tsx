@@ -73,11 +73,14 @@ type Props = {
     payload: QuoteCategoryDiscountSavePayload,
   ) => void | Promise<QuoteDiscountSaveResult | void> | QuoteDiscountSaveResult;
   sharedVersionNumber?: number | null;
+  crmSharedVersionNumber?: number | null;
+  viewingVersionNumber?: number | null;
   shareVersionSaving?: boolean;
   shareVersionError?: string | null;
-  shareAudience?: 'customer' | 'crm';
   hideCustomerLink?: boolean;
+  crmLockedView?: boolean;
   onShareVersionWithCustomer?: (versionNumber: number, quoteId: number) => void;
+  onSelectVersionForCrm?: (versionNumber: number, quoteId: number) => void;
 };
 
 function LinkIcon() {
@@ -160,13 +163,15 @@ export function QuoteExperienceView(props: Props) {
     additionalDiscount = null,
     onSaveDiscount,
     sharedVersionNumber = null,
+    crmSharedVersionNumber = null,
+    viewingVersionNumber = null,
     shareVersionSaving = false,
     shareVersionError = null,
-    shareAudience = 'customer',
     hideCustomerLink = false,
+    crmLockedView = false,
     onShareVersionWithCustomer,
+    onSelectVersionForCrm,
   } = props;
-  const shareForCrm = shareAudience === 'crm';
 
   const savedDiscount = Math.max(0, quote.discount ?? 0);
   const [previewDiscount, setPreviewDiscount] = useState<number | null>(null);
@@ -635,56 +640,76 @@ export function QuoteExperienceView(props: Props) {
               <h2 className="quote-heading text-lg font-bold text-[#2a1d14]">Revision History</h2>
             </div>
             <p className="mb-4 text-xs" style={{ color: QUOTE.muted }}>
-              {shareForCrm
-                ? 'Choose one version to send to CRM. CRM will only see this version — other revisions stay hidden.'
-                : 'Choose one version to share on the customer link. Customers will not see the other revisions.'}
+              {crmLockedView
+                ? 'CRM can only see the version the designer selected.'
+                : 'Click a version to preview it. Share with customer and Select for CRM each lock that version for that audience — other revisions stay hidden from them.'}
             </p>
             <div className="grid gap-4 sm:grid-cols-2">
               {quoteVersions.map((v, idx) => {
                 const versionNumber = v.versionNumber && v.versionNumber > 0 ? v.versionNumber : idx + 1;
-                const isShared =
+                const isSharedWithCustomer =
                   sharedVersionNumber != null && Number(sharedVersionNumber) === Number(versionNumber);
-                const isCurrent = (() => {
-                  const matchingIndices = quoteVersions
-                    .map((ver, i) => (String(ver.quoteId) === String(versionFetchId) ? i : -1))
-                    .filter((i) => i >= 0);
-                  if (matchingIndices.length > 1) {
-                    return idx === matchingIndices[matchingIndices.length - 1];
-                  }
-                  if (matchingIndices.length === 1) {
-                    return idx === matchingIndices[0];
-                  }
-                  return idx === quoteVersions.length - 1;
-                })();
-                const href = `/quote/${encodeURIComponent(String(v.quoteId))}${internalVersionSuffix}`;
+                const isSelectedForCrm =
+                  crmSharedVersionNumber != null && Number(crmSharedVersionNumber) === Number(versionNumber);
+                const isViewing =
+                  viewingVersionNumber != null
+                    ? Number(viewingVersionNumber) === Number(versionNumber)
+                    : (() => {
+                        const matchingIndices = quoteVersions
+                          .map((ver, i) => (String(ver.quoteId) === String(versionFetchId) ? i : -1))
+                          .filter((i) => i >= 0);
+                        if (matchingIndices.length > 1) {
+                          return idx === matchingIndices[matchingIndices.length - 1];
+                        }
+                        if (matchingIndices.length === 1) {
+                          return idx === matchingIndices[0];
+                        }
+                        return idx === quoteVersions.length - 1;
+                      })();
+                const hrefQs = new URLSearchParams(
+                  internalVersionSuffix.startsWith('?') ? internalVersionSuffix.slice(1) : internalVersionSuffix,
+                );
+                hrefQs.set('version', String(versionNumber));
+                const href = `/quote/${encodeURIComponent(String(v.quoteId))}?${hrefQs.toString()}`;
+                const isShared = isSharedWithCustomer || isSelectedForCrm;
                 return (
                   <div
                     key={`qv-${v.quoteId}-${idx}`}
                     className={`rounded-xl border p-5 ${
-                      isShared
-                        ? 'border-[#c9a84c] bg-[#fffbeb]'
-                        : isCurrent
-                          ? 'border-[#f5c6cb] bg-[#fff5f5]'
+                      isViewing
+                        ? 'border-[#f5c6cb] bg-[#fff5f5]'
+                        : isShared
+                          ? 'border-[#c9a84c] bg-[#fffbeb]'
                           : 'border-[#ece6df] bg-white'
                     }`}
                     style={
-                      isShared
-                        ? { borderLeftWidth: 4, borderLeftColor: QUOTE.gold }
-                        : isCurrent
-                          ? { borderLeftWidth: 4, borderLeftColor: QUOTE.red }
+                      isViewing
+                        ? { borderLeftWidth: 4, borderLeftColor: QUOTE.red }
+                        : isShared
+                          ? { borderLeftWidth: 4, borderLeftColor: QUOTE.gold }
                           : undefined
                     }
                   >
-                    <a href={href} className="block transition-opacity hover:opacity-90">
+                    <a
+                      href={crmLockedView ? undefined : href}
+                      className="block transition-opacity hover:opacity-90"
+                      onClick={crmLockedView ? (e) => e.preventDefault() : undefined}
+                    >
                       <p className="font-bold text-[#2a1d14]">
                         Version {versionNumber}
-                        {isShared ? (
-                          <span className="ml-2 text-sm font-normal" style={{ color: QUOTE.gold }}>
-                            {shareForCrm ? '(Selected for CRM)' : '(Shared with customer)'}
-                          </span>
-                        ) : isCurrent ? (
+                        {isViewing ? (
                           <span className="ml-2 text-sm font-normal" style={{ color: QUOTE.red }}>
-                            (Current)
+                            (Viewing)
+                          </span>
+                        ) : null}
+                        {isSharedWithCustomer ? (
+                          <span className="ml-2 text-sm font-normal" style={{ color: QUOTE.gold }}>
+                            (Shared with customer)
+                          </span>
+                        ) : null}
+                        {isSelectedForCrm ? (
+                          <span className="ml-2 text-sm font-normal" style={{ color: QUOTE.gold }}>
+                            (Selected for CRM)
                           </span>
                         ) : null}
                       </p>
@@ -718,30 +743,47 @@ export function QuoteExperienceView(props: Props) {
                         </p>
                       ) : null}
                     </a>
-                    {onShareVersionWithCustomer ? (
-                      <button
-                        type="button"
-                        disabled={shareVersionSaving || isShared}
-                        onClick={() => onShareVersionWithCustomer(versionNumber, v.quoteId)}
-                        className="mt-4 w-full rounded-md border px-3 py-2 text-xs font-semibold disabled:opacity-60"
-                        style={
-                          isShared
-                            ? { borderColor: QUOTE.gold, color: QUOTE.gold, backgroundColor: '#fffbeb' }
-                            : { borderColor: QUOTE.brown, color: QUOTE.brown, backgroundColor: '#fff' }
-                        }
-                      >
-                        {isShared
-                          ? shareForCrm
-                            ? 'Selected for CRM'
-                            : 'Shared on customer link'
-                          : shareVersionSaving
-                            ? shareForCrm
-                              ? 'Selecting…'
-                              : 'Sharing…'
-                            : shareForCrm
-                              ? 'Select for CRM'
-                              : 'Share this version with customer'}
-                      </button>
+                    {onShareVersionWithCustomer || onSelectVersionForCrm ? (
+                      <div className="mt-4 grid gap-2">
+                        {onShareVersionWithCustomer ? (
+                          <button
+                            type="button"
+                            disabled={shareVersionSaving || isSharedWithCustomer}
+                            onClick={() => onShareVersionWithCustomer(versionNumber, v.quoteId)}
+                            className="w-full rounded-md border px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                            style={
+                              isSharedWithCustomer
+                                ? { borderColor: QUOTE.gold, color: QUOTE.gold, backgroundColor: '#fffbeb' }
+                                : { borderColor: QUOTE.brown, color: QUOTE.brown, backgroundColor: '#fff' }
+                            }
+                          >
+                            {isSharedWithCustomer
+                              ? 'Shared with customer'
+                              : shareVersionSaving
+                                ? 'Sharing…'
+                                : 'Share this to customer'}
+                          </button>
+                        ) : null}
+                        {onSelectVersionForCrm ? (
+                          <button
+                            type="button"
+                            disabled={shareVersionSaving || isSelectedForCrm}
+                            onClick={() => onSelectVersionForCrm(versionNumber, v.quoteId)}
+                            className="w-full rounded-md border px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                            style={
+                              isSelectedForCrm
+                                ? { borderColor: QUOTE.gold, color: QUOTE.gold, backgroundColor: '#fffbeb' }
+                                : { borderColor: QUOTE.brown, color: QUOTE.brown, backgroundColor: '#fff' }
+                            }
+                          >
+                            {isSelectedForCrm
+                              ? 'Selected for CRM'
+                              : shareVersionSaving
+                                ? 'Selecting…'
+                                : 'Share this to CRM'}
+                          </button>
+                        ) : null}
+                      </div>
                     ) : null}
                   </div>
                 );

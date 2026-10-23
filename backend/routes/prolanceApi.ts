@@ -2277,7 +2277,7 @@ export function registerProlanceRoutes(
 
   const buildCustomerQuotePayload = async (
     quoteId: number,
-    opts?: { applySharedVersion?: boolean },
+    opts?: { applySharedVersion?: boolean; forceSharedVersion?: number },
   ): Promise<Record<string, unknown> | null> => {
     const [rows] = await pool.query(
       "SELECT payload_json FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1",
@@ -2308,8 +2308,12 @@ export function registerProlanceRoutes(
       const internalView =
         String(req.query.internal || "").trim() === "1" ||
         String(req.query.audience || "").trim().toLowerCase() === "internal";
+      const viewVersionRaw = Number(req.query.version);
+      const viewVersion =
+        internalView && Number.isFinite(viewVersionRaw) && viewVersionRaw > 0 ? viewVersionRaw : undefined;
       const payload = await buildCustomerQuotePayload(quoteId, {
         applySharedVersion: !internalView,
+        forceSharedVersion: viewVersion,
       });
       if (!payload) {
         res.status(404).json({ message: "Quote snapshot not found" });
@@ -2996,8 +3000,14 @@ function formatProlancePName(
         } catch (snapErr) {
           console.error("quote snapshot read error", snapErr);
         }
+        const viewVersionRaw = Number(req.query.version);
+        const viewVersion =
+          internalView && !crmAudience && Number.isFinite(viewVersionRaw) && viewVersionRaw > 0
+            ? viewVersionRaw
+            : undefined;
         hubMetaForQuote = await loadHubDiscountMetaForQuote(pool, resolvedQid, {
           applySharedVersion: !internalView && !crmAudience,
+          forceSharedVersion: viewVersion,
         });
         if (!payloadHasHubDiscount(hubMetaForQuote) && snapshotPayload) {
           hubMetaForQuote = extractHubDiscountMeta(snapshotPayload);
@@ -3228,8 +3238,12 @@ function formatProlancePName(
       const internalView =
         String(req.query.internal || "").trim() === "1" ||
         String(req.query.audience || "").trim().toLowerCase() === "internal";
+      const viewVersionRaw = Number(req.query.version);
+      const viewVersion =
+        internalView && Number.isFinite(viewVersionRaw) && viewVersionRaw > 0 ? viewVersionRaw : undefined;
       const discount = await loadHubDiscountMetaForQuote(pool, quoteId, {
         applySharedVersion: !internalView,
+        forceSharedVersion: viewVersion,
       });
       res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
       res.json({ ok: true, discount });
