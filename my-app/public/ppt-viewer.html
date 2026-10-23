@@ -191,9 +191,65 @@
     /* Positioned buttons */
     #dlBtn { position: absolute; left: 16px; }
     #fsBtn { position: absolute; right: 16px; }
+
+    /* Shown only while this viewer is browser-fullscreen.
+       The parent modal header is outside the iframe, so Close and
+       Minimize have to live inside the fullscreen document. */
+    #fsChrome {
+      display: none;
+      position: fixed;
+      top: 14px;
+      right: 14px;
+      z-index: 2147483000;
+      align-items: center;
+      gap: 8px;
+    }
+    .fs-action {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 36px;
+      padding: 0 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(17, 24, 39, 0.12);
+      background: #ffffff;
+      color: #111827;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 4px 18px rgba(0, 0, 0, 0.22);
+    }
+    .fs-action svg { display: block; flex-shrink: 0; }
+    .fs-action.min:hover { background: #f3f4f6; }
+    .fs-action.close:hover {
+      background: #EF0101;
+      border-color: #EF0101;
+      color: #ffffff;
+    }
   </style>
 </head>
 <body>
+
+<!-- Fullscreen-only controls. Parent modal chrome is not visible in browser fullscreen. -->
+<div id="fsChrome">
+  <button type="button" class="fs-action min" title="Minimize" onclick="minimizeViewer()">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8 3v3a2 2 0 01-2 2H3"/>
+      <path d="M21 8h-3a2 2 0 01-2-2V3"/>
+      <path d="M3 16h3a2 2 0 012 2v3"/>
+      <path d="M16 21v-3a2 2 0 012-2h3"/>
+    </svg>
+    Minimize
+  </button>
+  <button type="button" class="fs-action close" title="Close" onclick="closeViewer()">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18"/>
+      <line x1="6" y1="6" x2="18" y2="18"/>
+    </svg>
+    Close
+  </button>
+</div>
 
 <!-- Loading -->
 <div id="loading">
@@ -287,6 +343,18 @@
     document.getElementById('myNext').disabled = (current >= totalSlides);
   }
 
+  function tellParent(type) {
+    if (!window.parent || window.parent === window) return;
+    window.parent.postMessage({ type: type }, window.location.origin);
+  }
+
+  function setFullscreenChrome(fs) {
+    document.getElementById('fsChrome').style.display = fs ? 'flex' : 'none';
+    document.getElementById('fsExpand').style.display   = fs ? 'none' : '';
+    document.getElementById('fsCompress').style.display = fs ? '' : 'none';
+    document.getElementById('fsBtn').title = fs ? 'Exit fullscreen' : 'Fullscreen';
+  }
+
   /* ── Fullscreen toggle ── */
   function toggleFs() {
     if (!document.fullscreenElement) {
@@ -295,11 +363,25 @@
       document.exitFullscreen().catch(function(){});
     }
   }
+
+  /* Restore the windowed presentation modal. */
+  function minimizeViewer() {
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(function(){});
+    }
+    tellParent('hub-profile-minimize');
+  }
+
+  /* Leave fullscreen and close the presentation. */
+  function closeViewer() {
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(function(){});
+    }
+    tellParent('hub-profile-close');
+  }
+
   document.addEventListener('fullscreenchange', function() {
-    var fs = !!document.fullscreenElement;
-    document.getElementById('fsExpand').style.display   = fs ? 'none' : '';
-    document.getElementById('fsCompress').style.display = fs ? '' : 'none';
-    document.getElementById('fsBtn').title = fs ? 'Exit fullscreen' : 'Fullscreen';
+    setFullscreenChrome(!!document.fullscreenElement);
   });
 
   /* ── Error / msg helpers ── */

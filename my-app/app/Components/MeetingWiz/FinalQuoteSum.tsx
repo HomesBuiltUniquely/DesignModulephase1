@@ -47,25 +47,6 @@ function RoomIcon() {
   );
 }
 
-function formatHandover(lead: LeadshipTypes | null | undefined): { dateLabel: string; subLabel: string } {
-  const possession = lead?.intakePossessionDate?.trim();
-  const timeline = lead?.configScopeSummary?.expectedTimeline?.trim();
-  if (possession) {
-    const d = new Date(possession);
-    if (!Number.isNaN(d.getTime())) {
-      return {
-        dateLabel: d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }),
-        subLabel: timeline ? timeline.toUpperCase() : "POSSESSION TARGET",
-      };
-    }
-    return { dateLabel: possession, subLabel: timeline ? timeline.toUpperCase() : "POSSESSION TARGET" };
-  }
-  if (timeline) {
-    return { dateLabel: timeline, subLabel: "EXPECTED TIMELINE" };
-  }
-  return { dateLabel: "—", subLabel: "TO BE CONFIRMED" };
-}
-
 export default function FinalQuoteSum({
   onPrev,
   onNext: _onNext,
@@ -77,7 +58,6 @@ export default function FinalQuoteSum({
   const API = getApiBase();
   const timer = useMeetingWizTimer();
   const info = getMeetingWizLeadDisplay(lead);
-  const handover = formatHandover(lead);
 
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -511,25 +491,25 @@ export default function FinalQuoteSum({
               </div>
               <div
                 style={{
-                  fontSize: "17px",
+                  fontSize: "15px",
                   fontWeight: 800,
                   color: "var(--brand-dark)",
                   textAlign: "center",
-                  lineHeight: 1.2,
+                  lineHeight: 1.25,
                 }}
               >
-                {handover.dateLabel}
+                45 DAYS FROM DESIGN SIGN-OFF
               </div>
               <div
                 style={{
-                  fontSize: "10px",
-                  color: "color-mix(in srgb, var(--foreground) 50%, transparent)",
+                  fontSize: "11px",
+                  color: "color-mix(in srgb, var(--foreground) 55%, transparent)",
                   fontWeight: 500,
                   textAlign: "center",
-                  letterSpacing: "0.04em",
+                  letterSpacing: "0.01em",
                 }}
               >
-                {handover.subLabel}
+                Terms & Conditions apply
               </div>
             </div>
 

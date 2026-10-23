@@ -23,8 +23,17 @@ function CompanyProfileModal({ onClose }: { onClose: () => void }) {
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
+    const handleViewerMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type === "hub-profile-close") onClose();
+      if (event.data?.type === "hub-profile-minimize") setIsFullscreen(false);
+    };
     document.addEventListener("keydown", handleKey);
-    return () => document.removeEventListener("keydown", handleKey);
+    window.addEventListener("message", handleViewerMessage);
+    return () => {
+      document.removeEventListener("keydown", handleKey);
+      window.removeEventListener("message", handleViewerMessage);
+    };
   }, [onClose]);
 
   const toggleFullscreen = () => setIsFullscreen((f) => !f);
@@ -46,7 +55,7 @@ function CompanyProfileModal({ onClose }: { onClose: () => void }) {
         }}
       >
         {/* Modal Header */}
-        <div className="flex shrink-0 items-center justify-between border-b border-[var(--border-color)] bg-[var(--brand-surface)] px-6 py-3">
+        <div className="relative z-20 flex shrink-0 items-center justify-between border-b border-[var(--border-color)] bg-[var(--brand-surface)] px-6 py-3">
           <div className="flex items-center gap-3">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--brand-secondary)]">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--brand-primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -80,8 +89,8 @@ function CompanyProfileModal({ onClose }: { onClose: () => void }) {
             {/* Fullscreen toggle */}
             <button
               onClick={toggleFullscreen}
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--foreground)]/70 transition hover:bg-[var(--hover-bg)] hover:text-[var(--brand-dark)]"
-              title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+              className={`flex items-center justify-center gap-1.5 rounded-lg text-[var(--foreground)]/70 transition hover:bg-[var(--hover-bg)] hover:text-[var(--brand-dark)] ${isFullscreen ? "h-8 px-2.5" : "h-8 w-8"}`}
+              title={isFullscreen ? "Minimize" : "Fullscreen"}
             >
               {isFullscreen ? (
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -92,18 +101,20 @@ function CompanyProfileModal({ onClose }: { onClose: () => void }) {
                   <path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3" />
                 </svg>
               )}
+              {isFullscreen ? <span className="text-xs font-semibold">Minimize</span> : null}
             </button>
 
             {/* Close */}
             <button
               onClick={onClose}
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--foreground)]/70 transition hover:bg-[var(--brand-primary)]/10 hover:text-[var(--brand-primary)]"
+              className={`flex items-center justify-center gap-1.5 rounded-lg text-[var(--foreground)]/70 transition hover:bg-[var(--brand-primary)]/10 hover:text-[var(--brand-primary)] ${isFullscreen ? "h-8 px-2.5" : "h-8 w-8"}`}
               title="Close"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="18" y1="6" x2="6" y2="18" />
                 <line x1="6" y1="6" x2="18" y2="18" />
               </svg>
+              {isFullscreen ? <span className="text-xs font-semibold">Close</span> : null}
             </button>
           </div>
         </div>
