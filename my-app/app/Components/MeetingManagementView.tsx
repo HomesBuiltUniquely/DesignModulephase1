@@ -57,7 +57,7 @@ type ClientMeetingType = 'pre_10' | 'dqc1_first_cut' | 'dqc2_material_selection'
 type TypeFilter = 'all' | ClientMeetingType;
 type Venue = 'Showroom visit' | 'Virtual meeting' | 'Site visit';
 type ViewStatus = 'scheduled' | 'in_progress' | 'completed' | 'cancelled' | 'abandoned';
-type StatusFilter = 'all' | 'scheduled' | 'in_progress' | 'completed' | 'cancelled';
+type StatusKey = 'scheduled' | 'in_progress' | 'completed' | 'cancelled';
 type DatePreset = 'all' | 'month' | '3m' | '6m' | '1y' | 'prev' | 'custom';
 type PersonalKindFilter = 'all' | 'block' | 'full_day';
 
@@ -199,11 +199,6 @@ function monthBounds(monthKey: string): { from: string; to: string } | null {
     from: `${match[1]}-${match[2]}-01`,
     to: `${match[1]}-${match[2]}-${String(last).padStart(2, '0')}`,
   };
-}
-
-function adjacentMonthKeys(monthKey: string): string[] {
-  const start = `${monthKey}-01`;
-  return [addMonthsIso(start, -1).slice(0, 7), monthKey, addMonthsIso(start, 1).slice(0, 7)];
 }
 
 function dateBounds(
@@ -730,7 +725,7 @@ export default function MeetingManagementView() {
   const [designerFilter, setDesignerFilter] = useState('');
   const [salesFilter, setSalesFilter] = useState('');
   const [branchFilter, setBranchFilter] = useState('');
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [statusFilters, setStatusFilters] = useState<StatusKey[]>([]);
   const [personalKind, setPersonalKind] = useState<PersonalKindFilter>('all');
   const [quoteOnly, setQuoteOnly] = useState(false);
   const [datePreset, setDatePreset] = useState<DatePreset>('month');
@@ -912,12 +907,11 @@ export default function MeetingManagementView() {
       ...Array.from(extras, ([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })),
     ];
   }, [mapped]);
-  const statusOptions = [
-    { value: 'all', label: 'All statuses' },
-    { value: 'scheduled', label: 'Scheduled' },
-    { value: 'in_progress', label: 'In progress' },
-    { value: 'completed', label: 'Successful' },
-    { value: 'cancelled', label: 'Cancelled' },
+  const statusChoices: { id: StatusKey; label: string }[] = [
+    { id: 'scheduled', label: 'Scheduled' },
+    { id: 'in_progress', label: 'In progress' },
+    { id: 'completed', label: 'Successful' },
+    { id: 'cancelled', label: 'Cancelled' },
   ];
 
   useEffect(() => {
@@ -978,38 +972,27 @@ export default function MeetingManagementView() {
 
   const focusMonth = datePreset === 'month'
     ? viewMonth
-    : activeRange && activeRange.from.slice(0, 7) === activeRange.to.slice(0, 7)
+    : activeRange
       ? activeRange.from.slice(0, 7)
       : todayMonth;
 
-  const calendarPool = useMemo(() => {
-    const monthLimited = Boolean(activeRange && activeRange.from.slice(0, 7) === activeRange.to.slice(0, 7));
-    const keys = monthLimited ? new Set(adjacentMonthKeys(activeRange!.from.slice(0, 7))) : null;
-    const inWindow = (meeting: ViewMeeting) => !keys || keys.has(meeting.day.slice(0, 7));
-    const clients = monthLimited
-      ? mapped.filter((meeting) => matchesClientFilters(meeting, null) && inWindow(meeting))
-      : baseFiltered;
-    const personal = mapped.filter((meeting) => matchesPersonalFilters(meeting, monthLimited ? null : activeRange) && inWindow(meeting));
-    return [...clients, ...personal];
-  }, [mapped, matchesClientFilters, matchesPersonalFilters, activeRange, baseFiltered]);
+  const matchesStatus = useCallback((meeting: ViewMeeting) => {
+    if (statusFilters.length === 0) return true;
+    return statusFilters.includes(meeting.status as StatusKey);
+  }, [statusFilters]);
 
   const filtered = useMemo(() => {
-    let rows = statusFilter === 'all' ? baseFiltered : baseFiltered.filter((meeting) => meeting.status === statusFilter);
+    let rows = baseFiltered.filter(matchesStatus);
     if (quoteOnly) rows = rows.filter((meeting) => meeting.quote != null);
     return orderMeetings(rows, today);
-  }, [baseFiltered, statusFilter, quoteOnly, today]);
+  }, [baseFiltered, matchesStatus, quoteOnly, today]);
 
-  const calendarMeetings = useMemo(() => {
-    const clients = calendarPool.filter((meeting) => !meeting.personal);
-    let rows = statusFilter === 'all' ? clients : clients.filter((meeting) => meeting.status === statusFilter);
-    if (quoteOnly) rows = rows.filter((meeting) => meeting.quote != null);
-    return orderMeetings(rows, today);
-  }, [calendarPool, statusFilter, quoteOnly, today]);
+  const calendarMeetings = filtered;
 
   const personalListed = useMemo(() => {
-    if (personalKind === 'all') return personalBase;
-    return personalBase.filter((meeting) => meeting.personalKind === personalKind);
-  }, [personalBase, personalKind]);
+    const rows = personalKind === 'all' ? personalBase : personalBase.filter((meeting) => meeting.personalKind === personalKind);
+    return rows.filter(matchesStatus);
+  }, [personalBase, personalKind, matchesStatus]);
 
   const stats = useMemo(() => {
     let scheduled = 0;
@@ -1037,7 +1020,7 @@ export default function MeetingManagementView() {
   useEffect(() => {
     setPage(0);
     if (listRef.current) listRef.current.scrollTop = 0;
-  }, [query, typeFilter, designerFilter, salesFilter, branchFilter, statusFilter, quoteOnly, personalKind, datePreset, customFrom, customTo, viewMonth]);
+  }, [query, typeFilter, designerFilter, salesFilter, branchFilter, statusFilters, quoteOnly, personalKind, datePreset, customFrom, customTo, viewMonth]);
 
   useEffect(() => {
     if (!dateOpen && !filterOpen) return;
@@ -1089,7 +1072,7 @@ export default function MeetingManagementView() {
     designerFilter !== '' ||
     salesFilter !== '' ||
     branchFilter !== '' ||
-    statusFilter !== 'all' ||
+    statusFilters.length > 0 ||
     personalKind !== 'all' ||
     quoteOnly ||
     !dateIsDefault;
@@ -1109,6 +1092,7 @@ export default function MeetingManagementView() {
   };
 
   const showMonth = (isoDay: string) => {
+    if (datePreset !== 'month') return;
     const key = isoDay.slice(0, 7);
     if (!monthBounds(key)) return;
     followLiveMonth.current = key === todayMonth;
@@ -1129,7 +1113,7 @@ export default function MeetingManagementView() {
     setDesignerFilter('');
     setSalesFilter('');
     setBranchFilter('');
-    setStatusFilter('all');
+    setStatusFilters([]);
     setPersonalKind('all');
     setQuoteOnly(false);
     showCurrentMonth();
@@ -1143,14 +1127,14 @@ export default function MeetingManagementView() {
     setView(next);
   };
 
-  const toggleStatus = (status: StatusFilter) => {
-    setQuoteOnly(false);
-    setStatusFilter((current) => (current === status ? 'all' : status));
+  const toggleStatus = (status: StatusKey) => {
+    setStatusFilters((current) => (
+      current.includes(status) ? current.filter((item) => item !== status) : [...current, status]
+    ));
   };
 
   const toggleQuotes = () => {
     setQuoteOnly((on) => !on);
-    setStatusFilter('all');
   };
 
   const openDate = () => {
@@ -1243,13 +1227,11 @@ export default function MeetingManagementView() {
             <p className={styles.subtitle}>India time · design and CRM meetings</p>
           </div>
         <div className={styles.headActions}>
-          {view === 'list' ? (
-            <>
           <div className={styles.dateWrap} ref={filterRef}>
               <button
                 type="button"
               className={styles.rangeBtn}
-              data-on={designerFilter !== '' || salesFilter !== '' || branchFilter !== '' || statusFilter !== 'all'}
+              data-on={designerFilter !== '' || salesFilter !== '' || branchFilter !== '' || statusFilters.length > 0}
               data-open={filterOpen}
               aria-expanded={filterOpen}
               aria-haspopup="dialog"
@@ -1280,16 +1262,19 @@ export default function MeetingManagementView() {
                   </label>
                   <label>
                     Status
-                    <CustomSelect
-                      value={statusFilter}
-                      onChange={(value) => {
-                        setStatusFilter(value as StatusFilter);
-                        setQuoteOnly(false);
-                      }}
-                      options={statusOptions}
-                      placeholder="All statuses"
-                      buttonClassName={styles.filterSelect}
-                    />
+                    <span className={styles.statusPicks}>
+                      {statusChoices.map((status) => (
+                        <button
+                          key={status.id}
+                          type="button"
+                          data-on={statusFilters.includes(status.id)}
+                          aria-pressed={statusFilters.includes(status.id)}
+                          onClick={() => toggleStatus(status.id)}
+                        >
+                          {status.label}
+                        </button>
+                      ))}
+                    </span>
                   </label>
                 </div>
               </div>
@@ -1351,8 +1336,6 @@ export default function MeetingManagementView() {
               </div>
         ) : null}
           </div>
-            </>
-        ) : null}
           <div className={styles.viewToggle} data-view={view} role="group" aria-label="Meeting view">
             <span className={styles.viewGlide} aria-hidden="true" />
             <button type="button" data-on={view === 'list'} onClick={() => switchView('list')}>
@@ -1366,17 +1349,17 @@ export default function MeetingManagementView() {
       </header>
 
       <section className={styles.stats} aria-label="Meeting totals">
-        <button type="button" className={styles.stat} data-static="false" data-on={statusFilter === 'scheduled'} aria-pressed={statusFilter === 'scheduled'} onClick={() => toggleStatus('scheduled')}>
+        <button type="button" className={styles.stat} data-static="false" data-on={statusFilters.includes('scheduled')} aria-pressed={statusFilters.includes('scheduled')} onClick={() => toggleStatus('scheduled')}>
           <span className={styles.statLabel}>Scheduled</span>
           <span className={styles.statValue}>{loading ? '—' : stats.scheduled}</span>
           <span className={styles.statSub}>{loading ? '' : `${stats.scheduledToday} today`}</span>
         </button>
-        <button type="button" className={styles.stat} data-static="false" data-on={statusFilter === 'completed'} aria-pressed={statusFilter === 'completed'} onClick={() => toggleStatus('completed')}>
+        <button type="button" className={styles.stat} data-static="false" data-on={statusFilters.includes('completed')} aria-pressed={statusFilters.includes('completed')} onClick={() => toggleStatus('completed')}>
           <span className={styles.statLabel}>Successful</span>
           <span className={styles.statValue}>{loading ? '—' : stats.successful}</span>
           <span className={styles.statSub}>{'\u00a0'}</span>
         </button>
-        <button type="button" className={styles.stat} data-static="false" data-on={statusFilter === 'cancelled'} aria-pressed={statusFilter === 'cancelled'} onClick={() => toggleStatus('cancelled')}>
+        <button type="button" className={styles.stat} data-static="false" data-on={statusFilters.includes('cancelled')} aria-pressed={statusFilters.includes('cancelled')} onClick={() => toggleStatus('cancelled')}>
           <span className={styles.statLabel}>Cancelled</span>
           <span className={styles.statValue}>{loading ? '—' : stats.cancelled}</span>
           <span className={styles.statSub}>{loading ? '' : `${stats.pct}% of meetings`}</span>
@@ -1466,7 +1449,7 @@ export default function MeetingManagementView() {
               <p>
                 {mapped.length === 0
                   ? 'No meetings yet.'
-                  : query.trim() || typeFilter !== 'all' || designerFilter || salesFilter || branchFilter || statusFilter !== 'all' || quoteOnly || datePreset !== 'month'
+                  : query.trim() || typeFilter !== 'all' || designerFilter || salesFilter || branchFilter || statusFilters.length > 0 || quoteOnly || datePreset !== 'month'
                     ? 'No meetings match these filters.'
                     : 'No meetings in this month.'}
               </p>

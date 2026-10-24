@@ -926,6 +926,32 @@
   background-color: #fff;
 }
 
+.statusPicks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.statusPicks button {
+  border: 1px solid var(--mm-line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--mm-muted);
+  font-family: var(--mm-font);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: none;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.statusPicks button[data-on='true'] {
+  border-color: var(--mm-red);
+  background: var(--mm-red);
+  color: #fff;
+}
+
 .popOption {
   display: flex;
   width: 100%;
