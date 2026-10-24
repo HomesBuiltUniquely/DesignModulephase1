@@ -3,6 +3,7 @@ import { Manrope } from "next/font/google";
 import localFont from "next/font/local";
 import "./globals.css";
 import { ClientProviders } from "./providers/ClientProviders";
+import DesignAppShell from "./Components/DesignAppShell";
 
 /* ── Body font: Manrope — Google Fonts ── */
 const manrope = Manrope({
@@ -46,7 +47,7 @@ export default function RootLayout({
       </head>
       <body className={`${manrope.variable} antialiased`}>
         <ClientProviders>
-          {children}
+          <DesignAppShell>{children}</DesignAppShell>
         </ClientProviders>
       </body>
     </html>

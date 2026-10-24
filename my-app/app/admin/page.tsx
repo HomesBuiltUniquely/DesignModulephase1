@@ -7,7 +7,7 @@ import { redirectToLoginPage } from '@/app/lib/externalLoginUrl';
 
 export default function AdminPanelPage() {
   const router = useRouter();
-  const { user, loading, logoutAndRedirectToLogin } = useAuth();
+  const { user, loading } = useAuth();
 
   useEffect(() => {
     if (loading) return;
@@ -92,24 +92,8 @@ export default function AdminPanelPage() {
 
   return (
     <div className="min-h-screen bg-slate-100">
-      <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <h1 className="text-xl font-bold text-gray-900">Admin Panel</h1>
-          <a href="/" className="text-sm text-[#32261C] hover:underline">Dashboard</a>
-        </div>
-        <div className="flex items-center gap-4">
-          <a href="/change-password" className="text-sm text-gray-600 hover:text-gray-900">Change password</a>
-          <span className="text-sm text-gray-600">{user.email}</span>
-          <button
-            type="button"
-            onClick={() => void logoutAndRedirectToLogin()}
-            className="text-sm text-red-600 hover:underline"
-          >
-            Logout
-          </button>
-        </div>
-      </header>
       <main className="max-w-5xl mx-auto p-8">
+        <h1 className="mb-2 text-xl font-bold text-gray-900">Admin Panel</h1>
         <p className="text-gray-600 mb-8">Create and manage users. Choose a role to create below.</p>
         <div className="grid gap-4 sm:grid-cols-3">
           {actions.map((action) => (

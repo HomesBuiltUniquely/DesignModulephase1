@@ -10,7 +10,7 @@ const API = getApiBase();
 
 export default function ChangePasswordPage() {
   const router = useRouter();
-  const { user, sessionId, loading, logoutAndRedirectToLogin } = useAuth();
+  const { user, sessionId, loading } = useAuth();
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -73,24 +73,8 @@ export default function ChangePasswordPage() {
 
   return (
     <div className="min-h-screen bg-slate-100">
-      <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <h1 className="text-xl font-bold text-gray-900">Change Password</h1>
-          <a href="/" className="text-sm text-[#32261C] hover:underline">Dashboard</a>
-          <a href="/profile" className="text-sm text-gray-600 hover:text-gray-900">Profile</a>
-        </div>
-        <div className="flex items-center gap-4">
-          <span className="text-sm text-gray-600">{user.email}</span>
-          <button
-            type="button"
-            onClick={() => void logoutAndRedirectToLogin()}
-            className="text-sm text-red-600 hover:underline"
-          >
-            Logout
-          </button>
-        </div>
-      </header>
       <main className="max-w-md mx-auto p-8">
+        <h1 className="mb-6 text-xl font-bold text-gray-900">Change Password</h1>
         <div className="bg-white rounded-2xl shadow border border-gray-200 p-6">
           <form onSubmit={handleSubmit} className="space-y-4">
             {message && (
