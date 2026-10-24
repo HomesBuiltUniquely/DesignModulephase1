@@ -53,6 +53,8 @@ type ScheduledMeeting = {
 };
 
 type MeetingMode = 'online' | 'offline';
+type ClientMeetingType = 'pre_10' | 'dqc1_first_cut' | 'dqc2_material_selection' | 'design_signoff';
+type TypeFilter = 'all' | ClientMeetingType;
 type Venue = 'Showroom visit' | 'Virtual meeting' | 'Site visit';
 type ViewStatus = 'scheduled' | 'in_progress' | 'completed' | 'cancelled' | 'abandoned';
 type StatusFilter = 'all' | 'scheduled' | 'in_progress' | 'completed' | 'cancelled';
@@ -72,6 +74,7 @@ type ViewMeeting = {
   branchLabel: string;
   venue: Venue;
   kind: string;
+  typeKey: ClientMeetingType | null;
   mode: MeetingMode;
   start: string;
   day: string;
@@ -105,6 +108,19 @@ const STATUS_LABEL: Record<ViewStatus, string> = {
 };
 
 const STEP_LABELS = ['Scheduled', 'In progress', 'Successful'] as const;
+const TYPE_FILTERS: { id: TypeFilter; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'pre_10', label: 'Pre 10%' },
+  { id: 'dqc1_first_cut', label: 'First cut' },
+  { id: 'dqc2_material_selection', label: 'Material selection' },
+  { id: 'design_signoff', label: 'Design sign off' },
+];
+const TYPE_LABEL: Record<ClientMeetingType, string> = {
+  pre_10: 'Pre 10%',
+  dqc1_first_cut: 'First cut',
+  dqc2_material_selection: 'Material selection',
+  design_signoff: 'Design sign off',
+};
 const GRID_START_HOUR = HUB_MEETING_TIMELINE_START_MIN / 60;
 const GRID_LAST_HOUR = Math.floor((HUB_MEETING_TIMELINE_END_MIN - HUB_MEETING_DURATION_MIN) / 60);
 const HOURS = Array.from({ length: GRID_LAST_HOUR - GRID_START_HOUR + 1 }, (_, index) => GRID_START_HOUR + index);
@@ -344,6 +360,19 @@ function mapQuote(raw: string | null): number | null {
   return numeric;
 }
 
+/** Same buckets the meetings are stored in: Pre 10%, First cut, Material selection, Design sign off. */
+function clientMeetingType(meeting: ScheduledMeeting): ClientMeetingType | null {
+  if ((meeting.source || '').toLowerCase() === 'personal') return null;
+  if ((meeting.source || '').toLowerCase() === 'crm') return 'pre_10';
+  const key = (meeting.meetingType || '').trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
+  if (!key || key === 'design meeting') return null;
+  if (key === 'pre 10' || key === 'pre10' || key === 'crm appointment') return 'pre_10';
+  if (key.includes('first cut') || key.includes('firstcut') || /first.*cut/.test(key)) return 'dqc1_first_cut';
+  if (key.includes('material')) return 'dqc2_material_selection';
+  if (key.includes('signoff') || key.includes('sign off')) return 'design_signoff';
+  return null;
+}
+
 function meetingKindLabel(meeting: ScheduledMeeting): string {
   if ((meeting.source || '').toLowerCase() === 'personal') {
     const leave = meeting.personalKind === 'full_day' || (meeting.meetingType || '').includes('full_day');
@@ -353,16 +382,10 @@ function meetingKindLabel(meeting: ScheduledMeeting): string {
     if (meeting.personalApproval === 'cancelled') return 'Leave cancelled';
     return 'Full-day leave';
   }
-  const type = (meeting.meetingType || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
-  if (!type) return '—';
-  if (type === 'pre_10' || type === 'pre10' || type === 'crm_appointment') return 'Pre 10%';
-  if (type === 'dqc1_first_cut' || type.includes('first_cut') || type.includes('firstcut')) return 'First cut';
-  if (type === 'dqc2_material_selection' || type.includes('material')) return 'Material selection';
-  if (type === 'design_signoff' || type.includes('sign_off') || type.includes('signoff')) return 'Design sign off';
-  if (type.includes('showroom')) return 'Showroom visit';
-  if (type.includes('virtual') || type.includes('online')) return 'Virtual meeting';
-  if (type.includes('site')) return 'Site visit';
-  return (meeting.meetingType || '').replace(/[_-]+/g, ' ');
+  const type = clientMeetingType(meeting);
+  if (type) return TYPE_LABEL[type];
+  const raw = (meeting.meetingType || '').trim();
+  return raw ? raw.replace(/[_-]+/g, ' ') : '—';
 }
 
 function mapChannel(meeting: ScheduledMeeting): { venue: Venue; mode: MeetingMode } {
@@ -422,6 +445,7 @@ function toViewMeeting(meeting: ScheduledMeeting, index: number): ViewMeeting | 
           : 'Personal time'
       : channel.venue,
     kind: meetingKindLabel(meeting),
+    typeKey: clientMeetingType(meeting),
     mode: channel.mode,
     start: toStartIso(day, minutes),
     day,
@@ -702,7 +726,7 @@ export default function MeetingManagementView() {
   const [query, setQuery] = useState('');
   const [view, setView] = useState<'list' | 'calendar'>('list');
   const [viewDir, setViewDir] = useState<'next' | 'prev' | 'none'>('none');
-  const [modeFilter, setModeFilter] = useState<'all' | MeetingMode>('all');
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [designerFilter, setDesignerFilter] = useState('');
   const [salesFilter, setSalesFilter] = useState('');
   const [branchFilter, setBranchFilter] = useState('');
@@ -913,7 +937,7 @@ export default function MeetingManagementView() {
   const matchesClientFilters = useCallback((meeting: ViewMeeting, range: { from: string; to: string } | null) => {
     if (meeting.personal) return false;
     const q = query.trim().toLowerCase();
-    if (modeFilter !== 'all' && meeting.mode !== modeFilter) return false;
+    if (typeFilter !== 'all' && meeting.typeKey !== typeFilter) return false;
     if (designerFilter && !sameName(meeting.designer, designerFilter)) return false;
     if (salesFilter && !sameName(meeting.sales, salesFilter)) return false;
     if (branchFilter && meeting.branchKey !== branchFilter) return false;
@@ -923,7 +947,7 @@ export default function MeetingManagementView() {
       .join(' ')
       .toLowerCase();
     return haystack.includes(q);
-  }, [query, modeFilter, designerFilter, salesFilter, branchFilter]);
+  }, [query, typeFilter, designerFilter, salesFilter, branchFilter]);
 
   const matchesPersonalFilters = useCallback((meeting: ViewMeeting, range: { from: string; to: string } | null) => {
     if (!meeting.personal) return false;
@@ -1013,7 +1037,7 @@ export default function MeetingManagementView() {
   useEffect(() => {
     setPage(0);
     if (listRef.current) listRef.current.scrollTop = 0;
-  }, [query, modeFilter, designerFilter, salesFilter, branchFilter, statusFilter, quoteOnly, personalKind, datePreset, customFrom, customTo, viewMonth]);
+  }, [query, typeFilter, designerFilter, salesFilter, branchFilter, statusFilter, quoteOnly, personalKind, datePreset, customFrom, customTo, viewMonth]);
 
   useEffect(() => {
     if (!dateOpen && !filterOpen) return;
@@ -1061,7 +1085,7 @@ export default function MeetingManagementView() {
   const dateIsDefault = datePreset === 'month' && viewMonth === todayMonth;
   const filtersActive =
     query.trim() !== '' ||
-    modeFilter !== 'all' ||
+    typeFilter !== 'all' ||
     designerFilter !== '' ||
     salesFilter !== '' ||
     branchFilter !== '' ||
@@ -1101,7 +1125,7 @@ export default function MeetingManagementView() {
 
   const clearAll = () => {
     setQuery('');
-    setModeFilter('all');
+    setTypeFilter('all');
     setDesignerFilter('');
     setSalesFilter('');
     setBranchFilter('');
@@ -1409,10 +1433,10 @@ export default function MeetingManagementView() {
                 placeholder="Customer, lead ID, designer, sales, phone"
               />
             </label>
-            <div className={styles.seg} role="group" aria-label="Meeting mode">
-              {(['all', 'online', 'offline'] as const).map((mode) => (
-                <button key={mode} type="button" data-on={modeFilter === mode} onClick={() => setModeFilter(mode)}>
-                  {mode === 'all' ? 'All' : mode === 'online' ? 'Online' : 'Offline'}
+            <div className={`${styles.seg} ${styles.typeSeg}`} role="group" aria-label="Meeting type">
+              {TYPE_FILTERS.map((type) => (
+                <button key={type.id} type="button" data-on={typeFilter === type.id} onClick={() => setTypeFilter(type.id)}>
+                  {type.label}
                 </button>
               ))}
             </div>
@@ -1442,7 +1466,7 @@ export default function MeetingManagementView() {
               <p>
                 {mapped.length === 0
                   ? 'No meetings yet.'
-                  : query.trim() || modeFilter !== 'all' || designerFilter || salesFilter || branchFilter || statusFilter !== 'all' || quoteOnly || datePreset !== 'month'
+                  : query.trim() || typeFilter !== 'all' || designerFilter || salesFilter || branchFilter || statusFilter !== 'all' || quoteOnly || datePreset !== 'month'
                     ? 'No meetings match these filters.'
                     : 'No meetings in this month.'}
               </p>

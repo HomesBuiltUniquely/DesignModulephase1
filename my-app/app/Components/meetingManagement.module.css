@@ -190,6 +190,16 @@
   color: #fff;
 }
 
+.typeSeg {
+  flex: 0 1 auto;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.typeSeg button {
+  white-space: nowrap;
+}
+
 .viewToggle {
   position: relative;
   display: grid;
