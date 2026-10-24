@@ -6,7 +6,14 @@ import { buildAuthHeaders, getApiBase } from '../lib/apiBase';
 import { BRANCH_LOCATIONS, resolveBranchCode } from '../constants/branches';
 import CustomSelect from './ui/CustomSelect';
 import MeetingSlotPickerModal from '../Leads/[id]/components/popups/MeetingSlotPickerModal';
-import { formatHubTimeRange, HUB_MEETING_DURATION_MIN, minutesToHubTime24 } from '../../lib/hub-meeting-schedule';
+import {
+  formatHubTimeRange,
+  HUB_MEETING_DURATION_MIN,
+  HUB_MEETING_TIMELINE_END_MIN,
+  HUB_MEETING_TIMELINE_START_MIN,
+  hubMeetingDurationForStart,
+  minutesToHubTime24,
+} from '../../lib/hub-meeting-schedule';
 import styles from './meetingManagement.module.css';
 
 /** Designer sees their own meetings. Design manager and TDM see the people under them. Admin sees everyone. */
@@ -98,10 +105,11 @@ const STATUS_LABEL: Record<ViewStatus, string> = {
 };
 
 const STEP_LABELS = ['Scheduled', 'In progress', 'Successful'] as const;
-const HOURS = Array.from({ length: 12 }, (_, index) => index + 9);
+const GRID_START_HOUR = HUB_MEETING_TIMELINE_START_MIN / 60;
+const GRID_LAST_HOUR = Math.floor((HUB_MEETING_TIMELINE_END_MIN - HUB_MEETING_DURATION_MIN) / 60);
+const HOURS = Array.from({ length: GRID_LAST_HOUR - GRID_START_HOUR + 1 }, (_, index) => GRID_START_HOUR + index);
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const PAGE_SIZE = 10;
-const CLIENT_SLOT_MIN = 90;
 
 const DATE_PRESETS: { id: DatePreset; label: string }[] = [
   { id: 'month', label: 'This month' },
@@ -216,10 +224,16 @@ function parseMinutes(label: string | null, time?: string | null): number | null
   return hour * 60 + minute;
 }
 
-/** 9:00 AM through 8:59 PM, matching the previous week grid. */
+/** Week rows follow the hub day: 10:00 AM through the last 90-minute start. */
 function gridHour(minutes: number | null): number | null {
-  if (minutes == null || minutes < 9 * 60 || minutes > 20 * 60 + 59) return null;
-  return Math.floor(minutes / 60);
+  if (minutes == null || minutes < HUB_MEETING_TIMELINE_START_MIN || minutes >= HUB_MEETING_TIMELINE_END_MIN) return null;
+  const hour = Math.floor(minutes / 60);
+  if (hour < GRID_START_HOUR || hour > GRID_LAST_HOUR) return null;
+  return hour;
+}
+
+function slotRangeLabel(startMin: number): string {
+  return formatHubTimeRange(startMin, startMin + hubMeetingDurationForStart(startMin));
 }
 
 function toStartIso(day: string, minutes: number | null): string {
@@ -439,7 +453,7 @@ function markOverlaps(rows: ViewMeeting[]): ViewMeeting[] {
       if (row.personalKind === 'full_day') return true;
       if (row.minutes == null || client.minutes == null) return false;
       const rowEnd = row.endMinutes ?? row.minutes + 30;
-      return row.minutes < client.minutes + CLIENT_SLOT_MIN && rowEnd > client.minutes;
+      return row.minutes < client.minutes + hubMeetingDurationForStart(client.minutes) && rowEnd > client.minutes;
     });
     const insideLeave = row.personalKind === 'block' && leaveDays.has(`${designerKey}|${row.day}`);
     if (!overlapsClient && !insideLeave) return row;
@@ -570,7 +584,7 @@ function ownSlotLabel(meeting: ScheduledMeeting): string {
   if (clocks.length >= 2) return label;
   const mins = parseMinutes(meeting.meetingTime, meeting.meetingTimeLabel);
   if (mins == null) return 'Time not set';
-  return formatHubTimeRange(mins, mins + HUB_MEETING_DURATION_MIN);
+  return slotRangeLabel(mins);
 }
 
 function slotHasPassed(meeting: ViewMeeting, today: string, nowMinutes: number): boolean {
@@ -1709,7 +1723,7 @@ export default function MeetingManagementView() {
                     <span>
                       {nextStartMin == null
                         ? 'Choose this designer’s slot'
-                        : formatHubTimeRange(nextStartMin, nextStartMin + HUB_MEETING_DURATION_MIN)}
+                        : slotRangeLabel(nextStartMin)}
                     </span>
                     <span className={styles.slotPickHint}>{nextStartMin == null ? 'Select' : 'Change'}</span>
                   </button>
@@ -1746,7 +1760,7 @@ export default function MeetingManagementView() {
                 <div>
                   <span className={styles.metaLabel}>New slot</span>
                   <strong>{formatFullDate(nextDate)}</strong>
-                  <span className={styles.moveTime}>{formatHubTimeRange(nextStartMin, nextStartMin + HUB_MEETING_DURATION_MIN)}</span>
+                  <span className={styles.moveTime}>{slotRangeLabel(nextStartMin)}</span>
                 </div>
               </div>
             ) : null}
