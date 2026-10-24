@@ -5594,7 +5594,22 @@ app.get("/api/google-calendar/my-events", async (req: Request, res: Response) =>
       return res.status(403).json({ message: "You do not have access to HUB Calendar." });
     }
     const visibleUsers = await getCalendarVisibleUsers(user);
-    const connectionRows = visibleUsers.map((visibleUser) => ({
+    // Optional: filter to a single user when the calendar dropdown filter is used
+    const filterUserId = req.query.filterUserId ? Number(req.query.filterUserId) : null;
+    let effectiveUsers = visibleUsers;
+    if (filterUserId) {
+      const match = visibleUsers.find((u) => u.id === filterUserId);
+      if (match) {
+        effectiveUsers = [match];
+      } else {
+        const [uRows] = await pool.query(
+          "SELECT id, email, name, role FROM users WHERE id = ? LIMIT 1",
+          [filterUserId],
+        );
+        effectiveUsers = (uRows as any[]).length > 0 ? (uRows as any[]) : [];
+      }
+    }
+    const connectionRows = effectiveUsers.map((visibleUser) => ({
       user_id: visibleUser.id,
       user_email: visibleUser.email,
       user_name: visibleUser.name,
@@ -5605,7 +5620,7 @@ app.get("/api/google-calendar/my-events", async (req: Request, res: Response) =>
 
     const [googleEvents, erpPersonalEvents] = await Promise.all([
       gatherHubCalendarEventsForConnections(connectionRows, timeMin, timeMax),
-      fetchErpPersonalBlocksAsCalendarEvents(visibleUsers, timeMin, timeMax),
+      fetchErpPersonalBlocksAsCalendarEvents(effectiveUsers, timeMin, timeMax),
     ]);
     const allEvents = mergeHubCalendarEventsById(googleEvents, erpPersonalEvents);
 
@@ -5614,6 +5629,24 @@ app.get("/api/google-calendar/my-events", async (req: Request, res: Response) =>
   } catch (err: any) {
     console.error("google-calendar my-events error", err);
     return res.status(500).json({ message: err?.message || "Failed to load Google Calendar events" });
+  }
+});
+
+// Return the list of calendar-visible users for the current user (populates the designer filter dropdown)
+app.get("/api/google-calendar/visible-users", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    if (!canAccessHubCalendar(user.role)) {
+      return res.status(403).json({ message: "You do not have access to HUB Calendar." });
+    }
+    const normalizedRole = (user.role || "").toLowerCase();
+    const teamUsers = await getPersonalAppointmentVisibleUsers(user);
+    const users = teamUsers.map((u) => ({ id: u.id, name: u.name, role: u.role }));
+    return res.json({ users });
+  } catch (err) {
+    console.error("google-calendar visible-users error", err);
+    return res.status(500).json({ message: "Failed to load visible users" });
   }
 });
 
@@ -5644,7 +5677,13 @@ app.get("/api/google-calendar/all-events", async (req: Request, res: Response) =
       user_role: row.user_role,
     }));
 
-    const ownerRows = connectionRows.map((row) => ({
+    // Optional: filter to a single user when the calendar dropdown filter is used
+    const filterUserId = req.query.filterUserId ? Number(req.query.filterUserId) : null;
+    const effectiveConnectionRows = filterUserId
+      ? connectionRows.filter((r) => r.user_id === filterUserId)
+      : connectionRows;
+
+    const ownerRows = effectiveConnectionRows.map((row) => ({
       id: row.user_id,
       email: row.user_email,
       name: row.user_name,
@@ -5656,7 +5695,7 @@ app.get("/api/google-calendar/all-events", async (req: Request, res: Response) =
         console.error("hub calendar CRM aggregate failed", err);
         return [] as any[];
       }),
-      gatherHubCalendarEventsForConnections(connectionRows, timeMin, timeMax),
+      gatherHubCalendarEventsForConnections(effectiveConnectionRows, timeMin, timeMax),
       fetchErpPersonalBlocksAsCalendarEvents(ownerRows, timeMin, timeMax),
     ]);
     const allEvents = mergeHubCalendarEventsById(crmEvents, localEvents, erpPersonalEvents);

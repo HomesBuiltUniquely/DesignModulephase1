@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { getApiBase } from '@/app/lib/apiBase';
+import CustomSelect from '@/app/Components/ui/CustomSelect';
 
 type CalendarEventItem = {
   id: string;
@@ -319,6 +320,8 @@ export default function GoogleCalendarView() {
   const miniCalendarRef = useRef<HTMLDivElement | null>(null);
   const agendaRef = useRef<HTMLDivElement | null>(null);
   const accountMenuRef = useRef<HTMLDivElement | null>(null);
+  const [visibleUsers, setVisibleUsers] = useState<{ id: number; name: string; role: string }[]>([]);
+  const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
 
   const role = (user?.role || '').toLowerCase();
   const canSeeAllEvents = role === 'admin' || role === 'deputy_general_manager';
@@ -327,6 +330,21 @@ export default function GoogleCalendarView() {
     role === 'deputy_general_manager' ||
     role === 'territorial_design_manager' ||
     role === 'design_manager';
+  const showFilterDropdown =
+    role === 'admin' ||
+    role === 'deputy_general_manager' ||
+    role === 'territorial_design_manager' ||
+    role === 'design_manager';
+  const filterOptions = useMemo(
+    () => [
+      { value: '', label: 'All Members' },
+      ...visibleUsers.map((u) => ({
+        value: String(u.id),
+        label: u.name,
+      })),
+    ],
+    [visibleUsers],
+  );
   const weekStart = useMemo(() => startOfWeek(currentDate), [currentDate]);
   const weekDays = useMemo(() => buildWeekDays(weekStart), [weekStart]);
   const miniCalendarDays = useMemo(() => buildMiniCalendarDays(currentDate), [currentDate]);
@@ -383,6 +401,7 @@ export default function GoogleCalendarView() {
       const params = new URLSearchParams();
       params.set('timeMin', `${toInputDate(targetWeekStart)}T00:00:00+05:30`);
       params.set('timeMax', `${toInputDate(endOfWeek(targetWeekStart))}T23:59:59+05:30`);
+      if (selectedUserId) params.set('filterUserId', String(selectedUserId));
       const path = canSeeAllEvents ? '/api/google-calendar/all-events' : '/api/google-calendar/my-events';
       const controller = new AbortController();
       const timeoutId = window.setTimeout(() => controller.abort(), 120_000);
@@ -437,10 +456,19 @@ export default function GoogleCalendarView() {
     });
   }, [sessionId]);
 
+  // Fetch the list of visible users for the filter dropdown
+  useEffect(() => {
+    if (!sessionId) return;
+    fetch(`${getApiBase()}/api/google-calendar/visible-users`, { headers: authHeaders })
+      .then((res) => (res.ok ? res.json() : Promise.reject()))
+      .then((data) => setVisibleUsers(Array.isArray(data?.users) ? data.users : []))
+      .catch(() => setVisibleUsers([]));
+  }, [sessionId]);
+
   useEffect(() => {
     if (!sessionId) return;
     loadEvents(weekStart).catch(() => undefined);
-  }, [sessionId, weekStart, canSeeAllEvents]);
+  }, [sessionId, weekStart, canSeeAllEvents, selectedUserId]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -647,6 +675,20 @@ export default function GoogleCalendarView() {
             >
               {loading ? 'Refreshing...' : 'Refresh'}
             </button>
+
+            {showFilterDropdown ? (
+              <CustomSelect
+                value={selectedUserId != null ? String(selectedUserId) : ''}
+                onChange={(val) => {
+                  setSelectedUserId(val ? Number(val) : null);
+                }}
+                placeholder="All Members"
+                minWidth="12rem"
+                buttonClassName="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-800"
+                options={filterOptions}
+              />
+            ) : null}
+
             <span className="rounded-lg bg-gray-100 px-3 py-1.5 text-sm font-medium text-gray-700">Week</span>
 
             {!status.connected ? (
