@@ -22,6 +22,23 @@ import { notificationVisibleForRole } from './notificationBellHelpers';
 /** Inbox list page size — counts badge must use the same visible set as the panel. */
 const INBOX_LIST_LIMIT = 200;
 
+function isNetworkFetchError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /failed to fetch|networkerror|load failed|fetch failed/i.test(msg);
+}
+
+/** Never throw — inbox keeps polling if the API or notify service is down. */
+async function fetchInboxSafe(url: string, init?: RequestInit): Promise<Response | null> {
+  try {
+    return await fetch(url, init);
+  } catch (err) {
+    if (!isNetworkFetchError(err)) {
+      console.warn('[notification] request failed:', err instanceof Error ? err.message : err);
+    }
+    return null;
+  }
+}
+
 function countVisibleUnread(
   list: DesignNotificationItem[],
   role: string | null | undefined,
@@ -167,18 +184,18 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
       try {
         const headers = buildAuthHeaders(sessionId);
         const [listRes, countRes] = await Promise.all([
-          fetch(`${apiBase}/v1/design/inbox?user_id=${user.id}&limit=${INBOX_LIST_LIMIT}`, {
+          fetchInboxSafe(`${apiBase}/v1/design/inbox?user_id=${user.id}&limit=${INBOX_LIST_LIMIT}`, {
             headers,
             credentials: 'include',
           }),
-          fetch(`${apiBase}/v1/design/inbox/counts?user_id=${user.id}`, {
+          fetchInboxSafe(`${apiBase}/v1/design/inbox/counts?user_id=${user.id}`, {
             headers,
             credentials: 'include',
           }),
         ]);
 
         let list: DesignNotificationItem[] | null = null;
-        if (listRes.ok) {
+        if (listRes?.ok) {
           const json = await listRes.json().catch(() => ({}));
           if (Array.isArray(json?.data)) list = json.data as DesignNotificationItem[];
         }
@@ -191,7 +208,7 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
           prevUnreadRef.current = visibleUnread;
           inboxCountsReadyRef.current = true;
           setUnreadCount(visibleUnread);
-        } else if (countRes.ok) {
+        } else if (countRes?.ok) {
           const countJson = await countRes.json().catch(() => ({}));
           const total = Number(countJson?.data?.total);
           if (Number.isFinite(total)) {
@@ -206,7 +223,9 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
           }
         }
       } catch (err) {
-        console.error('[notification] refresh failed:', err);
+        if (!isNetworkFetchError(err)) {
+          console.warn('[notification] refresh failed:', err instanceof Error ? err.message : err);
+        }
       } finally {
         refreshInFlightRef.current = false;
       }
@@ -231,7 +250,7 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
       setUnreadCount((c) => Math.max(0, c - 1));
     }
 
-    fetch(`${apiBase}/v1/design/inbox/${id}/read`, {
+    void fetchInboxSafe(`${apiBase}/v1/design/inbox/${id}/read`, {
       method: 'POST',
       headers: {
         ...buildAuthHeaders(sessionId),
@@ -239,18 +258,14 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
       },
       body: JSON.stringify({ user_id: user.id }),
       credentials: 'include',
-    })
-      .then(async (r) => {
-        const res = await r.json().catch(() => ({}));
-        if (!r.ok || !(res?.ok || res?.success)) {
-          console.error('[notification] mark read failed', r.status, res);
-        }
-        void refreshInbox();
-      })
-      .catch((err) => {
-        console.error('Failed to mark read:', err);
-        void refreshInbox();
-      });
+    }).then(async (r) => {
+      if (!r) return;
+      const res = await r.json().catch(() => ({}));
+      if (!r.ok || !(res?.ok || res?.success)) {
+        console.warn('[notification] mark read failed', r.status);
+      }
+      void refreshInbox();
+    });
   };
 
   const handleMarkAllRead = () => {
@@ -262,7 +277,7 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
     prevUnreadRef.current = 0;
     setUnreadCount(0);
 
-    fetch(`${apiBase}/v1/design/inbox/read-all`, {
+    void fetchInboxSafe(`${apiBase}/v1/design/inbox/read-all`, {
       method: 'POST',
       headers: {
         ...buildAuthHeaders(sessionId),
@@ -270,18 +285,14 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
       },
       body: JSON.stringify({ user_id: user.id }),
       credentials: 'include',
-    })
-      .then(async (r) => {
-        const res = await r.json().catch(() => ({}));
-        if (!r.ok || !(res?.ok || res?.success)) {
-          console.error('[notification] mark all read failed', r.status, res);
-        }
-        void refreshInbox();
-      })
-      .catch((err) => {
-        console.error('Failed to mark all read:', err);
-        void refreshInbox();
-      });
+    }).then(async (r) => {
+      if (!r) return;
+      const res = await r.json().catch(() => ({}));
+      if (!r.ok || !(res?.ok || res?.success)) {
+        console.warn('[notification] mark all read failed', r.status);
+      }
+      void refreshInbox();
+    });
   };
 
   useEffect(() => {

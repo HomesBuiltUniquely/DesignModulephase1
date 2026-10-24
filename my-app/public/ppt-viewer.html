@@ -123,77 +123,152 @@
       left: -9999px !important;
     }
 
-    /* ── Custom Bottom Control Bar ── */
-    #ctrlBar {
-      display: none;
-      align-items: center;
-      justify-content: center;
-      height: 56px;
-      background: #1e1e2e;
-      border-top: 1px solid rgba(255,255,255,0.08);
-      box-shadow: 0 -4px 20px rgba(0,0,0,0.2);
-      flex-shrink: 0;
-      position: relative;
-      padding: 0 16px;
-    }
-
-    /* Centre group */
-    .ctrl-center {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-
-    /* Slide counter pill */
+    /* Slide count sits in the margin, with no bar behind it */
     #myCounter {
-      font-size: 13px;
+      display: none;
+      position: fixed;
+      left: 50%;
+      top: 22px;
+      transform: translateX(-50%);
+      z-index: 30;
+      font-size: 12px;
       font-weight: 600;
-      color: rgba(255,255,255,0.85);
-      background: rgba(255,255,255,0.1);
-      border: 1px solid rgba(255,255,255,0.15);
-      border-radius: 20px;
-      padding: 4px 14px;
-      min-width: 72px;
-      text-align: center;
+      color: #6b7280;
       letter-spacing: .03em;
       user-select: none;
     }
 
-    /* Icon buttons */
-    .c-btn {
-      display: flex;
+    /* Prev / next sit in the white space beside the slide */
+    .side-nav {
+      display: none;
+      position: fixed;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 30;
       align-items: center;
       justify-content: center;
-      width: 38px; height: 38px;
-      border-radius: 10px;
-      border: 1px solid rgba(255,255,255,0.15);
-      background: rgba(255,255,255,0.08);
-      color: rgba(255,255,255,0.8);
+      width: 40px;
+      height: 40px;
+      border-radius: 999px;
+      border: 1px solid rgba(17, 24, 39, 0.1);
+      background: #ffffff;
+      color: #111827;
       cursor: pointer;
-      transition: all 0.15s ease;
-      text-decoration: none;
-      flex-shrink: 0;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
     }
-    .c-btn:hover:not([disabled]):not(.disabled) {
+    .side-nav.prev { left: 16px; }
+    .side-nav.next { right: 16px; }
+    .side-nav:hover:not([disabled]) { background: #f3f4f6; }
+    .side-nav[disabled] {
+      opacity: 0.35;
+      cursor: default;
+    }
+    .side-nav svg { display: block; }
+    #minBtn .tip { right: auto; left: 0; }
+    .fs-action { text-decoration: none; }
+
+    /* Minimize stays in the top-left corner. Download and Close stay top-right. */
+    #minBtn {
+      display: none;
+      position: fixed;
+      top: 14px;
+      left: 14px;
+      z-index: 2147483000;
+    }
+    #rightChrome {
+      position: fixed;
+      top: 14px;
+      right: 14px;
+      z-index: 2147483000;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    #dlBtn { display: none; }
+    #closeBtn { display: none; }
+    .fs-action {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 36px;
+      height: 36px;
+      padding: 0;
+      border-radius: 10px;
+      border: 1px solid rgba(17, 24, 39, 0.12);
+      background: #ffffff;
+      color: #111827;
+      font-family: inherit;
+      cursor: pointer;
+      box-shadow: 0 4px 18px rgba(0, 0, 0, 0.22);
+    }
+    .fs-action svg { display: block; flex-shrink: 0; }
+    .fs-action .tip {
+      display: none;
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      padding: 4px 8px;
+      border-radius: 6px;
+      background: #111827;
+      color: #ffffff;
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.2;
+      white-space: nowrap;
+      pointer-events: none;
+    }
+    .fs-action:hover .tip,
+    .fs-action:focus-visible .tip { display: block; }
+    .fs-action.min:hover { background: #f3f4f6; }
+    .fs-action.close:hover {
       background: #EF0101;
       border-color: #EF0101;
       color: #ffffff;
-      transform: scale(1.08);
-      box-shadow: 0 4px 14px rgba(239,1,1,0.35);
     }
-    .c-btn[disabled], .c-btn.disabled {
-      opacity: 0.25;
-      cursor: not-allowed;
-      pointer-events: none;
-    }
-    .c-btn svg { display: block; }
-
-    /* Positioned buttons */
-    #dlBtn { position: absolute; left: 16px; }
-    #fsBtn { position: absolute; right: 16px; }
   </style>
 </head>
 <body>
+
+<button type="button" id="minBtn" class="fs-action min" aria-label="Minimize" onclick="minimizeViewer()">
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8 3v3a2 2 0 01-2 2H3"/>
+    <path d="M21 8h-3a2 2 0 01-2-2V3"/>
+    <path d="M3 16h3a2 2 0 012 2v3"/>
+    <path d="M16 21v-3a2 2 0 012-2h3"/>
+  </svg>
+  <span class="tip">Minimize</span>
+</button>
+
+<div id="rightChrome">
+  <a id="dlBtn" class="fs-action" href="/hub-profile.pptx" download aria-label="Download">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+      <polyline points="7 10 12 15 17 10"/>
+      <line x1="12" y1="15" x2="12" y2="3"/>
+    </svg>
+    <span class="tip">Download</span>
+  </a>
+  <button type="button" id="closeBtn" class="fs-action close" aria-label="Close" onclick="closeViewer()">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18"/>
+      <line x1="6" y1="6" x2="18" y2="18"/>
+    </svg>
+    <span class="tip">Close</span>
+  </button>
+</div>
+
+<button type="button" id="myPrev" class="side-nav prev" aria-label="Previous slide" onclick="navSlide(37)" disabled>
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="15 18 9 12 15 6"/>
+  </svg>
+</button>
+<button type="button" id="myNext" class="side-nav next" aria-label="Next slide" onclick="navSlide(39)">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="9 18 15 12 9 6"/>
+  </svg>
+</button>
+<div id="myCounter">— / —</div>
 
 <!-- Loading -->
 <div id="loading">
@@ -212,55 +287,6 @@
 <!-- Slide render area -->
 <div id="slideArea">
   <div id="pptxOutput"></div>
-</div>
-
-<!-- ── Bottom Control Bar ── -->
-<div id="ctrlBar">
-
-  <!-- Download — left -->
-  <a id="dlBtn" class="c-btn" href="/hub-profile.pptx" download title="Download PPT">
-    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
-      <polyline points="7 10 12 15 17 10"/>
-      <line x1="12" y1="15" x2="12" y2="3"/>
-    </svg>
-  </a>
-
-  <!-- Centre: Prev · Counter · Next -->
-  <div class="ctrl-center">
-
-    <button id="myPrev" class="c-btn" title="Previous slide" onclick="navSlide(37)" disabled>
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-        <polyline points="15 18 9 12 15 6"/>
-      </svg>
-    </button>
-
-    <span id="myCounter">— / —</span>
-
-    <button id="myNext" class="c-btn" title="Next slide" onclick="navSlide(39)">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-        <polyline points="9 18 15 12 9 6"/>
-      </svg>
-    </button>
-
-  </div>
-
-  <!-- Fullscreen — right -->
-  <button id="fsBtn" class="c-btn" title="Fullscreen" onclick="toggleFs()">
-    <svg id="fsExpand" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M8 3H5a2 2 0 00-2 2v3"/>
-      <path d="M21 8V5a2 2 0 00-2-2h-3"/>
-      <path d="M3 16v3a2 2 0 002 2h3"/>
-      <path d="M16 21h3a2 2 0 002-2v-3"/>
-    </svg>
-    <svg id="fsCompress" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none">
-      <path d="M8 3v3a2 2 0 01-2 2H3"/>
-      <path d="M21 8h-3a2 2 0 01-2-2V3"/>
-      <path d="M3 16h3a2 2 0 012 2v3"/>
-      <path d="M16 21v-3a2 2 0 012-2h3"/>
-    </svg>
-  </button>
-
 </div>
 
 <script>
@@ -287,6 +313,16 @@
     document.getElementById('myNext').disabled = (current >= totalSlides);
   }
 
+  function tellParent(type) {
+    if (!window.parent || window.parent === window) return;
+    window.parent.postMessage({ type: type }, window.location.origin);
+  }
+
+  function setFullscreenChrome(fs) {
+    document.getElementById('minBtn').style.display = fs ? 'inline-flex' : 'none';
+    document.getElementById('closeBtn').style.display = fs ? 'inline-flex' : 'none';
+  }
+
   /* ── Fullscreen toggle ── */
   function toggleFs() {
     if (!document.fullscreenElement) {
@@ -295,11 +331,25 @@
       document.exitFullscreen().catch(function(){});
     }
   }
+
+  /* Restore the windowed presentation modal. */
+  function minimizeViewer() {
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(function(){});
+    }
+    tellParent('hub-profile-minimize');
+  }
+
+  /* Leave fullscreen and close the presentation. */
+  function closeViewer() {
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(function(){});
+    }
+    tellParent('hub-profile-close');
+  }
+
   document.addEventListener('fullscreenchange', function() {
-    var fs = !!document.fullscreenElement;
-    document.getElementById('fsExpand').style.display   = fs ? 'none' : '';
-    document.getElementById('fsCompress').style.display = fs ? '' : 'none';
-    document.getElementById('fsBtn').title = fs ? 'Exit fullscreen' : 'Fullscreen';
+    setFullscreenChrome(!!document.fullscreenElement);
   });
 
   /* ── Error / msg helpers ── */
@@ -307,7 +357,10 @@
   function showError(msg) {
     document.getElementById('loading').style.display   = 'none';
     document.getElementById('slideArea').style.display = 'none';
-    document.getElementById('ctrlBar').style.display   = 'none';
+    document.getElementById('myPrev').style.display    = 'none';
+    document.getElementById('myNext').style.display    = 'none';
+    document.getElementById('myCounter').style.display = 'none';
+    document.getElementById('dlBtn').style.display     = 'none';
     document.getElementById('errorMsg').textContent    = msg;
     document.getElementById('errorBox').style.display  = 'flex';
   }
@@ -364,7 +417,10 @@
         /* Reveal UI */
         document.getElementById('loading').style.display   = 'none';
         document.getElementById('slideArea').style.display = 'flex';
-        document.getElementById('ctrlBar').style.display   = 'flex';
+        document.getElementById('myPrev').style.display    = 'inline-flex';
+        document.getElementById('myNext').style.display    = 'inline-flex';
+        document.getElementById('myCounter').style.display = 'block';
+        document.getElementById('dlBtn').style.display     = 'inline-flex';
 
         syncCounter();
         /* Keep counter live */

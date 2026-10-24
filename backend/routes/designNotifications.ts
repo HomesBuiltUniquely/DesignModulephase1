@@ -481,6 +481,10 @@ function notifyUpstreamWebSocketBase(): string {
   const explicit = (process.env.NOTIFY_WS_URL || "").trim();
   if (explicit) return explicit.replace(/\/$/, "");
   const http = notifyApiBase();
+  // notify.hubinterior.com has no TLS listener; wss:// there fails handshake.
+  if (/notify\.hubinterior\.com/i.test(http)) {
+    return http.replace(/^https:/i, "http:").replace(/^http:/i, "ws:");
+  }
   if (http.startsWith("https://")) return `wss://${http.slice(8)}`;
   if (http.startsWith("http://")) return `ws://${http.slice(7)}`;
   return `ws://${http}`;
@@ -503,7 +507,7 @@ function inboxBrowserWebSocketUrl(req: Request, ticket: string): string {
 export function attachInboxWebSocketProxy(server: HttpServer): void {
   const wss = new WebSocketServer({ noServer: true });
   server.on("upgrade", (req, socket, head) => {
-    const pathname = String(req.url || "").split("?")[0];
+    const pathname = String(req.url || "").split("?")[0].replace(/\/$/, "");
     if (pathname !== "/v1/design/inbox/ws") return;
     wss.handleUpgrade(req, socket, head, (client) => {
       const url = new URL(req.url || "", "http://localhost");

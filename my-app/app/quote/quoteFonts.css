@@ -5,21 +5,7 @@
     public/fonts/Wulkan-Bold.woff2
   Until those exist, headings fall back to Georgia.
 */
-@font-face {
-  font-family: 'Wulkan';
-  src: url('/fonts/Wulkan-Regular.woff2') format('woff2');
-  font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Wulkan';
-  src: url('/fonts/Wulkan-Bold.woff2') format('woff2');
-  font-weight: 700;
-  font-style: normal;
-  font-display: swap;
-}
+/* Wulkan woff2 files are not in public/fonts yet — do not request them (404). */
 
 .quote-page {
   font-family: var(--font-manrope), 'Manrope', Arial, sans-serif;

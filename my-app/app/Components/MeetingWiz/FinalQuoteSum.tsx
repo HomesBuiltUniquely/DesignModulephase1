@@ -47,6 +47,14 @@ function RoomIcon() {
   );
 }
 
+function withoutExpress(value: string): string {
+  return value
+    .replace(/\(\s*express\s*\)/gi, "")
+    .replace(/\bexpress\b/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 function formatHandover(lead: LeadshipTypes | null | undefined): { dateLabel: string; subLabel: string } {
   const possession = lead?.intakePossessionDate?.trim();
   const timeline = lead?.configScopeSummary?.expectedTimeline?.trim();
@@ -55,13 +63,16 @@ function formatHandover(lead: LeadshipTypes | null | undefined): { dateLabel: st
     if (!Number.isNaN(d.getTime())) {
       return {
         dateLabel: d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }),
-        subLabel: timeline ? timeline.toUpperCase() : "POSSESSION TARGET",
+        subLabel: timeline ? withoutExpress(timeline.toUpperCase()) : "POSSESSION TARGET",
       };
     }
-    return { dateLabel: possession, subLabel: timeline ? timeline.toUpperCase() : "POSSESSION TARGET" };
+    return {
+      dateLabel: possession,
+      subLabel: timeline ? withoutExpress(timeline.toUpperCase()) : "POSSESSION TARGET",
+    };
   }
   if (timeline) {
-    return { dateLabel: timeline, subLabel: "EXPECTED TIMELINE" };
+    return { dateLabel: withoutExpress(timeline), subLabel: "EXPECTED TIMELINE" };
   }
   return { dateLabel: "—", subLabel: "TO BE CONFIRMED" };
 }
@@ -530,6 +541,28 @@ export default function FinalQuoteSum({
                 }}
               >
                 {handover.subLabel}
+              </div>
+              <div
+                style={{
+                  fontSize: "9px",
+                  color: "color-mix(in srgb, var(--foreground) 45%, transparent)",
+                  fontWeight: 500,
+                  textAlign: "center",
+                  lineHeight: 1.3,
+                }}
+              >
+                Starts from Design Sign-Off
+              </div>
+              <div
+                style={{
+                  fontSize: "9px",
+                  color: "var(--brand-primary)",
+                  fontWeight: 600,
+                  textAlign: "center",
+                  lineHeight: 1.3,
+                }}
+              >
+                T& C applied
               </div>
             </div>
 

@@ -26,6 +26,7 @@ import {
   resolveLeadMilestonePaymentBreakdown,
   loadHubDiscountMetaForQuote,
   applyHubDiscountMetaToPayload,
+  mergeCrmVisibleVersionNumbers,
 } from "./routes/prolanceApi";
 import { registerCrmHubBookingRoutes, notifyHubFinanceReview, getHubBookingSyncForLead, buildFinance10pQueueList, buildCrmSalesClosureQueueRows, buildCrmSalesClosureLeadDetail, leadHasDqc1Approval, isCrmBookingFinanceApproved } from "./routes/crmHubBookingRoutes";
 import { readCrmFinanceHandlingMode } from "./routes/crmEasebuzzAutoFinance";
@@ -107,6 +108,8 @@ function buildAllowedOrigins(): string[] {
     "http://127.0.0.1:3000",
     "http://localhost:3002",
     "http://127.0.0.1:3002",
+    "https://hallway-liart.vercel.app",
+    "http://hallway-liart.vercel.app",
   ];
   const set = new Set<string>([...defaults, ...fromEnv]);
   const fe = (process.env.FRONTEND_BASE_URL || "").replace(/\/$/, "");
@@ -1699,6 +1702,42 @@ async function initDb() {
     } catch {
       // ignore
     }
+    try {
+      const [crmVerCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_prolance_quote_snapshots' AND COLUMN_NAME = 'crm_shared_version_number'",
+      );
+      if ((crmVerCol as any[]).length === 0) {
+        await conn.query(
+          "ALTER TABLE lead_prolance_quote_snapshots ADD COLUMN crm_shared_version_number INT NULL",
+        );
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      const [crmQuoteCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_prolance_quote_snapshots' AND COLUMN_NAME = 'crm_shared_quote_id'",
+      );
+      if ((crmQuoteCol as any[]).length === 0) {
+        await conn.query(
+          "ALTER TABLE lead_prolance_quote_snapshots ADD COLUMN crm_shared_quote_id INT NULL",
+        );
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      const [crmVisibleCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_prolance_quote_snapshots' AND COLUMN_NAME = 'crm_visible_version_numbers'",
+      );
+      if ((crmVisibleCol as any[]).length === 0) {
+        await conn.query(
+          "ALTER TABLE lead_prolance_quote_snapshots ADD COLUMN crm_visible_version_numbers TEXT NULL",
+        );
+      }
+    } catch {
+      // ignore
+    }
 
     await conn.query(`
       CREATE TABLE IF NOT EXISTS checklists (
@@ -2971,6 +3010,18 @@ app.get("/api/service/whoami", async (req: Request, res: Response) => {
   });
 });
 
+function quoteVersionUniquenessKey(item: {
+  quoteId: number;
+  changeSummary?: string;
+  versionNumber?: number;
+}): string {
+  const summary = String(item.changeSummary || "").trim();
+  if (/^quote generated$/i.test(summary)) return `${item.quoteId}|generated`;
+  if (summary && !/^no changes$/i.test(summary)) return `${item.quoteId}|${summary.toLowerCase()}`;
+  if (item.versionNumber && item.versionNumber > 0) return `${item.quoteId}:v${item.versionNumber}`;
+  return `${item.quoteId}:base`;
+}
+
 function dedupeProlanceQuoteVersionRows(
   list: Array<{
     quoteId: number;
@@ -2989,11 +3040,9 @@ function dedupeProlanceQuoteVersionRows(
   const seen = new Set<string>();
   const out: typeof list = [];
   for (const item of list) {
-    // Real discount revisions keep version_number; bootstrap/dupes often share quoteId with null/0.
-    const key =
-      item.versionNumber && item.versionNumber > 0
-        ? `${item.quoteId}:v${item.versionNumber}`
-        : `${item.quoteId}:base`;
+    const summary = String(item.changeSummary || "").trim();
+    if (/^no changes$/i.test(summary)) continue;
+    const key = quoteVersionUniquenessKey(item);
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(item);
@@ -3292,11 +3341,13 @@ function isPersonalAppointmentErpRow(raw: unknown): boolean {
   return Boolean(desc);
 }
 
-const HUB_DAY_START_TIME = "11:00";
-const HUB_DAY_END_TIME = "19:00";
-const HUB_DAY_START_MIN = 11 * 60;
-const HUB_DAY_END_MIN = 19 * 60;
+const HUB_DAY_START_TIME = "10:00";
+const HUB_DAY_END_TIME = "20:00";
+const HUB_DAY_START_MIN = 10 * 60;
+const HUB_DAY_END_MIN = 20 * 60;
+const HUB_DAY_STANDARD_GRID_START_MIN = 11 * 60;
 const HUB_DEFAULT_MEETING_DURATION_MIN = 90;
+const HUB_EARLY_SLOT_DURATION_MIN = 60;
 const FULL_DAY_LEAVE_DESC_PREFIX = "FULL_DAY_LEAVE:";
 
 /** Parse wall-clock local datetime `YYYY-MM-DDTHH:mm[:ss]` without timezone drift. */
@@ -3753,17 +3804,47 @@ async function assertDesignerSlotFree(opts: {
 
 const HUB_SLOT_STEP_MIN = 30;
 
-function listHubFreeStartMinutes(
-  busy: HubBusyBlock[],
+function hubMeetingDurationForStart(
+  startMin: number,
   durationMin = HUB_DEFAULT_MEETING_DURATION_MIN,
-): number[] {
-  const free: number[] = [];
+): number {
+  if (startMin === HUB_DAY_START_MIN && durationMin === HUB_DEFAULT_MEETING_DURATION_MIN) {
+    return HUB_EARLY_SLOT_DURATION_MIN;
+  }
+  return durationMin;
+}
+
+function listHubStartMinutes(durationMin = HUB_DEFAULT_MEETING_DURATION_MIN): number[] {
+  const starts: number[] = [];
+  if (durationMin === HUB_DEFAULT_MEETING_DURATION_MIN) {
+    starts.push(HUB_DAY_START_MIN);
+    for (
+      let m = HUB_DAY_STANDARD_GRID_START_MIN;
+      m + hubMeetingDurationForStart(m, durationMin) <= HUB_DAY_END_MIN;
+      m += HUB_SLOT_STEP_MIN
+    ) {
+      starts.push(m);
+    }
+    return starts;
+  }
   for (
     let m = HUB_DAY_START_MIN;
     m + durationMin <= HUB_DAY_END_MIN;
     m += HUB_SLOT_STEP_MIN
   ) {
-    if (findOverlappingBusyBlocks(busy, m, m + durationMin).length === 0) {
+    starts.push(m);
+  }
+  return starts;
+}
+
+function listHubFreeStartMinutes(
+  busy: HubBusyBlock[],
+  durationMin = HUB_DEFAULT_MEETING_DURATION_MIN,
+): number[] {
+  const free: number[] = [];
+  for (const m of listHubStartMinutes(durationMin)) {
+    const dur = hubMeetingDurationForStart(m, durationMin);
+    if (findOverlappingBusyBlocks(busy, m, m + dur).length === 0) {
       free.push(m);
     }
   }
@@ -5541,7 +5622,22 @@ app.get("/api/google-calendar/my-events", async (req: Request, res: Response) =>
       return res.status(403).json({ message: "You do not have access to HUB Calendar." });
     }
     const visibleUsers = await getCalendarVisibleUsers(user);
-    const connectionRows = visibleUsers.map((visibleUser) => ({
+    // Optional: filter to a single user when the calendar dropdown filter is used
+    const filterUserId = req.query.filterUserId ? Number(req.query.filterUserId) : null;
+    let effectiveUsers = visibleUsers;
+    if (filterUserId) {
+      const match = visibleUsers.find((u) => u.id === filterUserId);
+      if (match) {
+        effectiveUsers = [match];
+      } else {
+        const [uRows] = await pool.query(
+          "SELECT id, email, name, role FROM users WHERE id = ? LIMIT 1",
+          [filterUserId],
+        );
+        effectiveUsers = (uRows as any[]).length > 0 ? (uRows as any[]) : [];
+      }
+    }
+    const connectionRows = effectiveUsers.map((visibleUser) => ({
       user_id: visibleUser.id,
       user_email: visibleUser.email,
       user_name: visibleUser.name,
@@ -5552,7 +5648,7 @@ app.get("/api/google-calendar/my-events", async (req: Request, res: Response) =>
 
     const [googleEvents, erpPersonalEvents] = await Promise.all([
       gatherHubCalendarEventsForConnections(connectionRows, timeMin, timeMax),
-      fetchErpPersonalBlocksAsCalendarEvents(visibleUsers, timeMin, timeMax),
+      fetchErpPersonalBlocksAsCalendarEvents(effectiveUsers, timeMin, timeMax),
     ]);
     const allEvents = mergeHubCalendarEventsById(googleEvents, erpPersonalEvents);
 
@@ -5561,6 +5657,24 @@ app.get("/api/google-calendar/my-events", async (req: Request, res: Response) =>
   } catch (err: any) {
     console.error("google-calendar my-events error", err);
     return res.status(500).json({ message: err?.message || "Failed to load Google Calendar events" });
+  }
+});
+
+// Return the list of calendar-visible users for the current user (populates the designer filter dropdown)
+app.get("/api/google-calendar/visible-users", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    if (!canAccessHubCalendar(user.role)) {
+      return res.status(403).json({ message: "You do not have access to HUB Calendar." });
+    }
+    const normalizedRole = (user.role || "").toLowerCase();
+    const teamUsers = await getPersonalAppointmentVisibleUsers(user);
+    const users = teamUsers.map((u) => ({ id: u.id, name: u.name, role: u.role }));
+    return res.json({ users });
+  } catch (err) {
+    console.error("google-calendar visible-users error", err);
+    return res.status(500).json({ message: "Failed to load visible users" });
   }
 });
 
@@ -5591,7 +5705,13 @@ app.get("/api/google-calendar/all-events", async (req: Request, res: Response) =
       user_role: row.user_role,
     }));
 
-    const ownerRows = connectionRows.map((row) => ({
+    // Optional: filter to a single user when the calendar dropdown filter is used
+    const filterUserId = req.query.filterUserId ? Number(req.query.filterUserId) : null;
+    const effectiveConnectionRows = filterUserId
+      ? connectionRows.filter((r) => r.user_id === filterUserId)
+      : connectionRows;
+
+    const ownerRows = effectiveConnectionRows.map((row) => ({
       id: row.user_id,
       email: row.user_email,
       name: row.user_name,
@@ -5603,7 +5723,7 @@ app.get("/api/google-calendar/all-events", async (req: Request, res: Response) =
         console.error("hub calendar CRM aggregate failed", err);
         return [] as any[];
       }),
-      gatherHubCalendarEventsForConnections(connectionRows, timeMin, timeMax),
+      gatherHubCalendarEventsForConnections(effectiveConnectionRows, timeMin, timeMax),
       fetchErpPersonalBlocksAsCalendarEvents(ownerRows, timeMin, timeMax),
     ]);
     const allEvents = mergeHubCalendarEventsById(crmEvents, localEvents, erpPersonalEvents);
@@ -7358,6 +7478,61 @@ async function resolveLatestQuoteLinkForLead(leadId: number): Promise<{
   };
 }
 
+type CrmShareSelection = {
+  versionNumber: number;
+  quoteId: number;
+};
+
+function crmQuoteInternalUrl(leadId: number, quoteId: number): string {
+  return `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}?internal=1&leadId=${encodeURIComponent(String(leadId))}&audience=crm`;
+}
+
+async function leadIsPre10Stage(leadId: number): Promise<boolean> {
+  try {
+    const [rows] = await pool.query(`SELECT project_stage AS projectStage FROM leads WHERE id = ? LIMIT 1`, [
+      leadId,
+    ]);
+    const stage = String((rows as { projectStage?: unknown }[])[0]?.projectStage || "").trim();
+    if (!stage) return true;
+    if (/^cancelled$/i.test(stage)) return false;
+    if (stage === "Inactive") return true;
+    if (stage === "Active") return false;
+    if (stage === "10-20%") return false;
+    if (stage === "20-60%" || stage === "20" || stage === "20-60") return false;
+    if (["SUBMITTED", "PAYMENT_PENDING", "D1_ACTIVATED", "CONDITIONAL_D1", "Pre 10%"].includes(stage)) return true;
+    if (stage.startsWith("10") && stage.includes("20")) return false;
+    if (stage.startsWith("20") || stage.includes("60")) return false;
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+async function loadCrmShareForLead(leadId: number): Promise<CrmShareSelection | null> {
+  try {
+    const [rows] = await pool.query(
+      `SELECT crm_shared_version_number AS versionNumber, crm_shared_quote_id AS quoteId
+       FROM lead_prolance_quote_snapshots
+       WHERE lead_id = ?
+         AND crm_shared_quote_id IS NOT NULL
+         AND crm_shared_quote_id > 0
+       ORDER BY id DESC
+       LIMIT 1`,
+      [leadId],
+    );
+    const row = (rows as { versionNumber?: unknown; quoteId?: unknown }[])[0];
+    const quoteId = row?.quoteId != null ? Number(row.quoteId) : NaN;
+    const versionNumber = row?.versionNumber != null ? Number(row.versionNumber) : NaN;
+    if (!Number.isFinite(quoteId) || quoteId < 1) return null;
+    return {
+      quoteId,
+      versionNumber: Number.isFinite(versionNumber) && versionNumber > 0 ? versionNumber : 1,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function appendLatestQuoteLinkToMinutes(minutes: string, quoteUrl: string): string {
   const trimmed = (minutes || "").trim();
   if (trimmed.includes(quoteUrl)) return trimmed;
@@ -7919,6 +8094,40 @@ async function handleCrmInternalLinkByExternalLeadId(req: Request, res: Response
     }
 
     const leadId = Number(lead.id);
+    const pre10 = await leadIsPre10Stage(leadId);
+    const selected = await loadCrmShareForLead(leadId);
+
+    if (pre10) {
+      if (!selected) {
+        res.json({
+          ok: true,
+          selectedForCrm: false,
+          externalLeadId,
+          leadId,
+          quoteId: null,
+          crmSharedQuoteId: null,
+          crmSharedVersionNumber: null,
+          internalQuoteUrl: null,
+          customerQuoteUrl: null,
+          message: "Designer has not selected a quote version for CRM yet",
+        });
+        return;
+      }
+      res.json({
+        ok: true,
+        selectedForCrm: true,
+        isPre10: true,
+        externalLeadId,
+        leadId,
+        quoteId: selected.quoteId,
+        crmSharedQuoteId: selected.quoteId,
+        crmSharedVersionNumber: selected.versionNumber,
+        internalQuoteUrl: crmQuoteInternalUrl(leadId, selected.quoteId),
+        customerQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(selected.quoteId))}`,
+      });
+      return;
+    }
+
     let quoteId =
       lead.prolanceQuoteId != null && Number.isFinite(Number(lead.prolanceQuoteId))
         ? Number(lead.prolanceQuoteId)
@@ -7971,11 +8180,15 @@ async function handleCrmInternalLinkByExternalLeadId(req: Request, res: Response
 
     res.json({
       ok: true,
+      selectedForCrm: selected != null,
+      isPre10: false,
       externalLeadId,
       leadId,
-      quoteId,
-      internalQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}?internal=1&leadId=${encodeURIComponent(String(leadId))}`,
-      customerQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}`,
+      quoteId: selected?.quoteId ?? quoteId,
+      crmSharedQuoteId: selected?.quoteId ?? null,
+      crmSharedVersionNumber: selected?.versionNumber ?? null,
+      internalQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(selected?.quoteId ?? quoteId))}?internal=1&leadId=${encodeURIComponent(String(leadId))}`,
+      customerQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(selected?.quoteId ?? quoteId))}`,
     });
   } catch (err) {
     console.error("crm internal quote link error", err);
@@ -7988,7 +8201,70 @@ app.get("/api/crm/quotes/internal-link/:externalLeadId", handleCrmInternalLinkBy
 // CRM compatibility alias (requested path pattern)
 app.get("/api/new-crm/quotes/internal-link/by-lead/:externalLeadId", handleCrmInternalLinkByExternalLeadId);
 
-// CRM: fetch internal/customer quote links + current discount (for CRM UI to open quote and edit discount there).
+async function sendCrmSelectedQuotePayload(
+  res: Response,
+  leadId: number,
+  requestedQuoteId?: number,
+): Promise<void> {
+  const selected = await loadCrmShareForLead(leadId);
+  if (!selected) {
+    res.status(404).json({
+      ok: false,
+      selectedForCrm: false,
+      message: "Designer has not selected a quote version for CRM yet",
+    });
+    return;
+  }
+  if (
+    requestedQuoteId != null &&
+    Number.isFinite(requestedQuoteId) &&
+    requestedQuoteId > 0 &&
+    requestedQuoteId !== selected.quoteId
+  ) {
+    res.status(404).json({
+      ok: false,
+      selectedForCrm: true,
+      quoteId: selected.quoteId,
+      crmSharedVersionNumber: selected.versionNumber,
+      message: "This quote version is not selected for CRM",
+    });
+    return;
+  }
+
+  const quoteId = selected.quoteId;
+  const [snapRows] = await pool.query(
+    `SELECT lead_id AS leadId, quote_id AS quoteId, payload_json AS payloadJson, created_at AS createdAt
+     FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
+    [quoteId],
+  );
+  const snap = (snapRows as any[])[0];
+  if (!snap || Number(snap.leadId) !== leadId) {
+    res.status(404).json({ message: "Quote snapshot not found" });
+    return;
+  }
+
+  const snapshotPayload: Record<string, unknown> = parseStoredJsonObject(snap.payloadJson) ?? {};
+  const links = {
+    customerQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}`,
+    internalQuoteUrl: crmQuoteInternalUrl(leadId, quoteId),
+  };
+  const discount = readDiscountMetaFromSnapshot(snapshotPayload);
+
+  res.json({
+    ok: true,
+    selectedForCrm: true,
+    leadId,
+    quoteId,
+    crmSharedQuoteId: quoteId,
+    crmSharedVersionNumber: selected.versionNumber,
+    createdAt: snap.createdAt,
+    links,
+    discount,
+    rawSnapshot: snapshotPayload,
+  });
+}
+
+// CRM: fetch only the designer-selected quote version (never other revisions).
 app.get("/api/crm/leads/:leadId/quotes/:quoteId", async (req: Request, res: Response) => {
   if (!requireExternalApiKey(req, res, "CRM quote access")) return;
   const leadId = Number(req.params.leadId);
@@ -7997,6 +8273,10 @@ app.get("/api/crm/leads/:leadId/quotes/:quoteId", async (req: Request, res: Resp
   if (!Number.isFinite(quoteId) || quoteId < 1) return res.status(400).json({ message: "Invalid quoteId" });
 
   try {
+    if (await leadIsPre10Stage(leadId)) {
+      await sendCrmSelectedQuotePayload(res, leadId, quoteId);
+      return;
+    }
     const [snapRows] = await pool.query(
       `SELECT lead_id AS leadId, quote_id AS quoteId, payload_json AS payloadJson, created_at AS createdAt
        FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
@@ -8006,27 +8286,42 @@ app.get("/api/crm/leads/:leadId/quotes/:quoteId", async (req: Request, res: Resp
     if (!snap || Number(snap.leadId) !== leadId) {
       return res.status(404).json({ message: "Quote snapshot not found" });
     }
-
     const snapshotPayload: Record<string, unknown> = parseStoredJsonObject(snap.payloadJson) ?? {};
-
-    const links = {
-      customerQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}`,
-      internalQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}?internal=1&leadId=${encodeURIComponent(String(leadId))}`,
-    };
-    const discount = readDiscountMetaFromSnapshot(snapshotPayload);
-
     return res.json({
       ok: true,
+      selectedForCrm: false,
+      isPre10: false,
       leadId,
       quoteId,
       createdAt: snap.createdAt,
-      links,
-      discount,
+      links: {
+        customerQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}`,
+        internalQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}?internal=1&leadId=${encodeURIComponent(String(leadId))}`,
+      },
+      discount: readDiscountMetaFromSnapshot(snapshotPayload),
       rawSnapshot: snapshotPayload,
     });
   } catch (err) {
     console.error("crm quote get error", err);
     return res.status(500).json({ message: "Failed to load quote snapshot" });
+  }
+});
+
+app.get("/api/crm/quotes/selected/:externalLeadId", async (req: Request, res: Response) => {
+  if (!requireExternalApiKey(req, res, "CRM selected quote")) return;
+  const externalLeadId = String(req.params.externalLeadId || "").trim();
+  if (!externalLeadId) {
+    return res.status(400).json({ message: "externalLeadId is required" });
+  }
+  try {
+    const lead = await findLeadRowForCrmQuoteLookup(externalLeadId);
+    if (!lead) {
+      return res.status(404).json({ message: "Lead not found for externalLeadId" });
+    }
+    await sendCrmSelectedQuotePayload(res, Number(lead.id));
+  } catch (err) {
+    console.error("crm selected quote error", err);
+    return res.status(500).json({ message: "Failed to load selected CRM quote" });
   }
 });
 
@@ -8037,6 +8332,17 @@ app.patch("/api/crm/leads/:leadId/quotes/:quoteId/discount", async (req: Request
   const quoteId = Number(req.params.quoteId);
   if (!Number.isFinite(leadId) || leadId < 1) return res.status(400).json({ message: "Invalid leadId" });
   if (!Number.isFinite(quoteId) || quoteId < 1) return res.status(400).json({ message: "Invalid quoteId" });
+
+  if (await leadIsPre10Stage(leadId)) {
+    const crmSelected = await loadCrmShareForLead(leadId);
+    if (!crmSelected || crmSelected.quoteId !== quoteId) {
+      return res.status(404).json({
+        message: crmSelected
+          ? "This quote version is not selected for CRM"
+          : "Designer has not selected a quote version for CRM yet",
+      });
+    }
+  }
 
   const body = (req.body || {}) as Record<string, unknown>;
   const flatDiscountPctRaw = parseFiniteNumber(body.flatDiscountPct ?? body.hubFlatDiscountPct);
@@ -18144,11 +18450,53 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
     }
     const changeSummary = changesList.length > 0 ? changesList.join("; ") : "No changes";
 
-    // Temporarily always write a new version so the same discount can be re-saved
-    // after the customer-link error (duplicate-version popup blocked Save).
-    const isNewVersionCreated = true;
-    void hasExistingVersions;
-    void isSameWithPrevious;
+    const discountFingerprint = (state: {
+      woodwork: number;
+      accessories: number;
+      constructionHw: number;
+      services: number;
+      amount: number;
+      additionalDiscount: number;
+    }) =>
+      [
+        state.woodwork,
+        state.accessories,
+        state.constructionHw,
+        state.services,
+        Math.round(state.amount),
+        Math.round(state.additionalDiscount),
+      ].join("|");
+
+    let isDuplicateVersion = isSameWithPrevious && hasExistingVersions;
+    if (!viaCrmInternal && !isDuplicateVersion) {
+      const [dupRows] = await pool.query(
+        `SELECT discount_snapshot, updated_values
+         FROM lead_prolance_quote_versions
+         WHERE lead_id = ? AND quote_id = ?`,
+        [effectiveLeadId, quoteId],
+      );
+      const targetFp = discountFingerprint(targetDiscountState);
+      for (const row of dupRows as { discount_snapshot?: unknown; updated_values?: unknown }[]) {
+        const parsed = parseStoredJsonObject(row.discount_snapshot) || parseStoredJsonObject(row.updated_values);
+        if (!parsed) continue;
+        const existingFp = discountFingerprint({
+          woodwork: parseFiniteNumber(parsed.woodwork) ?? 0,
+          accessories: parseFiniteNumber(parsed.accessories) ?? 0,
+          constructionHw: parseFiniteNumber(parsed.constructionHw) ?? 0,
+          services: parseFiniteNumber(parsed.services) ?? 0,
+          amount: Math.round(parseFiniteNumber(parsed.amount) ?? 0),
+          additionalDiscount: Math.round(parseFiniteNumber(parsed.additionalDiscount) ?? 0),
+        });
+        if (existingFp === targetFp) {
+          isDuplicateVersion = true;
+          break;
+        }
+      }
+    }
+    if (!viaCrmInternal && changeSummary === "No changes") isDuplicateVersion = true;
+
+    const isNewVersionCreated = !isDuplicateVersion;
+    let createdVersionNumber: number | null = null;
     if (isNewVersionCreated) {
       const [maxRow] = await pool.query(
         `SELECT MAX(version_number) AS maxVer, COUNT(*) AS countAll FROM lead_prolance_quote_versions WHERE lead_id = ?`,
@@ -18157,6 +18505,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       const maxVer = (maxRow as any[])[0]?.maxVer;
       const countAll = (maxRow as any[])[0]?.countAll ?? 0;
       const nextVersionNumber = Math.max(Number(maxVer) || 0, Number(countAll) || 0) + 1;
+      createdVersionNumber = nextVersionNumber;
 
       const sourceModule = fromCrmModule ? "CRM" : "Design Module";
       await pool.query(
@@ -18180,6 +18529,35 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
         ],
       );
       void evaluateLeadQuotationRevisionXp(pool, effectiveLeadId);
+
+      if (viaCrmInternal) {
+        try {
+          const [shareRows] = await pool.query(
+            `SELECT crm_shared_version_number AS latest, crm_visible_version_numbers AS visible
+             FROM lead_prolance_quote_snapshots
+             WHERE lead_id = ? OR quote_id = ?
+             ORDER BY id DESC LIMIT 8`,
+            [effectiveLeadId, quoteId],
+          );
+          let prevLatest: number | null = null;
+          let visibleRaw: unknown;
+          for (const row of shareRows as { latest?: unknown; visible?: unknown }[]) {
+            if (visibleRaw == null && row.visible != null) visibleRaw = row.visible;
+            const n = Number(row.latest);
+            if (prevLatest == null && Number.isFinite(n) && n > 0) prevLatest = n;
+          }
+          const visibleJson = mergeCrmVisibleVersionNumbers(visibleRaw, prevLatest, nextVersionNumber);
+          await pool.query(
+            `UPDATE lead_prolance_quote_snapshots
+             SET crm_shared_version_number = ?, crm_shared_quote_id = ?,
+                 customer_shared_version_number = ?, crm_visible_version_numbers = ?
+             WHERE lead_id = ?`,
+            [nextVersionNumber, quoteId, nextVersionNumber, visibleJson, effectiveLeadId],
+          );
+        } catch (crmShareErr) {
+          console.error("crm-share stamp after CRM discount save failed", crmShareErr);
+        }
+      }
 
       // Record event into lead_history so it appears in the Lead's History card
       try {
@@ -18232,6 +18610,31 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       }
     }
 
+    if (viaCrmInternal && createdVersionNumber != null) {
+      try {
+        const hubMetaAfter = await loadHubDiscountMetaForQuote(pool, quoteId, {
+          applySharedVersion: false,
+          forceSharedVersion: createdVersionNumber,
+        });
+        if (hubMetaAfter && Object.keys(hubMetaAfter).length > 0) {
+          nextPayload = applyHubDiscountMetaToPayload(nextPayload, hubMetaAfter);
+          const payableAfter = extractTotalPayableAmount(nextPayload);
+          if (payableAfter != null) {
+            nextPayload = applyHubDiscountMetaToPayload(
+              { ...nextPayload, totalPayableAmount: payableAfter, finalTotalPrice: payableAfter },
+              hubMetaAfter,
+            );
+          }
+          await pool.query(`UPDATE lead_prolance_quote_snapshots SET payload_json = ? WHERE quote_id = ?`, [
+            JSON.stringify(nextPayload),
+            quoteId,
+          ]);
+        }
+      } catch (recomputeErr) {
+        console.error("CRM quote snapshot recompute after discount save failed", recomputeErr);
+      }
+    }
+
     const updatedVersions = await loadProlanceQuoteVersionsForLead(effectiveLeadId);
 
     return res.json({
@@ -18239,7 +18642,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       leadId: effectiveLeadId,
       quoteId,
       updated: ins.affectedRows > 0,
-      alreadyExists: false,
+      alreadyExists: isDuplicateVersion,
       discount: discountMeta,
       payload: nextPayload,
       versions: updatedVersions,
@@ -18251,7 +18654,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
 });
 
 // Designers pick one revision to expose on the customer /quote/:id link.
-app.patch("/api/leads/:id/quotes/:quoteId/customer-share", async (req: Request, res: Response) => {
+const handleCustomerShareQuoteVersion = async (req: Request, res: Response) => {
   const leadId = Number(req.params.id);
   const quoteId = Number(req.params.quoteId);
   if (!Number.isFinite(leadId) || leadId < 1) return res.status(400).json({ message: "Invalid id" });
@@ -18299,8 +18702,24 @@ app.patch("/api/leads/:id/quotes/:quoteId/customer-share", async (req: Request, 
        FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
       [quoteId],
     );
-    const snap = (snapRows as { leadId?: unknown; payloadJson?: unknown }[])[0];
-    if (!snap) return res.status(404).json({ message: "Quote snapshot not found" });
+    let snap = (snapRows as { leadId?: unknown; payloadJson?: unknown }[])[0];
+    if (!snap) {
+      const [leadSnaps] = await pool.query(
+        `SELECT lead_id AS leadId, payload_json AS payloadJson
+         FROM lead_prolance_quote_snapshots WHERE lead_id = ? ORDER BY created_at DESC LIMIT 1`,
+        [leadId],
+      );
+      snap = (leadSnaps as { leadId?: unknown; payloadJson?: unknown }[])[0];
+    }
+    if (!snap) {
+      await pool.query(
+        `INSERT INTO lead_prolance_quote_snapshots (lead_id, quote_id, payload_json, created_at)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE lead_id = VALUES(lead_id)`,
+        [leadId, quoteId, JSON.stringify({}), new Date()],
+      );
+      snap = { leadId, payloadJson: {} };
+    }
     const snapLead = Number(snap.leadId);
     if (Number.isFinite(snapLead) && snapLead > 0 && snapLead !== leadId) {
       return res.status(404).json({ message: "Quote snapshot not found for this lead" });
@@ -18315,13 +18734,12 @@ app.patch("/api/leads/:id/quotes/:quoteId/customer-share", async (req: Request, 
       leadVersions.find(
         (row) => Number(row.quoteId) === selectedQuoteId && Number(row.versionNumber) === versionNumber,
       ) ||
+      leadVersions.find(
+        (row) => Number(row.quoteId) === selectedQuoteId,
+      ) ||
       leadVersions.find((row) => Number(row.versionNumber) === versionNumber) ||
       leadVersions.find((_, idx) => idx + 1 === versionNumber) ||
-      null;
-
-    if (!matched && leadVersions.length > 0) {
-      return res.status(404).json({ message: "That quote version was not found" });
-    }
+      (leadVersions.length > 0 ? leadVersions[leadVersions.length - 1] : null);
 
     const persistQuoteId = matched?.quoteId && matched.quoteId > 0 ? matched.quoteId : quoteId;
     const persistVersion =
@@ -18378,9 +18796,153 @@ app.patch("/api/leads/:id/quotes/:quoteId/customer-share", async (req: Request, 
     });
   } catch (err) {
     console.error("customer-share quote version error", err);
-    return res.status(500).json({ message: "Failed to share quote version with customer" });
+    res.status(500).json({ message: "Failed to share quote version with customer" });
   }
-});
+};
+
+app.patch("/api/leads/:id/quotes/:quoteId/customer-share", handleCustomerShareQuoteVersion);
+app.post("/api/leads/:id/quotes/:quoteId/customer-share", handleCustomerShareQuoteVersion);
+
+// Designers pick one Pre-10 revision for CRM. Other versions are hidden from CRM APIs.
+const handleCrmShareQuoteVersion = async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  const quoteId = Number(req.params.quoteId);
+  if (!Number.isFinite(leadId) || leadId < 1) return res.status(400).json({ message: "Invalid id" });
+  if (!Number.isFinite(quoteId) || quoteId < 1) return res.status(400).json({ message: "Invalid quoteId" });
+
+  const body = (req.body || {}) as Record<string, unknown>;
+  const versionNumber = Number(body.versionNumber ?? body.crmSharedVersionNumber);
+  if (!Number.isFinite(versionNumber) || versionNumber < 1) {
+    return res.status(400).json({ message: "versionNumber is required" });
+  }
+
+  const normalizeShareRole = (raw: unknown): string =>
+    String(raw || "")
+      .trim()
+      .toLowerCase()
+      .replace(/^(role_|crm_)/i, "");
+  const canShareRole = (role: string): boolean =>
+    [
+      "designer",
+      "design_manager",
+      "territorial_design_manager",
+      "deputy_general_manager",
+      "admin",
+      "super_admin",
+      "superadmin",
+    ].includes(role);
+
+  const user = await getUserFromSession(req);
+  if (!user) return res.status(401).json({ message: "Unauthorized" });
+  if (!canShareRole(normalizeShareRole(user.role))) {
+    return res.status(403).json({ message: "You are not allowed to select a quote version for CRM" });
+  }
+
+  try {
+    const [snapRows] = await pool.query(
+      `SELECT lead_id AS leadId, payload_json AS payloadJson
+       FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
+      [quoteId],
+    );
+    let snap = (snapRows as { leadId?: unknown; payloadJson?: unknown }[])[0];
+    if (!snap) {
+      const [leadSnaps] = await pool.query(
+        `SELECT lead_id AS leadId, payload_json AS payloadJson
+         FROM lead_prolance_quote_snapshots WHERE lead_id = ? ORDER BY created_at DESC LIMIT 1`,
+        [leadId],
+      );
+      snap = (leadSnaps as { leadId?: unknown; payloadJson?: unknown }[])[0];
+    }
+    if (!snap) {
+      await pool.query(
+        `INSERT INTO lead_prolance_quote_snapshots (lead_id, quote_id, payload_json, created_at)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE lead_id = VALUES(lead_id)`,
+        [leadId, quoteId, JSON.stringify({}), new Date()],
+      );
+      snap = { leadId, payloadJson: {} };
+    }
+    const snapLead = Number(snap.leadId);
+    if (Number.isFinite(snapLead) && snapLead > 0 && snapLead !== leadId) {
+      return res.status(404).json({ message: "Quote snapshot not found for this lead" });
+    }
+
+    const selectedQuoteIdRaw = Number(body.selectedQuoteId ?? body.quoteId);
+    const selectedQuoteId =
+      Number.isFinite(selectedQuoteIdRaw) && selectedQuoteIdRaw > 0 ? selectedQuoteIdRaw : quoteId;
+
+    const leadVersions = await loadProlanceQuoteVersionsForLead(leadId);
+    const matched =
+      leadVersions.find(
+        (row) => Number(row.quoteId) === selectedQuoteId && Number(row.versionNumber) === versionNumber,
+      ) ||
+      leadVersions.find((row) => Number(row.quoteId) === selectedQuoteId) ||
+      leadVersions.find((row) => Number(row.versionNumber) === versionNumber) ||
+      leadVersions.find((_, idx) => idx + 1 === versionNumber) ||
+      (leadVersions.length > 0 ? leadVersions[leadVersions.length - 1] : null);
+
+    const persistQuoteId = matched?.quoteId && matched.quoteId > 0 ? matched.quoteId : quoteId;
+    const persistVersion =
+      matched?.versionNumber && matched.versionNumber > 0 ? matched.versionNumber : versionNumber;
+
+    const crmVisibleJson = mergeCrmVisibleVersionNumbers(null, persistVersion);
+    await pool.query(
+      `UPDATE lead_prolance_quote_snapshots
+       SET crm_shared_version_number = ?, crm_shared_quote_id = ?, crm_visible_version_numbers = ?
+       WHERE lead_id = ?`,
+      [persistVersion, persistQuoteId, crmVisibleJson, leadId],
+    );
+    await pool.query(
+      `UPDATE lead_prolance_quote_snapshots
+       SET crm_shared_version_number = ?, crm_shared_quote_id = ?, crm_visible_version_numbers = ?
+       WHERE quote_id IN (?, ?)`,
+      [persistVersion, persistQuoteId, crmVisibleJson, quoteId, persistQuoteId],
+    );
+
+    const hubMeta = await loadHubDiscountMetaForQuote(pool, persistQuoteId, {
+      applySharedVersion: false,
+      forceSharedVersion: persistVersion,
+    });
+    let payloadSource = snap.payloadJson;
+    if (persistQuoteId !== quoteId) {
+      const [persistSnaps] = await pool.query(
+        `SELECT payload_json AS payloadJson FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
+        [persistQuoteId],
+      );
+      const persistSnap = (persistSnaps as { payloadJson?: unknown }[])[0];
+      if (persistSnap?.payloadJson != null) payloadSource = persistSnap.payloadJson;
+    }
+    const existing = parseStoredJsonObject(payloadSource) ?? {};
+    let nextPayload = applyHubDiscountMetaToPayload(existing, hubMeta);
+    const payable = extractTotalPayableAmount(nextPayload);
+    if (payable != null) {
+      nextPayload = applyHubDiscountMetaToPayload(
+        { ...nextPayload, totalPayableAmount: payable, finalTotalPrice: payable },
+        hubMeta,
+      );
+    }
+    await pool.query(`UPDATE lead_prolance_quote_snapshots SET payload_json = ? WHERE quote_id = ?`, [
+      JSON.stringify(nextPayload),
+      persistQuoteId,
+    ]);
+
+    return res.json({
+      ok: true,
+      leadId,
+      quoteId: persistQuoteId,
+      crmSharedQuoteId: persistQuoteId,
+      crmSharedVersionNumber: persistVersion,
+      discount: hubMeta,
+      payload: nextPayload,
+    });
+  } catch (err) {
+    console.error("crm-share quote version error", err);
+    res.status(500).json({ message: "Failed to select quote version for CRM" });
+  }
+};
+
+app.patch("/api/leads/:id/quotes/:quoteId/crm-share", handleCrmShareQuoteVersion);
+app.post("/api/leads/:id/quotes/:quoteId/crm-share", handleCrmShareQuoteVersion);
 
 // Freeze quote JSON at generation time so older /quote/:id links stay correct after Prolance revisions.
 app.post("/api/leads/:id/prolance-quote-snapshots", async (req: Request, res: Response) => {
@@ -19790,7 +20352,7 @@ app.get("/api/appointment/available-designers", async (req: Request, res: Respon
         Number.isFinite(durationRaw) && durationRaw > 0
           ? Math.round(durationRaw)
           : HUB_DEFAULT_MEETING_DURATION_MIN;
-      endMin = startMin + durationMin;
+      endMin = startMin + hubMeetingDurationForStart(startMin, durationMin);
       endTimeOut = formatHubLocalDateTime(dateIso, endMin);
     }
 
@@ -19798,7 +20360,7 @@ app.get("/api/appointment/available-designers", async (req: Request, res: Respon
       return res.status(400).json({ message: "endTime must be after startTime" });
     }
 
-    // Hub window: 11:00–19:00
+    // Hub window: 10:00–20:00
     if (startMin < HUB_DAY_START_MIN || endMin > HUB_DAY_END_MIN) {
       return res.status(400).json({
         message: `Meeting must fall within Hub window ${HUB_DAY_START_TIME}–${HUB_DAY_END_TIME}`,
@@ -20095,12 +20657,15 @@ app.get("/api/appointment/me/available-slots", async (req: Request, res: Respons
     }
 
     const freeMins = listHubFreeStartMinutes(busy, durationMin);
-    const availableSlots = freeMins.map((startMin) => ({
-      startTime: formatHubLocalDateTime(dateIso, startMin),
-      endTime: formatHubLocalDateTime(dateIso, startMin + durationMin),
-      startLabel: minutesToHubLabel(startMin),
-      endLabel: minutesToHubLabel(startMin + durationMin),
-    }));
+    const availableSlots = freeMins.map((startMin) => {
+      const dur = hubMeetingDurationForStart(startMin, durationMin);
+      return {
+        startTime: formatHubLocalDateTime(dateIso, startMin),
+        endTime: formatHubLocalDateTime(dateIso, startMin + dur),
+        startLabel: minutesToHubLabel(startMin),
+        endLabel: minutesToHubLabel(startMin + dur),
+      };
+    });
 
     return res.json({
       date: dateIso,
