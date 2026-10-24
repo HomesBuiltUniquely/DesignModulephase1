@@ -1,16 +1,22 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { buildAuthHeaders, getApiBase } from '../lib/apiBase';
+import { BRANCH_LOCATIONS, resolveBranchCode } from '../constants/branches';
+import CustomSelect from './ui/CustomSelect';
+import MeetingSlotPickerModal from '../Leads/[id]/components/popups/MeetingSlotPickerModal';
+import { formatHubTimeRange, HUB_MEETING_DURATION_MIN, minutesToHubTime24 } from '../../lib/hub-meeting-schedule';
+import styles from './meetingManagement.module.css';
 
-/** Who can open Meeting Management. Add roles here when access should widen. */
+/** Designer sees their own meetings. Design manager and TDM see the people under them. Admin sees everyone. */
 export function canShowMeetingManagement(role: string | undefined | null): boolean {
-  return (role || '').toLowerCase() === 'admin';
+  const value = (role || '').toLowerCase();
+  return value === 'admin' || value === 'designer' || value === 'design_manager' || value === 'territorial_design_manager';
 }
 
 type ScheduledMeeting = {
+  id?: number;
   leadId: number;
   projectId: string | null;
   projectName: string | null;
@@ -20,22 +26,91 @@ type ScheduledMeeting = {
   phone: string | null;
   salesName: string | null;
   quotationTotal: string | null;
+  budget?: string | null;
   designerName: string;
+  branchName?: string | null;
   meetingDate: string;
   meetingTime: string | null;
   meetingTimeLabel: string | null;
   meetingType: string | null;
   meetingMode: string | null;
+  meetingStatus?: string | null;
+  progress?: string | null;
+  source?: string | null;
+  cancelReason?: string | null;
+  personalKey?: string | null;
+  personalKind?: 'block' | 'full_day' | null;
+  personalReason?: string | null;
+  personalApproval?: 'active' | 'pending' | 'approved' | 'cancelled' | 'expired' | null;
+  meetingEndTime?: string | null;
+};
+
+type MeetingMode = 'online' | 'offline';
+type Venue = 'Showroom visit' | 'Virtual meeting' | 'Site visit';
+type ViewStatus = 'scheduled' | 'in_progress' | 'completed' | 'cancelled' | 'abandoned';
+type StatusFilter = 'all' | 'scheduled' | 'in_progress' | 'completed' | 'cancelled';
+type DatePreset = 'all' | 'month' | '3m' | '6m' | '1y' | 'prev' | 'custom';
+type PersonalKindFilter = 'all' | 'block' | 'full_day';
+
+type ViewMeeting = {
+  key: string;
+  raw: ScheduledMeeting;
+  id?: number;
+  leadId: number;
+  customer: string;
+  phone: string | null;
+  designer: string;
+  sales: string;
+  branchKey: string;
+  branchLabel: string;
+  venue: Venue;
+  kind: string;
+  mode: MeetingMode;
+  start: string;
+  day: string;
+  minutes: number | null;
+  status: ViewStatus;
+  quote: number | null;
+  personal: boolean;
+  personalKind: 'block' | 'full_day' | null;
+  personalReason: string;
+  personalApproval: string | null;
+  endMinutes: number | null;
+  overlapsClient: boolean;
+  insideLeave: boolean;
 };
 
 const AVATARS = [
-  { bg: '#F3E8FF', fg: '#7C3AED' },
-  { bg: '#FCE7F3', fg: '#DB2777' },
-  { bg: '#FEF3C7', fg: '#B45309' },
-  { bg: '#DCFCE7', fg: '#15803D' },
-  { bg: '#E0E7FF', fg: '#4338CA' },
-  { bg: '#FFEDD5', fg: '#C2410C' },
-  { bg: '#E0F2FE', fg: '#0369A1' },
+  { bg: '#F8E4E4', fg: '#9A3B3B' },
+  { bg: '#E5F4EF', fg: '#138A6B' },
+  { bg: '#F3E6DA', fg: '#8A5230' },
+  { bg: '#E7EEF6', fg: '#3D5A80' },
+  { bg: '#F8EFD6', fg: '#8A6A1F' },
+  { bg: '#EEE7F6', fg: '#5C4A86' },
+];
+
+const STATUS_LABEL: Record<ViewStatus, string> = {
+  scheduled: 'Scheduled',
+  in_progress: 'In progress',
+  completed: 'Successful',
+  cancelled: 'Cancelled',
+  abandoned: 'Meeting abandoned',
+};
+
+const STEP_LABELS = ['Scheduled', 'In progress', 'Successful'] as const;
+const HOURS = Array.from({ length: 12 }, (_, index) => index + 9);
+const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const PAGE_SIZE = 10;
+const CLIENT_SLOT_MIN = 90;
+
+const DATE_PRESETS: { id: DatePreset; label: string }[] = [
+  { id: 'month', label: 'This month' },
+  { id: 'all', label: 'All time' },
+  { id: '3m', label: 'Last 3 months' },
+  { id: '6m', label: 'Last 6 months' },
+  { id: '1y', label: 'Last 1 year' },
+  { id: 'prev', label: 'Previous month' },
+  { id: 'custom', label: 'Custom range' },
 ];
 
 function kolkataTodayIso(): string {
@@ -47,6 +122,19 @@ function kolkataTodayIso(): string {
   }).format(new Date());
 }
 
+function kolkataMinutes(now = new Date()): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Kolkata',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(now);
+  const pick = (type: string) => Number(parts.find((part) => part.type === type)?.value || 0);
+  let hour = pick('hour');
+  if (hour === 24) hour = 0;
+  return hour * 60 + pick('minute');
+}
+
 function addDaysIso(isoDay: string, days: number): string {
   const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(isoDay);
   if (!match) return isoDay;
@@ -54,69 +142,477 @@ function addDaysIso(isoDay: string, days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
-function timeSortKey(meeting: ScheduledMeeting): string {
-  const raw = `${meeting.meetingTime || ''} ${meeting.meetingTimeLabel || ''}`;
+function addMonthsIso(isoDay: string, months: number): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(isoDay);
+  if (!match) return isoDay;
+  const target = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1 + months, 1));
+  const last = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+  const day = Math.min(Number(match[3]), last);
+  return new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth(), day)).toISOString().slice(0, 10);
+}
+
+function startOfWeek(isoDay: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(isoDay);
+  if (!match) return isoDay;
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  const weekday = date.getUTCDay();
+  const diff = weekday === 0 ? -6 : 1 - weekday;
+  return addDaysIso(isoDay, diff);
+}
+
+function previousMonthBounds(today: string): { from: string; to: string } {
+  const to = addDaysIso(`${today.slice(0, 7)}-01`, -1);
+  return { from: `${to.slice(0, 7)}-01`, to };
+}
+
+function monthBounds(monthKey: string): { from: string; to: string } | null {
+  const match = /^(\d{4})-(\d{2})$/.exec(monthKey);
+  if (!match) return null;
+  const month = Number(match[2]);
+  if (month < 1 || month > 12) return null;
+  const last = new Date(Date.UTC(Number(match[1]), month, 0)).getUTCDate();
+  return {
+    from: `${match[1]}-${match[2]}-01`,
+    to: `${match[1]}-${match[2]}-${String(last).padStart(2, '0')}`,
+  };
+}
+
+function adjacentMonthKeys(monthKey: string): string[] {
+  const start = `${monthKey}-01`;
+  return [addMonthsIso(start, -1).slice(0, 7), monthKey, addMonthsIso(start, 1).slice(0, 7)];
+}
+
+function dateBounds(
+  preset: DatePreset,
+  from: string,
+  to: string,
+  today: string,
+  monthKey: string,
+): { from: string; to: string } | null {
+  if (preset === 'all') return null;
+  if (preset === 'month') return monthBounds(monthKey) || monthBounds(today.slice(0, 7));
+  if (preset === '3m') return { from: addMonthsIso(today, -3), to: today };
+  if (preset === '6m') return { from: addMonthsIso(today, -6), to: today };
+  if (preset === '1y') return { from: addMonthsIso(today, -12), to: today };
+  if (preset === 'prev') return previousMonthBounds(today);
+  if (preset === 'custom' && from && to) return from <= to ? { from, to } : { from: to, to: from };
+  return null;
+}
+
+function parseMinutes(label: string | null, time?: string | null): number | null {
+  const raw = `${label || ''} ${time || ''}`.trim();
+  if (!raw) return null;
   const ampm = raw.match(/(\d{1,2}):(\d{2})\s*([ap]m)/i);
   if (ampm) {
     let hour = Number(ampm[1]) % 12;
     if (ampm[3].toLowerCase() === 'pm') hour += 12;
-    return `${String(hour).padStart(2, '0')}:${ampm[2]}`;
+    return hour * 60 + Number(ampm[2]);
   }
-  const hm = (meeting.meetingTime || '').match(/^(\d{1,2}):(\d{2})/);
-  if (hm) return `${hm[1].padStart(2, '0')}:${hm[2]}`;
-  return '99:99';
+  const hm = raw.match(/(\d{1,2}):(\d{2})/);
+  if (!hm) return null;
+  const hour = Number(hm[1]);
+  const minute = Number(hm[2]);
+  if (hour > 23 || minute > 59) return null;
+  return hour * 60 + minute;
 }
 
-function whenLabel(isoDay: string, today: string): string {
-  if (isoDay === today) return 'Today';
-  if (isoDay === addDaysIso(today, 1)) return 'Tomorrow';
-  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(isoDay);
-  if (!match) return isoDay;
-  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
-  return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+/** 9:00 AM through 8:59 PM, matching the previous week grid. */
+function gridHour(minutes: number | null): number | null {
+  if (minutes == null || minutes < 9 * 60 || minutes > 20 * 60 + 59) return null;
+  return Math.floor(minutes / 60);
 }
 
-function meetingChannel(meeting: ScheduledMeeting): { label: string; kind: 'virtual' | 'showroom' | 'other' } {
-  const mode = (meeting.meetingMode || '').trim().toLowerCase();
-  if (mode === 'online' || mode === 'virtual' || mode.includes('virtual')) {
-    return { label: 'Virtual Meeting', kind: 'virtual' };
-  }
-  if (mode === 'offline' || mode.includes('showroom') || mode === 'in_person' || mode === 'in-person') {
-    return { label: 'Showroom Visit', kind: 'showroom' };
-  }
-  if (meeting.meetingType) {
-    const key = meeting.meetingType.trim().toLowerCase();
-    if (key === 'dqc1_first_cut') return { label: 'First cut', kind: 'other' };
-    if (key === 'dqc2_material_selection') return { label: 'Material selection', kind: 'other' };
-    if (key === 'design_signoff') return { label: 'Design sign-off', kind: 'other' };
-    return { label: meeting.meetingType.replace(/_/g, ' '), kind: 'other' };
-  }
-  return { label: 'Meeting', kind: 'other' };
+function toStartIso(day: string, minutes: number | null): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(day);
+  if (!match) return new Date(0).toISOString();
+  const mins = minutes ?? 0;
+  const utc = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Math.floor(mins / 60), mins % 60);
+  return new Date(utc - 5.5 * 60 * 60 * 1000).toISOString();
 }
 
-function progressOf(meeting: ScheduledMeeting, today: string): { label: string; className: string } {
-  const stage = (meeting.projectStage || '').trim();
-  if (/cancel/i.test(stage)) {
-    return { label: 'Cancelled', className: 'bg-red-50 text-red-600' };
-  }
-  if (meeting.isOnHold) {
-    return { label: 'On hold', className: 'bg-gray-100 text-gray-600' };
-  }
-  if (meeting.meetingDate === today) {
-    return { label: 'In progress', className: 'bg-amber-50 text-amber-600' };
-  }
-  return { label: 'Scheduled', className: 'bg-blue-50 text-blue-600' };
+function formatClock(minutes: number | null): string {
+  if (minutes == null) return 'Time not set';
+  const hour24 = Math.floor(minutes / 60);
+  const minute = minutes % 60;
+  const suffix = hour24 >= 12 ? 'PM' : 'AM';
+  let hour = hour24 % 12;
+  if (hour === 0) hour = 12;
+  return `${hour}:${String(minute).padStart(2, '0')} ${suffix}`;
 }
 
-function formatInr(raw: string | null): string | null {
-  if (!raw) return null;
-  const numeric = Number(String(raw).replace(/,/g, '').replace(/[^\d.]/g, ''));
-  if (!Number.isFinite(numeric) || numeric <= 0) return raw;
+function hourLabel(hour: number): string {
+  const suffix = hour >= 12 ? 'PM' : 'AM';
+  let h = hour % 12;
+  if (h === 0) h = 12;
+  return `${h} ${suffix}`;
+}
+
+function dayHeading(day: string, today: string): string {
+  if (day === today) return 'Today';
+  if (day === addDaysIso(today, 1)) return 'Tomorrow';
+  if (day === addDaysIso(today, -1)) return 'Yesterday';
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(day);
+  if (!match) return day;
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  const weekday = new Intl.DateTimeFormat('en-GB', { weekday: 'short', timeZone: 'UTC' }).format(date);
+  const month = new Intl.DateTimeFormat('en-GB', { month: 'short', timeZone: 'UTC' }).format(date);
+  return `${weekday}, ${Number(match[3])} ${month}`;
+}
+
+function formatFullDate(day: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(day);
+  if (!match) return day;
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  return new Intl.DateTimeFormat('en-GB', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'UTC',
+  }).format(date);
+}
+
+function prettyDay(iso: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!match) return iso;
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  const month = new Intl.DateTimeFormat('en-GB', { month: 'short', timeZone: 'UTC' }).format(date);
+  return `${Number(match[3])} ${month} ${match[1]}`;
+}
+
+function weekdayShort(day: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(day);
+  if (!match) return '';
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  return new Intl.DateTimeFormat('en-GB', { weekday: 'short', timeZone: 'UTC' }).format(date);
+}
+
+function monthAbbrev(day: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(day);
+  if (!match) return '';
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  return new Intl.DateTimeFormat('en-GB', { month: 'short', timeZone: 'UTC' }).format(date);
+}
+
+function monthTitle(cursor: string): string {
+  const match = /^(\d{4})-(\d{2})/.exec(cursor);
+  if (!match) return cursor;
+  return new Intl.DateTimeFormat('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(
+    new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, 1)),
+  );
+}
+
+function weekTitle(days: string[]): string {
+  const a = /^(\d{4})-(\d{2})-(\d{2})/.exec(days[0] || '');
+  const b = /^(\d{4})-(\d{2})-(\d{2})/.exec(days[6] || '');
+  if (!a || !b) return '';
+  const aDate = new Date(Date.UTC(Number(a[1]), Number(a[2]) - 1, Number(a[3])));
+  const bDate = new Date(Date.UTC(Number(b[1]), Number(b[2]) - 1, Number(b[3])));
+  const aMon = new Intl.DateTimeFormat('en-GB', { month: 'short', timeZone: 'UTC' }).format(aDate);
+  const bMon = new Intl.DateTimeFormat('en-GB', { month: 'short', timeZone: 'UTC' }).format(bDate);
+  if (a[1] === b[1] && aMon === bMon) return `${Number(a[3])} – ${Number(b[3])} ${bMon} ${b[1]}`;
+  if (a[1] === b[1]) return `${Number(a[3])} ${aMon} – ${Number(b[3])} ${bMon} ${b[1]}`;
+  return `${Number(a[3])} ${aMon} ${a[1]} – ${Number(b[3])} ${bMon} ${b[1]}`;
+}
+
+function formatInr(amount: number): string {
   return new Intl.NumberFormat('en-IN', {
     style: 'currency',
     currency: 'INR',
     maximumFractionDigits: 0,
-  }).format(numeric);
+  }).format(amount);
+}
+
+function mapQuote(raw: string | null): number | null {
+  if (!raw) return null;
+  const numeric = Number(String(raw).replace(/,/g, '').replace(/[^\d.]/g, ''));
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  return numeric;
+}
+
+function meetingKindLabel(meeting: ScheduledMeeting): string {
+  if ((meeting.source || '').toLowerCase() === 'personal') {
+    const leave = meeting.personalKind === 'full_day' || (meeting.meetingType || '').includes('full_day');
+    if (!leave) return 'Personal';
+    if (meeting.personalApproval === 'pending') return 'Leave pending';
+    if (meeting.personalApproval === 'expired') return 'Leave expired';
+    if (meeting.personalApproval === 'cancelled') return 'Leave cancelled';
+    return 'Full-day leave';
+  }
+  const type = (meeting.meetingType || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (!type) return '—';
+  if (type === 'pre_10' || type === 'pre10' || type === 'crm_appointment') return 'Pre 10%';
+  if (type === 'dqc1_first_cut' || type.includes('first_cut') || type.includes('firstcut')) return 'First cut';
+  if (type === 'dqc2_material_selection' || type.includes('material')) return 'Material selection';
+  if (type === 'design_signoff' || type.includes('sign_off') || type.includes('signoff')) return 'Design sign off';
+  if (type.includes('showroom')) return 'Showroom visit';
+  if (type.includes('virtual') || type.includes('online')) return 'Virtual meeting';
+  if (type.includes('site')) return 'Site visit';
+  return (meeting.meetingType || '').replace(/[_-]+/g, ' ');
+}
+
+function mapChannel(meeting: ScheduledMeeting): { venue: Venue; mode: MeetingMode } {
+  const blob = `${meeting.meetingMode || ''} ${meeting.meetingType || ''}`.toLowerCase();
+  if (blob.includes('site')) return { venue: 'Site visit', mode: 'offline' };
+  if (blob.includes('online') || blob.includes('virtual')) return { venue: 'Virtual meeting', mode: 'online' };
+  return { venue: 'Showroom visit', mode: 'offline' };
+}
+
+function mapStatus(meeting: ScheduledMeeting): ViewStatus {
+  const meetingStatus = (meeting.meetingStatus || '').toLowerCase();
+  const progress = (meeting.progress || '').toLowerCase();
+  if (meetingStatus === 'cancelled' || progress === 'cancelled') return 'cancelled';
+  if (progress === 'completed') return 'completed';
+  if (progress === 'in_progress') return 'in_progress';
+  if (progress === 'meeting_abandoned') return 'abandoned';
+  return 'scheduled';
+}
+
+/** Maps a scheduled-meetings API row onto the page's view model. */
+function toViewMeeting(meeting: ScheduledMeeting, index: number): ViewMeeting | null {
+  const day = String(meeting.meetingDate || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+  const personal = (meeting.source || '').toLowerCase() === 'personal';
+  const personalKind: 'block' | 'full_day' | null = personal
+    ? meeting.personalKind === 'full_day' || (meeting.meetingType || '').includes('full_day')
+      ? 'full_day'
+      : 'block'
+    : null;
+  const minutes = parseMinutes(meeting.meetingTime, meeting.meetingTimeLabel);
+  const endMinutes = parseMinutes(meeting.meetingEndTime, null);
+  const channel = mapChannel(meeting);
+  const designer = (meeting.designerName || '').trim();
+  const sales = (meeting.salesName || '').trim();
+  const branch = branchOf(meeting.branchName);
+  const reason = (meeting.personalReason || '').trim();
+  return {
+    key: meeting.personalKey
+      ? `personal-${meeting.personalKey}`
+      : meeting.id != null
+        ? `id-${meeting.id}`
+        : `na-${meeting.leadId}-${day}-${meeting.meetingTime || ''}-${index}`,
+    raw: meeting,
+    id: personal ? undefined : meeting.id,
+    leadId: meeting.leadId,
+    customer: meeting.customerName || meeting.projectName || (personal ? 'Personal time' : 'Customer'),
+    phone: personal ? null : meeting.phone,
+    designer,
+    sales,
+    branchKey: branch.key,
+    branchLabel: branch.label,
+    venue: personal
+      ? personalKind === 'full_day'
+        ? reason || 'Full day'
+        : meeting.meetingEndTime
+          ? `Until ${meeting.meetingEndTime}`
+          : 'Personal time'
+      : channel.venue,
+    kind: meetingKindLabel(meeting),
+    mode: channel.mode,
+    start: toStartIso(day, minutes),
+    day,
+    minutes,
+    status: mapStatus(meeting),
+    quote: personal ? null : mapQuote(meeting.quotationTotal),
+    personal,
+    personalKind,
+    personalReason: reason,
+    personalApproval: meeting.personalApproval || null,
+    endMinutes: endMinutes != null && minutes != null && endMinutes > minutes ? endMinutes : null,
+    overlapsClient: false,
+    insideLeave: false,
+  };
+}
+
+function markOverlaps(rows: ViewMeeting[]): ViewMeeting[] {
+  const clients = rows.filter((row) => !row.personal && row.status !== 'cancelled' && row.status !== 'abandoned');
+  const leaveDays = new Set(
+    rows
+      .filter((row) => row.personal && row.personalKind === 'full_day' && row.status !== 'cancelled')
+      .map((row) => `${row.designer.trim().toLowerCase()}|${row.day}`),
+  );
+  return rows.map((row) => {
+    if (!row.personal || row.status === 'cancelled') return row;
+    const designerKey = row.designer.trim().toLowerCase();
+    const overlapsClient = clients.some((client) => {
+      if (client.designer.trim().toLowerCase() !== designerKey || client.day !== row.day) return false;
+      if (row.personalKind === 'full_day') return true;
+      if (row.minutes == null || client.minutes == null) return false;
+      const rowEnd = row.endMinutes ?? row.minutes + 30;
+      return row.minutes < client.minutes + CLIENT_SLOT_MIN && rowEnd > client.minutes;
+    });
+    const insideLeave = row.personalKind === 'block' && leaveDays.has(`${designerKey}|${row.day}`);
+    if (!overlapsClient && !insideLeave) return row;
+    return { ...row, overlapsClient, insideLeave };
+  });
+}
+
+function approvalLabel(value: string | null): string {
+  if (value === 'pending') return 'Pending approval';
+  if (value === 'approved') return 'Approved';
+  if (value === 'expired') return 'Expired';
+  if (value === 'cancelled') return 'Cancelled';
+  return 'Booked';
+}
+
+function personLabel(name: string): string {
+  const text = name.trim();
+  if (!text || text.toLowerCase() === 'unassigned') return '—';
+  return text;
+}
+
+function uniqueNames(values: string[]): string[] {
+  const seen = new Map<string, string>();
+  for (const value of values) {
+    const text = value.trim();
+    if (!text || text.toLowerCase() === 'unassigned') continue;
+    const key = text.toLocaleLowerCase();
+    if (!seen.has(key)) seen.set(key, text);
+  }
+  return Array.from(seen.values()).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
+function sameName(a: string, b: string): boolean {
+  return a.trim().toLocaleLowerCase() === b.trim().toLocaleLowerCase();
+}
+
+function branchOf(raw: string | null | undefined): { key: string; label: string } {
+  const text = (raw || '').trim();
+  const code = resolveBranchCode(text);
+  if (code) {
+    return { key: code, label: BRANCH_LOCATIONS[code].label };
+  }
+  const generic = !text || text.toLowerCase() === 'experience center' || text.toLowerCase() === 'experience centre';
+  if (generic) return { key: '', label: '' };
+  return { key: text.toLocaleLowerCase(), label: text };
+}
+
+function compareMeetings(a: ViewMeeting, b: ViewMeeting, dir: 1 | -1): number {
+  if (a.day !== b.day) return a.day < b.day ? -dir : dir;
+  if (a.minutes == null && b.minutes == null) return a.key < b.key ? -1 : 1;
+  if (a.minutes == null) return 1;
+  if (b.minutes == null) return -1;
+  if (a.minutes !== b.minutes) return a.minutes < b.minutes ? -dir : dir;
+  return a.key < b.key ? -1 : 1;
+}
+
+function orderMeetings(rows: ViewMeeting[], today: string): ViewMeeting[] {
+  const upcoming = rows.filter((meeting) => meeting.day >= today).sort((a, b) => compareMeetings(a, b, 1));
+  const past = rows.filter((meeting) => meeting.day < today).sort((a, b) => compareMeetings(a, b, -1));
+  return [...upcoming, ...past];
+}
+
+function groupDays(rows: ViewMeeting[]): { day: string; meetings: ViewMeeting[] }[] {
+  const groups: { day: string; meetings: ViewMeeting[] }[] = [];
+  for (const meeting of rows) {
+    const last = groups[groups.length - 1];
+    if (!last || last.day !== meeting.day) groups.push({ day: meeting.day, meetings: [meeting] });
+    else last.meetings.push(meeting);
+  }
+  return groups;
+}
+
+type DaySlice = { day: string; meetings: ViewMeeting[]; continued: boolean };
+type MeetingPage = { kind: 'today' | 'rest'; slices: DaySlice[] };
+
+function chunkMeetings(rows: ViewMeeting[], pageSize: number): MeetingPage[] {
+  const pages: MeetingPage[] = [];
+  for (let offset = 0; offset < rows.length; offset += pageSize) {
+    const slice = rows.slice(offset, offset + pageSize);
+    pages.push({
+      kind: 'rest',
+      slices: groupDays(slice).map((group, index) => ({
+        day: group.day,
+        meetings: group.meetings,
+        continued: index === 0 && offset > 0 && rows[offset - 1]?.day === group.day,
+      })),
+    });
+  }
+  return pages;
+}
+
+function buildMeetingPages(rows: ViewMeeting[], today: string, pageSize: number): MeetingPage[] {
+  const todayRows = rows.filter((meeting) => meeting.day === today);
+  const rest = rows.filter((meeting) => meeting.day !== today);
+  const pages: MeetingPage[] = [];
+  if (todayRows.length > 0) {
+    pages.push({
+      kind: 'today',
+      slices: groupDays(todayRows).map((group) => ({ day: group.day, meetings: group.meetings, continued: false })),
+    });
+  }
+  pages.push(...chunkMeetings(rest, pageSize));
+  return pages;
+}
+
+function pageWindow(current: number, total: number): (number | 'gap')[] {
+  if (total <= 7) return Array.from({ length: total }, (_, index) => index);
+  const items: (number | 'gap')[] = [0];
+  const start = Math.max(1, current - 1);
+  const end = Math.min(total - 2, current + 1);
+  if (start > 1) items.push('gap');
+  for (let index = start; index <= end; index += 1) items.push(index);
+  if (end < total - 2) items.push('gap');
+  items.push(total - 1);
+  return items;
+}
+
+function canManageMeeting(meeting: ScheduledMeeting): boolean {
+  if (!meeting.id) return false;
+  if ((meeting.meetingStatus || '').toLowerCase() === 'cancelled') return false;
+  if ((meeting.progress || '').toLowerCase() === 'completed') return false;
+  return true;
+}
+
+function ownSlotLabel(meeting: ScheduledMeeting): string {
+  const label = String(meeting.meetingTimeLabel || meeting.meetingTime || '').trim();
+  const clocks = label.match(/\d{1,2}:\d{2}/g) || [];
+  if (clocks.length >= 2) return label;
+  const mins = parseMinutes(meeting.meetingTime, meeting.meetingTimeLabel);
+  if (mins == null) return 'Time not set';
+  return formatHubTimeRange(mins, mins + HUB_MEETING_DURATION_MIN);
+}
+
+function slotHasPassed(meeting: ViewMeeting, today: string, nowMinutes: number): boolean {
+  if (meeting.day < today) return true;
+  if (meeting.day > today) return false;
+  if (meeting.minutes == null) return false;
+  return meeting.minutes <= nowMinutes;
+}
+
+function canAct(meeting: ViewMeeting, today: string, nowMinutes: number): boolean {
+  if (meeting.personal) return false;
+  if (slotHasPassed(meeting, today, nowMinutes)) return false;
+  if (meeting.status !== 'scheduled' && meeting.status !== 'in_progress') return false;
+  if ((meeting.raw.source || '').toLowerCase() === 'crm') return false;
+  return canManageMeeting(meeting.raw);
+}
+
+function clockToMinutes(value: string | null | undefined): number | null {
+  const match = String(value || '').trim().match(/(\d{1,2}):(\d{2})\s*([ap]m)?/i);
+  if (!match) return null;
+  let hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const mer = (match[3] || '').toLowerCase();
+  if (!Number.isFinite(hour) || !Number.isFinite(minute) || minute > 59 || hour > 23) return null;
+  if (mer === 'pm' && hour < 12) hour += 12;
+  if (mer === 'am' && hour === 12) hour = 0;
+  return hour * 60 + minute;
+}
+
+function rescheduleProblem(date: string, time: string, currentDate: string, currentTime: string | null): string | null {
+  if (!date || !time) return 'Choose the new date and time.';
+  const mins = clockToMinutes(time);
+  if (mins == null) return 'Choose a valid time.';
+  const today = kolkataTodayIso();
+  if (date < today || (date === today && mins <= kolkataMinutes())) {
+    return 'Pick a date and time that is still ahead.';
+  }
+  const currentMins = clockToMinutes(currentTime);
+  if (date === currentDate && currentMins != null && mins === currentMins) {
+    return 'Pick a different date or time.';
+  }
+  return null;
 }
 
 function avatarFor(name: string) {
@@ -127,17 +623,111 @@ function avatarFor(name: string) {
 
 function initial(name: string): string {
   const trimmed = name.trim();
-  return trimmed ? trimmed[0].toUpperCase() : '?';
+  if (!trimmed) return '?';
+  const ch = Array.from(trimmed)[0] || '?';
+  return ch.toLocaleUpperCase();
+}
+
+function Avatar({ name }: { name: string }) {
+  const tone = avatarFor(name);
+  return (
+    <span className={styles.avatar} style={{ background: tone.bg, color: tone.fg }} aria-hidden>
+      {initial(name)}
+    </span>
+  );
+}
+
+function StatusPill({ status }: { status: ViewStatus }) {
+  return (
+    <span className={styles.pill} data-status={status}>
+      {STATUS_LABEL[status]}
+    </span>
+  );
+}
+
+function ModeTag({ mode }: { mode: MeetingMode }) {
+  return (
+    <span className={styles.modeTag} data-mode={mode}>
+      {mode === 'online' ? 'Online' : 'Offline'}
+    </span>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16" aria-hidden>
+      <path fillRule="evenodd" d="M9 3.5a5.5 5.5 0 1 0 3.48 9.74l3.14 3.14a.75.75 0 1 0 1.06-1.06l-3.14-3.14A5.5 5.5 0 0 0 9 3.5ZM5 9a4 4 0 1 1 8 0 4 4 0 0 1-8 0Z" clipRule="evenodd" />
+    </svg>
+  );
+}
+
+function RefreshIcon() {
+  return (
+    <svg className={styles.rot} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+      <path d="M16.4 10a6.4 6.4 0 1 1-1.7-4.3" strokeLinecap="round" />
+      <path d="M16.6 3.4V6.6h-3.2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function ChevronIcon() {
+  return (
+    <svg className={styles.chevron} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" width="16" height="16" fill="currentColor" aria-hidden>
+      <path fillRule="evenodd" d="M7.21 14.77a.75.75 0 0 1 .02-1.06L11.168 10 7.23 6.29a.75.75 0 1 1 1.04-1.08l4.5 4.25a.75.75 0 0 1 0 1.08l-4.5 4.25a.75.75 0 0 1-1.06-.02Z" clipRule="evenodd" />
+    </svg>
+  );
 }
 
 export default function MeetingManagementView() {
   const { sessionId } = useAuth();
   const apiBase = getApiBase();
   const [meetings, setMeetings] = useState<ScheduledMeeting[]>([]);
+  const [personalWarning, setPersonalWarning] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
-  const today = kolkataTodayIso();
+  const [view, setView] = useState<'list' | 'calendar'>('list');
+  const [viewDir, setViewDir] = useState<'next' | 'prev' | 'none'>('none');
+  const [modeFilter, setModeFilter] = useState<'all' | MeetingMode>('all');
+  const [designerFilter, setDesignerFilter] = useState('');
+  const [salesFilter, setSalesFilter] = useState('');
+  const [branchFilter, setBranchFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [personalKind, setPersonalKind] = useState<PersonalKindFilter>('all');
+  const [quoteOnly, setQuoteOnly] = useState(false);
+  const [datePreset, setDatePreset] = useState<DatePreset>('month');
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
+  const [dateOpen, setDateOpen] = useState(false);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [draftPreset, setDraftPreset] = useState<DatePreset>('month');
+  const [draftMonthKey, setDraftMonthKey] = useState('');
+  const [draftFrom, setDraftFrom] = useState('');
+  const [draftTo, setDraftTo] = useState('');
+  const [dateError, setDateError] = useState<string | null>(null);
+  const [page, setPage] = useState(0);
+  const [liveExpanded, setLiveExpanded] = useState(false);
+  const [selected, setSelected] = useState<ViewMeeting | null>(null);
+  const [panelPhase, setPanelPhase] = useState<'in' | 'out' | null>(null);
+  const [actionMeeting, setActionMeeting] = useState<ScheduledMeeting | null>(null);
+  const [actionKind, setActionKind] = useState<'reschedule' | 'cancel' | null>(null);
+  const [nextDate, setNextDate] = useState('');
+  const [nextTime, setNextTime] = useState('');
+  const [cancelReason, setCancelReason] = useState('');
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionStep, setActionStep] = useState<'details' | 'form' | 'confirm'>('details');
+  const [nextStartMin, setNextStartMin] = useState<number | null>(null);
+  const [slotPickerOpen, setSlotPickerOpen] = useState(false);
+  const [savingAction, setSavingAction] = useState(false);
+  const [nowMinutes, setNowMinutes] = useState(kolkataMinutes);
+  const dateRef = useRef<HTMLDivElement>(null);
+  const filterRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const followLiveMonth = useRef(true);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const [today, setToday] = useState(kolkataTodayIso);
+  const todayMonth = today.slice(0, 7);
+  const [viewMonth, setViewMonth] = useState(todayMonth);
 
   const loadMeetings = useCallback(async () => {
     if (!sessionId) return;
@@ -153,8 +743,10 @@ export default function MeetingManagementView() {
         throw new Error(data?.message || 'Failed to load scheduled meetings');
       }
       setMeetings(Array.isArray(data?.meetings) ? data.meetings : []);
+      setPersonalWarning(typeof data?.personalWarning === 'string' && data.personalWarning.trim() ? data.personalWarning : null);
     } catch (err) {
       setMeetings([]);
+      setPersonalWarning(null);
       setError(err instanceof Error ? err.message : 'Failed to load scheduled meetings');
     } finally {
       setLoading(false);
@@ -165,200 +757,1556 @@ export default function MeetingManagementView() {
     void loadMeetings();
   }, [loadMeetings]);
 
-  const ordered = useMemo(() => {
-    return [...meetings].sort((a, b) => {
-      const aUpcoming = a.meetingDate >= today;
-      const bUpcoming = b.meetingDate >= today;
-      if (aUpcoming !== bUpcoming) return aUpcoming ? -1 : 1;
-      const byDate = a.meetingDate.localeCompare(b.meetingDate);
-      const dateOrder = aUpcoming ? byDate : -byDate;
-      if (dateOrder !== 0) return dateOrder;
-      const byTime = timeSortKey(a).localeCompare(timeSortKey(b));
-      return aUpcoming ? byTime : -byTime;
+  const closeAction = () => {
+    if (savingAction) return;
+    setActionMeeting(null);
+    setActionKind(null);
+    setActionStep('details');
+    setSlotPickerOpen(false);
+    setActionError(null);
+  };
+
+  const openAction = (kind: 'reschedule' | 'cancel', meeting: ScheduledMeeting) => {
+    const mins = parseMinutes(meeting.meetingTime, meeting.meetingTimeLabel);
+    setActionKind(kind);
+    setActionMeeting(meeting);
+    setActionStep('details');
+    setNextDate(meeting.meetingDate || '');
+    setNextStartMin(mins);
+    setNextTime(mins == null ? '' : minutesToHubTime24(mins));
+    setSlotPickerOpen(false);
+    setCancelReason('');
+    setActionError(null);
+  };
+
+  const reviewAction = () => {
+    if (!actionMeeting || !actionKind) return;
+    if (actionKind === 'reschedule') {
+      if (nextStartMin == null) {
+        setActionError('Choose a time slot for this designer.');
+        return;
+      }
+      const chosenTime = minutesToHubTime24(nextStartMin);
+      setNextTime(chosenTime);
+      const issue = rescheduleProblem(
+        nextDate,
+        chosenTime,
+        actionMeeting.meetingDate,
+        actionMeeting.meetingTimeLabel || actionMeeting.meetingTime,
+      );
+      setActionError(issue);
+      if (issue) return;
+    } else {
+      const reason = cancelReason.trim();
+      if (!reason) {
+        setActionError('A cancel reason is required.');
+        return;
+      }
+      if (reason.length > 500) {
+        setActionError('Cancel reason must be 500 characters or less.');
+        return;
+      }
+    }
+    setActionError(null);
+    setActionStep('confirm');
+  };
+
+  const submitAction = async () => {
+    if (!sessionId || !actionMeeting?.id || !actionKind) return;
+    setSavingAction(true);
+    setActionError(null);
+    try {
+      const path = actionKind === 'reschedule' ? 'reschedule' : 'cancel';
+      const res = await fetch(`${apiBase}/api/meetings/${actionMeeting.id}/${path}`, {
+        method: 'POST',
+        headers: buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' }),
+        credentials: 'include',
+        body: JSON.stringify(
+          actionKind === 'reschedule'
+            ? { meetingDate: nextDate, meetingTime: nextTime }
+            : { reason: cancelReason },
+        ),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.message || 'Could not update the meeting');
+      setActionMeeting(null);
+      setActionKind(null);
+      await loadMeetings();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Could not update the meeting');
+    } finally {
+      setSavingAction(false);
+    }
+  };
+
+  const mapped = useMemo(
+    () => markOverlaps(meetings.map(toViewMeeting).filter((meeting): meeting is ViewMeeting => meeting != null)),
+    [meetings],
+  );
+
+  useEffect(() => {
+    setSelected((current) => {
+      if (!current) return current;
+      return mapped.find((meeting) => meeting.key === current.key) ?? null;
     });
-  }, [meetings, today]);
+  }, [mapped]);
+
+  const designers = useMemo(() => uniqueNames(mapped.map((meeting) => meeting.designer)), [mapped]);
+  const salesPeople = useMemo(() => uniqueNames(mapped.map((meeting) => meeting.sales)), [mapped]);
+  const designerOptions = useMemo(
+    () => [{ value: '', label: 'All designers' }, ...designers.map((name) => ({ value: name, label: name }))],
+    [designers],
+  );
+  const salesOptions = useMemo(
+    () => [{ value: '', label: 'All sales' }, ...salesPeople.map((name) => ({ value: name, label: name }))],
+    [salesPeople],
+  );
+  const branchOptions = useMemo(() => {
+    const known = ['HBR', 'SJR', 'JPN'] as const;
+    const extras = new Map<string, string>();
+    for (const meeting of mapped) {
+      if (!meeting.branchKey || (known as readonly string[]).includes(meeting.branchKey)) continue;
+      extras.set(meeting.branchKey, meeting.branchLabel || meeting.branchKey);
+    }
+    return [
+      { value: '', label: 'All branches' },
+      ...known.map((code) => ({ value: code, label: BRANCH_LOCATIONS[code].label })),
+      ...Array.from(extras, ([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })),
+    ];
+  }, [mapped]);
+  const statusOptions = [
+    { value: 'all', label: 'All statuses' },
+    { value: 'scheduled', label: 'Scheduled' },
+    { value: 'in_progress', label: 'In progress' },
+    { value: 'completed', label: 'Successful' },
+    { value: 'cancelled', label: 'Cancelled' },
+  ];
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      const next = kolkataTodayIso();
+      setToday((current) => (current === next ? current : next));
+      setNowMinutes(kolkataMinutes());
+    }, 30000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    if (!followLiveMonth.current) return;
+    setViewMonth(todayMonth);
+  }, [todayMonth]);
+
+  const matchesClientFilters = useCallback((meeting: ViewMeeting, range: { from: string; to: string } | null) => {
+    if (meeting.personal) return false;
+    const q = query.trim().toLowerCase();
+    if (modeFilter !== 'all' && meeting.mode !== modeFilter) return false;
+    if (designerFilter && !sameName(meeting.designer, designerFilter)) return false;
+    if (salesFilter && !sameName(meeting.sales, salesFilter)) return false;
+    if (branchFilter && meeting.branchKey !== branchFilter) return false;
+    if (range && (meeting.day < range.from || meeting.day > range.to)) return false;
+    if (!q) return true;
+    const haystack = [meeting.customer, meeting.phone || '', meeting.designer, meeting.sales, meeting.branchLabel, meeting.branchKey, String(meeting.leadId)]
+      .join(' ')
+      .toLowerCase();
+    return haystack.includes(q);
+  }, [query, modeFilter, designerFilter, salesFilter, branchFilter]);
+
+  const matchesPersonalFilters = useCallback((meeting: ViewMeeting, range: { from: string; to: string } | null) => {
+    if (!meeting.personal) return false;
+    if (designerFilter && !sameName(meeting.designer, designerFilter)) return false;
+    if (range && (meeting.day < range.from || meeting.day > range.to)) return false;
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    const haystack = [meeting.customer, meeting.designer, meeting.personalReason, meeting.kind, meeting.branchLabel, 'personal', meeting.personalKind === 'full_day' ? 'leave' : 'block']
+      .join(' ')
+      .toLowerCase();
+    return haystack.includes(q);
+  }, [query, designerFilter]);
+
+  const activeRange = useMemo(
+    () => dateBounds(datePreset, customFrom, customTo, today, viewMonth),
+    [datePreset, customFrom, customTo, today, viewMonth],
+  );
+
+  const baseFiltered = useMemo(
+    () => mapped.filter((meeting) => matchesClientFilters(meeting, activeRange)),
+    [mapped, matchesClientFilters, activeRange],
+  );
+
+  const personalBase = useMemo(
+    () => orderMeetings(mapped.filter((meeting) => matchesPersonalFilters(meeting, activeRange)), today),
+    [mapped, matchesPersonalFilters, activeRange, today],
+  );
+
+  const focusMonth = datePreset === 'month'
+    ? viewMonth
+    : activeRange && activeRange.from.slice(0, 7) === activeRange.to.slice(0, 7)
+      ? activeRange.from.slice(0, 7)
+      : todayMonth;
+
+  const calendarPool = useMemo(() => {
+    const monthLimited = Boolean(activeRange && activeRange.from.slice(0, 7) === activeRange.to.slice(0, 7));
+    const keys = monthLimited ? new Set(adjacentMonthKeys(activeRange!.from.slice(0, 7))) : null;
+    const inWindow = (meeting: ViewMeeting) => !keys || keys.has(meeting.day.slice(0, 7));
+    const clients = monthLimited
+      ? mapped.filter((meeting) => matchesClientFilters(meeting, null) && inWindow(meeting))
+      : baseFiltered;
+    const personal = mapped.filter((meeting) => matchesPersonalFilters(meeting, monthLimited ? null : activeRange) && inWindow(meeting));
+    return [...clients, ...personal];
+  }, [mapped, matchesClientFilters, matchesPersonalFilters, activeRange, baseFiltered]);
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return ordered;
-    return ordered.filter((meeting) => {
-      const haystack = [
-        meeting.customerName,
-        meeting.phone,
-        meeting.designerName,
-        meeting.salesName,
-        meeting.projectId,
-        meeting.projectName,
-        String(meeting.leadId),
-        meetingChannel(meeting).label,
-      ]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase();
-      return haystack.includes(q);
-    });
-  }, [ordered, query]);
+    let rows = statusFilter === 'all' ? baseFiltered : baseFiltered.filter((meeting) => meeting.status === statusFilter);
+    if (quoteOnly) rows = rows.filter((meeting) => meeting.quote != null);
+    return orderMeetings(rows, today);
+  }, [baseFiltered, statusFilter, quoteOnly, today]);
+
+  const calendarMeetings = useMemo(() => {
+    const clients = calendarPool.filter((meeting) => !meeting.personal);
+    let rows = statusFilter === 'all' ? clients : clients.filter((meeting) => meeting.status === statusFilter);
+    if (quoteOnly) rows = rows.filter((meeting) => meeting.quote != null);
+    return orderMeetings(rows, today);
+  }, [calendarPool, statusFilter, quoteOnly, today]);
+
+  const personalListed = useMemo(() => {
+    if (personalKind === 'all') return personalBase;
+    return personalBase.filter((meeting) => meeting.personalKind === personalKind);
+  }, [personalBase, personalKind]);
+
+  const stats = useMemo(() => {
+    let scheduled = 0;
+    let scheduledToday = 0;
+    let successful = 0;
+    let cancelled = 0;
+    let quotes = 0;
+    for (const meeting of baseFiltered) {
+      if (meeting.status === 'scheduled') {
+        scheduled += 1;
+        if (meeting.day === today) scheduledToday += 1;
+      } else if (meeting.status === 'completed') successful += 1;
+      else if (meeting.status === 'cancelled') cancelled += 1;
+      if (meeting.quote != null) quotes += 1;
+    }
+    const pct = baseFiltered.length === 0 ? 0 : Math.round((cancelled / baseFiltered.length) * 100);
+    return { scheduled, scheduledToday, successful, cancelled, pct, quotes };
+  }, [baseFiltered, today]);
+
+  const inProgress = useMemo(
+    () => filtered.filter((meeting) => meeting.status === 'in_progress').sort((a, b) => compareMeetings(a, b, 1)),
+    [filtered],
+  );
+
+  useEffect(() => {
+    setPage(0);
+    if (listRef.current) listRef.current.scrollTop = 0;
+  }, [query, modeFilter, designerFilter, salesFilter, branchFilter, statusFilter, quoteOnly, personalKind, datePreset, customFrom, customTo, viewMonth]);
+
+  useEffect(() => {
+    if (!dateOpen && !filterOpen) return;
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (target.closest('.custom-select-dropdown')) return;
+      if (dateOpen && dateRef.current && !dateRef.current.contains(target)) setDateOpen(false);
+      if (filterOpen && filterRef.current && !filterRef.current.contains(target)) setFilterOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [dateOpen, filterOpen]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (actionMeeting) {
+        if (savingAction) return;
+        if (actionStep === 'confirm') {
+          setActionStep('form');
+          return;
+        }
+        closeAction();
+        return;
+      }
+      if (filterOpen) {
+        setFilterOpen(false);
+        return;
+      }
+      if (dateOpen) {
+        setDateOpen(false);
+        return;
+      }
+      if (selected && panelPhase !== 'out') closePanel();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [actionMeeting, actionStep, dateOpen, filterOpen, selected, panelPhase, savingAction]);
+
+  useEffect(() => {
+    if (!selected) return;
+    closeRef.current?.focus();
+  }, [selected?.key]);
+
+  const dateIsDefault = datePreset === 'month' && viewMonth === todayMonth;
+  const filtersActive =
+    query.trim() !== '' ||
+    modeFilter !== 'all' ||
+    designerFilter !== '' ||
+    salesFilter !== '' ||
+    branchFilter !== '' ||
+    statusFilter !== 'all' ||
+    personalKind !== 'all' ||
+    quoteOnly ||
+    !dateIsDefault;
+
+  const showCurrentMonth = () => {
+    followLiveMonth.current = true;
+    setViewMonth(todayMonth);
+    setDatePreset('month');
+    setCustomFrom('');
+    setCustomTo('');
+    setDraftPreset('month');
+    setDraftMonthKey(todayMonth);
+    setDraftFrom('');
+    setDraftTo('');
+    setDateError(null);
+    setDateOpen(false);
+  };
+
+  const showMonth = (isoDay: string) => {
+    const key = isoDay.slice(0, 7);
+    if (!monthBounds(key)) return;
+    followLiveMonth.current = key === todayMonth;
+    setViewMonth(key);
+    setDatePreset('month');
+    setCustomFrom('');
+    setCustomTo('');
+    setDraftPreset('month');
+    setDraftMonthKey(key);
+    setDraftFrom('');
+    setDraftTo('');
+    setDateError(null);
+  };
+
+  const clearAll = () => {
+    setQuery('');
+    setModeFilter('all');
+    setDesignerFilter('');
+    setSalesFilter('');
+    setBranchFilter('');
+    setStatusFilter('all');
+    setPersonalKind('all');
+    setQuoteOnly(false);
+    showCurrentMonth();
+  };
+
+  const switchView = (next: 'list' | 'calendar') => {
+    if (next === view) return;
+    setViewDir(next === 'calendar' ? 'next' : 'prev');
+    setFilterOpen(false);
+    setDateOpen(false);
+    setView(next);
+  };
+
+  const toggleStatus = (status: StatusFilter) => {
+    setQuoteOnly(false);
+    setStatusFilter((current) => (current === status ? 'all' : status));
+  };
+
+  const toggleQuotes = () => {
+    setQuoteOnly((on) => !on);
+    setStatusFilter('all');
+  };
+
+  const openDate = () => {
+    setDraftPreset(datePreset);
+    setDraftMonthKey(datePreset === 'month' ? viewMonth : '');
+    setDraftFrom(customFrom);
+    setDraftTo(customTo);
+    setDateError(null);
+    setDateOpen((open) => !open);
+  };
+
+  const applyDate = () => {
+    if (draftPreset === 'custom') {
+      if (!draftFrom || !draftTo) {
+        setDateError('Choose a from and to date');
+        return;
+      }
+      setCustomFrom(draftFrom <= draftTo ? draftFrom : draftTo);
+      setCustomTo(draftFrom <= draftTo ? draftTo : draftFrom);
+      followLiveMonth.current = false;
+    } else if (draftPreset === 'month') {
+      const key = draftMonthKey === todayMonth ? todayMonth : viewMonth;
+      followLiveMonth.current = key === todayMonth;
+      setViewMonth(key);
+      setCustomFrom('');
+      setCustomTo('');
+    } else {
+      followLiveMonth.current = false;
+    }
+    setDatePreset(draftPreset);
+    setDateError(null);
+    setDateOpen(false);
+  };
+
+  const clearDate = () => {
+    showCurrentMonth();
+  };
+
+  const rangeNote = (() => {
+    if (datePreset === 'month') return monthTitle(viewMonth);
+    if (datePreset === 'prev') return monthTitle(previousMonthBounds(today).from);
+    if (datePreset === 'custom' && customFrom && customTo) return `${prettyDay(customFrom)} – ${prettyDay(customTo)}`;
+    return DATE_PRESETS.find((preset) => preset.id === datePreset)?.label || 'This month';
+  })();
+
+  const openMeeting = (meeting: ViewMeeting) => {
+    setSelected(meeting);
+    setPanelPhase('in');
+  };
+
+  const closePanel = () => {
+    if (!selected || panelPhase === 'out') return;
+    setPanelPhase('out');
+  };
+
+  useEffect(() => {
+    if (panelPhase !== 'out') return;
+    const id = window.setTimeout(() => {
+      setSelected(null);
+      setPanelPhase(null);
+    }, 260);
+    return () => window.clearTimeout(id);
+  }, [panelPhase]);
+
+  const pages = useMemo(() => buildMeetingPages(filtered, today, PAGE_SIZE), [filtered, today]);
+  const pageCount = pages.length;
+  const safePage = pageCount === 0 ? 0 : Math.min(page, pageCount - 1);
+  const currentPage = pages[safePage];
+  const pageGroups = currentPage?.slices ?? [];
+  const restTotal = filtered.filter((meeting) => meeting.day !== today).length;
+  const restBefore = pages.slice(0, safePage).reduce((total, entry) => (
+    total + (entry.kind === 'rest' ? entry.slices.reduce((count, slice) => count + slice.meetings.length, 0) : 0)
+  ), 0);
+  const shownOnPage = pageGroups.reduce((count, slice) => count + slice.meetings.length, 0);
+  const goToPage = (next: number) => {
+    setPage(next);
+    if (listRef.current) listRef.current.scrollTop = 0;
+  };
+  const liveChips = liveExpanded ? inProgress : inProgress.slice(0, 4);
+  const liveHidden = Math.max(0, inProgress.length - 4);
 
   return (
-    <div className="min-h-[calc(100vh-4rem)] bg-[#F5F7FB] px-3 py-4 sm:px-5">
-      <div className="mx-auto max-w-[1400px] overflow-hidden rounded-2xl border border-[#EEF1F6] bg-white shadow-sm">
-        <div className="flex flex-wrap items-center gap-3 border-b border-[#F1F3F7] px-4 py-3 sm:px-5">
-          <label className="relative min-w-[240px] flex-1">
-            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
-              <SearchIcon />
-            </span>
-            <input
-              type="search"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search by customer, lead ID, designer or phone"
-              className="w-full rounded-xl border border-[#E7EAF0] bg-[#FAFBFD] py-2.5 pl-10 pr-3 text-sm text-gray-800 outline-none placeholder:text-gray-400 focus:border-[#EF0101] focus:bg-white"
-            />
-          </label>
-          <div className="ml-auto flex items-center gap-2">
-            <span className="rounded-full bg-[#F4F6FA] px-3 py-1.5 text-sm font-medium text-gray-500">
-              {loading ? '…' : `${filtered.length} meeting${filtered.length === 1 ? '' : 's'}`}
-            </span>
-            <button
-              type="button"
-              onClick={() => void loadMeetings()}
-              className="rounded-xl border border-[#E7EAF0] px-3 py-2 text-sm font-medium text-gray-600 hover:bg-[#FAFBFD]"
+    <div className={styles.root}>
+      <header className={styles.pageHead}>
+          <div className={styles.titleBlock}>
+            <div className={styles.titleRow}>
+              <h1 className={styles.title}>Meeting management</h1>
+              <span className={styles.monthChip}>{rangeNote}</span>
+          </div>
+            <p className={styles.subtitle}>India time · design and CRM meetings</p>
+          </div>
+        <div className={styles.headActions}>
+          {view === 'list' ? (
+            <>
+          <div className={styles.dateWrap} ref={filterRef}>
+              <button
+                type="button"
+              className={styles.rangeBtn}
+              data-on={designerFilter !== '' || salesFilter !== '' || branchFilter !== '' || statusFilter !== 'all'}
+              data-open={filterOpen}
+              aria-expanded={filterOpen}
+              aria-haspopup="dialog"
+              onClick={() => setFilterOpen((open) => !open)}
             >
-              Refresh
+              <svg className={styles.rangeIcon} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden>
+                <path d="M3 4.5h14l-5.2 6.1v4.2l-3.6 1.6V10.6L3 4.5Z" strokeLinejoin="round" />
+              </svg>
+              Filter
+              <svg className={styles.rangeCaret} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" width="14" height="14" fill="currentColor" aria-hidden>
+                <path fillRule="evenodd" d="M5.22 7.22a.75.75 0 0 1 1.06 0L10 10.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 8.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+              </svg>
+              </button>
+            {filterOpen ? (
+              <div className={`${styles.popover} ${styles.popoverEnd} ${styles.filterMenu}`} role="dialog" aria-label="Filter meetings">
+                <div className={styles.filterFields}>
+                  <label>
+                    Designer
+                    <CustomSelect value={designerFilter} onChange={setDesignerFilter} options={designerOptions} placeholder="All designers" buttonClassName={styles.filterSelect} />
+                  </label>
+                  <label>
+                    Sales
+                    <CustomSelect value={salesFilter} onChange={setSalesFilter} options={salesOptions} placeholder="All sales" buttonClassName={styles.filterSelect} />
+                  </label>
+                  <label>
+                    Branch / EC
+                    <CustomSelect value={branchFilter} onChange={setBranchFilter} options={branchOptions} placeholder="All branches" buttonClassName={styles.filterSelect} />
+                  </label>
+                  <label>
+                    Status
+                    <CustomSelect
+                      value={statusFilter}
+                      onChange={(value) => {
+                        setStatusFilter(value as StatusFilter);
+                        setQuoteOnly(false);
+                      }}
+                      options={statusOptions}
+                      placeholder="All statuses"
+                      buttonClassName={styles.filterSelect}
+                    />
+                  </label>
+                </div>
+              </div>
+            ) : null}
+          </div>
+          <div className={styles.dateWrap} ref={dateRef}>
+              <button
+                type="button"
+                className={styles.rangeBtn}
+                data-on={!dateIsDefault}
+                data-open={dateOpen}
+                aria-expanded={dateOpen}
+                aria-haspopup="dialog"
+                onClick={openDate}
+              >
+                <svg className={styles.rangeIcon} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden>
+                  <rect x="3" y="4.5" width="14" height="12" rx="2" />
+                  <path d="M3 8h14M7 3.2v2.6M13 3.2v2.6" strokeLinecap="round" />
+                </svg>
+                Date range
+                <svg className={styles.rangeCaret} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" width="14" height="14" fill="currentColor" aria-hidden>
+                  <path fillRule="evenodd" d="M5.22 7.22a.75.75 0 0 1 1.06 0L10 10.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 8.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+                </svg>
+              </button>
+            {dateOpen ? (
+              <div className={`${styles.popover} ${styles.popoverEnd} ${styles.dateMenu}`} role="dialog" aria-label="Date range">
+                {DATE_PRESETS.map((preset) => (
+            <button
+                    key={preset.id}
+              type="button"
+                    className={styles.popOption}
+                    data-on={preset.id === 'month' ? draftPreset === 'month' && draftMonthKey === todayMonth : draftPreset === preset.id}
+                    onClick={() => {
+                      setDraftPreset(preset.id);
+                      if (preset.id === 'month') setDraftMonthKey(todayMonth);
+                    }}
+                  >
+                    <i className={styles.popMark} aria-hidden="true" />
+                    {preset.label}
             </button>
+                ))}
+                {draftPreset === 'custom' ? (
+                  <div className={styles.popDates}>
+                    <label>
+                      From
+                      <input type="date" value={draftFrom} onChange={(event) => setDraftFrom(event.target.value)} />
+                    </label>
+                    <label>
+                      To
+                      <input type="date" value={draftTo} onChange={(event) => setDraftTo(event.target.value)} />
+                    </label>
+          </div>
+                ) : null}
+                {dateError ? <p className={styles.popError}>{dateError}</p> : null}
+                <div className={styles.menuActions}>
+                  <button type="button" className={styles.menuClear} onClick={clearDate}>Clear</button>
+                  <button type="button" className={styles.menuApply} onClick={applyDate}>Apply</button>
+        </div>
+              </div>
+        ) : null}
+          </div>
+            </>
+        ) : null}
+          <div className={styles.viewToggle} data-view={view} role="group" aria-label="Meeting view">
+            <span className={styles.viewGlide} aria-hidden="true" />
+            <button type="button" data-on={view === 'list'} onClick={() => switchView('list')}>
+              List
+            </button>
+            <button type="button" data-on={view === 'calendar'} onClick={() => switchView('calendar')}>
+                Calendar
+              </button>
+            </div>
+        </div>
+      </header>
+
+      <section className={styles.stats} aria-label="Meeting totals">
+        <button type="button" className={styles.stat} data-static="false" data-on={statusFilter === 'scheduled'} aria-pressed={statusFilter === 'scheduled'} onClick={() => toggleStatus('scheduled')}>
+          <span className={styles.statLabel}>Scheduled</span>
+          <span className={styles.statValue}>{loading ? '—' : stats.scheduled}</span>
+          <span className={styles.statSub}>{loading ? '' : `${stats.scheduledToday} today`}</span>
+        </button>
+        <button type="button" className={styles.stat} data-static="false" data-on={statusFilter === 'completed'} aria-pressed={statusFilter === 'completed'} onClick={() => toggleStatus('completed')}>
+          <span className={styles.statLabel}>Successful</span>
+          <span className={styles.statValue}>{loading ? '—' : stats.successful}</span>
+          <span className={styles.statSub}>{'\u00a0'}</span>
+        </button>
+        <button type="button" className={styles.stat} data-static="false" data-on={statusFilter === 'cancelled'} aria-pressed={statusFilter === 'cancelled'} onClick={() => toggleStatus('cancelled')}>
+          <span className={styles.statLabel}>Cancelled</span>
+          <span className={styles.statValue}>{loading ? '—' : stats.cancelled}</span>
+          <span className={styles.statSub}>{loading ? '' : `${stats.pct}% of meetings`}</span>
+        </button>
+        <button type="button" className={styles.stat} data-static="false" data-on={quoteOnly} aria-pressed={quoteOnly} onClick={toggleQuotes}>
+          <span className={styles.statLabel}>Quotes sent</span>
+          <span className={styles.statValue}>{loading ? '—' : stats.quotes}</span>
+          <span className={styles.statSub}>{'\u00a0'}</span>
+        </button>
+      </section>
+
+      {inProgress.length > 0 ? (
+        <div className={styles.live}>
+          <span className={styles.liveLabel}>
+            <span className={styles.pulse} aria-hidden />
+            In progress
+            </span>
+          <div className={styles.liveChips}>
+            {liveChips.map((meeting) => (
+              <button key={meeting.key} type="button" className={styles.liveChip} data-personal={meeting.personal ? meeting.personalKind || 'block' : undefined} onClick={() => openMeeting(meeting)}>
+                <span>{meeting.customer}</span>
+                <span>{formatClock(meeting.minutes)}</span>
+              </button>
+            ))}
+            {liveHidden > 0 ? (
+                              <button
+                                type="button"
+                className={styles.liveChip}
+                aria-expanded={liveExpanded}
+                onClick={() => setLiveExpanded((open) => !open)}
+                              >
+                {liveExpanded ? 'Show less' : `+${liveHidden} more`}
+                              </button>
+            ) : null}
           </div>
         </div>
+      ) : null}
 
-        {error ? (
-          <div className="border-b border-red-100 bg-red-50 px-5 py-3 text-sm text-red-700">{error}</div>
-        ) : null}
+      {error ? <div className={styles.err}>{error}</div> : null}
 
-        <div className="overflow-x-auto">
-          <table className="min-w-[1180px] w-full text-left">
-            <thead>
-              <tr className="text-xs font-medium text-gray-400">
-                <th className="px-4 py-3 font-medium">No.</th>
-                <th className="px-3 py-3 font-medium">Customer</th>
-                <th className="px-3 py-3 font-medium">Designer</th>
-                <th className="px-3 py-3 font-medium">Progress</th>
-                <th className="px-3 py-3 font-medium">Sales</th>
-                <th className="px-3 py-3 font-medium">Meeting</th>
-                <th className="px-3 py-3 font-medium">Date & time</th>
-                <th className="px-3 py-3 font-medium">Lead quote</th>
-                <th className="px-4 py-3 text-right font-medium">Actions</th>
-              </tr>
+      <div key={view} className={styles.viewStage} data-dir={viewDir}>
+      {view === 'list' ? (
+      <>
+      <section className={styles.card}>
+        <div className={styles.tools} data-solo={view === 'calendar' ? 'true' : 'false'}>
+          <div className={styles.toolRow}>
+            <label className={styles.search}>
+              <span className={styles.sr}>Search meetings</span>
+              <SearchIcon />
+              <input
+                type="search"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Customer, lead ID, designer, sales, phone"
+              />
+            </label>
+            <div className={styles.seg} role="group" aria-label="Meeting mode">
+              {(['all', 'online', 'offline'] as const).map((mode) => (
+                <button key={mode} type="button" data-on={modeFilter === mode} onClick={() => setModeFilter(mode)}>
+                  {mode === 'all' ? 'All' : mode === 'online' ? 'Online' : 'Offline'}
+                </button>
+              ))}
+            </div>
+                              <button
+                                type="button"
+              className={styles.iconBtn}
+              data-loading={loading}
+              aria-label="Refresh meetings"
+              onClick={() => void loadMeetings()}
+            >
+              <RefreshIcon />
+                              </button>
+            <span className={styles.count} title={loading ? 'Loading meetings' : `${filtered.length.toLocaleString('en-IN')} of ${mapped.length.toLocaleString('en-IN')} meetings`}>
+              {loading ? '…' : filtered.length.toLocaleString('en-IN')}
+            </span>
+            {filtersActive ? (
+              <button type="button" className={styles.textBtn} onClick={clearAll}>Clear all</button>
+                          ) : null}
+                        </div>
+        </div>
+
+        {view === 'list' ? (
+          loading && mapped.length === 0 ? (
+            <div className={styles.empty}><p>Loading meetings…</p></div>
+          ) : filtered.length === 0 ? (
+            <div className={styles.empty}>
+              <p>
+                {mapped.length === 0
+                  ? 'No meetings yet.'
+                  : query.trim() || modeFilter !== 'all' || designerFilter || salesFilter || branchFilter || statusFilter !== 'all' || quoteOnly || datePreset !== 'month'
+                    ? 'No meetings match these filters.'
+                    : 'No meetings in this month.'}
+              </p>
+              {filtersActive ? (
+                <button type="button" className={styles.moreBtn} onClick={clearAll}>Clear all filters</button>
+              ) : null}
+            </div>
+        ) : (
+        <>
+              <div className={styles.tableWrap} ref={listRef}>
+                <table className={styles.table}>
+                  <caption className={styles.sr}>Meetings</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Customer</th>
+                      <th scope="col">Designer</th>
+                      <th scope="col">Sales</th>
+                      <th scope="col">Meeting</th>
+                      <th scope="col">When</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">Quote</th>
+                      <th scope="col"><span className={styles.sr}>Open</span></th>
+                    </tr>
             </thead>
             <tbody>
-              {loading ? (
-                <tr>
-                  <td colSpan={9} className="px-4 py-16 text-center text-sm text-gray-400">
-                    Loading meetings…
-                  </td>
-                </tr>
-              ) : filtered.length === 0 ? (
-                <tr>
-                  <td colSpan={9} className="px-4 py-16 text-center text-sm text-gray-400">
-                    {ordered.length === 0
-                      ? 'No scheduled meetings yet.'
-                      : 'No meetings match that search.'}
-                  </td>
-                </tr>
-              ) : (
-                filtered.map((meeting, index) => {
-                  const customerName = meeting.customerName || meeting.projectName || 'Customer';
-                  const avatar = avatarFor(customerName);
-                  const progress = progressOf(meeting, today);
-                  const channel = meetingChannel(meeting);
-                  const quote = formatInr(meeting.quotationTotal);
-                  const subtitle = meeting.phone || meeting.projectId || `HUB-${meeting.leadId}`;
-                  return (
-                    <tr key={`${meeting.leadId}-${meeting.meetingDate}`} className="border-t border-[#F3F5F8] hover:bg-[#FAFBFD]">
-                      <td className="px-4 py-3.5 text-sm text-gray-400">{index + 1}</td>
-                      <td className="px-3 py-3.5">
-                        <div className="flex items-center gap-3">
-                          <span
-                            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-semibold"
-                            style={{ backgroundColor: avatar.bg, color: avatar.fg }}
-                          >
-                            {initial(customerName)}
-                          </span>
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-semibold text-gray-900">{customerName}</div>
-                            <div className="truncate text-xs text-gray-400">{subtitle}</div>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-3 py-3.5 text-sm text-gray-700">{meeting.designerName}</td>
-                      <td className="px-3 py-3.5">
-                        <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${progress.className}`}>
-                          <span className="h-1.5 w-1.5 rounded-full bg-current" />
-                          {progress.label}
-                        </span>
-                      </td>
-                      <td className="px-3 py-3.5 text-sm text-gray-600">{meeting.salesName || '—'}</td>
-                      <td className="px-3 py-3.5">
-                        <span className="inline-flex items-center gap-1.5 text-sm text-gray-700">
-                          {channel.kind === 'virtual' ? <VideoIcon /> : <HomeIcon />}
-                          {channel.label}
-                        </span>
-                      </td>
-                      <td className="px-3 py-3.5">
-                        <div className="text-sm font-semibold text-emerald-600">{whenLabel(meeting.meetingDate, today)}</div>
-                        <div className="text-xs font-medium text-emerald-600">
-                          {meeting.meetingTimeLabel || meeting.meetingTime || '—'}
-                        </div>
-                      </td>
-                      <td className="px-3 py-3.5 text-sm text-gray-400">{quote || 'No quote'}</td>
-                      <td className="px-4 py-3.5 text-right">
-                        <Link
-                          href={`/Leads/${meeting.leadId}`}
-                          title="Open lead"
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[#E7EAF0] text-gray-500 hover:border-[#EF0101] hover:text-[#EF0101]"
-                        >
-                          <OpenIcon />
-                        </Link>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
+                    {pageGroups.map((group) => (
+                      <GroupRows key={`${group.day}-${group.continued ? 'more' : 'start'}`} day={group.day} today={today} meetings={group.meetings} continued={group.continued} onOpen={openMeeting} />
+                    ))}
             </tbody>
           </table>
         </div>
+              <nav className={styles.pager} aria-label="Meeting pages">
+                  <span className={styles.pagerMeta}>
+                    {currentPage?.kind === 'today' ? (
+                      <>Today · {shownOnPage.toLocaleString('en-IN')}</>
+                    ) : (
+                      <>{restBefore + 1}–{restBefore + shownOnPage} of {restTotal.toLocaleString('en-IN')}</>
+                    )}
+                    <span className={styles.pagerHint}>{currentPage?.kind === 'today' ? 'Only today' : 'Other days'}</span>
+                  </span>
+                  <div className={styles.pagerBtns}>
+                    {pageCount > 1 ? (
+                      <>
+                        <button type="button" className={styles.pageBtn} aria-label="Previous page" disabled={safePage === 0} onClick={() => goToPage(safePage - 1)}>‹</button>
+                        {pageWindow(safePage, pageCount).map((item, index) => (
+                          item === 'gap' ? (
+                            <span key={`gap-${index}`} className={styles.pageGap} aria-hidden="true">…</span>
+                          ) : (
+            <button
+                              key={item}
+              type="button"
+                              className={styles.pageBtn}
+                              data-on={item === safePage}
+                              aria-label={pages[item]?.kind === 'today' ? 'Today' : `Page ${item + 1}`}
+                              aria-current={item === safePage ? 'page' : undefined}
+                              onClick={() => goToPage(item)}
+                            >
+                              {pages[item]?.kind === 'today' ? 'Today' : item + 1}
+            </button>
+                          )
+                        ))}
+                        <button type="button" className={styles.pageBtn} aria-label="Next page" disabled={safePage >= pageCount - 1} onClick={() => goToPage(safePage + 1)}>›</button>
+                      </>
+                    ) : null}
+                  </div>
+                </nav>
+            </>
+          )
+        ) : null}
+      </section>
+      </>
+      ) : null}
+
+      {view === 'calendar' ? (
+        <CalendarBoard
+          meetings={calendarMeetings}
+          personalMeetings={personalListed}
+          personalKind={personalKind}
+          onPersonalKind={setPersonalKind}
+          personalWarning={personalWarning}
+          today={today}
+          focusMonth={focusMonth}
+          onMonthChange={showMonth}
+          onOpen={openMeeting}
+        />
+      ) : null}
       </div>
+
+      {selected ? (
+        <>
+          <div className={styles.overlay} data-phase={panelPhase || 'in'} onClick={closePanel} />
+          <aside className={styles.panel} data-phase={panelPhase || 'in'} role="dialog" aria-modal="true" aria-label="Meeting details">
+            <div className={styles.panelHead}>
+              <button ref={closeRef} type="button" className={styles.closeBtn} aria-label="Close meeting details" onClick={closePanel}>
+                ×
+            </button>
+              <div className={styles.panelKicker}>{selected.personal ? (selected.personalKind === 'full_day' ? 'Full-day leave' : 'Personal appointment') : dayHeading(selected.day, today)}</div>
+              <p className={styles.panelTime}>
+                {selected.personal && selected.endMinutes != null
+                  ? `${formatClock(selected.minutes)} – ${formatClock(selected.endMinutes)}`
+                  : formatClock(selected.minutes)}
+              </p>
+              <p className={styles.panelDate}>{formatFullDate(selected.day)}</p>
+          </div>
+            <div className={styles.custCard} data-personal={selected.personal ? selected.personalKind || 'block' : undefined}>
+              <Avatar name={selected.personal ? selected.designer : selected.customer} />
+              <div className={styles.custBody}>
+                <span className={styles.custName}>{selected.customer}</span>
+                <span className={styles.sub}>
+                  {selected.personal
+                    ? `${personLabel(selected.designer)} · ${approvalLabel(selected.personalApproval)}`
+                    : `${selected.phone || 'No phone'} · Lead ${selected.leadId}`}
+                </span>
+                <div className={styles.tags}>
+                  {selected.personal ? (
+                    <span className={styles.modeTag} data-personal={selected.personalKind || 'block'}>
+                      {selected.personalKind === 'full_day' ? 'Leave' : 'Personal'}
+                    </span>
+                  ) : (
+                    <ModeTag mode={selected.mode} />
+                  )}
+                  <span className={styles.venue}>{selected.venue}</span>
+                  <span className={styles.kind}>{selected.kind}</span>
+                  <StatusPill status={selected.status} />
+        </div>
+              </div>
+            </div>
+            <div className={styles.panelBody}>
+              {selected.personal && selected.personalApproval === 'pending' ? (
+                <div className={styles.note}>
+                  <p>Waiting for leave approval</p>
+                  <p className={styles.noteSub}>This day stays blocked until the request is approved or rejected.</p>
+                </div>
+              ) : selected.status === 'cancelled' || selected.status === 'abandoned' ? (
+                <div className={styles.note}>
+                  <p>
+                    {selected.personal && selected.personalApproval === 'expired'
+                      ? 'This leave request expired'
+                      : selected.personal && selected.status === 'cancelled'
+                        ? 'This personal time was cancelled'
+                        : selected.status === 'cancelled'
+                          ? 'This meeting was cancelled'
+                          : 'This meeting was abandoned'}
+                  </p>
+                  {selected.status === 'cancelled' && selected.raw.cancelReason ? (
+                    <p className={styles.noteSub}>{selected.raw.cancelReason}</p>
+                          ) : null}
+                        </div>
+              ) : (
+                <ol className={styles.steps}>
+                  {STEP_LABELS.map((label, index) => {
+                    const active = selected.status === 'completed' ? 2 : selected.status === 'in_progress' ? 1 : 0;
+                    return (
+                      <li
+                        key={label}
+                        className={styles.step}
+                        data-on={index <= active}
+                        data-current={index === active}
+                        data-next={index < active}
+                      >
+                        <span className={styles.dot} />
+                        {label}
+                      </li>
+                    );
+                  })}
+                </ol>
+              )}
+              {selected.overlapsClient ? (
+                <div className={styles.note} data-tone="overlap">
+                  <p>Overlaps a client meeting for this designer</p>
+                </div>
+              ) : null}
+              {selected.insideLeave ? (
+                <div className={styles.note} data-tone="leave">
+                  <p>This block sits inside a full-day leave</p>
+                </div>
+              ) : null}
+              <div className={styles.metaGrid}>
+                <div className={styles.metaItem}>
+                  <span className={styles.metaLabel}>Designer</span>
+                  <span className={styles.metaValue}>{personLabel(selected.designer)}</span>
+      </div>
+                {selected.personal ? (
+                  <div className={styles.metaItem}>
+                    <span className={styles.metaLabel}>Reason</span>
+                    <span className={styles.metaValue}>{selected.personalReason || selected.customer}</span>
+                  </div>
+                ) : (
+                  <div className={styles.metaItem}>
+                    <span className={styles.metaLabel}>Sales</span>
+                    <span className={styles.metaValue}>{personLabel(selected.sales)}</span>
+                  </div>
+                )}
+                <div className={styles.metaItem}>
+                  <span className={styles.metaLabel}>{selected.personal ? 'Type' : 'Meeting type'}</span>
+                  <span className={styles.metaValue}>{selected.kind}</span>
+        </div>
+                <div className={styles.metaItem}>
+                  <span className={styles.metaLabel}>{selected.personal ? 'Approval' : 'Lead ID'}</span>
+                  <span className={styles.metaValue}>{selected.personal ? approvalLabel(selected.personalApproval) : selected.leadId}</span>
+                </div>
+              </div>
+              {selected.personal ? null : (
+              <div className={styles.leadQuote} data-empty={selected.quote == null}>
+                <span className={styles.metaLabel}>Lead quote</span>
+                {selected.quote != null ? (
+                  <span className={styles.leadAmount}>{formatInr(selected.quote)}</span>
+                ) : (
+                  <span className={styles.metaValue}>No quote yet</span>
+        )}
+      </div>
+              )}
+            </div>
+            {canAct(selected, today, nowMinutes) ? (
+              <div className={styles.foot}>
+                <button type="button" className={`${styles.actBtn} ${styles.actReschedule}`} onClick={() => openAction('reschedule', selected.raw)}>
+                  Reschedule
+                </button>
+                <button type="button" className={`${styles.actBtn} ${styles.actCancel}`} onClick={() => openAction('cancel', selected.raw)}>
+                  Cancel meeting
+                </button>
+              </div>
+            ) : selected.personal ? (
+              <div className={styles.foot}>
+                <p className={styles.crmHint}>
+                  Personal time is booked by the designer. Change or cancel it from Personal Appointments.
+                </p>
+              </div>
+            ) : (selected.raw.source || '').toLowerCase() === 'crm' && (selected.status === 'scheduled' || selected.status === 'in_progress') ? (
+              <div className={styles.foot}>
+                <p className={styles.crmHint}>
+                  Pre 10% meetings come from CRM, so reschedule and cancel stay there. First cut, material selection, and design sign off can be changed here.
+                </p>
+              </div>
+            ) : null}
+          </aside>
+        </>
+      ) : null}
+
+      {actionMeeting && actionKind ? (
+        <div className={styles.modal} onClick={(event) => { if (event.target === event.currentTarget) closeAction(); }}>
+          <div className={styles.modalCard} role="dialog" aria-modal="true" aria-labelledby="meeting-action-title" data-kind={actionKind}>
+            <p className={styles.actionKicker}>
+              {actionStep === 'details' ? 'Confirm current meeting' : actionStep === 'confirm' ? 'Confirm' : actionKind === 'reschedule' ? 'Reschedule' : 'Cancel meeting'}
+            </p>
+            <h2 id="meeting-action-title">{actionMeeting.customerName}</h2>
+            <div className={styles.actionChips}>
+              <span className={styles.kind}>{meetingKindLabel(actionMeeting)}</span>
+              <span className={styles.venue}>{mapChannel(actionMeeting).venue}</span>
+            </div>
+            {actionStep === 'details' ? (
+              <div className={styles.currentSlot}>
+                <span>Current slot</span>
+                <strong>{formatFullDate(actionMeeting.meetingDate)}</strong>
+                <em>{ownSlotLabel(actionMeeting)}</em>
+              </div>
+            ) : null}
+            {actionStep === 'form' && actionKind === 'reschedule' ? (
+              <div className={styles.fields}>
+                <div className={styles.currentSlot}>
+                  <span>Current slot</span>
+                  <strong>{formatFullDate(actionMeeting.meetingDate)}</strong>
+                  <em>{ownSlotLabel(actionMeeting)}</em>
+                </div>
+                <label>
+                  New date
+                  <input type="date" value={nextDate} min={today} onChange={(event) => { setNextDate(event.target.value); setActionError(null); }} />
+                </label>
+                <div className={styles.slotField}>
+                  <span>New slot</span>
+                  <button
+                    type="button"
+                    className={styles.slotPick}
+                    data-empty={nextStartMin == null ? 'true' : 'false'}
+                    disabled={!nextDate || !actionMeeting.designerName}
+                    onClick={() => setSlotPickerOpen(true)}
+                  >
+                    <span>
+                      {nextStartMin == null
+                        ? 'Choose this designer’s slot'
+                        : formatHubTimeRange(nextStartMin, nextStartMin + HUB_MEETING_DURATION_MIN)}
+                    </span>
+                    <span className={styles.slotPickHint}>{nextStartMin == null ? 'Select' : 'Change'}</span>
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            {actionStep === 'form' && actionKind === 'cancel' ? (
+              <>
+                <div className={styles.currentSlot}>
+                  <span>Current slot</span>
+                  <strong>{formatFullDate(actionMeeting.meetingDate)}</strong>
+                  <em>{ownSlotLabel(actionMeeting)}</em>
+                </div>
+                <label className={styles.reasonField}>
+                  Reason
+                  <textarea
+                    value={cancelReason}
+                    onChange={(event) => { setCancelReason(event.target.value); setActionError(null); }}
+                    rows={3}
+                    maxLength={500}
+                    placeholder="Why is this meeting cancelled?"
+                  />
+                </label>
+              </>
+            ) : null}
+            {actionStep === 'confirm' && actionKind === 'reschedule' && nextStartMin != null ? (
+              <div className={styles.move}>
+                <div>
+                  <span className={styles.metaLabel}>Now</span>
+                  <strong>{formatFullDate(actionMeeting.meetingDate)}</strong>
+                  <span className={styles.moveTime}>{ownSlotLabel(actionMeeting)}</span>
+                </div>
+                <span className={styles.moveArrow} aria-hidden>→</span>
+                <div>
+                  <span className={styles.metaLabel}>New slot</span>
+                  <strong>{formatFullDate(nextDate)}</strong>
+                  <span className={styles.moveTime}>{formatHubTimeRange(nextStartMin, nextStartMin + HUB_MEETING_DURATION_MIN)}</span>
+                </div>
+              </div>
+            ) : null}
+            {actionStep === 'confirm' && actionKind === 'cancel' ? (
+              <div className={styles.cancelReview}>
+                <div className={styles.currentSlot}>
+                  <span>Cancelling</span>
+                  <strong>{formatFullDate(actionMeeting.meetingDate)}</strong>
+                  <em>{ownSlotLabel(actionMeeting)}</em>
+                </div>
+                <p>This meeting will be marked cancelled.</p>
+                <blockquote>{cancelReason.trim()}</blockquote>
+              </div>
+            ) : null}
+            {actionError ? <p className={styles.popError}>{actionError}</p> : null}
+            <div className={styles.modalActions}>
+              {actionStep === 'details' ? (
+                <>
+                  <button type="button" className={styles.btn} onClick={closeAction}>Close</button>
+                  <button type="button" className={`${styles.btn} ${styles.btnPrimary}`} onClick={() => { setActionError(null); setActionStep('form'); }}>
+                    {actionKind === 'reschedule' ? 'Change this meeting' : 'Continue'}
+                  </button>
+                </>
+              ) : actionStep === 'form' ? (
+                <>
+                  <button type="button" className={styles.btn} onClick={() => { setActionError(null); setSlotPickerOpen(false); setActionStep('details'); }}>Back</button>
+                  <button type="button" className={`${styles.btn} ${styles.btnPrimary}`} onClick={reviewAction}>
+                    {actionKind === 'reschedule' ? 'Review new slot' : 'Review cancellation'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button type="button" className={styles.btn} disabled={savingAction} onClick={() => setActionStep('form')}>Back</button>
+                  <button
+                    type="button"
+                    className={`${styles.btn} ${actionKind === 'reschedule' ? styles.btnPrimary : styles.btnStop}`}
+                    disabled={savingAction}
+                    onClick={() => void submitAction()}
+                  >
+                    {savingAction ? 'Saving…' : actionKind === 'reschedule' ? 'Confirm reschedule' : 'Confirm cancel'}
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+          {actionKind === 'reschedule' && actionMeeting.designerName ? (
+            <MeetingSlotPickerModal
+              open={slotPickerOpen}
+              onClose={() => setSlotPickerOpen(false)}
+              onConfirm={(startMin) => {
+                setNextStartMin(startMin);
+                setNextTime(minutesToHubTime24(startMin));
+                setActionError(null);
+              }}
+              apiBase={apiBase}
+              designerName={actionMeeting.designerName}
+              meetingDate={nextDate}
+              initialStartMin={nextStartMin}
+              durationMin={HUB_MEETING_DURATION_MIN}
+              sessionId={sessionId}
+            />
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function SearchIcon() {
+function GroupRows({
+  day,
+  today,
+  meetings,
+  continued = false,
+  onOpen,
+}: {
+  day: string;
+  today: string;
+  meetings: ViewMeeting[];
+  continued?: boolean;
+  onOpen: (meeting: ViewMeeting) => void;
+}) {
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
-      <path fillRule="evenodd" d="M9 3.5a5.5 5.5 0 1 0 3.48 9.74l3.14 3.14a.75.75 0 1 0 1.06-1.06l-3.14-3.14A5.5 5.5 0 0 0 9 3.5ZM5 9a4 4 0 1 1 8 0 4 4 0 0 1-8 0Z" clipRule="evenodd" />
-    </svg>
+    <>
+      <tr className={styles.dayRow}>
+        <th colSpan={8} scope="colgroup">
+          {dayHeading(day, today)}
+          {continued ? <span className={styles.continued}>continued</span> : null}
+        </th>
+      </tr>
+      {meetings.map((meeting) => (
+        <tr
+          key={meeting.key}
+          className={styles.row}
+          data-mode={meeting.personal ? undefined : meeting.mode}
+          data-personal={meeting.personal ? meeting.personalKind || 'block' : undefined}
+          data-overlap={meeting.overlapsClient || meeting.insideLeave ? 'true' : undefined}
+          tabIndex={0}
+          aria-label={meeting.personal ? `Open personal time for ${meeting.designer}` : `Open meeting for ${meeting.customer}`}
+          onClick={() => onOpen(meeting)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              onOpen(meeting);
+            }
+          }}
+        >
+          <td>
+            <div className={styles.person}>
+              <Avatar name={meeting.customer} />
+              <div className={styles.personText}>
+                <span className={styles.name} title={meeting.customer}>{meeting.customer}</span>
+                {meeting.personal ? (
+                  <span className={styles.personalMark} data-kind={meeting.personalKind || 'block'}>
+                    {meeting.personalKind === 'full_day' ? 'Full-day leave' : 'Personal'}
+                    {meeting.overlapsClient ? ' · overlaps a client meeting' : ''}
+                    {meeting.insideLeave ? ' · inside full-day leave' : ''}
+                  </span>
+                ) : meeting.phone ? (
+                  <span className={styles.phone}>{meeting.phone}</span>
+                ) : null}
+              </div>
+            </div>
+          </td>
+          <td>{personLabel(meeting.designer)}</td>
+          <td>{personLabel(meeting.sales)}</td>
+          <td className={styles.meetCell}>
+            <div className={styles.meetBox}>
+              {meeting.personal ? (
+                <span className={styles.modeTag} data-personal={meeting.personalKind || 'block'}>
+                  {meeting.personalKind === 'full_day' ? 'Leave' : 'Personal'}
+                </span>
+              ) : (
+                <ModeTag mode={meeting.mode} />
+              )}
+              <span className={styles.kind}>{meeting.kind}</span>
+              <span className={styles.venue}>{meeting.venue}</span>
+            </div>
+          </td>
+          <td>
+            <div className={styles.whenTime}>{formatClock(meeting.minutes)}</div>
+            <div className={styles.whenDay}>{dayHeading(meeting.day, today)}</div>
+          </td>
+          <td><StatusPill status={meeting.status} /></td>
+          <td>
+            {meeting.personal ? (
+              <span className={styles.moneyNone}>Personal</span>
+            ) : meeting.quote != null ? (
+              <span className={styles.money}>{formatInr(meeting.quote)}</span>
+            ) : (
+              <span className={styles.moneyNone}>No quote</span>
+            )}
+          </td>
+          <td><ChevronIcon /></td>
+        </tr>
+      ))}
+    </>
   );
 }
 
-function HomeIcon() {
+function isPersonalUpcoming(meeting: ViewMeeting, today: string): boolean {
+  if (meeting.status === 'cancelled' || meeting.status === 'completed') return false;
+  return meeting.day >= today;
+}
+
+function PersonalBoard({
+  meetings,
+  today,
+  kind,
+  onKind,
+  warning,
+  loading = false,
+  onOpen,
+  compact = false,
+}: {
+  meetings: ViewMeeting[];
+  today: string;
+  kind: PersonalKindFilter;
+  onKind: (kind: PersonalKindFilter) => void;
+  warning: string | null;
+  loading?: boolean;
+  onOpen: (meeting: ViewMeeting) => void;
+  compact?: boolean;
+}) {
+  const upcoming = meetings.filter((meeting) => isPersonalUpcoming(meeting, today));
+  const past = meetings.filter((meeting) => !isPersonalUpcoming(meeting, today));
+  const groups = [
+    { id: 'upcoming', label: 'Upcoming', rows: upcoming },
+    { id: 'past', label: 'Past', rows: past },
+  ];
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 text-gray-400" aria-hidden>
-      <path fillRule="evenodd" d="M9.293 2.293a1 1 0 0 1 1.414 0l7 7A1 1 0 0 1 17 11h-1v6a1 1 0 0 1-1 1h-3.5a.5.5 0 0 1-.5-.5V14a1 1 0 0 0-1-1h-1a1 1 0 0 0-1 1v3.5a.5.5 0 0 1-.5.5H5a1 1 0 0 1-1-1v-6H3a1 1 0 0 1-.707-1.707l7-7Z" clipRule="evenodd" />
-    </svg>
+    <section className={compact ? styles.personalSide : styles.personalBoard} aria-label="Personal appointments">
+      <div className={styles.personalHead}>
+        <div>
+          <h2 className={styles.personalTitle}>Personal appointments</h2>
+          <p className={styles.personalSub}>
+            {loading ? 'Loading designer time…' : `${upcoming.length} upcoming · ${past.length} past`}
+          </p>
+        </div>
+        <div className={styles.seg} role="group" aria-label="Personal appointment type">
+          {([
+            ['all', 'All'],
+            ['block', 'Blocks'],
+            ['full_day', 'Leave'],
+          ] as const).map(([id, label]) => (
+            <button key={id} type="button" data-on={kind === id} onClick={() => onKind(id)}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {meetings.length === 0 ? (
+        <p className={styles.quiet}>
+          {warning ? 'Personal time blocks are waiting on the calendar service.' : 'No personal appointments in this range.'}
+        </p>
+      ) : (
+        <div className={styles.personalGroups}>
+          {groups.map((group) => (
+            <div key={group.id} className={styles.personalGroup} data-group={group.id}>
+              <div className={styles.personalGroupLabel}>
+                {group.label}
+                <span>{group.rows.length}</span>
+              </div>
+              {group.rows.length === 0 ? (
+                <p className={styles.personalEmpty}>{group.id === 'upcoming' ? 'Nothing coming up.' : 'Nothing earlier in this range.'}</p>
+              ) : (
+                group.rows.map((meeting) => (
+                  <button
+                    key={meeting.key}
+                    type="button"
+                    className={styles.personalItem}
+                    data-kind={meeting.personalKind || 'block'}
+                    data-overlap={meeting.overlapsClient || meeting.insideLeave ? 'true' : undefined}
+                    onClick={() => onOpen(meeting)}
+                  >
+                    <span className={styles.personalWhen}>
+                      <strong>{meeting.personalKind === 'full_day' ? 'Full day' : formatClock(meeting.minutes)}</strong>
+                      <span>{dayHeading(meeting.day, today)}</span>
+                    </span>
+                    <span className={styles.personalBody}>
+                      <span className={styles.personalName}>{meeting.personalKind === 'full_day' ? (meeting.personalReason || 'Full-day leave') : meeting.customer}</span>
+                      <span className={styles.personalMeta}>
+                        {personLabel(meeting.designer)}
+                        {meeting.endMinutes != null && meeting.personalKind !== 'full_day' ? ` · until ${formatClock(meeting.endMinutes)}` : ''}
+                        {meeting.overlapsClient ? ' · overlaps a client meeting' : ''}
+                      </span>
+                    </span>
+                    <span className={styles.modeTag} data-personal={meeting.personalKind || 'block'}>
+                      {meeting.personalKind === 'full_day' ? 'Leave' : 'Personal'}
+                    </span>
+                    <StatusPill status={meeting.status} />
+                  </button>
+                ))
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
-function VideoIcon() {
+function CalendarBoard({
+  meetings,
+  personalMeetings,
+  personalKind,
+  onPersonalKind,
+  personalWarning,
+  today,
+  focusMonth,
+  onMonthChange,
+  onOpen,
+}: {
+  meetings: ViewMeeting[];
+  personalMeetings: ViewMeeting[];
+  personalKind: PersonalKindFilter;
+  onPersonalKind: (kind: PersonalKindFilter) => void;
+  personalWarning: string | null;
+  today: string;
+  focusMonth: string;
+  onMonthChange: (isoDay: string) => void;
+  onOpen: (meeting: ViewMeeting) => void;
+}) {
+  const [cursor, setCursor] = useState(() => (focusMonth === today.slice(0, 7) ? today : `${focusMonth}-01`));
+  const [span, setSpan] = useState<'week' | 'month'>('week');
+  const [clock, setClock] = useState<number | null>(null);
+  const [motion, setMotion] = useState<{ dir: 'next' | 'prev'; id: number } | null>(null);
+
+  useEffect(() => {
+    const update = () => setClock(kolkataMinutes());
+    update();
+    const id = window.setInterval(update, 60000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    setCursor((current) => {
+      if (current.slice(0, 7) === focusMonth) return current;
+      return focusMonth === today.slice(0, 7) ? today : `${focusMonth}-01`;
+    });
+  }, [focusMonth, today]);
+
+  const weekDays = useMemo(() => Array.from({ length: 7 }, (_, index) => addDaysIso(startOfWeek(cursor), index)), [cursor]);
+  const monthDays = useMemo(() => {
+    const first = `${cursor.slice(0, 7)}-01`;
+    const start = startOfWeek(first);
+    return Array.from({ length: 42 }, (_, index) => addDaysIso(start, index));
+  }, [cursor]);
+
+  const byDay = useMemo(() => {
+    const map = new Map<string, ViewMeeting[]>();
+    for (const meeting of meetings) {
+      const list = map.get(meeting.day) || [];
+      list.push(meeting);
+      map.set(meeting.day, list);
+    }
+    for (const list of map.values()) list.sort((a, b) => compareMeetings(a, b, 1));
+    return map;
+  }, [meetings]);
+
+  const todayMeetings = byDay.get(today) || [];
+  const inProgress = meetings.filter((meeting) => meeting.status === 'in_progress').sort((a, b) => compareMeetings(a, b, 1));
+  const live = inProgress.find((meeting) => meeting.day === today) || inProgress[0] || null;
+  const nextToday = todayMeetings.find((meeting) => {
+    if (meeting.status !== 'scheduled') return false;
+    if (clock == null || meeting.minutes == null) return true;
+    return meeting.minutes >= clock;
+  });
+  const spotlight = live || nextToday || null;
+
+  const jumpMonth = (day: string) => {
+    setMotion(null);
+    setSpan('month');
+    setCursor(day);
+    if (day.slice(0, 7) !== focusMonth) onMonthChange(day);
+  };
+
+  const shiftCalendar = (direction: 1 | -1) => {
+    const next = span === 'week' ? addDaysIso(cursor, direction * 7) : addMonthsIso(cursor, direction);
+    setMotion({ dir: direction > 0 ? 'next' : 'prev', id: Date.now() });
+    setCursor(next);
+    if (next.slice(0, 7) !== focusMonth) onMonthChange(next);
+  };
+
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 text-sky-500" aria-hidden>
-      <path d="M3.25 5.5A1.75 1.75 0 0 0 1.5 7.25v5.5c0 .966.784 1.75 1.75 1.75h8.5A1.75 1.75 0 0 0 13.5 12.75v-1.19l3.22 2.148a.75.75 0 0 0 1.18-.614V6.906a.75.75 0 0 0-1.18-.614L13.5 8.44V7.25a1.75 1.75 0 0 0-1.75-1.75h-8.5Z" />
-    </svg>
+    <div className={styles.calLayout}>
+      <div className={styles.calFrame}>
+        <button
+          type="button"
+          key={motion?.dir === 'prev' ? `prev-${motion.id}` : 'prev-idle'}
+          className={styles.edgeBtn}
+          data-side="left"
+          data-go={motion?.dir === 'prev' ? 'true' : 'false'}
+          aria-label={span === 'week' ? 'Previous week' : 'Previous month'}
+          onClick={() => shiftCalendar(-1)}
+        >
+          ‹
+        </button>
+        <section className={styles.calCard}>
+          <div className={styles.calHead}>
+            <h2 className={styles.calTitle}>{span === 'week' ? weekTitle(weekDays) : monthTitle(cursor)}</h2>
+            <div className={styles.calTools}>
+              <button type="button" className={styles.todayBtn} onClick={() => { setMotion(null); setCursor(today); if (today.slice(0, 7) !== focusMonth) onMonthChange(today); }}>Today</button>
+              <div className={styles.seg} role="group" aria-label="Calendar span">
+                <button type="button" data-on={span === 'week'} onClick={() => { setMotion(null); setSpan('week'); }}>Week</button>
+                <button type="button" data-on={span === 'month'} onClick={() => { setMotion(null); setSpan('month'); }}>Month</button>
+              </div>
+            </div>
+          </div>
+          <div key={motion?.id ?? 'still'} className={styles.calMotion} data-slide={motion?.dir || 'none'}>
+        {span === 'week' ? (
+          <div className={styles.weekWrap}>
+            <div className={styles.week}>
+              <div className={styles.corner} />
+              {weekDays.map((day) => {
+                const outside = day.slice(0, 7) !== weekDays[0].slice(0, 7);
+                const nextStart = outside && day.endsWith('-01');
+                return (
+                  <div key={day} className={styles.weekHead} data-today={day === today} data-out={outside} data-next-start={nextStart}>
+                    <span>{weekdayShort(day)}</span>
+                    <span className={styles.dateNum} data-today={day === today} data-next-start={nextStart}>{Number(day.slice(8))}</span>
+                    {nextStart ? <span className={styles.monthMark}>{monthAbbrev(day)}</span> : null}
+                  </div>
+                );
+              })}
+              {HOURS.map((hour) => (
+                <HourRow key={hour} hour={hour} days={weekDays} today={today} anchorMonth={weekDays[0].slice(0, 7)} byDay={byDay} onOpen={onOpen} onMore={jumpMonth} />
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className={styles.monthWrap}>
+            <div className={styles.month}>
+              {WEEKDAYS.map((label) => (
+                <div key={label} className={styles.monthHead}>{label}</div>
+              ))}
+              {monthDays.map((day) => {
+                const events = byDay.get(day) || [];
+                const extra = events.length - 3;
+                const shownMonth = cursor.slice(0, 7);
+                const outside = !day.startsWith(shownMonth);
+                const nextStart = outside && day.endsWith('-01') && day.slice(0, 7) > shownMonth;
+                return (
+                  <div key={day} className={styles.monthCell} data-today={day === today} data-out={outside} data-next-start={nextStart}>
+                    <span className={styles.dateLine}>
+                      <span className={styles.dateNum} data-today={day === today} data-next-start={nextStart}>{Number(day.slice(8))}</span>
+                      {nextStart ? <span className={styles.monthMark}>{monthAbbrev(day)}</span> : null}
+                    </span>
+                    {events.slice(0, 3).map((meeting) => (
+                      <EventChip key={meeting.key} meeting={meeting} onOpen={onOpen} />
+                    ))}
+                    {extra > 0 ? <span className={styles.moreQuiet}>+{extra} more</span> : null}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+          </div>
+        <div className={styles.legend}>
+          <span><i className={styles.swatch} data-mode="offline" /> Offline</span>
+          <span><i className={styles.swatch} data-mode="online" /> Online</span>
+          <span><i className={styles.statusDot} data-status="scheduled" /> Scheduled</span>
+          <span><i className={styles.statusDot} data-status="in_progress" /> In progress</span>
+          <span><i className={styles.statusDot} data-status="completed" /> Successful</span>
+          <span><i className={styles.statusDot} data-status="abandoned" /> Abandoned</span>
+        </div>
+        </section>
+        <button
+          type="button"
+          key={motion?.dir === 'next' ? `next-${motion.id}` : 'next-idle'}
+          className={styles.edgeBtn}
+          data-side="right"
+          data-go={motion?.dir === 'next' ? 'true' : 'false'}
+          aria-label={span === 'week' ? 'Next week' : 'Next month'}
+          onClick={() => shiftCalendar(1)}
+        >
+          ›
+        </button>
+      </div>
+      <aside className={styles.side}>
+        <div className={styles.liveCard} data-live={live ? 'true' : 'false'}>
+          <div className={styles.liveKicker}>
+            {live ? <span className={styles.pulse} aria-hidden /> : null}
+            {live ? 'Happening now' : 'Up next'}
+          </div>
+          {spotlight ? (
+            <button type="button" className={styles.liveBody} onClick={() => onOpen(spotlight)}>
+              <span className={styles.liveTime}>{spotlight.minutes == null ? 'Time not on this booking' : formatClock(spotlight.minutes)}</span>
+              <span className={styles.liveName}>{spotlight.customer}</span>
+              <span className={styles.liveMeta}>
+                {personLabel(spotlight.designer)}
+                {spotlight.venue ? ` · ${spotlight.venue}` : ''}
+              </span>
+              <span className={styles.tags}>
+                <ModeTag mode={spotlight.mode} />
+                <StatusPill status={spotlight.status} />
+              </span>
+            </button>
+          ) : (
+            <p className={styles.liveEmpty}>No meeting is in progress, and nothing else is scheduled today.</p>
+          )}
+        </div>
+        <PersonalBoard
+          meetings={personalMeetings}
+          today={today}
+          kind={personalKind}
+          onKind={onPersonalKind}
+          warning={personalWarning}
+          onOpen={onOpen}
+          compact
+        />
+        <div className={styles.sideCard}>
+          <div className={styles.sideLabel}>
+            Today&apos;s schedule
+            <span className={styles.badge}>{todayMeetings.length}</span>
+          </div>
+          {todayMeetings.length === 0 ? (
+            <p className={styles.quiet}>Nothing scheduled today.</p>
+          ) : (
+            <div className={styles.timeline}>
+              {todayMeetings.map((meeting) => (
+                <button key={meeting.key} type="button" className={styles.tlBtn} data-personal={meeting.personal ? meeting.personalKind || 'block' : undefined} onClick={() => onOpen(meeting)}>
+                  <span className={styles.tlTime}>{meeting.minutes == null ? '—' : formatClock(meeting.minutes)}</span>
+                  <span className={styles.tlName}>{meeting.customer}</span>
+                  <StatusPill status={meeting.status} />
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </aside>
+    </div>
   );
 }
 
-function OpenIcon() {
+function HourRow({
+  hour,
+  days,
+  today,
+  anchorMonth,
+  byDay,
+  onOpen,
+  onMore,
+}: {
+  hour: number;
+  days: string[];
+  today: string;
+  anchorMonth: string;
+  byDay: Map<string, ViewMeeting[]>;
+  onOpen: (meeting: ViewMeeting) => void;
+  onMore: (day: string) => void;
+}) {
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
-      <path d="M12.232 4.232a2.5 2.5 0 0 1 3.536 3.536l-1.225 1.224a.75.75 0 0 0 1.061 1.06l1.224-1.224a4 4 0 0 0-5.656-5.656l-3 3a4 4 0 0 0 .225 5.865.75.75 0 0 0 .977-1.138 2.5 2.5 0 0 1-.142-3.667l3-3Z" />
-      <path d="M11.603 7.17a.75.75 0 0 0-.977 1.138 2.5 2.5 0 0 1 .142 3.667l-3 3a2.5 2.5 0 0 1-3.536-3.536l1.225-1.224a.75.75 0 0 0-1.061-1.06l-1.224 1.224a4 4 0 1 0 5.656 5.656l3-3a4 4 0 0 0-.225-5.865Z" />
-    </svg>
+    <>
+      <div className={styles.hourLabel}>{hourLabel(hour)}</div>
+      {days.map((day) => {
+        const events = (byDay.get(day) || []).filter((meeting) => gridHour(meeting.minutes) === hour);
+        const extra = events.length - 3;
+        const outside = !day.startsWith(anchorMonth);
+        const nextStart = outside && day.endsWith('-01');
+        return (
+          <div key={`${day}-${hour}`} className={styles.weekCell} data-today={day === today} data-out={outside} data-next-start={nextStart}>
+            {events.slice(0, 3).map((meeting) => (
+              <EventChip key={meeting.key} meeting={meeting} onOpen={onOpen} />
+            ))}
+            {extra > 0 ? (
+              <button type="button" className={styles.moreLink} onClick={() => onMore(day)}>
+                +{extra} more
+              </button>
+            ) : null}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+function EventChip({ meeting, onOpen }: { meeting: ViewMeeting; onOpen: (meeting: ViewMeeting) => void }) {
+  const when = meeting.minutes == null ? meeting.customer : `${formatClock(meeting.minutes)} ${meeting.customer}`;
+  const channel = meeting.personal
+    ? meeting.personalKind === 'full_day'
+      ? 'Full-day leave'
+      : 'Personal'
+    : meeting.mode === 'online'
+      ? 'Online'
+      : 'Offline';
+  return (
+    <button
+      type="button"
+      className={styles.chip}
+      data-mode={meeting.personal ? undefined : meeting.mode}
+      data-personal={meeting.personal ? meeting.personalKind || 'block' : undefined}
+      data-overlap={meeting.overlapsClient || meeting.insideLeave ? 'true' : undefined}
+      data-status={meeting.status}
+      aria-label={`${when}, ${channel} ${meeting.venue}, ${STATUS_LABEL[meeting.status]}${meeting.overlapsClient ? ', overlaps a client meeting' : ''}`}
+      title={when}
+      onClick={() => onOpen(meeting)}
+    >
+      <i className={styles.statusDot} data-status={meeting.status} aria-hidden="true" />
+      <span className={styles.chipLabel}>{when}</span>
+    </button>
   );
 }

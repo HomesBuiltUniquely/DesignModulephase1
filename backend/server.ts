@@ -41,6 +41,20 @@ import {
 } from "./routes/designerXpRoutes";
 import * as notify from "./routes/designNotifications";
 import { buildTimelineAnchorsFromPayloadAndD1, fetchLeadTimelineAnchors, stampEntered1020At } from "./leadTimelineAnchors";
+import {
+  MeetingActionError,
+  cancelLeadMeeting,
+  endActiveCrmMeeting,
+  ensureLeadMeetingsTable,
+  listLeadMeetings,
+  markDesignMeetingCompleted,
+  recordCrmMeeting,
+  recordDesignMeetingFromSchedule,
+  rescheduleLeadMeeting,
+  startActiveCrmMeetingForLead,
+  startCrmMeeting,
+  endCrmMeeting,
+} from "./leadMeetings";
 
 /**
  * Load backend/.env before dotenv. Supports `export KEY=value` and quoted values.
@@ -1936,6 +1950,7 @@ async function initDb() {
 
     await ensureOfflineMeetingExportTable(pool);
     await ensureDesignerXpTable(pool);
+    await ensureLeadMeetingsTable(pool);
 
     try {
       const [seenCol] = await conn.query(
@@ -5031,6 +5046,7 @@ async function persistLeadDesignScheduledMeeting(
     meetingTime?: string | null;
     meetingType?: string | null;
     meetingMode?: string | null;
+    actor?: { id?: number | null; name?: string | null } | null;
   },
 ) {
   const dateIso =
@@ -5073,6 +5089,18 @@ async function persistLeadDesignScheduledMeeting(
     new Date(),
     leadId,
   ]);
+  try {
+    await recordDesignMeetingFromSchedule(pool, {
+      leadId,
+      meetingDate: dateIso,
+      meetingTime: timeLabel,
+      meetingType: opts.meetingType,
+      meetingMode: opts.meetingMode,
+      actor: opts.actor,
+    });
+  } catch (err) {
+    console.error("[lead-meetings] record scheduled meeting failed", err);
+  }
 }
 function resolveCrmLeadPutPaths(leadType: string | null | undefined, crmLeadId: number): string[] {
   const norm = String(leadType || "").trim().toLowerCase().replace(/[\s_-]+/g, "");
@@ -7142,6 +7170,20 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
             existingLeadId,
           ],
         );
+        try {
+          const crmText = String(intakeMeetingType || "");
+          await recordCrmMeeting(pool, {
+            leadId: existingLeadId,
+            meetingDate: appointmentDate,
+            meetingTime: appointmentSlot,
+            meetingType: intakeMeetingType,
+            meetingMode: /virtual/i.test(crmText) ? "online" : /showroom|site/i.test(crmText) ? "offline" : null,
+            designerId: assignedDesignerId,
+            actor: { name: "CRM" },
+          });
+        } catch (meetingErr) {
+          console.error("[external-intake] crm meeting sync failed", meetingErr);
+        }
         return res.status(200).json({
           ok: true,
           leadId: existingLeadId,
@@ -7181,6 +7223,21 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
       ],
     );
     const newLeadId = Number((result as { insertId?: number }).insertId);
+
+    try {
+      const crmText = String(intakeMeetingType || "");
+      await recordCrmMeeting(pool, {
+        leadId: newLeadId,
+        meetingDate: appointmentDate,
+        meetingTime: appointmentSlot,
+        meetingType: intakeMeetingType,
+        meetingMode: /virtual/i.test(crmText) ? "online" : /showroom|site/i.test(crmText) ? "offline" : null,
+        designerId: assignedDesignerId,
+        actor: { name: "CRM" },
+      });
+    } catch (meetingErr) {
+      console.error("[external-intake] crm meeting sync failed", meetingErr);
+    }
 
     // Notify: 01 — Pre-10% new lead created
     void notify.leadPre10({
@@ -8609,6 +8666,12 @@ app.post("/api/leads/:id/history", async (req: Request, res: Response) => {
                 : null,
           meetingType: req.body?.taskName != null ? String(req.body.taskName) : null,
           meetingMode: meta?.meetingMode != null ? String(meta.meetingMode) : null,
+          actor: {
+            name:
+              req.body?.user && typeof req.body.user === "object"
+                ? String((req.body.user as { name?: string }).name || "")
+                : null,
+          },
         });
       }
     } catch (persistErr) {
@@ -8865,8 +8928,15 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
           meetingTime: meetingTime != null ? String(meetingTime) : null,
           meetingType: String(taskName),
           meetingMode: meta?.meetingMode != null ? String(meta.meetingMode) : null,
+          actor: { id: actingUser.id, name: actingUser.name },
         });
       }
+      await markDesignMeetingCompleted(pool, {
+        leadId: id,
+        milestoneIndex,
+        taskName: tNormComplete,
+        actor: { id: actingUser.id, name: actingUser.name },
+      });
     } catch (persistErr) {
       console.error("[complete-task] persist scheduled meeting failed (non-fatal)", persistErr);
     }
@@ -13501,6 +13571,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
         meetingTime: meetingTime != null ? String(meetingTime) : null,
         meetingType: String(meetingType),
         meetingMode: meetingMode != null ? String(meetingMode) : null,
+        actor: { id: actingUser.id, name: actingUser.name },
       });
     } catch (persistErr) {
       console.error("[schedule-meeting-invite] persist scheduled meeting failed (non-fatal)", persistErr);
@@ -17442,6 +17513,11 @@ app.patch("/api/leads/:id/meeting-wiz-completed", async (req: Request, res: Resp
         : completedAt.slice(0, 10);
 
     await persistLeadMeetingWizCompleted(id, { completedAt, meetingDate });
+    try {
+      await endActiveCrmMeeting(pool, id, { id: user?.id, name: user?.name });
+    } catch (meetingErr) {
+      console.error("[meeting-wiz-completed] end crm meeting failed", meetingErr);
+    }
     const [rows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [id]);
     const row = (rows as { payload?: string | null }[])[0];
     const intake = extractLeadIntakeViewFromPayload(row?.payload);
@@ -18954,7 +19030,35 @@ app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
 // ========== Slot Sync — New Endpoints ==========
 
 function canAccessMeetingManagement(role: string | null | undefined): boolean {
-  return String(role || "").trim().toLowerCase() === "admin";
+  const value = String(role || "").trim().toLowerCase();
+  return value === "admin" || value === "designer" || value === "design_manager" || value === "territorial_design_manager";
+}
+
+/** Admin sees every meeting. Everyone else sees only their own team. */
+async function meetingViewerScope(user: { id: number; name: string; role: string }): Promise<{ all: boolean; userIds: number[] } | null> {
+  if (!canAccessMeetingManagement(user.role)) return null;
+  if (String(user.role || "").trim().toLowerCase() === "admin") return { all: true, userIds: [] };
+  const people = await getPersonalAppointmentVisibleUsers(user);
+  const userIds = Array.from(new Set(people.map((person) => Number(person.id)).filter((id) => Number.isFinite(id) && id > 0)));
+  return { all: false, userIds };
+}
+
+async function assertMeetingInViewerScope(user: { id: number; name: string; role: string }, meetingId: number): Promise<void> {
+  const scope = await meetingViewerScope(user);
+  if (!scope) throw new MeetingActionError(403, "Not allowed to open meeting management");
+  if (scope.all) return;
+  const [rows] = await pool.query(
+    `SELECT COALESCE(m.designer_id, l.assigned_designer_id) AS designerId
+       FROM lead_meetings m
+       JOIN leads l ON l.id = m.lead_id
+      WHERE m.id = ?
+      LIMIT 1`,
+    [meetingId],
+  );
+  const designerId = Number((rows as { designerId?: number }[])[0]?.designerId);
+  if (!scope.userIds.includes(designerId)) {
+    throw new MeetingActionError(403, "You can only manage meetings for your team");
+  }
 }
 
 function cleanScheduledMeetingText(value: unknown): string | null {
@@ -18980,22 +19084,453 @@ function meetingTimeEmbeddedInDate(value: unknown): string | null {
   return rest;
 }
 
-function meetingModeFromCrmType(value: unknown): string | null {
-  const text = (cleanScheduledMeetingText(value) || "").toUpperCase();
-  if (!text) return null;
-  if (text.includes("VIRTUAL")) return "online";
-  if (text.includes("SHOWROOM") || text.includes("SITE")) return "offline";
-  return null;
+type PersonalBoardApproval = "active" | "pending" | "approved" | "cancelled";
+type PersonalBoardKind = "block" | "full_day";
+
+type PersonalBoardPayload = {
+  meetings: Record<string, unknown>[];
+  warning: string | null;
+};
+
+const personalBoardCache = new Map<string, { at: number; payload: PersonalBoardPayload }>();
+const PERSONAL_BOARD_CACHE_MS = 20_000;
+const PERSONAL_BOARD_ERP_TIMEOUT_MS = 8_000;
+
+function invalidatePersonalBoardCache(): void {
+  personalBoardCache.clear();
 }
 
-function isMeetingCompletionLabel(value: string | null): boolean {
-  if (!value) return false;
-  return /completed|wizard session/i.test(value);
+function kolkataClock(now = new Date()): { dateIso: string; minutes: number } {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now);
+  const pick = (type: string) => parts.find((part) => part.type === type)?.value || "";
+  let hour = Number(pick("hour"));
+  if (hour === 24) hour = 0;
+  const minute = Number(pick("minute"));
+  return {
+    dateIso: `${pick("year")}-${pick("month")}-${pick("day")}`,
+    minutes: (Number.isFinite(hour) ? hour : 0) * 60 + (Number.isFinite(minute) ? minute : 0),
+  };
+}
+
+function wallDateIso(raw: string): string | null {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) return null;
+  if (/([zZ]|[+-]\d{2}:?\d{2})$/.test(trimmed)) {
+    const instant = new Date(trimmed);
+    if (Number.isNaN(instant.getTime())) return null;
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Kolkata",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(instant);
+  }
+  const match = trimmed.match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : null;
+}
+
+function wallClockFromSql(raw: unknown): { dateIso: string; minutes: number } | null {
+  const match = String(raw ?? "")
+    .trim()
+    .match(/^(\d{4}-\d{2}-\d{2})[ T](\d{1,2}):(\d{2})/);
+  if (!match) return null;
+  const hour = Number(match[2]);
+  const minute = Number(match[3]);
+  if (hour > 23 || minute > 59) return null;
+  return { dateIso: match[1], minutes: hour * 60 + minute };
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timeout")), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+function personalLifecycle(
+  dateIso: string,
+  startMin: number,
+  endMin: number,
+  approval: PersonalBoardApproval,
+  now: { dateIso: string; minutes: number },
+): {
+  meetingStatus: string;
+  progress: string;
+  personalApproval: string;
+  cancelReason: string | null;
+} {
+  if (approval === "cancelled") {
+    return {
+      meetingStatus: "cancelled",
+      progress: "cancelled",
+      personalApproval: "cancelled",
+      cancelReason: "Cancelled by the designer",
+    };
+  }
+  const ended = dateIso < now.dateIso || (dateIso === now.dateIso && now.minutes >= endMin);
+  const started = dateIso < now.dateIso || (dateIso === now.dateIso && now.minutes >= startMin);
+  if (approval === "pending") {
+    if (ended) {
+      return {
+        meetingStatus: "cancelled",
+        progress: "cancelled",
+        personalApproval: "expired",
+        cancelReason: "Leave request expired without approval",
+      };
+    }
+    return {
+      meetingStatus: "scheduled",
+      progress: "scheduled",
+      personalApproval: "pending",
+      cancelReason: null,
+    };
+  }
+  if (ended) {
+    return {
+      meetingStatus: "completed",
+      progress: "completed",
+      personalApproval: approval,
+      cancelReason: null,
+    };
+  }
+  if (started) {
+    return {
+      meetingStatus: "scheduled",
+      progress: "in_progress",
+      personalApproval: approval,
+      cancelReason: null,
+    };
+  }
+  return {
+    meetingStatus: "scheduled",
+    progress: "scheduled",
+    personalApproval: approval,
+    cancelReason: null,
+  };
+}
+
+function toPersonalBoardMeeting(input: {
+  key: string;
+  kind: PersonalBoardKind;
+  designerName: string;
+  branchName: string | null;
+  dateIso: string;
+  startMin: number;
+  endMin: number;
+  title: string;
+  reason: string;
+  approval: PersonalBoardApproval;
+  cancelReason?: string | null;
+  now: { dateIso: string; minutes: number };
+}): Record<string, unknown> {
+  const life = personalLifecycle(input.dateIso, input.startMin, input.endMin, input.approval, input.now);
+  const startLabel = minutesToHubLabel(input.startMin);
+  const endLabel = minutesToHubLabel(input.endMin);
+  return {
+    personalKey: input.key,
+    leadId: 0,
+    projectId: null,
+    projectName: null,
+    projectStage: null,
+    isOnHold: false,
+    customerName: input.title.slice(0, 180),
+    phone: null,
+    salesName: null,
+    quotationTotal: null,
+    budget: null,
+    designerName: input.designerName,
+    branchName: input.branchName,
+    meetingDate: input.dateIso,
+    meetingTime: startLabel,
+    meetingTimeLabel: `${startLabel} – ${endLabel}`,
+    meetingEndTime: endLabel,
+    meetingType: input.kind === "full_day" ? "full_day_leave" : "personal_block",
+    meetingMode: null,
+    meetingStatus: life.meetingStatus,
+    progress: life.progress,
+    source: "personal",
+    cancelReason: input.cancelReason ?? life.cancelReason,
+    personalKind: input.kind,
+    personalReason: input.reason.slice(0, 500),
+    personalApproval: life.personalApproval,
+  };
+}
+
+function cleanPersonalReason(raw: unknown, fallback: string): string {
+  const text = String(raw ?? "")
+    .replace(/^FULL_DAY_LEAVE:\s*/i, "")
+    .trim();
+  return text || fallback;
 }
 
 /**
- * All design-module meetings currently stored on leads.
- * Visible to the admin role. Widen canAccessMeetingManagement when more roles should see it.
+ * Designer personal blocks and full-day leave for Meeting Management.
+ * Client meetings stay on lead_meetings. Personal rows never carry a lead id,
+ * so reschedule and cancel on this board cannot touch them.
+ * ERP failures stay per designer: full-day leave still comes from the local table.
+ */
+async function listPersonalAppointmentsForMeetingBoard(limitToUserIds?: number[]): Promise<PersonalBoardPayload> {
+  const scopedIds = limitToUserIds?.filter((id) => Number.isInteger(id) && id > 0);
+  if (limitToUserIds && (!scopedIds || scopedIds.length === 0)) return { meetings: [], warning: null };
+  const cacheKey = scopedIds ? scopedIds.slice().sort((a, b) => a - b).join(",") : "all";
+  const cached = personalBoardCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < PERSONAL_BOARD_CACHE_MS) return cached.payload;
+
+  const now = kolkataClock();
+  const meetings: Record<string, unknown>[] = [];
+  const seenKeys = new Set<string>();
+  const fullDayKeys = new Set<string>();
+  const push = (row: Record<string, unknown>) => {
+    const key = String(row.personalKey || "");
+    if (!key || seenKeys.has(key)) return;
+    seenKeys.add(key);
+    meetings.push(row);
+  };
+
+  let designers: { name: string; branch: string | null }[] = [];
+  try {
+    const [rows] = await pool.query(
+      `SELECT name, branch
+         FROM users
+        WHERE role IN ('designer', 'design_manager')
+          AND name IS NOT NULL
+          AND TRIM(name) <> ''
+          ${scopedIds ? `AND id IN (${scopedIds.map(() => "?").join(",")})` : ""}
+        ORDER BY name ASC`,
+      scopedIds || [],
+    );
+    const byName = new Map<string, { name: string; branch: string | null }>();
+    for (const row of rows as { name?: string; branch?: string | null }[]) {
+      const name = String(row.name || "").trim();
+      const key = name.toLowerCase();
+      if (!name || byName.has(key)) continue;
+      const branch = String(row.branch || "").trim();
+      byName.set(key, { name, branch: branch || null });
+    }
+    designers = Array.from(byName.values());
+  } catch (err) {
+    console.error("[meeting-board] designer list failed", err);
+  }
+  const branchByName = new Map(designers.map((designer) => [designer.name.toLowerCase(), designer.branch]));
+  const branchFor = (name: string) => branchByName.get(name.trim().toLowerCase()) ?? null;
+
+  const cancelledErpIds = new Set<string>();
+  try {
+    const [rows] = await pool.query(
+      `SELECT id, erp_appointment_id, designer_name, description,
+              DATE_FORMAT(start_time, '%Y-%m-%d %H:%i:%s') AS startWall,
+              DATE_FORMAT(end_time, '%Y-%m-%d %H:%i:%s') AS endWall
+         FROM personal_block_cancellations
+        ${scopedIds ? `WHERE designer_id IN (${scopedIds.map(() => "?").join(",")})` : ""}
+        ORDER BY id DESC
+        LIMIT 500`,
+      scopedIds || [],
+    );
+    for (const row of rows as {
+      id: number;
+      erp_appointment_id?: string | null;
+      designer_name?: string;
+      description?: string | null;
+      startWall?: string;
+      endWall?: string;
+    }[]) {
+      const designerName = String(row.designer_name || "").trim();
+      const start = wallClockFromSql(row.startWall);
+      const end = wallClockFromSql(row.endWall);
+      if (!designerName || !start || !end || end.dateIso !== start.dateIso || end.minutes <= start.minutes) continue;
+      const erpId = String(row.erp_appointment_id || "").trim();
+      if (erpId) cancelledErpIds.add(erpId);
+      const reason = cleanPersonalReason(row.description, "Personal time");
+      push(
+        toPersonalBoardMeeting({
+          key: `cancel-${row.id}`,
+          kind: "block",
+          designerName,
+          branchName: branchFor(designerName),
+          dateIso: start.dateIso,
+          startMin: start.minutes,
+          endMin: end.minutes,
+          title: reason,
+          reason,
+          approval: "cancelled",
+          now,
+        }),
+      );
+    }
+  } catch (err) {
+    console.error("[meeting-board] cancelled personal blocks failed", err);
+  }
+
+  try {
+    const [rows] = await pool.query(
+      `SELECT id, designer_name, reason_preset, reason, status, review_note,
+              DATE_FORMAT(block_date, '%Y-%m-%d') AS blockDate
+         FROM designer_full_day_requests
+        WHERE status IN ('pending', 'approved', 'cancelled')
+          ${scopedIds ? `AND designer_id IN (${scopedIds.map(() => "?").join(",")})` : ""}
+        ORDER BY block_date DESC, id DESC
+        LIMIT 500`,
+      scopedIds || [],
+    );
+    const leaveRank = (status: string) => (status === "approved" ? 3 : status === "pending" ? 2 : 1);
+    const chosenLeave = new Map<string, { rank: number; meeting: Record<string, unknown>; live: boolean }>();
+    for (const row of rows as {
+      id: number;
+      designer_name?: string;
+      reason_preset?: string;
+      reason?: string;
+      status?: string;
+      review_note?: string | null;
+      blockDate?: string;
+    }[]) {
+      const designerName = String(row.designer_name || "").trim();
+      const dateIso = String(row.blockDate || "").slice(0, 10);
+      if (!designerName || !/^\d{4}-\d{2}-\d{2}$/.test(dateIso)) continue;
+      const status = String(row.status || "").toLowerCase();
+      const rank = leaveRank(status);
+      const dayKey = `${designerName.toLowerCase()}|${dateIso}`;
+      const current = chosenLeave.get(dayKey);
+      if (current && current.rank >= rank) continue;
+      const preset = String(row.reason_preset || "").trim();
+      const reasonText = String(row.reason || "").trim();
+      const reason =
+        preset && preset !== "Other" && reasonText && preset.toLowerCase() !== reasonText.toLowerCase()
+          ? `${preset}: ${reasonText}`
+          : reasonText || preset || "Full-day leave";
+      const approval: PersonalBoardApproval =
+        status === "approved" ? "approved" : status === "cancelled" ? "cancelled" : "pending";
+      chosenLeave.set(dayKey, {
+        rank,
+        live: approval !== "cancelled",
+        meeting: toPersonalBoardMeeting({
+          key: `leave-${row.id}`,
+          kind: "full_day",
+          designerName,
+          branchName: branchFor(designerName),
+          dateIso,
+          startMin: HUB_DAY_START_MIN,
+          endMin: HUB_DAY_END_MIN,
+          title: "Full-day leave",
+          reason,
+          approval,
+          cancelReason: approval === "cancelled" ? cleanPersonalReason(row.review_note, "Full-day leave cancelled") : null,
+          now,
+        }),
+      });
+    }
+    for (const [dayKey, chosen] of chosenLeave) {
+      if (chosen.live) fullDayKeys.add(dayKey);
+      push(chosen.meeting);
+    }
+  } catch (err) {
+    console.error("[meeting-board] full-day leave failed", err);
+  }
+
+  let erpFailures = 0;
+  if (designers.length > 0) {
+    await mapPoolLimit(designers, 5, async (designer) => {
+      let rows: unknown[] = [];
+      try {
+        rows = await withTimeout(fetchDesignerErpAppointments(designer.name), PERSONAL_BOARD_ERP_TIMEOUT_MS);
+      } catch (err) {
+        erpFailures += 1;
+        console.error("[meeting-board] personal blocks failed", designer.name, err);
+        return;
+      }
+      for (const raw of rows) {
+        if (!raw || typeof raw !== "object") continue;
+        if (isFullDayLeaveErpRow(raw)) {
+          const record = raw as Record<string, unknown>;
+          const startRaw = String(record.startTime ?? record.start ?? "");
+          const dateIso = wallDateIso(startRaw);
+          if (!dateIso) continue;
+          const dayKey = `${designer.name.toLowerCase()}|${dateIso}`;
+          if (fullDayKeys.has(dayKey)) continue;
+          if (isCancelledErpAppointment(raw)) continue;
+          fullDayKeys.add(dayKey);
+          const reason = cleanPersonalReason(record.description, "Full-day leave");
+          push(
+            toPersonalBoardMeeting({
+              key: `leave-erp-${designer.name.toLowerCase()}-${dateIso}`,
+              kind: "full_day",
+              designerName: designer.name,
+              branchName: designer.branch,
+              dateIso,
+              startMin: HUB_DAY_START_MIN,
+              endMin: HUB_DAY_END_MIN,
+              title: "Full-day leave",
+              reason,
+              approval: "approved",
+              now,
+            }),
+          );
+          continue;
+        }
+        if (!isPersonalAppointmentErpRow(raw)) continue;
+        const record = raw as Record<string, unknown>;
+        const erpId = String(getErpAppointmentId(raw) ?? "").trim();
+        if (erpId && cancelledErpIds.has(erpId)) continue;
+        const startRaw = String(record.startTime ?? record.start ?? "");
+        const endRaw = String(record.endTime ?? record.end ?? "");
+        const dateIso = wallDateIso(startRaw);
+        if (!dateIso) continue;
+        const startMin = erpDateTimeToMinutesOnDate(startRaw, dateIso);
+        let endMin = erpDateTimeToMinutesOnDate(endRaw, dateIso);
+        if (startMin == null) continue;
+        if (endMin == null || endMin <= startMin) endMin = Math.min(startMin + HUB_DEFAULT_MEETING_DURATION_MIN, 24 * 60);
+        if (endMin <= startMin) continue;
+        const reason = cleanPersonalReason(record.description, "Personal time");
+        const cancelled = isCancelledErpAppointment(raw);
+        push(
+          toPersonalBoardMeeting({
+            key: erpId ? `block-${erpId}` : `block-${designer.name.toLowerCase()}-${dateIso}-${startMin}-${endMin}`,
+            kind: "block",
+            designerName: designer.name,
+            branchName: designer.branch,
+            dateIso,
+            startMin,
+            endMin,
+            title: reason,
+            reason,
+            approval: cancelled ? "cancelled" : "active",
+            now,
+          }),
+        );
+      }
+    });
+  }
+
+  const warning =
+    erpFailures > 0
+      ? erpFailures === designers.length
+        ? "Personal time blocks could not be loaded from the calendar. Full-day leave is still shown."
+        : `Personal time for ${erpFailures} designer${erpFailures === 1 ? "" : "s"} could not be loaded. The rest of the board is up to date.`
+      : null;
+  const payload = { meetings, warning };
+  personalBoardCache.set(cacheKey, { at: Date.now(), payload });
+  return payload;
+}
+
+/**
+ * Meetings stored on lead_meetings, plus designer personal time and full-day leave.
+ * Admin sees every meeting. Designer, design manager, and TDM see only their team.
  * GET /api/meetings/scheduled
  */
 app.get("/api/meetings/scheduled", async (req: Request, res: Response) => {
@@ -19003,148 +19538,128 @@ app.get("/api/meetings/scheduled", async (req: Request, res: Response) => {
     const actingUser = await getUserFromSession(req);
     if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
     if (!canAccessMeetingManagement(actingUser.role)) {
-      return res.status(403).json({ message: "Meeting management is available to admin only" });
+      return res.status(403).json({ message: "Not allowed to open meeting management" });
     }
-
-    const [rows] = await pool.query(
-      `SELECT
-         l.id AS leadId,
-         l.pid AS projectId,
-         l.project_name AS projectName,
-         l.project_stage AS projectStage,
-         l.contact_no AS contactNo,
-         l.is_on_hold AS isOnHold,
-         u.name AS assignedDesignerName,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.designer_name')) AS payloadDesignerName,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.designerName')) AS payloadDesignerNameAlt,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.connection.designerName')) AS connectionDesignerName,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.scheduledMeetingDate')) AS meetingDate,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.scheduledMeetingSlot')) AS meetingTime,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.date')) AS designDate,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.time')) AS meetingTimeAlt,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.meetingType')) AS meetingType,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.meetingMode')) AS meetingMode,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.crmSchedule.date')) AS crmDate,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.crmSchedule.slot')) AS crmSlot,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.connection.meetingType')) AS connectionMeetingType,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.meetingType')) AS rootMeetingType,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.customer_name')) AS customerName,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.customerName')) AS customerNameAlt,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.customer_name')) AS customerNameRoot,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.phone')) AS formPhone,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.mobile')) AS formMobile,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.contact_no')) AS formContact,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.sales_executive')) AS salesExec,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.salesExecutive')) AS salesExecAlt,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.salesExecutive')) AS salesExecRoot,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.sales_person')) AS salesPerson,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.discovery.budget')) AS discoveryBudget,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.budget')) AS formBudget,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.budget')) AS rootBudget,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.quotation_total')) AS quotationTotal,
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.quotationTotal')) AS quotationTotalAlt
-       FROM leads l
-       LEFT JOIN users u ON u.id = l.assigned_designer_id
-       WHERE l.payload IS NOT NULL
-         AND JSON_VALID(l.payload) = 1
-         AND (
-           (
-             JSON_TYPE(JSON_EXTRACT(l.payload, '$.scheduledMeetingDate')) = 'STRING'
-             AND JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.scheduledMeetingDate')) NOT IN ('', 'null')
-           )
-           OR (
-             JSON_TYPE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.date')) = 'STRING'
-             AND JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.date')) NOT IN ('', 'null')
-           )
-           OR (
-             JSON_TYPE(JSON_EXTRACT(l.payload, '$.crmSchedule.date')) = 'STRING'
-             AND JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.crmSchedule.date')) NOT IN ('', 'null')
-           )
-         )`,
-    );
-
-    const meetings = (rows as Record<string, unknown>[])
-      .map((row) => {
-        const designDate =
-          meetingDateFromRaw(row.meetingDate) || meetingDateFromRaw(row.designDate);
-        const crmDate = meetingDateFromRaw(row.crmDate);
-        const meetingDate = designDate || crmDate;
-        if (!meetingDate) return null;
-        const designTime =
-          cleanScheduledMeetingText(row.meetingTime) ||
-          cleanScheduledMeetingText(row.meetingTimeAlt);
-        const crmSlot = cleanScheduledMeetingText(row.crmSlot);
-        const embeddedCrmTime = meetingTimeEmbeddedInDate(row.crmDate);
-        const crmTime =
-          crmDate && crmDate === meetingDate ? crmSlot || embeddedCrmTime : !designDate ? crmSlot || embeddedCrmTime : null;
-        const meetingTime = designTime || crmTime;
-        const designerName =
-          cleanScheduledMeetingText(row.assignedDesignerName) ||
-          cleanScheduledMeetingText(row.connectionDesignerName) ||
-          cleanScheduledMeetingText(row.payloadDesignerName) ||
-          cleanScheduledMeetingText(row.payloadDesignerNameAlt) ||
-          "Unassigned";
-        const rawMeetingType = cleanScheduledMeetingText(row.meetingType);
-        const meetingType = isMeetingCompletionLabel(rawMeetingType) ? null : rawMeetingType;
-        const meetingMode =
-          cleanScheduledMeetingText(row.meetingMode) ||
-          meetingModeFromCrmType(row.connectionMeetingType) ||
-          meetingModeFromCrmType(row.rootMeetingType);
-        const customerName =
-          cleanScheduledMeetingText(row.customerName) ||
-          cleanScheduledMeetingText(row.customerNameAlt) ||
-          cleanScheduledMeetingText(row.customerNameRoot) ||
-          cleanScheduledMeetingText(row.projectName) ||
-          "Customer";
-        return {
-          leadId: Number(row.leadId),
-          projectId: cleanScheduledMeetingText(row.projectId),
-          projectName: cleanScheduledMeetingText(row.projectName),
-          projectStage: cleanScheduledMeetingText(row.projectStage),
-          isOnHold: row.isOnHold === 1 || row.isOnHold === true || row.isOnHold === "1",
-          customerName,
-          phone:
-            cleanScheduledMeetingText(row.contactNo) ||
-            cleanScheduledMeetingText(row.formPhone) ||
-            cleanScheduledMeetingText(row.formMobile) ||
-            cleanScheduledMeetingText(row.formContact),
-          salesName:
-            cleanScheduledMeetingText(row.salesExec) ||
-            cleanScheduledMeetingText(row.salesExecAlt) ||
-            cleanScheduledMeetingText(row.salesExecRoot) ||
-            cleanScheduledMeetingText(row.salesPerson),
-          budget:
-            cleanScheduledMeetingText(row.discoveryBudget) ||
-            cleanScheduledMeetingText(row.formBudget) ||
-            cleanScheduledMeetingText(row.rootBudget),
-          quotationTotal:
-            cleanScheduledMeetingText(row.quotationTotal) ||
-            cleanScheduledMeetingText(row.quotationTotalAlt),
-          designerName,
-          meetingDate: meetingDate.slice(0, 10),
-          meetingTime: meetingTime || null,
-          meetingTimeLabel:
-            meetingTime && /[ap]m/i.test(meetingTime)
-              ? meetingTime
-              : formatTime12Hour(meetingTime) || meetingTime || null,
-          meetingType,
-          meetingMode,
-        };
-      })
-      .filter((row): row is NonNullable<typeof row> => row != null);
-
-    meetings.sort((a, b) => {
-      const byDate = a.meetingDate.localeCompare(b.meetingDate);
-      if (byDate !== 0) return byDate;
-      return String(a.meetingTime || "").localeCompare(String(b.meetingTime || ""));
-    });
-
-    return res.json({ meetings });
+    const scope = await meetingViewerScope(actingUser);
+    if (!scope) return res.status(403).json({ message: "Not allowed to open meeting management" });
+    const meetings = await listLeadMeetings(pool, scope.all ? undefined : { designerIds: scope.userIds });
+    let personal: Record<string, unknown>[] = [];
+    let personalWarning: string | null = null;
+    try {
+      const board = await listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds);
+      personal = board.meetings;
+      personalWarning = board.warning;
+    } catch (personalErr) {
+      console.error("[meeting-board] personal appointments failed", personalErr);
+      personalWarning = "Personal appointments could not be loaded. Client meetings are still shown.";
+    }
+    return res.json({ meetings: [...meetings, ...personal], personalWarning });
   } catch (err) {
     console.error("scheduled meetings list error", err);
     return res.status(500).json({ message: "Failed to load scheduled meetings" });
   }
 });
+
+app.post("/api/meetings/:id/reschedule", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+    if (!canAccessMeetingManagement(actingUser.role)) {
+      return res.status(403).json({ message: "Not allowed to open meeting management" });
+    }
+    const meetingId = Number(req.params.id);
+    if (!Number.isFinite(meetingId)) return res.status(400).json({ message: "Invalid meeting id" });
+    await assertMeetingInViewerScope(actingUser, meetingId);
+    const body = (req.body || {}) as { meetingDate?: unknown; meetingTime?: unknown; meetingMode?: unknown };
+    const meeting = await rescheduleLeadMeeting(pool, meetingId, {
+      meetingDate: body.meetingDate,
+      meetingTime: body.meetingTime,
+      meetingMode: body.meetingMode,
+      actor: { id: actingUser.id, name: actingUser.name },
+      assertDesignerAvailable: async (designerName, meetingDate) => {
+        if (!designerName) return;
+        const block = await getActiveFullDayBlock(designerName, meetingDate);
+        if (block) {
+          throw new MeetingActionError(409, `${designerName} is on full-day leave on ${meetingDate}`);
+        }
+      },
+    });
+    return res.json({ meeting });
+  } catch (err) {
+    if (err instanceof MeetingActionError) return res.status(err.status).json({ message: err.message });
+    console.error("reschedule meeting error", err);
+    return res.status(500).json({ message: "Failed to reschedule meeting" });
+  }
+});
+
+app.post("/api/meetings/:id/cancel", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+    if (!canAccessMeetingManagement(actingUser.role)) {
+      return res.status(403).json({ message: "Not allowed to open meeting management" });
+    }
+    const meetingId = Number(req.params.id);
+    if (!Number.isFinite(meetingId)) return res.status(400).json({ message: "Invalid meeting id" });
+    await assertMeetingInViewerScope(actingUser, meetingId);
+    const reason = (req.body || {}).reason;
+    const result = await cancelLeadMeeting(pool, meetingId, {
+      reason,
+      actor: { id: actingUser.id, name: actingUser.name },
+    });
+    return res.json(result);
+  } catch (err) {
+    if (err instanceof MeetingActionError) return res.status(err.status).json({ message: err.message });
+    console.error("cancel meeting error", err);
+    return res.status(500).json({ message: "Failed to cancel meeting" });
+  }
+});
+
+app.post("/api/meetings/:id/start", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+    const meetingId = Number(req.params.id);
+    if (!Number.isFinite(meetingId)) return res.status(400).json({ message: "Invalid meeting id" });
+    const meeting = await startCrmMeeting(pool, meetingId, { id: actingUser.id, name: actingUser.name });
+    return res.json({ meeting });
+  } catch (err) {
+    if (err instanceof MeetingActionError) return res.status(err.status).json({ message: err.message });
+    console.error("start meeting error", err);
+    return res.status(500).json({ message: "Failed to start meeting" });
+  }
+});
+
+app.post("/api/meetings/:id/end", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+    const meetingId = Number(req.params.id);
+    if (!Number.isFinite(meetingId)) return res.status(400).json({ message: "Invalid meeting id" });
+    const meeting = await endCrmMeeting(pool, meetingId, { id: actingUser.id, name: actingUser.name });
+    return res.json({ meeting });
+  } catch (err) {
+    if (err instanceof MeetingActionError) return res.status(err.status).json({ message: err.message });
+    console.error("end meeting error", err);
+    return res.status(500).json({ message: "Failed to end meeting" });
+  }
+});
+
+app.post("/api/leads/:id/crm-meeting/start", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+    const leadId = Number(req.params.id);
+    if (!Number.isFinite(leadId)) return res.status(400).json({ message: "Invalid lead id" });
+    const meeting = await startActiveCrmMeetingForLead(pool, leadId, { id: actingUser.id, name: actingUser.name });
+    return res.json({ meeting });
+  } catch (err) {
+    if (err instanceof MeetingActionError) return res.status(err.status).json({ message: err.message });
+    console.error("start crm meeting error", err);
+    return res.status(500).json({ message: "Failed to start meeting" });
+  }
+});
+
 
 // NOTE: GET /api/designers is defined earlier in this file (line ~9957) — do not re-register here.
 
@@ -20012,6 +20527,7 @@ app.post("/api/appointment/personal", async (req: Request, res: Response) => {
     if (!["designer", "design_manager"].includes(role)) {
       return res.status(403).json({ message: "Only designers and design managers can book personal time" });
     }
+    invalidatePersonalBoardCache();
 
     const {
       reason,
@@ -20197,6 +20713,7 @@ app.post("/api/appointment/personal/:erpId/cancel", async (req: Request, res: Re
     if (designerName.trim().toLowerCase() !== actingUser.name.trim().toLowerCase()) {
       return res.status(403).json({ message: "Only the person who booked this block can cancel it" });
     }
+    invalidatePersonalBoardCache();
 
     const appointments = await fetchDesignerErpAppointments(designerName);
     const row = appointments.find((raw) => String(getErpAppointmentId(raw)) === erpId);
@@ -20254,6 +20771,7 @@ app.post("/api/appointment/full-day", async (req: Request, res: Response) => {
     if (!["designer", "design_manager"].includes(role)) {
       return res.status(403).json({ message: "Only designers and design managers can request full-day leave" });
     }
+    invalidatePersonalBoardCache();
 
     const { blockDate, reason, reasonPreset } = req.body || {};
     const dateIso = normalizeBlockDateIso(blockDate);
@@ -20488,6 +21006,7 @@ app.post("/api/appointment/full-day/:id/approve", async (req: Request, res: Resp
       });
     }
 
+    invalidatePersonalBoardCache();
     await deletePartialPersonalBlocksForDate(designerName, dateIso);
 
     const { startTime, endTime } = buildFullDayIsoRange(dateIso);
@@ -20613,6 +21132,7 @@ app.post("/api/appointment/full-day/:id/reject", async (req: Request, res: Respo
       return res.status(403).json({ message: "Not allowed to reject this full-day leave request" });
     }
 
+    invalidatePersonalBoardCache();
     await pool.query(
       `UPDATE designer_full_day_requests
        SET status = 'rejected',
@@ -20688,6 +21208,7 @@ app.post("/api/appointment/full-day/:id/cancel", async (req: Request, res: Respo
       return res.status(403).json({ message: "Only the requester can cancel this full-day leave request" });
     }
 
+    invalidatePersonalBoardCache();
     if (request.status === "approved" && request.erp_appointment_id) {
       try {
         await callErpApi(`/v1/Appointment/${request.erp_appointment_id}`, { method: "DELETE" });
