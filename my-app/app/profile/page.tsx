@@ -29,7 +29,7 @@ function splitName(fullName: string): { firstName: string; lastName: string } {
 
 export default function ProfilePage() {
   const router = useRouter();
-  const { user, sessionId, loading, logoutAndRedirectToLogin, refreshUser } = useAuth();
+  const { user, sessionId, loading, refreshUser } = useAuth();
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [firstName, setFirstName] = useState('');
@@ -147,26 +147,22 @@ export default function ProfilePage() {
 
   return (
     <div className="min-h-screen bg-slate-100">
-      <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <h1 className="text-xl font-bold text-gray-900">Profile</h1>
-          <a href="/" className="text-sm text-[#32261C] hover:underline">Dashboard</a>
-          <a href="/profile/experience" className="text-sm text-gray-600 hover:text-gray-900">Experience &amp; stats</a>
-          <a href="/profile/inspiration" className="text-sm text-gray-600 hover:text-gray-900">Portfolio projects</a>
-          <a href="/change-password" className="text-sm text-gray-600 hover:text-gray-900">Change password</a>
-        </div>
-        <div className="flex items-center gap-4">
-          <span className="text-sm text-gray-600">{user.email}</span>
-          <button
-            type="button"
-            onClick={() => void logoutAndRedirectToLogin()}
-            className="text-sm text-red-600 hover:underline"
-          >
-            Logout
-          </button>
-        </div>
-      </header>
       <main className="max-w-4xl mx-auto p-8">
+        <div className="mb-6 flex flex-wrap items-center gap-3">
+          <h1 className="mr-2 text-xl font-bold text-gray-900">Profile</h1>
+          <a
+            href="/profile/experience"
+            className="inline-flex items-center rounded-lg bg-[#EF0101] px-4 py-2 text-sm font-semibold text-white hover:bg-[#EF0101]/90"
+          >
+            Experience &amp; stats
+          </a>
+          <a
+            href="/profile/inspiration"
+            className="inline-flex items-center rounded-lg bg-[#EF0101] px-4 py-2 text-sm font-semibold text-white hover:bg-[#EF0101]/90"
+          >
+            Portfolio projects
+          </a>
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="bg-white rounded-2xl shadow border border-gray-200 p-6">
             <p className="text-gray-600 text-sm mb-6">Upload a photo for your profile. It will appear in the header and next to your name. Max 2MB, JPG or PNG.</p>

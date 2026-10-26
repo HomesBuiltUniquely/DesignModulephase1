@@ -12,7 +12,7 @@ const API = getApiBase();
 
 export default function AdminCreateEscalationManagerPage() {
   const router = useRouter();
-  const { user, sessionId, loading, logoutAndRedirectToLogin } = useAuth();
+  const { user, sessionId, loading } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
@@ -69,25 +69,8 @@ export default function AdminCreateEscalationManagerPage() {
 
   return (
     <div className="min-h-screen bg-slate-100">
-      <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <h1 className="text-xl font-bold text-gray-900">Admin — Create Escalation Manager</h1>
-          <a href="/" className="text-sm text-[#32261C] hover:underline">Dashboard</a>
-          <a href="/admin" className="text-sm text-gray-600 hover:text-gray-900">Admin Panel</a>
-        </div>
-        <div className="flex items-center gap-4">
-          <a href="/change-password" className="text-sm text-gray-600 hover:text-gray-900">Change password</a>
-          <span className="text-sm text-gray-600">{user.email}</span>
-          <button
-            type="button"
-            onClick={() => void logoutAndRedirectToLogin()}
-            className="text-sm text-red-600 hover:underline"
-          >
-            Logout
-          </button>
-        </div>
-      </header>
       <main className="max-w-md mx-auto p-8">
+        <h1 className="mb-6 text-xl font-bold text-gray-900">Admin — Create Escalation Manager</h1>
         <div className="bg-white rounded-2xl shadow border border-gray-200 p-6">
           <p className="text-gray-600 text-sm mb-4">Only Admin can create Escalation Manager logins. They can sign in and handle escalations. Email must end with @hubinterior.com.</p>
           <form onSubmit={handleSubmit} className="space-y-4">

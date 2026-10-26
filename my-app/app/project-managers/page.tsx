@@ -27,7 +27,7 @@ type ProjectManagerRow = {
 
 export default function ProjectManagersPage() {
   const router = useRouter();
-  const { user, sessionId, loading, logoutAndRedirectToLogin } = useAuth();
+  const { user, sessionId, loading } = useAuth();
   const role = (user?.role || '').toLowerCase();
 
   const [rows, setRows] = useState<ProjectManagerRow[]>([]);
@@ -163,26 +163,9 @@ export default function ProjectManagersPage() {
 
   return (
     <div className="min-h-screen bg-slate-100">
-      <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-        <div className="flex flex-wrap items-center gap-4">
-          <h1 className="text-xl font-bold text-gray-900">Project Managers</h1>
-          <a href="/" className="text-sm text-[#32261C] hover:underline">
-            Dashboard
-          </a>
-        </div>
-        <div className="flex items-center gap-4">
-          <span className="text-sm text-gray-600">{user.email}</span>
-          <button
-            type="button"
-            onClick={() => void logoutAndRedirectToLogin()}
-            className="text-sm text-red-600 hover:underline"
-          >
-            Logout
-          </button>
-        </div>
-      </header>
 
       <main className="max-w-5xl mx-auto p-6 sm:p-8 space-y-8">
+        <h1 className="mb-6 text-xl font-bold text-gray-900">Project Managers</h1>
         {error && <div className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{error}</div>}
         {success && (
           <div className="text-sm text-[#32261C] bg-[#DDCDC1]/20 border border-[#DDCDC1] rounded-lg px-3 py-2">
