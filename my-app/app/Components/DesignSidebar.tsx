@@ -159,7 +159,7 @@ export default function DesignSidebar({ role, appointmentUnread = false }: Props
           />
         </div>
         <span className="truncate pr-4 text-[15px] font-semibold tracking-tight text-[var(--foreground)]">
-          Hows Design
+          HOWS ERP
         </span>
       </div>
       <nav className="flex min-h-0 w-64 flex-1 flex-col gap-1 overflow-y-auto py-3" aria-label="Design module">
