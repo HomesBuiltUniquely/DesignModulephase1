@@ -4,16 +4,12 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { getApiBase } from "../lib/apiBase";
 
-type LinkItem = { href: string; label: string };
-
 type HallwayUser = { email?: string | null; name?: string | null; role?: string | null };
 
 type Props = {
   hallwayUrl: string;
   hallwayUser?: HallwayUser | null;
   hallwaySessionId?: string | null;
-  financeLinks: LinkItem[];
-  operationLinks: LinkItem[];
   showAdmin: boolean;
 };
 
@@ -74,30 +70,18 @@ export default function AppSwitcher({
   hallwayUrl,
   hallwayUser,
   hallwaySessionId,
-  financeLinks,
-  operationLinks,
   showAdmin,
 }: Props) {
   const [open, setOpen] = useState(false);
-  const [section, setSection] = useState<"finance" | "operations" | null>(null);
-  const [listOpen, setListOpen] = useState(true);
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
     const onPointer = (event: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
-        setOpen(false);
-        setSection(null);
-        setListOpen(true);
-      }
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
     };
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setOpen(false);
-        setSection(null);
-        setListOpen(true);
-      }
+      if (event.key === "Escape") setOpen(false);
     };
     document.addEventListener("mousedown", onPointer);
     document.addEventListener("keydown", onKey);
@@ -107,19 +91,13 @@ export default function AppSwitcher({
     };
   }, [open]);
 
-  const list = section === "finance" ? financeLinks : section === "operations" ? operationLinks : null;
-
   return (
     <div className="relative" ref={rootRef}>
       <button
         type="button"
         aria-label="Open app switcher"
         aria-expanded={open}
-        onClick={() => {
-          setOpen((value) => !value);
-          setSection(null);
-          setListOpen(true);
-        }}
+        onClick={() => setOpen((value) => !value)}
         className={`grid h-9 w-9 place-items-center rounded-xl text-[var(--brand-primary)] transition hover:bg-[var(--hover-bg)] ${
           open ? "scale-110 bg-[var(--hover-bg)]" : ""
         }`}
@@ -141,44 +119,6 @@ export default function AppSwitcher({
             >
               <SwitcherGlyph src="/icons/switcher-hallway.png" />
             </button>
-            {financeLinks.length > 0 ? (
-              <button
-                type="button"
-                title="Finance"
-                aria-label="Finance"
-                aria-pressed={section === "finance"}
-                className={tileClass}
-                onClick={() => {
-                  if (section === "finance") {
-                    setListOpen((value) => !value);
-                    return;
-                  }
-                  setSection("finance");
-                  setListOpen(true);
-                }}
-              >
-                <SwitcherGlyph src="/icons/switcher-finance.png?v=2" />
-              </button>
-            ) : null}
-            {operationLinks.length > 0 ? (
-              <button
-                type="button"
-                title="Operations"
-                aria-label="Operations"
-                aria-pressed={section === "operations"}
-                className={tileClass}
-                onClick={() => {
-                  if (section === "operations") {
-                    setListOpen((value) => !value);
-                    return;
-                  }
-                  setSection("operations");
-                  setListOpen(true);
-                }}
-              >
-                <SwitcherGlyph src="/icons/switcher-operations.png?v=2" />
-              </button>
-            ) : null}
             {showAdmin ? (
               <Link
                 href="/admin"
@@ -191,33 +131,6 @@ export default function AppSwitcher({
               </Link>
             ) : null}
           </div>
-          {list ? (
-            <div className="mt-1 w-56 border-t border-[var(--border-color)] px-1 py-1">
-              <button
-                type="button"
-                aria-expanded={listOpen}
-                onClick={() => setListOpen((value) => !value)}
-                className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-sm font-semibold text-[var(--foreground)] hover:bg-[var(--hover-bg)]"
-              >
-                <span>{section === "finance" ? "Finance" : "Operations"}</span>
-                <svg viewBox="0 0 20 20" className={`h-3.5 w-3.5 text-[var(--brand-primary)] transition-transform ${listOpen ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="m5 8 5 5 5-5" />
-                </svg>
-              </button>
-              {listOpen
-                ? list.map((item) => (
-                    <Link
-                      key={item.href}
-                      href={item.href}
-                      onClick={() => setOpen(false)}
-                      className="block rounded-lg px-2 py-2 text-sm font-semibold hover:bg-[var(--hover-bg)]"
-                    >
-                      {item.label}
-                    </Link>
-                  ))
-                : null}
-            </div>
-          ) : null}
         </div>
       ) : null}
     </div>

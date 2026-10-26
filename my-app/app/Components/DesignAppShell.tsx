@@ -199,7 +199,12 @@ export default function DesignAppShell({ children }: { children: React.ReactNode
   return (
     <WorkspaceFilterProvider>
       <div className="flex min-h-screen bg-[var(--background)] text-[var(--foreground)]">
-        <DesignSidebar role={role} appointmentUnread={appointmentUnread} />
+        <DesignSidebar
+          role={role}
+          appointmentUnread={appointmentUnread}
+          financeLinks={financeLinks}
+          operationLinks={operationLinks}
+        />
         <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-40 flex h-[57px] items-center justify-between gap-3 border-b border-[var(--border-color)] bg-[var(--card-bg)]/90 px-4 shadow-sm backdrop-blur-sm">
             <HeaderContext />
@@ -220,8 +225,6 @@ export default function DesignAppShell({ children }: { children: React.ReactNode
               hallwayUrl={hallwayUrl}
               hallwayUser={user}
               hallwaySessionId={sessionId}
-              financeLinks={financeLinks}
-              operationLinks={operationLinks}
               showAdmin={role === "admin"}
             />
             <div className="flex items-center gap-2">
