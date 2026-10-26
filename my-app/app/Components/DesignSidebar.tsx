@@ -15,7 +15,7 @@ type Props = {
 
 function Icon({ children }: { children: React.ReactNode }) {
   return (
-    <span className="relative grid h-8 w-8 shrink-0 place-items-center text-[var(--brand-primary)]">{children}</span>
+    <span className="relative grid h-9 w-9 shrink-0 place-items-center text-[var(--brand-primary)]">{children}</span>
   );
 }
 
@@ -24,14 +24,18 @@ const iconProps = {
   fill: "none",
   stroke: "currentColor",
   strokeWidth: 1.8,
-  className: "h-[18px] w-[18px]",
+  className: "h-5.5 w-5.5",
 } as const;
+
+const chevronButtonClass =
+  "grid h-7 w-7 shrink-0 place-items-center rounded-md text-[var(--foreground)]/55 hover:bg-[var(--hover-bg)]";
 
 function Chevron({ open }: { open: boolean }) {
   return (
     <svg
       viewBox="0 0 20 20"
-      className={`h-3.5 w-3.5 shrink-0 text-[var(--brand-primary)] transition-transform ${open ? "rotate-180" : ""}`}
+      className={`h-4 w-4 shrink-0 transition-transform ${open ? "rotate-180" : ""}`}
+      style={{ color: "color-mix(in srgb, var(--foreground) 55%, transparent)" }}
       fill="none"
       stroke="currentColor"
       strokeWidth="1.8"
@@ -70,6 +74,7 @@ export default function DesignSidebar({ role, appointmentUnread = false }: Props
   const { phase, status, setPhase, setStatus } = useWorkspaceFilters();
   const [open, setOpen] = useState(false);
   const [canHover, setCanHover] = useState(true);
+  const [dashboardOpen, setDashboardOpen] = useState(false);
   const [phasesOpen, setPhasesOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -124,7 +129,7 @@ export default function DesignSidebar({ role, appointmentUnread = false }: Props
   };
 
   const rowClass = (active: boolean) =>
-    `flex w-full items-center gap-3 rounded-lg px-4 py-2 text-left text-sm font-semibold transition ${
+    `flex w-full items-center gap-3 rounded-lg px-4 py-2.5 text-left text-sm font-semibold transition ${
       active
         ? "bg-[var(--hover-bg)] text-[var(--brand-primary)]"
         : "text-[var(--foreground)] hover:bg-[var(--hover-bg)]"
@@ -132,8 +137,9 @@ export default function DesignSidebar({ role, appointmentUnread = false }: Props
 
   return (
     <aside
+      data-expanded={open ? "true" : "false"}
       className={`sticky top-0 z-30 flex h-screen shrink-0 flex-col overflow-hidden border-r border-[var(--border-color)] bg-[var(--card-bg)] transition-[width] duration-200 ${
-        open ? "w-64" : "w-16"
+        open ? "w-64" : "w-[4.5rem]"
       }`}
       onMouseEnter={() => {
         if (canHover) setOpen(true);
@@ -142,25 +148,51 @@ export default function DesignSidebar({ role, appointmentUnread = false }: Props
         if (canHover) setOpen(false);
       }}
     >
-      <div className="h-[57px] shrink-0 border-b border-[var(--border-color)]" aria-hidden />
+      <div className="flex h-[57px] shrink-0 items-center gap-1 overflow-hidden border-b border-[var(--border-color)]">
+        <div className="grid h-full w-[4.5rem] shrink-0 place-items-center">
+          <img
+            src="/icons/hows-logo.png"
+            alt="HOWS"
+            width={40}
+            height={40}
+            className="h-10 w-10 min-h-0 min-w-0 max-h-10 max-w-10 shrink-0 rounded-lg object-contain"
+          />
+        </div>
+        <span className="truncate pr-4 text-[15px] font-semibold tracking-tight text-[var(--foreground)]">
+          Hows Design
+        </span>
+      </div>
       <nav className="flex min-h-0 w-64 flex-1 flex-col gap-1 overflow-y-auto py-3" aria-label="Design module">
-        <button
-          type="button"
-          className={rowClass(pathname === "/")}
-          title="Dashboard"
-          onClick={() => {
-            if (!canHover) setOpen((value) => !value);
-            router.push("/");
-          }}
-        >
-          <Icon>
-            <svg {...iconProps}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-9.5Z" />
-            </svg>
-          </Icon>
-          <span className={open ? "truncate" : "sr-only"}>Dashboard</span>
-        </button>
-        {open && !hideWorkspaceFilters ? (
+        <div className={`${rowClass(pathname === "/")} pr-2`}>
+          <button
+            type="button"
+            title="Dashboard"
+            className="flex min-w-0 flex-1 items-center gap-3"
+            onClick={() => {
+              if (!canHover) setOpen((value) => !value);
+              router.push("/");
+            }}
+          >
+            <Icon>
+              <svg {...iconProps}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-9.5Z" />
+              </svg>
+            </Icon>
+            <span className={open ? "truncate" : "sr-only"}>Dashboard</span>
+          </button>
+          {open && !hideWorkspaceFilters ? (
+            <button
+              type="button"
+              aria-expanded={dashboardOpen}
+              aria-label={dashboardOpen ? "Hide dashboard lists" : "Show dashboard lists"}
+              onClick={() => setDashboardOpen((value) => !value)}
+              className={chevronButtonClass}
+            >
+              <Chevron open={dashboardOpen} />
+            </button>
+          ) : null}
+        </div>
+        {open && dashboardOpen && !hideWorkspaceFilters ? (
           <div className="mb-1 ml-4 space-y-1 border-l border-[var(--border-color)] pl-2">
             <SectionToggle
               label="Design Phases"
@@ -270,7 +302,7 @@ export default function DesignSidebar({ role, appointmentUnread = false }: Props
               aria-expanded={profileOpen}
               aria-label={profileOpen ? "Hide profile links" : "Show profile links"}
               onClick={() => setProfileOpen((value) => !value)}
-              className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-[var(--foreground)]/50 hover:bg-[var(--hover-bg)] hover:text-[var(--foreground)]"
+              className={chevronButtonClass}
             >
               <Chevron open={profileOpen} />
             </button>

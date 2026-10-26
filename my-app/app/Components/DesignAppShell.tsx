@@ -14,7 +14,8 @@ import {
 } from "./AppointmentSuccessToast";
 import AppSwitcher from "./AppSwitcher";
 import DesignSidebar from "./DesignSidebar";
-import { WorkspaceFilterProvider } from "./WorkspaceFilters";
+import { WorkspaceFilterProvider, useWorkspaceFilters } from "./WorkspaceFilters";
+import { SideDashboard, SideDashboardStatus } from "../Enums/Enums";
 
 const BARE_PREFIXES = ["/login", "/auth", "/quote", "/MeetingWiz", "/mail-templates", "/newEmail", "/receipt"];
 
@@ -30,6 +31,88 @@ function hallwayHomeUrl() {
   } catch {
     return "https://hallway-liart.vercel.app/";
   }
+}
+
+const HEADER_CRUMBS: Record<string, { section: string; page: string }> = {
+  "/google-calendar": { section: "Design", page: "HUB Calendar" },
+  "/incentives": { section: "Design", page: "Incentives" },
+  "/leaderboard": { section: "Design", page: "Leaderboard" },
+  "/meeting-management": { section: "Design", page: "Meeting Management" },
+  "/profile": { section: "Design", page: "Profile" },
+  "/profile/experience": { section: "Profile", page: "Experience & stats" },
+  "/profile/inspiration": { section: "Profile", page: "Portfolio projects" },
+  "/change-password": { section: "Profile", page: "Change Password" },
+  "/personal-appointments": { section: "Profile", page: "Personal Appointments" },
+  "/admin": { section: "Admin", page: "Admin Panel" },
+  "/admin/manage-users": { section: "Admin", page: "Manage Design Roles" },
+  "/admin/create-admin": { section: "Admin", page: "Create Admin" },
+  "/admin/create-tdm": { section: "Admin", page: "Create Territory Design Manager" },
+  "/admin/create-deputy-general-manager": { section: "Admin", page: "Create Deputy General Manager" },
+  "/admin/create-dqc-manager": { section: "Admin", page: "Create DQC Manager" },
+  "/admin/create-mmt-manager": { section: "Admin", page: "Create MMT Manager" },
+  "/admin/create-finance": { section: "Admin", page: "Create Finance Team" },
+  "/admin/create-project-manager": { section: "Admin", page: "Create Project Manager" },
+  "/admin/create-senior-project-manager": { section: "Admin", page: "Create Senior Project Manager" },
+  "/admin/create-escalation-manager": { section: "Admin", page: "Create Escalation Manager" },
+  "/admin/prolance-test": { section: "Admin", page: "Prolance API Test" },
+  "/finance": { section: "Finance", page: "10% Payment" },
+  "/finance/refunds": { section: "Finance", page: "Refunds" },
+  "/finance/sales-closure": { section: "Finance", page: "Sales Closure" },
+  "/finance/40": { section: "Finance", page: "40% Payment" },
+  "/tdm/register": { section: "Operations", page: "Register DM / Designer" },
+  "/dqc-manager/register": { section: "Operations", page: "Register DQE" },
+  "/mmt-manager/register": { section: "Operations", page: "Register MMT Executive" },
+  "/mmt-manager/d1-requests": { section: "Operations", page: "D1 Requests" },
+  "/mmt": { section: "Operations", page: "D1 Uploads" },
+  "/d2-uploads": { section: "Operations", page: "D2 Uploads" },
+  "/project-managers": { section: "Design", page: "Project Managers" },
+};
+
+function resolveHeaderCrumb(pathname: string, phase: string, status: string) {
+  if (pathname === "/") {
+    const phaseSet = phase !== SideDashboard.All_Projects;
+    const statusSet = status !== SideDashboardStatus.All_Statuses;
+    if (phaseSet && statusSet) return { section: phase, page: status };
+    if (phaseSet) return { section: "Design Phases", page: phase };
+    if (statusSet) return { section: "Project Status", page: status };
+    return { section: "Design", page: "Dashboard" };
+  }
+  if (HEADER_CRUMBS[pathname]) return HEADER_CRUMBS[pathname];
+  if (pathname.startsWith("/leaderboard")) return { section: "Design", page: "Leaderboard" };
+  if (pathname.startsWith("/profile")) return { section: "Profile", page: "Profile" };
+  if (pathname.startsWith("/admin")) return { section: "Admin", page: "Admin Panel" };
+  if (pathname.startsWith("/finance")) return { section: "Finance", page: "Finance" };
+  const segment = pathname.split("/").filter(Boolean).pop() || "Design";
+  const page = segment
+    .split("-")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+  return { section: "Design", page };
+}
+
+function HeaderContext() {
+  const pathname = usePathname();
+  const { phase, status } = useWorkspaceFilters();
+  const { section, page } = resolveHeaderCrumb(pathname, phase, status);
+
+  return (
+    <div className="flex min-w-0 items-center gap-3">
+      <span className="shell-brand hidden shrink-0 text-[15px] font-semibold tracking-tight text-[var(--foreground)] sm:inline">
+        Hows Design
+      </span>
+      <span className="shell-brand-divider hidden h-5 w-px shrink-0 bg-[var(--border-color)] sm:block" aria-hidden />
+      <div className="flex min-w-0 items-center gap-2 text-sm">
+        <span className="truncate text-[var(--foreground)]/75">{section}</span>
+        <svg viewBox="0 0 20 20" className="h-3.5 w-3.5 shrink-0 text-[var(--foreground)]/40" fill="currentColor" aria-hidden>
+          <path d="M7.2 4.5a.75.75 0 0 1 1.06 0l4.5 4.5a.75.75 0 0 1 0 1.06l-4.5 4.5a.75.75 0 1 1-1.06-1.06L11.17 10 7.2 5.56a.75.75 0 0 1 0-1.06Z" />
+        </svg>
+        <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full bg-[var(--brand-primary)]/10 px-2.5 py-1 font-medium text-[var(--brand-primary)]">
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--brand-primary)]" />
+          <span className="truncate">{page}</span>
+        </span>
+      </div>
+    </div>
+  );
 }
 
 function initials(name?: string | null, email?: string | null) {
@@ -122,7 +205,9 @@ export default function DesignAppShell({ children }: { children: React.ReactNode
       <div className="flex min-h-screen bg-[var(--background)] text-[var(--foreground)]">
         <DesignSidebar role={role} appointmentUnread={appointmentUnread} />
         <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-40 flex h-[57px] items-center justify-end gap-3 border-b border-[var(--border-color)] bg-[var(--card-bg)]/90 px-4 shadow-sm backdrop-blur-sm">
+        <header className="sticky top-0 z-40 flex h-[57px] items-center justify-between gap-3 border-b border-[var(--border-color)] bg-[var(--card-bg)]/90 px-4 shadow-sm backdrop-blur-sm">
+            <HeaderContext />
+            <div className="flex shrink-0 items-center gap-3">
             {isDesignManager && sessionId ? (
               <button
                 type="button"
@@ -162,6 +247,7 @@ export default function DesignAppShell({ children }: { children: React.ReactNode
             >
               Logout
             </button>
+            </div>
         </header>
         <div className="min-w-0 flex-1">{children}</div>
         </div>

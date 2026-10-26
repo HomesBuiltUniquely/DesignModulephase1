@@ -148,10 +148,20 @@ export default function ProfilePage() {
   return (
     <div className="min-h-screen bg-slate-100">
       <main className="max-w-4xl mx-auto p-8">
-        <div className="mb-6 flex flex-wrap items-center gap-4">
-          <h1 className="text-xl font-bold text-gray-900">Profile</h1>
-          <a href="/profile/experience" className="text-sm font-semibold text-[var(--brand-primary)] hover:underline">Experience &amp; stats</a>
-          <a href="/profile/inspiration" className="text-sm font-semibold text-[var(--brand-primary)] hover:underline">Portfolio projects</a>
+        <div className="mb-6 flex flex-wrap items-center gap-3">
+          <h1 className="mr-2 text-xl font-bold text-gray-900">Profile</h1>
+          <a
+            href="/profile/experience"
+            className="inline-flex items-center rounded-lg bg-[#EF0101] px-4 py-2 text-sm font-semibold text-white hover:bg-[#EF0101]/90"
+          >
+            Experience &amp; stats
+          </a>
+          <a
+            href="/profile/inspiration"
+            className="inline-flex items-center rounded-lg bg-[#EF0101] px-4 py-2 text-sm font-semibold text-white hover:bg-[#EF0101]/90"
+          >
+            Portfolio projects
+          </a>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="bg-white rounded-2xl shadow border border-gray-200 p-6">
