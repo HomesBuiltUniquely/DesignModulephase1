@@ -8,9 +8,13 @@ import { canShowIncentivesNav } from "./IncentivesNavLink";
 import { canShowMeetingManagement } from "./MeetingManagementView";
 import { useWorkspaceFilters } from "./WorkspaceFilters";
 
+type NavLink = { href: string; label: string };
+
 type Props = {
   role: string;
   appointmentUnread?: boolean;
+  financeLinks: NavLink[];
+  operationLinks: NavLink[];
 };
 
 function Icon({ children }: { children: React.ReactNode }) {
@@ -46,6 +50,66 @@ function Chevron({ open }: { open: boolean }) {
   );
 }
 
+function SidebarGroup({
+  label,
+  links,
+  pathname,
+  railOpen,
+  expanded,
+  onToggle,
+  rowClass,
+  icon,
+}: {
+  label: string;
+  links: NavLink[];
+  pathname: string;
+  railOpen: boolean;
+  expanded: boolean;
+  onToggle: () => void;
+  rowClass: (active: boolean) => string;
+  icon: React.ReactNode;
+}) {
+  const active = links.some((item) => pathname === item.href || pathname.startsWith(`${item.href}/`));
+  return (
+    <>
+      <div className={`${rowClass(active)} pr-2`}>
+        <button type="button" title={label} className="flex min-w-0 flex-1 items-center gap-3" onClick={onToggle}>
+          <Icon>{icon}</Icon>
+          <span className={railOpen ? "truncate" : "sr-only"}>{label}</span>
+        </button>
+        {railOpen ? (
+          <button
+            type="button"
+            aria-expanded={expanded}
+            aria-label={expanded ? `Hide ${label}` : `Show ${label}`}
+            onClick={onToggle}
+            className={chevronButtonClass}
+          >
+            <Chevron open={expanded} />
+          </button>
+        ) : null}
+      </div>
+      {railOpen && expanded ? (
+        <div className="mb-1 ml-4 space-y-1 border-l border-[var(--border-color)] pl-2">
+          {links.map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={`block rounded-lg px-3 py-2 text-sm font-semibold ${
+                pathname === item.href
+                  ? "text-[var(--brand-primary)]"
+                  : "text-[var(--foreground)]/80 hover:bg-[var(--hover-bg)]"
+              }`}
+            >
+              {item.label}
+            </Link>
+          ))}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 function SectionToggle({
   label,
   open,
@@ -68,7 +132,12 @@ function SectionToggle({
   );
 }
 
-export default function DesignSidebar({ role, appointmentUnread = false }: Props) {
+export default function DesignSidebar({
+  role,
+  appointmentUnread = false,
+  financeLinks,
+  operationLinks,
+}: Props) {
   const pathname = usePathname();
   const router = useRouter();
   const { phase, status, setPhase, setStatus } = useWorkspaceFilters();
@@ -78,6 +147,8 @@ export default function DesignSidebar({ role, appointmentUnread = false }: Props
   const [phasesOpen, setPhasesOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [financeOpen, setFinanceOpen] = useState(false);
+  const [operationsOpen, setOperationsOpen] = useState(false);
 
   useEffect(() => {
     const media = window.matchMedia("(hover: hover) and (pointer: fine)");
@@ -155,7 +226,7 @@ export default function DesignSidebar({ role, appointmentUnread = false }: Props
             alt="HOWS"
             width={40}
             height={40}
-            className="h-10 w-10 min-h-0 min-w-0 max-h-10 max-w-10 shrink-0 rounded-lg object-contain"
+            className="h-10 w-10 shrink-0 object-contain"
           />
         </div>
         <span className="truncate pr-4 text-[15px] font-semibold tracking-tight text-[var(--foreground)]">
@@ -284,15 +355,70 @@ export default function DesignSidebar({ role, appointmentUnread = false }: Props
           </Link>
         ) : null}
 
+        {showAppointments ? (
+          <Link
+            href="/personal-appointments"
+            className={rowClass(pathname === "/personal-appointments")}
+            title="Personal Appointments"
+          >
+            <Icon>
+              <svg {...iconProps}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8 3v2M16 3v2M4 8h16M6 5h12a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 13h6M12 10v6" />
+              </svg>
+              {appointmentUnread ? (
+                <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-[var(--brand-primary)]" />
+              ) : null}
+            </Icon>
+            <span className={open ? "truncate" : "sr-only"}>Personal Appointments</span>
+          </Link>
+        ) : null}
+
+        {financeLinks.length > 0 ? (
+          <SidebarGroup
+            label="Finance"
+            links={financeLinks}
+            pathname={pathname}
+            railOpen={open}
+            expanded={financeOpen}
+            onToggle={() => {
+              if (!canHover) setOpen(true);
+              setFinanceOpen((value) => !value);
+            }}
+            rowClass={rowClass}
+            icon={
+              <svg {...iconProps}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v18M16.5 7.5c0-1.7-2-3-4.5-3S7.5 5.8 7.5 7.5 9.5 10.5 12 10.5s4.5 1.3 4.5 3-2 3-4.5 3-4.5-1.3-4.5-3" />
+              </svg>
+            }
+          />
+        ) : null}
+        {operationLinks.length > 0 ? (
+          <SidebarGroup
+            label="Operations"
+            links={operationLinks}
+            pathname={pathname}
+            railOpen={open}
+            expanded={operationsOpen}
+            onToggle={() => {
+              if (!canHover) setOpen(true);
+              setOperationsOpen((value) => !value);
+            }}
+            rowClass={rowClass}
+            icon={
+              <svg {...iconProps}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8 4h10a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H8M5 4h.01M5 9h.01M5 14h.01M5 19h.01M9 8h6M9 12h6M9 16h4" />
+              </svg>
+            }
+          />
+        ) : null}
+
         <div className={`${rowClass(pathname.startsWith("/profile"))} pr-2`}>
           <Link href="/profile" title="Profile" className="flex min-w-0 flex-1 items-center gap-3">
             <Icon>
               <svg {...iconProps}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM5 20a7 7 0 0 1 14 0" />
               </svg>
-              {appointmentUnread ? (
-                <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-[var(--brand-primary)]" />
-              ) : null}
             </Icon>
             <span className={open ? "truncate" : "sr-only"}>Profile</span>
           </Link>
@@ -320,21 +446,6 @@ export default function DesignSidebar({ role, appointmentUnread = false }: Props
             >
               Change Password
             </Link>
-            {showAppointments ? (
-              <Link
-                href="/personal-appointments"
-                className={`flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-sm font-semibold ${
-                  pathname === "/personal-appointments"
-                    ? "text-[var(--brand-primary)]"
-                    : "text-[var(--foreground)]/80 hover:bg-[var(--hover-bg)]"
-                }`}
-              >
-                <span>Personal Appointments</span>
-                {appointmentUnread ? (
-                  <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--brand-primary)]" />
-                ) : null}
-              </Link>
-            ) : null}
           </div>
         ) : null}
       </nav>
