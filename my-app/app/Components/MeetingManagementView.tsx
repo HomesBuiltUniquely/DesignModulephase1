@@ -72,7 +72,7 @@ type ViewMeeting = {
   sales: string;
   branchKey: string;
   branchLabel: string;
-  venue: Venue;
+  venue: string;
   kind: string;
   typeKey: ClientMeetingType | null;
   mode: MeetingMode;
@@ -218,7 +218,7 @@ function dateBounds(
   return null;
 }
 
-function parseMinutes(label: string | null, time?: string | null): number | null {
+function parseMinutes(label: string | null | undefined, time?: string | null | undefined): number | null {
   const raw = `${label || ''} ${time || ''}`.trim();
   if (!raw) return null;
   const ampm = raw.match(/(\d{1,2}):(\d{2})\s*([ap]m)/i);
@@ -1404,7 +1404,7 @@ export default function MeetingManagementView() {
       {view === 'list' ? (
       <>
       <section className={styles.card}>
-        <div className={styles.tools} data-solo={view === 'calendar' ? 'true' : 'false'}>
+        <div className={styles.tools}>
           <div className={styles.toolRow}>
             <label className={styles.search}>
               <span className={styles.sr}>Search meetings</span>
