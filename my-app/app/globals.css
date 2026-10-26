@@ -709,9 +709,4 @@ div.fixed[class*="z-["] {
   color: var(--foreground);
 }
 
-/* Product name sits beside the logo once the rail opens, so the header copy hides. */
-aside[data-expanded="true"] + div .shell-brand,
-aside[data-expanded="true"] + div .shell-brand-divider {
-  display: none !important;
-}
 

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { getApiBase } from "../lib/apiBase";
 
 type LinkItem = { href: string; label: string };
 
@@ -27,6 +28,7 @@ function hallwayHomeTarget(base: string, user?: HallwayUser | null, sessionId?: 
         email: user.email,
         name: user.name || "",
         role: user.role || "",
+        apiBase: getApiBase(),
       }),
     )}`;
   } else {
