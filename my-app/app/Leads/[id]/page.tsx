@@ -2214,7 +2214,16 @@ export default function ProjectDetailPage() {
                         getPhaseBucket(project) === 'Pre 10%' &&
                         canShowStartMeetingButton(project, historyEvents)
                     }
-                    onStartMeeting={() => setMeetingWizOpen(true)}
+                    onStartMeeting={() => {
+                        if (sessionId && projectId) {
+                            void fetch(`${API}/api/leads/${projectId}/crm-meeting/start`, {
+                                method: 'POST',
+                                headers: buildAuthHeaders(sessionId),
+                                credentials: 'include',
+                            }).catch(() => undefined);
+                        }
+                        setMeetingWizOpen(true);
+                    }}
                 />
             )}
 

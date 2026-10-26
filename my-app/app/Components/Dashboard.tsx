@@ -462,6 +462,13 @@ export default function Dashboard() {
     const [meetingWizLead, setMeetingWizLead] = useState<LeadshipTypes | null>(null);
 
     const openMeetingWizForLead = (row: LeadshipTypes) => {
+        if (sessionId && row.id) {
+            void fetch(`${API}/api/leads/${row.id}/crm-meeting/start`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${sessionId}` },
+                credentials: "include",
+            }).catch(() => undefined);
+        }
         setMeetingWizLead(row);
         setMeetingWizOpen(true);
     };
