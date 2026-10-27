@@ -1414,6 +1414,9 @@ export async function loadHubDiscountMetaForQuote(
     if (parsed && sharedVersion == null) {
       const meta = extractHubDiscountMeta(parsed);
       if (payloadHasHubDiscount(meta)) return meta;
+      // Snapshot already stores hub discount keys at 0 after a clear — do not
+      // resurrect an older discount from version history.
+      if (HUB_DISCOUNT_META_KEYS.some((k) => meta[k] != null)) return {};
     }
     const leadId = snap?.leadId != null ? Number(snap.leadId) : null;
     const [verRows] = await pool.query(

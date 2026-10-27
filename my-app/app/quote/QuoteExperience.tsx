@@ -19,6 +19,7 @@ import { extractLineItemPrice, extractUnitDisplayPrice, mergeQuoteLineItemArrays
 import { applyDiscountMetaToLocalPayload } from '@/app/quote/applyQuoteDiscountLocally';
 import {
   discountMetaFromVersionHints,
+  payloadHasExplicitHubDiscountMeta,
   payloadHasHubDiscountFields,
 } from '@/app/quote/hubDiscountFromVersions';
 
@@ -571,7 +572,12 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           } catch {
             /* share payload still usable without overlay */
           }
-          if (!payloadHasHubDiscountFields(nextPayload)) {
+          // Only backfill from revisions when the payload never stored hub discount
+          // keys. After a clear (keys present at 0), do not resurrect older discounts.
+          if (
+            !payloadHasHubDiscountFields(nextPayload) &&
+            !payloadHasExplicitHubDiscountMeta(nextPayload)
+          ) {
             try {
               const revRes = await fetch(
                 `${API}/api/prolance-test/public/quote-revisions/${encodeURIComponent(q)}?${cacheBust}&${audienceQs}`,
@@ -796,6 +802,8 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     if (viewingVersionNumber != null) return;
     if (!payload || quoteVersions.length === 0) return;
     if (payloadHasHubDiscountFields(payload)) return;
+    // Cleared discounts keep hub keys at 0 — don't re-apply older version discounts.
+    if (payloadHasExplicitHubDiscountMeta(payload)) return;
     const meta = discountMetaFromVersionHints(quoteVersions, quoteIdProp);
     if (!meta) return;
     setPayload(applyDiscountMetaToLocalPayload(payload, meta));
