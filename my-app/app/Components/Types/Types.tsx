@@ -122,6 +122,12 @@ export type LeadshipTypes = {
     intakePropertyLocation?: string | null;
     intakeMeetingType?: string | null;
     floorPlanPublicLink?: string | null;
+    /** All CRM floor plans for this lead (ordered by index). */
+    floorPlans?: Array<{
+        index: number;
+        filename: string;
+        publicUrl: string;
+    }> | null;
     salesExecutive?: string | null;
     intakePincode?: string | null;
     intakeLeadSource?: string | null;
