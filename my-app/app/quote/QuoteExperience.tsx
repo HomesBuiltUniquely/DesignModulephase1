@@ -19,6 +19,7 @@ import { extractLineItemPrice, extractUnitDisplayPrice, mergeQuoteLineItemArrays
 import { applyDiscountMetaToLocalPayload } from '@/app/quote/applyQuoteDiscountLocally';
 import {
   discountMetaFromVersionHints,
+  payloadHasExplicitHubDiscountMeta,
   payloadHasHubDiscountFields,
 } from '@/app/quote/hubDiscountFromVersions';
 
@@ -34,6 +35,16 @@ function asStr(v: unknown): string {
   if (typeof v === 'string' && v.trim()) return v.trim();
   if (typeof v === 'number' && Number.isFinite(v)) return String(v);
   return '-';
+}
+
+/** Prolance space name (`roomName`), not `roomType`/`optionName` (those can stay Bedroom on a services space). */
+function displayQuoteSpaceName(roomName: string, optionName = '-'): string {
+  const room = roomName.trim();
+  const option = optionName.trim();
+  const raw = room && room !== '-' ? room : option && option !== '-' ? option : '';
+  if (!raw) return '-';
+  if (/^services?$/i.test(raw)) return 'Services';
+  return raw;
 }
 
 function asObj(v: unknown): Record<string, unknown> {
@@ -210,7 +221,7 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
       );
       return {
         key,
-        roomName: asStr(r.roomName),
+        roomName: displayQuoteSpaceName(asStr(r.roomName), asStr(r.optionName ?? r.roomType)),
         optionName: asStr(r.optionName ?? r.roomType),
         totalPrice: asNum(r.totalPrice),
         totalPriceOld: asNum(r.totalPriceOld ?? r.unitsPrice ?? r.woodWorkPrice),
@@ -267,7 +278,7 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
 
   const lineItems = rooms.map((r) => ({
     roomKey: r.key,
-    name: r.optionName !== '-' ? r.optionName : r.roomName,
+    name: r.roomName !== '-' ? r.roomName : r.optionName,
     amount: r.totalPriceOld,
     discountedAmount: r.totalPrice,
   }));
@@ -571,7 +582,12 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           } catch {
             /* share payload still usable without overlay */
           }
-          if (!payloadHasHubDiscountFields(nextPayload)) {
+          // Only backfill from revisions when the payload never stored hub discount
+          // keys. After a clear (keys present at 0), do not resurrect older discounts.
+          if (
+            !payloadHasHubDiscountFields(nextPayload) &&
+            !payloadHasExplicitHubDiscountMeta(nextPayload)
+          ) {
             try {
               const revRes = await fetch(
                 `${API}/api/prolance-test/public/quote-revisions/${encodeURIComponent(q)}?${cacheBust}&${audienceQs}`,
@@ -796,6 +812,8 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     if (viewingVersionNumber != null) return;
     if (!payload || quoteVersions.length === 0) return;
     if (payloadHasHubDiscountFields(payload)) return;
+    // Cleared discounts keep hub keys at 0 — don't re-apply older version discounts.
+    if (payloadHasExplicitHubDiscountMeta(payload)) return;
     const meta = discountMetaFromVersionHints(quoteVersions, quoteIdProp);
     if (!meta) return;
     setPayload(applyDiscountMetaToLocalPayload(payload, meta));

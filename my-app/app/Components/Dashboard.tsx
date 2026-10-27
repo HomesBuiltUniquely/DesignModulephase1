@@ -36,7 +36,7 @@ import {
     AppointmentSuccessToast,
     type AppointmentSuccessPayload,
 } from "./AppointmentSuccessToast";
-import { IncentivesNavLink, canShowIncentivesNav } from "./IncentivesNavLink";
+import { useWorkspaceFilters } from "./WorkspaceFilters";
 
 // Stage column: Active / Inactive (sales) / Cancelled (TDM admin DGM)
 function getStatusDisplay(stage: string): "Active" | "Inactive" | "Cancelled" {
@@ -416,21 +416,14 @@ export default function Dashboard() {
         }
     };
     
-    const allTypes = Object.values(SideDashboard);
     /** SPM queue is D2-focused — only show 10–20% / 20–60% (plus all). */
     const spmPhaseTypes = [
         SideDashboard.All_Projects,
         SideDashboard.Ten_50,
         SideDashboard.Fifty_above,
     ];
-    const phaseSidebarTypes = isSpmUser ? spmPhaseTypes : allTypes;
-    const allStatusTypes = Object.values(SideDashboardStatus);
-    const [isDropdownOpen, setIsDropdownOpen] = useState(true);
-    const [designPhasesOpen, setDesignPhasesOpen] = useState(true);
-    const [projectStatusOpen, setProjectStatusOpen] = useState(true);
-    const [isSelected, setIsSelected] = useState<string>(SideDashboard.All_Projects);
+    const { phase: isSelected, status: statusSelected, setPhase: setIsSelected, setStatus: setStatusSelected } = useWorkspaceFilters();
     const [showDelayedOnly, setShowDelayedOnly] = useState(false);
-    const [statusSelected, setStatusSelected] = useState<string>(allStatusTypes[0]);
     const [searchQuery, setSearchQuery] = useState("");
     const [milestoneFilter, setMilestoneFilter] = useState<string>("");
     /** Branch (experience center); only applied for non-designers on the design queue */
@@ -635,18 +628,6 @@ export default function Dashboard() {
         ).length,
         bucket1020: phaseCountSource.filter((p) => getPhaseBucket(p) === "10-20%").length,
         bucket2060: phaseCountSource.filter((p) => getPhaseBucket(p) === "20-60%").length,
-    };
-
-    const toggleDropdown = () => {
-        setIsDropdownOpen(!isDropdownOpen);
-    };
-
-    const handleSelection = (type: string) => {
-        setIsSelected(type);
-    };
-
-    const handleStatusSelection = (status: string) => {
-        setStatusSelected(status);
     };
 
     const router = useRouter();
@@ -1670,142 +1651,8 @@ export default function Dashboard() {
 
     return (
         <div>
-            <main className="">
-                <div className="xl:flex xl:gap-4">
-                    <div className="xl:w-64 xl:shrink-0 xl:sticky xl:top-[57px] xl:h-[calc(100vh-57px)] xl:overflow-y-auto border-r border-gray-300 xl:pt-4 xl:pr-2">
-
-                    {!isDqcUser && (
-                        <>
-                    <button
-                        type="button"
-                        id="workspace-sidebar-trigger"
-                        aria-expanded={isDropdownOpen}
-                        aria-controls="workspace-sidebar-panel"
-                        className="flex w-full items-center justify-between gap-2 mb-1 rounded-lg py-3 pl-4 pr-2 text-left cursor-pointer hover:bg-gray-100 transition-colors xl:mb-2 xl:py-4"
-                        onClick={toggleDropdown}
-                    >
-                        <span className="text-base font-bold text-[#32261C] xl:text-lg xl:pl-4 xl:pt-0">My WorkSpace</span>
-                        <svg
-                            xmlns="http://www.w3.org/2000/svg"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            strokeWidth={1.5}
-                            stroke="currentColor"
-                            className={`size-5 shrink-0 text-gray-700 transition-transform duration-200 ${isDropdownOpen ? 'rotate-180' : ''}`}
-                            aria-hidden
-                        >
-                        <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
-                        </svg>
-                    </button>
-                    {canShowIncentivesNav(user?.role) && (
-                        <IncentivesNavLink
-                            active={false}
-                            className="mb-2 xl:w-full"
-                        />
-                    )}
-                    {isDropdownOpen && (
-                        <div id="workspace-sidebar-panel" className="transition-all duration-200 space-y-1">
-                            <button
-                                type="button"
-                                aria-expanded={designPhasesOpen}
-                                aria-controls="workspace-design-phases"
-                                className="flex w-full items-center justify-between gap-2 rounded-lg py-2 pl-4 pr-2 text-left cursor-pointer hover:bg-gray-100 transition-colors"
-                                onClick={() => setDesignPhasesOpen((o) => !o)}
-                            >
-                                <span className="text-xs font-bold text-[#32261C]/60 uppercase tracking-widest">Design Phases</span>
-                                <svg
-                                    xmlns="http://www.w3.org/2000/svg"
-                                    fill="none"
-                                    viewBox="0 0 24 24"
-                                    strokeWidth={1.5}
-                                    stroke="currentColor"
-                                    className={`size-4 shrink-0 text-gray-600 transition-transform duration-200 ${designPhasesOpen ? 'rotate-180' : ''}`}
-                                    aria-hidden
-                                >
-                                    <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
-                                </svg>
-                            </button>
-                            {designPhasesOpen && (
-                                <div id="workspace-design-phases" role="region" aria-label="Design phases">
-                                    {phaseSidebarTypes.map((type, index) => (
-                                        <div
-                                            key={index}
-                                            role="button"
-                                            tabIndex={0}
-                                            onClick={() => handleSelection(type)}
-                                            onKeyDown={(e) => {
-                                                if (e.key === 'Enter' || e.key === ' ') {
-                                                    e.preventDefault();
-                                                    handleSelection(type);
-                                                }
-                                            }}
-                                            className={`p-3 pl-4 cursor-pointer font-semibold text-sm text-left w-full transition-all duration-200 xl:p-4 xl:pl-4 xl:block xl:w-full rounded-r-lg ${
-                                                isSelected === type
-                                                    ? 'border-l-4 border-l-[#EF0101] bg-[#DDCDC1]/40 text-[#32261C] font-bold shadow-sm'
-                                                    : 'border-l-4 border-l-transparent text-gray-600 hover:border-l-[#EF0101]/40 hover:bg-[#F1F2F6] hover:text-[#32261C]'
-                                            }`}
-                                        >
-                                            {type}
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-                            {!isSpmUser && (
-                            <button
-                                type="button"
-                                aria-expanded={projectStatusOpen}
-                                aria-controls="workspace-project-status"
-                                className="flex w-full items-center justify-between gap-2 rounded-lg py-2 pl-4 pr-2 text-left cursor-pointer hover:bg-gray-100 transition-colors mt-2"
-                                onClick={() => setProjectStatusOpen((o) => !o)}
-                            >
-                                <span className="text-xs font-bold text-[#32261C]/60 uppercase tracking-widest">Project status</span>
-                                <svg
-                                    xmlns="http://www.w3.org/2000/svg"
-                                    fill="none"
-                                    viewBox="0 0 24 24"
-                                    strokeWidth={1.5}
-                                    stroke="currentColor"
-                                    className={`size-4 shrink-0 text-gray-600 transition-transform duration-200 ${projectStatusOpen ? 'rotate-180' : ''}`}
-                                    aria-hidden
-                                >
-                                    <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
-                                </svg>
-                            </button>
-                            )}
-                            {!isSpmUser && projectStatusOpen && (
-                                <div id="workspace-project-status" role="region" aria-label="Project status">
-                                    {allStatusTypes.map((status, index) => (
-                                        <div
-                                            key={`status-${index}`}
-                                            role="button"
-                                            tabIndex={0}
-                                            onClick={() => handleStatusSelection(status)}
-                                            onKeyDown={(e) => {
-                                                if (e.key === 'Enter' || e.key === ' ') {
-                                                    e.preventDefault();
-                                                    handleStatusSelection(status);
-                                                }
-                                            }}
-                                            className={`p-3 pl-4 cursor-pointer font-semibold text-sm text-left w-full transition-all duration-200 xl:p-4 xl:pl-4 xl:block xl:w-full rounded-r-lg ${
-                                                statusSelected === status
-                                                    ? 'border-l-4 border-l-[#EF0101] bg-[#DDCDC1]/40 text-[#32261C] font-bold shadow-sm'
-                                                    : 'border-l-4 border-l-transparent text-gray-600 hover:border-l-[#EF0101]/40 hover:bg-[#F1F2F6] hover:text-[#32261C]'
-                                            }`}
-                                        >
-                                            {status}
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-                        </div>
-                    )}   
-                        </>
-                    )}
-                    {isDqcUser && (
-                        <div className="xl:text-lg xl:font-semibold xl:pl-4 xl:pt-4">DQC Queue</div>
-                    )}
-                    </div>
-                    <div className="min-w-0 flex-1 w-full overflow-auto">
+            <main>
+                <div className="min-w-0 w-full overflow-auto">
                         {!isDqcUser && !isMmtUser ? (
                             <div className="p-4 xl:p-6 pb-32 xl:pb-32 space-y-6 max-w-[1600px]">
                                 <div className="flex flex-col gap-4">
@@ -2171,7 +2018,6 @@ export default function Dashboard() {
                             </div>
                         )}
                     </div>
-                </div>
             </main>
             {viewLead ? (
                 <Pre10LeadViewModal

@@ -33,7 +33,7 @@ function normalizeCategory(raw: unknown): Category {
 
 export default function InspirationProjectsPage() {
   const router = useRouter();
-  const { user, sessionId, loading, logoutAndRedirectToLogin, refreshUser } = useAuth();
+  const { user, sessionId, loading, refreshUser } = useAuth();
   const [projects, setProjects] = useState<InspirationProject[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -149,32 +149,9 @@ export default function InspirationProjectsPage() {
 
   return (
     <div className="min-h-screen bg-slate-100">
-      <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-4 flex-wrap">
-          <h1 className="text-xl font-bold text-gray-900">Portfolio projects</h1>
-          <Link href="/profile" className="text-sm text-gray-600 hover:text-gray-900">
-            Profile
-          </Link>
-          <Link href="/profile/experience" className="text-sm text-gray-600 hover:text-gray-900">
-            Experience
-          </Link>
-          <Link href="/" className="text-sm text-[#32261C] hover:underline">
-            Dashboard
-          </Link>
-        </div>
-        <div className="flex items-center gap-4">
-          <span className="text-sm text-gray-600">{user.email}</span>
-          <button
-            type="button"
-            onClick={() => void logoutAndRedirectToLogin()}
-            className="text-sm text-red-600 hover:underline"
-          >
-            Logout
-          </button>
-        </div>
-      </header>
 
       <main className="max-w-3xl mx-auto p-8">
+        <h1 className="mb-6 text-xl font-bold text-gray-900">Portfolio projects</h1>
         <p className="text-sm text-gray-600 mb-6">
           Upload project photos with a category (Living Room, Bedroom, Kitchen). These feed the Meeting Wizard
           Designer portfolio gallery and filters. Title is required for each entry.

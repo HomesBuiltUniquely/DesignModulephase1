@@ -244,7 +244,7 @@ export function Pre10LeadViewModal({
                                     '—'
                                 )}
                             </dd>
-                        </div>
+                        </div>₹
                     </Section>
 
                     {scope ? (

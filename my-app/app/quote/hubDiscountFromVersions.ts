@@ -68,8 +68,15 @@ function mergeDefinedPct(target: AccumPct, src: Record<string, unknown> | null |
   }
 }
 
-export function payloadHasHubDiscountFields(payload: Record<string, unknown> | null | undefined): boolean {
-  if (!payload) return false;
+const HUB_DISCOUNT_META_KEYS = [
+  'hubFlatDiscountPct',
+  'hubFlatDiscountAmount',
+  'hubCategoryDiscountPct',
+  'hubCategoryDiscountAmount',
+  'hubAdditionalDiscountAmount',
+] as const;
+
+function quotePayloadHosts(payload: Record<string, unknown>): Record<string, unknown>[] {
   const hosts: Record<string, unknown>[] = [payload];
   const data = payload.data ?? payload.Data;
   if (data && typeof data === 'object') {
@@ -79,12 +86,34 @@ export function payloadHasHubDiscountFields(payload: Record<string, unknown> | n
       hosts.push(data as Record<string, unknown>);
     }
   }
-  for (const host of hosts) {
+  return hosts;
+}
+
+/** True when the payload carries a positive (non-zero) hub discount. */
+export function payloadHasHubDiscountFields(payload: Record<string, unknown> | null | undefined): boolean {
+  if (!payload) return false;
+  for (const host of quotePayloadHosts(payload)) {
     if (asNum(host.hubCategoryDiscountAmount) > 0) return true;
     if (asNum(host.hubAdditionalDiscountAmount) > 0) return true;
     const pct = host.hubCategoryDiscountPct;
     if (pct && typeof pct === 'object' && !Array.isArray(pct)) {
       if (Object.values(pct as Record<string, unknown>).some((v) => asNum(v) > 0)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * True when hub discount keys are present on the payload — including an intentional
+ * clear (all zeros). Used to avoid re-applying older version discounts after remove.
+ */
+export function payloadHasExplicitHubDiscountMeta(
+  payload: Record<string, unknown> | null | undefined,
+): boolean {
+  if (!payload) return false;
+  for (const host of quotePayloadHosts(payload)) {
+    for (const k of HUB_DISCOUNT_META_KEYS) {
+      if (host[k] != null) return true;
     }
   }
   return false;

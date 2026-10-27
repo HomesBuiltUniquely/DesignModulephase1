@@ -7869,6 +7869,20 @@ function hubMetaHasDiscount(meta: Record<string, unknown>): boolean {
   return false;
 }
 
+function discountStateLooksExplicit(ds: Record<string, unknown>): boolean {
+  return (
+    ds.amount != null ||
+    ds.additionalDiscount != null ||
+    ds.woodwork != null ||
+    ds.accessories != null ||
+    ds.services != null ||
+    ds.constructionHw != null ||
+    ds.hubCategoryDiscountAmount != null ||
+    ds.hubAdditionalDiscountAmount != null ||
+    ds.hubCategoryDiscountPct != null
+  );
+}
+
 async function loadLatestVersionHubMeta(
   quoteId: number,
   leadId?: number | null,
@@ -7888,12 +7902,13 @@ async function loadLatestVersionHubMeta(
       changeSummary?: unknown;
     }[]) {
       const ds = parseStoredJsonObject(ver.discount_snapshot) || parseStoredJsonObject(ver.updated_values);
-      if (ds) {
+      if (ds && discountStateLooksExplicit(ds)) {
         const meta = hubMetaFromDiscountState(ds);
-        if (hubMetaHasDiscount(meta)) return meta;
+        // Explicit zero snapshot means discount was cleared — do not walk older rows.
+        return hubMetaHasDiscount(meta) ? meta : {};
       }
       const summary = String(ver.changeSummary ?? "").trim();
-      if (summary && !/^no changes$/i.test(summary)) {
+      if (summary && !/^no changes$/i.test(summary) && !/^quote generated$/i.test(summary)) {
         const pickPct = (label: string): number => {
           const re = new RegExp(`${label}:\\s*[\\d.]+%\\s*->\\s*([\\d.]+)%`, "i");
           const m = summary.match(re);
@@ -7919,7 +7934,8 @@ async function loadLatestVersionHubMeta(
           hubFlatDiscountPct: 0,
           hubFlatDiscountAmount: 0,
         };
-        if (hubMetaHasDiscount(meta)) return meta;
+        // A change summary that only records → 0% / ₹0 is an intentional clear.
+        return hubMetaHasDiscount(meta) ? meta : {};
       }
     }
   } catch {
@@ -18348,30 +18364,30 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       additionalDiscount: 0,
     };
 
-    if (lastVersion?.discount_snapshot) {
-      try {
-        const parsed = parseStoredJsonObject(lastVersion.discount_snapshot) ?? {};
-        previousDiscountState = {
-          woodwork: parseFiniteNumber(parsed.woodwork) ?? 0,
-          accessories: parseFiniteNumber(parsed.accessories) ?? 0,
-          constructionHw: parseFiniteNumber(parsed.constructionHw) ?? 0,
-          services: parseFiniteNumber(parsed.services) ?? 0,
-          amount: Math.round(parseFiniteNumber(parsed.amount) ?? 0),
-          additionalDiscount: Math.round(parseFiniteNumber(parsed.additionalDiscount) ?? 0),
-        };
-      } catch {}
-    } else if (lastVersion?.updated_values) {
-      try {
-        const parsed = typeof lastVersion.updated_values === "string" ? JSON.parse(lastVersion.updated_values) : lastVersion.updated_values;
-        previousDiscountState = {
-          woodwork: parseFiniteNumber(parsed.woodwork) ?? 0,
-          accessories: parseFiniteNumber(parsed.accessories) ?? 0,
-          constructionHw: parseFiniteNumber(parsed.constructionHw) ?? 0,
-          services: parseFiniteNumber(parsed.services) ?? 0,
-          amount: Math.round(parseFiniteNumber(parsed.amount) ?? 0),
-          additionalDiscount: Math.round(parseFiniteNumber(parsed.additionalDiscount) ?? 0),
-        };
-      } catch {}
+    const discountStateFromRow = (raw: unknown): typeof previousDiscountState | null => {
+      const parsed = parseStoredJsonObject(raw);
+      if (!parsed || !discountStateLooksExplicit(parsed)) return null;
+      const meta = hubMetaFromDiscountState(parsed);
+      const pct =
+        meta.hubCategoryDiscountPct && typeof meta.hubCategoryDiscountPct === "object"
+          ? (meta.hubCategoryDiscountPct as Record<string, unknown>)
+          : {};
+      return {
+        woodwork: parseFiniteNumber(pct.woodwork) ?? 0,
+        accessories: parseFiniteNumber(pct.accessories) ?? 0,
+        constructionHw: parseFiniteNumber(pct.constructionHw) ?? 0,
+        services: parseFiniteNumber(pct.services) ?? 0,
+        amount: Math.round(parseFiniteNumber(meta.hubCategoryDiscountAmount) ?? 0),
+        additionalDiscount: Math.round(parseFiniteNumber(meta.hubAdditionalDiscountAmount) ?? 0),
+      };
+    };
+
+    const fromLastSnapshot = discountStateFromRow(lastVersion?.discount_snapshot);
+    const fromLastUpdated = fromLastSnapshot ? null : discountStateFromRow(lastVersion?.updated_values);
+    if (fromLastSnapshot) {
+      previousDiscountState = fromLastSnapshot;
+    } else if (fromLastUpdated) {
+      previousDiscountState = fromLastUpdated;
     } else {
       // Fallback: Read previous discount state from the existing snapshot
       const prevDiscount = readDiscountMetaFromSnapshot(snapshotPayload);
@@ -18450,6 +18466,11 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
     if (previousDiscountState.services !== targetDiscountState.services) {
       changesList.push(`Services: ${previousDiscountState.services}% -> ${targetDiscountState.services}%`);
     }
+    if (previousDiscountState.constructionHw !== targetDiscountState.constructionHw) {
+      changesList.push(
+        `Construction Hardware: ${previousDiscountState.constructionHw}% -> ${targetDiscountState.constructionHw}%`,
+      );
+    }
     if (previousDiscountState.amount !== targetDiscountState.amount) {
       changesList.push(`Category discount amount: ₹${previousDiscountState.amount.toLocaleString("en-IN")} -> ₹${targetDiscountState.amount.toLocaleString("en-IN")}`);
     }
@@ -18458,49 +18479,10 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
     }
     const changeSummary = changesList.length > 0 ? changesList.join("; ") : "No changes";
 
-    const discountFingerprint = (state: {
-      woodwork: number;
-      accessories: number;
-      constructionHw: number;
-      services: number;
-      amount: number;
-      additionalDiscount: number;
-    }) =>
-      [
-        state.woodwork,
-        state.accessories,
-        state.constructionHw,
-        state.services,
-        Math.round(state.amount),
-        Math.round(state.additionalDiscount),
-      ].join("|");
-
+    // Only skip a revision when the save matches the *latest* version.
+    // Matching an older historical discount (e.g. removing a discount back to 0%)
+    // must still create a new version so the clear is recorded and applied.
     let isDuplicateVersion = isSameWithPrevious && hasExistingVersions;
-    if (!viaCrmInternal && !isDuplicateVersion) {
-      const [dupRows] = await pool.query(
-        `SELECT discount_snapshot, updated_values
-         FROM lead_prolance_quote_versions
-         WHERE lead_id = ? AND quote_id = ?`,
-        [effectiveLeadId, quoteId],
-      );
-      const targetFp = discountFingerprint(targetDiscountState);
-      for (const row of dupRows as { discount_snapshot?: unknown; updated_values?: unknown }[]) {
-        const parsed = parseStoredJsonObject(row.discount_snapshot) || parseStoredJsonObject(row.updated_values);
-        if (!parsed) continue;
-        const existingFp = discountFingerprint({
-          woodwork: parseFiniteNumber(parsed.woodwork) ?? 0,
-          accessories: parseFiniteNumber(parsed.accessories) ?? 0,
-          constructionHw: parseFiniteNumber(parsed.constructionHw) ?? 0,
-          services: parseFiniteNumber(parsed.services) ?? 0,
-          amount: Math.round(parseFiniteNumber(parsed.amount) ?? 0),
-          additionalDiscount: Math.round(parseFiniteNumber(parsed.additionalDiscount) ?? 0),
-        });
-        if (existingFp === targetFp) {
-          isDuplicateVersion = true;
-          break;
-        }
-      }
-    }
     if (!viaCrmInternal && changeSummary === "No changes") isDuplicateVersion = true;
 
     const isNewVersionCreated = !isDuplicateVersion;
@@ -18993,11 +18975,14 @@ app.post("/api/leads/:id/prolance-quote-snapshots", async (req: Request, res: Re
           if (existing[k] != null) existingHub[k] = existing[k];
         }
       }
-      if (!hubMetaHasDiscount(existingHub)) {
+      const snapshotHasExplicitHubMeta = Object.keys(existingHub).length > 0;
+      // Only backfill from versions when the snapshot never stored hub discount keys.
+      // After a clear (keys present at 0), do not resurrect an older discount.
+      if (!hubMetaHasDiscount(existingHub) && !snapshotHasExplicitHubMeta) {
         const fromVersions = await loadLatestVersionHubMeta(quoteId, id);
         Object.assign(existingHub, fromVersions);
       }
-      if (hubMetaHasDiscount(existingHub)) {
+      if (hubMetaHasDiscount(existingHub) || snapshotHasExplicitHubMeta) {
         nextPayload = applyDiscountMetaToSnapshotPayload(incoming, existingHub);
         const payable = extractTotalPayableAmount(nextPayload);
         if (payable != null && payable >= 0) {

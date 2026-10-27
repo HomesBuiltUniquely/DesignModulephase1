@@ -170,8 +170,9 @@ export function summarizeMeetingWizQuote(
       void unitsRaw.map((u) => extractUnitDisplayPrice(u));
 
       const optionName = asStr(r.optionName ?? r.roomType);
+      const spaceName = /^services?$/i.test(roomName) ? 'Services' : roomName;
       return {
-        name: optionName && optionName !== '-' ? optionName : roomName,
+        name: spaceName,
         tags: tagsFromRoom(r, unitsRaw, servicesRaw),
         amount: asNum(r.totalPriceOld ?? r.unitsPrice ?? r.woodWorkPrice),
         discountedAmount: asNum(r.totalPrice),
