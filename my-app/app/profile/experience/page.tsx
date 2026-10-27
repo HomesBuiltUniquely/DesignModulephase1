@@ -11,7 +11,7 @@ const API = getApiBase();
 
 export default function DesignerExperiencePage() {
   const router = useRouter();
-  const { user, sessionId, loading, logoutAndRedirectToLogin, refreshUser } = useAuth();
+  const { user, sessionId, loading, refreshUser } = useAuth();
   const [title, setTitle] = useState('');
   const [experience, setExperience] = useState('');
   const [projects, setProjects] = useState('');
@@ -101,32 +101,9 @@ export default function DesignerExperiencePage() {
 
   return (
     <div className="min-h-screen bg-slate-100">
-      <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-4 flex-wrap">
-          <h1 className="text-xl font-bold text-gray-900">Experience</h1>
-          <Link href="/profile" className="text-sm text-gray-600 hover:text-gray-900">
-            Profile
-          </Link>
-          <Link href="/profile/inspiration" className="text-sm text-gray-600 hover:text-gray-900">
-            Portfolio projects
-          </Link>
-          <Link href="/" className="text-sm text-[#32261C] hover:underline">
-            Dashboard
-          </Link>
-        </div>
-        <div className="flex items-center gap-4">
-          <span className="text-sm text-gray-600">{user.email}</span>
-          <button
-            type="button"
-            onClick={() => void logoutAndRedirectToLogin()}
-            className="text-sm text-red-600 hover:underline"
-          >
-            Logout
-          </button>
-        </div>
-      </header>
 
       <main className="max-w-3xl mx-auto p-8 space-y-6">
+        <h1 className="text-xl font-bold text-gray-900">Experience</h1>
         <p className="text-sm text-gray-600">
           Advisor card fields show on Meeting Wizard Intro. Portfolio stats (projects completed, sq. ft., awards,
           satisfaction) show on the Designer portfolio step.
