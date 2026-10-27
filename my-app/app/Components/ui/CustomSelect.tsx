@@ -186,8 +186,8 @@ export default function CustomSelect({
             ? "bg-[#F1F2F6] border-gray-200 text-gray-400 cursor-not-allowed"
             : open
               ? "bg-white border-[#EF0101] text-[#32261C] shadow-md ring-2 ring-[#EF0101]/10"
-              : buttonClassName?.includes("border-")
-                ? "bg-white text-[#32261C] hover:border-[#EF0101]/60 hover:shadow-sm"
+              : buttonClassName
+                ? "text-[#32261C] hover:shadow-sm"
                 : "bg-white border-[#DDCDC1] text-[#32261C] hover:border-[#EF0101]/60 hover:shadow-sm"
           }
         `}
