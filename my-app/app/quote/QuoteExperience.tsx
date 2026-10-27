@@ -37,6 +37,16 @@ function asStr(v: unknown): string {
   return '-';
 }
 
+/** Prolance space name (`roomName`), not `roomType`/`optionName` (those can stay Bedroom on a services space). */
+function displayQuoteSpaceName(roomName: string, optionName = '-'): string {
+  const room = roomName.trim();
+  const option = optionName.trim();
+  const raw = room && room !== '-' ? room : option && option !== '-' ? option : '';
+  if (!raw) return '-';
+  if (/^services?$/i.test(raw)) return 'Services';
+  return raw;
+}
+
 function asObj(v: unknown): Record<string, unknown> {
   return v && typeof v === 'object' ? (v as Record<string, unknown>) : {};
 }
@@ -211,7 +221,7 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
       );
       return {
         key,
-        roomName: asStr(r.roomName),
+        roomName: displayQuoteSpaceName(asStr(r.roomName), asStr(r.optionName ?? r.roomType)),
         optionName: asStr(r.optionName ?? r.roomType),
         totalPrice: asNum(r.totalPrice),
         totalPriceOld: asNum(r.totalPriceOld ?? r.unitsPrice ?? r.woodWorkPrice),
@@ -268,7 +278,7 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
 
   const lineItems = rooms.map((r) => ({
     roomKey: r.key,
-    name: r.optionName !== '-' ? r.optionName : r.roomName,
+    name: r.roomName !== '-' ? r.roomName : r.optionName,
     amount: r.totalPriceOld,
     discountedAmount: r.totalPrice,
   }));
