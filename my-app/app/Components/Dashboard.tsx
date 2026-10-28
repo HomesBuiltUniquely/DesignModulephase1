@@ -107,6 +107,7 @@ function getProgressPercent(bucket: string): number {
     if (bucket === "Pre 10%") return 5;
     if (bucket === "10-20%") return 15;
     if (bucket === "20-60%") return 40;
+    if (bucket === "In Execution") return 70;
     return 5;
 }
 
@@ -115,6 +116,7 @@ function getStatusFromBucket(bucket: string): { label: string; className: string
     if (bucket === "Pre 10%") return { label: "DELAYED", className: "bg-red-100 text-red-800" };
     if (bucket === "10-20%") return { label: "UNDER QC", className: "bg-[#DDCDC1]/40 text-[#32261C]" };
     if (bucket === "20-60%") return { label: "READY PROD.", className: "bg-[#DDCDC1]/40 text-[#32261C]" };
+    if (bucket === "IN EXECUTION") return { label: "IN EXECUTION", className: "bg-[#DDCDC1]/40 text-[#32261C]" };
     return { label: "PRE 10%", className: "bg-gray-100 text-gray-800" };
 }
 
@@ -154,6 +156,7 @@ function getNextAction(bucket: string): string {
     if (bucket === "Pre 10%") return "Complete D1 submission";
     if (bucket === "10-20%") return "Submit for QC";
     if (bucket === "20-60%") return "Transition to Prod.";
+    if (bucket === "IN EXECUTION") return "Cx approval / Push to prod.";
     return "Continue design";
 }
 
@@ -417,11 +420,12 @@ export default function Dashboard() {
         }
     };
     
-    /** SPM queue is D2-focused — only show 10–20% / 20–60% (plus all). */
+    /** SPM queue is D2-focused — 10–20% / 20–60% / IN EXECUTION (plus all). */
     const spmPhaseTypes = [
         SideDashboard.All_Projects,
         SideDashboard.Ten_50,
         SideDashboard.Fifty_above,
+        SideDashboard.In_Execution,
     ];
     const { phase: isSelected, status: statusSelected, setPhase: setIsSelected, setStatus: setStatusSelected } = useWorkspaceFilters();
     const [showDelayedOnly, setShowDelayedOnly] = useState(false);
@@ -493,8 +497,11 @@ export default function Dashboard() {
             if (isSelected === SideDashboard.Fifty_above) {
                 return notCancelledUnlessTab.filter((p) => getPhaseBucket(p) === "20-60%");
             }
-            // All Projects (10-60%): keep full D2 queue (includes any edge Pre 10 rows)
-            return notCancelledUnlessTab;
+            if (isSelected === SideDashboard.In_Execution) {
+                return notCancelledUnlessTab.filter((p) => getPhaseBucket(p) === SideDashboard.In_Execution);
+            }
+            // All Projects (10-60%): D2 queue without IN EXECUTION (P2P lives in its own tab)
+            return notCancelledUnlessTab.filter((p) => getPhaseBucket(p) !== SideDashboard.In_Execution);
         }
 
         if (statusSelected === SideDashboardStatus.Cancelled) {
