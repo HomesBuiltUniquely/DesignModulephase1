@@ -125,7 +125,21 @@ export function Pre10LeadViewModal({
         lead.intakeCustomerName?.trim() ||
         lead.projectName?.trim() ||
         null;
-    const floorPlanUrl = lead.floorPlanPublicLink?.trim() || '';
+    const floorPlans = (() => {
+        const fromList = Array.isArray(lead.floorPlans)
+            ? lead.floorPlans
+                  .map((item, i) => ({
+                      index: typeof item?.index === 'number' ? item.index : i,
+                      filename: String(item?.filename || '').trim() || `Floor plan ${i + 1}`,
+                      publicUrl: String(item?.publicUrl || '').trim(),
+                  }))
+                  .filter((item) => item.publicUrl)
+                  .sort((a, b) => a.index - b.index)
+            : [];
+        if (fromList.length) return fromList;
+        const legacy = lead.floorPlanPublicLink?.trim() || '';
+        return legacy ? [{ index: 0, filename: 'Floor plan', publicUrl: legacy }] : [];
+    })();
     const scope = lead.configScopeSummary ?? null;
     const experience = lead.experienceSummary ?? null;
     const decision = lead.decisionSummary ?? null;
@@ -202,26 +216,35 @@ export function Pre10LeadViewModal({
                         <Field label="Time slot" value={displayValue(timeSlotLabel)} />
                         <Field label="Designer" value={displayValue(lead.designerName)} />
                         <div className="sm:col-span-2">
-                            <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Floor plan</dt>
+                            <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">
+                                Floor plan{floorPlans.length > 1 ? 's' : ''}
+                            </dt>
                             <dd className="mt-1 text-sm text-gray-900">
-                                {floorPlanUrl ? (
-                                    <a
-                                        href={floorPlanUrl}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="inline-flex items-center gap-1.5 rounded-lg border border-[#EF0101] bg-white px-3 py-1.5 text-sm font-semibold text-[#32261C] shadow-sm hover:bg-[#DDCDC1]/20"
-                                    >
-                                        Open floor plan
-                                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
-                                            <path d="M11 3a1 1 0 1 0 0 2h2.586l-6.293 6.293a1 1 0 1 0 1.414 1.414L15 6.414V9a1 1 0 1 0 2 0V4a1 1 0 0 0-1-1h-5Z" />
-                                            <path d="M5 5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-3a1 1 0 1 0-2 0v3H5V7h3a1 1 0 0 0 0-2H5Z" />
-                                        </svg>
-                                    </a>
+                                {floorPlans.length ? (
+                                    <ul className="flex flex-wrap gap-2">
+                                        {floorPlans.map((plan) => (
+                                            <li key={`${plan.index}-${plan.publicUrl}`}>
+                                                <a
+                                                    href={plan.publicUrl}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-[#EF0101] bg-white px-3 py-1.5 text-sm font-semibold text-[#32261C] shadow-sm hover:bg-[#DDCDC1]/20"
+                                                    title={plan.filename}
+                                                >
+                                                    <span className="truncate">{plan.filename}</span>
+                                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0">
+                                                        <path d="M11 3a1 1 0 1 0 0 2h2.586l-6.293 6.293a1 1 0 1 0 1.414 1.414L15 6.414V9a1 1 0 1 0 2 0V4a1 1 0 0 0-1-1h-5Z" />
+                                                        <path d="M5 5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-3a1 1 0 1 0-2 0v3H5V7h3a1 1 0 0 0 0-2H5Z" />
+                                                    </svg>
+                                                </a>
+                                            </li>
+                                        ))}
+                                    </ul>
                                 ) : (
                                     '—'
                                 )}
                             </dd>
-                        </div>
+                        </div>₹
                     </Section>
 
                     {scope ? (

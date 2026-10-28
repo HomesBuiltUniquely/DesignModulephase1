@@ -436,9 +436,14 @@ export function QuoteExperienceView(props: Props) {
                           </span>
                           <div>
                             <p className="quote-heading text-base font-bold text-[#2a1d14] sm:text-lg">{room.roomName}</p>
+                            {room.optionName &&
+                            room.optionName !== '-' &&
+                            room.optionName.trim().toLowerCase() !== room.roomName.trim().toLowerCase() &&
+                            !/^(bedroom|kitchen|living|dining|services?)s?(\s*\d+)?$/i.test(room.optionName) ? (
                             <p className="text-xs sm:text-sm" style={{ color: QUOTE.muted }}>
                               {room.optionName}
                             </p>
+                            ) : null}
                           </div>
                         </div>
                         <div className="text-right">
