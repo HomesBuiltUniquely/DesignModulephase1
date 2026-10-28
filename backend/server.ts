@@ -1092,6 +1092,23 @@ async function triggerCustomerEmailForLead(
     const rawOrderValue = payload?.order_value ?? payload?.form?.order_value ?? payload?.formData?.order_value ?? null;
     const paymentAmounts = await resolveMilestonePaymentAmounts(leadId, 0.1, rawOrderValue);
 
+    let quotationLink: string | undefined;
+    let quoteDiscountSource: Record<string, unknown> | null = null;
+    let quoteIdForPayload: number | null = null;
+    if (emailRoutePath === "/api/email/send-mail-loop-chain-initiate") {
+      try {
+        const enrich = await buildWelcomeMailQuoteEnrichment(leadId);
+        quotationLink = enrich.quotationLink ?? undefined;
+        quoteDiscountSource = enrich.quoteDiscountSource;
+        quoteIdForPayload = enrich.quoteId;
+        if (!quotationLink) {
+          console.info("welcome mail: no quote link for lead", { leadId });
+        }
+      } catch (enrichErr) {
+        console.info("welcome mail: quote enrichment failed (non-fatal)", { leadId, error: enrichErr });
+      }
+    }
+
     const sendPromise = triggerMailRouteWithLog({
       leadId,
       taskName: "customer-email-trigger",
@@ -1104,6 +1121,8 @@ async function triggerCustomerEmailForLead(
         customerName,
         designerName,
         quotationTotal: paymentAmounts.quotationTotal,
+        ...(quotationLink ? { quotationLink } : {}),
+        ...(quoteDiscountSource ? { quoteDiscountSource } : {}),
         leadPayload: {
           ...sanitizeLeadPayloadForEmail(
             payload && typeof payload === "object" && !Array.isArray(payload)
@@ -1112,6 +1131,12 @@ async function triggerCustomerEmailForLead(
           ),
           intakeView: extractLeadIntakeViewFromPayload(payload),
           experienceCenter: resolveLeadBranchName(payload),
+          ...(quoteIdForPayload != null && quoteIdForPayload > 0
+            ? {
+                prolance_quote_id: quoteIdForPayload,
+                prolanceQuoteId: quoteIdForPayload,
+              }
+            : {}),
         },
       },
     });
@@ -8018,6 +8043,100 @@ function applyDiscountMetaToSnapshotPayload(
     ];
   }
   return nextPayload;
+}
+
+/** Quote link + Hub/Prolance discount source for the mail-loop welcome letter. */
+async function buildWelcomeMailQuoteEnrichment(leadId: number): Promise<{
+  quotationLink: string | null;
+  quoteId: number | null;
+  quoteDiscountSource: Record<string, unknown> | null;
+}> {
+  const links = await resolveLatestQuoteLinkForLead(leadId);
+  if (!links) {
+    return { quotationLink: null, quoteId: null, quoteDiscountSource: null };
+  }
+
+  const quoteId = links.quoteId;
+  let snapshotPayload: Record<string, unknown> = {};
+  try {
+    const [snapRows] = await pool.query(
+      `SELECT payload_json AS payloadJson
+       FROM lead_prolance_quote_snapshots
+       WHERE lead_id = ? AND quote_id = ?
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+      [leadId, quoteId],
+    );
+    let snap = (snapRows as { payloadJson?: unknown }[])[0];
+    if (!snap?.payloadJson) {
+      const [anySnap] = await pool.query(
+        `SELECT payload_json AS payloadJson
+         FROM lead_prolance_quote_snapshots
+         WHERE quote_id = ?
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1`,
+        [quoteId],
+      );
+      snap = (anySnap as { payloadJson?: unknown }[])[0];
+    }
+    snapshotPayload = parseStoredJsonObject(snap?.payloadJson) ?? {};
+  } catch {
+    snapshotPayload = {};
+  }
+
+  let hubMeta: Record<string, unknown> = {};
+  try {
+    hubMeta = await loadLatestVersionHubMeta(quoteId, leadId);
+  } catch {
+    hubMeta = {};
+  }
+
+  const merged =
+    hubMeta && Object.keys(hubMeta).length > 0
+      ? applyDiscountMetaToSnapshotPayload(snapshotPayload, hubMeta)
+      : snapshotPayload;
+
+  // Compact source: quote root fields the email route needs for breakdown (prices + Hub meta + room arrays).
+  const data = merged.data ?? merged.Data;
+  const quoteDiscountSource: Record<string, unknown> = {
+    ...merged,
+    quoteId,
+    hubCategoryDiscountPct: merged.hubCategoryDiscountPct,
+    hubCategoryDiscountAmount: merged.hubCategoryDiscountAmount,
+    hubAdditionalDiscountAmount: merged.hubAdditionalDiscountAmount,
+    hubFlatDiscountPct: merged.hubFlatDiscountPct,
+    hubFlatDiscountAmount: merged.hubFlatDiscountAmount,
+    woodWorkPrice: merged.woodWorkPrice,
+    woodWorkDiscount: merged.woodWorkDiscount,
+    accessoriesPrice: merged.accessoriesPrice,
+    accessoriesDiscount: merged.accessoriesDiscount,
+    consHardwarePrice: merged.consHardwarePrice,
+    hardwarePrice: merged.hardwarePrice,
+    servicesPrice: merged.servicesPrice,
+    servicesDiscount: merged.servicesDiscount,
+    worktopsPrice: merged.worktopsPrice,
+    worktopPrice: merged.worktopPrice,
+    worktopDiscount: merged.worktopDiscount,
+    worktopsDiscount: merged.worktopsDiscount,
+    totalPrice: merged.totalPrice,
+    finalTotalPrice: merged.finalTotalPrice,
+    finalPrice: merged.finalPrice,
+    discount: merged.discount,
+    discountAmount: merged.discountAmount,
+    optionDetails: merged.optionDetails,
+    quoteOptionsData: merged.quoteOptionsData,
+    roomWiseSummary: merged.roomWiseSummary,
+    ...(data != null ? { data } : {}),
+  };
+
+  return {
+    quotationLink: links.customerQuoteUrl,
+    quoteId,
+    quoteDiscountSource:
+      Object.keys(snapshotPayload).length > 0 || Object.keys(hubMeta).length > 0
+        ? quoteDiscountSource
+        : null,
+  };
 }
 
 function readDiscountMetaFromSnapshot(snapshotPayload: Record<string, unknown>): {
