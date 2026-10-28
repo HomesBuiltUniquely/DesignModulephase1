@@ -6,6 +6,13 @@ import { buildAuthHeaders, getApiBase } from '../lib/apiBase';
 import { BRANCH_LOCATIONS, resolveBranchCode } from '../constants/branches';
 import CustomSelect from './ui/CustomSelect';
 import MeetingSlotPickerModal from '../Leads/[id]/components/popups/MeetingSlotPickerModal';
+import { MeetingWizSessionOverlay } from './MeetingWiz/MeetingWizSessionOverlay';
+import type { LeadshipTypes } from './Types/Types';
+import {
+  canShowEndMeetingForBoardMeeting,
+  canShowStartMeetingForBoardMeeting,
+  getBoardStartMeetingBlockReason,
+} from '../lib/leadMeetingSchedule';
 import {
   formatHubTimeRange,
   HUB_MEETING_DURATION_MIN,
@@ -47,6 +54,10 @@ type ScheduledMeeting = {
   source?: string | null;
   cancelReason?: string | null;
   cancelFiles?: { id: number; name: string; mimeType?: string | null }[] | null;
+  reason?: string | null;
+  endedAt?: string | null;
+  quoteSent?: boolean;
+  quoteFinalAmount?: string | null;
   personalKey?: string | null;
   personalKind?: 'block' | 'full_day' | null;
   personalReason?: string | null;
@@ -59,7 +70,7 @@ type ClientMeetingType = 'pre_10' | 'dqc1_first_cut' | 'dqc2_material_selection'
 type TypeFilter = 'all' | ClientMeetingType;
 type Venue = 'Showroom visit' | 'Virtual meeting' | 'Site visit';
 type ViewStatus = 'scheduled' | 'in_progress' | 'completed' | 'cancelled' | 'abandoned';
-type StatusKey = 'scheduled' | 'in_progress' | 'completed' | 'cancelled';
+type StatusKey = 'scheduled' | 'in_progress' | 'completed' | 'cancelled' | 'abandoned';
 type DatePreset = 'all' | 'month' | '3m' | '6m' | '1y' | 'prev' | 'custom';
 type PersonalKindFilter = 'all' | 'block' | 'full_day';
 
@@ -83,6 +94,8 @@ type ViewMeeting = {
   minutes: number | null;
   status: ViewStatus;
   quote: number | null;
+  quoteSent: boolean;
+  endedAt: string | null;
   personal: boolean;
   personalKind: 'block' | 'full_day' | null;
   personalReason: string;
@@ -128,6 +141,7 @@ const GRID_LAST_HOUR = Math.floor((HUB_MEETING_TIMELINE_END_MIN - HUB_MEETING_DU
 const HOURS = Array.from({ length: GRID_LAST_HOUR - GRID_START_HOUR + 1 }, (_, index) => GRID_START_HOUR + index);
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const PAGE_SIZE = 10;
+const QUOTE_DELAY_MS = 4 * 60 * 60 * 1000;
 
 const DATE_PRESETS: { id: DatePreset; label: string }[] = [
   { id: 'month', label: 'This month' },
@@ -350,6 +364,26 @@ function formatInr(amount: number): string {
   }).format(amount);
 }
 
+function meetingEndedMs(meeting: { endedAt: string | null; day: string; minutes: number | null }): number | null {
+  if (meeting.endedAt) {
+    const ended = Date.parse(meeting.endedAt);
+    if (Number.isFinite(ended)) return ended;
+  }
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(meeting.day);
+  if (!match) return null;
+  const mins = meeting.minutes ?? 0;
+  const utc = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Math.floor(mins / 60), mins % 60);
+  return utc - 5.5 * 60 * 60 * 1000;
+}
+
+/** Successful meeting whose quote is still not shared to CRM 4 hours later. */
+function isQuoteDelayed(meeting: ViewMeeting, nowMs: number): boolean {
+  if (meeting.personal || meeting.status !== 'completed' || meeting.quoteSent) return false;
+  const ended = meetingEndedMs(meeting);
+  if (ended == null) return false;
+  return nowMs - ended >= QUOTE_DELAY_MS;
+}
+
 function mapQuote(raw: string | null): number | null {
   if (!raw) return null;
   const numeric = Number(String(raw).replace(/,/g, '').replace(/[^\d.]/g, ''));
@@ -448,7 +482,9 @@ function toViewMeeting(meeting: ScheduledMeeting, index: number): ViewMeeting | 
     day,
     minutes,
     status: mapStatus(meeting),
-    quote: personal ? null : mapQuote(meeting.quotationTotal),
+    quote: personal ? null : mapQuote(meeting.quoteFinalAmount || meeting.quotationTotal || null),
+    quoteSent: !personal && meeting.quoteSent === true,
+    endedAt: personal ? null : meeting.endedAt || null,
     personal,
     personalKind,
     personalReason: reason,
@@ -568,6 +604,12 @@ function chunkMeetings(rows: ViewMeeting[], pageSize: number): MeetingPage[] {
 
 function buildMeetingPages(rows: ViewMeeting[], today: string, pageSize: number): MeetingPage[] {
   const todayRows = rows.filter((meeting) => meeting.day === today);
+  // A short today list used to sit alone (2 or 4 rows). Fill that page to
+  // pageSize with the next days — tomorrow first — so the list always shows
+  // a full page when more meetings exist.
+  if (todayRows.length > 0 && todayRows.length < pageSize) {
+    return chunkMeetings(rows, pageSize);
+  }
   const rest = rows.filter((meeting) => meeting.day !== today);
   const pages: MeetingPage[] = [];
   if (todayRows.length > 0) {
@@ -724,12 +766,15 @@ export default function MeetingManagementView() {
   const [view, setView] = useState<'list' | 'calendar'>('list');
   const [viewDir, setViewDir] = useState<'next' | 'prev' | 'none'>('none');
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
+  const [typeOpen, setTypeOpen] = useState(false);
+  const [statusOpen, setStatusOpen] = useState(false);
   const [designerFilter, setDesignerFilter] = useState('');
   const [salesFilter, setSalesFilter] = useState('');
   const [branchFilter, setBranchFilter] = useState('');
   const [statusFilters, setStatusFilters] = useState<StatusKey[]>([]);
   const [personalKind, setPersonalKind] = useState<PersonalKindFilter>('all');
   const [quoteOnly, setQuoteOnly] = useState(false);
+  const [quoteDelayedOnly, setQuoteDelayedOnly] = useState(false);
   const [datePreset, setDatePreset] = useState<DatePreset>('month');
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
@@ -748,7 +793,7 @@ export default function MeetingManagementView() {
   const [actionKind, setActionKind] = useState<'reschedule' | 'cancel' | null>(null);
   const [nextDate, setNextDate] = useState('');
   const [nextTime, setNextTime] = useState('');
-  const [cancelReason, setCancelReason] = useState('');
+  const [actionReason, setActionReason] = useState('');
   const [cancelFiles, setCancelFiles] = useState<File[]>([]);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionStep, setActionStep] = useState<'details' | 'form' | 'confirm'>('details');
@@ -756,6 +801,7 @@ export default function MeetingManagementView() {
   const [slotPickerOpen, setSlotPickerOpen] = useState(false);
   const [savingAction, setSavingAction] = useState(false);
   const [nowMinutes, setNowMinutes] = useState(kolkataMinutes);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const dateRef = useRef<HTMLDivElement>(null);
   const filterRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -764,6 +810,18 @@ export default function MeetingManagementView() {
   const [today, setToday] = useState(kolkataTodayIso);
   const todayMonth = today.slice(0, 7);
   const [viewMonth, setViewMonth] = useState(todayMonth);
+  const [panelLead, setPanelLead] = useState<LeadshipTypes | null>(null);
+  const [panelHistory, setPanelHistory] = useState<Array<{
+    taskName?: string;
+    timestamp?: string;
+    meta?: Record<string, unknown> | null;
+  }> | null>(null);
+  const [panelLeadLoading, setPanelLeadLoading] = useState(false);
+  const [startMeetingBusy, setStartMeetingBusy] = useState(false);
+  const [endMeetingBusy, setEndMeetingBusy] = useState(false);
+  const [pre10ActionError, setPre10ActionError] = useState<string | null>(null);
+  const [meetingWizOpen, setMeetingWizOpen] = useState(false);
+  const [meetingWizLead, setMeetingWizLead] = useState<LeadshipTypes | null>(null);
 
   const loadMeetings = useCallback(async () => {
     if (!sessionId) return;
@@ -793,13 +851,63 @@ export default function MeetingManagementView() {
     void loadMeetings();
   }, [loadMeetings]);
 
+  useEffect(() => {
+    if (!selected || selected.personal || selected.typeKey !== 'pre_10' || !sessionId) {
+      setPanelLead(null);
+      setPanelHistory(null);
+      setPanelLeadLoading(false);
+      setPre10ActionError(null);
+      return;
+    }
+    let cancelled = false;
+    const leadId = selected.leadId;
+    setPanelLeadLoading(true);
+    setPre10ActionError(null);
+    const headers = buildAuthHeaders(sessionId);
+    Promise.all([
+      fetch(`${apiBase}/api/leads/${leadId}`, { headers, credentials: 'include' }).then(async (res) => {
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(data?.message || 'Could not load lead');
+        return data as LeadshipTypes;
+      }),
+      fetch(`${apiBase}/api/leads/${leadId}/history`, { headers, credentials: 'include' }).then(async (res) => {
+        const data = await res.json().catch(() => null);
+        if (!res.ok) return [] as Array<{ taskName?: string; timestamp?: string; meta?: Record<string, unknown> | null }>;
+        const events = Array.isArray(data)
+          ? data
+          : Array.isArray(data?.events)
+            ? data.events
+            : Array.isArray(data?.history)
+              ? data.history
+              : [];
+        return events as Array<{ taskName?: string; timestamp?: string; meta?: Record<string, unknown> | null }>;
+      }),
+    ])
+      .then(([lead, history]) => {
+        if (cancelled) return;
+        setPanelLead(lead);
+        setPanelHistory(history);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPanelLead(null);
+        setPanelHistory(null);
+      })
+      .finally(() => {
+        if (!cancelled) setPanelLeadLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, selected?.key, selected?.leadId, selected?.personal, selected?.typeKey, sessionId]);
+
   const closeAction = () => {
     if (savingAction) return;
     setActionMeeting(null);
     setActionKind(null);
     setActionStep('details');
     setSlotPickerOpen(false);
-    setCancelReason('');
+    setActionReason('');
     setCancelFiles([]);
     setActionError(null);
   };
@@ -813,13 +921,22 @@ export default function MeetingManagementView() {
     setNextStartMin(mins);
     setNextTime(mins == null ? '' : minutesToHubTime24(mins));
     setSlotPickerOpen(false);
-    setCancelReason('');
+    setActionReason('');
     setCancelFiles([]);
     setActionError(null);
   };
 
   const reviewAction = () => {
     if (!actionMeeting || !actionKind) return;
+    const reason = actionReason.trim();
+    if (!reason) {
+      setActionError(actionKind === 'reschedule' ? 'A reschedule reason is required.' : 'A cancel reason is required.');
+      return;
+    }
+    if (reason.length > 500) {
+      setActionError('Reason must be 500 characters or less.');
+      return;
+    }
     if (actionKind === 'reschedule') {
       if (nextStartMin == null) {
         setActionError('Choose a time slot for this designer.');
@@ -836,15 +953,6 @@ export default function MeetingManagementView() {
       setActionError(issue);
       if (issue) return;
     } else {
-      const reason = cancelReason.trim();
-      if (!reason) {
-        setActionError('A cancel reason is required.');
-        return;
-      }
-      if (reason.length > 500) {
-        setActionError('Cancel reason must be 500 characters or less.');
-        return;
-      }
       const fileIssue = statusNoteFileProblem(cancelFiles);
       if (fileIssue) {
         setActionError(fileIssue);
@@ -863,7 +971,7 @@ export default function MeetingManagementView() {
       const path = actionKind === 'reschedule' ? 'reschedule' : 'cancel';
       const cancelBody = new FormData();
       if (actionKind === 'cancel') {
-        cancelBody.append('reason', cancelReason.trim());
+        cancelBody.append('reason', actionReason.trim());
         cancelFiles.forEach((file) => cancelBody.append('files', file));
       }
       const res = await fetch(`${apiBase}/api/meetings/${actionMeeting.id}/${path}`, {
@@ -874,7 +982,7 @@ export default function MeetingManagementView() {
         credentials: 'include',
         body: actionKind === 'cancel'
           ? cancelBody
-          : JSON.stringify({ meetingDate: nextDate, meetingTime: nextTime }),
+          : JSON.stringify({ meetingDate: nextDate, meetingTime: nextTime, reason: actionReason }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.message || 'Could not update the meeting');
@@ -928,13 +1036,21 @@ export default function MeetingManagementView() {
     { id: 'in_progress', label: 'In progress' },
     { id: 'completed', label: 'Successful' },
     { id: 'cancelled', label: 'Cancelled' },
+    { id: 'abandoned', label: 'Meeting abandoned' },
   ];
+  const statusClosedLabel =
+    statusFilters.length === 0
+      ? 'All'
+      : statusFilters.length === 1
+        ? statusChoices.find((item) => item.id === statusFilters[0])?.label || 'Status'
+        : `${statusFilters.length} selected`;
 
   useEffect(() => {
     const id = window.setInterval(() => {
       const next = kolkataTodayIso();
       setToday((current) => (current === next ? current : next));
       setNowMinutes(kolkataMinutes());
+      setNowMs(Date.now());
     }, 30000);
     return () => window.clearInterval(id);
   }, []);
@@ -994,14 +1110,15 @@ export default function MeetingManagementView() {
 
   const matchesStatus = useCallback((meeting: ViewMeeting) => {
     if (statusFilters.length === 0) return true;
-    return statusFilters.includes(meeting.status as StatusKey);
+    return statusFilters.includes(meeting.status);
   }, [statusFilters]);
 
   const filtered = useMemo(() => {
     let rows = baseFiltered.filter(matchesStatus);
-    if (quoteOnly) rows = rows.filter((meeting) => meeting.quote != null);
+    if (quoteOnly) rows = rows.filter((meeting) => meeting.quoteSent);
+    if (quoteDelayedOnly) rows = rows.filter((meeting) => isQuoteDelayed(meeting, nowMs));
     return orderMeetings(rows, today);
-  }, [baseFiltered, matchesStatus, quoteOnly, today]);
+  }, [baseFiltered, matchesStatus, quoteOnly, quoteDelayedOnly, nowMs, today]);
 
   const calendarMeetings = filtered;
 
@@ -1016,17 +1133,19 @@ export default function MeetingManagementView() {
     let successful = 0;
     let cancelled = 0;
     let quotes = 0;
+    let quoteDelayed = 0;
     for (const meeting of baseFiltered) {
       if (meeting.status === 'scheduled') {
         scheduled += 1;
         if (meeting.day === today) scheduledToday += 1;
       } else if (meeting.status === 'completed') successful += 1;
       else if (meeting.status === 'cancelled') cancelled += 1;
-      if (meeting.quote != null) quotes += 1;
+      if (meeting.quoteSent) quotes += 1;
+      if (isQuoteDelayed(meeting, nowMs)) quoteDelayed += 1;
     }
     const pct = baseFiltered.length === 0 ? 0 : Math.round((cancelled / baseFiltered.length) * 100);
-    return { scheduled, scheduledToday, successful, cancelled, pct, quotes };
-  }, [baseFiltered, today]);
+    return { scheduled, scheduledToday, successful, cancelled, pct, quotes, quoteDelayed };
+  }, [baseFiltered, today, nowMs]);
 
   const inProgress = useMemo(
     () => filtered.filter((meeting) => meeting.status === 'in_progress').sort((a, b) => compareMeetings(a, b, 1)),
@@ -1036,7 +1155,7 @@ export default function MeetingManagementView() {
   useEffect(() => {
     setPage(0);
     if (listRef.current) listRef.current.scrollTop = 0;
-  }, [query, typeFilter, designerFilter, salesFilter, branchFilter, statusFilters, quoteOnly, personalKind, datePreset, customFrom, customTo, viewMonth]);
+  }, [query, typeFilter, designerFilter, salesFilter, branchFilter, statusFilters, quoteOnly, quoteDelayedOnly, personalKind, datePreset, customFrom, customTo, viewMonth]);
 
   useEffect(() => {
     if (!dateOpen && !filterOpen) return;
@@ -1091,6 +1210,7 @@ export default function MeetingManagementView() {
     statusFilters.length > 0 ||
     personalKind !== 'all' ||
     quoteOnly ||
+    quoteDelayedOnly ||
     !dateIsDefault;
 
   const showCurrentMonth = () => {
@@ -1132,6 +1252,7 @@ export default function MeetingManagementView() {
     setStatusFilters([]);
     setPersonalKind('all');
     setQuoteOnly(false);
+    setQuoteDelayedOnly(false);
     showCurrentMonth();
   };
 
@@ -1151,6 +1272,12 @@ export default function MeetingManagementView() {
 
   const toggleQuotes = () => {
     setQuoteOnly((on) => !on);
+    setQuoteDelayedOnly(false);
+  };
+
+  const toggleQuoteDelayed = () => {
+    setQuoteDelayedOnly((on) => !on);
+    setQuoteOnly(false);
   };
 
   const openDate = () => {
@@ -1220,10 +1347,13 @@ export default function MeetingManagementView() {
   const safePage = pageCount === 0 ? 0 : Math.min(page, pageCount - 1);
   const currentPage = pages[safePage];
   const pageGroups = currentPage?.slices ?? [];
-  const restTotal = filtered.filter((meeting) => meeting.day !== today).length;
-  const restBefore = pages.slice(0, safePage).reduce((total, entry) => (
-    total + (entry.kind === 'rest' ? entry.slices.reduce((count, slice) => count + slice.meetings.length, 0) : 0)
+  const listTotal = filtered.length;
+  const shownBefore = pages.slice(0, safePage).reduce((total, entry) => (
+    total + entry.slices.reduce((count, slice) => count + slice.meetings.length, 0)
   ), 0);
+  const pageIsTodayOnly = !!currentPage
+    && currentPage.slices.length > 0
+    && currentPage.slices.every((slice) => slice.day === today);
   const shownOnPage = pageGroups.reduce((count, slice) => count + slice.meetings.length, 0);
   const goToPage = (next: number) => {
     setPage(next);
@@ -1231,6 +1361,149 @@ export default function MeetingManagementView() {
   };
   const liveChips = liveExpanded ? inProgress : inProgress.slice(0, 4);
   const liveHidden = Math.max(0, inProgress.length - 4);
+
+  const showPre10Start =
+    !!selected &&
+    !panelLeadLoading &&
+    canShowStartMeetingForBoardMeeting(selected.raw, panelLead, panelHistory, today);
+  const showPre10End = selected ? canShowEndMeetingForBoardMeeting(selected.raw) : false;
+  const pre10StartBlock = selected
+    ? getBoardStartMeetingBlockReason(selected.raw, panelLead, panelHistory, today, {
+        loading: panelLeadLoading,
+      })
+    : null;
+
+  const pre10StartBlockMessage = (() => {
+    switch (pre10StartBlock) {
+      case 'loading':
+        return 'Checking Pre 10% dashboard rules for this visit…';
+      case 'future':
+        return 'Start meeting appears on the meeting day — same as the Pre 10% dashboard.';
+      case 'past':
+        return 'This Pre 10% slot has passed. Reschedule stays in CRM.';
+      case 'not_today':
+        return 'Start meeting is only for today’s Pre 10% visit.';
+      case 'completed':
+        return 'This Pre 10% meeting is already successful. Start returns after a newer schedule.';
+      case 'abandoned':
+        return 'This meeting was abandoned. Schedule a new Pre 10% visit to start again.';
+      case 'cancelled':
+        return 'This meeting is cancelled, so Start meeting stays hidden.';
+      case 'phase_passed':
+        return 'Lead is past Pre 10%, so Start meeting is locked — same as the Pre 10% dashboard.';
+      case 'wiz_done':
+        return 'Meeting wizard already completed for this schedule. Start returns after a newer reschedule.';
+      case 'no_lead':
+        return 'Could not load lead details to verify Start meeting rules.';
+      case 'not_pre10':
+        return null;
+      default:
+        return null;
+    }
+  })();
+
+  const resolvePanelLead = async (): Promise<LeadshipTypes | null> => {
+    if (panelLead) return panelLead;
+    if (!selected?.leadId || !sessionId) return null;
+    const res = await fetch(`${apiBase}/api/leads/${selected.leadId}`, {
+      headers: buildAuthHeaders(sessionId),
+      credentials: 'include',
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data) return null;
+    const lead = data as LeadshipTypes;
+    setPanelLead(lead);
+    return lead;
+  };
+
+  const openPre10StartMeeting = async () => {
+    if (!selected || !sessionId || startMeetingBusy) return;
+    setPre10ActionError(null);
+    setStartMeetingBusy(true);
+    try {
+      const lead = await resolvePanelLead();
+      if (!lead) {
+        throw new Error('Lead details are needed to open the meeting.');
+      }
+      if (!canShowStartMeetingForBoardMeeting(selected.raw, lead, panelHistory, today)) {
+        throw new Error('Start meeting is locked by the same Pre 10% dashboard rules.');
+      }
+      const meetingId = selected.id ?? selected.raw.id;
+      if (meetingId != null) {
+        const startRes = await fetch(`${apiBase}/api/meetings/${meetingId}/start`, {
+          method: 'POST',
+          headers: buildAuthHeaders(sessionId),
+          credentials: 'include',
+        });
+        const startData = await startRes.json().catch(() => ({}));
+        if (!startRes.ok) {
+          throw new Error(startData?.message || 'Could not start this meeting.');
+        }
+      }
+      // Same CRM kickoff the Pre 10% dashboard uses before opening the wizard.
+      void fetch(`${apiBase}/api/leads/${selected.leadId}/crm-meeting/start`, {
+        method: 'POST',
+        headers: buildAuthHeaders(sessionId),
+        credentials: 'include',
+      }).catch(() => undefined);
+      setMeetingWizLead(lead);
+      setMeetingWizOpen(true);
+      await loadMeetings();
+      setSelected((prev) =>
+        prev && prev.key === selected.key
+          ? {
+              ...prev,
+              status: 'in_progress',
+              raw: { ...prev.raw, progress: 'in_progress' },
+            }
+          : prev,
+      );
+    } catch (err) {
+      setPre10ActionError(err instanceof Error ? err.message : 'Could not start meeting.');
+    } finally {
+      setStartMeetingBusy(false);
+    }
+  };
+
+  const endPre10Meeting = async () => {
+    if (!selected || !sessionId || endMeetingBusy) return;
+    if (!canShowEndMeetingForBoardMeeting(selected.raw)) return;
+    const meetingId = selected.id ?? selected.raw.id;
+    if (meetingId == null) {
+      setPre10ActionError('This meeting has no id to end.');
+      return;
+    }
+    if (!window.confirm('End this Pre 10% meeting now? Mark it successful only when the visit is done.')) {
+      return;
+    }
+    setPre10ActionError(null);
+    setEndMeetingBusy(true);
+    try {
+      const res = await fetch(`${apiBase}/api/meetings/${meetingId}/end`, {
+        method: 'POST',
+        headers: buildAuthHeaders(sessionId),
+        credentials: 'include',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.message || 'Could not end this meeting.');
+      }
+      await loadMeetings();
+      setSelected((prev) =>
+        prev && prev.key === selected.key
+          ? {
+              ...prev,
+              status: 'completed',
+              raw: { ...prev.raw, progress: 'completed' },
+            }
+          : prev,
+      );
+    } catch (err) {
+      setPre10ActionError(err instanceof Error ? err.message : 'Could not end meeting.');
+    } finally {
+      setEndMeetingBusy(false);
+    }
+  };
 
   return (
     <div className={styles.root}>
@@ -1247,7 +1520,7 @@ export default function MeetingManagementView() {
               <button
                 type="button"
               className={styles.rangeBtn}
-              data-on={designerFilter !== '' || salesFilter !== '' || branchFilter !== '' || statusFilters.length > 0}
+              data-on={designerFilter !== '' || salesFilter !== '' || branchFilter !== ''}
               data-open={filterOpen}
               aria-expanded={filterOpen}
               aria-haspopup="dialog"
@@ -1275,22 +1548,6 @@ export default function MeetingManagementView() {
                   <label>
                     Branch / EC
                     <CustomSelect value={branchFilter} onChange={setBranchFilter} options={branchOptions} placeholder="All branches" buttonClassName={styles.filterSelect} />
-                  </label>
-                  <label>
-                    Status
-                    <span className={styles.statusPicks}>
-                      {statusChoices.map((status) => (
-                        <button
-                          key={status.id}
-                          type="button"
-                          data-on={statusFilters.includes(status.id)}
-                          aria-pressed={statusFilters.includes(status.id)}
-                          onClick={() => toggleStatus(status.id)}
-                        >
-                          {status.label}
-                        </button>
-                      ))}
-                    </span>
                   </label>
                 </div>
               </div>
@@ -1383,7 +1640,12 @@ export default function MeetingManagementView() {
         <button type="button" className={styles.stat} data-static="false" data-on={quoteOnly} aria-pressed={quoteOnly} onClick={toggleQuotes}>
           <span className={styles.statLabel}>Quotes sent</span>
           <span className={styles.statValue}>{loading ? '—' : stats.quotes}</span>
-          <span className={styles.statSub}>{'\u00a0'}</span>
+          <span className={styles.statSub}>Shared to CRM</span>
+        </button>
+        <button type="button" className={styles.stat} data-static="false" data-on={quoteDelayedOnly} aria-pressed={quoteDelayedOnly} onClick={toggleQuoteDelayed}>
+          <span className={styles.statLabel}>Quote delayed</span>
+          <span className={styles.statValue}>{loading ? '—' : stats.quoteDelayed}</span>
+          <span className={styles.statSub}>Still open after 4 hours</span>
         </button>
       </section>
 
@@ -1429,15 +1691,94 @@ export default function MeetingManagementView() {
                 type="search"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Customer, lead ID, designer, sales, phone"
+                placeholder="Customer, lead ID, designer, sales"
               />
             </label>
-            <div className={`${styles.seg} ${styles.typeSeg}`} role="group" aria-label="Meeting type">
-              {TYPE_FILTERS.map((type) => (
-                <button key={type.id} type="button" data-on={typeFilter === type.id} onClick={() => setTypeFilter(type.id)}>
+            <div
+              className={`${styles.seg} ${styles.typeSeg} ${styles.statusSeg}`}
+              data-open={statusOpen}
+              role="group"
+              aria-label="Meeting status"
+              onMouseEnter={() => setStatusOpen(true)}
+              onMouseLeave={() => setStatusOpen(false)}
+              onFocus={() => setStatusOpen(true)}
+              onBlur={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setStatusOpen(false);
+              }}
+            >
+              <button
+                type="button"
+                className={styles.statusClosed}
+                data-on="true"
+                data-closed-only="true"
+                tabIndex={statusOpen ? -1 : 0}
+                aria-label={`Status filter: ${statusClosedLabel}`}
+                onClick={() => setStatusOpen(true)}
+              >
+                {statusClosedLabel}
+              </button>
+              <button
+                type="button"
+                data-on={statusFilters.length === 0}
+                data-open-only="true"
+                data-index={0}
+                aria-pressed={statusFilters.length === 0}
+                tabIndex={statusOpen ? 0 : -1}
+                onClick={() => {
+                  setStatusFilters([]);
+                  window.setTimeout(() => setStatusOpen(false), 260);
+                }}
+              >
+                All
+              </button>
+              {statusChoices.map((status, index) => (
+                <button
+                  key={status.id}
+                  type="button"
+                  data-on={statusFilters.includes(status.id)}
+                  data-open-only="true"
+                  data-index={index + 1}
+                  aria-pressed={statusFilters.includes(status.id)}
+                  tabIndex={statusOpen ? 0 : -1}
+                  onClick={() => {
+                    toggleStatus(status.id);
+                    window.setTimeout(() => setStatusOpen(false), 260);
+                  }}
+                >
+                  {status.label}
+                </button>
+              ))}
+              <span className={styles.typeCaret} aria-hidden="true">▾</span>
+            </div>
+            <div
+              className={`${styles.seg} ${styles.typeSeg}`}
+              data-open={typeOpen}
+              role="group"
+              aria-label="Meeting type"
+              onMouseEnter={() => setTypeOpen(true)}
+              onMouseLeave={() => setTypeOpen(false)}
+              onFocus={() => setTypeOpen(true)}
+              onBlur={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setTypeOpen(false);
+              }}
+            >
+              {TYPE_FILTERS.map((type, index) => (
+                <button
+                  key={type.id}
+                  type="button"
+                  data-on={typeFilter === type.id}
+                  data-index={index}
+                  aria-pressed={typeFilter === type.id}
+                  tabIndex={typeOpen || typeFilter === type.id ? 0 : -1}
+                  onClick={() => {
+                    setTypeFilter(type.id);
+                    window.setTimeout(() => setTypeOpen(false), 260);
+                  }}
+                >
                   {type.label}
                 </button>
               ))}
+              <span className={styles.typeCaret} aria-hidden="true">▾</span>
             </div>
                               <button
                                 type="button"
@@ -1465,7 +1806,7 @@ export default function MeetingManagementView() {
               <p>
                 {mapped.length === 0
                   ? 'No meetings yet.'
-                  : query.trim() || typeFilter !== 'all' || designerFilter || salesFilter || branchFilter || statusFilters.length > 0 || quoteOnly || datePreset !== 'month'
+                  : query.trim() || typeFilter !== 'all' || designerFilter || salesFilter || branchFilter || statusFilters.length > 0 || quoteOnly || quoteDelayedOnly || datePreset !== 'month'
                     ? 'No meetings match these filters.'
                     : 'No meetings in this month.'}
               </p>
@@ -1499,12 +1840,18 @@ export default function MeetingManagementView() {
         </div>
               <nav className={styles.pager} aria-label="Meeting pages">
                   <span className={styles.pagerMeta}>
-                    {currentPage?.kind === 'today' ? (
+                    {pageIsTodayOnly ? (
                       <>Today · {shownOnPage.toLocaleString('en-IN')}</>
                     ) : (
-                      <>{restBefore + 1}–{restBefore + shownOnPage} of {restTotal.toLocaleString('en-IN')}</>
+                      <>{listTotal === 0 ? 0 : shownBefore + 1}–{shownBefore + shownOnPage} of {listTotal.toLocaleString('en-IN')}</>
                     )}
-                    <span className={styles.pagerHint}>{currentPage?.kind === 'today' ? 'Only today' : 'Other days'}</span>
+                    <span className={styles.pagerHint}>
+                      {pageIsTodayOnly
+                        ? 'Only today'
+                        : currentPage?.slices.some((slice) => slice.day === today)
+                          ? 'Today and upcoming'
+                          : 'Other days'}
+                    </span>
                   </span>
                   <div className={styles.pagerBtns}>
                     {pageCount > 1 ? (
@@ -1577,7 +1924,7 @@ export default function MeetingManagementView() {
                 <span className={styles.sub}>
                   {selected.personal
                     ? `${personLabel(selected.designer)} · ${approvalLabel(selected.personalApproval)}`
-                    : `${selected.phone || 'No phone'} · Lead ${selected.leadId}`}
+                    : `Lead ${selected.leadId}`}
                 </span>
                 <div className={styles.tags}>
                   {selected.personal ? (
@@ -1610,8 +1957,13 @@ export default function MeetingManagementView() {
                           ? 'This meeting was cancelled'
                           : 'This meeting was abandoned'}
                   </p>
-                  {selected.status === 'cancelled' && selected.raw.cancelReason ? (
-                    <p className={styles.noteSub}>{selected.raw.cancelReason}</p>
+                  {selected.status === 'abandoned' ? (
+                    <p className={styles.noteSub}>
+                      The slot end plus 2 hours passed and this meeting was never started.
+                    </p>
+                  ) : null}
+                  {(selected.raw.reason || selected.raw.cancelReason) ? (
+                    <p className={styles.noteSub}>{selected.raw.reason || selected.raw.cancelReason}</p>
                           ) : null}
                   {selected.status === 'cancelled' && selected.raw.cancelFiles?.length ? (
                     <ul className={styles.attachList}>
@@ -1682,6 +2034,12 @@ export default function MeetingManagementView() {
                   <span className={styles.metaLabel}>{selected.personal ? 'Approval' : 'Lead ID'}</span>
                   <span className={styles.metaValue}>{selected.personal ? approvalLabel(selected.personalApproval) : selected.leadId}</span>
                 </div>
+                {!selected.personal && (selected.raw.reason || selected.raw.cancelReason) ? (
+                  <div className={`${styles.metaItem} ${styles.metaItemWide}`}>
+                    <span className={styles.metaLabel}>Reason</span>
+                    <span className={styles.metaValue}>{selected.raw.reason || selected.raw.cancelReason}</span>
+                  </div>
+                ) : null}
               </div>
               {selected.personal ? null : (
               <div className={styles.leadQuote} data-empty={selected.quote == null}>
@@ -1693,6 +2051,52 @@ export default function MeetingManagementView() {
         )}
       </div>
               )}
+              {(() => {
+                if (selected.personal || selected.typeKey !== 'pre_10') return null;
+                const fromList = Array.isArray(panelLead?.floorPlans)
+                  ? panelLead.floorPlans
+                      .map((item, i) => ({
+                        index: typeof item?.index === 'number' ? item.index : i,
+                        filename: String(item?.filename || '').trim() || `Floor plan ${i + 1}`,
+                        publicUrl: String(item?.publicUrl || '').trim(),
+                      }))
+                      .filter((item) => item.publicUrl)
+                      .sort((a, b) => a.index - b.index)
+                  : [];
+                const plans =
+                  fromList.length > 0
+                    ? fromList
+                    : panelLead?.floorPlanPublicLink?.trim()
+                      ? [{ index: 0, filename: 'Floor plan', publicUrl: panelLead.floorPlanPublicLink.trim() }]
+                      : [];
+                if (!plans.length) return null;
+                return (
+                  <div className={styles.floorPlansBlock}>
+                    <span className={styles.metaLabel}>
+                      Floor plan{plans.length > 1 ? 's' : ''}
+                    </span>
+                    <ul className={styles.floorPlanList}>
+                      {plans.map((plan) => (
+                        <li key={`${plan.index}-${plan.publicUrl}`}>
+                          <a
+                            href={plan.publicUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className={styles.floorPlanLink}
+                            title={plan.filename}
+                          >
+                            <span>{plan.filename}</span>
+                            <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true">
+                              <path fill="currentColor" d="M11 3a1 1 0 1 0 0 2h2.586l-6.293 6.293a1 1 0 1 0 1.414 1.414L15 6.414V9a1 1 0 1 0 2 0V4a1 1 0 0 0-1-1h-5Z" />
+                              <path fill="currentColor" d="M5 5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-3a1 1 0 1 0-2 0v3H5V7h3a1 1 0 0 0 0-2H5Z" />
+                            </svg>
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                );
+              })()}
             </div>
             {canAct(selected, today, nowMinutes) ? (
               <div className={styles.foot}>
@@ -1709,16 +2113,119 @@ export default function MeetingManagementView() {
                   Personal time is booked by the designer. Change or cancel it from Personal Appointments.
                 </p>
               </div>
-            ) : (selected.raw.source || '').toLowerCase() === 'crm' && (selected.status === 'scheduled' || selected.status === 'in_progress') ? (
-              <div className={styles.foot}>
-                <p className={styles.crmHint}>
-                  Pre 10% meetings come from CRM, so reschedule and cancel stay there. First cut, material selection, and design sign off can be changed here.
-                </p>
+            ) : selected.typeKey === 'pre_10' && (selected.status === 'scheduled' || selected.status === 'in_progress' || selected.status === 'completed' || selected.status === 'abandoned') ? (
+              <div className={`${styles.foot} ${styles.pre10Foot}`}>
+                <div
+                  className={styles.pre10ActionCard}
+                  data-state={showPre10End ? 'live' : showPre10Start ? 'ready' : 'locked'}
+                >
+                  <div className={styles.pre10ActionShine} aria-hidden="true" />
+                  <div className={styles.pre10ActionTop}>
+                    <span className={styles.pre10Badge}>
+                      <span className={styles.pre10BadgeDot} aria-hidden="true" />
+                      {showPre10End ? 'In progress' : showPre10Start ? 'Ready now' : 'Pre 10%'}
+                    </span>
+                    {selected.day === today ? (
+                      <span className={styles.pre10TodayChip}>Today</span>
+                    ) : null}
+                  </div>
+                  <div className={styles.pre10ActionBody}>
+                    <p className={styles.pre10ActionTitle}>
+                      {showPre10End
+                        ? 'Finish this visit when you’re done'
+                        : showPre10Start
+                          ? selected.status === 'in_progress'
+                            ? 'Continue the meeting'
+                            : 'Ready to begin?'
+                          : 'Start meeting locked'}
+                    </p>
+                    <p className={styles.pre10ActionSub}>
+                      {showPre10Start || showPre10End
+                        ? showPre10End
+                          ? 'Open the wizard to keep going, or end the meeting once the visit is complete.'
+                          : 'Opens the Pre 10% meeting wizard for this lead — same rules as the dashboard.'
+                        : pre10StartBlockMessage || 'Same Pre 10% dashboard rules apply here.'}
+                    </p>
+                  </div>
+                  {(showPre10Start || showPre10End) ? (
+                    <div
+                      className={`${styles.pre10ActionRow}${showPre10Start && showPre10End ? ` ${styles.pre10ActionRowSplit}` : ''}`}
+                    >
+                      {showPre10Start ? (
+                        <button
+                          type="button"
+                          className={`${styles.actBtn} ${styles.actStart}`}
+                          disabled={startMeetingBusy || panelLeadLoading}
+                          onClick={() => void openPre10StartMeeting()}
+                        >
+                          <svg className={styles.pre10BtnIcon} viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+                            <path fill="currentColor" d="M6.5 4.8c0-.7.8-1.1 1.4-.7l7.2 4.7c.6.4.6 1.2 0 1.5l-7.2 4.7c-.6.4-1.4 0-1.4-.7V4.8Z" />
+                          </svg>
+                          {startMeetingBusy
+                            ? 'Opening…'
+                            : selected.status === 'in_progress'
+                              ? 'Continue meeting'
+                              : 'Start meeting'}
+                        </button>
+                      ) : null}
+                      {showPre10End ? (
+                        <button
+                          type="button"
+                          className={`${styles.actBtn} ${styles.actEnd}`}
+                          disabled={endMeetingBusy}
+                          onClick={() => void endPre10Meeting()}
+                        >
+                          <svg className={styles.pre10BtnIcon} viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+                            <rect x="5" y="5" width="10" height="10" rx="2" fill="currentColor" />
+                          </svg>
+                          {endMeetingBusy ? 'Ending…' : 'End meeting'}
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {pre10ActionError ? <p className={styles.pre10ActionError}>{pre10ActionError}</p> : null}
+                </div>
               </div>
             ) : null}
           </aside>
         </>
       ) : null}
+
+      <MeetingWizSessionOverlay
+        open={meetingWizOpen}
+        lead={meetingWizLead}
+        onLeadUpdated={(updated) => {
+          setMeetingWizLead(updated);
+          setPanelLead(updated);
+        }}
+        onClose={() => {
+          setMeetingWizOpen(false);
+          if (meetingWizLead) setPanelLead(meetingWizLead);
+          setMeetingWizLead(null);
+          void loadMeetings();
+          // Refresh history so “wizard completed” edge case matches the dashboard.
+          if (selected?.leadId && sessionId && selected.typeKey === 'pre_10' && !selected.personal) {
+            const leadId = selected.leadId;
+            fetch(`${apiBase}/api/leads/${leadId}/history`, {
+              headers: buildAuthHeaders(sessionId),
+              credentials: 'include',
+            })
+              .then(async (res) => {
+                const data = await res.json().catch(() => null);
+                if (!res.ok) return;
+                const events = Array.isArray(data)
+                  ? data
+                  : Array.isArray(data?.events)
+                    ? data.events
+                    : Array.isArray(data?.history)
+                      ? data.history
+                      : [];
+                setPanelHistory(events);
+              })
+              .catch(() => undefined);
+          }
+        }}
+      />
 
       {actionMeeting && actionKind ? (
         <div className={styles.modal} onClick={(event) => { if (event.target === event.currentTarget) closeAction(); }}>
@@ -1766,6 +2273,16 @@ export default function MeetingManagementView() {
                     <span className={styles.slotPickHint}>{nextStartMin == null ? 'Select' : 'Change'}</span>
                   </button>
                 </div>
+                <label className={styles.reasonField}>
+                  Reason
+                  <textarea
+                    value={actionReason}
+                    onChange={(event) => { setActionReason(event.target.value); setActionError(null); }}
+                    rows={3}
+                    maxLength={500}
+                    placeholder="Why is this meeting being rescheduled?"
+                  />
+                </label>
               </div>
             ) : null}
             {actionStep === 'form' && actionKind === 'cancel' ? (
@@ -1778,8 +2295,8 @@ export default function MeetingManagementView() {
                 <label className={styles.reasonField}>
                   Reason
                   <textarea
-                    value={cancelReason}
-                    onChange={(event) => { setCancelReason(event.target.value); setActionError(null); }}
+                    value={actionReason}
+                    onChange={(event) => { setActionReason(event.target.value); setActionError(null); }}
                     rows={3}
                     maxLength={500}
                     placeholder="Why is this meeting cancelled?"
@@ -1824,18 +2341,22 @@ export default function MeetingManagementView() {
               </>
             ) : null}
             {actionStep === 'confirm' && actionKind === 'reschedule' && nextStartMin != null ? (
-              <div className={styles.move}>
-                <div>
-                  <span className={styles.metaLabel}>Now</span>
-                  <strong>{formatFullDate(actionMeeting.meetingDate)}</strong>
-                  <span className={styles.moveTime}>{ownSlotLabel(actionMeeting)}</span>
+              <div className={styles.cancelReview}>
+                <div className={styles.move}>
+                  <div>
+                    <span className={styles.metaLabel}>Now</span>
+                    <strong>{formatFullDate(actionMeeting.meetingDate)}</strong>
+                    <span className={styles.moveTime}>{ownSlotLabel(actionMeeting)}</span>
+                  </div>
+                  <span className={styles.moveArrow} aria-hidden>→</span>
+                  <div>
+                    <span className={styles.metaLabel}>New slot</span>
+                    <strong>{formatFullDate(nextDate)}</strong>
+                    <span className={styles.moveTime}>{slotRangeLabel(nextStartMin)}</span>
+                  </div>
                 </div>
-                <span className={styles.moveArrow} aria-hidden>→</span>
-                <div>
-                  <span className={styles.metaLabel}>New slot</span>
-                  <strong>{formatFullDate(nextDate)}</strong>
-                  <span className={styles.moveTime}>{slotRangeLabel(nextStartMin)}</span>
-                </div>
+                <p>This meeting will be moved to the new slot.</p>
+                <blockquote>{actionReason.trim()}</blockquote>
               </div>
             ) : null}
             {actionStep === 'confirm' && actionKind === 'cancel' ? (
@@ -1846,7 +2367,7 @@ export default function MeetingManagementView() {
                   <em>{ownSlotLabel(actionMeeting)}</em>
                 </div>
                 <p>This meeting will be marked cancelled.</p>
-                <blockquote>{cancelReason.trim()}</blockquote>
+                <blockquote>{actionReason.trim()}</blockquote>
                 {cancelFiles.length > 0 ? (
                   <ul className={styles.fileNames}>
                     {cancelFiles.map((file) => (
@@ -1948,7 +2469,7 @@ function GroupRows({
             }
           }}
         >
-          <td>
+          <td className={styles.customerCell}>
             <div className={styles.person}>
               <Avatar name={meeting.customer} />
               <div className={styles.personText}>
@@ -1959,33 +2480,37 @@ function GroupRows({
                     {meeting.overlapsClient ? ' · overlaps a client meeting' : ''}
                     {meeting.insideLeave ? ' · inside full-day leave' : ''}
                   </span>
-                ) : meeting.phone ? (
-                  <span className={styles.phone}>{meeting.phone}</span>
                 ) : null}
               </div>
             </div>
           </td>
-          <td>{personLabel(meeting.designer)}</td>
-          <td>{personLabel(meeting.sales)}</td>
+          <td className={styles.nameCell}>
+            <span className={styles.cellText} title={personLabel(meeting.designer)}>{personLabel(meeting.designer)}</span>
+          </td>
+          <td className={styles.nameCell}>
+            <span className={styles.cellText} title={personLabel(meeting.sales)}>{personLabel(meeting.sales)}</span>
+          </td>
           <td className={styles.meetCell}>
             <div className={styles.meetBox}>
-              {meeting.personal ? (
-                <span className={styles.modeTag} data-personal={meeting.personalKind || 'block'}>
-                  {meeting.personalKind === 'full_day' ? 'Leave' : 'Personal'}
-                </span>
-              ) : (
-                <ModeTag mode={meeting.mode} />
-              )}
-              <span className={styles.kind}>{meeting.kind}</span>
+              <div className={styles.meetTags}>
+                {meeting.personal ? (
+                  <span className={styles.modeTag} data-personal={meeting.personalKind || 'block'}>
+                    {meeting.personalKind === 'full_day' ? 'Leave' : 'Personal'}
+                  </span>
+                ) : (
+                  <ModeTag mode={meeting.mode} />
+                )}
+                <span className={styles.kind}>{meeting.kind}</span>
+              </div>
               <span className={styles.venue}>{meeting.venue}</span>
             </div>
           </td>
-          <td>
+          <td className={styles.whenCell}>
             <div className={styles.whenTime}>{formatClock(meeting.minutes)}</div>
             <div className={styles.whenDay}>{dayHeading(meeting.day, today)}</div>
           </td>
-          <td><StatusPill status={meeting.status} /></td>
-          <td>
+          <td className={styles.statusCell}><StatusPill status={meeting.status} /></td>
+          <td className={styles.quoteCell}>
             {meeting.personal ? (
               <span className={styles.moneyNone}>Personal</span>
             ) : meeting.quote != null ? (
@@ -1994,7 +2519,7 @@ function GroupRows({
               <span className={styles.moneyNone}>No quote</span>
             )}
           </td>
-          <td><ChevronIcon /></td>
+          <td className={styles.chevronCell}><ChevronIcon /></td>
         </tr>
       ))}
     </>

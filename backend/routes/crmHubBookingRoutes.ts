@@ -17,6 +17,10 @@ import {
   type ConvertBookingFinanceResult,
   type FinanceSection,
 } from "./crmEasebuzzAutoFinance";
+import {
+  floorPlanPersistFields,
+  normalizeFloorPlansFromCrmBody,
+} from "../floorPlans";
 
 const HUB_PROOFS_DIR = path.join(process.cwd(), "uploads", "hub-payment-proofs");
 
@@ -711,13 +715,8 @@ function buildCrmHubPayload(body: HubLeadBody, leadType: string, leadIdNum: numb
     discoveryIn.propertyLocation,
   );
   const meetingType = pickStr(body.meetingType, body.meeting_type, connectionIn.meetingType);
-  const floorPlanPublicLink = pickStr(
-    body.floorPlanPublicLink,
-    body.floorPlanUrl,
-    body.floor_plan_public_link,
-    connectionIn.floorPlanPublicLink,
-    connectionIn.floorPlanUrl,
-  );
+  const floorPlansNorm = normalizeFloorPlansFromCrmBody(body);
+  const floorPersist = floorPlanPersistFields(floorPlansNorm);
   const salesExecutive = pickStr(body.salesExecutive, body.sales_executive);
   const salesExecutiveEmail = pickStr(body.salesExecutiveEmail, body.sales_executive_email);
   const pincode = pickStr(body.pincode);
@@ -739,11 +738,10 @@ function buildCrmHubPayload(body: HubLeadBody, leadType: string, leadIdNum: numb
   };
 
   const connection = {
-    floorPlanPublicLink: floorPlanPublicLink || null,
-    floorPlanUrl: floorPlanPublicLink || null,
     meetingType: meetingType || null,
     designerName: designerName || null,
     configurationScope: scopeSummary,
+    ...floorPersist,
   };
 
   return {
@@ -776,9 +774,7 @@ function buildCrmHubPayload(body: HubLeadBody, leadType: string, leadIdNum: numb
       ...(bookingType ? { bookingType, booking_type: bookingType } : {}),
       ...(propertyLocation ? { propertyLocation, property_location: propertyLocation } : {}),
       ...(meetingType ? { meetingType, meeting_type: meetingType } : {}),
-      ...(floorPlanPublicLink
-        ? { floorPlanPublicLink, floorPlanUrl: floorPlanPublicLink }
-        : {}),
+      ...floorPersist,
       ...(salesExecutive ? { sales_executive: salesExecutive } : {}),
       ...(salesExecutiveEmail ? { sales_executive_email: salesExecutiveEmail } : {}),
     },
@@ -788,8 +784,7 @@ function buildCrmHubPayload(body: HubLeadBody, leadType: string, leadIdNum: numb
     },
     discovery,
     connection,
-    floorPlanPublicLink: floorPlanPublicLink || null,
-    floorPlanUrl: floorPlanPublicLink || null,
+    ...floorPersist,
     meetingType: meetingType || null,
     budget: budget || null,
     language: language || null,

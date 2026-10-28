@@ -10,8 +10,8 @@ import type { QuoteCategoryDiscountSavePayload } from '@/app/quote/QuoteDiscount
 import type { DiscountCapProfile } from '@/app/quote/quoteDiscountLimits';
 import {
   buildQuoteDiscountBreakdown,
+  resolveHubPayableDiscount,
   resolveTotalDiscount,
-  sumHubEditableDiscountAmounts,
   type QuoteDiscountBreakdownRow,
 } from '@/app/quote/quoteDiscountBreakdown';
 import type { QuoteRoom } from '@/app/quote/quoteTypes';
@@ -289,16 +289,9 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
   const pickedTotalPrice = asNum(pick('totalPrice'));
   const pickedFeesExplicit = asNum(pick('designAndManagementFees'));
   const discount = asNum(pick('discount', 'discountAmount'));
-  const hubCategoryAmount = asNum(pick('hubCategoryDiscountAmount'));
-  const hubAdditionalAmount = Math.max(0, asNum(pick('hubAdditionalDiscountAmount')) ?? 0);
   const breakdownSource = { ...rootTop, ...root, ...quoteObj };
   const discountBreakdown = buildQuoteDiscountBreakdown(breakdownSource, optionDetailsRaw, summaryRows);
-  const hubFromRows = sumHubEditableDiscountAmounts(discountBreakdown);
-  const hubStored =
-    hubCategoryAmount != null || hubAdditionalAmount > 0
-      ? Math.max(0, (hubCategoryAmount ?? 0) + hubAdditionalAmount)
-      : 0;
-  const hubDisc = Math.max(hubStored, hubFromRows);
+  const hubDisc = resolveHubPayableDiscount(breakdownSource, discountBreakdown);
   const disc = hubDisc > 0 ? hubDisc : discount || 0;
 
   let interiorProjectAmount: number | null;

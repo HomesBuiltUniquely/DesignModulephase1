@@ -15,6 +15,10 @@ import {
 import AppSwitcher from "./AppSwitcher";
 import DesignSidebar from "./DesignSidebar";
 import { WorkspaceFilterProvider, useWorkspaceFilters } from "./WorkspaceFilters";
+import {
+  DashboardQueueCacheProvider,
+  useDashboardQueueCache,
+} from "./DashboardQueueCache";
 import { SideDashboard, SideDashboardStatus } from "../Enums/Enums";
 
 const BARE_PREFIXES = ["/login", "/auth", "/quote", "/MeetingWiz", "/mail-templates", "/newEmail", "/receipt"];
@@ -121,9 +125,28 @@ function initials(name?: string | null, email?: string | null) {
   return email?.trim().slice(0, 2).toUpperCase() || "?";
 }
 
+function LogoutButton() {
+  const { logoutAndRedirectToLogin } = useAuth();
+  const { clearAllWorkspaceFilters } = useWorkspaceFilters();
+  const { clearQueueCache } = useDashboardQueueCache();
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        clearAllWorkspaceFilters();
+        clearQueueCache();
+        void logoutAndRedirectToLogin();
+      }}
+      className="text-sm font-semibold text-[var(--brand-primary)]"
+    >
+      Logout
+    </button>
+  );
+}
+
 export default function DesignAppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { user, loading, logoutAndRedirectToLogin, sessionId } = useAuth();
+  const { user, loading, sessionId } = useAuth();
   const [appointmentOpen, setAppointmentOpen] = useState(false);
   const [appointmentToast, setAppointmentToast] = useState<AppointmentSuccessPayload | null>(null);
   const [appointmentUnread, setAppointmentUnread] = useState(false);
@@ -198,6 +221,7 @@ export default function DesignAppShell({ children }: { children: React.ReactNode
 
   return (
     <WorkspaceFilterProvider>
+      <DashboardQueueCacheProvider>
       <div className="flex min-h-screen bg-[var(--background)] text-[var(--foreground)]">
         <DesignSidebar
           role={role}
@@ -239,13 +263,7 @@ export default function DesignAppShell({ children }: { children: React.ReactNode
                 {user.name} ({formatUserRoleLabel(user.role)})
               </span>
             </div>
-            <button
-              type="button"
-              onClick={() => void logoutAndRedirectToLogin()}
-              className="text-sm font-semibold text-[var(--brand-primary)]"
-            >
-              Logout
-            </button>
+            <LogoutButton />
             </div>
         </header>
         <div className="min-w-0 flex-1">{children}</div>
@@ -267,6 +285,7 @@ export default function DesignAppShell({ children }: { children: React.ReactNode
       {appointmentToast ? (
         <AppointmentSuccessToast payload={appointmentToast} onDismiss={() => setAppointmentToast(null)} />
       ) : null}
+      </DashboardQueueCacheProvider>
     </WorkspaceFilterProvider>
   );
 }

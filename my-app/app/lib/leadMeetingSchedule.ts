@@ -30,17 +30,20 @@ export function parseMeetingDateToIsoDay(raw: string | null | undefined): string
   return null;
 }
 
-export function todayIsoDay(): string {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+/** India calendar day — matches Meeting management / CRM slot day. */
+export function todayIsoDay(now = new Date()): string {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  return fmt.format(now);
 }
 
-export function isMeetingOnToday(isoDay: string | null | undefined): boolean {
+export function isMeetingOnToday(isoDay: string | null | undefined, today = todayIsoDay()): boolean {
   if (!isoDay) return false;
-  return isoDay === todayIsoDay();
+  return isoDay === today;
 }
 
 type HistoryEventLike = {
@@ -179,4 +182,123 @@ export function canShowStartMeetingButton(
   if (completedDay === scheduleDay) return false;
 
   return true;
+}
+
+/** Meeting-management board row fields used for Pre 10% Start / End gating. */
+export type BoardMeetingStartGate = {
+  meetingDate?: string | null;
+  source?: string | null;
+  meetingType?: string | null;
+  progress?: string | null;
+  meetingStatus?: string | null;
+  projectStage?: string | null;
+};
+
+/** Same Pre 10% / CRM bucket the meeting board uses. */
+export function isPre10CrmBoardMeeting(meeting: BoardMeetingStartGate | null | undefined): boolean {
+  if (!meeting) return false;
+  const source = (meeting.source || '').toLowerCase();
+  if (source === 'personal') return false;
+  if (source === 'crm') return true;
+  const key = (meeting.meetingType || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ');
+  return key === 'pre 10' || key === 'pre10' || key === 'crm appointment';
+}
+
+/** Align board slot date onto the lead so dashboard Start rules see “today” for this row. */
+export function alignLeadToBoardMeeting(
+  lead: LeadshipTypes,
+  meeting: BoardMeetingStartGate | null | undefined,
+): LeadshipTypes {
+  return {
+    ...lead,
+    appointmentDate: meeting?.meetingDate || lead.appointmentDate,
+    scheduledMeetingDate: meeting?.meetingDate || lead.scheduledMeetingDate,
+    // Keep the lead’s real stage (dashboard gate). Fill only when lead stage is empty.
+    projectStage: lead.projectStage || meeting?.projectStage || 'PRE_10',
+  };
+}
+
+/**
+ * Start Meeting on the meeting-detail side panel — identical gates to Pre 10% dashboard
+ * (`canShowStartMeetingButton`), plus board-row checks (Pre 10%/CRM, not cancelled /
+ * completed / abandoned, meeting day = today IST). Lead must be loaded; never flash open.
+ */
+export function canShowStartMeetingForBoardMeeting(
+  meeting: BoardMeetingStartGate | null | undefined,
+  lead?: LeadshipTypes | null,
+  historyEvents?: HistoryEventLike[] | null,
+  todayIso?: string,
+): boolean {
+  if (!isPre10CrmBoardMeeting(meeting)) return false;
+  if ((meeting?.meetingStatus || '').toLowerCase() === 'cancelled') return false;
+  const progress = (meeting?.progress || '').toLowerCase();
+  if (progress === 'completed' || progress === 'meeting_abandoned') return false;
+
+  const meetingDay = parseMeetingDateToIsoDay(meeting?.meetingDate);
+  const today = todayIso || todayIsoDay();
+  if (!isMeetingOnToday(meetingDay, today)) return false;
+
+  // Match dashboard: validate only when lead (+ optional history) is available.
+  if (!lead) return false;
+
+  return canShowStartMeetingButton(alignLeadToBoardMeeting(lead, meeting), historyEvents);
+}
+
+export type BoardStartMeetingBlockReason =
+  | 'loading'
+  | 'not_pre10'
+  | 'cancelled'
+  | 'completed'
+  | 'abandoned'
+  | 'future'
+  | 'past'
+  | 'no_lead'
+  | 'phase_passed'
+  | 'wiz_done'
+  | 'not_today'
+  | null;
+
+/** Why Start is hidden on the meeting-detail panel (null when Start is allowed). */
+export function getBoardStartMeetingBlockReason(
+  meeting: BoardMeetingStartGate | null | undefined,
+  lead: LeadshipTypes | null | undefined,
+  historyEvents: HistoryEventLike[] | null | undefined,
+  todayIso: string,
+  opts?: { loading?: boolean },
+): BoardStartMeetingBlockReason {
+  if (opts?.loading) return 'loading';
+  if (!isPre10CrmBoardMeeting(meeting)) return 'not_pre10';
+  if ((meeting?.meetingStatus || '').toLowerCase() === 'cancelled') return 'cancelled';
+
+  const progress = (meeting?.progress || '').toLowerCase();
+  if (progress === 'completed') return 'completed';
+  if (progress === 'meeting_abandoned') return 'abandoned';
+
+  const meetingDay = parseMeetingDateToIsoDay(meeting?.meetingDate);
+  if (!isMeetingOnToday(meetingDay, todayIso)) {
+    if (meetingDay && meetingDay > todayIso) return 'future';
+    if (meetingDay && meetingDay < todayIso) return 'past';
+    return 'not_today';
+  }
+
+  if (!lead) return 'no_lead';
+
+  const aligned = alignLeadToBoardMeeting(lead, meeting);
+  if (getPhaseBucket(aligned) !== 'Pre 10%') return 'phase_passed';
+
+  if (canShowStartMeetingButton(aligned, historyEvents)) return null;
+  return 'wiz_done';
+}
+
+/** End Meeting after the CRM meeting was started (in progress). Not today-gated. */
+export function canShowEndMeetingForBoardMeeting(
+  meeting: BoardMeetingStartGate | null | undefined,
+): boolean {
+  if (!isPre10CrmBoardMeeting(meeting)) return false;
+  if ((meeting?.meetingStatus || '').toLowerCase() === 'cancelled') return false;
+  return (meeting?.progress || '').toLowerCase() === 'in_progress';
 }

@@ -26,6 +26,15 @@ export interface EmailConfigScope {
   rooms?: EmailConfigScopeRoom[];
 }
 
+/** Non-zero discount rows for the welcome mail (quote UI parity). */
+export type EmailDiscountRow = {
+  label: string;
+  originalPrice?: string;
+  finalPrice: string;
+  discountPct?: string;
+  kind: 'category' | 'additional' | 'total';
+};
+
 export interface MailLoopChainInitiateEmailProps {
   customerName?: string;
   projectId?: string;
@@ -50,6 +59,8 @@ export interface MailLoopChainInitiateEmailProps {
   specialOffer?: string;
   customCommitments?: string;
   quotationLink?: string;
+  /** Non-zero Hub/Prolance discount rows — omit section when empty */
+  discountBreakdown?: EmailDiscountRow[];
   /** Full Config scope — basic data from the View modal */
   configScope?: EmailConfigScope | null;
 }
@@ -260,6 +271,7 @@ export default function MailLoopChainInitiateEmail({
   specialOffer = '',
   customCommitments = '',
   quotationLink = '',
+  discountBreakdown = [],
   configScope = null,
 }: MailLoopChainInitiateEmailProps) {
   const overviewItems = [
@@ -357,6 +369,88 @@ export default function MailLoopChainInitiateEmail({
 
         <SectionLabel>Offer confirmed</SectionLabel>
         <OfferCards items={offerItems} />
+
+        {discountBreakdown.length > 0 ? (
+          <>
+            <Hr className="border-0 border-t border-neutral-lightGrey my-7" />
+            <SectionLabel>Discount breakdown</SectionLabel>
+            <Section
+              style={{
+                border: '1px solid #e5e7eb',
+                borderRadius: '8px',
+                overflow: 'hidden',
+                backgroundColor: '#fafafa',
+              }}
+            >
+              {discountBreakdown.map((row, idx) => {
+                const isTotal = row.kind === 'total';
+                const isLast = idx === discountBreakdown.length - 1;
+                return (
+                  <Section
+                    key={`${row.kind}-${row.label}-${idx}`}
+                    style={{
+                      padding: '12px 16px',
+                      borderBottom: isLast ? 'none' : '1px solid #ece6df',
+                      backgroundColor: isTotal ? '#fff' : '#faf8f5',
+                    }}
+                  >
+                    <Row>
+                      <Column style={{ width: '42%', verticalAlign: 'middle' }}>
+                        <Text
+                          style={{
+                            margin: 0,
+                            fontSize: '13px',
+                            fontWeight: isTotal ? 600 : 700,
+                            color: isTotal ? '#6b7280' : '#1f2937',
+                            fontFamily: 'sans-serif',
+                          }}
+                        >
+                          {row.label}
+                        </Text>
+                      </Column>
+                      <Column style={{ width: '58%', verticalAlign: 'middle', textAlign: 'right' }}>
+                        {row.kind === 'category' ? (
+                          <Text style={{ margin: 0, fontSize: '13px', fontFamily: 'sans-serif' }}>
+                            {row.originalPrice ? (
+                              <span
+                                style={{
+                                  color: '#9a928c',
+                                  textDecoration: 'line-through',
+                                  marginRight: '10px',
+                                }}
+                              >
+                                {row.originalPrice}
+                              </span>
+                            ) : null}
+                            <span style={{ fontWeight: 700, color: '#1f2937', marginRight: '10px' }}>
+                              {row.finalPrice}
+                            </span>
+                            {row.discountPct ? (
+                              <span style={{ fontWeight: 700, color: '#c1272d' }}>{row.discountPct}</span>
+                            ) : null}
+                          </Text>
+                        ) : (
+                          <Text
+                            style={{
+                              margin: 0,
+                              fontSize: '13px',
+                              fontWeight: 700,
+                              color: '#c1272d',
+                              fontFamily: 'sans-serif',
+                              fontVariantNumeric: 'tabular-nums',
+                            }}
+                          >
+                            {row.kind === 'total' ? `- ${row.finalPrice}` : row.finalPrice}
+                          </Text>
+                        )}
+                      </Column>
+                    </Row>
+                  </Section>
+                );
+              })}
+            </Section>
+          </>
+        ) : null}
 
         {showSpecialDeclaration && (
           <>

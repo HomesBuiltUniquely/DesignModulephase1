@@ -3,7 +3,7 @@
 import { SideDashboard, SideDashboardStatus } from "../Enums/Enums";
 import { useRouter } from "next/navigation";
 import { LeadshipTypes } from "./Types/Types";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { useAuth } from "../auth/AuthContext";
 import { getApiBase } from "@/app/lib/apiBase";
 import { BRANCH_OPTIONS } from "../constants/branches";
@@ -37,6 +37,7 @@ import {
     type AppointmentSuccessPayload,
 } from "./AppointmentSuccessToast";
 import { useWorkspaceFilters } from "./WorkspaceFilters";
+import { useDashboardQueueCache } from "./DashboardQueueCache";
 
 // Stage column: Active / Inactive (sales) / Cancelled (TDM admin DGM)
 function getStatusDisplay(stage: string): "Active" | "Inactive" | "Cancelled" {
@@ -286,8 +287,24 @@ type AssignableDesigner = {
 
 export default function Dashboard() {
     const { user, sessionId } = useAuth();
-    const [projects, setProjects] = useState<LeadshipTypes[]>([]);
-    const [dqcProjects, setDqcProjects] = useState<DqcQueueItem[]>([]);
+    const {
+        projects,
+        setProjects,
+        dqcProjects: dqcProjectsRaw,
+        setDqcProjects: setDqcProjectsRaw,
+        assignableDesigners,
+        setAssignableDesigners,
+        page,
+        setPage,
+        pageSize,
+        setPageSize,
+        queueFetched,
+        setQueueFetched,
+        designersFetched,
+        setDesignersFetched,
+    } = useDashboardQueueCache();
+    const dqcProjects = dqcProjectsRaw as DqcQueueItem[];
+    const setDqcProjects = setDqcProjectsRaw as unknown as Dispatch<SetStateAction<DqcQueueItem[]>>;
     const [uploadingId, setUploadingId] = useState<number | null>(null);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const targetLeadRef = useRef<number | null>(null);
@@ -307,8 +324,9 @@ export default function Dashboard() {
         (user?.role || "").toLowerCase() === "deputy_general_manager" ||
         (user?.role || "").toLowerCase() === "design_manager";
 
-    // Fetch leads queue (DQC users get dqc-queue; others get queue)
+    // Fetch leads queue once per session — keep cache when leaving a project and coming Back.
     useEffect(() => {
+        if (!sessionId || queueFetched) return;
         let cancelled = false;
         const headers: Record<string, string> = {};
         if (sessionId) headers["Authorization"] = `Bearer ${sessionId}`;
@@ -319,22 +337,24 @@ export default function Dashboard() {
                 if (cancelled) return;
                 if (isDqcUser && Array.isArray(data)) setDqcProjects([...data].sort((a, b) => b.id - a.id));
                 else if (!isDqcUser && Array.isArray(data)) setProjects([...data].sort((a, b) => b.id - a.id));
+                setQueueFetched(true);
             })
             .catch(() => {
                 if (!cancelled) {
                     if (isDqcUser) setDqcProjects([]);
                     else setProjects([]);
+                    setQueueFetched(true);
                 }
             });
         return () => { cancelled = true; };
-    }, [sessionId, isDqcUser]);
+    }, [sessionId, isDqcUser, queueFetched, setDqcProjects, setProjects, setQueueFetched]);
 
     // Branch/designer filters are shown for TDM/DM/admin/etc (not designer/DQC/MMT/finance/SPM).
     const showBranchDesignerFilters =
         !isDesigner && !isDqcUser && !isMmtUser && !isFinanceUser && !isSpmUser;
 
     useEffect(() => {
-        if (!sessionId) return;
+        if (!sessionId || designersFetched) return;
         // Assign/import + designer filter need the DB designer list (not names scraped from leads).
         if (!canImportLeads && !isAdmin && !showBranchDesignerFilters) return;
 
@@ -377,13 +397,24 @@ export default function Dashboard() {
             if (!rows) {
                 rows = await loadDesignersFallback();
             }
-            if (!cancelled) setAssignableDesigners(rows ?? []);
+            if (!cancelled) {
+                setAssignableDesigners(rows ?? []);
+                setDesignersFetched(true);
+            }
         })();
 
         return () => {
             cancelled = true;
         };
-    }, [canImportLeads, isAdmin, sessionId, showBranchDesignerFilters]);
+    }, [
+        canImportLeads,
+        designersFetched,
+        isAdmin,
+        sessionId,
+        setAssignableDesigners,
+        setDesignersFetched,
+        showBranchDesignerFilters,
+    ]);
 
     const onUploadClick = (e: React.MouseEvent, leadId: number) => {
         e.stopPropagation();
@@ -427,18 +458,25 @@ export default function Dashboard() {
         SideDashboard.Fifty_above,
         SideDashboard.In_Execution,
     ];
-    const { phase: isSelected, status: statusSelected, setPhase: setIsSelected, setStatus: setStatusSelected } = useWorkspaceFilters();
+    const {
+        phase: isSelected,
+        status: statusSelected,
+        setPhase: setIsSelected,
+        setStatus: setStatusSelected,
+        searchQuery,
+        branchFilter,
+        designerFilter,
+        milestoneFilter,
+        setSearchQuery,
+        setBranchFilter,
+        setDesignerFilter,
+        setMilestoneFilter,
+        hasQueueFilters,
+        clearQueueFilters,
+    } = useWorkspaceFilters();
     const [showDelayedOnly, setShowDelayedOnly] = useState(false);
-    const [searchQuery, setSearchQuery] = useState("");
-    const [milestoneFilter, setMilestoneFilter] = useState<string>("");
-    /** Branch (experience center); only applied for non-designers on the design queue */
-    const [branchFilter, setBranchFilter] = useState<string>("");
-    /** "" = all, "__unassigned__", or designer user id */
-    const [designerFilter, setDesignerFilter] = useState<string>("");
     const [filterDropdownOpen, setFilterDropdownOpen] = useState(false);
     const filterDropdownRef = useRef<HTMLDivElement>(null);
-    const [page, setPage] = useState(1);
-    const [pageSize, setPageSize] = useState(20);
     const [showImportPanel, setShowImportPanel] = useState(false);
     const [excelFile, setExcelFile] = useState<File | null>(null);
     const [previewToken, setPreviewToken] = useState<string | null>(null);
@@ -450,7 +488,6 @@ export default function Dashboard() {
     const [previewLoading, setPreviewLoading] = useState(false);
     const [importLoading, setImportLoading] = useState(false);
     const [importMessage, setImportMessage] = useState<string | null>(null);
-    const [assignableDesigners, setAssignableDesigners] = useState<AssignableDesigner[]>([]);
     const [selectedLeadIds, setSelectedLeadIds] = useState<number[]>([]);
     const [bulkDesignerId, setBulkDesignerId] = useState<number | "">("");
     const [bulkAssignLoading, setBulkAssignLoading] = useState(false);
@@ -640,9 +677,88 @@ export default function Dashboard() {
 
     const router = useRouter();
 
+    // Reset to page 1 only when filters actually change — not on remount after Back.
+    const queueFilterKey = [
+        isSelected,
+        statusSelected,
+        searchQuery,
+        milestoneFilter,
+        branchFilter,
+        designerFilter,
+        pageSize,
+        String(showDelayedOnly),
+    ].join("|");
+    const prevQueueFilterKeyRef = useRef<string | null>(null);
     useEffect(() => {
+        if (prevQueueFilterKeyRef.current === null) {
+            prevQueueFilterKeyRef.current = queueFilterKey;
+            return;
+        }
+        if (prevQueueFilterKeyRef.current === queueFilterKey) return;
+        prevQueueFilterKeyRef.current = queueFilterKey;
         setPage(1);
-    }, [isSelected, statusSelected, searchQuery, milestoneFilter, branchFilter, designerFilter, pageSize, showDelayedOnly]);
+    }, [queueFilterKey, setPage]);
+
+    const pageRef = useRef(page);
+    pageRef.current = page;
+
+    useEffect(() => {
+        if (typeof window === "undefined" || window.location.pathname !== "/") return;
+        try {
+            sessionStorage.setItem("design-dashboard-page", String(page));
+        } catch {
+            /* ignore */
+        }
+    }, [page]);
+
+    // Restore page + scroll after Back from project (do not save on unmount — that overwrites with 0).
+    useEffect(() => {
+        try {
+            const savedPage = Number(sessionStorage.getItem("design-dashboard-page") || "");
+            if (Number.isFinite(savedPage) && savedPage >= 1) {
+                setPage(savedPage);
+            }
+        } catch {
+            /* ignore */
+        }
+
+        const restoreScroll = () => {
+            try {
+                const top = Number(sessionStorage.getItem("design-dashboard-scroll-y") || "");
+                if (Number.isFinite(top) && top > 0) {
+                    window.scrollTo({ top, left: 0, behavior: "auto" });
+                }
+            } catch {
+                /* ignore */
+            }
+        };
+        restoreScroll();
+        const t0 = window.setTimeout(restoreScroll, 0);
+        const t1 = window.setTimeout(restoreScroll, 50);
+        const t2 = window.setTimeout(restoreScroll, 150);
+        const t3 = window.setTimeout(restoreScroll, 350);
+
+        const saveScroll = () => {
+            // Only while dashboard is the active route — avoids wiping position during leave.
+            if (window.location.pathname !== "/") return;
+            try {
+                sessionStorage.setItem("design-dashboard-scroll-y", String(window.scrollY || 0));
+                sessionStorage.setItem("design-dashboard-page", String(pageRef.current));
+            } catch {
+                /* ignore */
+            }
+        };
+        window.addEventListener("scroll", saveScroll, { passive: true });
+        return () => {
+            window.clearTimeout(t0);
+            window.clearTimeout(t1);
+            window.clearTimeout(t2);
+            window.clearTimeout(t3);
+            window.removeEventListener("scroll", saveScroll);
+        };
+        // Mount-only: restore place once when returning from a project.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     // Close filter dropdown when clicking outside
     useEffect(() => {
@@ -655,7 +771,18 @@ export default function Dashboard() {
         return () => document.removeEventListener("mousedown", handleClickOutside);
     }, []);
 
+    const rememberDashboardPlace = () => {
+        if (typeof window === "undefined") return;
+        try {
+            sessionStorage.setItem("design-dashboard-scroll-y", String(window.scrollY || 0));
+            sessionStorage.setItem("design-dashboard-page", String(page));
+        } catch {
+            /* ignore */
+        }
+    };
+
     const handleRouter = (rowOrId: LeadshipTypes | number, dqcStage?: "dqc1" | "dqc2") => {
+        rememberDashboardPlace();
         const id = typeof rowOrId === "number" ? rowOrId : rowOrId.id;
         const leadRow =
             typeof rowOrId === "number" ? projects.find((p) => p.id === rowOrId) ?? null : rowOrId;
@@ -1759,7 +1886,7 @@ export default function Dashboard() {
                                             {/* Search input with leading icon */}
                                             <div className="relative w-full md:w-72">
                                                 <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-                                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor" className="w-4 h-4 text-gray-400">
+                                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor" className={`w-4 h-4 ${searchQuery.trim() ? "text-[#EF0101]" : "text-gray-400"}`}>
                                                         <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.602 10.602Z" />
                                                     </svg>
                                                 </span>
@@ -1772,7 +1899,12 @@ export default function Dashboard() {
                                                     }
                                                     value={searchQuery}
                                                     onChange={(e) => setSearchQuery(e.target.value)}
-                                                    className="pl-9 pr-3 py-2 border border-gray-300 rounded-xl text-sm w-full bg-white focus:outline-none focus:ring-2 focus:ring-[#00B0ED]/30 focus:border-[#00B0ED] transition-all duration-150"
+                                                    data-active={searchQuery.trim() ? "true" : undefined}
+                                                    className={`pl-9 pr-3 py-2 rounded-xl text-sm w-full transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-[#EF0101]/25 focus:border-[#EF0101] ${
+                                                        searchQuery.trim()
+                                                            ? "border border-[#EF0101]/45 bg-[#EF0101]/10 text-[#32261C] font-semibold shadow-sm"
+                                                            : "border border-gray-300 bg-white"
+                                                    }`}
                                                     aria-label="Search projects"
                                                 />
                                             </div>
@@ -1784,6 +1916,11 @@ export default function Dashboard() {
                                                         onChange={(v) => setBranchFilter(v)}
                                                         placeholder="All branches"
                                                         minWidth="9rem"
+                                                        buttonClassName={`rounded-xl px-3 py-2 text-sm ${
+                                                            branchFilter
+                                                                ? "border border-[#EF0101]/45 bg-[#EF0101]/10 font-semibold"
+                                                                : "border border-gray-300 bg-white"
+                                                        }`}
                                                         options={[
                                                             { value: "", label: "All branches" },
                                                             ...BRANCH_OPTIONS.map((b) => ({ value: b, label: b })),
@@ -1794,6 +1931,11 @@ export default function Dashboard() {
                                                         onChange={(v) => setDesignerFilter(v)}
                                                         placeholder="All designers"
                                                         minWidth="11rem"
+                                                        buttonClassName={`rounded-xl px-3 py-2 text-sm ${
+                                                            designerFilter
+                                                                ? "border border-[#EF0101]/45 bg-[#EF0101]/10 font-semibold"
+                                                                : "border border-gray-300 bg-white"
+                                                        }`}
                                                         options={[
                                                             { value: "", label: "All designers" },
                                                             ...(hasUnassignedInQueue ? [{ value: "__unassigned__", label: "Unassigned" }] : []),
@@ -1807,10 +1949,13 @@ export default function Dashboard() {
                                                 <button
                                                     type="button"
                                                     onClick={() => setFilterDropdownOpen((o) => !o)}
+                                                    data-active={milestoneFilter ? "true" : undefined}
                                                     className={`px-4 py-2 rounded-xl border text-sm font-medium flex items-center gap-2 transition-all duration-200 ${
-                                                        filterDropdownOpen || milestoneFilter
-                                                            ? 'border-[#EF0101] bg-[#EF0101] text-white shadow-md'
-                                                            : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
+                                                        filterDropdownOpen
+                                                            ? "border-[#EF0101] bg-[#EF0101] text-white shadow-md"
+                                                            : milestoneFilter
+                                                              ? "border-[#EF0101]/45 bg-[#EF0101]/10 text-[#EF0101] font-semibold shadow-sm"
+                                                              : "border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
                                                     }`}
                                                 >
                                                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
@@ -1857,21 +2002,26 @@ export default function Dashboard() {
                                             </div>
                                         </div>
 
-                                        {/* Reset Filters Option */}
-                                        {(searchQuery || branchFilter || designerFilter || milestoneFilter) && (
+                                        {hasQueueFilters ? (
                                             <button
                                                 type="button"
-                                                onClick={() => {
-                                                    setSearchQuery("");
-                                                    setBranchFilter("");
-                                                    setDesignerFilter("");
-                                                    setMilestoneFilter("");
-                                                }}
-                                                className="text-xs font-bold text-[#EF0101] hover:text-[#EF0101]/85 shrink-0 px-2.5 py-1.5 hover:bg-[#EF0101]/5 rounded-lg transition-all duration-200"
+                                                onClick={clearQueueFilters}
+                                                title="Clear search, branch, designer, and milestone"
+                                                aria-label="Clear filters"
+                                                className="group inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-[#EF0101]/25 bg-white px-2.5 py-2 text-xs font-bold text-[#EF0101] shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-[#EF0101] hover:bg-[#EF0101] hover:text-white hover:shadow-md"
                                             >
-                                                Clear all filters
+                                                <svg
+                                                    xmlns="http://www.w3.org/2000/svg"
+                                                    viewBox="0 0 20 20"
+                                                    fill="currentColor"
+                                                    className="h-3.5 w-3.5 transition-transform duration-200 group-hover:rotate-90"
+                                                    aria-hidden
+                                                >
+                                                    <path d="M6.28 5.22a.75.75 0 0 0-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 1 0 1.06 1.06L10 11.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L11.06 10l3.72-3.72a.75.75 0 0 0-1.06-1.06L10 8.94 6.28 5.22Z" />
+                                                </svg>
+                                                Clear
                                             </button>
-                                        )}
+                                        ) : null}
                                     </div>
                                 </div>
                                 {canImportLeads && showImportPanel && (

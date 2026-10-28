@@ -362,6 +362,31 @@ export function sumHubEditableDiscountAmounts(rows: QuoteDiscountBreakdownRow[])
   }, 0);
 }
 
+const HUB_PCT_CATEGORY_KEYS = ['woodwork', 'accessories', 'services'] as const;
+
+/**
+ * Rupee hub discount to subtract from this quote.
+ * Category percentages are applied to the current quote's prices. A stored
+ * rupee amount copied from an older quote version must not override that.
+ */
+export function resolveHubPayableDiscount(
+  quoteObj: Record<string, unknown>,
+  breakdownRows: QuoteDiscountBreakdownRow[],
+): number {
+  const hubCategoryAmount = Math.max(0, readHubDiscountAmount(quoteObj, 'hubCategoryDiscountAmount') ?? 0);
+  const hubAdditionalAmount = Math.max(0, readHubDiscountAmount(quoteObj, 'hubAdditionalDiscountAmount') ?? 0);
+  const fromHubRows = sumHubEditableDiscountAmounts(breakdownRows);
+  const pctCategories = breakdownRows.filter(
+    (row) =>
+      (HUB_PCT_CATEGORY_KEYS as readonly string[]).includes(row.key) && (row.discountPct ?? 0) > 0,
+  );
+  const pricedOnThisQuote =
+    pctCategories.length > 0 &&
+    pctCategories.every((row) => (row.price ?? 0) > 0 && (row.discountAmount ?? 0) > 0);
+  if (pricedOnThisQuote) return fromHubRows;
+  return Math.max(hubCategoryAmount + hubAdditionalAmount, fromHubRows);
+}
+
 function readHubDiscountAmount(quoteObj: Record<string, unknown>, key: string): number | null {
   const sources = [quoteObj];
   const data = quoteObj.data ?? quoteObj.Data;
@@ -383,14 +408,8 @@ export function resolveTotalDiscount(
   interiorAmount: number | null,
   payableAmount: number | null,
 ): number | null {
-  const hubCategoryAmount = readHubDiscountAmount(quoteObj, 'hubCategoryDiscountAmount');
-  const hubAdditionalAmount = Math.max(0, readHubDiscountAmount(quoteObj, 'hubAdditionalDiscountAmount') ?? 0);
-  const fromHubRows = sumHubEditableDiscountAmounts(breakdownRows);
-  const hubStored = Math.max(0, (hubCategoryAmount ?? 0) + hubAdditionalAmount);
-  // Prefer rupees implied by Hub % (so 45% woodwork still reduces the total if stored amount is 0/stale).
-  if (hubStored > 0 || fromHubRows > 0) {
-    return Math.max(hubStored, fromHubRows);
-  }
+  const hubPayable = resolveHubPayableDiscount(quoteObj, breakdownRows);
+  if (hubPayable > 0) return hubPayable;
 
   const fromBreakdown = sumDiscountBreakdownAmounts(breakdownRows);
   if (fromBreakdown > 0) return fromBreakdown;
