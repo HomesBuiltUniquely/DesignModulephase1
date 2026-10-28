@@ -18,11 +18,18 @@ export default function BookingCelebrationHost() {
   if (!user) return null;
   const viewerKey = (user.email || String(user.id) || user.name || '').trim();
   if (!viewerKey) return null;
+  const aliases = [
+    user.email,
+    String(user.id || ''),
+    user.id ? `uid:${user.id}` : '',
+    user.name,
+  ].filter(Boolean) as string[];
   return (
     <BookingCelebration
       apiBase={hallwayBase()}
       placement="corner"
       viewerKey={viewerKey}
+      viewerAliases={aliases}
       viewerName={user.name || viewerKey}
     />
   );
