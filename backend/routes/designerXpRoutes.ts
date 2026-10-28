@@ -16,6 +16,7 @@ import {
   getTaskSlaHours,
 } from "../constants/xpTaskRules";
 import { extractTotalPayableAmount } from "./prolanceApi";
+import { holdOverlapMs, listLeadHoldPeriods } from "../leadHoldPeriods";
 
 /**
  * Ensures the single database table `designer_xp_transactions` exists.
@@ -202,10 +203,13 @@ export async function evaluateAndAwardWorkflowXp(
       workflowStartTime = new Date(Math.min(...stepCompletionTimes));
     }
 
-    // 5. Calculate elapsed time vs total allowed time
+    // 5. Calculate elapsed time vs total allowed time.
+    // Time the project spent on hold does not count, and does not add overdue XP.
     const startMs = workflowStartTime.getTime();
     const endMs = workflowCompletedAt.getTime();
-    const elapsedMs = Math.max(0, endMs - startMs);
+    const holdPeriods = await listLeadHoldPeriods(pool, leadId);
+    const pausedMs = holdOverlapMs(holdPeriods, startMs, endMs);
+    const elapsedMs = Math.max(0, endMs - startMs - pausedMs);
     const allowedMs = workflow.totalAllowedDays * 24 * 60 * 60 * 1000;
 
     let isDelayed = false;
@@ -265,6 +269,7 @@ export async function evaluateAndAwardWorkflowXp(
           workflowId: workflow.workflowId,
           totalAllowedDays: workflow.totalAllowedDays,
           elapsedDays: Number((elapsedMs / (24 * 60 * 60 * 1000)).toFixed(2)),
+          pausedDays: Number((pausedMs / (24 * 60 * 60 * 1000)).toFixed(2)),
           overdueDays,
           isDelayed,
           startTime: workflowStartTime.toISOString(),

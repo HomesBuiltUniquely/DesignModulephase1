@@ -3,7 +3,7 @@
 import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '../../auth/AuthContext';
-import { LeadshipTypes } from '../../Components/Types/Types';
+import { LeadshipTypes, type StatusAttachment } from '../../Components/Types/Types';
 import MileStonesArray from '@/app/Components/Types/MileStoneArray';
 import type { ImageType, QCRemark, HistoryEvent } from './types';
 import {
@@ -37,6 +37,7 @@ import DesignPaymentLinkBanner from './components/popups/DesignPaymentLinkBanner
 import PopupD1FilesWaiting from './components/popups/PopupD1FilesWaiting';
 import { checklistDefinitions, getChecklistKeyForTask } from './components/Checklists/checklistRegistry';
 import { buildAuthHeaders, getApiBase } from '@/app/lib/apiBase';
+import { statusNoteFileProblem } from '@/app/lib/statusNoteFiles';
 import { QuoteTermsAndConditions } from '@/app/quote/hubQuoteTermsPanel';
 import { buildQuoteDiscountBreakdown, resolveTotalDiscount } from '@/app/quote/quoteDiscountBreakdown';
 import {
@@ -71,6 +72,109 @@ import {
 import { getTaskTimelineLabel } from './lib/taskDeadlineConfig';
 
 const API = getApiBase();
+
+function StatusNoteFields({
+    label,
+    placeholder,
+    note,
+    onNote,
+    files,
+    onFiles,
+}: {
+    label: string;
+    placeholder: string;
+    note: string;
+    onNote: (value: string) => void;
+    files: File[];
+    onFiles: (files: File[]) => void;
+}) {
+    return (
+        <>
+            <label className="block space-y-1.5">
+                <span className="text-sm font-medium text-gray-800">{label}</span>
+                <textarea
+                    value={note}
+                    onChange={(event) => onNote(event.target.value)}
+                    rows={4}
+                    maxLength={4000}
+                    placeholder={placeholder}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 outline-none focus:border-gray-500"
+                />
+            </label>
+            <div className="space-y-2">
+                <span className="block text-sm font-medium text-gray-800">Attachments</span>
+                <p className="text-xs text-gray-500">Images and PDF files. Up to 8 files, 20 MB each.</p>
+                <input
+                    type="file"
+                    accept="image/*,.pdf,application/pdf"
+                    multiple
+                    aria-label="Attach images or PDFs"
+                    onChange={(event) => {
+                        const picked = Array.from(event.target.files || []);
+                        event.target.value = '';
+                        if (picked.length) onFiles([...files, ...picked]);
+                    }}
+                    className="block w-full text-sm text-gray-700 file:mr-3 file:rounded-lg file:border-0 file:bg-gray-100 file:px-3 file:py-1.5 file:text-sm file:font-semibold file:text-gray-800"
+                />
+                {files.length > 0 && (
+                    <ul className="space-y-1">
+                        {files.map((file, index) => (
+                            <li key={`${file.name}-${file.size}-${index}`} className="flex items-center justify-between gap-2 rounded-lg bg-gray-50 px-2 py-1 text-sm text-gray-800">
+                                <span className="truncate">{file.name}</span>
+                                <button
+                                    type="button"
+                                    className="shrink-0 text-xs font-semibold text-red-700"
+                                    onClick={() => onFiles(files.filter((_, fileIndex) => fileIndex !== index))}
+                                >
+                                    Remove
+                                </button>
+                            </li>
+                        ))}
+                    </ul>
+                )}
+            </div>
+        </>
+    );
+}
+
+function StatusNoteBanner({
+    title,
+    note,
+    files,
+    leadId,
+    hint,
+}: {
+    title: string;
+    note?: string | null;
+    files?: StatusAttachment[] | null;
+    leadId: number;
+    hint?: string;
+}) {
+    if (!note?.trim() && !files?.length && !hint) return null;
+    return (
+        <div className="mx-4 mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-amber-950 xl:mx-6">
+            <p className="text-xs font-semibold uppercase tracking-wide">{title}</p>
+            {hint ? <p className="mt-1 text-sm">{hint}</p> : null}
+            {note?.trim() ? <p className="mt-1 whitespace-pre-wrap text-sm">{note.trim()}</p> : null}
+            {files?.length ? (
+                <ul className="mt-2 flex flex-wrap gap-2">
+                    {files.map((file) => (
+                        <li key={file.id}>
+                            <a
+                                href={`${API}/api/leads/${leadId}/uploads/${file.id}/download`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-xs font-semibold text-amber-950 hover:bg-amber-100"
+                            >
+                                {file.name}
+                            </a>
+                        </li>
+                    ))}
+                </ul>
+            ) : null}
+        </div>
+    );
+}
 
 async function readScheduleInviteFailure(
     res: Response,
@@ -271,6 +375,14 @@ export default function ProjectDetailPage() {
     const [hubPassBusy, setHubPassBusy] = useState(false);
     const [bypassMilestoneBusy, setBypassMilestoneBusy] = useState(false);
     const [holdDate, setHoldDate] = useState<string>('');
+    const [holdNote, setHoldNote] = useState('');
+    const [holdFiles, setHoldFiles] = useState<File[]>([]);
+    const [holdError, setHoldError] = useState<string | null>(null);
+    const [holdSaving, setHoldSaving] = useState(false);
+    const [cancelNote, setCancelNote] = useState('');
+    const [cancelFiles, setCancelFiles] = useState<File[]>([]);
+    const [cancelError, setCancelError] = useState<string | null>(null);
+    const [cancelSaving, setCancelSaving] = useState(false);
     const [selectedHistoryEvent, setSelectedHistoryEvent] = useState<HistoryEvent | null>(null);
     const [uploadsVersion, setUploadsVersion] = useState(0);
 
@@ -2163,7 +2275,13 @@ export default function ProjectDetailPage() {
                     image={image}
                     onAddImage={handleImageAdding}
                     currentMilestoneIndex={currentMilestoneIndex}
-                    onHoldClick={() => setShowHoldModal(true)}
+                    onHoldClick={() => {
+                        setHoldDate('');
+                        setHoldNote('');
+                        setHoldFiles([]);
+                        setHoldError(null);
+                        setShowHoldModal(true);
+                    }}
                     onResumeClick={async () => {
                         if (!projectId) return;
                         try {
@@ -2171,13 +2289,35 @@ export default function ProjectDetailPage() {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                             });
-                            setProject((prev) => (prev ? { ...prev, isOnHold: false, resumeAt: null } : prev));
+                            setProject((prev) =>
+                                prev
+                                    ? {
+                                          ...prev,
+                                          isOnHold: false,
+                                          resumeAt: null,
+                                          holdNote: null,
+                                          holdFiles: [],
+                                          timelineAnchors: {
+                                              ...prev.timelineAnchors,
+                                              holdResumeAt: null,
+                                              holdPeriods: (prev.timelineAnchors?.holdPeriods ?? []).map((period) =>
+                                                  period.endedAt ? period : { ...period, endedAt: new Date().toISOString() },
+                                              ),
+                                          },
+                                      }
+                                    : prev,
+                            );
                         } catch {
                             // ignore
                         }
                     }}
                     showCancelButton={canCancelLead && !isMmtUser}
-                    onCancelClick={() => setShowCancelModal(true)}
+                    onCancelClick={() => {
+                        setCancelNote('');
+                        setCancelFiles([]);
+                        setCancelError(null);
+                        setShowCancelModal(true);
+                    }}
                     hideNavTabs={isMmtUser}
                     hideStepper={isMmtUser}
                     hideProlanceHoldResume={isMmtUser}
@@ -3093,6 +3233,23 @@ export default function ProjectDetailPage() {
                 </div>
             )}
 
+            {projectId != null && (project.projectStage || '').trim().toLowerCase() === 'cancelled' ? (
+                <StatusNoteBanner
+                    title="Why this project was cancelled"
+                    note={project.cancelNote}
+                    files={project.cancelFiles}
+                    leadId={projectId}
+                />
+            ) : projectId != null && project.isOnHold ? (
+                <StatusNoteBanner
+                    title="Why this project is on hold"
+                    note={project.holdNote}
+                    files={project.holdFiles}
+                    leadId={projectId}
+                    hint="The project timeline is paused. XP is not reduced until the project resumes."
+                />
+            ) : null}
+
             {/* --- MAIN GRID --- */}
             <main className={`xl:grid xl:grid-cols-7 xl:gap-5 xl:m-4 transition-all duration-300 ${activeCard ? 'block' : ''}`}>
                 
@@ -3200,33 +3357,67 @@ export default function ProjectDetailPage() {
             </main>
 
             {showCancelModal && (
-                <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/60 animate-backdropFadeIn">
-                    <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md space-y-4 animate-modalPopIn">
+                <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/60 p-4 animate-backdropFadeIn">
+                    <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto space-y-4 animate-modalPopIn">
                         <h2 className="text-lg font-semibold text-gray-900">Mark project as cancelled?</h2>
                         <p className="text-sm text-gray-600">
                             This moves the project to the <strong>Cancelled</strong> queue on the dashboard. Hold will be cleared. This action is intended for Admin, TDM, or Deputy General Manager only.
                         </p>
+                        <StatusNoteFields
+                            label="Why is this project cancelled?"
+                            placeholder="Add the reason this project is being cancelled"
+                            note={cancelNote}
+                            onNote={(value) => {
+                                setCancelNote(value);
+                                setCancelError(null);
+                            }}
+                            files={cancelFiles}
+                            onFiles={(next) => {
+                                const problem = statusNoteFileProblem(next);
+                                if (problem) {
+                                    setCancelError(problem);
+                                    return;
+                                }
+                                setCancelError(null);
+                                setCancelFiles(next);
+                            }}
+                        />
+                        {cancelError ? <p className="text-sm font-medium text-red-700">{cancelError}</p> : null}
                         <div className="flex justify-end gap-3 pt-2">
                             <button
                                 type="button"
                                 onClick={() => setShowCancelModal(false)}
-                                className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium hover:bg-gray-50"
+                                disabled={cancelSaving}
+                                className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium hover:bg-gray-50 disabled:opacity-60"
                             >
                                 Back
                             </button>
                             <button
                                 type="button"
                                 className="px-4 py-2 rounded-lg bg-amber-700 text-white text-sm font-semibold hover:bg-amber-800 disabled:opacity-60"
-                                disabled={!sessionId}
+                                disabled={!sessionId || cancelSaving || !cancelNote.trim()}
                                 onClick={async () => {
                                     if (!projectId || !sessionId) return;
+                                    const note = cancelNote.trim();
+                                    if (!note) {
+                                        setCancelError('A note explaining why is required.');
+                                        return;
+                                    }
+                                    const problem = statusNoteFileProblem(cancelFiles);
+                                    if (problem) {
+                                        setCancelError(problem);
+                                        return;
+                                    }
+                                    const body = new FormData();
+                                    body.append('note', note);
+                                    cancelFiles.forEach((file) => body.append('files', file));
+                                    setCancelSaving(true);
+                                    setCancelError(null);
                                     try {
                                         const res = await fetch(`${API}/api/leads/${projectId}/cancel`, {
                                             method: 'POST',
-                                            headers: {
-                                                'Content-Type': 'application/json',
-                                                Authorization: `Bearer ${sessionId}`,
-                                            },
+                                            headers: { Authorization: `Bearer ${sessionId}` },
+                                            body,
                                         });
                                         const data = await res.json().catch(() => ({}));
                                         if (!res.ok) throw new Error(data?.message || 'Request failed');
@@ -3237,37 +3428,64 @@ export default function ProjectDetailPage() {
                                                       projectStage: 'Cancelled',
                                                       isOnHold: false,
                                                       resumeAt: null,
+                                                      holdNote: null,
+                                                      holdFiles: [],
+                                                      cancelNote: data?.note || note,
+                                                      cancelFiles: Array.isArray(data?.files) ? data.files : [],
                                                   }
                                                 : prev,
                                         );
                                         setShowCancelModal(false);
-                                    } catch {
-                                        // optional: toast
+                                    } catch (err) {
+                                        setCancelError(err instanceof Error ? err.message : 'Could not cancel this project');
+                                    } finally {
+                                        setCancelSaving(false);
                                     }
                                 }}
                             >
-                                Mark as cancelled
+                                {cancelSaving ? 'Saving…' : 'Mark as cancelled'}
                             </button>
-        </div>
+                        </div>
                     </div>
                 </div>
             )}
 
             {showHoldModal && (
-                <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/60 animate-backdropFadeIn">
-                    <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md space-y-4 animate-modalPopIn">
+                <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/60 p-4 animate-backdropFadeIn">
+                    <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto space-y-4 animate-modalPopIn">
                         <h2 className="text-lg font-semibold text-gray-900">Put project on hold</h2>
                         <p className="text-sm text-gray-600">
-                            Select a date when this project should automatically resume.
+                            Select a date when this project should automatically resume, and add why it is going on hold.
                         </p>
                         <CustomDatePicker
                             value={holdDate}
                             onChange={(date) => setHoldDate(date)}
                         />
+                        <StatusNoteFields
+                            label="Why is this project on hold?"
+                            placeholder="Add the reason this project is being put on hold"
+                            note={holdNote}
+                            onNote={(value) => {
+                                setHoldNote(value);
+                                setHoldError(null);
+                            }}
+                            files={holdFiles}
+                            onFiles={(next) => {
+                                const problem = statusNoteFileProblem(next);
+                                if (problem) {
+                                    setHoldError(problem);
+                                    return;
+                                }
+                                setHoldError(null);
+                                setHoldFiles(next);
+                            }}
+                        />
+                        {holdError ? <p className="text-sm font-medium text-red-700">{holdError}</p> : null}
                         <div className="flex justify-end gap-3 pt-2">
                             <button
                                 type="button"
                                 onClick={() => {
+                                    if (holdSaving) return;
                                     setShowHoldModal(false);
                                     setHoldDate('');
                                 }}
@@ -3278,25 +3496,62 @@ export default function ProjectDetailPage() {
                             <button
                                 type="button"
                                 className="px-4 py-2 rounded-lg bg-[#EF0101] text-white text-sm font-semibold hover:bg-[#EF0101]/90 disabled:opacity-60"
-                                disabled={!holdDate}
+                                disabled={!holdDate || !holdNote.trim() || holdSaving}
                                 onClick={async () => {
                                     if (!projectId || !holdDate) return;
+                                    const note = holdNote.trim();
+                                    if (!note) {
+                                        setHoldError('A note explaining why is required.');
+                                        return;
+                                    }
+                                    const problem = statusNoteFileProblem(holdFiles);
+                                    if (problem) {
+                                        setHoldError(problem);
+                                        return;
+                                    }
+                                    const body = new FormData();
+                                    body.append('resumeAt', holdDate);
+                                    body.append('note', note);
+                                    holdFiles.forEach((file) => body.append('files', file));
+                                    setHoldSaving(true);
+                                    setHoldError(null);
                                     try {
-                                        await fetch(`${API}/api/leads/${projectId}/hold`, {
+                                        const res = await fetch(`${API}/api/leads/${projectId}/hold`, {
                                             method: 'POST',
-                                            headers: { 'Content-Type': 'application/json' },
-                                            body: JSON.stringify({ resumeAt: holdDate }),
+                                            headers: sessionId ? { Authorization: `Bearer ${sessionId}` } : undefined,
+                                            body,
                                         });
-                                        setProject((prev) =>
-                                            prev ? { ...prev, isOnHold: true, resumeAt: holdDate } : prev,
-                                        );
+                                        const data = await res.json().catch(() => ({}));
+                                        if (!res.ok) throw new Error(data?.message || 'Could not put this project on hold');
+                                        setProject((prev) => {
+                                            if (!prev) return prev;
+                                            const periods = prev.timelineAnchors?.holdPeriods ?? [];
+                                            const hasOpen = periods.some((period) => !period.endedAt);
+                                            const resumeAt = data?.resumeAt || holdDate;
+                                            return {
+                                                ...prev,
+                                                isOnHold: true,
+                                                resumeAt,
+                                                holdNote: data?.note || note,
+                                                holdFiles: Array.isArray(data?.files) ? data.files : [],
+                                                timelineAnchors: {
+                                                    ...prev.timelineAnchors,
+                                                    holdResumeAt: resumeAt,
+                                                    holdPeriods: hasOpen
+                                                        ? periods
+                                                        : [...periods, { startedAt: new Date().toISOString(), endedAt: null }],
+                                                },
+                                            };
+                                        });
                                         setShowHoldModal(false);
-                                    } catch {
-                                        // ignore
+                                    } catch (err) {
+                                        setHoldError(err instanceof Error ? err.message : 'Could not put this project on hold');
+                                    } finally {
+                                        setHoldSaving(false);
                                     }
                                 }}
                             >
-                                Confirm hold
+                                {holdSaving ? 'Saving…' : 'Confirm hold'}
                             </button>
                         </div>
                     </div>

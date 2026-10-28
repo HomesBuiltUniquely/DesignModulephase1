@@ -548,6 +548,7 @@ export default function MilestonesCard({
                         );
                         const isActiveOverdue =
                           status.icon !== "completed" && status.isOverdue === true;
+                        const timelineOnHold = (timelineAnchors?.holdPeriods ?? []).some((period) => !period.endedAt);
                         const isLateCompleted =
                           status.icon === "completed" && status.tags.includes("LATE");
                         const tags = status.tags;
@@ -794,7 +795,14 @@ export default function MilestonesCard({
                               })()}
                               </div>
                               {/* Daily Deduction Info below */}
-                              {taskXp && taskXp.hasDailyDeduction && (
+                              {taskXp && taskXp.hasDailyDeduction && timelineOnHold ? (
+                                  <span
+                                    className="text-[9px] font-semibold text-amber-800"
+                                    title="XP is not reduced while this project is on hold"
+                                  >
+                                    On hold — XP paused
+                                  </span>
+                                ) : taskXp && taskXp.hasDailyDeduction && (
                                 (taskXp.isDelayed || (taskXp.delayDays > 0) || (taskXp.overdueDays > 0) || (taskXp.penaltyXp > 0) || isActiveOverdue) ? (
                                   <div className="flex flex-col items-end gap-0.5">
                                     <span

@@ -2392,6 +2392,75 @@ export function registerProlanceRoutes(
     return meta.latest;
   };
 
+  /** Pre-10 customer links must open the version selected for CRM, not a later quote id. */
+  const resolvePre10CustomerQuote = async (
+    quoteId: number,
+  ): Promise<{ quoteId: number; versionNumber: number } | null> => {
+    try {
+      let leadId: number | null = null;
+      const [snapRows] = await pool.query(
+        `SELECT lead_id AS leadId FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
+        [quoteId],
+      );
+      const snapLead = (snapRows as { leadId?: unknown }[])[0]?.leadId;
+      if (snapLead != null && Number(snapLead) > 0) leadId = Number(snapLead);
+      if (leadId == null) {
+        const [verRows] = await pool.query(
+          `SELECT lead_id AS leadId FROM lead_prolance_quote_versions WHERE quote_id = ? LIMIT 1`,
+          [quoteId],
+        );
+        const verLead = (verRows as { leadId?: unknown }[])[0]?.leadId;
+        if (verLead != null && Number(verLead) > 0) leadId = Number(verLead);
+      }
+      if (leadId == null) {
+        const [leadRows] = await pool.query(
+          `SELECT id AS leadId FROM leads WHERE prolance_quote_id = ? LIMIT 1`,
+          [quoteId],
+        );
+        const fromLead = (leadRows as { leadId?: unknown }[])[0]?.leadId;
+        if (fromLead != null && Number(fromLead) > 0) leadId = Number(fromLead);
+      }
+      if (leadId == null) return null;
+
+      const [stageRows] = await pool.query(
+        `SELECT project_stage AS projectStage FROM leads WHERE id = ? LIMIT 1`,
+        [leadId],
+      );
+      const stage = String((stageRows as { projectStage?: unknown }[])[0]?.projectStage || "").trim();
+      if (/^cancelled$/i.test(stage)) return null;
+      if (
+        stage === "Active" ||
+        stage === "10-20%" ||
+        stage === "20-60%" ||
+        stage === "20" ||
+        stage === "20-60" ||
+        (stage.startsWith("10") && stage.includes("20")) ||
+        stage.startsWith("20") ||
+        stage.includes("60")
+      ) {
+        return null;
+      }
+
+      const [shareRows] = await pool.query(
+        `SELECT crm_shared_quote_id AS quoteId, crm_shared_version_number AS versionNumber
+         FROM lead_prolance_quote_snapshots
+         WHERE lead_id = ? AND crm_shared_quote_id IS NOT NULL AND crm_shared_quote_id > 0
+         ORDER BY id DESC LIMIT 1`,
+        [leadId],
+      );
+      const share = (shareRows as { quoteId?: unknown; versionNumber?: unknown }[])[0];
+      const selectedId = share?.quoteId != null ? Number(share.quoteId) : NaN;
+      const versionNumber = share?.versionNumber != null ? Number(share.versionNumber) : NaN;
+      if (!Number.isFinite(selectedId) || selectedId < 1) return null;
+      return {
+        quoteId: selectedId,
+        versionNumber: Number.isFinite(versionNumber) && versionNumber > 0 ? versionNumber : 1,
+      };
+    } catch {
+      return null;
+    }
+  };
+
   const buildCustomerQuotePayload = async (
     quoteId: number,
     opts?: { applySharedVersion?: boolean; forceSharedVersion?: number },
@@ -2433,9 +2502,11 @@ export function registerProlanceRoutes(
           ? viewVersionRaw
           : undefined;
       const crmForce = crmView ? await resolveCrmForceVersion(quoteId, viewVersionRaw) : undefined;
-      const payload = await buildCustomerQuotePayload(quoteId, {
-        applySharedVersion: !internalView && !crmView,
-        forceSharedVersion: viewVersion ?? crmForce,
+      const pre10Selected = !internalView && !crmView ? await resolvePre10CustomerQuote(quoteId) : null;
+      const payloadQuoteId = pre10Selected?.quoteId ?? quoteId;
+      const payload = await buildCustomerQuotePayload(payloadQuoteId, {
+        applySharedVersion: !internalView && !crmView && pre10Selected == null,
+        forceSharedVersion: viewVersion ?? crmForce ?? pre10Selected?.versionNumber,
       });
       if (!payload) {
         res.status(404).json({ message: "Quote snapshot not found" });
@@ -2827,10 +2898,11 @@ function formatProlancePName(
     }
   });
 
-  async function loadQuoteVersionsForLeadPublic(leadId: number): Promise<Array<{ quoteId: number; createdAt: string; createdBy?: string; sourceModule?: string; changeSummary?: string; versionNumber?: number }>> {
+  async function loadQuoteVersionsForLeadPublic(leadId: number): Promise<Array<{ id?: number; quoteId: number; createdAt: string; createdBy?: string; sourceModule?: string; changeSummary?: string; versionNumber?: number; internalNote?: string }>> {
     const [rows] = await pool.query(
-      `SELECT quote_id AS quoteId, created_at AS createdAt, created_by AS createdBy,
-              source_module AS sourceModule, change_summary AS changeSummary, version_number AS versionNumber
+      `SELECT id, quote_id AS quoteId, created_at AS createdAt, created_by AS createdBy,
+              source_module AS sourceModule, change_summary AS changeSummary, version_number AS versionNumber,
+              internal_note AS internalNote
        FROM lead_prolance_quote_versions
        WHERE lead_id = ?
        ORDER BY created_at ASC, id ASC`,
@@ -2838,13 +2910,15 @@ function formatProlancePName(
     );
     const toIso = (d: unknown) =>
       d instanceof Date ? d.toISOString() : typeof d === "string" ? d : new Date().toISOString();
-    const raw = (rows as { quoteId: unknown; createdAt: unknown; createdBy?: unknown; sourceModule?: unknown; changeSummary?: unknown; versionNumber?: unknown }[]).map((r) => ({
+    const raw = (rows as { id?: unknown; quoteId: unknown; createdAt: unknown; createdBy?: unknown; sourceModule?: unknown; changeSummary?: unknown; versionNumber?: unknown; internalNote?: unknown }[]).map((r) => ({
+      id: r.id != null && Number(r.id) > 0 ? Number(r.id) : undefined,
       quoteId: Number(r.quoteId),
       createdAt: toIso(r.createdAt),
       createdBy: r.createdBy ? String(r.createdBy) : undefined,
       sourceModule: r.sourceModule ? String(r.sourceModule) : undefined,
       changeSummary: r.changeSummary ? String(r.changeSummary) : undefined,
       versionNumber: r.versionNumber ? Number(r.versionNumber) : undefined,
+      internalNote: r.internalNote != null && String(r.internalNote).trim() ? String(r.internalNote) : undefined,
     }));
     const seen = new Set<string>();
     const list: typeof raw = [];
@@ -2997,6 +3071,12 @@ function formatProlancePName(
       const audience = String(req.query.audience || "").trim().toLowerCase();
       const forCustomer = audience === "customer" || String(req.query.internal || "").trim() === "0";
       const forCrm = audience === "crm";
+      const noteViewer = await getUserFromSession(req);
+      const includeInternalNotes = !forCustomer && noteViewer != null;
+      const presentVersions = <T extends { id?: number; internalNote?: string }>(rows: T[]) =>
+        includeInternalNotes
+          ? rows
+          : rows.map(({ internalNote: _note, id: _id, ...rest }) => rest as T);
       if (forCustomer && versions.length > 0) {
         const sameQuote = versions.filter((v) => Number(v.quoteId) === seed);
         const poolRows = sameQuote.length > 0 ? sameQuote : versions;
@@ -3032,7 +3112,7 @@ function formatProlancePName(
       }
       res.json({
         leadId,
-        versions,
+        versions: presentVersions(versions),
         sharedVersionNumber,
         crmSharedVersionNumber,
         crmSharedQuoteId,
@@ -3057,6 +3137,7 @@ function formatProlancePName(
 
       let snapshotPayload: Record<string, unknown> | null = null;
       let hubMetaForQuote: Record<string, unknown> = {};
+      let liveQuoteKey = quoteId;
       const snapshotQid = Number(quoteId);
       const audience = String(req.query.audience || "").trim().toLowerCase();
       const crmAudience = audience === "crm";
@@ -3065,6 +3146,15 @@ function formatProlancePName(
         audience === "internal";
       if (Number.isFinite(snapshotQid) && snapshotQid > 0) {
         let resolvedQid = snapshotQid;
+        let pre10CustomerVersion: number | undefined;
+        if (!internalView && !crmAudience) {
+          const pre10Selected = await resolvePre10CustomerQuote(snapshotQid);
+          if (pre10Selected) {
+            resolvedQid = pre10Selected.quoteId;
+            pre10CustomerVersion = pre10Selected.versionNumber;
+            liveQuoteKey = String(pre10Selected.quoteId);
+          }
+        }
         if (crmAudience) {
           try {
             const [crmRows] = await pool.query(
@@ -3138,8 +3228,8 @@ function formatProlancePName(
             : undefined;
         const crmForce = crmAudience ? await resolveCrmForceVersion(resolvedQid, viewVersionRaw) : undefined;
         hubMetaForQuote = await loadHubDiscountMetaForQuote(pool, resolvedQid, {
-          applySharedVersion: !internalView && !crmAudience,
-          forceSharedVersion: viewVersion ?? crmForce,
+          applySharedVersion: !internalView && !crmAudience && pre10CustomerVersion == null,
+          forceSharedVersion: viewVersion ?? crmForce ?? pre10CustomerVersion,
         });
         if (!payloadHasHubDiscount(hubMetaForQuote) && snapshotPayload) {
           hubMetaForQuote = extractHubDiscountMeta(snapshotPayload);
@@ -3243,7 +3333,7 @@ function formatProlancePName(
               if (originSessionId) {
                 let fullDetails = await proxiedFetch({
                   method: "GET",
-                  path: `/Origin/Quotes/FullDetails/${pathSegment(quoteId)}`,
+                  path: `/Origin/Quotes/FullDetails/${pathSegment(liveQuoteKey)}`,
                   token,
                   originSessionId,
                   includeOriginApiHeaders: true,
@@ -3252,7 +3342,7 @@ function formatProlancePName(
                 if (fullDetails.status === 401) {
                   fullDetails = await proxiedFetch({
                     method: "GET",
-                    path: `/Origin/Quotes/FullDetails/${pathSegment(quoteId)}`,
+                    path: `/Origin/Quotes/FullDetails/${pathSegment(liveQuoteKey)}`,
                     token: null,
                     originSessionId,
                     includeOriginApiHeaders: true,
@@ -3308,7 +3398,7 @@ function formatProlancePName(
                         if (!q || typeof q !== "object") return false;
                         const qo = q as Record<string, unknown>;
                         const qid = qo.quoteID ?? qo.quoteId ?? qo.quotationId ?? qo.quotationID;
-                        return String(qid ?? "") === String(quoteId);
+                        return String(qid ?? "") === String(liveQuoteKey);
                       });
                       if (matchedQuote && typeof matchedQuote === "object") {
                         livePayload = mergeFullDetailsWithSummaryQuote(
@@ -3378,9 +3468,10 @@ function formatProlancePName(
           ? viewVersionRaw
           : undefined;
       const crmForce = crmView ? await resolveCrmForceVersion(quoteId, viewVersionRaw) : undefined;
-      const discount = await loadHubDiscountMetaForQuote(pool, quoteId, {
-        applySharedVersion: !internalView && !crmView,
-        forceSharedVersion: viewVersion ?? crmForce,
+      const pre10Selected = !internalView && !crmView ? await resolvePre10CustomerQuote(quoteId) : null;
+      const discount = await loadHubDiscountMetaForQuote(pool, pre10Selected?.quoteId ?? quoteId, {
+        applySharedVersion: !internalView && !crmView && pre10Selected == null,
+        forceSharedVersion: viewVersion ?? crmForce ?? pre10Selected?.versionNumber,
       });
       res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
       res.json({ ok: true, discount });

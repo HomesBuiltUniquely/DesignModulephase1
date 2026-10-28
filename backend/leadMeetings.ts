@@ -223,6 +223,13 @@ export function ensureLeadMeetingsTable(pool: Pool): Promise<void> {
       if ((branchCol as unknown[]).length === 0) {
         await pool.query("ALTER TABLE lead_meetings ADD COLUMN branch VARCHAR(64) NULL AFTER source");
       }
+      const [cancelFilesCol] = await pool.query(
+        `SELECT 1 FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'cancel_files'`,
+      );
+      if ((cancelFilesCol as unknown[]).length === 0) {
+        await pool.query("ALTER TABLE lead_meetings ADD COLUMN cancel_files TEXT NULL AFTER cancel_reason");
+      }
       await pool.query(
         `UPDATE lead_meetings
             SET meeting_mode = CASE
@@ -746,7 +753,11 @@ export async function rescheduleLeadMeeting(
 export async function cancelLeadMeeting(
   pool: Pool,
   meetingId: number,
-  input: { reason: unknown; actor?: MeetingActor | null },
+  input: {
+    reason: unknown;
+    actor?: MeetingActor | null;
+    files?: { id: number; name: string; mimeType: string | null }[] | null;
+  },
 ) {
   await ensureLeadMeetingsTable(pool);
   const row = await loadMeeting(pool, meetingId);
@@ -755,12 +766,13 @@ export async function cancelLeadMeeting(
   const reason = String(input.reason || "").trim();
   if (!reason) throw new MeetingActionError(400, "A cancel reason is required");
   if (reason.length > 500) throw new MeetingActionError(400, "Cancel reason must be 500 characters or less");
+  const files = (input.files || []).filter((file) => Number.isFinite(file.id));
   const now = new Date();
   await pool.query(
     `UPDATE lead_meetings
-        SET meeting_status = 'cancelled', cancel_reason = ?, updated_at = ?
+        SET meeting_status = 'cancelled', cancel_reason = ?, cancel_files = ?, updated_at = ?
       WHERE id = ?`,
-    [reason, now, row.id],
+    [reason, files.length ? JSON.stringify(files) : null, now, row.id],
   );
   const def = row.source === "design_module" ? DESIGN_MEETINGS.find((item) => item.meetingType === row.meetingType) : undefined;
   let milestoneReopened = false;
@@ -797,6 +809,7 @@ export async function cancelLeadMeeting(
   ) {
     await writeDesignPayload(pool, row.leadId, null);
   }
+  const fileNames = files.map((file) => file.name).filter(Boolean);
   await writeHistory(pool, row.leadId, input.actor, "Meeting cancelled", `Meeting on ${row.meetingDate} was cancelled. ${reason}`, {
     action: "cancelled",
     meetingId: row.id,
@@ -804,6 +817,7 @@ export async function cancelLeadMeeting(
     meetingDate: row.meetingDate,
     meetingTime: row.meetingTime,
     reason,
+    files: fileNames,
     milestoneReopened,
   });
   return { meeting: await loadMeeting(pool, row.id), milestoneReopened };
@@ -1030,6 +1044,7 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
             m.progress,
             m.source,
             m.cancel_reason AS cancelReason,
+            m.cancel_files AS cancelFiles,
             u.name AS assignedDesignerName,
             JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.formData.customer_name')) AS customerName,
             JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.formData.customerName')) AS customerNameAlt,
@@ -1101,7 +1116,28 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
     progress: cleanText(row.progress),
     source: cleanText(row.source),
     cancelReason: cleanText(row.cancelReason),
+    cancelFiles: parseCancelFiles(row.cancelFiles),
   }));
+}
+
+function parseCancelFiles(raw: unknown): { id: number; name: string; mimeType: string | null }[] {
+  if (raw == null || raw === "") return [];
+  try {
+    const value = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((item) => {
+      const row = item as { id?: unknown; name?: unknown; mimeType?: unknown };
+      const id = Number(row?.id);
+      if (!Number.isFinite(id)) return [];
+      return [{
+        id,
+        name: String(row?.name || "file"),
+        mimeType: row?.mimeType == null || row.mimeType === "" ? null : String(row.mimeType),
+      }];
+    });
+  } catch {
+    return [];
+  }
 }
 
 async function backfillLeadMeetings(pool: Pool) {

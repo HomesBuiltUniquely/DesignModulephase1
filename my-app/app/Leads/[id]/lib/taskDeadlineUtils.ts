@@ -9,10 +9,64 @@ import {
   type TimelineAnchorType,
 } from "./taskDeadlineConfig";
 
+export type HoldPeriod = {
+  startedAt: string;
+  endedAt?: string | null;
+};
+
 export type TimelineAnchors = {
   entered1020At?: string | null;
   d1MmtRequestSentAt?: string | null;
+  /** Windows when the project clock and XP penalties were paused. An open window has no endedAt. */
+  holdPeriods?: HoldPeriod[] | null;
+  /** Planned resume instant while a hold is open. Deadlines shift to this date plus the time still left. */
+  holdResumeAt?: string | null;
 };
+
+function holdOverlapMs(periods: HoldPeriod[] | null | undefined, fromMs: number, toMs: number): number {
+  if (!periods?.length || !(toMs > fromMs)) return 0;
+  let total = 0;
+  for (const period of periods) {
+    const start = Date.parse(period.startedAt);
+    if (!Number.isFinite(start)) continue;
+    const rawEnd = period.endedAt ? Date.parse(period.endedAt) : toMs;
+    const end = Number.isFinite(rawEnd) ? rawEnd : toMs;
+    const overlapStart = Math.max(start, fromMs);
+    const overlapEnd = Math.min(end, toMs);
+    if (overlapEnd > overlapStart) total += overlapEnd - overlapStart;
+  }
+  return total;
+}
+
+function activeElapsedMs(periods: HoldPeriod[] | null | undefined, fromMs: number, toMs: number): number {
+  if (!(toMs > fromMs)) return 0;
+  return Math.max(0, toMs - fromMs - holdOverlapMs(periods, fromMs, toMs));
+}
+
+function hasOpenHold(periods: HoldPeriod[] | null | undefined): boolean {
+  return Boolean(periods?.some((period) => !period.endedAt));
+}
+
+/** Calendar time when `slaMs` of working time has passed, skipping hold windows. */
+function projectDueMs(anchorMs: number, slaMs: number, anchors: TimelineAnchors, now: Date): number {
+  const periods = anchors.holdPeriods ?? [];
+  const nowMs = now.getTime();
+  const elapsed = activeElapsedMs(periods, anchorMs, nowMs);
+  if (elapsed >= slaMs) {
+    let lo = anchorMs;
+    let hi = Math.max(anchorMs, nowMs);
+    for (let i = 0; i < 40 && hi - lo > 1000; i += 1) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (activeElapsedMs(periods, anchorMs, mid) >= slaMs) hi = mid;
+      else lo = mid;
+    }
+    return hi;
+  }
+  const remaining = slaMs - elapsed;
+  const resumeMs = anchors.holdResumeAt ? Date.parse(anchors.holdResumeAt) : NaN;
+  const base = hasOpenHold(periods) && Number.isFinite(resumeMs) && resumeMs > nowMs ? resumeMs : nowMs;
+  return base + remaining;
+}
 
 export type TaskCompletionMap = Record<string, { completedAt: string }>;
 
@@ -235,49 +289,47 @@ export function evaluateTaskDeadline(
   const anchorMs = Date.parse(anchorIso);
   if (!Number.isFinite(anchorMs)) return null;
 
-  const dueAt = new Date(anchorMs + hours * 60 * 60 * 1000);
+  const periods = anchors.holdPeriods ?? [];
+  const slaMs = hours * 60 * 60 * 1000;
+  const dueAt = new Date(projectDueMs(anchorMs, slaMs, anchors, now));
 
   // Cumulative SLA hours up to this task from milestone start
   const milestoneStartIso = getMilestoneStartAnchorIso(milestoneIndex, anchors, completions);
   const milestoneStartMs = milestoneStartIso ? Date.parse(milestoneStartIso) : NaN;
   const milestoneTotalHours = getMilestoneTotalHours(milestoneIndex, propertyConfigRaw);
-  const milestoneDueAtMs =
-    Number.isFinite(milestoneStartMs) && milestoneTotalHours > 0
-      ? milestoneStartMs + milestoneTotalHours * 60 * 60 * 1000
-      : NaN;
 
   let cumulativeHours = 0;
   for (let i = 0; i <= taskIndex; i++) {
     const r = getTaskDeadlineRule(milestoneIndex, taskList[i]);
     if (r) cumulativeHours += getTaskDeadlineHours(r, config);
   }
-  const cumulativeDueAtMs =
-    Number.isFinite(milestoneStartMs) && cumulativeHours > 0
-      ? milestoneStartMs + cumulativeHours * 60 * 60 * 1000
-      : NaN;
 
   let isOverdue = false;
   let overdueMessage = OVERDUE_MESSAGE;
+
+  const elapsedPast = (fromMs: number, toMs: number, allowedHours: number) =>
+    Number.isFinite(fromMs) && allowedHours > 0 && activeElapsedMs(periods, fromMs, toMs) > allowedHours * 60 * 60 * 1000;
 
   if (isCompleted) {
     const key = taskKey(milestoneIndex, taskName);
     const completedAtIso = completions[key]?.completedAt;
     const completedMs = completedAtIso ? Date.parse(completedAtIso) : NaN;
     if (Number.isFinite(completedMs)) {
-      const taskOverdue = completedMs > dueAt.getTime();
+      const taskOverdue = activeElapsedMs(periods, anchorMs, completedMs) > slaMs;
       const milestoneOverdue =
-        (Number.isFinite(cumulativeDueAtMs) && completedMs > cumulativeDueAtMs) ||
-        (Number.isFinite(milestoneDueAtMs) && completedMs > milestoneDueAtMs);
+        elapsedPast(milestoneStartMs, completedMs, cumulativeHours) ||
+        elapsedPast(milestoneStartMs, completedMs, milestoneTotalHours);
       isOverdue = taskOverdue || milestoneOverdue;
     } else {
       isOverdue = false;
     }
     overdueMessage = "Completed overdue — this task or milestone was not completed within the given timeline.";
   } else {
-    const taskOverdue = now.getTime() > dueAt.getTime();
+    const nowMs = now.getTime();
+    const taskOverdue = activeElapsedMs(periods, anchorMs, nowMs) > slaMs;
     const milestoneOverdue =
-      (Number.isFinite(cumulativeDueAtMs) && now.getTime() > cumulativeDueAtMs) ||
-      (Number.isFinite(milestoneDueAtMs) && now.getTime() > milestoneDueAtMs);
+      elapsedPast(milestoneStartMs, nowMs, cumulativeHours) ||
+      elapsedPast(milestoneStartMs, nowMs, milestoneTotalHours);
     isOverdue = taskOverdue || milestoneOverdue;
   }
 
@@ -352,7 +404,7 @@ export function getMilestoneDateRangeLabel(
   const totalHours = getMilestoneTotalHours(milestoneIndex, propertyConfigRaw);
   if (totalHours <= 0) return "TBD";
 
-  const endMs = startMs + totalHours * 60 * 60 * 1000;
+  const endMs = projectDueMs(startMs, totalHours * 60 * 60 * 1000, anchors, new Date());
   return `${formatShortDate(new Date(startMs))} - ${formatShortDate(new Date(endMs))}`;
 }
 

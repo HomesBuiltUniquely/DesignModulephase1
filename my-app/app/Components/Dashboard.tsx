@@ -242,6 +242,7 @@ function getPaginationRange(current: number, total: number): (number | "ellipsis
 const API = getApiBase();
 
 function projectIsDelayed(row: LeadshipTypes): boolean {
+    if (row.isOnHold || isCancelledLead(row)) return false;
     const completions = buildTaskCompletionMap(row.taskCompletions ?? []);
     return isLeadDelayed(row.intakeConfiguration, row.timelineAnchors ?? {}, completions);
 }

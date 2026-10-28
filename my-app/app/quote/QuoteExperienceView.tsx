@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Image from 'next/image';
 import type { QuoteDiscountBreakdownRow } from './quoteDiscountBreakdown';
 import { QuoteBrandLogo } from './QuoteBrandLogo';
@@ -34,6 +34,7 @@ type QuoteView = {
 };
 
 type VersionRow = {
+  id?: number;
   quoteId: number;
   createdAt: string;
   createdBy?: string;
@@ -41,6 +42,7 @@ type VersionRow = {
   sourceModule?: string;
   changeSummary?: string;
   versionNumber?: number;
+  internalNote?: string;
 };
 
 type Props = {
@@ -81,6 +83,7 @@ type Props = {
   crmLockedView?: boolean;
   onShareVersionWithCustomer?: (versionNumber: number, quoteId: number) => void;
   onSelectVersionForCrm?: (versionNumber: number, quoteId: number) => void;
+  onSaveVersionNote?: (versionId: number, note: string) => Promise<void> | void;
 };
 
 function LinkIcon() {
@@ -112,6 +115,73 @@ const PROJECT_FIELDS = [
   { label: 'Project ID', key: 'projectId', icon: 'doc' },
   { label: 'Date', key: 'date', icon: 'cal' },
 ] as const;
+
+function VersionInternalNote({
+  versionId,
+  savedNote,
+  onSave,
+}: {
+  versionId?: number;
+  savedNote?: string;
+  onSave?: (versionId: number, note: string) => Promise<void> | void;
+}) {
+  const [draft, setDraft] = useState(savedNote ?? '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [savedFlash, setSavedFlash] = useState(false);
+
+  useEffect(() => {
+    setDraft(savedNote ?? '');
+  }, [savedNote, versionId]);
+
+  const dirty = draft.trim() !== (savedNote ?? '').trim();
+  const canSave = Boolean(onSave && versionId && versionId > 0 && dirty && !saving);
+
+  return (
+    <div className="mt-4 border-t border-[#ece6df] pt-3">
+      <label className="text-[11px] font-semibold uppercase tracking-wide text-[#786c5f]">
+        Internal note
+      </label>
+      <p className="mt-0.5 text-[10px] text-[#9a928c]">Only the team can see this. It is not shown on the customer quotation.</p>
+      <textarea
+        value={draft}
+        onChange={(event) => {
+          setDraft(event.target.value);
+          setSavedFlash(false);
+          setError(null);
+        }}
+        rows={3}
+        maxLength={4000}
+        placeholder="Why this version changed, what to watch for…"
+        className="mt-2 w-full resize-y rounded-lg border border-[#ece6df] bg-white px-3 py-2 text-xs text-[#2a1d14] outline-none focus:border-[#c1272d]"
+      />
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <span className="text-[10px]" style={{ color: error ? '#c1272d' : QUOTE.muted }}>
+          {error ? error : savedFlash ? 'Saved' : onSave && versionId ? '' : 'Sign in to save this note.'}
+        </span>
+        <button
+          type="button"
+          disabled={!canSave}
+          onClick={() => {
+            if (!onSave || !versionId) return;
+            setSaving(true);
+            setError(null);
+            void Promise.resolve(onSave(versionId, draft.trim()))
+              .then(() => setSavedFlash(true))
+              .catch((err: unknown) => {
+                setError(err instanceof Error ? err.message : 'Failed to save the note');
+              })
+              .finally(() => setSaving(false));
+          }}
+          className="rounded-md px-3 py-1.5 text-[11px] font-semibold text-white disabled:opacity-40"
+          style={{ backgroundColor: QUOTE.red }}
+        >
+          {saving ? 'Saving…' : 'Save note'}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 const TABS = [
   { id: 'overall' as const, label: 'Overall Summary' },
@@ -171,9 +241,22 @@ export function QuoteExperienceView(props: Props) {
     crmLockedView = false,
     onShareVersionWithCustomer,
     onSelectVersionForCrm,
+    onSaveVersionNote,
   } = props;
 
   const savedDiscount = Math.max(0, quote.discount ?? 0);
+  const currentVersionIndex = useMemo(() => {
+    let best = 0;
+    let bestNumber = -1;
+    quoteVersions.forEach((ver, i) => {
+      const n = ver.versionNumber && ver.versionNumber > 0 ? ver.versionNumber : i + 1;
+      if (n >= bestNumber) {
+        bestNumber = n;
+        best = i;
+      }
+    });
+    return best;
+  }, [quoteVersions]);
   const [previewDiscount, setPreviewDiscount] = useState<number | null>(null);
   const handlePreviewDiscountChange = useCallback((amount: number) => {
     setPreviewDiscount((prev) => (prev === amount ? prev : amount));
@@ -656,6 +739,7 @@ export function QuoteExperienceView(props: Props) {
             <div className="grid gap-4 sm:grid-cols-2">
               {quoteVersions.map((v, idx) => {
                 const versionNumber = v.versionNumber && v.versionNumber > 0 ? v.versionNumber : idx + 1;
+                const isCurrent = idx === currentVersionIndex;
                 const isSharedWithCustomer =
                   sharedVersionNumber != null && Number(sharedVersionNumber) === Number(versionNumber);
                 const isSelectedForCrm =
@@ -685,14 +769,16 @@ export function QuoteExperienceView(props: Props) {
                   <div
                     key={`qv-${v.quoteId}-${idx}`}
                     className={`rounded-xl border p-5 ${
-                      isViewing
-                        ? 'border-[#f5c6cb] bg-[#fff5f5]'
-                        : isShared
-                          ? 'border-[#c9a84c] bg-[#fffbeb]'
-                          : 'border-[#ece6df] bg-white'
+                      isCurrent
+                        ? 'border-[#c1272d] bg-[#fff5f5] ring-2 ring-[#c1272d]/25'
+                        : isViewing
+                          ? 'border-[#f5c6cb] bg-[#fff8f8]'
+                          : isShared
+                            ? 'border-[#c9a84c] bg-[#fffbeb]'
+                            : 'border-[#ece6df] bg-white'
                     }`}
                     style={
-                      isViewing
+                      isCurrent || isViewing
                         ? { borderLeftWidth: 4, borderLeftColor: QUOTE.red }
                         : isShared
                           ? { borderLeftWidth: 4, borderLeftColor: QUOTE.gold }
@@ -705,7 +791,12 @@ export function QuoteExperienceView(props: Props) {
                     >
                       <p className="font-bold text-[#2a1d14]">
                         Version {versionNumber}
-                        {isViewing ? (
+                        {isCurrent ? (
+                          <span className="ml-2 inline-flex items-center rounded-full bg-[#c1272d] px-2 py-0.5 align-middle text-[10px] font-semibold uppercase tracking-wide text-white">
+                            Current version
+                          </span>
+                        ) : null}
+                        {isViewing && !isCurrent ? (
                           <span className="ml-2 text-sm font-normal" style={{ color: QUOTE.red }}>
                             (Viewing)
                           </span>
@@ -751,6 +842,11 @@ export function QuoteExperienceView(props: Props) {
                         </p>
                       ) : null}
                     </a>
+                    <VersionInternalNote
+                      versionId={v.id}
+                      savedNote={v.internalNote}
+                      onSave={onSaveVersionNote}
+                    />
                     {onShareVersionWithCustomer || onSelectVersionForCrm ? (
                       <div className="mt-4 grid gap-2">
                         {onShareVersionWithCustomer ? (

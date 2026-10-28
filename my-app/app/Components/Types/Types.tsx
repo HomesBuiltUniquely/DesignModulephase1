@@ -61,6 +61,12 @@ export type ConfigScopeSummary = {
 
 export type PhaseSummaryBag = Record<string, unknown>;
 
+export type StatusAttachment = {
+    id: number;
+    name: string;
+    mimeType?: string | null;
+};
+
 export type LeadshipTypes = {
     id: number;
     pid: string;
@@ -74,6 +80,12 @@ export type LeadshipTypes = {
     alternateClientEmail?: string | null;
     isOnHold?: boolean;
     resumeAt?: string | null;
+    /** Why the project is on hold, with optional image/PDF attachments */
+    holdNote?: string | null;
+    holdFiles?: StatusAttachment[] | null;
+    /** Why the project was cancelled, with optional image/PDF attachments */
+    cancelNote?: string | null;
+    cancelFiles?: StatusAttachment[] | null;
     designerName?: string | null; // from sales closure payload (for DQC review panel)
     revision?: string | null; // for DQC review panel
     /** Current milestone name from task completions (e.g. "D1 SITE MEASUREMENT", "10% PAYMENT") */
@@ -135,6 +147,8 @@ export type LeadshipTypes = {
     timelineAnchors?: {
         entered1020At?: string | null;
         d1MmtRequestSentAt?: string | null;
+        holdPeriods?: { startedAt: string; endedAt?: string | null }[] | null;
+        holdResumeAt?: string | null;
     } | null;
     /** Task completions with timestamps (from queue API) */
     taskCompletions?: Array<{

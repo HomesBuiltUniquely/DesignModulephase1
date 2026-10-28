@@ -15,6 +15,7 @@ import {
   minutesToHubTime24,
 } from '../../lib/hub-meeting-schedule';
 import styles from './meetingManagement.module.css';
+import { statusNoteFileProblem } from '../lib/statusNoteFiles';
 
 /** Designer sees their own meetings. Design manager and TDM see the people under them. Admin sees everyone. */
 export function canShowMeetingManagement(role: string | undefined | null): boolean {
@@ -45,6 +46,7 @@ type ScheduledMeeting = {
   progress?: string | null;
   source?: string | null;
   cancelReason?: string | null;
+  cancelFiles?: { id: number; name: string; mimeType?: string | null }[] | null;
   personalKey?: string | null;
   personalKind?: 'block' | 'full_day' | null;
   personalReason?: string | null;
@@ -747,6 +749,7 @@ export default function MeetingManagementView() {
   const [nextDate, setNextDate] = useState('');
   const [nextTime, setNextTime] = useState('');
   const [cancelReason, setCancelReason] = useState('');
+  const [cancelFiles, setCancelFiles] = useState<File[]>([]);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionStep, setActionStep] = useState<'details' | 'form' | 'confirm'>('details');
   const [nextStartMin, setNextStartMin] = useState<number | null>(null);
@@ -796,6 +799,8 @@ export default function MeetingManagementView() {
     setActionKind(null);
     setActionStep('details');
     setSlotPickerOpen(false);
+    setCancelReason('');
+    setCancelFiles([]);
     setActionError(null);
   };
 
@@ -809,6 +814,7 @@ export default function MeetingManagementView() {
     setNextTime(mins == null ? '' : minutesToHubTime24(mins));
     setSlotPickerOpen(false);
     setCancelReason('');
+    setCancelFiles([]);
     setActionError(null);
   };
 
@@ -839,6 +845,11 @@ export default function MeetingManagementView() {
         setActionError('Cancel reason must be 500 characters or less.');
         return;
       }
+      const fileIssue = statusNoteFileProblem(cancelFiles);
+      if (fileIssue) {
+        setActionError(fileIssue);
+        return;
+      }
     }
     setActionError(null);
     setActionStep('confirm');
@@ -850,15 +861,20 @@ export default function MeetingManagementView() {
     setActionError(null);
     try {
       const path = actionKind === 'reschedule' ? 'reschedule' : 'cancel';
+      const cancelBody = new FormData();
+      if (actionKind === 'cancel') {
+        cancelBody.append('reason', cancelReason.trim());
+        cancelFiles.forEach((file) => cancelBody.append('files', file));
+      }
       const res = await fetch(`${apiBase}/api/meetings/${actionMeeting.id}/${path}`, {
         method: 'POST',
-        headers: buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' }),
+        headers: actionKind === 'cancel'
+          ? buildAuthHeaders(sessionId)
+          : buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' }),
         credentials: 'include',
-        body: JSON.stringify(
-          actionKind === 'reschedule'
-            ? { meetingDate: nextDate, meetingTime: nextTime }
-            : { reason: cancelReason },
-        ),
+        body: actionKind === 'cancel'
+          ? cancelBody
+          : JSON.stringify({ meetingDate: nextDate, meetingTime: nextTime }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.message || 'Could not update the meeting');
@@ -1597,6 +1613,21 @@ export default function MeetingManagementView() {
                   {selected.status === 'cancelled' && selected.raw.cancelReason ? (
                     <p className={styles.noteSub}>{selected.raw.cancelReason}</p>
                           ) : null}
+                  {selected.status === 'cancelled' && selected.raw.cancelFiles?.length ? (
+                    <ul className={styles.attachList}>
+                      {selected.raw.cancelFiles.map((file) => (
+                        <li key={file.id}>
+                          <a
+                            href={`${apiBase}/api/leads/${selected.leadId}/uploads/${file.id}/download`}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            {file.name}
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
                         </div>
               ) : (
                 <ol className={styles.steps}>
@@ -1754,6 +1785,42 @@ export default function MeetingManagementView() {
                     placeholder="Why is this meeting cancelled?"
                   />
                 </label>
+                <label className={styles.filePick}>
+                  Attach images or PDFs
+                  <input
+                    type="file"
+                    accept="image/*,.pdf,application/pdf"
+                    multiple
+                    onChange={(event) => {
+                      const picked = Array.from(event.target.files || []);
+                      event.target.value = '';
+                      if (!picked.length) return;
+                      const next = [...cancelFiles, ...picked];
+                      const problem = statusNoteFileProblem(next);
+                      if (problem) {
+                        setActionError(problem);
+                        return;
+                      }
+                      setActionError(null);
+                      setCancelFiles(next);
+                    }}
+                  />
+                </label>
+                {cancelFiles.length > 0 ? (
+                  <ul className={styles.fileNames}>
+                    {cancelFiles.map((file, index) => (
+                      <li key={`${file.name}-${file.size}-${index}`}>
+                        <span>{file.name}</span>
+                        <button
+                          type="button"
+                          onClick={() => setCancelFiles((current) => current.filter((_, fileIndex) => fileIndex !== index))}
+                        >
+                          Remove
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
               </>
             ) : null}
             {actionStep === 'confirm' && actionKind === 'reschedule' && nextStartMin != null ? (
@@ -1780,6 +1847,13 @@ export default function MeetingManagementView() {
                 </div>
                 <p>This meeting will be marked cancelled.</p>
                 <blockquote>{cancelReason.trim()}</blockquote>
+                {cancelFiles.length > 0 ? (
+                  <ul className={styles.fileNames}>
+                    {cancelFiles.map((file) => (
+                      <li key={`${file.name}-${file.size}`}><span>{file.name}</span></li>
+                    ))}
+                  </ul>
+                ) : null}
               </div>
             ) : null}
             {actionError ? <p className={styles.popError}>{actionError}</p> : null}

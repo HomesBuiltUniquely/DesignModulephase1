@@ -2333,6 +2333,26 @@
   font-weight: 600;
 }
 
+.attachList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.attachList a {
+  display: inline-flex;
+  border-radius: 999px;
+  background: #fff;
+  padding: 4px 10px;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
 .metaGrid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -2637,6 +2657,45 @@
   color: var(--mm-muted);
   font-size: 12px;
   font-weight: 700;
+}
+
+.filePick {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  color: var(--mm-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.fileNames {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fileNames li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-radius: 10px;
+  background: #fff;
+  padding: 6px 8px;
+  color: var(--mm-ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.fileNames button {
+  border: 0;
+  background: transparent;
+  color: #9a3d55;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .move {

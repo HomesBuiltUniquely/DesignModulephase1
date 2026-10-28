@@ -43,6 +43,14 @@ import {
 import * as notify from "./routes/designNotifications";
 import { buildTimelineAnchorsFromPayloadAndD1, fetchLeadTimelineAnchors, stampEntered1020At } from "./leadTimelineAnchors";
 import {
+  endDueHolds,
+  endLeadHold,
+  ensureLeadHoldPeriodsTable,
+  listLeadHoldPeriods,
+  listLeadHoldPeriodsByLeadIds,
+  startLeadHold,
+} from "./leadHoldPeriods";
+import {
   MeetingActionError,
   cancelLeadMeeting,
   endActiveCrmMeeting,
@@ -1578,6 +1586,25 @@ async function initDb() {
       // ignore
     }
 
+    for (const [column, ddl] of [
+      ["hold_note", "ALTER TABLE leads ADD COLUMN hold_note TEXT NULL"],
+      ["hold_files", "ALTER TABLE leads ADD COLUMN hold_files TEXT NULL"],
+      ["cancel_note", "ALTER TABLE leads ADD COLUMN cancel_note TEXT NULL"],
+      ["cancel_files", "ALTER TABLE leads ADD COLUMN cancel_files TEXT NULL"],
+    ] as const) {
+      try {
+        const [col] = await conn.query(
+          "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'leads' AND COLUMN_NAME = ?",
+          [column],
+        );
+        if ((col as any[]).length === 0) {
+          await conn.query(ddl);
+        }
+      } catch {
+        // ignore
+      }
+    }
+
     await conn.query(`
       CREATE TABLE IF NOT EXISTS lead_prolance_quote_versions (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -1626,6 +1653,7 @@ async function initDb() {
       ["previous_values", "LONGTEXT NULL"],
       ["updated_values", "LONGTEXT NULL"],
       ["discount_snapshot", "LONGTEXT NULL"],
+      ["internal_note", "TEXT NULL"],
     ];
     for (const [columnName, columnDefinition] of quoteVersionColumns) {
       const [cols] = await conn.query(
@@ -1990,6 +2018,7 @@ async function initDb() {
     await ensureOfflineMeetingExportTable(pool);
     await ensureDesignerXpTable(pool);
     await ensureLeadMeetingsTable(pool);
+    await ensureLeadHoldPeriodsTable(pool);
 
     try {
       const [seenCol] = await conn.query(
@@ -3024,18 +3053,22 @@ function quoteVersionUniquenessKey(item: {
 
 function dedupeProlanceQuoteVersionRows(
   list: Array<{
+    id?: number;
     quoteId: number;
     createdAt: string;
     createdBy?: string;
     changeSummary?: string;
     versionNumber?: number;
+    internalNote?: string;
   }>,
 ): Array<{
+  id?: number;
   quoteId: number;
   createdAt: string;
   createdBy?: string;
   changeSummary?: string;
   versionNumber?: number;
+  internalNote?: string;
 }> {
   const seen = new Set<string>();
   const out: typeof list = [];
@@ -3055,6 +3088,7 @@ function dedupeProlanceQuoteVersionRows(
 
 async function loadProlanceQuoteVersionsForLead(leadId: number): Promise<
   Array<{
+    id?: number;
     quoteId: number;
     createdAt: string;
     createdBy?: string;
@@ -3062,12 +3096,14 @@ async function loadProlanceQuoteVersionsForLead(leadId: number): Promise<
     sourceModule?: string;
     changeSummary?: string;
     versionNumber?: number;
+    internalNote?: string;
   }>
 > {
   const [rows] = await pool.query(
-    `SELECT quote_id AS quoteId, created_at AS createdAt, created_by AS createdBy,
+    `SELECT id, quote_id AS quoteId, created_at AS createdAt, created_by AS createdBy,
             created_by_role AS createdByRole, source_module AS sourceModule,
-            change_summary AS changeSummary, version_number AS versionNumber
+            change_summary AS changeSummary, version_number AS versionNumber,
+            internal_note AS internalNote
      FROM lead_prolance_quote_versions
      WHERE lead_id = ?
      ORDER BY created_at ASC, id ASC`,
@@ -3076,6 +3112,7 @@ async function loadProlanceQuoteVersionsForLead(leadId: number): Promise<
   const toIso = (d: unknown) =>
     d instanceof Date ? d.toISOString() : typeof d === "string" ? d : new Date().toISOString();
   const list = (rows as any[]).map((r) => ({
+    id: r.id != null && Number(r.id) > 0 ? Number(r.id) : undefined,
     quoteId: Number(r.quoteId),
     createdAt: toIso(r.createdAt),
     createdBy: r.createdBy ? String(r.createdBy) : undefined,
@@ -3083,6 +3120,7 @@ async function loadProlanceQuoteVersionsForLead(leadId: number): Promise<
     sourceModule: r.sourceModule ? String(r.sourceModule) : undefined,
     changeSummary: r.changeSummary ? String(r.changeSummary) : undefined,
     versionNumber: r.versionNumber ? Number(r.versionNumber) : undefined,
+    internalNote: r.internalNote != null && String(r.internalNote).trim() ? String(r.internalNote) : undefined,
   }));
   // Current lead quote id is persisted as a real version row on first snapshot — do not invent extras.
   return dedupeProlanceQuoteVersionRows(list);
@@ -7420,6 +7458,18 @@ async function resolveLatestQuoteLinkForLead(leadId: number): Promise<{
   customerQuoteUrl: string;
   internalQuoteUrl: string;
 } | null> {
+  if (await leadIsPre10Stage(leadId)) {
+    const selected = await loadCrmShareForLead(leadId);
+    if (selected) {
+      const base = frontendBase();
+      return {
+        quoteId: selected.quoteId,
+        customerQuoteUrl: `${base}/quote/${encodeURIComponent(String(selected.quoteId))}`,
+        internalQuoteUrl: crmQuoteInternalUrl(leadId, selected.quoteId),
+      };
+    }
+  }
+
   let quoteId: number | null = null;
 
   // Prefer newest version row (true latest quotation)
@@ -14026,12 +14076,16 @@ app.get("/api/leads/:id/uploads", async (req: Request, res: Response) => {
                   u.name as uploaderName, u.role as uploaderRole
            FROM lead_uploads lu
            LEFT JOIN users u ON u.id = lu.uploader_id
-           WHERE lu.lead_id = ? AND lu.status = 'approved' ORDER BY lu.uploaded_at DESC`
+           WHERE lu.lead_id = ? AND lu.status = 'approved'
+             AND (lu.upload_type IS NULL OR lu.upload_type = '' OR lu.upload_type NOT IN ('hold_note', 'cancel_note', 'mtg_cancel'))
+           ORDER BY lu.uploaded_at DESC`
         : `SELECT lu.id, lu.original_name as originalName, lu.uploaded_at as uploadedAt, lu.status, lu.upload_type as uploadType, lu.s3_url as s3Url,
                   u.name as uploaderName, u.role as uploaderRole
            FROM lead_uploads lu
            LEFT JOIN users u ON u.id = lu.uploader_id
-           WHERE lu.lead_id = ? ORDER BY lu.uploaded_at DESC`,
+           WHERE lu.lead_id = ?
+             AND (lu.upload_type IS NULL OR lu.upload_type = '' OR lu.upload_type NOT IN ('hold_note', 'cancel_note', 'mtg_cancel'))
+           ORDER BY lu.uploaded_at DESC`,
       [leadId],
     );
     return res.json(rows);
@@ -14069,6 +14123,10 @@ app.post("/api/leads/:leadId/uploads/:uploadId/approve", async (req: Request, re
     );
     if ((result as any).affectedRows === 0)
       return res.status(404).json({ message: "Upload not found" });
+
+    if (STATUS_NOTE_UPLOAD_TYPES.has(String(uploadRow.uploadType || ""))) {
+      return res.json({ ok: true });
+    }
 
     // Mark the corresponding file-upload task complete in lead_task_completions
     const isD2Upload = (uploadRow.uploadType || "") === "d2_masking";
@@ -16316,8 +16374,9 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
   res.setHeader("X-Accel-Buffering", "no");
   try {
     try {
+      await endDueHolds(pool, now);
       await pool.query(
-        "UPDATE leads SET is_on_hold = 0, resume_at = NULL, update_at = ? WHERE is_on_hold = 1 AND resume_at IS NOT NULL AND resume_at <= ?",
+        "UPDATE leads SET is_on_hold = 0, resume_at = NULL, hold_note = NULL, hold_files = NULL, update_at = ? WHERE is_on_hold = 1 AND resume_at IS NOT NULL AND resume_at <= ?",
         [now, now],
       );
     } catch (holdErr) {
@@ -16510,6 +16569,10 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
     for (const row of d1AnchorRows as { leadId: number; sentAt?: Date | string }[]) {
       if (row.sentAt) d1SentByLead.set(row.leadId, new Date(row.sentAt).toISOString());
     }
+    const holdPeriodsByLead = await listLeadHoldPeriodsByLeadIds(
+      pool,
+      baseList.map((l: { id: number }) => l.id),
+    );
     const enrichedList = baseList.map((l: any) => {
       let comps = completionsByLead.get(l.id) ?? [];
       // Auto-complete KT TRANSFER for existing projects that have already started on other milestones.
@@ -16529,12 +16592,17 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
         payloadByLeadId.get(l.id) ?? null,
         d1SentByLead.get(l.id) ?? null,
       );
+      const resumeAt = l.resumeAt ? new Date(l.resumeAt) : null;
       return {
         ...l,
         currentMilestoneIndex: idx,
         currentMilestoneName: MILESTONE_NAMES[idx] ?? "—",
         currentMilestoneProgress: progress,
-        timelineAnchors,
+        timelineAnchors: {
+          ...timelineAnchors,
+          holdPeriods: holdPeriodsByLead.get(l.id) ?? [],
+          holdResumeAt: l.isOnHold && resumeAt && !Number.isNaN(resumeAt.getTime()) ? resumeAt.toISOString() : null,
+        },
         taskCompletions: comps,
       };
     });
@@ -16688,6 +16756,7 @@ async function enrichLeadQueueRowsWithTimeline<T extends { id: number }>(
     options?.completionsByLead ?? (await loadLeadTaskCompletionsByLead());
   const d1SentByLead =
     options?.d1SentByLead ?? (await loadD1MmtRequestSentAtByLead());
+  const holdPeriodsByLead = await listLeadHoldPeriodsByLeadIds(pool, leadIds);
 
   return rows.map((row) => {
     const payload = payloadByLeadId.get(row.id) ?? null;
@@ -16697,10 +16766,16 @@ async function enrichLeadQueueRowsWithTimeline<T extends { id: number }>(
       payload,
       d1SentByLead.get(row.id) ?? null,
     );
+    const holdRow = row as T & { isOnHold?: boolean | number; resumeAt?: Date | string | null };
+    const resumeAt = holdRow.resumeAt ? new Date(holdRow.resumeAt) : null;
     return {
       ...row,
       intakeConfiguration: intake.intakeConfiguration ?? null,
-      timelineAnchors,
+      timelineAnchors: {
+        ...timelineAnchors,
+        holdPeriods: holdPeriodsByLead.get(row.id) ?? [],
+        holdResumeAt: holdRow.isOnHold && resumeAt && !Number.isNaN(resumeAt.getTime()) ? resumeAt.toISOString() : null,
+      },
       taskCompletions,
     };
   });
@@ -16762,6 +16837,10 @@ app.get("/api/leads/dqc-queue", async (req: Request, res: Response) => {
           c.milestoneIndex === 1 &&
           c.taskName === "DQC 1 submission - dwg + quotation",
       );
+    const holdPeriodsByLead = await listLeadHoldPeriodsByLeadIds(
+      pool,
+      leads.map((l) => l.id),
+    );
     const list = leads.map((l) => {
       const verdict = latestVerdictByLead[l.id];
       const dqc2Pending = verdict === "pending_dqc2";
@@ -16775,10 +16854,15 @@ app.get("/api/leads/dqc-queue", async (req: Request, res: Response) => {
         d1SentByLead.get(l.id) ?? null,
       );
       const { payload: _payload, ...leadPublic } = l;
+      const holdPeriods = holdPeriodsByLead.get(l.id) ?? [];
       return {
         ...leadPublic,
         intakeConfiguration: l.intakeConfiguration ?? null,
-        timelineAnchors,
+        timelineAnchors: {
+          ...timelineAnchors,
+          holdPeriods,
+          holdResumeAt: null,
+        },
         taskCompletions,
         dqcStatus: verdict === "approved" ? "Approved DQC" : "Pending DQC",
         dqc1Pending: !!dqc1Pending,
@@ -17383,6 +17467,8 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
               l.contact_no as contactNo, l.client_email as clientEmail,
               l.client_email_alt as alternateClientEmail,
               l.is_on_hold as isOnHold, l.resume_at as resumeAt,
+              l.hold_note as holdNote, l.hold_files as holdFiles,
+              l.cancel_note as cancelNote, l.cancel_files as cancelFiles,
               l.create_at as createAt, l.update_at as updateAt, l.payload,
               l.assigned_designer_id,
               l.assigned_project_manager_id,
@@ -17451,12 +17537,16 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
 
     // auto-resume if date is reached
     if (row.isOnHold && row.resumeAt && new Date(row.resumeAt) <= new Date()) {
+      const resumedAt = new Date();
+      await endLeadHold(pool, id, resumedAt);
       await pool.query(
-        "UPDATE leads SET is_on_hold = 0, resume_at = NULL, update_at = ? WHERE id = ?",
-        [new Date(), id],
+        "UPDATE leads SET is_on_hold = 0, resume_at = NULL, hold_note = NULL, hold_files = NULL, update_at = ? WHERE id = ?",
+        [resumedAt, id],
       );
       row.isOnHold = 0;
       row.resumeAt = null;
+      row.holdNote = null;
+      row.holdFiles = null;
     }
 
     let designerName: string | undefined;
@@ -17498,7 +17588,11 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
 
     const { payload: _p, ...rest } = row;
     const intake = extractLeadIntakeViewFromPayload(row.payload);
-    const timelineAnchors = await fetchLeadTimelineAnchors(pool, id, row.payload);
+    const timelineAnchors = {
+      ...(await fetchLeadTimelineAnchors(pool, id, row.payload)),
+      holdPeriods: await listLeadHoldPeriods(pool, id),
+      holdResumeAt: row.isOnHold && row.resumeAt ? new Date(row.resumeAt).toISOString() : null,
+    };
     const mailLoopState = readMailLoopChainState(parsedPayload);
     return res.json({
       ...rest,
@@ -17511,6 +17605,10 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
       mailLoopChainInitiatedAt: mailLoopState.initiatedAt,
       timelineAnchors,
       isOnHold: !!row.isOnHold,
+      holdNote: row.holdNote ? String(row.holdNote) : null,
+      holdFiles: parseStatusNoteFiles(row.holdFiles),
+      cancelNote: row.cancelNote ? String(row.cancelNote) : null,
+      cancelFiles: parseStatusNoteFiles(row.cancelFiles),
       designerName: designerName || null,
       designerEmail: row.designerEmail ?? null,
       designManagerEmail: row.designManagerEmail ?? null,
@@ -18079,6 +18177,63 @@ app.get("/api/leads/prolance-quote-versions/by-quote/:quoteId", async (req: Requ
   } catch (err) {
     console.error("prolance-quote-versions by-quote error", err);
     return res.status(500).json({ message: "Failed to load quote versions" });
+  }
+});
+
+/** Team-only note on one quotation version. Never returned on the customer quote. */
+app.patch("/api/leads/:id/quote-versions/:versionId/note", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  const versionId = Number(req.params.versionId);
+  if (!Number.isFinite(leadId) || leadId < 1) return res.status(400).json({ message: "Invalid id" });
+  if (!Number.isFinite(versionId) || versionId < 1) return res.status(400).json({ message: "Invalid version" });
+
+  const user = await getUserFromSession(req);
+  if (!user) return res.status(401).json({ message: "Unauthorized" });
+
+  const rawNote = (req.body as { note?: unknown } | undefined)?.note;
+  if (rawNote != null && typeof rawNote !== "string") {
+    return res.status(400).json({ message: "Note must be text" });
+  }
+  const note = typeof rawNote === "string" ? rawNote.trim().slice(0, 4000) : "";
+
+  try {
+    const [rows] = await pool.query(
+      `SELECT id, lead_id AS leadId FROM lead_prolance_quote_versions WHERE id = ? AND lead_id = ? LIMIT 1`,
+      [versionId, leadId],
+    );
+    if ((rows as any[]).length === 0) {
+      return res.status(404).json({ message: "Quote version not found" });
+    }
+
+    const roleNorm = String(user.role || "")
+      .trim()
+      .toLowerCase()
+      .replace(/^(role_|crm_)/i, "");
+    const crmQuoteViewer = [
+      "super_admin",
+      "superadmin",
+      "admin",
+      "sales_admin",
+      "sales_manager",
+      "sales_executive",
+    ].includes(roleNorm);
+    if (!crmQuoteViewer) {
+      const access = await getLeadAccessRowForUser(res, user, leadId);
+      if (!access.ok) return;
+    } else {
+      const [exists] = await pool.query(`SELECT id FROM leads WHERE id = ? LIMIT 1`, [leadId]);
+      if ((exists as any[]).length === 0) return res.status(404).json({ message: "Lead not found" });
+    }
+
+    await pool.query(`UPDATE lead_prolance_quote_versions SET internal_note = ? WHERE id = ? AND lead_id = ?`, [
+      note || null,
+      versionId,
+      leadId,
+    ]);
+    return res.json({ ok: true, id: versionId, internalNote: note || null });
+  } catch (err) {
+    console.error("quote version note error", err);
+    return res.status(500).json({ message: "Failed to save internal note" });
   }
 });
 
@@ -19279,41 +19434,191 @@ app.get("/api/leads/:id/involved-users", async (req: Request, res: Response) => 
   }
 });
 
-// Put project on hold until a given date
-app.post("/api/leads/:id/hold", async (req: Request, res: Response) => {
+const STATUS_NOTE_MAX_FILES = 8;
+const STATUS_NOTE_MAX_BYTES = 20 * 1024 * 1024;
+const STATUS_NOTE_UPLOAD_TYPES = new Set(["hold_note", "cancel_note", "mtg_cancel"]);
+
+type StatusNoteFile = { id: number; name: string; mimeType: string | null };
+
+function statusNoteFileAllowed(file: Express.Multer.File): boolean {
+  const mime = (file.mimetype || "").toLowerCase();
+  const name = (file.originalname || "").toLowerCase();
+  if (mime === "application/pdf" || mime.startsWith("image/")) return true;
+  return /\.(png|jpe?g|gif|webp|heic|heif|bmp|pdf)$/i.test(name);
+}
+
+function statusNoteFilesProblem(files: Express.Multer.File[]): string | null {
+  if (files.length > STATUS_NOTE_MAX_FILES) return "You can attach up to 8 files";
+  for (const file of files) {
+    if (!statusNoteFileAllowed(file)) return "Only images and PDF files are allowed";
+    if (file.size > STATUS_NOTE_MAX_BYTES) return "Each file must be 20 MB or smaller";
+  }
+  return null;
+}
+
+function readStatusNote(value: unknown, max = 4000): { note: string } | { error: string } {
+  const note = String(value ?? "").trim();
+  if (!note) return { error: "A note explaining why is required" };
+  if (note.length > max) return { error: `Note must be ${max} characters or less` };
+  return { note };
+}
+
+function parseStatusNoteFiles(raw: unknown): StatusNoteFile[] {
+  if (raw == null || raw === "") return [];
+  try {
+    const value = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((item) => {
+      const row = item as { id?: unknown; name?: unknown; mimeType?: unknown };
+      const id = Number(row?.id);
+      if (!Number.isFinite(id)) return [];
+      return [{
+        id,
+        name: String(row?.name || "file"),
+        mimeType: row?.mimeType == null || row.mimeType === "" ? null : String(row.mimeType),
+      }];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function unlinkUploaded(files: Express.Multer.File[] | undefined) {
+  for (const file of files || []) {
+    try {
+      if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function acceptStatusNoteFiles(req: Request, res: Response, next: NextFunction) {
+  upload.array("files", STATUS_NOTE_MAX_FILES)(req, res, (err: unknown) => {
+    if (!err) return next();
+    const code = (err as { code?: string }).code;
+    const message = code === "LIMIT_FILE_COUNT" || code === "LIMIT_UNEXPECTED_FILE"
+      ? "You can attach up to 8 files"
+      : (err as { message?: string }).message || "Upload failed";
+    return res.status(400).json({ message });
+  });
+}
+
+async function saveStatusNoteFiles(
+  leadId: number,
+  uploaderId: number | null,
+  files: Express.Multer.File[],
+  uploadType: "hold_note" | "cancel_note" | "mtg_cancel",
+  saved: StatusNoteFile[],
+) {
+  const now = new Date();
+  for (const file of files) {
+    let s3Url: string | null = null;
+    if (process.env.AWS_ACCESS_KEY_ID) {
+      s3Url = await uploadLeadFileToS3(leadId, file.path, file.originalname, file.mimetype);
+    }
+    const [result] = await pool.query(
+      `INSERT INTO lead_uploads
+       (lead_id, uploader_id, original_name, stored_name, stored_path, mime_type, size_bytes, uploaded_at, status, upload_type, s3_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?)`,
+      [leadId, uploaderId, file.originalname, file.filename, file.path, file.mimetype || null, file.size, now, uploadType, s3Url],
+    );
+    saved.push({
+      id: Number((result as mysql.ResultSetHeader).insertId),
+      name: file.originalname,
+      mimeType: file.mimetype || null,
+    });
+  }
+}
+
+async function discardStatusNoteFiles(saved: StatusNoteFile[], files: Express.Multer.File[]) {
+  if (saved.length) {
+    await pool.query(
+      `DELETE FROM lead_uploads WHERE id IN (${saved.map(() => "?").join(",")})`,
+      saved.map((file) => file.id),
+    );
+  }
+  unlinkUploaded(files);
+}
+
+// Put project on hold until a given date. Note is required; images and PDFs are optional.
+app.post("/api/leads/:id/hold", acceptStatusNoteFiles, async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
 
-  const { resumeAt } = req.body as { resumeAt?: string };
-  if (!resumeAt)
+  const files = ((req as any).files as Express.Multer.File[] | undefined) || [];
+  const resumeAt = String((req.body as { resumeAt?: string })?.resumeAt || "");
+  const noteResult = readStatusNote((req.body as { note?: string })?.note);
+  if ("error" in noteResult) {
+    unlinkUploaded(files);
+    return res.status(400).json({ message: noteResult.error });
+  }
+  if (!resumeAt) {
+    unlinkUploaded(files);
     return res.status(400).json({ message: "resumeAt is required" });
-
+  }
   const date = new Date(resumeAt);
-  if (Number.isNaN(date.getTime()))
+  if (Number.isNaN(date.getTime())) {
+    unlinkUploaded(files);
     return res.status(400).json({ message: "Invalid resumeAt date" });
+  }
+  const fileProblem = statusNoteFilesProblem(files);
+  if (fileProblem) {
+    unlinkUploaded(files);
+    return res.status(400).json({ message: fileProblem });
+  }
 
+  let saved: StatusNoteFile[] = [];
   try {
+    const user = await getUserFromSession(req);
     const [rows] = await pool.query(
       "SELECT id, project_stage as projectStage FROM leads WHERE id = ?",
       [id],
     );
     const lead = (rows as any[])[0];
-    if (!lead) return res.status(404).json({ message: "Lead not found" });
+    if (!lead) {
+      unlinkUploaded(files);
+      return res.status(404).json({ message: "Lead not found" });
+    }
     if (String(lead.projectStage ?? "").trim().toLowerCase() === "cancelled") {
+      unlinkUploaded(files);
       return res.status(400).json({ message: "Cannot put a cancelled project on hold" });
     }
 
+    await saveStatusNoteFiles(id, user?.id ?? null, files, "hold_note", saved);
+    const now = new Date();
     await pool.query(
-      "UPDATE leads SET is_on_hold = 1, resume_at = ?, update_at = ? WHERE id = ?",
-      [date, new Date(), id],
+      "UPDATE leads SET is_on_hold = 1, resume_at = ?, hold_note = ?, hold_files = ?, update_at = ? WHERE id = ?",
+      [date, noteResult.note, saved.length ? JSON.stringify(saved) : null, now, id],
     );
+    await startLeadHold(pool, id, now);
+    try {
+      await addLeadHistoryEvent(id, {
+        id: `hold-${Date.now()}`,
+        type: "note",
+        taskName: "Project on hold",
+        timestamp: now.toISOString(),
+        description: noteResult.note,
+        user: { name: user?.name ?? "User" },
+        details: { kind: "note", noteText: noteResult.note, files: saved.map((file) => file.name) },
+      });
+    } catch (historyErr) {
+      console.error("hold history error", historyErr);
+    }
 
     res.json({
       success: true,
       message: "Project put on hold",
       resumeAt: date.toISOString(),
+      note: noteResult.note,
+      files: saved,
     });
   } catch (err) {
+    try {
+      await discardStatusNoteFiles(saved, files);
+    } catch (cleanupErr) {
+      console.error("hold file cleanup error", cleanupErr);
+    }
     console.error("hold error", err);
     res.status(500).json({ message: "Failed to put project on hold" });
   }
@@ -19332,12 +19637,14 @@ app.post("/api/leads/:id/resume", async (req: Request, res: Response) => {
     const lead = (rows as any[])[0];
     if (!lead) return res.status(404).json({ message: "Lead not found" });
 
+    const resumedAt = new Date();
+    await endLeadHold(pool, id, resumedAt);
     await pool.query(
-      "UPDATE leads SET is_on_hold = 0, resume_at = NULL, update_at = ? WHERE id = ?",
-      [new Date(), id],
+      "UPDATE leads SET is_on_hold = 0, resume_at = NULL, hold_note = NULL, hold_files = NULL, update_at = ? WHERE id = ?",
+      [resumedAt, id],
     );
 
-    res.json({ success: true, message: "Project resumed" });
+    res.json({ success: true, message: "Project resumed", resumedAt: resumedAt.toISOString() });
   } catch (err) {
     console.error("resume error", err);
     res.status(500).json({ message: "Failed to resume project" });
@@ -19345,16 +19652,33 @@ app.post("/api/leads/:id/resume", async (req: Request, res: Response) => {
 });
 
 // Mark project as cancelled (Admin, TDM, or Deputy General Manager only). Clears hold.
-app.post("/api/leads/:id/cancel", async (req: Request, res: Response) => {
+app.post("/api/leads/:id/cancel", acceptStatusNoteFiles, async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
 
+  const files = ((req as any).files as Express.Multer.File[] | undefined) || [];
+  const noteResult = readStatusNote((req.body as { note?: string })?.note);
+  if ("error" in noteResult) {
+    unlinkUploaded(files);
+    return res.status(400).json({ message: noteResult.error });
+  }
+  const fileProblem = statusNoteFilesProblem(files);
+  if (fileProblem) {
+    unlinkUploaded(files);
+    return res.status(400).json({ message: fileProblem });
+  }
+
+  let saved: StatusNoteFile[] = [];
   try {
     const user = await getUserFromSession(req);
-    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    if (!user) {
+      unlinkUploaded(files);
+      return res.status(401).json({ message: "Unauthorized" });
+    }
     const role = (user.role ?? "").toLowerCase();
     const allowed = ["admin", "territorial_design_manager", "deputy_general_manager"];
     if (!allowed.includes(role)) {
+      unlinkUploaded(files);
       return res.status(403).json({ message: "Only Admin, TDM, or Deputy General Manager can cancel a project" });
     }
 
@@ -19363,19 +19687,53 @@ app.post("/api/leads/:id/cancel", async (req: Request, res: Response) => {
       [id],
     );
     const lead = (rows as any[])[0];
-    if (!lead) return res.status(404).json({ message: "Lead not found" });
+    if (!lead) {
+      unlinkUploaded(files);
+      return res.status(404).json({ message: "Lead not found" });
+    }
     const st = String(lead.projectStage ?? "").trim().toLowerCase();
     if (st === "cancelled") {
+      unlinkUploaded(files);
       return res.json({ success: true, message: "Project is already cancelled", projectStage: "Cancelled" });
     }
 
+    await saveStatusNoteFiles(id, user.id, files, "cancel_note", saved);
+    const now = new Date();
+    await endLeadHold(pool, id, now);
     await pool.query(
-      "UPDATE leads SET project_stage = 'Cancelled', is_on_hold = 0, resume_at = NULL, update_at = ? WHERE id = ?",
-      [new Date(), id],
+      `UPDATE leads
+          SET project_stage = 'Cancelled', is_on_hold = 0, resume_at = NULL,
+              hold_note = NULL, hold_files = NULL, cancel_note = ?, cancel_files = ?, update_at = ?
+        WHERE id = ?`,
+      [noteResult.note, saved.length ? JSON.stringify(saved) : null, now, id],
     );
+    try {
+      await addLeadHistoryEvent(id, {
+        id: `cancel-${Date.now()}`,
+        type: "note",
+        taskName: "Project cancelled",
+        timestamp: now.toISOString(),
+        description: noteResult.note,
+        user: { name: user.name ?? "User" },
+        details: { kind: "note", noteText: noteResult.note, files: saved.map((file) => file.name) },
+      });
+    } catch (historyErr) {
+      console.error("cancel history error", historyErr);
+    }
 
-    res.json({ success: true, message: "Project marked as cancelled", projectStage: "Cancelled" });
+    res.json({
+      success: true,
+      message: "Project marked as cancelled",
+      projectStage: "Cancelled",
+      note: noteResult.note,
+      files: saved,
+    });
   } catch (err) {
+    try {
+      await discardStatusNoteFiles(saved, files);
+    } catch (cleanupErr) {
+      console.error("cancel file cleanup error", cleanupErr);
+    }
     console.error("cancel lead error", err);
     res.status(500).json({ message: "Failed to cancel project" });
   }
@@ -20139,24 +20497,61 @@ app.post("/api/meetings/:id/reschedule", async (req: Request, res: Response) => 
   }
 });
 
-app.post("/api/meetings/:id/cancel", async (req: Request, res: Response) => {
+app.post("/api/meetings/:id/cancel", acceptStatusNoteFiles, async (req: Request, res: Response) => {
+  const files = ((req as any).files as Express.Multer.File[] | undefined) || [];
+  const noteResult = readStatusNote((req.body as { reason?: string })?.reason, 500);
+  if ("error" in noteResult) {
+    unlinkUploaded(files);
+    return res.status(400).json({ message: noteResult.error === "A note explaining why is required" ? "A cancel reason is required" : noteResult.error });
+  }
+  const fileProblem = statusNoteFilesProblem(files);
+  if (fileProblem) {
+    unlinkUploaded(files);
+    return res.status(400).json({ message: fileProblem });
+  }
+
+  let saved: StatusNoteFile[] = [];
   try {
     const actingUser = await getUserFromSession(req);
-    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+    if (!actingUser) {
+      unlinkUploaded(files);
+      return res.status(401).json({ message: "Unauthorized" });
+    }
     if (!canAccessMeetingManagement(actingUser.role)) {
+      unlinkUploaded(files);
       return res.status(403).json({ message: "Not allowed to open meeting management" });
     }
     const meetingId = Number(req.params.id);
-    if (!Number.isFinite(meetingId)) return res.status(400).json({ message: "Invalid meeting id" });
+    if (!Number.isFinite(meetingId)) {
+      unlinkUploaded(files);
+      return res.status(400).json({ message: "Invalid meeting id" });
+    }
     await assertMeetingInViewerScope(actingUser, meetingId);
-    const reason = (req.body || {}).reason;
+    const [leadRows] = await pool.query(
+      "SELECT lead_id as leadId FROM lead_meetings WHERE id = ? LIMIT 1",
+      [meetingId],
+    );
+    const leadId = Number((leadRows as { leadId?: number }[])[0]?.leadId);
+    if (!Number.isFinite(leadId) || leadId <= 0) {
+      unlinkUploaded(files);
+      return res.status(404).json({ message: "Meeting not found" });
+    }
+    await saveStatusNoteFiles(leadId, actingUser.id, files, "mtg_cancel", saved);
     const result = await cancelLeadMeeting(pool, meetingId, {
-      reason,
+      reason: noteResult.note,
+      files: saved,
       actor: { id: actingUser.id, name: actingUser.name },
     });
     return res.json(result);
   } catch (err) {
-    if (err instanceof MeetingActionError) return res.status(err.status).json({ message: err.message });
+    if (err instanceof MeetingActionError) {
+      try {
+        await discardStatusNoteFiles(saved, files);
+      } catch (cleanupErr) {
+        console.error("cancel meeting file cleanup error", cleanupErr);
+      }
+      return res.status(err.status).json({ message: err.message });
+    }
     console.error("cancel meeting error", err);
     return res.status(500).json({ message: "Failed to cancel meeting" });
   }

@@ -381,6 +381,7 @@ function normalizeQuote(payload: unknown, fallbackQuoteId: string): NormalizedQu
 }
 
 type QuoteVersionRow = {
+  id?: number;
   quoteId: number;
   createdAt: string;
   createdBy?: string;
@@ -388,9 +389,46 @@ type QuoteVersionRow = {
   sourceModule?: string;
   changeSummary?: string;
   versionNumber?: number;
+  internalNote?: string;
   discountSnapshot?: unknown;
   updatedValues?: unknown;
 };
+
+function parseQuoteVersionRow(row: unknown, fallbackQuoteId?: string | null): QuoteVersionRow | null {
+  const o = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+  const qid = asNum(o.quoteId) ?? (fallbackQuoteId && /^\d+$/.test(fallbackQuoteId) ? Number(fallbackQuoteId) : null);
+  const ca = o.createdAt != null ? String(o.createdAt) : '';
+  if (qid == null || qid < 1) return null;
+  const createdBy =
+    o.createdBy != null
+      ? String(o.createdBy)
+      : o.createdByName != null
+        ? String(o.createdByName)
+        : o.userName != null
+          ? String(o.userName)
+          : o.designerName != null
+            ? String(o.designerName)
+            : undefined;
+  const createdByRole =
+    o.createdByRole != null ? String(o.createdByRole) : o.role != null ? String(o.role) : undefined;
+  const sourceModule =
+    o.sourceModule != null ? String(o.sourceModule) : o.module != null ? String(o.module) : undefined;
+  const versionId = asNum(o.id);
+  const noteRaw = o.internalNote != null ? String(o.internalNote) : o.internal_note != null ? String(o.internal_note) : '';
+  return {
+    id: versionId != null && versionId > 0 ? versionId : undefined,
+    quoteId: qid,
+    createdAt: ca || new Date().toISOString(),
+    createdBy,
+    createdByRole,
+    sourceModule,
+    changeSummary: o.changeSummary != null ? String(o.changeSummary) : undefined,
+    versionNumber: asNum(o.versionNumber) ?? undefined,
+    internalNote: noteRaw.trim() ? noteRaw : undefined,
+    discountSnapshot: o.discountSnapshot ?? o.discount_snapshot,
+    updatedValues: o.updatedValues ?? o.updated_values,
+  };
+}
 
 function versionsForCrmAudience(
   versions: QuoteVersionRow[],
@@ -711,8 +749,13 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
             ? 'internal=1'
             : 'audience=customer';
         // Designers always load the full revision list (internal=1). CRM audience stays filtered.
+        const versionHeaders: HeadersInit = {};
+        if (sessionId && (isInternalMode || crmAudience)) {
+          versionHeaders.Authorization = `Bearer ${sessionId}`;
+        }
         const res = await fetch(
           `${API}/api/prolance-test/public/quote-revisions/${encodeURIComponent(versionFetchId)}?${audienceQs}`,
+          { headers: versionHeaders, cache: 'no-store' },
         );
         const txt = await res.text();
         let body: {
@@ -736,48 +779,8 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           );
         }
         const rawVers = Array.isArray(body.versions) ? body.versions : [];
-        const versions: QuoteVersionRow[] = rawVers
-          .map((row: unknown) => {
-            const o = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
-            const qid = asNum(o.quoteId);
-            const ca = o.createdAt != null ? String(o.createdAt) : '';
-            if (qid == null || qid < 1) return null;
-            const createdBy =
-              o.createdBy != null
-                ? String(o.createdBy)
-                : o.createdByName != null
-                  ? String(o.createdByName)
-                  : o.userName != null
-                    ? String(o.userName)
-                    : o.designerName != null
-                      ? String(o.designerName)
-                      : undefined;
-            const createdByRole =
-              o.createdByRole != null
-                ? String(o.createdByRole)
-                : o.role != null
-                  ? String(o.role)
-                  : undefined;
-            const sourceModule =
-              o.sourceModule != null
-                ? String(o.sourceModule)
-                : o.module != null
-                  ? String(o.module)
-                  : undefined;
-            const changeSummary = o.changeSummary != null ? String(o.changeSummary) : undefined;
-            const versionNumber = asNum(o.versionNumber) ?? undefined;
-            return {
-              quoteId: qid,
-              createdAt: ca || new Date().toISOString(),
-              createdBy,
-              createdByRole,
-              sourceModule,
-              changeSummary,
-              versionNumber,
-              discountSnapshot: o.discountSnapshot ?? o.discount_snapshot,
-              updatedValues: o.updatedValues ?? o.updated_values,
-            };
-          })
+        const versions = rawVers
+          .map((row) => parseQuoteVersionRow(row))
           .filter(Boolean) as QuoteVersionRow[];
         if (!cancelled) {
           const shared = asNum(body.sharedVersionNumber);
@@ -805,7 +808,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     return () => {
       cancelled = true;
     };
-  }, [versionFetchId, isInternalMode, crmAudience]);
+  }, [versionFetchId, isInternalMode, crmAudience, sessionId]);
 
   useEffect(() => {
     if (!isInternalMode || crmAudience) return;
@@ -1055,47 +1058,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       const parseVersionsArray = (rawList: unknown): QuoteVersionRow[] => {
         if (!Array.isArray(rawList)) return [];
         return rawList
-          .map((row: unknown) => {
-            const o = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
-            const qid = asNum(o.quoteId) ?? (versionFetchId ? Number(versionFetchId) : null);
-            const ca = o.createdAt != null ? String(o.createdAt) : '';
-            if (qid == null || qid < 1) return null;
-            const createdBy =
-              o.createdBy != null
-                ? String(o.createdBy)
-                : o.createdByName != null
-                  ? String(o.createdByName)
-                  : o.userName != null
-                    ? String(o.userName)
-                    : o.designerName != null
-                      ? String(o.designerName)
-                      : undefined;
-            const createdByRole =
-              o.createdByRole != null
-                ? String(o.createdByRole)
-                : o.role != null
-                  ? String(o.role)
-                  : undefined;
-            const sourceModule =
-              o.sourceModule != null
-                ? String(o.sourceModule)
-                : o.module != null
-                  ? String(o.module)
-                  : undefined;
-            const changeSummary = o.changeSummary != null ? String(o.changeSummary) : undefined;
-            const versionNumber = asNum(o.versionNumber) ?? undefined;
-            return {
-              quoteId: qid,
-              createdAt: ca || new Date().toISOString(),
-              createdBy,
-              createdByRole,
-              sourceModule,
-              changeSummary,
-              versionNumber,
-              discountSnapshot: o.discountSnapshot ?? o.discount_snapshot,
-              updatedValues: o.updatedValues ?? o.updated_values,
-            };
-          })
+          .map((row) => parseQuoteVersionRow(row, versionFetchId))
           .filter(Boolean) as QuoteVersionRow[];
       };
 
@@ -1138,9 +1101,13 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           try {
             setQuoteVersionsLoading(true);
             const audienceQs = crmAudience ? 'audience=crm' : isInternalMode ? 'internal=1' : 'audience=customer';
+            const versionHeaders: HeadersInit = {};
+            if (sessionId && (isInternalMode || crmAudience)) {
+              versionHeaders.Authorization = `Bearer ${sessionId}`;
+            }
             const vRes = await fetch(
               `${API}/api/prolance-test/public/quote-revisions/${encodeURIComponent(versionFetchId)}?t=${Date.now()}&${audienceQs}`,
-              { cache: 'no-store' },
+              { cache: 'no-store', headers: versionHeaders },
             );
             const vTxt = await vRes.text();
             let vBody: { versions?: unknown; message?: unknown } = {};
@@ -1260,6 +1227,30 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     }
   };
 
+  const handleSaveVersionNote = async (versionId: number, note: string) => {
+    if (!sessionId) throw new Error('Sign in to save an internal note.');
+    if (resolvedLeadId == null || resolvedLeadId < 1) {
+      throw new Error('This quotation is not linked to a lead yet.');
+    }
+    const res = await fetch(
+      `${API}/api/leads/${resolvedLeadId}/quote-versions/${versionId}/note`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${sessionId}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ note }),
+      },
+    );
+    const body = (await res.json().catch(() => ({}))) as { message?: unknown; internalNote?: unknown };
+    if (!res.ok) {
+      throw new Error(body.message != null ? String(body.message) : 'Failed to save the internal note');
+    }
+    const saved = body.internalNote != null && String(body.internalNote).trim() ? String(body.internalNote) : undefined;
+    setQuoteVersions((prev) => prev.map((row) => (row.id === versionId ? { ...row, internalNote: saved } : row)));
+  };
+
   return (
     <QuoteExperienceView
       quote={quote}
@@ -1325,6 +1316,11 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
         resolvedLeadId != null &&
         resolvedLeadId > 0
           ? (versionNumber, quoteId) => handleShareQuoteVersion(versionNumber, quoteId, 'crm')
+          : undefined
+      }
+      onSaveVersionNote={
+        isInternalMode && sessionId && resolvedLeadId != null && resolvedLeadId > 0
+          ? handleSaveVersionNote
           : undefined
       }
     />
