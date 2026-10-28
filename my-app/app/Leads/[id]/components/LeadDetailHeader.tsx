@@ -1,5 +1,6 @@
 'use client';
 
+import { useRouter } from 'next/navigation';
 import type { LeadshipTypes } from '@/app/Components/Types/Types';
 import type { ImageType } from '../types';
 import MileStonesArray from '@/app/Components/Types/MileStoneArray';
@@ -70,6 +71,7 @@ export default function LeadDetailHeader({
     showStartMeeting,
     onStartMeeting,
 }: Props) {
+    const router = useRouter();
     const isCancelled = (project.projectStage || '').trim().toLowerCase() === 'cancelled';
     const holdLabel = isCancelled
         ? 'Cancelled'
@@ -81,7 +83,39 @@ export default function LeadDetailHeader({
         <div className="w-full px-4 xl:px-6 pt-4 pb-4">
             {/* Top row: project info (left) | Prolance + avatars + HOLD/RESUME (right) – aligned in one row */}
             <div className="flex flex-wrap items-center justify-between gap-4 xl:gap-6">
-                <div className="flex flex-wrap items-baseline gap-6 xl:gap-8">
+                <div className="flex min-w-0 flex-wrap items-center gap-4 xl:gap-6">
+                    <button
+                        type="button"
+                        onClick={() => {
+                            // Prefer history back so Next keeps list place; fall back to dashboard home.
+                            if (typeof window !== 'undefined' && window.history.length > 1) {
+                                router.back();
+                                return;
+                            }
+                            router.push('/');
+                        }}
+                        title="Back to dashboard"
+                        aria-label="Back to dashboard"
+                        className="group inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/5 px-3 py-1.5 text-sm font-semibold text-white/90 shadow-sm backdrop-blur-sm transition-all duration-300 ease-out hover:-translate-x-0.5 hover:border-white/40 hover:bg-white hover:text-[#32261C] hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
+                    >
+                        <span className="relative inline-flex h-5 w-5 items-center justify-center overflow-hidden rounded-full bg-white/10 transition-colors duration-300 group-hover:bg-[#EF0101]/10">
+                            <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                viewBox="0 0 20 20"
+                                fill="currentColor"
+                                className="h-3.5 w-3.5 -translate-x-0.5 transition-transform duration-300 ease-out group-hover:-translate-x-1"
+                                aria-hidden
+                            >
+                                <path
+                                    fillRule="evenodd"
+                                    d="M11.78 5.22a.75.75 0 0 1 0 1.06L8.06 10l3.72 3.72a.75.75 0 1 1-1.06 1.06l-4.25-4.25a.75.75 0 0 1 0-1.06l4.25-4.25a.75.75 0 0 1 1.06 0Z"
+                                    clipRule="evenodd"
+                                />
+                            </svg>
+                        </span>
+                        <span className="transition-transform duration-300 group-hover:translate-x-0.5">Back</span>
+                    </button>
+                    <div className="flex min-w-0 flex-wrap items-baseline gap-6 xl:gap-8">
                     <p className="font-bold text-white">
                         <span className="text-gray-400">PID:</span> {formatHubPid(project.pid, project.id)}
                     </p>
@@ -91,6 +125,7 @@ export default function LeadDetailHeader({
                     <p className="font-bold text-white">
                         <span className="text-gray-400">Project Name:</span> {project.projectName}
                     </p>
+                    </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-4 xl:gap-6">
                 {showStartMeeting && onStartMeeting ? (

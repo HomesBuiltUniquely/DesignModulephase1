@@ -59,6 +59,7 @@ type MeetingRow = {
   designerId: number | null;
   designerName: string | null;
   source: MeetingSource;
+  /** Shared reason for cancel or reschedule. */
   cancelReason: string | null;
   startedAt: Date | string | null;
   endedAt: Date | string | null;
@@ -163,6 +164,34 @@ export function isFutureKolkataSlot(dateIso: string, timeLabel: string | null, n
   return minutes > today.minutes;
 }
 
+const HUB_DAY_START_MIN = 10 * 60;
+const HUB_MEETING_DURATION_MIN = 90;
+const HUB_EARLY_SLOT_DURATION_MIN = 60;
+/** After the slot end, wait this long before marking an unstarted meeting abandoned. */
+const MEETING_ABANDON_BUFFER_MIN = 2 * 60;
+
+function hubMeetingDurationForStart(startMin: number): number {
+  return startMin === HUB_DAY_START_MIN ? HUB_EARLY_SLOT_DURATION_MIN : HUB_MEETING_DURATION_MIN;
+}
+
+function addDaysIso(dateIso: string, days: number): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateIso);
+  if (!match) return dateIso;
+  const stamp = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + days);
+  return new Date(stamp).toISOString().slice(0, 10);
+}
+
+function isAtOrPastKolkata(dateIso: string, minutes: number, now: Date): boolean {
+  const today = kolkataParts(now);
+  if (today.date > dateIso) return true;
+  if (today.date < dateIso) return false;
+  return today.minutes >= minutes;
+}
+
+/**
+ * Abandoned only after the meeting end time + 2 hours, and only when the
+ * meeting was never started. Started meetings stay in progress until completed.
+ */
 export function nextMeetingProgress(
   row: {
     meetingStatus: MeetingBookingStatus;
@@ -176,15 +205,32 @@ export function nextMeetingProgress(
 ): MeetingProgress {
   if (row.meetingStatus === "cancelled") return row.progress;
   if (row.progress === "completed") return "completed";
+
   const today = kolkataParts(now);
-  if (row.meetingDate < today.date) return "meeting_abandoned";
-  if (row.meetingDate > today.date) return "scheduled";
   const startMin = clockLabelToMinutes(row.meetingTime);
-  const timeReached = startMin == null ? true : today.minutes >= startMin;
-  if (row.source === "crm") {
-    if (row.startedAt) return "in_progress";
+  const durationMin = startMin == null ? HUB_MEETING_DURATION_MIN : hubMeetingDurationForStart(startMin);
+  // No clock on the row: treat the hub day end (8:00 PM) as the slot end.
+  const endMin = (startMin == null ? 20 * 60 : startMin) + durationMin;
+  let abandonDate = row.meetingDate;
+  let abandonMin = endMin + MEETING_ABANDON_BUFFER_MIN;
+  while (abandonMin >= 24 * 60) {
+    abandonMin -= 24 * 60;
+    abandonDate = addDaysIso(abandonDate, 1);
+  }
+
+  const pastAbandonWindow = isAtOrPastKolkata(abandonDate, abandonMin, now);
+  const neverStarted = !row.startedAt;
+  if (pastAbandonWindow && neverStarted) return "meeting_abandoned";
+
+  if (row.startedAt) return "in_progress";
+  if (row.meetingDate > today.date) return "scheduled";
+  if (row.meetingDate < today.date) {
+    // Past the meeting day but still inside the end+2h window (late slot).
     return "scheduled";
   }
+
+  const timeReached = startMin == null ? true : today.minutes >= startMin;
+  if (row.source === "crm") return "scheduled";
   if (!timeReached) return "scheduled";
   return "in_progress";
 }
@@ -207,7 +253,7 @@ export function ensureLeadMeetingsTable(pool: Pool): Promise<void> {
           designer_id INT NULL,
           source ENUM('design_module','crm') NOT NULL,
           branch VARCHAR(64) NULL,
-          cancel_reason VARCHAR(500) NULL,
+          reschedule_cancel_reason VARCHAR(500) NULL,
           started_at DATETIME NULL,
           ended_at DATETIME NULL,
           created_at DATETIME NOT NULL,
@@ -683,6 +729,7 @@ export async function rescheduleLeadMeeting(
     meetingDate: unknown;
     meetingTime: unknown;
     meetingMode?: unknown;
+    reason?: unknown;
     actor?: MeetingActor | null;
     now?: Date;
     assertDesignerAvailable?: (designerName: string | null, meetingDate: string) => Promise<void>;
@@ -697,6 +744,9 @@ export async function rescheduleLeadMeeting(
   if (!dateIso || !timeLabel) {
     throw new MeetingActionError(400, "A future date and time are required");
   }
+  const reason = String(input.reason || "").trim();
+  if (!reason) throw new MeetingActionError(400, "A reschedule reason is required");
+  if (reason.length > 500) throw new MeetingActionError(400, "Reason must be 500 characters or less");
   const now = input.now || new Date();
   if (!isFutureKolkataSlot(dateIso, timeLabel, now)) {
     throw new MeetingActionError(400, "Pick a date and time that is still ahead");
@@ -722,12 +772,13 @@ export async function rescheduleLeadMeeting(
     },
     now,
   );
+  // Cancel and reschedule share cancel_reason as the single reason column.
   await pool.query(
     `UPDATE lead_meetings
         SET meeting_date = ?, meeting_time = ?, meeting_mode = ?, meeting_status = 'rescheduled',
-            progress = ?, started_at = NULL, ended_at = NULL, updated_at = ?
+            progress = ?, cancel_reason = ?, started_at = NULL, ended_at = NULL, updated_at = ?
       WHERE id = ?`,
-    [dateIso, timeLabel, mode, progress, new Date(), row.id],
+    [dateIso, timeLabel, mode, progress, reason, new Date(), row.id],
   );
   if (row.source === "design_module") {
     await writeDesignPayload(pool, row.leadId, {
@@ -737,7 +788,7 @@ export async function rescheduleLeadMeeting(
       meetingMode: mode,
     });
   }
-  await writeHistory(pool, row.leadId, input.actor, "Meeting rescheduled", `Meeting moved from ${row.meetingDate} ${row.meetingTime || ""} to ${dateIso} ${timeLabel}.`.trim(), {
+  await writeHistory(pool, row.leadId, input.actor, "Meeting rescheduled", `Meeting moved from ${row.meetingDate} ${row.meetingTime || ""} to ${dateIso} ${timeLabel}. ${reason}`.trim(), {
     action: "rescheduled",
     meetingId: row.id,
     meetingType: row.meetingType,
@@ -746,6 +797,7 @@ export async function rescheduleLeadMeeting(
     meetingDate: dateIso,
     meetingTime: timeLabel,
     meetingMode: mode,
+    reason,
   });
   return loadMeeting(pool, row.id);
 }
@@ -959,6 +1011,98 @@ async function leadBranch(pool: Pool, leadId: number): Promise<string | null> {
   );
 }
 
+function positiveAmount(value: unknown): number | null {
+  if (value == null) return null;
+  const numeric = Number(String(value).replace(/,/g, "").replace(/[^\d.]/g, ""));
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  return numeric;
+}
+
+export function meetingEndedIso(value: unknown): string | null {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString();
+  const text = String(value || "").trim();
+  if (!text || text.toLowerCase() === "null") return null;
+  const parsed = new Date(text.includes("T") ? text : text.replace(" ", "T"));
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+}
+
+/**
+ * Quote sent only when the lead has a generated quote code, a final amount,
+ * and at least one version whose CRM share is finished.
+ */
+async function quoteShareByLead(
+  pool: Pool,
+  leadIds: number[],
+): Promise<Map<number, { quoteSent: boolean; quoteFinalAmount: number | null }>> {
+  const out = new Map<number, { quoteSent: boolean; quoteFinalAmount: number | null }>();
+  const ids = [...new Set(leadIds.filter((id) => Number.isInteger(id) && id > 0))];
+  if (ids.length === 0) return out;
+  const placeholders = ids.map(() => "?").join(",");
+  const [leadRows] = await pool.query(
+    `SELECT id AS leadId,
+            prolance_quote_id AS quoteId,
+            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(payload), payload, '{}'), '$.quotation_total')) AS quotationTotal,
+            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(payload), payload, '{}'), '$.quotationTotal')) AS quotationTotalAlt
+       FROM leads
+      WHERE id IN (${placeholders})`,
+    ids,
+  );
+  const [snapRows] = await pool.query(
+    `SELECT lead_id AS leadId,
+            MAX(CASE
+                  WHEN crm_shared_version_number >= 1 AND crm_shared_quote_id > 0 THEN 1
+                  ELSE 0
+                END) AS crmShared,
+            MAX(CASE
+                  WHEN crm_shared_quote_id > 0 THEN crm_shared_quote_id
+                  ELSE 0
+                END) AS sharedQuoteId,
+            MAX(CASE
+                  WHEN JSON_VALID(payload_json) THEN GREATEST(
+                    COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.totalPayableAmount')) AS DECIMAL(18,2)), 0),
+                    COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.finalTotalPrice')) AS DECIMAL(18,2)), 0),
+                    COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.finalPrice')) AS DECIMAL(18,2)), 0)
+                  )
+                  ELSE 0
+                END) AS snapshotAmount
+       FROM lead_prolance_quote_snapshots
+      WHERE lead_id IN (${placeholders})
+      GROUP BY lead_id`,
+    ids,
+  );
+  const leads = new Map<number, { code: boolean; amount: number | null }>();
+  for (const row of leadRows as Record<string, unknown>[]) {
+    const id = Number(row.leadId);
+    const quoteId = Number(row.quoteId);
+    leads.set(id, {
+      code: Number.isFinite(quoteId) && quoteId > 0,
+      amount: positiveAmount(row.quotationTotal) ?? positiveAmount(row.quotationTotalAlt),
+    });
+  }
+  const snaps = new Map<number, { shared: boolean; sharedQuoteId: number; amount: number | null }>();
+  for (const row of snapRows as Record<string, unknown>[]) {
+    const id = Number(row.leadId);
+    const snapshotAmount = positiveAmount(row.snapshotAmount);
+    snaps.set(id, {
+      shared: Number(row.crmShared) === 1,
+      sharedQuoteId: Number(row.sharedQuoteId) || 0,
+      amount: snapshotAmount,
+    });
+  }
+  for (const id of ids) {
+    const lead = leads.get(id);
+    const snap = snaps.get(id);
+    const finalAmount = snap?.amount ?? lead?.amount ?? null;
+    const code = lead?.code === true || (snap?.sharedQuoteId ?? 0) > 0;
+    out.set(id, {
+      quoteSent: code && finalAmount != null && snap?.shared === true,
+      quoteFinalAmount: finalAmount,
+    });
+  }
+  return out;
+}
+
 /** Design meetings whose MOM / meeting-completed milestone is already done are successful, not abandoned. */
 async function reconcileCompletedDesignMeetings(pool: Pool) {
   await pool.query(
@@ -1045,6 +1189,7 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
             m.source,
             m.cancel_reason AS cancelReason,
             m.cancel_files AS cancelFiles,
+            m.ended_at AS endedAt,
             u.name AS assignedDesignerName,
             JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.formData.customer_name')) AS customerName,
             JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.formData.customerName')) AS customerNameAlt,
@@ -1079,7 +1224,19 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
     [...(opts?.leadId ? [opts.leadId] : []), ...(scoped ? designerIds! : [])],
   );
 
-  return (rows as Record<string, unknown>[]).map((row) => ({
+  let shareByLead = new Map<number, { quoteSent: boolean; quoteFinalAmount: number | null }>();
+  try {
+    shareByLead = await quoteShareByLead(
+      pool,
+      (rows as Record<string, unknown>[]).map((row) => Number(row.leadId)),
+    );
+  } catch (err) {
+    console.error("quote share lookup failed", err);
+  }
+
+  return (rows as Record<string, unknown>[]).map((row) => {
+    const share = shareByLead.get(Number(row.leadId));
+    return {
     id: Number(row.id),
     leadId: Number(row.leadId),
     projectId: cleanText(row.projectId),
@@ -1117,7 +1274,12 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
     source: cleanText(row.source),
     cancelReason: cleanText(row.cancelReason),
     cancelFiles: parseCancelFiles(row.cancelFiles),
-  }));
+    reason: cleanText(row.cancelReason),
+    endedAt: meetingEndedIso(row.endedAt),
+    quoteSent: share?.quoteSent === true,
+    quoteFinalAmount: share?.quoteFinalAmount != null ? String(share.quoteFinalAmount) : null,
+  };
+  });
 }
 
 function parseCancelFiles(raw: unknown): { id: number; name: string; mimeType: string | null }[] {

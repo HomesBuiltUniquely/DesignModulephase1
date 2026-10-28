@@ -64,6 +64,12 @@ import {
   startCrmMeeting,
   endCrmMeeting,
 } from "./leadMeetings";
+import {
+  extractFloorPlansFromLeadPayload,
+  floorPlanPersistFields,
+  normalizeFloorPlansFromCrmBody,
+  type FloorPlanItem,
+} from "./floorPlans";
 
 /**
  * Load backend/.env before dotenv. Supports `export KEY=value` and quoted values.
@@ -2661,6 +2667,7 @@ function extractLeadIntakeViewFromPayload(payloadInput: unknown): {
   intakePropertyLocation: string | null;
   intakeMeetingType: string | null;
   floorPlanPublicLink: string | null;
+  floorPlans: FloorPlanItem[];
   salesExecutive: string | null;
   pincode: string | null;
   leadSource: string | null;
@@ -2682,6 +2689,7 @@ function extractLeadIntakeViewFromPayload(payloadInput: unknown): {
     intakePropertyLocation: null as string | null,
     intakeMeetingType: null as string | null,
     floorPlanPublicLink: null as string | null,
+    floorPlans: [] as FloorPlanItem[],
     salesExecutive: null as string | null,
     pincode: null as string | null,
     leadSource: null as string | null,
@@ -2784,15 +2792,18 @@ function extractLeadIntakeViewFromPayload(payloadInput: unknown): {
     formData.meeting_type,
     root.meetingType,
   );
-  const floorPlanPublicLink = pickTrimmedString(
-    connection.floorPlanPublicLink,
-    connection.floorPlanUrl,
-    formData.floorPlanPublicLink,
-    formData.floorPlanUrl,
-    root.floorPlanPublicLink,
-    root.floorPlanUrl,
-    rawPayload.floorPlanPublicLink,
-  );
+  const floorPlans = extractFloorPlansFromLeadPayload(root);
+  const floorPlanPublicLink =
+    floorPlans[0]?.publicUrl ||
+    pickTrimmedString(
+      connection.floorPlanPublicLink,
+      connection.floorPlanUrl,
+      formData.floorPlanPublicLink,
+      formData.floorPlanUrl,
+      root.floorPlanPublicLink,
+      root.floorPlanUrl,
+      rawPayload.floorPlanPublicLink,
+    );
   const salesExecutive = pickTrimmedString(
     formData.sales_executive,
     formData.salesExecutive,
@@ -2823,6 +2834,7 @@ function extractLeadIntakeViewFromPayload(payloadInput: unknown): {
     intakePropertyLocation,
     intakeMeetingType,
     floorPlanPublicLink,
+    floorPlans,
     salesExecutive,
     pincode,
     leadSource,
@@ -7174,12 +7186,10 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
       payload.connection && typeof payload.connection === "object"
         ? (payload.connection as Record<string, unknown>)
         : {};
-    const floorPlanPublicLink = pickTrimmedString(
-      payload.floorPlanPublicLink,
-      payload.floorPlanUrl,
-      connectionIn.floorPlanPublicLink,
-      connectionIn.floorPlanUrl,
+    const floorPlansNorm = normalizeFloorPlansFromCrmBody(
+      payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {},
     );
+    const floorPersist = floorPlanPersistFields(floorPlansNorm);
     const intakeBudget = pickTrimmedString(payload.budget, discoveryIn.budget);
     const intakeLanguage = pickTrimmedString(payload.language, discoveryIn.language);
     const intakeBookingType = pickTrimmedString(
@@ -7220,9 +7230,7 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
         ...(intakeBookingType ? { bookingType: intakeBookingType } : {}),
         ...(intakePropertyLocation ? { propertyLocation: intakePropertyLocation } : {}),
         ...(intakeMeetingType ? { meetingType: intakeMeetingType } : {}),
-        ...(floorPlanPublicLink
-          ? { floorPlanPublicLink, floorPlanUrl: floorPlanPublicLink }
-          : {}),
+        ...floorPersist,
       },
       discovery: {
         propertyLocation: intakePropertyLocation,
@@ -7234,14 +7242,12 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
         ...discoveryIn,
       },
       connection: {
-        floorPlanPublicLink,
-        floorPlanUrl: floorPlanPublicLink,
         meetingType: intakeMeetingType,
         designerName: designerName || null,
         ...connectionIn,
+        ...floorPersist,
       },
-      floorPlanPublicLink,
-      floorPlanUrl: floorPlanPublicLink,
+      ...floorPersist,
       meetingType: intakeMeetingType,
       budget: intakeBudget,
       language: intakeLanguage,
@@ -16528,6 +16534,7 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
           intakePropertyLocation: intake.intakePropertyLocation,
           intakeMeetingType: intake.intakeMeetingType,
           floorPlanPublicLink: intake.floorPlanPublicLink,
+          floorPlans: intake.floorPlans,
           salesExecutive: intake.salesExecutive,
           intakePincode: intake.pincode,
           intakeLeadSource: intake.leadSource,
@@ -17634,6 +17641,7 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
       intakePropertyLocation: intake.intakePropertyLocation,
       intakeMeetingType: intake.intakeMeetingType,
       floorPlanPublicLink: intake.floorPlanPublicLink,
+      floorPlans: intake.floorPlans,
       salesExecutive: intake.salesExecutive,
       intakePincode: intake.pincode,
       intakeLeadSource: intake.leadSource,
@@ -20465,6 +20473,136 @@ app.get("/api/meetings/scheduled", async (req: Request, res: Response) => {
   }
 });
 
+function meetingTypeEmailLabel(meetingType: string | null | undefined): { label: string; stageName: string } {
+  const key = String(meetingType || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, " ");
+  if (key.includes("first cut") || key === "dqc1 first cut") {
+    return { label: "First cut", stageName: "DQC 1 · FIRST CUT DESIGN" };
+  }
+  if (key.includes("material")) {
+    return { label: "Material selection", stageName: "DQC 2 · MATERIAL SELECTION" };
+  }
+  if (key.includes("signoff") || key.includes("sign off")) {
+    return { label: "Design sign off", stageName: "DESIGN SIGN-OFF" };
+  }
+  if (key.includes("pre 10") || key === "pre10" || key.includes("crm")) {
+    return { label: "Pre 10%", stageName: "PRE 10%" };
+  }
+  return { label: meetingType?.trim() || "Design meeting", stageName: "DESIGN MEETING" };
+}
+
+function formatMeetingDateForEmail(dateIso: string | null | undefined): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(dateIso || ""));
+  if (!match) return String(dateIso || "").trim() || "Date to be confirmed";
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${Number(match[3])} ${months[Number(match[2]) - 1]} ${match[1]}`;
+}
+
+/** Customer mail-loop notice when Meeting management reschedules or cancels a milestone meeting. */
+async function notifyCustomerMeetingChange(args: {
+  leadId: number;
+  action: "rescheduled" | "cancelled";
+  meetingType: string | null;
+  meetingMode: string | null;
+  meetingDate: string | null;
+  meetingTime: string | null;
+  previousMeetingDate?: string | null;
+  previousMeetingTime?: string | null;
+  reason?: string | null;
+  designerName?: string | null;
+  actingUserEmail?: string | null;
+}): Promise<void> {
+  try {
+    const [rows] = await pool.query(
+      `SELECT l.pid, l.project_name AS projectName, l.client_email AS clientEmail, l.payload,
+              u.name AS designerName, u.email AS designerEmail
+         FROM leads l
+         LEFT JOIN users u ON u.id = l.assigned_designer_id
+        WHERE l.id = ?
+        LIMIT 1`,
+      [args.leadId],
+    );
+    const row = (rows as Record<string, unknown>[])[0];
+    if (!row) return;
+
+    let payload: Record<string, unknown> = {};
+    try {
+      payload = row.payload ? (JSON.parse(String(row.payload)) as Record<string, unknown>) : {};
+    } catch {
+      payload = {};
+    }
+    const formData =
+      (payload.formData as Record<string, unknown> | undefined) ||
+      (payload.form_data as Record<string, unknown> | undefined) ||
+      (payload.form as Record<string, unknown> | undefined) ||
+      payload;
+    const customerEmail =
+      (typeof row.clientEmail === "string" && row.clientEmail.trim()) ||
+      (typeof formData.email === "string" && formData.email.trim()) ||
+      (typeof formData.sales_email === "string" && formData.sales_email.trim()) ||
+      (typeof payload.email === "string" && payload.email.trim()) ||
+      null;
+    if (!customerEmail) {
+      console.warn("[meeting-update-email] skipped — no customer email", { leadId: args.leadId, action: args.action });
+      return;
+    }
+
+    const customerName =
+      (typeof formData.customer_name === "string" && formData.customer_name.trim()) ||
+      (typeof formData.sales_lead_name === "string" && formData.sales_lead_name.trim()) ||
+      (typeof payload.customer_name === "string" && payload.customer_name.trim()) ||
+      (typeof row.projectName === "string" && row.projectName.trim()) ||
+      "Customer";
+    const designerName =
+      args.designerName ||
+      (typeof row.designerName === "string" && row.designerName.trim()) ||
+      "Your Design Consultant";
+    const projectId = (typeof row.pid === "string" && row.pid.trim()) || `HUB-${args.leadId}`;
+    const typeMeta = meetingTypeEmailLabel(args.meetingType);
+    const modeRaw = String(args.meetingMode || "").toLowerCase();
+    const meetingMode = modeRaw.includes("online") || modeRaw.includes("virtual") ? "online" : "offline";
+    const branchName = resolveLeadBranchName(payload, null) || "HUB Experience Center";
+
+    void triggerMailRouteWithLog({
+      leadId: args.leadId,
+      taskName: args.action === "cancelled" ? `Cancel ${typeMeta.label} meeting` : `Reschedule ${typeMeta.label} meeting`,
+      route: "/api/email/send-meeting-update",
+      visibility: "external",
+      payload: {
+        to: customerEmail,
+        cc: await getMailLoopCcEmails(
+          [args.actingUserEmail || null, typeof row.designerEmail === "string" ? row.designerEmail : null],
+          args.leadId,
+        ),
+        subject: buildMailChainSubject(projectId, row.projectName as string | null, customerName),
+        action: args.action,
+        customerName,
+        leadId: args.leadId,
+        projectId,
+        meetingTypeLabel: typeMeta.label,
+        stageName: typeMeta.stageName,
+        meetingDate: formatMeetingDateForEmail(args.meetingDate),
+        meetingTime: formatTime12Hour(args.meetingTime) || args.meetingTime || undefined,
+        previousMeetingDate: args.previousMeetingDate
+          ? formatMeetingDateForEmail(args.previousMeetingDate)
+          : undefined,
+        previousMeetingTime: args.previousMeetingTime
+          ? formatTime12Hour(args.previousMeetingTime) || args.previousMeetingTime
+          : undefined,
+        meetingMode,
+        branchName,
+        ecLocation: branchName,
+        designerName,
+        reason: args.reason || undefined,
+      },
+    });
+  } catch (err) {
+    console.error("[meeting-update-email] failed (non-fatal)", err);
+  }
+}
+
 app.post("/api/meetings/:id/reschedule", async (req: Request, res: Response) => {
   try {
     const actingUser = await getUserFromSession(req);
@@ -20475,11 +20613,21 @@ app.post("/api/meetings/:id/reschedule", async (req: Request, res: Response) => 
     const meetingId = Number(req.params.id);
     if (!Number.isFinite(meetingId)) return res.status(400).json({ message: "Invalid meeting id" });
     await assertMeetingInViewerScope(actingUser, meetingId);
-    const body = (req.body || {}) as { meetingDate?: unknown; meetingTime?: unknown; meetingMode?: unknown };
+    const body = (req.body || {}) as { meetingDate?: unknown; meetingTime?: unknown; meetingMode?: unknown; reason?: unknown };
+
+    const [beforeRows] = await pool.query(
+      `SELECT meeting_date AS meetingDate, meeting_time AS meetingTime, meeting_type AS meetingType,
+              meeting_mode AS meetingMode, lead_id AS leadId
+         FROM lead_meetings WHERE id = ? LIMIT 1`,
+      [meetingId],
+    );
+    const before = (beforeRows as Record<string, unknown>[])[0];
+
     const meeting = await rescheduleLeadMeeting(pool, meetingId, {
       meetingDate: body.meetingDate,
       meetingTime: body.meetingTime,
       meetingMode: body.meetingMode,
+      reason: body.reason,
       actor: { id: actingUser.id, name: actingUser.name },
       assertDesignerAvailable: async (designerName, meetingDate) => {
         if (!designerName) return;
@@ -20489,6 +20637,23 @@ app.post("/api/meetings/:id/reschedule", async (req: Request, res: Response) => 
         }
       },
     });
+
+    if (meeting) {
+      void notifyCustomerMeetingChange({
+        leadId: Number(meeting.leadId),
+        action: "rescheduled",
+        meetingType: meeting.meetingType,
+        meetingMode: meeting.meetingMode,
+        meetingDate: meeting.meetingDate,
+        meetingTime: meeting.meetingTime,
+        previousMeetingDate: before?.meetingDate != null ? String(before.meetingDate).slice(0, 10) : null,
+        previousMeetingTime: before?.meetingTime != null ? String(before.meetingTime) : null,
+        reason: body.reason != null ? String(body.reason) : null,
+        designerName: meeting.designerName,
+        actingUserEmail: actingUser.email,
+      });
+    }
+
     return res.json({ meeting });
   } catch (err) {
     if (err instanceof MeetingActionError) return res.status(err.status).json({ message: err.message });
@@ -20542,6 +20707,22 @@ app.post("/api/meetings/:id/cancel", acceptStatusNoteFiles, async (req: Request,
       files: saved,
       actor: { id: actingUser.id, name: actingUser.name },
     });
+
+    const cancelled = result?.meeting;
+    if (cancelled) {
+      void notifyCustomerMeetingChange({
+        leadId: Number(cancelled.leadId),
+        action: "cancelled",
+        meetingType: cancelled.meetingType,
+        meetingMode: cancelled.meetingMode,
+        meetingDate: cancelled.meetingDate,
+        meetingTime: cancelled.meetingTime,
+        reason: reason != null ? String(reason) : null,
+        designerName: cancelled.designerName,
+        actingUserEmail: actingUser.email,
+      });
+    }
+
     return res.json(result);
   } catch (err) {
     if (err instanceof MeetingActionError) {

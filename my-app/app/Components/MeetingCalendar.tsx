@@ -745,7 +745,6 @@ function MeetingCard({
   const style = isCancelled(meeting) ? { ...CHANNEL_STYLE.other, label: 'Cancelled', chip: 'bg-rose-50 text-rose-700 border-rose-200', bar: 'bg-rose-400' } : CHANNEL_STYLE[channelOf(meeting)];
   const rows = [
     ['Start', `${dayTitle(meeting.meetingDate)} · ${meeting.meetingTimeLabel || meeting.meetingTime || 'Time not set'}`],
-    ['Phone', meeting.phone || '—'],
     ['Type', style.label],
     ['Designer', designerLabel(meeting.designerName)],
     ['Sales', meeting.salesName || '—'],
