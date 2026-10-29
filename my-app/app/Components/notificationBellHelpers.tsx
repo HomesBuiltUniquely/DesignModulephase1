@@ -511,7 +511,7 @@ export function notificationTabIdsForRole(role: string | null | undefined): Noti
   if (r === 'designer') {
     return NOTIFICATION_FILTERS.map((f) => f.id);
   }
-  if (r === 'project_manager' || r === 'senior_project_manager') {
+  if (r === 'project_manager' || r === 'senior_project_manager' || r === 'operation_manager') {
     return ['all', 'milestone', 'dqc', 'mmt', 'assignment'];
   }
   return NOTIFICATION_FILTERS.map((f) => f.id);
@@ -607,7 +607,7 @@ export function notificationVisibleForRole(
     return type === 'MMT' || type === 'P2P';
   }
 
-  if (r === 'project_manager' || r === 'senior_project_manager') {
+  if (r === 'project_manager' || r === 'senior_project_manager' || r === 'operation_manager') {
     // SPM/PM do not want meeting notifications
     if (type === 'MEETING') return false;
     return payloadIsD2Related(item) || type === 'P2P';

@@ -315,6 +315,7 @@ export default function Dashboard() {
     const isDqcUser = ["dqc_manager", "dqe"].includes((user?.role || "").toLowerCase());
     const isFinanceUser = (user?.role || "").toLowerCase() === "finance";
     const isSpmUser = (user?.role || "").toLowerCase() === "senior_project_manager";
+    const isOpsUser = (user?.role || "").toLowerCase() === "operation_manager";
     const canImportLeads =
         isAdmin ||
         (user?.role || "").toLowerCase() === "territorial_design_manager" ||
@@ -348,7 +349,7 @@ export default function Dashboard() {
 
     // Branch/designer filters are shown for TDM/DM/admin/etc (not designer/DQC/MMT/finance/SPM).
     const showBranchDesignerFilters =
-        !isDesigner && !isDqcUser && !isMmtUser && !isFinanceUser && !isSpmUser;
+        !isDesigner && !isDqcUser && !isMmtUser && !isFinanceUser && !isSpmUser && !isOpsUser;
 
     useEffect(() => {
         if (!sessionId || designersFetched) return;
@@ -531,6 +532,19 @@ export default function Dashboard() {
                 return notCancelledUnlessTab.filter((p) => getPhaseBucket(p) === "20-60%");
             }
             // All Projects (10-60%): keep full D2 queue (includes any edge Pre 10 rows)
+            return notCancelledUnlessTab;
+        }
+
+        if (isOpsUser) {
+            if (isSelected === SideDashboard.Pre_10) {
+                return notCancelledUnlessTab.filter((p) => getPhaseBucket(p) === "Pre 10%");
+            }
+            if (isSelected === SideDashboard.Ten_50) {
+                return notCancelledUnlessTab.filter((p) => getPhaseBucket(p) === "10-20%");
+            }
+            if (isSelected === SideDashboard.Fifty_above) {
+                return notCancelledUnlessTab.filter((p) => getPhaseBucket(p) === "20-60%");
+            }
             return notCancelledUnlessTab;
         }
 
@@ -1793,7 +1807,9 @@ export default function Dashboard() {
                                             <p className="text-sm text-gray-500 mt-0.5">
                                                 {isSpmUser
                                                     ? "Leads where a D2 masking request has been raised — assign PM and manage D2 files."
-                                                    : "Projects between 10% and 60% progress."}
+                                                    : isOpsUser
+                                                      ? "Projects from D1 site measurement through the end of the project. Assign SPM and PM, and upload D1 and D2 files."
+                                                      : "Projects between 10% and 60% progress."}
                                             </p>
                                             {isSpmUser && (
                                                 <div className="flex flex-wrap gap-2 mt-3">

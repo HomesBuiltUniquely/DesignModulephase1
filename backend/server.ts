@@ -1571,6 +1571,19 @@ async function initDb() {
     }
 
     try {
+      const [spmCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'leads' AND COLUMN_NAME = 'assigned_senior_project_manager_id'",
+      );
+      if ((spmCol as any[]).length === 0) {
+        await conn.query(
+          "ALTER TABLE leads ADD COLUMN assigned_senior_project_manager_id INT NULL",
+        );
+      }
+    } catch {
+      // ignore
+    }
+
+    try {
       const [ppc] = await conn.query(
         "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'leads' AND COLUMN_NAME = 'prolance_project_id'",
       );
@@ -5043,6 +5056,30 @@ function canAssignLeads(role: string | null | undefined): boolean {
   return r === "admin" || r === "territorial_design_manager" || r === "deputy_general_manager" || r === "design_manager";
 }
 
+function isOperationManagerRole(role: string | null | undefined): boolean {
+  return (role || "").toLowerCase() === "operation_manager";
+}
+
+/** Projects an operation manager can open: D1 site measurement through the end. */
+async function leadIsInOperationScope(leadId: number): Promise<boolean> {
+  const [rows] = await pool.query(
+    `SELECT 1
+     FROM leads l
+     WHERE l.id = ?
+       AND (
+         EXISTS (SELECT 1 FROM lead_d1_assignments a WHERE a.lead_id = l.id)
+         OR EXISTS (SELECT 1 FROM lead_d2_assignments d WHERE d.lead_id = l.id)
+         OR EXISTS (
+           SELECT 1 FROM lead_task_completions c
+           WHERE c.lead_id = l.id AND c.milestone_index IN (0, 1, 2, 3, 4, 5, 6, 7)
+         )
+       )
+     LIMIT 1`,
+    [leadId],
+  );
+  return (rows as unknown[]).length > 0;
+}
+
 /** Who may pick the project manager on a lead (after DQC 2 approval). */
 function canAssignProjectManagerRole(role: string | null | undefined): boolean {
   const r = (role || "").toLowerCase();
@@ -5050,7 +5087,8 @@ function canAssignProjectManagerRole(role: string | null | undefined): boolean {
     r === "admin" ||
     r === "territorial_design_manager" ||
     r === "deputy_general_manager" ||
-    r === "senior_project_manager"
+    r === "senior_project_manager" ||
+    r === "operation_manager"
   );
 }
 
@@ -5061,7 +5099,7 @@ function canCompleteProjectManagerApproval(
   assignedPmId: number | null | undefined,
 ): boolean {
   const r = (role || "").toLowerCase();
-  if (r === "admin" || r === "senior_project_manager") return true;
+  if (r === "admin" || r === "senior_project_manager" || r === "operation_manager") return true;
   if (r !== "project_manager") return false;
   const pmId = assignedPmId != null ? Number(assignedPmId) : NaN;
   return Number.isFinite(pmId) && pmId > 0 && pmId === userId;
@@ -5077,13 +5115,14 @@ const DQC2_PM_REVERT_TASKS = [
 /** Who may upload D2 masking files (SPM, assigned PM, or Admin). */
 function canUploadD2FilesRole(role: string | null | undefined): boolean {
   const r = (role || "").toLowerCase();
-  return r === "senior_project_manager" || r === "project_manager" || r === "admin";
+  return r === "senior_project_manager" || r === "project_manager" || r === "admin" || r === "operation_manager";
 }
 
 function d2UploadRoleLabel(role: string): string {
   const r = role.toLowerCase();
   if (r === "senior_project_manager") return "Senior Project Manager";
   if (r === "project_manager") return "Project Manager";
+  if (r === "operation_manager") return "Operation Manager";
   if (r === "admin") return "Admin";
   return role.replace(/_/g, " ");
 }
@@ -5091,6 +5130,7 @@ function d2UploadRoleLabel(role: string): string {
 function resolveD2UploadedAsRole(sessionRole: string, bodyRole?: string): string {
   const r = sessionRole.toLowerCase();
   const body = (bodyRole || "").toLowerCase();
+  if (r === "operation_manager") return "operation_manager";
   if (r === "project_manager") return "project_manager";
   if (r === "senior_project_manager") return "senior_project_manager";
   if (r === "admin") {
@@ -6315,13 +6355,14 @@ app.all("/api/auth/create-project-manager", async (req: Request, res: Response) 
     const allowed = [
       "admin",
       "senior_project_manager",
+      "operation_manager",
       "territorial_design_manager",
       "deputy_general_manager",
     ];
     if (!allowed.includes(r)) {
       return res.status(403).json({
         message:
-          "Only Admin, Senior Project Manager, Territory Design Manager, or Deputy General Manager can create a Project Manager",
+          "Only Admin, Operation Manager, Senior Project Manager, Territory Design Manager, or Deputy General Manager can create a Project Manager",
       });
     }
     const { email, password, name, phone, branch } = req.body || {};
@@ -6375,6 +6416,37 @@ app.all("/api/auth/create-senior-project-manager", async (req: Request, res: Res
   }
 });
 
+// Admin: create Operation Manager (D1 through project end; assigns SPM and PM; same actions as SPM)
+app.all("/api/auth/create-operation-manager", async (req: Request, res: Response) => {
+  if (req.method !== "POST") return res.status(405).json({ message: "Use POST" });
+  try {
+    const admin = await getUserFromSession(req);
+    if (!admin) return res.status(401).json({ message: "Unauthorized" });
+    if ((admin.role || "").toLowerCase() !== "admin") {
+      return res.status(403).json({ message: "Only admin can create an Operation Manager" });
+    }
+    const { email, password, name, phone, branch } = req.body || {};
+    const normalized = (email || "").trim().toLowerCase();
+    if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
+    if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
+    const displayName = (name || normalized).trim() || normalized;
+    const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
+    const [result] = await pool.query(
+      "INSERT INTO users (email, password, name, role, phone, branch) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "operation_manager", phoneVal || null, branchVal],
+    );
+    const insertId = (result as any).insertId;
+    return res.status(201).json({
+      user: { id: insertId, email: normalized, name: displayName, role: "operation_manager" },
+    });
+  } catch (err: any) {
+    if (err?.code === "ER_DUP_ENTRY") return res.status(400).json({ message: "A user with this email already exists" });
+    console.error("create-operation-manager error", err);
+    return res.status(500).json({ message: "Failed to create Operation Manager" });
+  }
+});
+
 // List project managers (for assigning to a lead after DQC 2)
 app.get("/api/auth/project-managers", async (req: Request, res: Response) => {
   try {
@@ -6400,9 +6472,9 @@ app.delete("/api/auth/project-managers/:id", async (req: Request, res: Response)
     const actor = await getUserFromSession(req);
     if (!actor) return res.status(401).json({ message: "Unauthorized" });
     const actorRole = (actor.role || "").toLowerCase();
-    if (actorRole !== "admin" && actorRole !== "senior_project_manager") {
+    if (actorRole !== "admin" && actorRole !== "senior_project_manager" && actorRole !== "operation_manager") {
       return res.status(403).json({
-        message: "Only Admin or Senior Project Manager can delete a Project Manager",
+        message: "Only Admin, Operation Manager, or Senior Project Manager can delete a Project Manager",
       });
     }
 
@@ -13392,7 +13464,11 @@ app.post(
       }
 
       const status =
-        isKT || (isD2 && canUploadD2FilesRole(role)) || role === "mmt_manager" || role === "admin"
+        isKT ||
+        (isD2 && canUploadD2FilesRole(role)) ||
+        role === "mmt_manager" ||
+        role === "admin" ||
+        role === "operation_manager"
           ? "approved"
           : "pending";
       const now = new Date();
@@ -13469,6 +13545,7 @@ app.post(
         if (
           role === "mmt_manager" ||
           role === "admin" ||
+          role === "operation_manager" ||
           (isD2 && canUploadD2FilesRole(role))
         ) {
           await pool.query(
@@ -13500,7 +13577,7 @@ app.post(
               approvedBy: user?.name ?? (isD2 ? "Uploader" : "MMT Manager"),
             });
           }
-          if (!isD2 && (role === "mmt_manager" || role === "admin")) {
+          if (!isD2 && (role === "mmt_manager" || role === "admin" || role === "operation_manager")) {
             void notifyD1FilesReadyInternal(
               leadId,
               { name: user?.name, email: user?.email },
@@ -14063,7 +14140,7 @@ app.get("/api/leads/:id/uploads", async (req: Request, res: Response) => {
     const role = (user?.role ?? "").toLowerCase();
     const isMmt = role === "mmt_manager" || role === "mmt_executive";
     const seesAllUploadStatuses =
-      role === "finance" || role === "admin" || role === "senior_project_manager";
+      role === "finance" || role === "admin" || role === "senior_project_manager" || role === "operation_manager";
     let onlyApproved = !isMmt && !seesAllUploadStatuses;
     if (user && role === "project_manager") {
       const [lr] = await pool.query(
@@ -15185,6 +15262,7 @@ app.post(
         "admin",
         "project_manager",
         "senior_project_manager",
+        "operation_manager",
       ];
       if (!allowed.includes(role)) {
         return res.status(403).json({
@@ -15395,6 +15473,7 @@ app.get("/api/leads/:id/dqc-submission-files", async (req: Request, res: Respons
       role === "dqe" ||
       role === "admin" ||
       role === "senior_project_manager" ||
+      role === "operation_manager" ||
       role === "designer" ||
       role === "design_manager" ||
       role === "territorial_design_manager";
@@ -15480,6 +15559,7 @@ app.get("/api/leads/:id/dqc2-submission-files", async (req: Request, res: Respon
       role === "dqe" ||
       role === "admin" ||
       role === "senior_project_manager" ||
+      role === "operation_manager" ||
       role === "designer" ||
       role === "design_manager" ||
       role === "territorial_design_manager";
@@ -16066,7 +16146,8 @@ app.get("/api/leads/:id/d2-masking-request", async (req: Request, res: Response)
     const [rows] = await pool.query(
       `SELECT a.id, a.masking_date as maskingDate, a.masking_time as maskingTime, a.status, a.created_at as createdAt,
               a.requested_spm_id as requestedSpmId,
-              l.assigned_project_manager_id as assignedProjectManagerId
+              l.assigned_project_manager_id as assignedProjectManagerId,
+              l.assigned_senior_project_manager_id as assignedSpmId
        FROM leads l
        LEFT JOIN lead_d2_assignments a ON a.lead_id = l.id
        WHERE l.id = ?
@@ -16075,8 +16156,15 @@ app.get("/api/leads/:id/d2-masking-request", async (req: Request, res: Response)
       [leadId],
     );
     const row = (rows as any[])[0];
-    if (!row?.id) {
-      return res.json({ raised: false });
+    if (!row) return res.json({ raised: false });
+    const assignedSpmId = row.assignedSpmId ?? row.requestedSpmId ?? null;
+    if (!row.id) {
+      return res.json({
+        raised: false,
+        assignedProjectManagerId: row.assignedProjectManagerId ?? null,
+        requestedSpmId: assignedSpmId,
+        assignedSpmId,
+      });
     }
     // Repair: if request exists but task completion is missing, mark it complete
     try {
@@ -16096,7 +16184,8 @@ app.get("/api/leads/:id/d2-masking-request", async (req: Request, res: Response)
       status: row.status || "pending",
       createdAt: row.createdAt,
       assignedProjectManagerId: row.assignedProjectManagerId ?? null,
-      requestedSpmId: row.requestedSpmId ?? null,
+      requestedSpmId: row.requestedSpmId ?? row.assignedSpmId ?? null,
+      assignedSpmId: row.assignedSpmId ?? row.requestedSpmId ?? null,
     });
   } catch (err) {
     console.error("d2-masking-request get error", err);
@@ -16116,9 +16205,9 @@ app.post("/api/leads/:id/d2-masking-request", upload.array("files", 20), async (
     if (role === "mmt_executive" || role === "mmt_manager") {
       return res.status(403).json({ message: "MMT users cannot raise D2 masking requests" });
     }
-    if (role === "senior_project_manager") {
+    if (role === "senior_project_manager" || role === "operation_manager") {
       return res.status(403).json({
-        message: "As Senior Project Manager, assign the project manager from this task instead of submitting a new request.",
+        message: "Assign the project manager from this task instead of submitting a new request.",
       });
     }
     const { maskingDate, maskingTime, requestedSpmId } = req.body || {};
@@ -16396,6 +16485,7 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
     if (queueType === "d2") {
       const canD2Queue =
         role === "senior_project_manager" ||
+        role === "operation_manager" ||
         role === "project_manager" ||
         role === "admin" ||
         role === "service_readonly";
@@ -16651,6 +16741,22 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
       );
       const d2Ids = new Set((d2Rows as { leadId: number }[]).map((r) => r.leadId));
       const filtered = enrichedList.filter((l: any) => d2Ids.has(l.id));
+      return res.json(filtered);
+    }
+
+    if (user && role === "operation_manager") {
+      const [opsRows] = await pool.query(
+        `SELECT l.id
+         FROM leads l
+         WHERE EXISTS (SELECT 1 FROM lead_d1_assignments a WHERE a.lead_id = l.id)
+            OR EXISTS (SELECT 1 FROM lead_d2_assignments d WHERE d.lead_id = l.id)
+            OR EXISTS (
+              SELECT 1 FROM lead_task_completions c
+              WHERE c.lead_id = l.id AND c.milestone_index IN (0, 1, 2, 3, 4, 5, 6, 7)
+            )`,
+      );
+      const opsIds = new Set((opsRows as { id: number }[]).map((r) => r.id));
+      const filtered = enrichedList.filter((l: any) => opsIds.has(l.id));
       return res.json(filtered);
     }
 
@@ -17295,6 +17401,43 @@ app.patch("/api/leads/:id/assign-project-manager", async (req: Request, res: Res
   }
 });
 
+// Operation manager assigns the Senior Project Manager for a project (all SPMs report here).
+app.patch("/api/leads/:id/assign-senior-project-manager", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+  const spmId = Number((req.body || {}).seniorProjectManagerId);
+  if (!Number.isFinite(spmId) || spmId < 1) {
+    return res.status(400).json({ message: "seniorProjectManagerId is required" });
+  }
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user.role || "").toLowerCase();
+    if (!isOperationManagerRole(role) && role !== "admin") {
+      return res.status(403).json({
+        message: "Only an Operation Manager or Admin can assign a Senior Project Manager",
+      });
+    }
+    const [urows] = await pool.query("SELECT id, name, role FROM users WHERE id = ?", [spmId]);
+    const target = (urows as { id?: number; name?: string; role?: string }[])[0];
+    if (!target || String(target.role || "").toLowerCase() !== "senior_project_manager") {
+      return res.status(400).json({ message: "Invalid senior project manager" });
+    }
+    await pool.query(
+      "UPDATE leads SET assigned_senior_project_manager_id = ?, update_at = ? WHERE id = ?",
+      [spmId, new Date(), id],
+    );
+    await pool.query(
+      "UPDATE lead_d2_assignments SET requested_spm_id = ? WHERE lead_id = ?",
+      [spmId, id],
+    );
+    return res.json({ ok: true, seniorProjectManagerId: spmId, name: target.name || null });
+  } catch (err) {
+    console.error("assign-senior-project-manager error", err);
+    return res.status(500).json({ message: "Failed to assign senior project manager" });
+  }
+});
+
 // Reject PM approval: upload pointer-to-change file and revert workflow to DQC 2 submission
 app.post(
   "/api/leads/:id/reject-pm-approval",
@@ -17537,6 +17680,13 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
           [id],
         );
         if ((d2Rows as any[]).length === 0) {
+          return res.status(404).json({ message: "Lead not found" });
+        }
+      }
+
+      if (user && isOperationManagerRole(role)) {
+        const inScope = await leadIsInOperationScope(id);
+        if (!inScope) {
           return res.status(404).json({ message: "Lead not found" });
         }
       }
@@ -20717,7 +20867,7 @@ app.post("/api/meetings/:id/cancel", acceptStatusNoteFiles, async (req: Request,
         meetingMode: cancelled.meetingMode,
         meetingDate: cancelled.meetingDate,
         meetingTime: cancelled.meetingTime,
-        reason: reason != null ? String(reason) : null,
+        reason: noteResult.note != null ? String(noteResult.note) : null,
         designerName: cancelled.designerName,
         actingUserEmail: actingUser.email,
       });

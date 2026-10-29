@@ -146,7 +146,7 @@ export default function D2UploadsPage() {
         }
     };
 
-    const canAccess = ['senior_project_manager', 'project_manager', 'admin'].includes(role || '');
+    const canAccess = ['senior_project_manager', 'project_manager', 'admin', 'operation_manager'].includes(role || '');
     if (role && !canAccess) {
         return (
             <div className="min-h-screen bg-slate-900 p-6">

@@ -71,6 +71,13 @@ export default function AdminPanelPage() {
       label: 'Open Project Managers',
     },
     {
+      title: 'Create Operation Manager',
+      description:
+        'Sees projects from D1 site measurement through the end. Uploads D1 and D2 files, and assigns SPM and PM. Can do everything an SPM can do.',
+      href: '/admin/create-operation-manager',
+      label: 'Create Operation Manager',
+    },
+    {
       title: 'Create Senior Project Manager',
       description: 'Create SPM logins (Admin only). They see all projects and assign project managers after DQC 2 with Admin, TDM, and DGM.',
       href: '/admin/create-senior-project-manager',

@@ -160,6 +160,7 @@ export default function DesignSidebar({
 
   const normalized = role.toLowerCase();
   const isSpm = normalized === "senior_project_manager";
+  const isOps = normalized === "operation_manager";
   const hideWorkspaceFilters = [
     "finance",
     "dqc_manager",
@@ -167,7 +168,9 @@ export default function DesignSidebar({
     "mmt_manager",
     "mmt_executive",
   ].includes(normalized);
-  const phases = isSpm
+  const phases = isOps
+    ? [SideDashboard.All_Projects, SideDashboard.Pre_10, SideDashboard.Ten_50, SideDashboard.Fifty_above]
+    : isSpm
     ? [SideDashboard.All_Projects, SideDashboard.Ten_50, SideDashboard.Fifty_above]
     : Object.values(SideDashboard);
   const statuses = Object.values(SideDashboardStatus);

@@ -15,6 +15,7 @@ const CAN_CREATE_PM = new Set([
   'territorial_design_manager',
   'deputy_general_manager',
   'senior_project_manager',
+  'operation_manager',
 ]);
 
 export default function AdminCreateProjectManagerPage() {

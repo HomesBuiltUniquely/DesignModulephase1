@@ -105,7 +105,7 @@ export default function PopupMmtFilesUploadApproval({
             <p className="text-sm text-gray-600">
                 {uploadType === 'd2_masking' ? (
                     <>
-                        Review D2 masking uploads for <strong>{taskLabel}</strong>. SPM or the assigned project manager can upload multiple PDF files from the Files card or D2 uploads page.
+                        Review D2 site marking uploads for <strong>{taskLabel}</strong>. The operation manager, SPM, or the assigned project manager can upload multiple PDF files from the Files card or D2 uploads page.
                     </>
                 ) : (
                     <>
@@ -129,7 +129,7 @@ export default function PopupMmtFilesUploadApproval({
                 <p className="text-sm text-gray-600">
                     No uploads yet.{' '}
                     {uploadType === 'd2_masking'
-                        ? 'SPM or the assigned project manager can upload PDFs from this lead’s Files card or the D2 uploads page.'
+                        ? 'The operation manager, SPM, or the assigned project manager can upload PDFs from this lead’s Files card or the D2 uploads page.'
                         : 'MMT can upload from this lead’s Files card or the D1 uploads page.'}
                 </p>
             ) : (
