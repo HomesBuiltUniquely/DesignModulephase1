@@ -3,7 +3,7 @@
 import { useRouter } from 'next/navigation';
 import type { LeadshipTypes } from '@/app/Components/Types/Types';
 import type { ImageType } from '../types';
-import MileStonesArray from '@/app/Components/Types/MileStoneArray';
+import { getTrackerMilestones } from '@/app/Components/Types/MileStoneArray';
 import { formatHubPid } from '@/app/lib/formatHubPid';
 import { StartMeetingButton } from '@/app/Components/MeetingWiz/StartMeetingButton';
 
@@ -18,6 +18,9 @@ type Props = {
     /** Admin / TDM / DGM: mark project cancelled */
     showCancelButton?: boolean;
     onCancelClick?: () => void;
+    /** Opens Upload KT Files (independent of tracker unlock). */
+    showKtTransfer?: boolean;
+    onKtTransferClick?: () => void;
     showStartMeeting?: boolean;
     onStartMeeting?: () => void;
     /** Hide the Overview/BOQ/Payment/Escalation navbar (e.g. for MMT). */
@@ -35,8 +38,6 @@ type Props = {
     showLeadSettings?: boolean;
     onLeadSettingsClick?: () => void;
 };
-
-const TOTAL_STAGES = MileStonesArray.MilestonesName.length;
 
 /**
  * Lead/Project detail page header: PID, name, stage progress bar, tabs, team avatars, HOLD/RESUME.
@@ -68,10 +69,14 @@ export default function LeadDetailHeader({
     onLeadSettingsClick,
     showCancelButton,
     onCancelClick,
+    showKtTransfer,
+    onKtTransferClick,
     showStartMeeting,
     onStartMeeting,
 }: Props) {
     const router = useRouter();
+    const trackerMilestones = getTrackerMilestones();
+    const currentVisualIndex = trackerMilestones.findIndex((m) => m.id === currentMilestoneIndex);
     const isCancelled = (project.projectStage || '').trim().toLowerCase() === 'cancelled';
     const holdLabel = isCancelled
         ? 'Cancelled'
@@ -208,6 +213,15 @@ export default function LeadDetailHeader({
                                 CANCELLED
                             </button>
                         )}
+                        {showKtTransfer && !isCancelled && onKtTransferClick && (
+                            <button
+                                type="button"
+                                onClick={onKtTransferClick}
+                                className="px-4 py-2 border border-gray-400 rounded-md font-bold text-white hover:text-[#32261C] hover:bg-[#F1F2F6] transition-colors cursor-pointer"
+                            >
+                                KT TRANSFER
+                            </button>
+                        )}
                     </div>
                     </>
                 )}
@@ -228,19 +242,19 @@ export default function LeadDetailHeader({
             <div className="w-full flex justify-center mt-5 xl:mt-6">
                 <div className="w-full max-w-4xl rounded-xl bg-[#F1F2F6] shadow border border-[#DDCDC1]/80 px-4 py-3 xl:px-6 xl:py-4">
                     <div className="flex items-start justify-between gap-1 xl:gap-2">
-                        {MileStonesArray.MilestonesName.map((milestone, index) => {
-                            const isCompleted = index < currentMilestoneIndex;
-                            const isCurrent = index === currentMilestoneIndex;
-                            const isLast = index === TOTAL_STAGES - 1;
+                        {trackerMilestones.map((milestone, index) => {
+                            const isCompleted = currentVisualIndex >= 0 && index < currentVisualIndex;
+                            const isCurrent = index === currentVisualIndex;
+                            const isLast = index === trackerMilestones.length - 1;
                             return (
                                 <div key={milestone.id} className="flex flex-1 flex-col items-center min-w-0">
                                     <div className="flex items-center w-full">
                                         {index > 0 && (
                                             <div
                                                 className={`flex-1 h-0.5 xl:h-1 min-w-[6px] transition-colors rounded ${
-                                                    index <= currentMilestoneIndex ? 'bg-[#EF0101]/90' : 'bg-gray-300'
+                                                    currentVisualIndex >= 0 && index <= currentVisualIndex ? 'bg-[#EF0101]/90' : 'bg-gray-300'
                                                 }`}
-                                                style={{ opacity: index <= currentMilestoneIndex ? 1 : 0.5 }}
+                                                style={{ opacity: currentVisualIndex >= 0 && index <= currentVisualIndex ? 1 : 0.5 }}
                                             />
                                         )}
                                         <div

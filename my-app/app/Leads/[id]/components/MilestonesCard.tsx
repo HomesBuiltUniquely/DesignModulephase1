@@ -2,7 +2,7 @@
 
 import type { RefObject } from "react";
 import { useState, useEffect } from "react";
-import MileStonesArray from "@/app/Components/Types/MileStoneArray";
+import MileStonesArray, { getTrackerMilestones } from "@/app/Components/Types/MileStoneArray";
 import { hasChecklistForTask } from "./Checklists/checklistRegistry";
 import MilestonePaymentSummary, { type QuotePaymentSummary } from "./MilestonePaymentSummary";
 import { loadQuotePaymentSummary } from "./loadQuotePaymentSummary";
@@ -165,9 +165,10 @@ export default function MilestonesCard({
     return () => clearTimeout(timer);
   }, [isMaximized, currentMilestoneIndex, scrollRef]);
 
+  const trackerMilestones = getTrackerMilestones();
   const milestones = isMaximized
-    ? MileStonesArray.MilestonesName
-    : MileStonesArray.MilestonesName.filter((m) => m.id === currentMilestoneIndex);
+    ? trackerMilestones
+    : trackerMilestones.filter((m) => m.id === currentMilestoneIndex);
 
   return (
     <div className={`${cardClass} flex h-full min-h-0 flex-col`}>
@@ -346,8 +347,8 @@ export default function MilestonesCard({
               );
               const totalPossibleXp = milestoneXp?.totalPossibleXp || 0;
               const earnedMilestoneXp = milestoneXp?.earnedXp || 0;
-              const targetVisualIndex = MileStonesArray.MilestonesName.findIndex((m) => m.id === milestoneIndex);
-              const currentVisualIndex = MileStonesArray.MilestonesName.findIndex((m) => m.id === currentMilestoneIndex);
+              const targetVisualIndex = trackerMilestones.findIndex((m) => m.id === milestoneIndex);
+              const currentVisualIndex = trackerMilestones.findIndex((m) => m.id === currentMilestoneIndex);
               const isCurrent = targetVisualIndex === currentVisualIndex;
               const isNextOrLater = targetVisualIndex > currentVisualIndex;
               const taskList = milestone.taskList;
@@ -357,7 +358,7 @@ export default function MilestonesCard({
               const progressPercent = taskList.length
                 ? Math.min(100, Math.round((completedCount / taskList.length) * 100))
                 : 0;
-              const displayIndex = milestone.id === 7 ? 0 : milestone.id + 1;
+              const displayIndex = targetVisualIndex >= 0 ? targetVisualIndex + 1 : milestone.id + 1;
               const dateRange = getMilestoneDateRangeLabel(
                 milestoneIndex,
                 propertyConfiguration,

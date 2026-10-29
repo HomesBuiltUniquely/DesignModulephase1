@@ -123,20 +123,7 @@ export function getTaskSlaHours(rule: TaskXpRule, configRaw?: string | null): nu
 
 export const TASK_XP_RULES: TaskXpRule[] = [
   // --- Milestone 0: D1 SITE MEASUREMENT ---
-  // Row 1: Group description update | SLA: blank | XP: blank
-  {
-    milestoneIndex: 0,
-    milestoneName: "D1 SITE MEASUREMENT",
-    taskName: "Group description update",
-    aliases: ["Group Description"],
-    slaDays: null,
-    slaHours: 12,
-    baseXp: 0,
-    isActive: true,
-    baselineType: "none",
-    classification: "CONFIRMED",
-  },
-  // Row 2: Mail loop chain 2 initiate | SLA: 12h | XP: 5
+  // Mail loop chain 2 initiate | SLA: 12h | XP badge moved to D1 for MMT request
   {
     milestoneIndex: 0,
     milestoneName: "D1 SITE MEASUREMENT",
@@ -149,19 +136,19 @@ export const TASK_XP_RULES: TaskXpRule[] = [
     ],
     slaDays: 0.5,
     slaHours: 12,
-    baseXp: 5,
+    baseXp: 0,
     isActive: true,
-    baselineType: "group_description_completed",
+    baselineType: "none",
     classification: "CONFIRMED",
   },
-  // Row 3: D1 for MMT request | SLA: 48h | XP: blank
+  // D1 for MMT request | SLA: 48h | XP: 5
   {
     milestoneIndex: 0,
     milestoneName: "D1 SITE MEASUREMENT",
     taskName: "D1 for MMT request",
     slaDays: 2,
     slaHours: 48,
-    baseXp: 0,
+    baseXp: 5,
     isActive: true,
     baselineType: "sales_closure_approval",
     classification: "CONFIRMED",
@@ -538,12 +525,6 @@ export const WORKFLOW_XP_RULES: WorkflowXpRule[] = [
     totalAllowedDays: 4,
     rewardXp: 5,
     steps: [
-      {
-        stepKey: "group_description",
-        stepName: "Group description",
-        aliases: ["Group description update", "Group Description"],
-        stepAllowedDays: 0.5,
-      },
       {
         stepKey: "mail_loop_chain",
         stepName: "Mail loop chain 2",

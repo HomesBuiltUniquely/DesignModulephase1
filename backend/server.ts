@@ -9205,7 +9205,7 @@ app.get("/api/leads/:id/completions", async (req: Request, res: Response) => {
 /** Temp testing: Hub Pass — admin-only milestone bypass (matches frontend MileStoneArray). */
 const HUB_PASS_MILESTONE_TASKS: Record<number, string[]> = {
   7: ["Upload KT files"],
-  0: ["Group Description", "Mail loop chain 2 initiate", "D1 for MMT request", "D1 files upload"],
+  0: ["Mail loop chain 2 initiate", "D1 for MMT request", "D1 files upload"],
   1: [
     "First cut design + quotation discussion meeting request",
     "meeting completed",
@@ -9482,13 +9482,9 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
       switch (milestoneIndex) {
         // Milestone 0: D1 SITE MEASUREMENT
         case 0:
-          if (t === "Group Description") {
-            // Sl no 1 – welcome / mail-loop initiate letter on mark as done
-            return "/api/email/send-mail-loop-chain-initiate";
-          }
           if (t === "Mail loop chain 2 initiate") {
-            // Sl no 2 – collect client + family member emails only (no mail on complete)
-            return null;
+            // Welcome / mail-loop initiate letter — moved here after Group Description was removed
+            return "/api/email/send-mail-loop-chain-initiate";
           }
           if (t === "D1 for MMT request") {
             // External visit mail fires after MMT manager/admin assigns executive
@@ -11264,7 +11260,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
           });
         }
       } else if (emailRoutePath === "/api/email/send-mail-loop-chain-initiate") {
-        // Group Description — await welcome mail so UI can confirm success
+        // Mail loop chain 2 initiate — await welcome mail so UI can confirm success
         try {
           await ensureLeadClientContactColumns(id);
           const [stateRows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [id]);
@@ -11298,7 +11294,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               : mailResult.reason || null,
           });
         } catch (err) {
-          console.error("complete-task Group Description mail error (non-fatal)", {
+          console.error("complete-task mail-loop-chain-initiate mail error (non-fatal)", {
             leadId: id,
             error: err,
           });
@@ -11427,7 +11423,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
 });
 
 // Trigger mail loop chain initiation mail (SMTP-backed).
-// Prefer completing "Group Description" (fires the same route via complete-task).
+// Prefer completing "Mail loop chain 2 initiate" (fires the same route via complete-task).
 // Kept for manual/admin re-send if needed.
 app.post("/api/leads/:id/mail-loop-chain-initiate", async (req: Request, res: Response) => {
   const id = Number(req.params.id);
@@ -16374,7 +16370,7 @@ const MILESTONE_NAMES = [
   "KT TRANSFER",
 ];
 const MILESTONE_TASKS: string[][] = [
-  ["Group Description", "Mail loop chain 2 initiate", "D1 for MMT request", "D1 files upload"],
+  ["Mail loop chain 2 initiate", "D1 for MMT request", "D1 files upload"],
   [
     "First cut design + quotation discussion meeting request",
     "meeting completed",
@@ -20836,7 +20832,7 @@ app.post("/api/meetings/:id/cancel", acceptStatusNoteFiles, async (req: Request,
         meetingMode: cancelled.meetingMode,
         meetingDate: cancelled.meetingDate,
         meetingTime: cancelled.meetingTime,
-        reason: reason != null ? String(reason) : null,
+        reason: noteResult.note,
         designerName: cancelled.designerName,
         actingUserEmail: actingUser.email,
       });
