@@ -430,7 +430,39 @@ export function registerIncentivesRoutes(
           durationFormatted: asStr(meta.durationFormatted) || null,
         });
       }
-      meetings.sort((a, b) => a.completedAt.localeCompare(b.completedAt));
+      // Filter duplicate pre-10 meetings for the same lead/client and count only once.
+      // If multiple meetings exist for the same lead in this fortnight, keep the latest completion.
+      const dedupedMeetingsMap = new Map<string, (typeof meetings)[number]>();
+      for (const m of meetings) {
+        const normName = (m.customerName || "").trim().toLowerCase();
+        const dedupKey =
+          m.leadId > 0
+            ? `lead_${m.leadId}`
+            : normName && normName !== "customer"
+              ? `name_${normName}`
+              : `m_${m.completedAt}`;
+
+        const existing = dedupedMeetingsMap.get(dedupKey);
+        if (!existing || m.completedAt > existing.completedAt) {
+          dedupedMeetingsMap.set(dedupKey, m);
+        }
+      }
+
+      const sortedCandidates = Array.from(dedupedMeetingsMap.values()).sort((a, b) =>
+        b.completedAt.localeCompare(a.completedAt),
+      );
+      const uniqueMeetings: typeof meetings = [];
+      const seenNames = new Set<string>();
+      for (const m of sortedCandidates) {
+        const normName = (m.customerName || "").trim().toLowerCase();
+        if (normName && normName !== "customer") {
+          if (seenNames.has(normName)) continue;
+          seenNames.add(normName);
+        }
+        uniqueMeetings.push(m);
+      }
+      uniqueMeetings.sort((a, b) => a.completedAt.localeCompare(b.completedAt));
+      meetings.splice(0, meetings.length, ...uniqueMeetings);
       const meetingsCompleted = meetings.length;
 
       const deals: Array<Record<string, unknown>> = [];

@@ -47,7 +47,7 @@ const DESIGN_MEETINGS: DesignMeetingDef[] = [
   },
 ];
 
-type MeetingRow = {
+export type MeetingRow = {
   id: number;
   leadId: number;
   meetingDate: string;
@@ -61,6 +61,7 @@ type MeetingRow = {
   source: MeetingSource;
   /** Shared reason for cancel or reschedule. */
   cancelReason: string | null;
+  rescheduleCount?: number;
   startedAt: Date | string | null;
   endedAt: Date | string | null;
 };
@@ -276,6 +277,13 @@ export function ensureLeadMeetingsTable(pool: Pool): Promise<void> {
       if ((cancelFilesCol as unknown[]).length === 0) {
         await pool.query("ALTER TABLE lead_meetings ADD COLUMN cancel_files TEXT NULL AFTER cancel_reason");
       }
+      const [rescheduleCountCol] = await pool.query(
+        `SELECT 1 FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'reschedule_count'`,
+      );
+      if ((rescheduleCountCol as unknown[]).length === 0) {
+        await pool.query("ALTER TABLE lead_meetings ADD COLUMN reschedule_count INT NOT NULL DEFAULT 0 AFTER cancel_files");
+      }
       await pool.query(
         `UPDATE lead_meetings
             SET meeting_mode = CASE
@@ -336,6 +344,7 @@ function mapRow(row: Record<string, unknown>): MeetingRow {
     designerName: row.designerName == null ? null : String(row.designerName),
     source: String(row.source || "design_module") as MeetingSource,
     cancelReason: row.cancelReason == null ? null : String(row.cancelReason),
+    rescheduleCount: Number(row.rescheduleCount || 0),
     startedAt: (row.startedAt as Date | string | null) ?? null,
     endedAt: (row.endedAt as Date | string | null) ?? null,
   };
@@ -354,13 +363,14 @@ const MEETING_SELECT = `
          u.name AS designerName,
          m.source,
          m.cancel_reason AS cancelReason,
+         COALESCE(m.reschedule_count, 0) AS rescheduleCount,
          m.started_at AS startedAt,
          m.ended_at AS endedAt
     FROM lead_meetings m
     LEFT JOIN users u ON u.id = m.designer_id
 `;
 
-async function loadMeeting(pool: Pool, id: number): Promise<MeetingRow | null> {
+export async function loadMeeting(pool: Pool, id: number): Promise<MeetingRow | null> {
   const [rows] = await pool.query(`${MEETING_SELECT} WHERE m.id = ? LIMIT 1`, [id]);
   const row = (rows as Record<string, unknown>[])[0];
   return row ? mapRow(row) : null;
@@ -623,6 +633,7 @@ export async function recordCrmMeeting(
     await pool.query(
       `UPDATE lead_meetings
           SET meeting_date = ?, meeting_time = ?, meeting_mode = ?, meeting_type = ?, meeting_status = 'rescheduled',
+              reschedule_count = reschedule_count + 1,
               progress = ?, started_at = NULL, ended_at = NULL, updated_at = ?
         WHERE id = ?`,
       [dateIso, timeLabel, mode || active.meetingMode, meetingType, progress, now, active.id],
@@ -776,6 +787,7 @@ export async function rescheduleLeadMeeting(
   await pool.query(
     `UPDATE lead_meetings
         SET meeting_date = ?, meeting_time = ?, meeting_mode = ?, meeting_status = 'rescheduled',
+            reschedule_count = reschedule_count + 1,
             progress = ?, cancel_reason = ?, started_at = NULL, ended_at = NULL, updated_at = ?
       WHERE id = ?`,
     [dateIso, timeLabel, mode, progress, reason, new Date(), row.id],
@@ -1190,6 +1202,8 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
             m.cancel_reason AS cancelReason,
             m.cancel_files AS cancelFiles,
             m.ended_at AS endedAt,
+            COALESCE(m.reschedule_count, 0) AS rescheduleCount,
+            (SELECT COUNT(*) FROM lead_history h WHERE h.lead_id = m.lead_id AND (h.event_title = 'Meeting rescheduled' OR JSON_UNQUOTE(JSON_EXTRACT(h.metadata, '$.action')) = 'rescheduled')) AS historyRescheduleCount,
             u.name AS assignedDesignerName,
             JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.formData.customer_name')) AS customerName,
             JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.formData.customerName')) AS customerNameAlt,
@@ -1278,6 +1292,7 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
     endedAt: meetingEndedIso(row.endedAt),
     quoteSent: share?.quoteSent === true,
     quoteFinalAmount: share?.quoteFinalAmount != null ? String(share.quoteFinalAmount) : null,
+    rescheduleCount: Math.max(Number(row.rescheduleCount || 0), Number(row.historyRescheduleCount || 0)),
   };
   });
 }
