@@ -7916,13 +7916,15 @@ async function resolveLatestQuoteLinkForLead(leadId: number): Promise<{
   versionNumber: number | null;
   source: "shared" | "latest";
 } | null> {
-  // Prefer the version shared with the customer at every project stage (DQC must match customer quote).
-  const selected = await loadCrmShareForLead(leadId);
+  // Prefer the quote selected for CRM or shared with the customer. DQC1 and DQC2 must review that version.
+  const selected = await loadSelectedQuoteForLead(leadId);
   if (selected) {
     const base = frontendBase();
+    const versionQuery =
+      selected.versionNumber > 0 ? `?version=${encodeURIComponent(String(selected.versionNumber))}` : "";
     return {
       quoteId: selected.quoteId,
-      customerQuoteUrl: `${base}/quote/${encodeURIComponent(String(selected.quoteId))}`,
+      customerQuoteUrl: `${base}/quote/${encodeURIComponent(String(selected.quoteId))}${versionQuery}`,
       internalQuoteUrl: crmQuoteInternalUrl(leadId, selected.quoteId),
       versionNumber: selected.versionNumber > 0 ? selected.versionNumber : null,
       source: "shared",
@@ -8019,29 +8021,79 @@ async function leadIsPre10Stage(leadId: number): Promise<boolean> {
   }
 }
 
+function asPositiveInt(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** CRM-selected quote, including shares stored on a snapshot tied to this lead by quote id. */
 async function loadCrmShareForLead(leadId: number): Promise<CrmShareSelection | null> {
   try {
     const [rows] = await pool.query(
-      `SELECT crm_shared_version_number AS versionNumber, crm_shared_quote_id AS quoteId
+      `SELECT s.crm_shared_version_number AS versionNumber, s.crm_shared_quote_id AS quoteId
+       FROM lead_prolance_quote_snapshots s
+       WHERE s.crm_shared_quote_id IS NOT NULL
+         AND s.crm_shared_quote_id > 0
+         AND (
+           s.lead_id = ?
+           OR s.quote_id IN (
+             SELECT v.quote_id FROM lead_prolance_quote_versions v WHERE v.lead_id = ?
+           )
+         )
+       ORDER BY (s.lead_id = ?) DESC, s.id DESC
+       LIMIT 1`,
+      [leadId, leadId, leadId],
+    );
+    const row = (rows as { versionNumber?: unknown; quoteId?: unknown }[])[0];
+    const quoteId = asPositiveInt(row?.quoteId);
+    if (quoteId == null) return null;
+    const versionNumber = asPositiveInt(row?.versionNumber) ?? 1;
+    return { quoteId, versionNumber };
+  } catch {
+    return null;
+  }
+}
+
+/** Version locked with Share this to customer, resolved to that version's quote id. */
+async function loadCustomerSharedQuoteForLead(leadId: number): Promise<CrmShareSelection | null> {
+  try {
+    const [rows] = await pool.query(
+      `SELECT customer_shared_version_number AS versionNumber
        FROM lead_prolance_quote_snapshots
        WHERE lead_id = ?
-         AND crm_shared_quote_id IS NOT NULL
-         AND crm_shared_quote_id > 0
+         AND customer_shared_version_number IS NOT NULL
+         AND customer_shared_version_number > 0
        ORDER BY id DESC
        LIMIT 1`,
       [leadId],
     );
-    const row = (rows as { versionNumber?: unknown; quoteId?: unknown }[])[0];
-    const quoteId = row?.quoteId != null ? Number(row.quoteId) : NaN;
-    const versionNumber = row?.versionNumber != null ? Number(row.versionNumber) : NaN;
-    if (!Number.isFinite(quoteId) || quoteId < 1) return null;
-    return {
-      quoteId,
-      versionNumber: Number.isFinite(versionNumber) && versionNumber > 0 ? versionNumber : 1,
-    };
+    const versionNumber = asPositiveInt((rows as { versionNumber?: unknown }[])[0]?.versionNumber);
+    if (versionNumber == null) return null;
+    const [verRows] = await pool.query(
+      `SELECT quote_id AS quoteId
+       FROM lead_prolance_quote_versions
+       WHERE lead_id = ? AND version_number = ?
+       ORDER BY id DESC
+       LIMIT 1`,
+      [leadId, versionNumber],
+    );
+    let quoteId = asPositiveInt((verRows as { quoteId?: unknown }[])[0]?.quoteId);
+    if (quoteId == null) {
+      const versions = await loadProlanceQuoteVersionsForLead(leadId);
+      const matched =
+        versions.find((row) => Number(row.versionNumber) === versionNumber) ||
+        versions[versionNumber - 1];
+      quoteId = asPositiveInt(matched?.quoteId);
+    }
+    if (quoteId == null) return null;
+    return { quoteId, versionNumber };
   } catch {
     return null;
   }
+}
+
+async function loadSelectedQuoteForLead(leadId: number): Promise<CrmShareSelection | null> {
+  return (await loadCrmShareForLead(leadId)) || (await loadCustomerSharedQuoteForLead(leadId));
 }
 
 function appendLatestQuoteLinkToMinutes(minutes: string, quoteUrl: string): string {
@@ -15223,6 +15275,7 @@ async function persistDqc2SubmissionFromMeta(
   quotationFiles: { originalname: string; filename: string; path: string; mimetype: string; size: number }[],
   drawingS3Urls: (string | null)[],
   quotationS3Urls: (string | null)[],
+  quoteMeta?: { quoteId?: number | null; quotationLink?: string | null } | null,
 ): Promise<void> {
   const now = new Date();
   for (let i = 0; i < drawingFiles.length; i++) {
@@ -15245,18 +15298,35 @@ async function persistDqc2SubmissionFromMeta(
       [leadId, user.id, quotationFile.originalname, quotationFile.filename, quotationFile.path, quotationFile.mimetype, quotationFile.size, now, quotationS3],
     );
   }
+  const linkedQuoteId =
+    quoteMeta?.quoteId != null && Number.isFinite(Number(quoteMeta.quoteId)) && Number(quoteMeta.quoteId) > 0
+      ? Number(quoteMeta.quoteId)
+      : null;
+  const linkedQuotationLink =
+    typeof quoteMeta?.quotationLink === "string" && quoteMeta.quotationLink.trim()
+      ? quoteMeta.quotationLink.trim()
+      : null;
+  const fileNames = [
+    ...drawingFiles.map((f) => f.originalname),
+    ...quotationFiles.map((f) => f.originalname),
+  ];
+  if (linkedQuotationLink && quotationFiles.length === 0) {
+    fileNames.push(linkedQuoteId ? `quotation link #${linkedQuoteId}` : "quotation link");
+  }
   const ev = {
     id: `dqc2-submission-${Date.now()}`,
     type: "file_upload",
     taskName: "DQC 2 submission",
     milestoneName: "DQC2",
     timestamp: now.toISOString(),
-    description: `DQC 2 submission: ${[...drawingFiles.map((f) => f.originalname), ...quotationFiles.map((f) => f.originalname)].join(", ")}`,
+    description: `DQC 2 submission: ${fileNames.join(", ")}`,
     user: { name: user.name ?? "User" },
     details: {
       kind: "dqc2_submission",
       drawings: drawingFiles.map((f) => f.originalname),
       quotations: quotationFiles.map((f) => f.originalname),
+      ...(linkedQuoteId != null ? { quoteId: linkedQuoteId } : {}),
+      ...(linkedQuotationLink ? { quotationLink: linkedQuotationLink } : {}),
     },
   };
   await addLeadHistoryEvent(leadId, ev);
@@ -15545,8 +15615,8 @@ app.post("/api/leads/:id/dqc2-submission/presign", async (req: Request, res: Res
     const validQuotations = quotationsInput
       .map((q) => ({ name: (q?.name || "").trim(), mime: (q?.mime || "application/octet-stream").trim() || "application/octet-stream" }))
       .filter((q) => q.name);
-    if (validDrawings.length === 0 || validQuotations.length === 0) {
-      return res.status(400).json({ message: "At least one drawing and one quotation are required" });
+    if (validDrawings.length === 0) {
+      return res.status(400).json({ message: "At least one drawing is required" });
     }
     const ts = Date.now();
     const drawings = await Promise.all(
@@ -15606,6 +15676,8 @@ app.post("/api/leads/:id/dqc2-submission/complete", async (req: Request, res: Re
       quotationKeys?: string[];
       drawingNames?: string[];
       quotationNames?: string[];
+      quoteId?: number | string | null;
+      quotationLink?: string | null;
     };
     const drawingKeys =
       Array.isArray(body.drawingKeys) && body.drawingKeys.length > 0
@@ -15619,8 +15691,15 @@ app.post("/api/leads/:id/dqc2-submission/complete", async (req: Request, res: Re
         : body.quotationKey?.trim()
           ? [body.quotationKey.trim()]
           : [];
-    if (drawingKeys.length === 0 || quotationKeys.length === 0) {
-      return res.status(400).json({ message: "At least one drawingKey and one quotationKey are required" });
+    const quoteIdNum = body.quoteId != null ? Number(body.quoteId) : NaN;
+    const quotationLink =
+      typeof body.quotationLink === "string" && body.quotationLink.trim() ? body.quotationLink.trim() : null;
+    const hasLinkedQuote =
+      Number.isFinite(quoteIdNum) && quoteIdNum > 0 && Boolean(quotationLink);
+    if (drawingKeys.length === 0 || (quotationKeys.length === 0 && !hasLinkedQuote)) {
+      return res.status(400).json({
+        message: "At least one drawingKey and a selected quote (or quotationKey) are required",
+      });
     }
     const prefix = `lead-uploads/lead-${leadId}-`;
     if (drawingKeys.some((k) => !k.startsWith(prefix)) || quotationKeys.some((k) => !k.startsWith(prefix))) {
@@ -15677,6 +15756,7 @@ app.post("/api/leads/:id/dqc2-submission/complete", async (req: Request, res: Re
       quotationFilesMeta,
       drawingS3Urls,
       quotationS3Urls,
+      hasLinkedQuote ? { quoteId: quoteIdNum, quotationLink } : null,
     );
     return res.status(201).json({ ok: true });
   } catch (err) {
@@ -16102,8 +16182,14 @@ app.post(
       const files = (req as any).files as { drawing?: Express.Multer.File[]; quotation?: Express.Multer.File[] };
       const drawingFiles = files?.drawing ?? [];
       const quotationFiles = files?.quotation ?? [];
-      if (drawingFiles.length === 0 || quotationFiles.length === 0) {
-        return res.status(400).json({ message: "At least one drawing and one quotation file are required" });
+      const body = (req.body || {}) as { quoteId?: string | number | null; quotationLink?: string | null };
+      const quoteIdNum = body.quoteId != null ? Number(body.quoteId) : NaN;
+      const quotationLink =
+        typeof body.quotationLink === "string" && body.quotationLink.trim() ? body.quotationLink.trim() : null;
+      const hasLinkedQuote =
+        Number.isFinite(quoteIdNum) && quoteIdNum > 0 && Boolean(quotationLink);
+      if (drawingFiles.length === 0 || (quotationFiles.length === 0 && !hasLinkedQuote)) {
+        return res.status(400).json({ message: "At least one drawing and a selected quotation are required" });
       }
       let drawingS3Urls: (string | null)[] = [];
       let quotationS3Urls: (string | null)[] = [];
@@ -16115,7 +16201,15 @@ app.post(
           quotationFiles.map((f) => uploadLeadFileToS3(leadId, f.path, f.originalname, f.mimetype)),
         );
       }
-      await persistDqc2SubmissionFromMeta(leadId, user, drawingFiles, quotationFiles, drawingS3Urls, quotationS3Urls);
+      await persistDqc2SubmissionFromMeta(
+        leadId,
+        user,
+        drawingFiles,
+        quotationFiles,
+        drawingS3Urls,
+        quotationS3Urls,
+        hasLinkedQuote ? { quoteId: quoteIdNum, quotationLink } : null,
+      );
       return res.status(201).json({ ok: true });
     } catch (err) {
       console.error("dqc2-submission error", err);
@@ -16168,11 +16262,61 @@ app.get("/api/leads/:id/dqc2-submission-files", async (req: Request, res: Respon
       .map((r: any) => ({ id: r.id, originalName: originalName(r) }));
     const drawing = drawingFiles[0];
     const quotation = quotationFiles[0];
+    let quoteId: number | null = null;
+    let quotationLink: string | null = null;
+    if (quotationFiles.length === 0) {
+      try {
+        const [histRows] = await pool.query(
+          `SELECT event FROM lead_history WHERE lead_id = ? ORDER BY created_at DESC LIMIT 80`,
+          [leadId],
+        );
+        for (const row of (histRows as any[]) || []) {
+          let ev: any = row?.event;
+          if (typeof ev === "string") {
+            try {
+              ev = JSON.parse(ev);
+            } catch {
+              continue;
+            }
+          }
+          const details = ev?.details;
+          if (!details || details.kind !== "dqc2_submission") continue;
+          const link =
+            typeof details.quotationLink === "string" && details.quotationLink.trim()
+              ? details.quotationLink.trim()
+              : null;
+          const qid =
+            details.quoteId != null && Number.isFinite(Number(details.quoteId)) && Number(details.quoteId) > 0
+              ? Number(details.quoteId)
+              : null;
+          if (link || qid) {
+            quotationLink = link;
+            quoteId = qid;
+            break;
+          }
+        }
+      } catch (histErr) {
+        console.warn("dqc2-submission-files history quote lookup failed (non-fatal)", histErr);
+      }
+      if (!quotationLink) {
+        try {
+          const latest = await resolveLatestQuoteLinkForLead(leadId);
+          if (latest?.source === "shared" && latest.customerQuoteUrl) {
+            quotationLink = latest.customerQuoteUrl;
+            quoteId = latest.quoteId > 0 ? latest.quoteId : quoteId;
+          }
+        } catch (linkErr) {
+          console.warn("dqc2-submission-files quote link fallback failed (non-fatal)", linkErr);
+        }
+      }
+    }
     return res.json({
       drawing: drawing ?? null,
       quotation: quotation ?? null,
       drawingFiles,
       quotationFiles,
+      quoteId,
+      quotationLink,
     });
   } catch (err) {
     console.error("dqc2-submission-files error", err);
