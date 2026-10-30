@@ -1466,6 +1466,26 @@ async function initDb() {
       // ignore
     }
 
+    // Audit trail for designer career-level (sub_role) changes by Admin / TDM
+    try {
+      await conn.query(`
+        CREATE TABLE IF NOT EXISTS user_role_change_audit (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NOT NULL,
+          changed_by INT NOT NULL,
+          field VARCHAR(64) NOT NULL,
+          from_value VARCHAR(64) NULL,
+          to_value VARCHAR(64) NULL,
+          created_at DATETIME NOT NULL,
+          INDEX idx_user_role_audit_user (user_id),
+          INDEX idx_user_role_audit_changed_by (changed_by),
+          INDEX idx_user_role_audit_created (created_at)
+        );
+      `);
+    } catch {
+      // ignore
+    }
+
     // Designer Meeting Wizard portfolio fields (experience card + inspiration projects)
     for (const colSpec of [
       { name: "designer_title", ddl: "ALTER TABLE users ADD COLUMN designer_title VARCHAR(128) NULL" },
@@ -6528,6 +6548,9 @@ const ADMIN_DELETABLE_ROLES = new Set([
   "territorial_design_manager",
 ]);
 
+/** Designer career ladder stored on users.sub_role (org role stays designer). */
+const DESIGNER_SUB_ROLES = new Set(["INTERN", "JID", "ID", "SID", "PD"]);
+
 function adminDeletableRoleLabel(role: string): string {
   if (role === "designer") return "Designer";
   if (role === "design_manager") return "Design Manager";
@@ -6535,13 +6558,55 @@ function adminDeletableRoleLabel(role: string): string {
   return role;
 }
 
-// Admin: list users by role (designer / design_manager / territorial_design_manager)
+function normalizeDesignerSubRoleCode(raw: unknown): string | null {
+  const key = String(raw || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+  if (!key) return null;
+  const aliases: Record<string, string> = {
+    INTERN: "INTERN",
+    JRDESIGNER: "JID",
+    JUNIORDESIGNER: "JID",
+    JUNIORINTERIORDESIGNER: "JID",
+    JID: "JID",
+    ID: "ID",
+    INTERIORDESIGNER: "ID",
+    SID: "SID",
+    SENIORDESIGNER: "SID",
+    SENIORINTERIORDESIGNER: "SID",
+    PD: "PD",
+    PRINCIPALDESIGNER: "PD",
+    PRINCIPALINTERIORDESIGNER: "PD",
+  };
+  const code = aliases[key] || null;
+  return code && DESIGNER_SUB_ROLES.has(code) ? code : null;
+}
+
+async function designerIsUnderTdm(designerId: number, tdmId: number): Promise<boolean> {
+  const [rows] = await pool.query(
+    `SELECT u.id
+     FROM users u
+     INNER JOIN users dm ON dm.id = u.design_manager_id AND dm.role = 'design_manager'
+     WHERE u.id = ?
+       AND u.role = 'designer'
+       AND dm.territorial_design_manager_id = ?
+     LIMIT 1`,
+    [designerId, tdmId],
+  );
+  return (rows as any[]).length > 0;
+}
+
+// Admin or TDM: list users by role (TDM: designers in territory only)
 app.get("/api/auth/admin/users", async (req: Request, res: Response) => {
   try {
-    const admin = await getUserFromSession(req);
-    if (!admin) return res.status(401).json({ message: "Unauthorized" });
-    if ((admin.role || "").toLowerCase() !== "admin") {
-      return res.status(403).json({ message: "Only admin can list users for management" });
+    const actor = await getUserFromSession(req);
+    if (!actor) return res.status(401).json({ message: "Unauthorized" });
+    const actorRole = (actor.role || "").toLowerCase();
+    const isAdmin = actorRole === "admin";
+    const isTdm = actorRole === "territorial_design_manager";
+    if (!isAdmin && !isTdm) {
+      return res.status(403).json({ message: "Only admin or TDM can list users for management" });
     }
 
     const roleFilter = String(req.query.role || "").trim().toLowerCase();
@@ -6551,9 +6616,28 @@ app.get("/api/auth/admin/users", async (req: Request, res: Response) => {
       });
     }
 
+    if (isTdm && roleFilter !== "designer") {
+      return res.status(403).json({
+        message: "TDM can only list designers in their territory",
+      });
+    }
+
     if (roleFilter === "designer") {
+      if (isTdm) {
+        const [rows] = await pool.query(
+          `SELECT u.id, u.name, u.email, u.role, u.branch, u.phone, u.sub_role AS subRole,
+                  dm.name AS managerName, dm.email AS managerEmail
+           FROM users u
+           INNER JOIN users dm ON dm.id = u.design_manager_id AND dm.role = 'design_manager'
+           WHERE u.role = 'designer'
+             AND dm.territorial_design_manager_id = ?
+           ORDER BY u.name ASC`,
+          [actor.id],
+        );
+        return res.json(rows);
+      }
       const [rows] = await pool.query(
-        `SELECT u.id, u.name, u.email, u.role, u.branch, u.phone,
+        `SELECT u.id, u.name, u.email, u.role, u.branch, u.phone, u.sub_role AS subRole,
                 dm.name AS managerName, dm.email AS managerEmail
          FROM users u
          LEFT JOIN users dm ON dm.id = u.design_manager_id
@@ -6585,6 +6669,101 @@ app.get("/api/auth/admin/users", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("admin users list error", err);
     return res.status(500).json({ message: "Failed to load users" });
+  }
+});
+
+// Admin or TDM: change designer career level (users.sub_role)
+app.patch("/api/auth/admin/users/:id/sub-role", async (req: Request, res: Response) => {
+  try {
+    const actor = await getUserFromSession(req);
+    if (!actor) return res.status(401).json({ message: "Unauthorized" });
+    const actorRole = (actor.role || "").toLowerCase();
+    const isAdmin = actorRole === "admin";
+    const isTdm = actorRole === "territorial_design_manager";
+    if (!isAdmin && !isTdm) {
+      return res.status(403).json({ message: "Only admin or TDM can change designer career levels" });
+    }
+
+    const userId = Number(req.params.id);
+    if (!Number.isFinite(userId) || userId <= 0) {
+      return res.status(400).json({ message: "Invalid user id" });
+    }
+    if (Number(actor.id) === userId) {
+      return res.status(400).json({ message: "You cannot change your own career level here" });
+    }
+
+    const nextSubRole = normalizeDesignerSubRoleCode((req.body || {}).subRole ?? (req.body || {}).sub_role);
+    if (!nextSubRole) {
+      return res.status(400).json({
+        message: "subRole must be one of INTERN, JID, ID, SID, PD",
+      });
+    }
+
+    const [rows] = await pool.query(
+      `SELECT id, name, email, role, sub_role AS subRole
+       FROM users WHERE id = ? LIMIT 1`,
+      [userId],
+    );
+    const target = (rows as any[])[0];
+    if (!target) return res.status(404).json({ message: "User not found" });
+    if (String(target.role || "").toLowerCase() !== "designer") {
+      return res.status(400).json({ message: "Career level can only be set for designers" });
+    }
+
+    if (isTdm) {
+      const allowed = await designerIsUnderTdm(userId, Number(actor.id));
+      if (!allowed) {
+        return res.status(403).json({
+          message: "You can only change career levels for designers under your design managers",
+        });
+      }
+    }
+
+    const fromValue =
+      target.subRole != null && String(target.subRole).trim() !== ""
+        ? String(target.subRole).trim().toUpperCase()
+        : null;
+    if (fromValue === nextSubRole) {
+      return res.json({
+        user: {
+          id: target.id,
+          name: target.name,
+          email: target.email,
+          role: target.role,
+          subRole: nextSubRole,
+        },
+        unchanged: true,
+      });
+    }
+
+    await pool.query(`UPDATE users SET sub_role = ? WHERE id = ? AND role = 'designer'`, [
+      nextSubRole,
+      userId,
+    ]);
+
+    try {
+      await pool.query(
+        `INSERT INTO user_role_change_audit
+         (user_id, changed_by, field, from_value, to_value, created_at)
+         VALUES (?, ?, 'sub_role', ?, ?, ?)`,
+        [userId, actor.id, fromValue, nextSubRole, new Date()],
+      );
+    } catch (auditErr) {
+      console.warn("user_role_change_audit insert failed (non-fatal)", auditErr);
+    }
+
+    return res.json({
+      user: {
+        id: target.id,
+        name: target.name,
+        email: target.email,
+        role: "designer",
+        subRole: nextSubRole,
+      },
+    });
+  } catch (err) {
+    console.error("admin users sub-role patch error", err);
+    return res.status(500).json({ message: "Failed to update designer career level" });
   }
 });
 
@@ -6794,12 +6973,31 @@ app.all("/api/auth/register", async (req: Request, res: Response) => {
       }
     }
 
+    const designerSubRole = targetRole === "designer" ? "INTERN" : null;
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone, branch, design_manager_id, territorial_design_manager_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, targetRole, phoneVal || null, branchVal, designManagerId, territorialDesignManagerId],
+      "INSERT INTO users (email, password, name, role, phone, branch, design_manager_id, territorial_design_manager_id, sub_role) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        normalized,
+        String(password),
+        displayName,
+        targetRole,
+        phoneVal || null,
+        branchVal,
+        designManagerId,
+        territorialDesignManagerId,
+        designerSubRole,
+      ],
     );
     const insertId = (result as any).insertId;
-    return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: targetRole } });
+    return res.status(201).json({
+      user: {
+        id: insertId,
+        email: normalized,
+        name: displayName,
+        role: targetRole,
+        ...(designerSubRole ? { subRole: designerSubRole } : {}),
+      },
+    });
   } catch (err: any) {
     if (err?.code === "ER_DUP_ENTRY") return res.status(400).json({ message: "A user with this email already exists" });
     console.error("register (TDM) error", err);

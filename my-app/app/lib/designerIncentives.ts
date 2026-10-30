@@ -146,7 +146,7 @@ export type WeightedRevenueBreakdown = {
 export type DesignerIncentivesData = {
   designerId: number;
   designerName: string;
-  /** Normalized sub-role used for the target (JID / ID / SID / PD) */
+  /** Normalized sub-role used for the target (INTERN / JID / ID / SID / PD) */
   subRole: string | null;
   totalTarget: number;
   monthlyTarget: number;
@@ -223,10 +223,16 @@ export type IncentiveMember = {
   subRole?: string | null;
 };
 
-export type IncentiveSubRoleCode = "JID" | "ID" | "SID" | "PD";
+/**
+ * Incentive target codes. INTERN is a career-ladder level; until product defines
+ * a separate Intern monthly target, Intern uses the JID target for calculations.
+ */
+export type IncentiveSubRoleCode = "INTERN" | "JID" | "ID" | "SID" | "PD";
 
 /** Monthly targets by sub-role (₹). Fortnight target = monthly / 2. */
 export const SUB_ROLE_MONTHLY_TARGETS: Record<IncentiveSubRoleCode, number> = {
+  /** Same as JID until a distinct Intern target is defined. */
+  INTERN: 25_00_000,
   JID: 25_00_000,
   ID: 30_00_000,
   SID: 35_00_000,
@@ -241,9 +247,11 @@ export const INCENTIVE_CYCLE_TARGET = Math.round(SUB_ROLE_MONTHLY_TARGETS.ID / 2
 export const INCENTIVE_MONTHLY_TARGET = SUB_ROLE_MONTHLY_TARGETS.ID;
 
 const SUB_ROLE_ALIASES: Record<string, IncentiveSubRoleCode> = {
+  INTERN: "INTERN",
   JID: "JID",
   JUNIORINTERIORDESIGNER: "JID",
   JUNIORDESIGNER: "JID",
+  JRDESIGNER: "JID",
   ID: "ID",
   INTERIORDESIGNER: "ID",
   SID: "SID",
@@ -251,6 +259,7 @@ const SUB_ROLE_ALIASES: Record<string, IncentiveSubRoleCode> = {
   SENIORDESIGNER: "SID",
   PD: "PD",
   PRINCIPALDESIGNER: "PD",
+  PRINCIPALINTERIORDESIGNER: "PD",
 };
 
 export function normalizeIncentiveSubRole(raw?: string | null): IncentiveSubRoleCode | null {
