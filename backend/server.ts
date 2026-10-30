@@ -59,6 +59,7 @@ import {
   markDesignMeetingCompleted,
   recordCrmMeeting,
   recordDesignMeetingFromSchedule,
+  loadMeeting,
   rescheduleLeadMeeting,
   startActiveCrmMeetingForLead,
   startCrmMeeting,
@@ -980,14 +981,15 @@ async function triggerMailRouteWithLog(args: {
       body: bodyStr,
     });
     if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
+      const contentType = resp.headers.get("content-type") || "unknown";
+      await resp.body?.cancel();
       console.error("[mail-trigger-failed]", {
         leadId: args.leadId,
         route: args.route,
         status: resp.status,
         taskName: args.taskName,
         visibility: args.visibility,
-        body,
+        contentType,
       });
       return false;
     }
@@ -4484,8 +4486,9 @@ async function triggerInternalMailRoute(
       body: JSON.stringify(payload),
     });
     if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
-      console.error("[internal-mail-failed]", { route, status: resp.status, body });
+      const contentType = resp.headers.get("content-type") || "unknown";
+      await resp.body?.cancel();
+      console.error("[internal-mail-failed]", { route, status: resp.status, contentType });
     }
   } catch (error) {
     console.error("[internal-mail-error]", { route, error });
@@ -6920,6 +6923,128 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
   }
 });
 
+// CRM helper to resolve a designer's design manager
+app.get("/api/crm/designer-manager", async (req: Request, res: Response) => {
+  try {
+    const email = String(req.query.email || "").trim();
+    const name = String(req.query.name || "").trim();
+    if (!email && !name) {
+      return res.status(400).json({ error: "email or name is required" });
+    }
+    const [rows] = await pool.query<any[]>(
+      `SELECT dm.id, dm.name, dm.email
+       FROM users u
+       JOIN users dm ON dm.id = u.design_manager_id
+       WHERE (? != '' AND LOWER(u.email) = LOWER(?))
+          OR (? != '' AND LOWER(u.name) = LOWER(?))
+       LIMIT 1`,
+      [email, email, name, name]
+    );
+    if (!rows || rows.length === 0) {
+      return res.status(404).json({ message: "Design manager not found" });
+    }
+    return res.json({
+      id: rows[0].id,
+      name: rows[0].name,
+      email: rows[0].email,
+    });
+  } catch (err: any) {
+    console.error("Error resolving design manager:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// CRM helper to resolve meeting CC recipients: assigned designer, design manager, all TDMs, all admins
+app.get("/api/crm/meeting-cc-emails", async (req: Request, res: Response) => {
+  try {
+    const designerEmail = String(req.query.designerEmail || "").trim();
+    const designerName = String(req.query.designerName || "").trim();
+    const leadId = req.query.leadId ? Number(req.query.leadId) : undefined;
+
+    let resolvedDesignerEmail = designerEmail;
+    if (!resolvedDesignerEmail && designerName) {
+      const [dRows] = await pool.query<any[]>(
+        "SELECT email FROM users WHERE role = 'designer' AND LOWER(name) = LOWER(?) AND email IS NOT NULL AND email != '' LIMIT 1",
+        [designerName]
+      );
+      if (dRows && dRows[0]?.email) {
+        resolvedDesignerEmail = dRows[0].email;
+      }
+    }
+
+    let designManagerEmail: string | null = null;
+    let designManagerName: string | null = null;
+    if (resolvedDesignerEmail || designerName) {
+      const [dmRows] = await pool.query<any[]>(
+        `SELECT dm.id, dm.name, dm.email
+         FROM users u
+         JOIN users dm ON dm.id = u.design_manager_id
+         WHERE (? != '' AND LOWER(u.email) = LOWER(?))
+            OR (? != '' AND LOWER(u.name) = LOWER(?))
+         LIMIT 1`,
+        [resolvedDesignerEmail, resolvedDesignerEmail, designerName, designerName]
+      );
+      if (dmRows && dmRows[0]?.email) {
+        designManagerEmail = dmRows[0].email;
+        designManagerName = dmRows[0].name;
+      }
+    }
+
+    if (!designManagerEmail && leadId && Number.isFinite(leadId)) {
+      const [dmLead] = await pool.query<any[]>(
+        `SELECT dm.id, dm.name, dm.email
+         FROM leads l
+         JOIN users d ON d.id = l.assigned_designer_id
+         JOIN users dm ON dm.id = d.design_manager_id
+         WHERE l.id = ? AND dm.email IS NOT NULL AND dm.email != '' LIMIT 1`,
+        [leadId]
+      );
+      if (dmLead && dmLead[0]?.email) {
+        designManagerEmail = dmLead[0].email;
+        designManagerName = dmLead[0].name;
+      }
+    }
+
+    // All TDMs
+    const [tdmRows] = await pool.query<any[]>(
+      "SELECT email FROM users WHERE role = 'territorial_design_manager' AND email IS NOT NULL AND email != ''"
+    );
+    const tdmEmails = (tdmRows || [])
+      .map((r) => String(r.email).trim().toLowerCase())
+      .filter((e) => e.length > 0 && e.includes("@"));
+
+    // All Admins
+    const [adminRows] = await pool.query<any[]>(
+      "SELECT email FROM users WHERE role = 'admin' AND email IS NOT NULL AND email != ''"
+    );
+    const adminEmails = (adminRows || [])
+      .map((r) => String(r.email).trim().toLowerCase())
+      .filter((e) => e.length > 0 && e.includes("@"));
+
+    const allCcSet = new Set<string>();
+    if (resolvedDesignerEmail && resolvedDesignerEmail.includes("@")) {
+      allCcSet.add(resolvedDesignerEmail.toLowerCase());
+    }
+    if (designManagerEmail && designManagerEmail.includes("@")) {
+      allCcSet.add(designManagerEmail.toLowerCase());
+    }
+    tdmEmails.forEach((e) => allCcSet.add(e));
+    adminEmails.forEach((e) => allCcSet.add(e));
+
+    return res.json({
+      designerEmail: resolvedDesignerEmail || null,
+      designManagerEmail: designManagerEmail || null,
+      designManagerName: designManagerName || null,
+      tdmEmails: Array.from(new Set(tdmEmails)),
+      adminEmails: Array.from(new Set(adminEmails)),
+      allCcEmails: Array.from(allCcSet),
+    });
+  } catch (err: any) {
+    console.error("Error fetching meeting CC emails:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // External system intake: create a lead directly in Pre 10%.
 // This endpoint is meant to be called by another project/service.
 app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
@@ -7330,7 +7455,13 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
         );
         try {
           const crmText = String(intakeMeetingType || "");
-          await recordCrmMeeting(pool, {
+          const [activeMtgRows] = await pool.query(
+            "SELECT id, DATE_FORMAT(meeting_date, '%Y-%m-%d') as meetingDate, meeting_time as meetingTime FROM lead_meetings WHERE lead_id = ? AND source = 'crm' AND meeting_status <> 'cancelled' AND progress <> 'completed' ORDER BY id DESC LIMIT 1",
+            [existingLeadId],
+          );
+          const activeMtg = (activeMtgRows as any[])[0];
+
+          const recordedMeeting = await recordCrmMeeting(pool, {
             leadId: existingLeadId,
             meetingDate: appointmentDate,
             meetingTime: appointmentSlot,
@@ -7339,6 +7470,30 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
             designerId: assignedDesignerId,
             actor: { name: "CRM" },
           });
+
+          if (
+            activeMtg &&
+            appointmentDate &&
+            (activeMtg.meetingDate !== appointmentDate || (appointmentSlot && activeMtg.meetingTime !== appointmentSlot))
+          ) {
+            const intakeRescheduleCount =
+              typeof ((req.body as any)?.rescheduleCount ?? (req.body as any)?.schedule?.rescheduleCount) === "number"
+                ? Number((req.body as any).rescheduleCount ?? (req.body as any)?.schedule?.rescheduleCount)
+                : (recordedMeeting?.rescheduleCount || 1);
+
+            void sendMeetingRescheduledMail(existingLeadId, {
+              previousDate: activeMtg.meetingDate,
+              previousTime: activeMtg.meetingTime,
+              newDate: appointmentDate,
+              newTime: appointmentSlot,
+              meetingType: intakeMeetingType || "pre_10",
+              meetingMode: /virtual/i.test(crmText) ? "online" : "offline",
+              rescheduleCount: intakeRescheduleCount,
+              actorEmail: null,
+            }).catch((mailErr) => {
+              console.error("[external-intake] reschedule mail error", mailErr);
+            });
+          }
         } catch (meetingErr) {
           console.error("[external-intake] crm meeting sync failed", meetingErr);
         }
@@ -20465,6 +20620,252 @@ app.get("/api/meetings/scheduled", async (req: Request, res: Response) => {
   }
 });
 
+function friendlyMeetingLabel(meetingType?: string | null): string {
+  const t = String(meetingType || "").toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!t || t === "pre 10" || t === "pre10" || t === "crm appointment") {
+    return "Pre 10% Initial Consultation";
+  }
+  if (t.includes("first cut") || t.includes("firstcut") || t.includes("dqc1")) {
+    return "First Cut Design Discussion";
+  }
+  if (t.includes("material") || t.includes("dqc2")) {
+    return "Material Selection & Quotation Discussion";
+  }
+  if (t.includes("signoff") || t.includes("sign off")) {
+    return "Design Sign-Off Meeting";
+  }
+  if (t.includes("site")) {
+    return "Site Visit";
+  }
+  return String(meetingType || "Design Meeting").replace(/_/g, " ").trim();
+}
+
+function formatMeetingDateDisplay(dateStr?: string | null): string {
+  if (!dateStr) return "";
+  const match = String(dateStr).trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return String(dateStr);
+  const [, y, m, d] = match;
+  const months = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+  ];
+  const monthName = months[parseInt(m, 10) - 1] || m;
+  return `${monthName} ${parseInt(d, 10)}, ${y}`;
+}
+
+async function sendMeetingRescheduledMail(
+  leadId: number,
+  args: {
+    previousDate?: string | null;
+    previousTime?: string | null;
+    newDate?: string | null;
+    newTime?: string | null;
+    meetingType?: string | null;
+    meetingMode?: string | null;
+    rescheduleCount?: number | null;
+    actorEmail?: string | null;
+  },
+): Promise<void> {
+  try {
+    const [rows] = await pool.query(
+      `SELECT l.pid as projectPid,
+              l.project_name as projectName,
+              l.client_email as clientEmail,
+              l.client_email_alt as alternateClientEmail,
+              l.payload,
+              u.name as designerName,
+              u.email as designerEmail
+       FROM leads l
+       LEFT JOIN users u ON u.id = l.assigned_designer_id
+       WHERE l.id = ?`,
+      [leadId],
+    );
+    const row = (rows as any[])[0];
+    if (!row) return;
+
+    let payload: any = {};
+    try {
+      payload = row.payload ? (typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload) : {};
+    } catch {
+      payload = {};
+    }
+
+    const customerTo = collectLeadClientEmails(
+      {
+        clientEmail: row.clientEmail,
+        alternateClientEmail: row.alternateClientEmail,
+      },
+      payload,
+    );
+    if (!customerTo.length) {
+      console.warn("[meeting-mail] No customer email found on lead for reschedule notify", leadId);
+      return;
+    }
+
+    const customerName =
+      payload.customer_name ||
+      payload?.form?.customer_name ||
+      payload?.formData?.customer_name ||
+      row.projectName ||
+      "Customer";
+    const designerName =
+      row.designerName ||
+      payload?.designer_name ||
+      payload?.designerName ||
+      "Your Design Consultant";
+
+    const isCrmPre10 =
+      String(args.meetingType || "").toLowerCase().includes("pre_10") ||
+      String(args.meetingType || "").toLowerCase().includes("pre 10");
+    const count = Math.max(1, Number(args.rescheduleCount || 1));
+    const meetingTypeLabel = isCrmPre10
+      ? `Meeting Rescheduled ${count}`
+      : friendlyMeetingLabel(args.meetingType);
+
+    const mailChainCc = await getMailLoopCcEmails(
+      [args.actorEmail || null, row.designerEmail || null],
+      leadId,
+    );
+    const toSet = new Set(customerTo.map((e) => e.toLowerCase()));
+    const ccOnly = mailChainCc.filter((e) => !toSet.has(e.toLowerCase()));
+
+    const subject = isCrmPre10
+      ? buildMailChainSubject(row.projectPid || null, row.projectName || null, customerName) + ` – Meeting Rescheduled ${count}`
+      : buildMailChainSubject(row.projectPid || null, row.projectName || null, customerName) + ` – Meeting Rescheduled: ${meetingTypeLabel}`;
+
+    const branchName = resolveLeadBranchName(payload) || "HUB Experience Center";
+    const meetingLink =
+      payload.meetingLink ||
+      payload.designScheduledMeeting?.meetingLink ||
+      payload.crmSchedule?.meetingLink ||
+      "";
+
+    await triggerMailRouteWithLog({
+      leadId,
+      taskName: `Meeting rescheduled: ${meetingTypeLabel}`,
+      route: "/api/email/send-meeting-rescheduled",
+      visibility: "external",
+      payload: {
+        to: customerTo.length === 1 ? customerTo[0] : customerTo,
+        cc: ccOnly,
+        subject,
+        customerName,
+        projectId: row.projectPid || `HUB-${leadId}`,
+        meetingTypeLabel,
+        previousDate: formatMeetingDateDisplay(args.previousDate),
+        previousTime: args.previousTime || "",
+        newDate: formatMeetingDateDisplay(args.newDate),
+        newTime: args.newTime || "",
+        meetingMode: args.meetingMode || "offline",
+        meetingLink,
+        branchName,
+        designerName,
+      },
+    });
+  } catch (err) {
+    console.error("[meeting-mail] sendMeetingRescheduledMail error", err);
+  }
+}
+
+async function sendMeetingCancelledMail(
+  leadId: number,
+  args: {
+    meetingDate?: string | null;
+    meetingTime?: string | null;
+    meetingType?: string | null;
+    meetingMode?: string | null;
+    reason?: string | null;
+    actorEmail?: string | null;
+  },
+): Promise<void> {
+  try {
+    const [rows] = await pool.query(
+      `SELECT l.pid as projectPid,
+              l.project_name as projectName,
+              l.client_email as clientEmail,
+              l.client_email_alt as alternateClientEmail,
+              l.payload,
+              u.name as designerName,
+              u.email as designerEmail
+       FROM leads l
+       LEFT JOIN users u ON u.id = l.assigned_designer_id
+       WHERE l.id = ?`,
+      [leadId],
+    );
+    const row = (rows as any[])[0];
+    if (!row) return;
+
+    let payload: any = {};
+    try {
+      payload = row.payload ? (typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload) : {};
+    } catch {
+      payload = {};
+    }
+
+    const customerTo = collectLeadClientEmails(
+      {
+        clientEmail: row.clientEmail,
+        alternateClientEmail: row.alternateClientEmail,
+      },
+      payload,
+    );
+    if (!customerTo.length) {
+      console.warn("[meeting-mail] No customer email found on lead for cancel notify", leadId);
+      return;
+    }
+
+    const customerName =
+      payload.customer_name ||
+      payload?.form?.customer_name ||
+      payload?.formData?.customer_name ||
+      row.projectName ||
+      "Customer";
+    const designerName =
+      row.designerName ||
+      payload?.designer_name ||
+      payload?.designerName ||
+      "Your Design Consultant";
+    const isCrmPre10 =
+      String(args.meetingType || "").toLowerCase().includes("pre_10") ||
+      String(args.meetingType || "").toLowerCase().includes("pre 10");
+    const meetingTypeLabel = isCrmPre10
+      ? "Meeting Cancelled"
+      : friendlyMeetingLabel(args.meetingType);
+
+    const mailChainCc = await getMailLoopCcEmails(
+      [args.actorEmail || null, row.designerEmail || null],
+      leadId,
+    );
+    const toSet = new Set(customerTo.map((e) => e.toLowerCase()));
+    const ccOnly = mailChainCc.filter((e) => !toSet.has(e.toLowerCase()));
+
+    const subject = isCrmPre10
+      ? buildMailChainSubject(row.projectPid || null, row.projectName || null, customerName) + ` – Meeting Cancelled`
+      : buildMailChainSubject(row.projectPid || null, row.projectName || null, customerName) + ` – Meeting Cancelled: ${meetingTypeLabel}`;
+
+    await triggerMailRouteWithLog({
+      leadId,
+      taskName: `Meeting cancelled: ${meetingTypeLabel}`,
+      route: "/api/email/send-meeting-cancelled",
+      visibility: "external",
+      payload: {
+        to: customerTo.length === 1 ? customerTo[0] : customerTo,
+        cc: ccOnly,
+        subject,
+        customerName,
+        projectId: row.projectPid || `HUB-${leadId}`,
+        meetingTypeLabel,
+        meetingDate: formatMeetingDateDisplay(args.meetingDate),
+        meetingTime: args.meetingTime || "",
+        reason: args.reason || "",
+        designerName,
+      },
+    });
+  } catch (err) {
+    console.error("[meeting-mail] sendMeetingCancelledMail error", err);
+  }
+}
+
 app.post("/api/meetings/:id/reschedule", async (req: Request, res: Response) => {
   try {
     const actingUser = await getUserFromSession(req);
@@ -20475,6 +20876,9 @@ app.post("/api/meetings/:id/reschedule", async (req: Request, res: Response) => 
     const meetingId = Number(req.params.id);
     if (!Number.isFinite(meetingId)) return res.status(400).json({ message: "Invalid meeting id" });
     await assertMeetingInViewerScope(actingUser, meetingId);
+    const beforeMeeting = await loadMeeting(pool, meetingId);
+    if (!beforeMeeting) return res.status(404).json({ message: "Meeting not found" });
+
     const body = (req.body || {}) as { meetingDate?: unknown; meetingTime?: unknown; meetingMode?: unknown };
     const meeting = await rescheduleLeadMeeting(pool, meetingId, {
       meetingDate: body.meetingDate,
@@ -20489,6 +20893,23 @@ app.post("/api/meetings/:id/reschedule", async (req: Request, res: Response) => 
         }
       },
     });
+
+    if (meeting) {
+      const nextCount = Number(meeting.rescheduleCount || (beforeMeeting.rescheduleCount || 0) + 1);
+      void sendMeetingRescheduledMail(meeting.leadId, {
+        previousDate: beforeMeeting.meetingDate,
+        previousTime: beforeMeeting.meetingTime,
+        newDate: meeting.meetingDate,
+        newTime: meeting.meetingTime,
+        meetingType: meeting.meetingType,
+        meetingMode: meeting.meetingMode,
+        rescheduleCount: nextCount,
+        actorEmail: actingUser.email,
+      }).catch((mailErr) => {
+        console.error("[reschedule-meeting] mail send failed (non-fatal)", mailErr);
+      });
+    }
+
     return res.json({ meeting });
   } catch (err) {
     if (err instanceof MeetingActionError) return res.status(err.status).json({ message: err.message });
@@ -20527,11 +20948,12 @@ app.post("/api/meetings/:id/cancel", acceptStatusNoteFiles, async (req: Request,
       return res.status(400).json({ message: "Invalid meeting id" });
     }
     await assertMeetingInViewerScope(actingUser, meetingId);
-    const [leadRows] = await pool.query(
-      "SELECT lead_id as leadId FROM lead_meetings WHERE id = ? LIMIT 1",
-      [meetingId],
-    );
-    const leadId = Number((leadRows as { leadId?: number }[])[0]?.leadId);
+    const beforeMeeting = await loadMeeting(pool, meetingId);
+    if (!beforeMeeting) {
+      unlinkUploaded(files);
+      return res.status(404).json({ message: "Meeting not found" });
+    }
+    const leadId = beforeMeeting.leadId;
     if (!Number.isFinite(leadId) || leadId <= 0) {
       unlinkUploaded(files);
       return res.status(404).json({ message: "Meeting not found" });
@@ -20542,6 +20964,18 @@ app.post("/api/meetings/:id/cancel", acceptStatusNoteFiles, async (req: Request,
       files: saved,
       actor: { id: actingUser.id, name: actingUser.name },
     });
+
+    void sendMeetingCancelledMail(leadId, {
+      meetingDate: beforeMeeting.meetingDate,
+      meetingTime: beforeMeeting.meetingTime,
+      meetingType: beforeMeeting.meetingType,
+      meetingMode: beforeMeeting.meetingMode,
+      reason: noteResult.note,
+      actorEmail: actingUser.email,
+    }).catch((mailErr) => {
+      console.error("[cancel-meeting] mail send failed (non-fatal)", mailErr);
+    });
+
     return res.json(result);
   } catch (err) {
     if (err instanceof MeetingActionError) {

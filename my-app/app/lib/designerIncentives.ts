@@ -776,6 +776,46 @@ function multiplierForSlab(slab: number): number {
  * Build designer incentives from real (or demo) deal inputs for a fortnight.
  * Only stages flagged `creditPart*InCycle` contribute weighted revenue this cycle.
  */
+/**
+ * Filter duplicate pre-10 meetings for the same lead/client and count only once.
+ * If multiple meetings exist for the same lead in the fortnight, keeps the latest completion.
+ */
+export function deduplicateIncentiveMeetings(
+  meetings: IncentiveMeetingRow[],
+): IncentiveMeetingRow[] {
+  if (!meetings || meetings.length === 0) return [];
+  const dedupedMeetingsMap = new Map<string, IncentiveMeetingRow>();
+  for (const m of meetings) {
+    const normName = (m.customerName || "").trim().toLowerCase();
+    const dedupKey =
+      m.leadId > 0
+        ? `lead_${m.leadId}`
+        : normName && normName !== "customer"
+          ? `name_${normName}`
+          : `m_${m.completedAt}`;
+
+    const existing = dedupedMeetingsMap.get(dedupKey);
+    if (!existing || m.completedAt > existing.completedAt) {
+      dedupedMeetingsMap.set(dedupKey, m);
+    }
+  }
+
+  const sortedCandidates = Array.from(dedupedMeetingsMap.values()).sort((a, b) =>
+    b.completedAt.localeCompare(a.completedAt),
+  );
+  const uniqueMeetings: IncentiveMeetingRow[] = [];
+  const seenNames = new Set<string>();
+  for (const m of sortedCandidates) {
+    const normName = (m.customerName || "").trim().toLowerCase();
+    if (normName && normName !== "customer") {
+      if (seenNames.has(normName)) continue;
+      seenNames.add(normName);
+    }
+    uniqueMeetings.push(m);
+  }
+  return uniqueMeetings.sort((a, b) => a.completedAt.localeCompare(b.completedAt));
+}
+
 export function buildIncentivesFromDealInputs(
   member: IncentiveMember,
   cycle: IncentiveCycleInfo,
@@ -855,8 +895,12 @@ export function buildIncentivesFromDealInputs(
     incentive: Math.round((row.weightedRevenue * incentiveMultiplierPct) / 100),
   }));
 
+  const rawMeetings = options?.meetings ?? [];
+  const dedupedMeetings = rawMeetings.length > 0 ? deduplicateIncentiveMeetings(rawMeetings) : [];
+  const resolvedMeetingsCompleted = rawMeetings.length > 0 ? dedupedMeetings.length : meetingsCompleted;
+
   const potentialIncentiveEarned = Math.round((revenueAchieved * incentiveMultiplierPct) / 100);
-  const meetingsEligible = meetingsCompleted >= meetingsRequired;
+  const meetingsEligible = resolvedMeetingsCompleted >= meetingsRequired;
   const incentiveEarned = meetingsEligible ? potentialIncentiveEarned : 0;
   const sameDayClosures = dealsWithIncentive.filter((row) => row.closureTime === "SAME DAY").length;
   const fortyEightHourClosures = dealsWithIncentive.filter(
@@ -895,10 +939,10 @@ export function buildIncentivesFromDealInputs(
     sameDayBonus: meetingsEligible ? sameDayBonus : 0,
     fortyEightHourClosures,
     fortyEightHourBonus: meetingsEligible ? fortyEightHourBonus : 0,
-    meetingsCompleted,
+    meetingsCompleted: resolvedMeetingsCompleted,
     meetingsRequired,
     meetingsEligible,
-    meetings: options?.meetings ?? [],
+    meetings: rawMeetings.length > 0 ? dedupedMeetings : options?.meetings ?? [],
     weightedBreakdown,
     deals: finalDeals,
     cycle: cycleForMember,
