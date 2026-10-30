@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 
 import { getApiBase } from '@/app/lib/apiBase';
 
@@ -47,7 +47,9 @@ type Props = {
 };
 
 /**
- * DQC Submission popup: Final Sketchup Drawing + Final Quotation uploads. Same for DQC 1 and DQC 2.
+ * DQC Submission popup: Final Design PDFs + Final Quotation.
+ * DQC1 uses the lead’s latest quote link (no quotation file upload).
+ * DQC2 still uploads quotation files.
  */
 export default function PopupDqcSubmission({
   leadId,
@@ -59,14 +61,87 @@ export default function PopupDqcSubmission({
   onSubmit,
   onUploadSuccess,
 }: Props) {
+  const isDqc1 = submissionVariant !== 'dqc2';
   const [drawingFiles, setDrawingFiles] = useState<File[]>([]);
   const [quotationFiles, setQuotationFiles] = useState<File[]>([]);
   const [drawingDrag, setDrawingDrag] = useState(false);
   const [quotationDrag, setQuotationDrag] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [quoteLoading, setQuoteLoading] = useState(false);
+  const [quoteError, setQuoteError] = useState<string | null>(null);
+  const [quotationLink, setQuotationLink] = useState<string | null>(null);
+  const [quoteId, setQuoteId] = useState<number | null>(null);
+  const [quoteVersionNumber, setQuoteVersionNumber] = useState<number | null>(null);
+  const [quoteSource, setQuoteSource] = useState<'shared' | 'latest' | null>(null);
   const drawingInputRef = useRef<HTMLInputElement>(null);
   const quotationInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!isDqc1 || !leadId || !sessionId) {
+      setQuotationLink(null);
+      setQuoteId(null);
+      setQuoteVersionNumber(null);
+      setQuoteSource(null);
+      setQuoteError(null);
+      return;
+    }
+    let cancelled = false;
+    setQuoteLoading(true);
+    setQuoteError(null);
+    fetch(`${API}/api/leads/${leadId}/latest-quote-link`, {
+      headers: { Authorization: `Bearer ${sessionId}` },
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error((data as { message?: string }).message || 'Failed to load quotation');
+        return data as {
+          quoteId?: number | null;
+          customerQuoteUrl?: string | null;
+          versionNumber?: number | null;
+          source?: 'shared' | 'latest' | null;
+        };
+      })
+      .then((data) => {
+        if (cancelled) return;
+        const url = data.customerQuoteUrl || null;
+        const qid = data.quoteId != null ? Number(data.quoteId) : null;
+        const version =
+          data.versionNumber != null && Number.isFinite(Number(data.versionNumber)) && Number(data.versionNumber) > 0
+            ? Number(data.versionNumber)
+            : null;
+        const source = data.source === 'shared' || data.source === 'latest' ? data.source : null;
+        setQuoteSource(source);
+        setQuoteVersionNumber(version);
+        // DQC1 only accepts the version shared with the customer (not a silent latest fallback).
+        if (source === 'shared' && url && qid && Number.isFinite(qid) && qid > 0) {
+          setQuotationLink(url);
+          setQuoteId(qid);
+          setQuoteError(null);
+        } else {
+          setQuotationLink(null);
+          setQuoteId(null);
+          setQuoteError(
+            'No quotation shared with customer yet — open the quote revision history and use Share this to customer.',
+          );
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setQuotationLink(null);
+          setQuoteId(null);
+          setQuoteVersionNumber(null);
+          setQuoteSource(null);
+          setQuoteError('Could not load the latest quotation link.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setQuoteLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isDqc1, leadId, sessionId]);
 
   const handleDrawingDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -83,7 +158,12 @@ export default function PopupDqcSubmission({
   };
 
   const handleSubmit = async () => {
-    if (drawingFiles.length === 0 || quotationFiles.length === 0 || !leadId || !sessionId) return;
+    if (!leadId || !sessionId || drawingFiles.length === 0) return;
+    if (isDqc1) {
+      if (!quoteId || !quotationLink || quoteSource !== 'shared') return;
+    } else if (quotationFiles.length === 0) {
+      return;
+    }
     setSubmitError(null);
     setSubmitting(true);
     try {
@@ -91,19 +171,29 @@ export default function PopupDqcSubmission({
       const authHeaders = { Authorization: `Bearer ${sessionId}` } as Record<string, string>;
 
       /** 1) Try S3 direct upload (small API calls — bypasses Nginx body limit in production). */
+      const presignBody = isDqc1
+        ? {
+            drawings: drawingFiles.map((f) => ({
+              name: f.name,
+              mime: f.type || 'application/octet-stream',
+            })),
+            quotations: [] as { name: string; mime: string }[],
+          }
+        : {
+            drawings: drawingFiles.map((f) => ({
+              name: f.name,
+              mime: f.type || 'application/octet-stream',
+            })),
+            quotations: quotationFiles.map((f) => ({
+              name: f.name,
+              mime: f.type || 'application/octet-stream',
+            })),
+          };
+
       const presignRes = await fetch(`${API}/api/leads/${leadId}/${endpoint}/presign`, {
         method: 'POST',
         headers: { ...authHeaders, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          drawings: drawingFiles.map((f) => ({
-            name: f.name,
-            mime: f.type || 'application/octet-stream',
-          })),
-          quotations: quotationFiles.map((f) => ({
-            name: f.name,
-            mime: f.type || 'application/octet-stream',
-          })),
-        }),
+        body: JSON.stringify(presignBody),
       });
 
       if (presignRes.ok) {
@@ -111,7 +201,11 @@ export default function PopupDqcSubmission({
           drawings: Array<{ uploadUrl: string; key: string; contentType: string }>;
           quotations: Array<{ uploadUrl: string; key: string; contentType: string }>;
         };
-        if (presign.drawings.length !== drawingFiles.length || presign.quotations.length !== quotationFiles.length) {
+        if (presign.drawings.length !== drawingFiles.length) {
+          setSubmitError('Upload preparation mismatch. Please try again.');
+          return;
+        }
+        if (!isDqc1 && presign.quotations.length !== quotationFiles.length) {
           setSubmitError('Upload preparation mismatch. Please try again.');
           return;
         }
@@ -124,28 +218,40 @@ export default function PopupDqcSubmission({
             }),
           ),
         );
-        const quotationResults = await Promise.all(
-          presign.quotations.map((u, idx) =>
-            fetch(u.uploadUrl, {
-              method: 'PUT',
-              body: quotationFiles[idx],
-              headers: { 'Content-Type': u.contentType },
-            }),
-          ),
-        );
+        const quotationResults = isDqc1
+          ? []
+          : await Promise.all(
+              presign.quotations.map((u, idx) =>
+                fetch(u.uploadUrl, {
+                  method: 'PUT',
+                  body: quotationFiles[idx],
+                  headers: { 'Content-Type': u.contentType },
+                }),
+              ),
+            );
         if (drawingResults.some((r) => !r.ok) || quotationResults.some((r) => !r.ok)) {
           setSubmitError('Upload to storage failed. Check S3 bucket CORS or try again.');
           return;
         }
+        const completePayload = isDqc1
+          ? {
+              drawingKeys: presign.drawings.map((u) => u.key),
+              quotationKeys: [] as string[],
+              drawingNames: drawingFiles.map((f) => f.name),
+              quotationNames: [] as string[],
+              quoteId,
+              quotationLink,
+            }
+          : {
+              drawingKeys: presign.drawings.map((u) => u.key),
+              quotationKeys: presign.quotations.map((u) => u.key),
+              drawingNames: drawingFiles.map((f) => f.name),
+              quotationNames: quotationFiles.map((f) => f.name),
+            };
         const done = await fetch(`${API}/api/leads/${leadId}/${endpoint}/complete`, {
           method: 'POST',
           headers: { ...authHeaders, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            drawingKeys: presign.drawings.map((u) => u.key),
-            quotationKeys: presign.quotations.map((u) => u.key),
-            drawingNames: drawingFiles.map((f) => f.name),
-            quotationNames: quotationFiles.map((f) => f.name),
-          }),
+          body: JSON.stringify(completePayload),
         });
         const doneData = await done.json().catch(() => ({}));
         if (!done.ok) {
@@ -178,7 +284,12 @@ export default function PopupDqcSubmission({
 
       const form = new FormData();
       drawingFiles.forEach((f) => form.append('drawing', f));
-      quotationFiles.forEach((f) => form.append('quotation', f));
+      if (isDqc1) {
+        if (quoteId != null) form.append('quoteId', String(quoteId));
+        if (quotationLink) form.append('quotationLink', quotationLink);
+      } else {
+        quotationFiles.forEach((f) => form.append('quotation', f));
+      }
       const res = await fetch(`${API}/api/leads/${leadId}/${endpoint}`, {
         method: 'POST',
         headers: authHeaders,
@@ -203,7 +314,10 @@ export default function PopupDqcSubmission({
     }
   };
 
-  const canSubmit = drawingFiles.length > 0 && quotationFiles.length > 0;
+  const hasSharedQuote = quoteSource === 'shared' && quoteId != null && Boolean(quotationLink);
+  const canSubmit = isDqc1
+    ? drawingFiles.length > 0 && hasSharedQuote
+    : drawingFiles.length > 0 && quotationFiles.length > 0;
 
   return (
     <>
@@ -224,7 +338,9 @@ export default function PopupDqcSubmission({
         </button>
       </div>
       <p className="text-sm text-gray-600 px-6 pb-4">
-        Submit finalized design + quotation for quality verification. Files you upload here are sent to DQC—they will review and resolve (approve or request changes). Ensure all files meet the project standards before uploading.
+        {isDqc1
+          ? 'Submit finalized design PDFs with the quotation version shared with the customer. DQC will review drawings against that quotation and resolve (approve or request changes).'
+          : 'Submit finalized design + quotation for quality verification. Files you upload here are sent to DQC—they will review and resolve (approve or request changes). Ensure all files meet the project standards before uploading.'}
       </p>
 
       <div className="px-6 space-y-6 pb-4">
@@ -274,42 +390,81 @@ export default function PopupDqcSubmission({
         <div>
           <div className="flex justify-between items-center mb-2">
             <span className="font-bold text-sm uppercase text-gray-800">Final Quotation</span>
-            <span className="text-xs text-gray-500">(.pdf, .xlsx)</span>
+            {isDqc1 ? (
+              <span className="text-xs text-gray-500">Shared with customer</span>
+            ) : (
+              <span className="text-xs text-gray-500">(.pdf, .xlsx)</span>
+            )}
           </div>
-          <div
-            onDragOver={(e) => { e.preventDefault(); setQuotationDrag(true); }}
-            onDragLeave={() => setQuotationDrag(false)}
-            onDrop={handleQuotationDrop}
-            className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${quotationDrag ? 'border-[#00B0ED] bg-[#00B0ED]/10/50' : 'border-gray-300 bg-gray-50/50 hover:border-gray-400'}`}
-          >
-            <div className="flex flex-col items-center gap-2">
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-12 h-12 text-[#00B0ED]">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
-              </svg>
-              <p className="font-semibold text-gray-700">Drag and drop quotation files here</p>
-              <p className="text-sm text-gray-500">Upload final quotation files aligned with design</p>
-              {quotationFiles.length > 0 && (
-                <p className="text-sm text-[#32261C] font-medium text-left w-full">
-                  {quotationFiles.map((f) => f.name).join(', ')}
+          {isDqc1 ? (
+            <div className="rounded-lg border border-gray-200 bg-gray-50/80 p-4">
+              {quoteLoading ? (
+                <p className="text-sm text-gray-500">Loading quotation link…</p>
+              ) : hasSharedQuote ? (
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-[#32261C]">Shared with customer</p>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      {[
+                        quoteVersionNumber != null ? `Version ${quoteVersionNumber}` : null,
+                        quoteId != null ? `Quote #${quoteId}` : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </p>
+                  </div>
+                  <a
+                    href={quotationLink!}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex shrink-0 items-center justify-center rounded-lg bg-[#00B0ED] px-4 py-2 text-sm font-medium text-white hover:bg-[#00B0ED]/90"
+                  >
+                    Open quotation
+                  </a>
+                </div>
+              ) : (
+                <p className="text-sm text-amber-800">
+                  {quoteError ||
+                    'No quotation shared with customer yet — open the quote revision history and use Share this to customer.'}
                 </p>
               )}
-              <input
-                ref={quotationInputRef}
-                type="file"
-                multiple
-                accept={QUOTATION_ACCEPT}
-                className="hidden"
-                onChange={(e) => setQuotationFiles(Array.from(e.target.files || []))}
-              />
-              <button
-                type="button"
-                onClick={() => quotationInputRef.current?.click()}
-                className="mt-2 px-4 py-2 rounded-lg bg-gray-200 text-gray-700 text-sm font-medium hover:bg-gray-300"
-              >
-                Browse Files
-              </button>
             </div>
-          </div>
+          ) : (
+            <div
+              onDragOver={(e) => { e.preventDefault(); setQuotationDrag(true); }}
+              onDragLeave={() => setQuotationDrag(false)}
+              onDrop={handleQuotationDrop}
+              className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${quotationDrag ? 'border-[#00B0ED] bg-[#00B0ED]/10/50' : 'border-gray-300 bg-gray-50/50 hover:border-gray-400'}`}
+            >
+              <div className="flex flex-col items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-12 h-12 text-[#00B0ED]">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+                </svg>
+                <p className="font-semibold text-gray-700">Drag and drop quotation files here</p>
+                <p className="text-sm text-gray-500">Upload final quotation files aligned with design</p>
+                {quotationFiles.length > 0 && (
+                  <p className="text-sm text-[#32261C] font-medium text-left w-full">
+                    {quotationFiles.map((f) => f.name).join(', ')}
+                  </p>
+                )}
+                <input
+                  ref={quotationInputRef}
+                  type="file"
+                  multiple
+                  accept={QUOTATION_ACCEPT}
+                  className="hidden"
+                  onChange={(e) => setQuotationFiles(Array.from(e.target.files || []))}
+                />
+                <button
+                  type="button"
+                  onClick={() => quotationInputRef.current?.click()}
+                  className="mt-2 px-4 py-2 rounded-lg bg-gray-200 text-gray-700 text-sm font-medium hover:bg-gray-300"
+                >
+                  Browse Files
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {submitError && (
@@ -321,9 +476,11 @@ export default function PopupDqcSubmission({
             <path strokeLinecap="round" strokeLinejoin="round" d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z" />
           </svg>
           <div>
-            <p className="font-semibold text-[#00B0ED] text-sm">Files go to DQC</p>
+            <p className="font-semibold text-[#00B0ED] text-sm">{isDqc1 ? 'Files and quotation go to DQC' : 'Files go to DQC'}</p>
             <p className="text-sm text-[#00B0ED] mt-0.5">
-              Uploaded files are sent to DQC. They will review and resolve (approve or request changes). You can see their feedback and re-upload if needed. The project will not move to the next phase until DQC approves.
+              {isDqc1
+                ? 'Drawing files are uploaded and the linked quotation is shared with DQC. They will review and resolve (approve or request changes). You can see their feedback and re-upload drawings if needed. The project will not move to the next phase until DQC approves.'
+                : 'Uploaded files are sent to DQC. They will review and resolve (approve or request changes). You can see their feedback and re-upload if needed. The project will not move to the next phase until DQC approves.'}
             </p>
           </div>
         </div>

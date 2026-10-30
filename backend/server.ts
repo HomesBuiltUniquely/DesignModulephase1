@@ -7488,22 +7488,25 @@ async function resolveLatestQuoteLinkForLead(leadId: number): Promise<{
   quoteId: number;
   customerQuoteUrl: string;
   internalQuoteUrl: string;
+  versionNumber: number | null;
+  source: "shared" | "latest";
 } | null> {
-  if (await leadIsPre10Stage(leadId)) {
-    const selected = await loadCrmShareForLead(leadId);
-    if (selected) {
-      const base = frontendBase();
-      return {
-        quoteId: selected.quoteId,
-        customerQuoteUrl: `${base}/quote/${encodeURIComponent(String(selected.quoteId))}`,
-        internalQuoteUrl: crmQuoteInternalUrl(leadId, selected.quoteId),
-      };
-    }
+  // Prefer the version shared with the customer at every project stage (DQC must match customer quote).
+  const selected = await loadCrmShareForLead(leadId);
+  if (selected) {
+    const base = frontendBase();
+    return {
+      quoteId: selected.quoteId,
+      customerQuoteUrl: `${base}/quote/${encodeURIComponent(String(selected.quoteId))}`,
+      internalQuoteUrl: crmQuoteInternalUrl(leadId, selected.quoteId),
+      versionNumber: selected.versionNumber > 0 ? selected.versionNumber : null,
+      source: "shared",
+    };
   }
 
   let quoteId: number | null = null;
 
-  // Prefer newest version row (true latest quotation)
+  // Fallback: newest version row (no CRM share yet)
   try {
     const [verRows] = await pool.query(
       `SELECT quote_id AS quoteId
@@ -7556,6 +7559,8 @@ async function resolveLatestQuoteLinkForLead(leadId: number): Promise<{
     quoteId,
     customerQuoteUrl: `${base}/quote/${encodeURIComponent(String(quoteId))}`,
     internalQuoteUrl: `${base}/quote/${encodeURIComponent(String(quoteId))}?internal=1&leadId=${encodeURIComponent(String(leadId))}`,
+    versionNumber: null,
+    source: "latest",
   };
 }
 
@@ -14634,6 +14639,7 @@ async function persistDqc1SubmissionFromMeta(
   quotationFiles: { originalname: string; filename: string; path: string; mimetype: string; size: number }[],
   drawingS3Urls: (string | null)[],
   quotationS3Urls: (string | null)[],
+  quoteMeta?: { quoteId?: number | null; quotationLink?: string | null } | null,
 ): Promise<void> {
   const now = new Date();
   for (let i = 0; i < drawingFiles.length; i++) {
@@ -14656,18 +14662,35 @@ async function persistDqc1SubmissionFromMeta(
       [leadId, user.id, quotationFile.originalname, quotationFile.filename, quotationFile.path, quotationFile.mimetype, quotationFile.size, now, quotationS3],
     );
   }
+  const linkedQuoteId =
+    quoteMeta?.quoteId != null && Number.isFinite(Number(quoteMeta.quoteId)) && Number(quoteMeta.quoteId) > 0
+      ? Number(quoteMeta.quoteId)
+      : null;
+  const linkedQuotationLink =
+    typeof quoteMeta?.quotationLink === "string" && quoteMeta.quotationLink.trim()
+      ? quoteMeta.quotationLink.trim()
+      : null;
+  const fileNames = [
+    ...drawingFiles.map((f) => f.originalname),
+    ...quotationFiles.map((f) => f.originalname),
+  ];
+  if (linkedQuotationLink && quotationFiles.length === 0) {
+    fileNames.push(linkedQuoteId ? `quotation link #${linkedQuoteId}` : "quotation link");
+  }
   const ev = {
     id: `dqc-submission-${Date.now()}`,
     type: "file_upload",
     taskName: "DQC 1 submission - dwg + quotation",
     milestoneName: "DQC1",
     timestamp: now.toISOString(),
-    description: `DQC submission: ${[...drawingFiles.map((f) => f.originalname), ...quotationFiles.map((f) => f.originalname)].join(", ")}`,
+    description: `DQC submission: ${fileNames.join(", ")}`,
     user: { name: user.name ?? "User" },
     details: {
       kind: "dqc_submission",
       drawings: drawingFiles.map((f) => f.originalname),
       quotations: quotationFiles.map((f) => f.originalname),
+      ...(linkedQuoteId != null ? { quoteId: linkedQuoteId } : {}),
+      ...(linkedQuotationLink ? { quotationLink: linkedQuotationLink } : {}),
     },
   };
   await addLeadHistoryEvent(leadId, ev);
@@ -14877,10 +14900,11 @@ app.post("/api/leads/:id/dqc-submission/presign", async (req: Request, res: Resp
       .filter((d) => d.name);
     const validQuotations = quotationsInput
       .map((q) => ({ name: (q?.name || "").trim(), mime: (q?.mime || "application/octet-stream").trim() || "application/octet-stream" }))
-      .filter((q) => q.name);
-    if (validDrawings.length === 0 || validQuotations.length === 0) {
-      return res.status(400).json({ message: "At least one drawing and one quotation are required" });
+       .filter((q) => q.name);
+    if (validDrawings.length === 0) {
+      return res.status(400).json({ message: "At least one drawing is required" });
     }
+    // Quotation file upload is optional on DQC1 when the client will send quoteId/quotationLink on /complete.
     const ts = Date.now();
     const drawings = await Promise.all(
       validDrawings.map(async (d, idx) => {
@@ -14939,6 +14963,8 @@ app.post("/api/leads/:id/dqc-submission/complete", async (req: Request, res: Res
       quotationKeys?: string[];
       drawingNames?: string[];
       quotationNames?: string[];
+      quoteId?: number | string | null;
+      quotationLink?: string | null;
     };
     const drawingKeys =
       Array.isArray(body.drawingKeys) && body.drawingKeys.length > 0
@@ -14952,8 +14978,18 @@ app.post("/api/leads/:id/dqc-submission/complete", async (req: Request, res: Res
         : body.quotationKey?.trim()
           ? [body.quotationKey.trim()]
           : [];
-    if (drawingKeys.length === 0 || quotationKeys.length === 0) {
-      return res.status(400).json({ message: "At least one drawingKey and one quotationKey are required" });
+    const quoteIdNum = body.quoteId != null && String(body.quoteId).trim() !== "" ? Number(body.quoteId) : null;
+    const quotationLink =
+      typeof body.quotationLink === "string" && body.quotationLink.trim() ? body.quotationLink.trim() : null;
+    const hasLinkedQuote =
+      quoteIdNum != null && Number.isFinite(quoteIdNum) && quoteIdNum > 0 && Boolean(quotationLink);
+    if (drawingKeys.length === 0) {
+      return res.status(400).json({ message: "At least one drawingKey is required" });
+    }
+    if (quotationKeys.length === 0 && !hasLinkedQuote) {
+      return res.status(400).json({
+        message: "Provide quotationKeys or a linked quoteId and quotationLink",
+      });
     }
     const prefix = `lead-uploads/lead-${leadId}-`;
     if (drawingKeys.some((k) => !k.startsWith(prefix)) || quotationKeys.some((k) => !k.startsWith(prefix))) {
@@ -15010,6 +15046,7 @@ app.post("/api/leads/:id/dqc-submission/complete", async (req: Request, res: Res
       quotationFilesMeta,
       drawingS3Urls,
       quotationS3Urls,
+      hasLinkedQuote ? { quoteId: quoteIdNum, quotationLink } : null,
     );
 
     // Notify: 06 — DQC submission (S3 flow)
@@ -15234,8 +15271,19 @@ app.post(
       const files = (req as any).files as { drawing?: Express.Multer.File[]; quotation?: Express.Multer.File[] };
       const drawingFiles = files?.drawing ?? [];
       const quotationFiles = files?.quotation ?? [];
-      if (drawingFiles.length === 0 || quotationFiles.length === 0) {
-        return res.status(400).json({ message: "At least one drawing and one quotation file are required" });
+      const body = (req.body || {}) as { quoteId?: string | number | null; quotationLink?: string | null };
+      const quoteIdNum = body.quoteId != null && String(body.quoteId).trim() !== "" ? Number(body.quoteId) : null;
+      const quotationLink =
+        typeof body.quotationLink === "string" && body.quotationLink.trim() ? body.quotationLink.trim() : null;
+      const hasLinkedQuote =
+        quoteIdNum != null && Number.isFinite(quoteIdNum) && quoteIdNum > 0 && Boolean(quotationLink);
+      if (drawingFiles.length === 0) {
+        return res.status(400).json({ message: "At least one drawing file is required" });
+      }
+      if (quotationFiles.length === 0 && !hasLinkedQuote) {
+        return res.status(400).json({
+          message: "Provide quotation files or a linked quoteId and quotationLink",
+        });
       }
       let drawingS3Urls: (string | null)[] = [];
       let quotationS3Urls: (string | null)[] = [];
@@ -15247,7 +15295,15 @@ app.post(
           quotationFiles.map((f) => uploadLeadFileToS3(leadId, f.path, f.originalname, f.mimetype)),
         );
       }
-      await persistDqc1SubmissionFromMeta(leadId, user, drawingFiles, quotationFiles, drawingS3Urls, quotationS3Urls);
+      await persistDqc1SubmissionFromMeta(
+        leadId,
+        user,
+        drawingFiles,
+        quotationFiles,
+        drawingS3Urls,
+        quotationS3Urls,
+        hasLinkedQuote ? { quoteId: quoteIdNum, quotationLink } : null,
+      );
 
       // Notify: 06 — DQC submission (legacy multipart flow)
       try {
@@ -15533,11 +15589,64 @@ app.get("/api/leads/:id/dqc-submission-files", async (req: Request, res: Respons
       .map((r: any) => ({ id: r.id, originalName: originalName(r) }));
     const drawing = drawingFiles[0];
     const quotation = quotationFiles[0];
+
+    let quoteId: number | null = null;
+    let quotationLink: string | null = null;
+    if (quotationFiles.length === 0) {
+      try {
+        const [histRows] = await pool.query(
+          `SELECT event FROM lead_history WHERE lead_id = ? ORDER BY created_at DESC LIMIT 80`,
+          [leadId],
+        );
+        for (const row of (histRows as any[]) || []) {
+          let ev: any = row?.event;
+          if (typeof ev === "string") {
+            try {
+              ev = JSON.parse(ev);
+            } catch {
+              continue;
+            }
+          }
+          const details = ev?.details;
+          if (!details || details.kind !== "dqc_submission") continue;
+          const link =
+            typeof details.quotationLink === "string" && details.quotationLink.trim()
+              ? details.quotationLink.trim()
+              : null;
+          const qid =
+            details.quoteId != null && Number.isFinite(Number(details.quoteId)) && Number(details.quoteId) > 0
+              ? Number(details.quoteId)
+              : null;
+          if (link || qid) {
+            quotationLink = link;
+            quoteId = qid;
+            break;
+          }
+        }
+      } catch (histErr) {
+        console.warn("dqc-submission-files history quote lookup failed (non-fatal)", histErr);
+      }
+      if (!quotationLink) {
+        try {
+          const latest = await resolveLatestQuoteLinkForLead(leadId);
+          if (latest?.customerQuoteUrl) {
+            quotationLink = latest.customerQuoteUrl;
+            quoteId =
+              latest.quoteId != null && Number(latest.quoteId) > 0 ? Number(latest.quoteId) : quoteId;
+          }
+        } catch (linkErr) {
+          console.warn("dqc-submission-files latest-quote-link fallback failed (non-fatal)", linkErr);
+        }
+      }
+    }
+
     return res.json({
       drawing: drawing ?? null,
       quotation: quotation ?? null,
       drawingFiles,
       quotationFiles,
+      quoteId,
+      quotationLink,
     });
   } catch (err) {
     console.error("dqc-submission-files error", err);
@@ -18201,6 +18310,8 @@ app.get("/api/leads/:id/latest-quote-link", async (req: Request, res: Response) 
         ok: true,
         quoteId: null,
         customerQuoteUrl: null,
+        versionNumber: null,
+        source: null,
         ...(isServiceReadonlyUser(user) ? {} : { internalQuoteUrl: null }),
       });
     }
@@ -18209,6 +18320,8 @@ app.get("/api/leads/:id/latest-quote-link", async (req: Request, res: Response) 
         ok: true,
         quoteId: latest.quoteId,
         customerQuoteUrl: latest.customerQuoteUrl,
+        versionNumber: latest.versionNumber,
+        source: latest.source,
       });
     }
     return res.json({
@@ -18216,6 +18329,8 @@ app.get("/api/leads/:id/latest-quote-link", async (req: Request, res: Response) 
       quoteId: latest.quoteId,
       customerQuoteUrl: latest.customerQuoteUrl,
       internalQuoteUrl: latest.internalQuoteUrl,
+      versionNumber: latest.versionNumber,
+      source: latest.source,
     });
   } catch (err) {
     console.error("latest-quote-link error", err);

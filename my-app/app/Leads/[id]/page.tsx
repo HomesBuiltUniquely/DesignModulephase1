@@ -342,6 +342,8 @@ export default function ProjectDetailPage() {
     const [dqc1SubmissionLoading, setDqc1SubmissionLoading] = useState(false);
     const [dqcSubmissionFiles, setDqcSubmissionFiles] = useState<Array<{ id: number; originalName: string }>>([]);
     const [selectedDqcSubmissionFileId, setSelectedDqcSubmissionFileId] = useState<number | null>(null);
+    const [dqcQuotationLink, setDqcQuotationLink] = useState<string | null>(null);
+    const [dqcQuoteId, setDqcQuoteId] = useState<number | null>(null);
     const [dqc1SelectedPin, setDqc1SelectedPin] = useState<number | null>(null);
     const [dqc1HighlightedPin, setDqc1HighlightedPin] = useState<number | null>(null);
     // Design upload (First cut design popup): selected files
@@ -1370,15 +1372,36 @@ export default function ProjectDetailPage() {
                 }
                 return res.json();
             })
-            .then((data: { drawing?: { id: number; originalName: string }; quotation?: { id: number; originalName: string }; drawingFiles?: Array<{ id: number; originalName: string }>; quotationFiles?: Array<{ id: number; originalName: string }> } | null) => {
+            .then((data: {
+                drawing?: { id: number; originalName: string };
+                quotation?: { id: number; originalName: string };
+                drawingFiles?: Array<{ id: number; originalName: string }>;
+                quotationFiles?: Array<{ id: number; originalName: string }>;
+                quotationLink?: string | null;
+                quoteId?: number | null;
+            } | null) => {
                 if (data === null) return;
                 const drawingFiles = Array.isArray(data?.drawingFiles) ? data.drawingFiles : [];
                 const quotationFiles = Array.isArray(data?.quotationFiles) ? data.quotationFiles : [];
                 const allFiles = [...drawingFiles, ...quotationFiles];
                 setDqcSubmissionFiles(allFiles);
+                const link =
+                    typeof data?.quotationLink === 'string' && data.quotationLink.trim()
+                        ? data.quotationLink.trim()
+                        : null;
+                const qid =
+                    data?.quoteId != null && Number.isFinite(Number(data.quoteId)) && Number(data.quoteId) > 0
+                        ? Number(data.quoteId)
+                        : null;
+                setDqcQuotationLink(quotationFiles.length === 0 ? link : null);
+                setDqcQuoteId(quotationFiles.length === 0 ? qid : null);
                 const fileToLoad = allFiles[0] ?? data?.drawing ?? data?.quotation ?? null;
                 if (!fileToLoad) {
-                    setDqc1SubmissionLoadError('No DQC submission files found for this lead.');
+                    setDqc1SubmissionLoadError(
+                        link
+                            ? 'No drawing files found. Open the linked quotation from the toolbar.'
+                            : 'No DQC submission files found for this lead.',
+                    );
                     setDqc1SubmissionLoading(false);
                     return;
                 }
@@ -1424,6 +1447,8 @@ export default function ProjectDetailPage() {
                 const quotationFiles = Array.isArray(data?.quotationFiles) ? data.quotationFiles : [];
                 const allFiles = [...drawingFiles, ...quotationFiles];
                 setDqcSubmissionFiles(allFiles);
+                setDqcQuotationLink(null);
+                setDqcQuoteId(null);
                 const fileToLoad = allFiles[0] ?? data?.drawing ?? data?.quotation ?? null;
                 if (!fileToLoad) {
                     setDqc1SubmissionLoadError('No DQC 2 submission files found for this lead.');
@@ -2250,6 +2275,8 @@ export default function ProjectDetailPage() {
                                 setDqc1SubmissionLoading(false);
                             });
                         }}
+                        dqcQuotationLink={dqcQuotationLink}
+                        dqcQuoteId={dqcQuoteId}
                     />
                 </div>
             </div>
@@ -4029,6 +4056,8 @@ export default function ProjectDetailPage() {
                                         setDqc1SubmissionLoading(false);
                                     });
                                 }}
+                                dqcQuotationLink={dqcQuotationLink}
+                                dqcQuoteId={dqcQuoteId}
                             />
                         ) : (
                             <div className="px-6 pb-6">
@@ -4417,6 +4446,8 @@ export default function ProjectDetailPage() {
                                         setDqc1SubmissionLoading(false);
                                     });
                                 }}
+                                dqcQuotationLink={dqcQuotationLink}
+                                dqcQuoteId={dqcQuoteId}
                             />
                         ) : (
                             <div className="px-6 pb-6">

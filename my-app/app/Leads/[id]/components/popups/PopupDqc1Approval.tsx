@@ -81,6 +81,9 @@ type Props = {
   dqcSubmissionFiles?: Array<{ id: number; originalName: string }>;
   selectedDqcSubmissionFileId?: number | null;
   onSelectDqcSubmissionFile?: (id: number) => void;
+  /** Linked Prolance quotation when DQC1 submitted without quotation upload files */
+  dqcQuotationLink?: string | null;
+  dqcQuoteId?: number | null;
 };
 
 /**
@@ -135,6 +138,8 @@ export default function PopupDqc1Approval({
   dqcSubmissionFiles = [],
   selectedDqcSubmissionFileId = null,
   onSelectDqcSubmissionFile,
+  dqcQuotationLink = null,
+  dqcQuoteId = null,
 }: Props) {
   const visibleRemarks = dqc1Remarks.filter((r) => {
     if (selectedDqcSubmissionFileId == null) return true;
@@ -188,6 +193,16 @@ export default function PopupDqc1Approval({
                   placeholder="Select submitted file"
                 />
               </div>
+            )}
+            {dqcQuotationLink && (
+              <a
+                href={dqcQuotationLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center rounded-md bg-[#00B0ED] px-3 py-1.5 text-sm font-medium text-white hover:bg-[#00B0ED]/90"
+              >
+                Open quotation{dqcQuoteId ? ` #${dqcQuoteId}` : ''}
+              </a>
             )}
             <button
               type="button"

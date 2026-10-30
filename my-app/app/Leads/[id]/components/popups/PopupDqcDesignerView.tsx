@@ -64,6 +64,8 @@ export default function PopupDqcDesignerView({
   const [pdfNumPages, setPdfNumPages] = useState(0);
   const [submissionFiles, setSubmissionFiles] = useState<Array<{ id: number; originalName: string }>>([]);
   const [selectedFileId, setSelectedFileId] = useState<number | null>(null);
+  const [quotationLink, setQuotationLink] = useState<string | null>(null);
+  const [quoteId, setQuoteId] = useState<number | null>(null);
   const [highlightedRemarkIndex, setHighlightedRemarkIndex] = useState<number | null>(null);
   const pdfBlobUrlRef = useRef<string | null>(null);
 
@@ -118,12 +120,29 @@ export default function PopupDqcDesignerView({
       headers: { Authorization: `Bearer ${sessionId}` },
     })
       .then((res) => (res.ok ? res.json() : null))
-      .then((data: { drawing?: { id: number; originalName: string }; quotation?: { id: number; originalName: string }; drawingFiles?: Array<{ id: number; originalName: string }>; quotationFiles?: Array<{ id: number; originalName: string }> } | null) => {
+      .then((data: {
+        drawing?: { id: number; originalName: string };
+        quotation?: { id: number; originalName: string };
+        drawingFiles?: Array<{ id: number; originalName: string }>;
+        quotationFiles?: Array<{ id: number; originalName: string }>;
+        quotationLink?: string | null;
+        quoteId?: number | null;
+      } | null) => {
         if (cancelled) return;
         const drawingFiles = Array.isArray(data?.drawingFiles) ? data.drawingFiles : [];
         const quotationFiles = Array.isArray(data?.quotationFiles) ? data.quotationFiles : [];
         const allFiles = [...drawingFiles, ...quotationFiles];
         setSubmissionFiles(allFiles);
+        const link =
+          typeof data?.quotationLink === 'string' && data.quotationLink.trim()
+            ? data.quotationLink.trim()
+            : null;
+        const qid =
+          data?.quoteId != null && Number.isFinite(Number(data.quoteId)) && Number(data.quoteId) > 0
+            ? Number(data.quoteId)
+            : null;
+        setQuotationLink(quotationFiles.length === 0 ? link : null);
+        setQuoteId(quotationFiles.length === 0 ? qid : null);
         const fileToLoad = allFiles[0] ?? data?.drawing ?? data?.quotation ?? null;
         if (!fileToLoad) {
           setPdfLoading(false);
@@ -211,6 +230,16 @@ export default function PopupDqcDesignerView({
                   options={submissionFiles.map((f) => ({ value: String(f.id), label: f.originalName }))}
                 />
               </div>
+            )}
+            {quotationLink && (
+              <a
+                href={quotationLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center rounded-lg bg-[#00B0ED] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#00B0ED]/90"
+              >
+                Open quotation{quoteId ? ` #${quoteId}` : ''}
+              </a>
             )}
             <span className="text-xs text-gray-500">
               Page {pdfPageNumber} of {pdfNumPages || 1}
