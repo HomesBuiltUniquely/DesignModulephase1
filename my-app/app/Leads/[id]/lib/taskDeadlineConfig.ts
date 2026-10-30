@@ -35,14 +35,8 @@ export const TASK_DEADLINE_RULES: TaskDeadlineRule[] = [
   // D1 SITE MEASUREMENT
   {
     milestoneIndex: 0,
-    taskName: "Group Description",
-    anchor: "milestone_start",
-    hoursByConfig: { "1BHK": 12, "2BHK": 12, "3BHK": 12, "4BHK": 12, "5BHK": 12 },
-  },
-  {
-    milestoneIndex: 0,
     taskName: "Mail loop chain 2 initiate",
-    anchor: "previous_task_completed",
+    anchor: "milestone_start",
     hoursByConfig: { "1BHK": 12, "2BHK": 12, "3BHK": 12, "4BHK": 12, "5BHK": 12 },
   },
   {

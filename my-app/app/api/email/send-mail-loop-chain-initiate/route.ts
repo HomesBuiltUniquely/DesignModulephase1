@@ -2,7 +2,13 @@ import { NextResponse } from 'next/server';
 import { render } from '@react-email/components';
 import React from 'react';
 import { sendMail } from '@/lib/email/mailer';
-import MailLoopChainInitiateEmail, { EmailConfigScope, EmailConfigScopeRoom } from '@/app/newEmail/templates/External/MailLoopChainInitiate';
+import MailLoopChainInitiateEmail, {
+  EmailConfigScope,
+  EmailConfigScopeRoom,
+  EmailDiscountRow,
+} from '@/app/newEmail/templates/External/MailLoopChainInitiate';
+import { buildQuoteDiscountBreakdown } from '@/app/quote/quoteDiscountBreakdown';
+import { inrFull } from '@/app/quote/quoteStyles';
 
 function pickString(...values: unknown[]): string {
   for (const value of values) {
@@ -51,14 +57,80 @@ function buildDiscountFields(pick: (key: string) => string, pickNum: (key: strin
   };
 }
 
+/** Build email-safe discount rows — non-zero only (matches quote Discount breakdown UI). */
+export function buildEmailDiscountBreakdown(
+  quoteDiscountSource: Record<string, unknown> | null | undefined,
+): EmailDiscountRow[] {
+  if (!quoteDiscountSource || typeof quoteDiscountSource !== 'object') return [];
+
+  const optionDetails = Array.isArray(quoteDiscountSource.optionDetails)
+    ? quoteDiscountSource.optionDetails
+    : [];
+  const roomSummaries = Array.isArray(quoteDiscountSource.roomWiseSummary)
+    ? quoteDiscountSource.roomWiseSummary
+    : [];
+
+  const rows = buildQuoteDiscountBreakdown(quoteDiscountSource, optionDetails, roomSummaries);
+  const emailRows: EmailDiscountRow[] = [];
+
+  for (const row of rows) {
+    if (row.key === 'additionalDiscount') {
+      const amount = row.discountAmount ?? 0;
+      if (amount > 0) {
+        emailRows.push({
+          label: 'Additional Discount',
+          finalPrice: `- ${inrFull(amount)}`,
+          kind: 'additional',
+        });
+      }
+      continue;
+    }
+    if (row.key === 'flatDiscount') {
+      const amount = row.discountAmount ?? 0;
+      if (amount > 0) {
+        emailRows.push({
+          label: row.label || 'Flat Discount',
+          finalPrice: `- ${inrFull(amount)}`,
+          kind: 'additional',
+        });
+      }
+      continue;
+    }
+
+    const pct = row.discountPct ?? 0;
+    const amount = row.discountAmount ?? 0;
+    if (!(pct > 0 || amount > 0)) continue;
+
+    const original = row.price;
+    const discounted = row.discountedPrice ?? row.price;
+    const showOriginal =
+      original != null &&
+      original > 0 &&
+      discounted != null &&
+      original !== discounted;
+
+    emailRows.push({
+      label: row.label,
+      ...(showOriginal ? { originalPrice: inrFull(original) } : {}),
+      finalPrice: inrFull(discounted ?? original ?? 0),
+      discountPct: `${pct}%`,
+      kind: 'category',
+    });
+  }
+
+  return emailRows;
+}
+
 export function mapLeadPayloadToEmailProps(
   customerName: string,
   leadPayload: Record<string, unknown> | undefined,
   quotationTotal?: string,
   quotationLink?: string,
+  quoteDiscountSource?: Record<string, unknown> | null,
 ) {
   const { pd, pick, pickNum } = salesFormSources(leadPayload);
   const { discountLabel, discountValue, discountSubtitle } = buildDiscountFields(pick, pickNum);
+  const discountBreakdown = buildEmailDiscountBreakdown(quoteDiscountSource);
 
   // Extract configScopeSummary merged by the caller (from project.configScopeSummary or fallback payload locations)
   const rawScopeObj =
@@ -269,6 +341,7 @@ export function mapLeadPayloadToEmailProps(
       }
       return qLink;
     })(),
+    discountBreakdown,
     configScope,
   };
 }
@@ -282,6 +355,7 @@ export async function POST(request: Request) {
     const customerName = body.customerName as string | undefined;
     const quotationTotal = body.quotationTotal as string | undefined;
     const quotationLink = body.quotationLink as string | undefined;
+    const quoteDiscountSource = body.quoteDiscountSource as Record<string, unknown> | null | undefined;
     const leadPayload = body.leadPayload as Record<string, unknown> | undefined;
 
     const toList = Array.isArray(to)
@@ -297,7 +371,13 @@ export async function POST(request: Request) {
       );
     }
 
-    const emailProps = mapLeadPayloadToEmailProps(customerName, leadPayload, quotationTotal, quotationLink);
+    const emailProps = mapLeadPayloadToEmailProps(
+      customerName,
+      leadPayload,
+      quotationTotal,
+      quotationLink,
+      quoteDiscountSource,
+    );
     const emailComponent = React.createElement(MailLoopChainInitiateEmail, emailProps);
     const html = await render(emailComponent);
 

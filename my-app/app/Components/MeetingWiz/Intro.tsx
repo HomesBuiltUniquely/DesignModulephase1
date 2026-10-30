@@ -2,24 +2,30 @@
 
 import { useAuth } from "@/app/auth/AuthContext";
 import type { LeadshipTypes } from "@/app/Components/Types/Types";
-import {
-  buildMeetingAgendaTimes,
-  getMeetingWizLeadDisplay,
-} from "@/app/lib/meetingWizLeadDisplay";
+import { getMeetingWizLeadDisplay } from "@/app/lib/meetingWizLeadDisplay";
 import { MeetingWizShell, MeetingWizStepDots, MeetingWizTopBar, mwCard } from "./MeetingWizChrome";
 
-const agendaBase = [
+/** Matches the Pre-10 Start Meeting wizard steps, in order. */
+const meetingAgenda = [
   {
-    title: "Opening & Soft Intro",
-    description: "Personal check-in and project phase summary (5 mins)",
+    title: "Introduction",
+    description: "Personal check-in and a clear overview of today’s design journey",
   },
   {
-    title: "Concept Walkthrough",
-    description: "Review design direction, moodboard, and finishes (20 mins)",
+    title: "About HUB",
+    description: "Our story, craft, and how we partner with you on the home",
   },
   {
-    title: "Budgetary Calibration",
-    description: "Align scope, quote, and next steps (15 mins)",
+    title: "Design Portfolio",
+    description: "Selected projects that show our style, quality, and approach",
+  },
+  {
+    title: "Scope of Work",
+    description: "Align rooms, preferences, and the work we will take on",
+  },
+  {
+    title: "Final Quote & Summary",
+    description: "Walk through the estimate, timeline, and agreed next steps",
   },
 ];
 
@@ -101,19 +107,11 @@ export default function Intro({ onNext, onPrev, lead }: Props) {
   const projectsLabel = user?.designerProjects?.trim() || "—";
   const specialtyLabel = user?.designerSpecialty?.trim() || "—";
   const quoteLabel = user?.designerQuote?.trim() || "";
-  const agendaTimes = buildMeetingAgendaTimes(
-    info.timeSlot !== "—" ? info.timeSlot : lead?.appointmentSlot || lead?.scheduledMeetingSlot,
-  );
-  const agendaItems = agendaBase.map((item, i) => ({
-    ...item,
-    time: agendaTimes[i] || "—",
-  }));
-
   const metaRows = [
     { label: "Project Name", value: info.projectName },
     { label: "Configuration", value: info.configuration },
     { label: "Property Type", value: info.propertyType },
-    { label: "Location", value: info.propertyLocation },
+    { label: "Property Name", value: info.propertyLocation },
     { label: "Budget", value: info.budget },
     { label: "Meeting slot", value: info.timeSlot },
   ];
@@ -235,29 +233,46 @@ export default function Intro({ onNext, onPrev, lead }: Props) {
             </span>
           </div>
 
-          <div className="flex flex-col">
-            {agendaItems.map((item, i) => (
-              <div
-                key={i}
-                className={`group flex cursor-default items-start justify-between py-4 ${
-                  i < agendaItems.length - 1 ? "border-b border-[var(--border-color)]" : ""
-                }`}
-              >
-                <div className="flex items-start gap-4">
-                  <div className="mt-0.5 h-5 w-5 shrink-0 rounded-full border-2 border-[var(--border-color)] transition-colors group-hover:border-[var(--brand-primary)]" />
-                  <div>
-                    <div className="mb-1 text-sm font-bold text-[var(--brand-dark)] transition-colors group-hover:text-[var(--brand-primary)]">
+          <ol className="m-0 flex list-none flex-col p-0">
+            {meetingAgenda.map((item, i) => {
+              const isCurrent = i === 0;
+              const isLast = i === meetingAgenda.length - 1;
+              return (
+                <li key={item.title} className="relative flex gap-4">
+                  <div className="relative flex w-8 shrink-0 flex-col items-center">
+                    <span
+                      className={`relative z-[1] grid h-8 w-8 place-items-center rounded-full text-xs font-bold ${
+                        isCurrent
+                          ? "bg-[var(--brand-primary)] text-white"
+                          : "border-2 border-[var(--border-color)] bg-[var(--card-bg)] text-[var(--foreground)]/55"
+                      }`}
+                      aria-current={isCurrent ? "step" : undefined}
+                    >
+                      {i + 1}
+                    </span>
+                    {!isLast ? (
+                      <span
+                        className="absolute top-8 bottom-0 w-0.5 bg-[var(--border-color)]"
+                        aria-hidden
+                      />
+                    ) : null}
+                  </div>
+                  <div className={`min-w-0 flex-1 ${isLast ? "pb-0" : "pb-6"}`}>
+                    <div
+                      className={`mb-1 text-sm font-bold ${
+                        isCurrent ? "text-[var(--brand-primary)]" : "text-[var(--brand-dark)]"
+                      }`}
+                    >
                       {item.title}
                     </div>
-                    <div className="text-xs text-[var(--foreground)]/60">{item.description}</div>
+                    <div className="text-xs leading-relaxed text-[var(--foreground)]/60">
+                      {item.description}
+                    </div>
                   </div>
-                </div>
-                <span className="ml-4 mt-1 whitespace-nowrap rounded-md bg-[var(--hover-bg)] px-2.5 py-1 text-xs font-semibold text-[var(--foreground)]/70">
-                  {item.time}
-                </span>
-              </div>
-            ))}
-          </div>
+                </li>
+              );
+            })}
+          </ol>
         </div>
 
         <div className="flex justify-center">

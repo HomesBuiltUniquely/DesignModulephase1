@@ -169,9 +169,20 @@ export default function DesignSidebar({
     "mmt_executive",
   ].includes(normalized);
   const phases = isOps
-    ? [SideDashboard.All_Projects, SideDashboard.Pre_10, SideDashboard.Ten_50, SideDashboard.Fifty_above]
+    ? [
+        SideDashboard.All_Projects,
+        SideDashboard.Pre_10,
+        SideDashboard.Ten_50,
+        SideDashboard.Fifty_above,
+        SideDashboard.In_Execution,
+      ]
     : isSpm
-    ? [SideDashboard.All_Projects, SideDashboard.Ten_50, SideDashboard.Fifty_above]
+    ? [
+        SideDashboard.All_Projects,
+        SideDashboard.Ten_50,
+        SideDashboard.Fifty_above,
+        SideDashboard.In_Execution,
+      ]
     : Object.values(SideDashboard);
   const statuses = Object.values(SideDashboardStatus);
   const showCalendar = [

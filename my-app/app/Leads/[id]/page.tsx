@@ -4,7 +4,11 @@ import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '../../auth/AuthContext';
 import { LeadshipTypes, type StatusAttachment } from '../../Components/Types/Types';
-import MileStonesArray from '@/app/Components/Types/MileStoneArray';
+import MileStonesArray, {
+    getTrackerMilestones,
+    KT_MILESTONE_ID,
+    KT_TASK_NAME,
+} from '@/app/Components/Types/MileStoneArray';
 import type { ImageType, QCRemark, HistoryEvent } from './types';
 import {
     LeadDetailHeader,
@@ -25,7 +29,6 @@ import {
     PopupDqcSubmission,
     PopupPlaceholder,
     Popup10pPaymentCollection,
-    PopupGroupDescription,
     PopupMailLoopChain,
     GenericMeetingChecklistPopup,
     PopupProjectManagerApproval,
@@ -253,9 +256,10 @@ export default function ProjectDetailPage() {
     }, []);
 
     // Keep highlighted milestone in sync with persisted task completions (handles refresh and new tasks).
+    // Tracker excludes KT (header button) — D1 unlock does not wait on Upload KT files.
     useEffect(() => {
-        const milestones = MileStonesArray.MilestonesName;
-        let activeId = milestones[0].id;
+        const milestones = getTrackerMilestones();
+        let activeId = milestones[0]?.id ?? 0;
         for (let i = 0; i < milestones.length; i++) {
             const m = milestones[i];
             const allDone = m.taskList.every((t: string) =>
@@ -339,6 +343,8 @@ export default function ProjectDetailPage() {
     const [dqc1SubmissionLoading, setDqc1SubmissionLoading] = useState(false);
     const [dqcSubmissionFiles, setDqcSubmissionFiles] = useState<Array<{ id: number; originalName: string }>>([]);
     const [selectedDqcSubmissionFileId, setSelectedDqcSubmissionFileId] = useState<number | null>(null);
+    const [dqcQuotationLink, setDqcQuotationLink] = useState<string | null>(null);
+    const [dqcQuoteId, setDqcQuoteId] = useState<number | null>(null);
     const [dqc1SelectedPin, setDqc1SelectedPin] = useState<number | null>(null);
     const [dqc1HighlightedPin, setDqc1HighlightedPin] = useState<number | null>(null);
     // Design upload (First cut design popup): selected files
@@ -1265,23 +1271,6 @@ export default function ProjectDetailPage() {
         }
     }, [project?.id, project?.prolanceProjectId, project?.prolanceQuoteId]);
 
-    // When Group Description popup opens, auto-fetch latest profile (designer phone) and lead (client contactNo)
-    useEffect(() => {
-        const isGroupDesc = popupContext?.milestoneIndex === 0 && popupContext?.taskName === 'Group Description';
-        if (!isGroupDesc || projectId == null) return;
-        refreshUser();
-        fetch(`${API}/api/leads/${projectId}`, {
-            headers: buildAuthHeaders(sessionId),
-        })
-            .then(async (res) => {
-                const text = await res.text();
-                if (!res.ok || !text) return null;
-                try { return JSON.parse(text) as LeadshipTypes; } catch { return null; }
-            })
-            .then((data: LeadshipTypes | null) => { if (data) setProject(data); })
-            .catch(() => {});
-    }, [popupContext?.milestoneIndex, popupContext?.taskName, projectId, refreshUser, sessionId]);
-
     // Load history from server. Only apply response if still for same lead; merge with current state so we never drop recent events.
     const loadHistory = useCallback(() => {
         if (projectId == null) return;
@@ -1384,15 +1373,36 @@ export default function ProjectDetailPage() {
                 }
                 return res.json();
             })
-            .then((data: { drawing?: { id: number; originalName: string }; quotation?: { id: number; originalName: string }; drawingFiles?: Array<{ id: number; originalName: string }>; quotationFiles?: Array<{ id: number; originalName: string }> } | null) => {
+            .then((data: {
+                drawing?: { id: number; originalName: string };
+                quotation?: { id: number; originalName: string };
+                drawingFiles?: Array<{ id: number; originalName: string }>;
+                quotationFiles?: Array<{ id: number; originalName: string }>;
+                quotationLink?: string | null;
+                quoteId?: number | null;
+            } | null) => {
                 if (data === null) return;
                 const drawingFiles = Array.isArray(data?.drawingFiles) ? data.drawingFiles : [];
                 const quotationFiles = Array.isArray(data?.quotationFiles) ? data.quotationFiles : [];
                 const allFiles = [...drawingFiles, ...quotationFiles];
                 setDqcSubmissionFiles(allFiles);
+                const link =
+                    typeof data?.quotationLink === 'string' && data.quotationLink.trim()
+                        ? data.quotationLink.trim()
+                        : null;
+                const qid =
+                    data?.quoteId != null && Number.isFinite(Number(data.quoteId)) && Number(data.quoteId) > 0
+                        ? Number(data.quoteId)
+                        : null;
+                setDqcQuotationLink(quotationFiles.length === 0 ? link : null);
+                setDqcQuoteId(quotationFiles.length === 0 ? qid : null);
                 const fileToLoad = allFiles[0] ?? data?.drawing ?? data?.quotation ?? null;
                 if (!fileToLoad) {
-                    setDqc1SubmissionLoadError('No DQC submission files found for this lead.');
+                    setDqc1SubmissionLoadError(
+                        link
+                            ? 'No drawing files found. Open the linked quotation from the toolbar.'
+                            : 'No DQC submission files found for this lead.',
+                    );
                     setDqc1SubmissionLoading(false);
                     return;
                 }
@@ -1438,6 +1448,8 @@ export default function ProjectDetailPage() {
                 const quotationFiles = Array.isArray(data?.quotationFiles) ? data.quotationFiles : [];
                 const allFiles = [...drawingFiles, ...quotationFiles];
                 setDqcSubmissionFiles(allFiles);
+                setDqcQuotationLink(null);
+                setDqcQuoteId(null);
                 const fileToLoad = allFiles[0] ?? data?.drawing ?? data?.quotation ?? null;
                 if (!fileToLoad) {
                     setDqc1SubmissionLoadError('No DQC 2 submission files found for this lead.');
@@ -1575,8 +1587,9 @@ export default function ProjectDetailPage() {
             setTimeout(() => setBlockedTaskMessage(null), 3000);
             return;
         }
-        const targetVisualIndex = MileStonesArray.MilestonesName.findIndex(m => m.id === milestoneIndex);
-        const currentVisualIndex = MileStonesArray.MilestonesName.findIndex(m => m.id === currentMilestoneIndex);
+        const tracker = getTrackerMilestones();
+        const targetVisualIndex = tracker.findIndex((m) => m.id === milestoneIndex);
+        const currentVisualIndex = tracker.findIndex((m) => m.id === currentMilestoneIndex);
         // Only allow opening tasks for the current or past milestones; next milestones unlock after current is completed
         if (targetVisualIndex > currentVisualIndex) {
             setBlockedTaskMessage('Complete the current milestone first.');
@@ -2024,8 +2037,9 @@ export default function ProjectDetailPage() {
         const taskName = taskList[taskIndex];
         const key = taskKey(milestoneIndex, taskName);
         const isCompleted = completedTaskKeys.includes(key);
-        const targetVisualIndex = MileStonesArray.MilestonesName.findIndex(m => m.id === milestoneIndex);
-        const currentVisualIndex = MileStonesArray.MilestonesName.findIndex(m => m.id === currentMilestoneIndex);
+        const tracker = getTrackerMilestones();
+        const targetVisualIndex = tracker.findIndex((m) => m.id === milestoneIndex);
+        const currentVisualIndex = tracker.findIndex((m) => m.id === currentMilestoneIndex);
         const isCurrentMilestone = targetVisualIndex === currentVisualIndex;
         const isPastMilestone = targetVisualIndex < currentVisualIndex;
         const roleNow = (authUser?.role || '').toLowerCase();
@@ -2264,6 +2278,8 @@ export default function ProjectDetailPage() {
                                 setDqc1SubmissionLoading(false);
                             });
                         }}
+                        dqcQuotationLink={dqcQuotationLink}
+                        dqcQuoteId={dqcQuoteId}
                     />
                 </div>
             </div>
@@ -2320,6 +2336,14 @@ export default function ProjectDetailPage() {
                         setCancelFiles([]);
                         setCancelError(null);
                         setShowCancelModal(true);
+                    }}
+                    showKtTransfer={!isMmtUser && Boolean(project && sessionId)}
+                    onKtTransferClick={() => {
+                        setPopupContext({
+                            milestoneIndex: KT_MILESTONE_ID,
+                            milestoneName: 'KT TRANSFER',
+                            taskName: KT_TASK_NAME,
+                        });
                     }}
                     hideNavTabs={isMmtUser}
                     hideStepper={isMmtUser}
@@ -3292,7 +3316,7 @@ export default function ProjectDetailPage() {
                         historyEvents={historyEvents}
                         onViewTaskDetails={setSelectedHistoryEvent}
                         currentMilestoneIndex={currentMilestoneIndex}
-                        totalMilestones={MileStonesArray.MilestonesName.length}
+                        totalMilestones={getTrackerMilestones().length}
                         showDqcFeedback={isDesigner}
                         leadId={projectId}
                         sessionId={sessionId}
@@ -3612,42 +3636,6 @@ export default function ProjectDetailPage() {
                             onClose={closePopup}
                         />
                     )}
-                    {popupContext.milestoneIndex === 0 && popupContext.taskName === 'Group Description' && (
-                        <PopupGroupDescription
-                            leadId={projectId}
-                            designerPhone={authUser?.phone ?? ''}
-                            clientPhone={
-                                project?.contactNo?.trim() ||
-                                (project as { clientPhones?: string[] })?.clientPhones?.[0] ||
-                                project?.intakeAltPhone ||
-                                ''
-                            }
-                            clientEmail={project?.clientEmail ?? ''}
-                            customerName={
-                                project?.intakeCustomerName?.trim() ||
-                                project?.projectName?.trim() ||
-                                ''
-                            }
-                            mailLoopChainInitiated={Boolean(
-                                (project as { mailLoopChainInitiated?: boolean })?.mailLoopChainInitiated,
-                            )}
-                            designManagerName={
-                                (project as any)?.designManagerName ||
-                                (project as any)?.design_manager_name ||
-                                (project as any)?.designer_lead_name ||
-                                ''
-                            }
-                            designManagerEmail={
-                                (project as any)?.designManagerEmail ||
-                                (project as any)?.design_manager_email ||
-                                (project as any)?.designer_lead_email ||
-                                ''
-                            }
-                            sessionId={sessionId}
-                            onMarkComplete={() => recordTaskComplete(0, 'Group Description')}
-                            onClose={closePopup}
-                        />
-                    )}
                     {popupContext.milestoneIndex === 0 && popupContext.taskName === 'Mail loop chain 2 initiate' && (
                         <PopupMailLoopChain
                             leadId={projectId}
@@ -3704,7 +3692,7 @@ export default function ProjectDetailPage() {
                             onClose={closePopup}
                         />
                     )}
-                    {popupContext.milestoneIndex === 0 && popupContext.taskName !== 'D1 for MMT request' && popupContext.taskName !== 'Group Description' && popupContext.taskName !== 'Mail loop chain 2 initiate' && popupContext.taskName !== 'D1 files upload' && (
+                    {popupContext.milestoneIndex === 0 && popupContext.taskName !== 'D1 for MMT request' && popupContext.taskName !== 'Mail loop chain 2 initiate' && popupContext.taskName !== 'D1 files upload' && (
                         <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(popupContext.milestoneIndex, popupContext.taskName); closePopup(); }} />
                     )}
                     {popupContext.milestoneIndex === 0 && popupContext.taskName === 'D1 files upload' && !canApproveMmtWorkflow && (authUser?.role || '').toLowerCase() !== 'operation_manager' && (
@@ -4083,6 +4071,8 @@ export default function ProjectDetailPage() {
                                         setDqc1SubmissionLoading(false);
                                     });
                                 }}
+                                dqcQuotationLink={dqcQuotationLink}
+                                dqcQuoteId={dqcQuoteId}
                             />
                         ) : (
                             <div className="px-6 pb-6">
@@ -4471,6 +4461,8 @@ export default function ProjectDetailPage() {
                                         setDqc1SubmissionLoading(false);
                                     });
                                 }}
+                                dqcQuotationLink={dqcQuotationLink}
+                                dqcQuoteId={dqcQuoteId}
                             />
                         ) : (
                             <div className="px-6 pb-6">

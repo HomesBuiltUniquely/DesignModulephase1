@@ -1,5 +1,9 @@
 import { MileStonesTypes } from "./milestones";
 
+/** Logical KT id — kept in the array for popup/API paths, hidden from the tracker UI. */
+export const KT_MILESTONE_ID = 7;
+export const KT_TASK_NAME = "Upload KT files";
+
 const MileStonesArray: MileStonesTypes = {
   MilestonesName: [
     {
@@ -14,7 +18,6 @@ const MileStonesArray: MileStonesTypes = {
       id: 0,
       name: "D1 SITE MEASUREMENT",
       taskList: [
-        "Group Description",
         "Mail loop chain 2 initiate",
         "D1 for MMT request",
         "D1 files upload",
@@ -78,5 +81,10 @@ const MileStonesArray: MileStonesTypes = {
     },
   ],
 };
+
+/** Project Tracker + header stepper — KT lives on the lead header button, not here. */
+export function getTrackerMilestones() {
+  return MileStonesArray.MilestonesName.filter((m) => m.id !== KT_MILESTONE_ID);
+}
 
 export default MileStonesArray;

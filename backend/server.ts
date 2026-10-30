@@ -1092,6 +1092,23 @@ async function triggerCustomerEmailForLead(
     const rawOrderValue = payload?.order_value ?? payload?.form?.order_value ?? payload?.formData?.order_value ?? null;
     const paymentAmounts = await resolveMilestonePaymentAmounts(leadId, 0.1, rawOrderValue);
 
+    let quotationLink: string | undefined;
+    let quoteDiscountSource: Record<string, unknown> | null = null;
+    let quoteIdForPayload: number | null = null;
+    if (emailRoutePath === "/api/email/send-mail-loop-chain-initiate") {
+      try {
+        const enrich = await buildWelcomeMailQuoteEnrichment(leadId);
+        quotationLink = enrich.quotationLink ?? undefined;
+        quoteDiscountSource = enrich.quoteDiscountSource;
+        quoteIdForPayload = enrich.quoteId;
+        if (!quotationLink) {
+          console.info("welcome mail: no quote link for lead", { leadId });
+        }
+      } catch (enrichErr) {
+        console.info("welcome mail: quote enrichment failed (non-fatal)", { leadId, error: enrichErr });
+      }
+    }
+
     const sendPromise = triggerMailRouteWithLog({
       leadId,
       taskName: "customer-email-trigger",
@@ -1104,6 +1121,8 @@ async function triggerCustomerEmailForLead(
         customerName,
         designerName,
         quotationTotal: paymentAmounts.quotationTotal,
+        ...(quotationLink ? { quotationLink } : {}),
+        ...(quoteDiscountSource ? { quoteDiscountSource } : {}),
         leadPayload: {
           ...sanitizeLeadPayloadForEmail(
             payload && typeof payload === "object" && !Array.isArray(payload)
@@ -1112,6 +1131,12 @@ async function triggerCustomerEmailForLead(
           ),
           intakeView: extractLeadIntakeViewFromPayload(payload),
           experienceCenter: resolveLeadBranchName(payload),
+          ...(quoteIdForPayload != null && quoteIdForPayload > 0
+            ? {
+                prolance_quote_id: quoteIdForPayload,
+                prolanceQuoteId: quoteIdForPayload,
+              }
+            : {}),
         },
       },
     });
@@ -1437,6 +1462,26 @@ async function initDb() {
           "ALTER TABLE users ADD COLUMN sub_role VARCHAR(50) NULL",
         );
       }
+    } catch {
+      // ignore
+    }
+
+    // Audit trail for designer career-level (sub_role) changes by Admin / TDM
+    try {
+      await conn.query(`
+        CREATE TABLE IF NOT EXISTS user_role_change_audit (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NOT NULL,
+          changed_by INT NOT NULL,
+          field VARCHAR(64) NOT NULL,
+          from_value VARCHAR(64) NULL,
+          to_value VARCHAR(64) NULL,
+          created_at DATETIME NOT NULL,
+          INDEX idx_user_role_audit_user (user_id),
+          INDEX idx_user_role_audit_changed_by (changed_by),
+          INDEX idx_user_role_audit_created (created_at)
+        );
+      `);
     } catch {
       // ignore
     }
@@ -6575,6 +6620,9 @@ const ADMIN_DELETABLE_ROLES = new Set([
   "territorial_design_manager",
 ]);
 
+/** Designer career ladder stored on users.sub_role (org role stays designer). */
+const DESIGNER_SUB_ROLES = new Set(["INTERN", "JID", "ID", "SID", "PD"]);
+
 function adminDeletableRoleLabel(role: string): string {
   if (role === "designer") return "Designer";
   if (role === "design_manager") return "Design Manager";
@@ -6582,13 +6630,55 @@ function adminDeletableRoleLabel(role: string): string {
   return role;
 }
 
-// Admin: list users by role (designer / design_manager / territorial_design_manager)
+function normalizeDesignerSubRoleCode(raw: unknown): string | null {
+  const key = String(raw || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+  if (!key) return null;
+  const aliases: Record<string, string> = {
+    INTERN: "INTERN",
+    JRDESIGNER: "JID",
+    JUNIORDESIGNER: "JID",
+    JUNIORINTERIORDESIGNER: "JID",
+    JID: "JID",
+    ID: "ID",
+    INTERIORDESIGNER: "ID",
+    SID: "SID",
+    SENIORDESIGNER: "SID",
+    SENIORINTERIORDESIGNER: "SID",
+    PD: "PD",
+    PRINCIPALDESIGNER: "PD",
+    PRINCIPALINTERIORDESIGNER: "PD",
+  };
+  const code = aliases[key] || null;
+  return code && DESIGNER_SUB_ROLES.has(code) ? code : null;
+}
+
+async function designerIsUnderTdm(designerId: number, tdmId: number): Promise<boolean> {
+  const [rows] = await pool.query(
+    `SELECT u.id
+     FROM users u
+     INNER JOIN users dm ON dm.id = u.design_manager_id AND dm.role = 'design_manager'
+     WHERE u.id = ?
+       AND u.role = 'designer'
+       AND dm.territorial_design_manager_id = ?
+     LIMIT 1`,
+    [designerId, tdmId],
+  );
+  return (rows as any[]).length > 0;
+}
+
+// Admin or TDM: list users by role (TDM: designers in territory only)
 app.get("/api/auth/admin/users", async (req: Request, res: Response) => {
   try {
-    const admin = await getUserFromSession(req);
-    if (!admin) return res.status(401).json({ message: "Unauthorized" });
-    if ((admin.role || "").toLowerCase() !== "admin") {
-      return res.status(403).json({ message: "Only admin can list users for management" });
+    const actor = await getUserFromSession(req);
+    if (!actor) return res.status(401).json({ message: "Unauthorized" });
+    const actorRole = (actor.role || "").toLowerCase();
+    const isAdmin = actorRole === "admin";
+    const isTdm = actorRole === "territorial_design_manager";
+    if (!isAdmin && !isTdm) {
+      return res.status(403).json({ message: "Only admin or TDM can list users for management" });
     }
 
     const roleFilter = String(req.query.role || "").trim().toLowerCase();
@@ -6598,9 +6688,28 @@ app.get("/api/auth/admin/users", async (req: Request, res: Response) => {
       });
     }
 
+    if (isTdm && roleFilter !== "designer") {
+      return res.status(403).json({
+        message: "TDM can only list designers in their territory",
+      });
+    }
+
     if (roleFilter === "designer") {
+      if (isTdm) {
+        const [rows] = await pool.query(
+          `SELECT u.id, u.name, u.email, u.role, u.branch, u.phone, u.sub_role AS subRole,
+                  dm.name AS managerName, dm.email AS managerEmail
+           FROM users u
+           INNER JOIN users dm ON dm.id = u.design_manager_id AND dm.role = 'design_manager'
+           WHERE u.role = 'designer'
+             AND dm.territorial_design_manager_id = ?
+           ORDER BY u.name ASC`,
+          [actor.id],
+        );
+        return res.json(rows);
+      }
       const [rows] = await pool.query(
-        `SELECT u.id, u.name, u.email, u.role, u.branch, u.phone,
+        `SELECT u.id, u.name, u.email, u.role, u.branch, u.phone, u.sub_role AS subRole,
                 dm.name AS managerName, dm.email AS managerEmail
          FROM users u
          LEFT JOIN users dm ON dm.id = u.design_manager_id
@@ -6632,6 +6741,101 @@ app.get("/api/auth/admin/users", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("admin users list error", err);
     return res.status(500).json({ message: "Failed to load users" });
+  }
+});
+
+// Admin or TDM: change designer career level (users.sub_role)
+app.patch("/api/auth/admin/users/:id/sub-role", async (req: Request, res: Response) => {
+  try {
+    const actor = await getUserFromSession(req);
+    if (!actor) return res.status(401).json({ message: "Unauthorized" });
+    const actorRole = (actor.role || "").toLowerCase();
+    const isAdmin = actorRole === "admin";
+    const isTdm = actorRole === "territorial_design_manager";
+    if (!isAdmin && !isTdm) {
+      return res.status(403).json({ message: "Only admin or TDM can change designer career levels" });
+    }
+
+    const userId = Number(req.params.id);
+    if (!Number.isFinite(userId) || userId <= 0) {
+      return res.status(400).json({ message: "Invalid user id" });
+    }
+    if (Number(actor.id) === userId) {
+      return res.status(400).json({ message: "You cannot change your own career level here" });
+    }
+
+    const nextSubRole = normalizeDesignerSubRoleCode((req.body || {}).subRole ?? (req.body || {}).sub_role);
+    if (!nextSubRole) {
+      return res.status(400).json({
+        message: "subRole must be one of INTERN, JID, ID, SID, PD",
+      });
+    }
+
+    const [rows] = await pool.query(
+      `SELECT id, name, email, role, sub_role AS subRole
+       FROM users WHERE id = ? LIMIT 1`,
+      [userId],
+    );
+    const target = (rows as any[])[0];
+    if (!target) return res.status(404).json({ message: "User not found" });
+    if (String(target.role || "").toLowerCase() !== "designer") {
+      return res.status(400).json({ message: "Career level can only be set for designers" });
+    }
+
+    if (isTdm) {
+      const allowed = await designerIsUnderTdm(userId, Number(actor.id));
+      if (!allowed) {
+        return res.status(403).json({
+          message: "You can only change career levels for designers under your design managers",
+        });
+      }
+    }
+
+    const fromValue =
+      target.subRole != null && String(target.subRole).trim() !== ""
+        ? String(target.subRole).trim().toUpperCase()
+        : null;
+    if (fromValue === nextSubRole) {
+      return res.json({
+        user: {
+          id: target.id,
+          name: target.name,
+          email: target.email,
+          role: target.role,
+          subRole: nextSubRole,
+        },
+        unchanged: true,
+      });
+    }
+
+    await pool.query(`UPDATE users SET sub_role = ? WHERE id = ? AND role = 'designer'`, [
+      nextSubRole,
+      userId,
+    ]);
+
+    try {
+      await pool.query(
+        `INSERT INTO user_role_change_audit
+         (user_id, changed_by, field, from_value, to_value, created_at)
+         VALUES (?, ?, 'sub_role', ?, ?, ?)`,
+        [userId, actor.id, fromValue, nextSubRole, new Date()],
+      );
+    } catch (auditErr) {
+      console.warn("user_role_change_audit insert failed (non-fatal)", auditErr);
+    }
+
+    return res.json({
+      user: {
+        id: target.id,
+        name: target.name,
+        email: target.email,
+        role: "designer",
+        subRole: nextSubRole,
+      },
+    });
+  } catch (err) {
+    console.error("admin users sub-role patch error", err);
+    return res.status(500).json({ message: "Failed to update designer career level" });
   }
 });
 
@@ -6841,12 +7045,31 @@ app.all("/api/auth/register", async (req: Request, res: Response) => {
       }
     }
 
+    const designerSubRole = targetRole === "designer" ? "INTERN" : null;
     const [result] = await pool.query(
-      "INSERT INTO users (email, password, name, role, phone, branch, design_manager_id, territorial_design_manager_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      [normalized, String(password), displayName, targetRole, phoneVal || null, branchVal, designManagerId, territorialDesignManagerId],
+      "INSERT INTO users (email, password, name, role, phone, branch, design_manager_id, territorial_design_manager_id, sub_role) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        normalized,
+        String(password),
+        displayName,
+        targetRole,
+        phoneVal || null,
+        branchVal,
+        designManagerId,
+        territorialDesignManagerId,
+        designerSubRole,
+      ],
     );
     const insertId = (result as any).insertId;
-    return res.status(201).json({ user: { id: insertId, email: normalized, name: displayName, role: targetRole } });
+    return res.status(201).json({
+      user: {
+        id: insertId,
+        email: normalized,
+        name: displayName,
+        role: targetRole,
+        ...(designerSubRole ? { subRole: designerSubRole } : {}),
+      },
+    });
   } catch (err: any) {
     if (err?.code === "ER_DUP_ENTRY") return res.status(400).json({ message: "A user with this email already exists" });
     console.error("register (TDM) error", err);
@@ -7535,22 +7758,25 @@ async function resolveLatestQuoteLinkForLead(leadId: number): Promise<{
   quoteId: number;
   customerQuoteUrl: string;
   internalQuoteUrl: string;
+  versionNumber: number | null;
+  source: "shared" | "latest";
 } | null> {
-  if (await leadIsPre10Stage(leadId)) {
-    const selected = await loadCrmShareForLead(leadId);
-    if (selected) {
-      const base = frontendBase();
-      return {
-        quoteId: selected.quoteId,
-        customerQuoteUrl: `${base}/quote/${encodeURIComponent(String(selected.quoteId))}`,
-        internalQuoteUrl: crmQuoteInternalUrl(leadId, selected.quoteId),
-      };
-    }
+  // Prefer the version shared with the customer at every project stage (DQC must match customer quote).
+  const selected = await loadCrmShareForLead(leadId);
+  if (selected) {
+    const base = frontendBase();
+    return {
+      quoteId: selected.quoteId,
+      customerQuoteUrl: `${base}/quote/${encodeURIComponent(String(selected.quoteId))}`,
+      internalQuoteUrl: crmQuoteInternalUrl(leadId, selected.quoteId),
+      versionNumber: selected.versionNumber > 0 ? selected.versionNumber : null,
+      source: "shared",
+    };
   }
 
   let quoteId: number | null = null;
 
-  // Prefer newest version row (true latest quotation)
+  // Fallback: newest version row (no CRM share yet)
   try {
     const [verRows] = await pool.query(
       `SELECT quote_id AS quoteId
@@ -7603,6 +7829,8 @@ async function resolveLatestQuoteLinkForLead(leadId: number): Promise<{
     quoteId,
     customerQuoteUrl: `${base}/quote/${encodeURIComponent(String(quoteId))}`,
     internalQuoteUrl: `${base}/quote/${encodeURIComponent(String(quoteId))}?internal=1&leadId=${encodeURIComponent(String(leadId))}`,
+    versionNumber: null,
+    source: "latest",
   };
 }
 
@@ -8090,6 +8318,100 @@ function applyDiscountMetaToSnapshotPayload(
     ];
   }
   return nextPayload;
+}
+
+/** Quote link + Hub/Prolance discount source for the mail-loop welcome letter. */
+async function buildWelcomeMailQuoteEnrichment(leadId: number): Promise<{
+  quotationLink: string | null;
+  quoteId: number | null;
+  quoteDiscountSource: Record<string, unknown> | null;
+}> {
+  const links = await resolveLatestQuoteLinkForLead(leadId);
+  if (!links) {
+    return { quotationLink: null, quoteId: null, quoteDiscountSource: null };
+  }
+
+  const quoteId = links.quoteId;
+  let snapshotPayload: Record<string, unknown> = {};
+  try {
+    const [snapRows] = await pool.query(
+      `SELECT payload_json AS payloadJson
+       FROM lead_prolance_quote_snapshots
+       WHERE lead_id = ? AND quote_id = ?
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+      [leadId, quoteId],
+    );
+    let snap = (snapRows as { payloadJson?: unknown }[])[0];
+    if (!snap?.payloadJson) {
+      const [anySnap] = await pool.query(
+        `SELECT payload_json AS payloadJson
+         FROM lead_prolance_quote_snapshots
+         WHERE quote_id = ?
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1`,
+        [quoteId],
+      );
+      snap = (anySnap as { payloadJson?: unknown }[])[0];
+    }
+    snapshotPayload = parseStoredJsonObject(snap?.payloadJson) ?? {};
+  } catch {
+    snapshotPayload = {};
+  }
+
+  let hubMeta: Record<string, unknown> = {};
+  try {
+    hubMeta = await loadLatestVersionHubMeta(quoteId, leadId);
+  } catch {
+    hubMeta = {};
+  }
+
+  const merged =
+    hubMeta && Object.keys(hubMeta).length > 0
+      ? applyDiscountMetaToSnapshotPayload(snapshotPayload, hubMeta)
+      : snapshotPayload;
+
+  // Compact source: quote root fields the email route needs for breakdown (prices + Hub meta + room arrays).
+  const data = merged.data ?? merged.Data;
+  const quoteDiscountSource: Record<string, unknown> = {
+    ...merged,
+    quoteId,
+    hubCategoryDiscountPct: merged.hubCategoryDiscountPct,
+    hubCategoryDiscountAmount: merged.hubCategoryDiscountAmount,
+    hubAdditionalDiscountAmount: merged.hubAdditionalDiscountAmount,
+    hubFlatDiscountPct: merged.hubFlatDiscountPct,
+    hubFlatDiscountAmount: merged.hubFlatDiscountAmount,
+    woodWorkPrice: merged.woodWorkPrice,
+    woodWorkDiscount: merged.woodWorkDiscount,
+    accessoriesPrice: merged.accessoriesPrice,
+    accessoriesDiscount: merged.accessoriesDiscount,
+    consHardwarePrice: merged.consHardwarePrice,
+    hardwarePrice: merged.hardwarePrice,
+    servicesPrice: merged.servicesPrice,
+    servicesDiscount: merged.servicesDiscount,
+    worktopsPrice: merged.worktopsPrice,
+    worktopPrice: merged.worktopPrice,
+    worktopDiscount: merged.worktopDiscount,
+    worktopsDiscount: merged.worktopsDiscount,
+    totalPrice: merged.totalPrice,
+    finalTotalPrice: merged.finalTotalPrice,
+    finalPrice: merged.finalPrice,
+    discount: merged.discount,
+    discountAmount: merged.discountAmount,
+    optionDetails: merged.optionDetails,
+    quoteOptionsData: merged.quoteOptionsData,
+    roomWiseSummary: merged.roomWiseSummary,
+    ...(data != null ? { data } : {}),
+  };
+
+  return {
+    quotationLink: links.customerQuoteUrl,
+    quoteId,
+    quoteDiscountSource:
+      Object.keys(snapshotPayload).length > 0 || Object.keys(hubMeta).length > 0
+        ? quoteDiscountSource
+        : null,
+  };
 }
 
 function readDiscountMetaFromSnapshot(snapshotPayload: Record<string, unknown>): {
@@ -9158,7 +9480,7 @@ app.get("/api/leads/:id/completions", async (req: Request, res: Response) => {
 /** Temp testing: Hub Pass — admin-only milestone bypass (matches frontend MileStoneArray). */
 const HUB_PASS_MILESTONE_TASKS: Record<number, string[]> = {
   7: ["Upload KT files"],
-  0: ["Group Description", "Mail loop chain 2 initiate", "D1 for MMT request", "D1 files upload"],
+  0: ["Mail loop chain 2 initiate", "D1 for MMT request", "D1 files upload"],
   1: [
     "First cut design + quotation discussion meeting request",
     "meeting completed",
@@ -9435,13 +9757,9 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
       switch (milestoneIndex) {
         // Milestone 0: D1 SITE MEASUREMENT
         case 0:
-          if (t === "Group Description") {
-            // Sl no 1 – welcome / mail-loop initiate letter on mark as done
-            return "/api/email/send-mail-loop-chain-initiate";
-          }
           if (t === "Mail loop chain 2 initiate") {
-            // Sl no 2 – collect client + family member emails only (no mail on complete)
-            return null;
+            // Welcome / mail-loop initiate letter — moved here after Group Description was removed
+            return "/api/email/send-mail-loop-chain-initiate";
           }
           if (t === "D1 for MMT request") {
             // External visit mail fires after MMT manager/admin assigns executive
@@ -11217,7 +11535,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
           });
         }
       } else if (emailRoutePath === "/api/email/send-mail-loop-chain-initiate") {
-        // Group Description — await welcome mail so UI can confirm success
+        // Mail loop chain 2 initiate — await welcome mail so UI can confirm success
         try {
           await ensureLeadClientContactColumns(id);
           const [stateRows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [id]);
@@ -11251,7 +11569,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
               : mailResult.reason || null,
           });
         } catch (err) {
-          console.error("complete-task Group Description mail error (non-fatal)", {
+          console.error("complete-task mail-loop-chain-initiate mail error (non-fatal)", {
             leadId: id,
             error: err,
           });
@@ -11380,7 +11698,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
 });
 
 // Trigger mail loop chain initiation mail (SMTP-backed).
-// Prefer completing "Group Description" (fires the same route via complete-task).
+// Prefer completing "Mail loop chain 2 initiate" (fires the same route via complete-task).
 // Kept for manual/admin re-send if needed.
 app.post("/api/leads/:id/mail-loop-chain-initiate", async (req: Request, res: Response) => {
   const id = Number(req.params.id);
@@ -14596,6 +14914,7 @@ async function persistDqc1SubmissionFromMeta(
   quotationFiles: { originalname: string; filename: string; path: string; mimetype: string; size: number }[],
   drawingS3Urls: (string | null)[],
   quotationS3Urls: (string | null)[],
+  quoteMeta?: { quoteId?: number | null; quotationLink?: string | null } | null,
 ): Promise<void> {
   const now = new Date();
   for (let i = 0; i < drawingFiles.length; i++) {
@@ -14618,18 +14937,35 @@ async function persistDqc1SubmissionFromMeta(
       [leadId, user.id, quotationFile.originalname, quotationFile.filename, quotationFile.path, quotationFile.mimetype, quotationFile.size, now, quotationS3],
     );
   }
+  const linkedQuoteId =
+    quoteMeta?.quoteId != null && Number.isFinite(Number(quoteMeta.quoteId)) && Number(quoteMeta.quoteId) > 0
+      ? Number(quoteMeta.quoteId)
+      : null;
+  const linkedQuotationLink =
+    typeof quoteMeta?.quotationLink === "string" && quoteMeta.quotationLink.trim()
+      ? quoteMeta.quotationLink.trim()
+      : null;
+  const fileNames = [
+    ...drawingFiles.map((f) => f.originalname),
+    ...quotationFiles.map((f) => f.originalname),
+  ];
+  if (linkedQuotationLink && quotationFiles.length === 0) {
+    fileNames.push(linkedQuoteId ? `quotation link #${linkedQuoteId}` : "quotation link");
+  }
   const ev = {
     id: `dqc-submission-${Date.now()}`,
     type: "file_upload",
     taskName: "DQC 1 submission - dwg + quotation",
     milestoneName: "DQC1",
     timestamp: now.toISOString(),
-    description: `DQC submission: ${[...drawingFiles.map((f) => f.originalname), ...quotationFiles.map((f) => f.originalname)].join(", ")}`,
+    description: `DQC submission: ${fileNames.join(", ")}`,
     user: { name: user.name ?? "User" },
     details: {
       kind: "dqc_submission",
       drawings: drawingFiles.map((f) => f.originalname),
       quotations: quotationFiles.map((f) => f.originalname),
+      ...(linkedQuoteId != null ? { quoteId: linkedQuoteId } : {}),
+      ...(linkedQuotationLink ? { quotationLink: linkedQuotationLink } : {}),
     },
   };
   await addLeadHistoryEvent(leadId, ev);
@@ -14839,10 +15175,11 @@ app.post("/api/leads/:id/dqc-submission/presign", async (req: Request, res: Resp
       .filter((d) => d.name);
     const validQuotations = quotationsInput
       .map((q) => ({ name: (q?.name || "").trim(), mime: (q?.mime || "application/octet-stream").trim() || "application/octet-stream" }))
-      .filter((q) => q.name);
-    if (validDrawings.length === 0 || validQuotations.length === 0) {
-      return res.status(400).json({ message: "At least one drawing and one quotation are required" });
+       .filter((q) => q.name);
+    if (validDrawings.length === 0) {
+      return res.status(400).json({ message: "At least one drawing is required" });
     }
+    // Quotation file upload is optional on DQC1 when the client will send quoteId/quotationLink on /complete.
     const ts = Date.now();
     const drawings = await Promise.all(
       validDrawings.map(async (d, idx) => {
@@ -14901,6 +15238,8 @@ app.post("/api/leads/:id/dqc-submission/complete", async (req: Request, res: Res
       quotationKeys?: string[];
       drawingNames?: string[];
       quotationNames?: string[];
+      quoteId?: number | string | null;
+      quotationLink?: string | null;
     };
     const drawingKeys =
       Array.isArray(body.drawingKeys) && body.drawingKeys.length > 0
@@ -14914,8 +15253,18 @@ app.post("/api/leads/:id/dqc-submission/complete", async (req: Request, res: Res
         : body.quotationKey?.trim()
           ? [body.quotationKey.trim()]
           : [];
-    if (drawingKeys.length === 0 || quotationKeys.length === 0) {
-      return res.status(400).json({ message: "At least one drawingKey and one quotationKey are required" });
+    const quoteIdNum = body.quoteId != null && String(body.quoteId).trim() !== "" ? Number(body.quoteId) : null;
+    const quotationLink =
+      typeof body.quotationLink === "string" && body.quotationLink.trim() ? body.quotationLink.trim() : null;
+    const hasLinkedQuote =
+      quoteIdNum != null && Number.isFinite(quoteIdNum) && quoteIdNum > 0 && Boolean(quotationLink);
+    if (drawingKeys.length === 0) {
+      return res.status(400).json({ message: "At least one drawingKey is required" });
+    }
+    if (quotationKeys.length === 0 && !hasLinkedQuote) {
+      return res.status(400).json({
+        message: "Provide quotationKeys or a linked quoteId and quotationLink",
+      });
     }
     const prefix = `lead-uploads/lead-${leadId}-`;
     if (drawingKeys.some((k) => !k.startsWith(prefix)) || quotationKeys.some((k) => !k.startsWith(prefix))) {
@@ -14972,6 +15321,7 @@ app.post("/api/leads/:id/dqc-submission/complete", async (req: Request, res: Res
       quotationFilesMeta,
       drawingS3Urls,
       quotationS3Urls,
+      hasLinkedQuote ? { quoteId: quoteIdNum, quotationLink } : null,
     );
 
     // Notify: 06 — DQC submission (S3 flow)
@@ -15196,8 +15546,19 @@ app.post(
       const files = (req as any).files as { drawing?: Express.Multer.File[]; quotation?: Express.Multer.File[] };
       const drawingFiles = files?.drawing ?? [];
       const quotationFiles = files?.quotation ?? [];
-      if (drawingFiles.length === 0 || quotationFiles.length === 0) {
-        return res.status(400).json({ message: "At least one drawing and one quotation file are required" });
+      const body = (req.body || {}) as { quoteId?: string | number | null; quotationLink?: string | null };
+      const quoteIdNum = body.quoteId != null && String(body.quoteId).trim() !== "" ? Number(body.quoteId) : null;
+      const quotationLink =
+        typeof body.quotationLink === "string" && body.quotationLink.trim() ? body.quotationLink.trim() : null;
+      const hasLinkedQuote =
+        quoteIdNum != null && Number.isFinite(quoteIdNum) && quoteIdNum > 0 && Boolean(quotationLink);
+      if (drawingFiles.length === 0) {
+        return res.status(400).json({ message: "At least one drawing file is required" });
+      }
+      if (quotationFiles.length === 0 && !hasLinkedQuote) {
+        return res.status(400).json({
+          message: "Provide quotation files or a linked quoteId and quotationLink",
+        });
       }
       let drawingS3Urls: (string | null)[] = [];
       let quotationS3Urls: (string | null)[] = [];
@@ -15209,7 +15570,15 @@ app.post(
           quotationFiles.map((f) => uploadLeadFileToS3(leadId, f.path, f.originalname, f.mimetype)),
         );
       }
-      await persistDqc1SubmissionFromMeta(leadId, user, drawingFiles, quotationFiles, drawingS3Urls, quotationS3Urls);
+      await persistDqc1SubmissionFromMeta(
+        leadId,
+        user,
+        drawingFiles,
+        quotationFiles,
+        drawingS3Urls,
+        quotationS3Urls,
+        hasLinkedQuote ? { quoteId: quoteIdNum, quotationLink } : null,
+      );
 
       // Notify: 06 — DQC submission (legacy multipart flow)
       try {
@@ -15497,11 +15866,64 @@ app.get("/api/leads/:id/dqc-submission-files", async (req: Request, res: Respons
       .map((r: any) => ({ id: r.id, originalName: originalName(r) }));
     const drawing = drawingFiles[0];
     const quotation = quotationFiles[0];
+
+    let quoteId: number | null = null;
+    let quotationLink: string | null = null;
+    if (quotationFiles.length === 0) {
+      try {
+        const [histRows] = await pool.query(
+          `SELECT event FROM lead_history WHERE lead_id = ? ORDER BY created_at DESC LIMIT 80`,
+          [leadId],
+        );
+        for (const row of (histRows as any[]) || []) {
+          let ev: any = row?.event;
+          if (typeof ev === "string") {
+            try {
+              ev = JSON.parse(ev);
+            } catch {
+              continue;
+            }
+          }
+          const details = ev?.details;
+          if (!details || details.kind !== "dqc_submission") continue;
+          const link =
+            typeof details.quotationLink === "string" && details.quotationLink.trim()
+              ? details.quotationLink.trim()
+              : null;
+          const qid =
+            details.quoteId != null && Number.isFinite(Number(details.quoteId)) && Number(details.quoteId) > 0
+              ? Number(details.quoteId)
+              : null;
+          if (link || qid) {
+            quotationLink = link;
+            quoteId = qid;
+            break;
+          }
+        }
+      } catch (histErr) {
+        console.warn("dqc-submission-files history quote lookup failed (non-fatal)", histErr);
+      }
+      if (!quotationLink) {
+        try {
+          const latest = await resolveLatestQuoteLinkForLead(leadId);
+          if (latest?.customerQuoteUrl) {
+            quotationLink = latest.customerQuoteUrl;
+            quoteId =
+              latest.quoteId != null && Number(latest.quoteId) > 0 ? Number(latest.quoteId) : quoteId;
+          }
+        } catch (linkErr) {
+          console.warn("dqc-submission-files latest-quote-link fallback failed (non-fatal)", linkErr);
+        }
+      }
+    }
+
     return res.json({
       drawing: drawing ?? null,
       quotation: quotation ?? null,
       drawingFiles,
       quotationFiles,
+      quoteId,
+      quotationLink,
     });
   } catch (err) {
     console.error("dqc-submission-files error", err);
@@ -16344,7 +16766,7 @@ const MILESTONE_NAMES = [
   "KT TRANSFER",
 ];
 const MILESTONE_TASKS: string[][] = [
-  ["Group Description", "Mail loop chain 2 initiate", "D1 for MMT request", "D1 files upload"],
+  ["Mail loop chain 2 initiate", "D1 for MMT request", "D1 files upload"],
   [
     "First cut design + quotation discussion meeting request",
     "meeting completed",
@@ -18236,6 +18658,8 @@ app.get("/api/leads/:id/latest-quote-link", async (req: Request, res: Response) 
         ok: true,
         quoteId: null,
         customerQuoteUrl: null,
+        versionNumber: null,
+        source: null,
         ...(isServiceReadonlyUser(user) ? {} : { internalQuoteUrl: null }),
       });
     }
@@ -18244,6 +18668,8 @@ app.get("/api/leads/:id/latest-quote-link", async (req: Request, res: Response) 
         ok: true,
         quoteId: latest.quoteId,
         customerQuoteUrl: latest.customerQuoteUrl,
+        versionNumber: latest.versionNumber,
+        source: latest.source,
       });
     }
     return res.json({
@@ -18251,6 +18677,8 @@ app.get("/api/leads/:id/latest-quote-link", async (req: Request, res: Response) 
       quoteId: latest.quoteId,
       customerQuoteUrl: latest.customerQuoteUrl,
       internalQuoteUrl: latest.internalQuoteUrl,
+      versionNumber: latest.versionNumber,
+      source: latest.source,
     });
   } catch (err) {
     console.error("latest-quote-link error", err);

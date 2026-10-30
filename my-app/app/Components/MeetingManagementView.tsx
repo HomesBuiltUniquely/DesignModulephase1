@@ -543,6 +543,62 @@ function uniqueNames(values: string[]): string[] {
   return Array.from(seen.values()).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 }
 
+/** Prefer the live visit when the same Pre 10% lead has duplicate rows for one day. */
+const PRE10_STATUS_RANK: Record<ViewStatus, number> = {
+  in_progress: 5,
+  scheduled: 4,
+  completed: 3,
+  abandoned: 2,
+  cancelled: 1,
+};
+
+function isPre10Meeting(meeting: ViewMeeting): boolean {
+  if (meeting.personal) return false;
+  if (meeting.typeKey === 'pre_10') return true;
+  if ((meeting.raw.source || '').toLowerCase() === 'crm') return true;
+  // Legacy CRM/import rows sometimes stored type as "design meeting" instead of pre_10.
+  const type = (meeting.raw.meetingType || '').trim().toLowerCase().replace(/[_-]+/g, ' ');
+  return type === 'design meeting';
+}
+
+function preferPre10Meeting(a: ViewMeeting, b: ViewMeeting): ViewMeeting {
+  const rankDiff = PRE10_STATUS_RANK[a.status] - PRE10_STATUS_RANK[b.status];
+  if (rankDiff !== 0) return rankDiff > 0 ? a : b;
+  const aTimed = a.minutes != null ? 1 : 0;
+  const bTimed = b.minutes != null ? 1 : 0;
+  if (aTimed !== bTimed) return aTimed > bTimed ? a : b;
+  const aId = a.id ?? 0;
+  const bId = b.id ?? 0;
+  if (aId !== bId) return aId > bId ? a : b;
+  return a.key >= b.key ? a : b;
+}
+
+/**
+ * Same lead can get more than one Pre 10% row for the same day (CRM sync / reschedule leftovers).
+ * Keep one row per lead+day for the board and totals. Other meeting types are unchanged.
+ */
+function dedupePre10Meetings(rows: ViewMeeting[]): ViewMeeting[] {
+  const bestByLeadDay = new Map<string, ViewMeeting>();
+  const dropKeys = new Set<string>();
+
+  for (const meeting of rows) {
+    if (!isPre10Meeting(meeting) || meeting.leadId <= 0) continue;
+    const groupKey = `${meeting.leadId}|${meeting.day}`;
+    const current = bestByLeadDay.get(groupKey);
+    if (!current) {
+      bestByLeadDay.set(groupKey, meeting);
+      continue;
+    }
+    const preferred = preferPre10Meeting(current, meeting);
+    const dropped = preferred.key === current.key ? meeting : current;
+    bestByLeadDay.set(groupKey, preferred);
+    dropKeys.add(dropped.key);
+  }
+
+  if (dropKeys.size === 0) return rows;
+  return rows.filter((meeting) => !dropKeys.has(meeting.key));
+}
+
 function sameName(a: string, b: string): boolean {
   return a.trim().toLocaleLowerCase() === b.trim().toLocaleLowerCase();
 }
@@ -997,7 +1053,10 @@ export default function MeetingManagementView() {
   };
 
   const mapped = useMemo(
-    () => markOverlaps(meetings.map(toViewMeeting).filter((meeting): meeting is ViewMeeting => meeting != null)),
+    () =>
+      dedupePre10Meetings(
+        markOverlaps(meetings.map(toViewMeeting).filter((meeting): meeting is ViewMeeting => meeting != null)),
+      ),
     [meetings],
   );
 

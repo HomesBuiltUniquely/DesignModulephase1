@@ -24,7 +24,8 @@ export default function AdminPanelPage() {
   const actions = [
     {
       title: 'Manage Design Roles',
-      description: 'Search and delete Designers, Design Managers, and Territory Design Managers.',
+      description:
+        'Change designer career levels (Intern → Principal) and delete Designers, Design Managers, or TDMs.',
       href: '/admin/manage-users',
       label: 'Manage / Delete Users',
     },
