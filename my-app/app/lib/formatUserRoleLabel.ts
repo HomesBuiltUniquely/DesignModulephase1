@@ -4,6 +4,7 @@ export function formatUserRoleLabel(role: string | null | undefined): string {
   if (!r) return "";
   if (r === "territorial_design_manager") return "Territory Design Manager";
   if (r === "senior_project_manager") return "Senior Project Manager";
+  if (r === "operation_manager") return "Operation Manager";
   if (r === "project_manager") return "Project Manager";
   if (r === "deputy_general_manager") return "Deputy General Manager";
   if (r === "design_manager") return "Design Manager";

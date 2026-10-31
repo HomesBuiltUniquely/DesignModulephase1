@@ -13,11 +13,12 @@ const API = getApiBase();
 const CAN_ACCESS = new Set([
   'admin',
   'senior_project_manager',
+  'operation_manager',
   'territorial_design_manager',
   'deputy_general_manager',
 ]);
 
-const CAN_DELETE = new Set(['admin', 'senior_project_manager']);
+const CAN_DELETE = new Set(['admin', 'senior_project_manager', 'operation_manager']);
 
 type ProjectManagerRow = {
   id: number;

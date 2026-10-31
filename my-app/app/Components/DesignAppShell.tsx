@@ -59,6 +59,7 @@ const HEADER_PAGES: Record<string, string> = {
   "/admin/create-finance": "Create Finance Team",
   "/admin/create-project-manager": "Create Project Manager",
   "/admin/create-senior-project-manager": "Create Senior Project Manager",
+  "/admin/create-operation-manager": "Create Operation Manager",
   "/admin/create-escalation-manager": "Create Escalation Manager",
   "/admin/prolance-test": "Prolance API Test",
   "/finance": "10% Payment",
@@ -216,8 +217,14 @@ export default function DesignAppShell({ children }: { children: React.ReactNode
     ...(role === "mmt_manager" || role === "mmt_executive"
       ? [{ href: "/mmt", label: "D1 Uploads" }]
       : []),
-    ...(role === "senior_project_manager" || role === "project_manager" || role === "admin"
+    ...(role === "senior_project_manager" || role === "project_manager" || role === "admin" || role === "operation_manager"
       ? [{ href: "/d2-uploads", label: "D2 Uploads" }]
+      : []),
+    ...(role === "operation_manager"
+      ? [
+          { href: "/mmt", label: "D1 Uploads" },
+          { href: "/project-managers", label: "Project Managers" },
+        ]
       : []),
   ];
   const hallwayUrl = hallwayHomeUrl();

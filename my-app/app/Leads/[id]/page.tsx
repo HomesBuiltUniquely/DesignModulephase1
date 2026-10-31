@@ -198,7 +198,7 @@ export default function ProjectDetailPage() {
     const projectId = params?.id ? Number(params.id) : null;
     const isMmtUser = ['mmt', 'mmt_manager', 'mmt_executive'].includes((authUser?.role || '').toLowerCase());
     const canApproveMmtWorkflow = ['admin', 'mmt_manager'].includes((authUser?.role || '').toLowerCase());
-    const canUploadD2Files = ['senior_project_manager', 'project_manager', 'admin'].includes((authUser?.role || '').toLowerCase());
+    const canUploadD2Files = ['senior_project_manager', 'project_manager', 'admin', 'operation_manager'].includes((authUser?.role || '').toLowerCase());
     const viewDqc = searchParams.get('view') === 'dqc';
     const dqcStage = viewDqc ? (searchParams.get('stage') === 'dqc2' ? 'dqc2' as const : 'dqc1' as const) : null;
     const isDqcUser = ['dqc_manager', 'dqe'].includes((authUser?.role || '').toLowerCase());
@@ -228,7 +228,8 @@ export default function ProjectDetailPage() {
     // Track which tasks that have checklists have had their checklist completed
     const [completedChecklistKeys, setCompletedChecklistKeys] = useState<string[]>([]);
 
-    const filesCanUpload = currentMilestoneIndex === 4 ? canUploadD2Files : isMmtUser;
+    const d2FilesStage = currentMilestoneIndex === 3 || currentMilestoneIndex === 4;
+    const filesCanUpload = d2FilesStage ? canUploadD2Files : isMmtUser;
     const filesCanDelete = currentMilestoneIndex === 4 ? canUploadD2Files : isMmtUser;
 
     const taskKey = (milestoneIndex: number, taskName: string) => `${milestoneIndex}-${taskName}`;
@@ -1613,10 +1614,11 @@ export default function ProjectDetailPage() {
             const canPmApprove =
                 role === 'admin' ||
                 role === 'senior_project_manager' ||
+                role === 'operation_manager' ||
                 (role === 'project_manager' && pmId && authUser?.id && pmId === authUser.id);
             if (!canPmApprove) {
                 setBlockedTaskMessage(
-                    'Only the assigned project manager, Senior Project Manager, or Admin can open this approval step.',
+                    'Only the assigned project manager, Senior Project Manager, Operation Manager, or Admin can open this approval step.',
                 );
                 setTimeout(() => setBlockedTaskMessage(null), 4000);
                 return;
@@ -2040,7 +2042,8 @@ export default function ProjectDetailPage() {
         const currentVisualIndex = tracker.findIndex((m) => m.id === currentMilestoneIndex);
         const isCurrentMilestone = targetVisualIndex === currentVisualIndex;
         const isPastMilestone = targetVisualIndex < currentVisualIndex;
-        const isSpm = (authUser?.role || '').toLowerCase() === 'senior_project_manager';
+        const roleNow = (authUser?.role || '').toLowerCase();
+        const isSpm = roleNow === 'senior_project_manager' || roleNow === 'operation_manager';
         const needsSpmAssignPm =
             isSpm &&
             milestoneIndex === 3 &&
@@ -2175,11 +2178,11 @@ export default function ProjectDetailPage() {
     const getTaskLabel = (milestoneIndex: number, taskName: string) => {
         const role = (authUser?.role || '').toLowerCase();
         if (
-            role === 'senior_project_manager' &&
+            (role === 'senior_project_manager' || role === 'operation_manager') &&
             milestoneIndex === 3 &&
             taskName === 'D2 - masking request raise'
         ) {
-            return 'Assign PM';
+            return role === 'operation_manager' ? 'Assign SPM & PM' : 'Assign PM';
         }
         return taskName;
     };
@@ -3356,7 +3359,7 @@ export default function ProjectDetailPage() {
                                     userRole={authUser?.role}
                                     userName={authUser?.name}
                                     canDelete={filesCanDelete}
-                                    uploadType={currentMilestoneIndex === 4 ? 'd2_masking' : currentMilestoneIndex === 0 ? 'kt_transfer' : 'd1'}
+                                    uploadType={d2FilesStage ? 'd2_masking' : currentMilestoneIndex === 0 ? 'kt_transfer' : 'd1'}
                                     onD2UploadComplete={() => {
                                         refreshCompletions();
                                         setUploadsVersion((v) => v + 1);
@@ -3692,8 +3695,20 @@ export default function ProjectDetailPage() {
                     {popupContext.milestoneIndex === 0 && popupContext.taskName !== 'D1 for MMT request' && popupContext.taskName !== 'Mail loop chain 2 initiate' && popupContext.taskName !== 'D1 files upload' && (
                         <PopupPlaceholder message={popupContext.taskName} onMarkComplete={() => { recordTaskComplete(popupContext.milestoneIndex, popupContext.taskName); closePopup(); }} />
                     )}
-                    {popupContext.milestoneIndex === 0 && popupContext.taskName === 'D1 files upload' && !canApproveMmtWorkflow && (
+                    {popupContext.milestoneIndex === 0 && popupContext.taskName === 'D1 files upload' && !canApproveMmtWorkflow && (authUser?.role || '').toLowerCase() !== 'operation_manager' && (
                         <PopupD1FilesWaiting onClose={closePopup} />
+                    )}
+                    {popupContext.milestoneIndex === 0 && popupContext.taskName === 'D1 files upload' && (authUser?.role || '').toLowerCase() === 'operation_manager' && (
+                        <PopupD1FilesWaiting
+                            onClose={closePopup}
+                            leadId={projectId}
+                            sessionId={sessionId}
+                            canUpload
+                            onUploaded={() => {
+                                refreshCompletions();
+                                setUploadsVersion((v) => v + 1);
+                            }}
+                        />
                     )}
 
                 {/* ---------- Milestone 1: DQC1 – different popup per task ---------- */}
@@ -4472,7 +4487,7 @@ export default function ProjectDetailPage() {
                             projectManagerName={project.projectManagerName ?? null}
                             userRole={authUser?.role}
                             isAdminApprover={(authUser?.role || '').toLowerCase() === 'admin'}
-                            isSpmApprover={(authUser?.role || '').toLowerCase() === 'senior_project_manager'}
+                            isSpmApprover={['senior_project_manager', 'operation_manager'].includes((authUser?.role || '').toLowerCase())}
                             onClose={closePopup}
                             onApprove={() => {
                                 recordTaskComplete(4, 'Project manager approval');

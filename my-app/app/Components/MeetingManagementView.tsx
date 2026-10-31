@@ -58,6 +58,7 @@ type ScheduledMeeting = {
   endedAt?: string | null;
   quoteSent?: boolean;
   quoteFinalAmount?: string | null;
+  rescheduleCount?: number | null;
   personalKey?: string | null;
   personalKind?: 'block' | 'full_day' | null;
   personalReason?: string | null;
@@ -103,6 +104,7 @@ type ViewMeeting = {
   endMinutes: number | null;
   overlapsClient: boolean;
   insideLeave: boolean;
+  rescheduleCount?: number;
 };
 
 const AVATARS = [
@@ -492,6 +494,7 @@ function toViewMeeting(meeting: ScheduledMeeting, index: number): ViewMeeting | 
     endMinutes: endMinutes != null && minutes != null && endMinutes > minutes ? endMinutes : null,
     overlapsClient: false,
     insideLeave: false,
+    rescheduleCount: Number(meeting.rescheduleCount || 0),
   };
 }
 
@@ -770,10 +773,28 @@ function Avatar({ name }: { name: string }) {
   );
 }
 
-function StatusPill({ status }: { status: ViewStatus }) {
+function StatusPill({ status, meeting }: { status: ViewStatus; meeting?: ViewMeeting }) {
+  let label = STATUS_LABEL[status];
+  let pillStatus: string = status;
+  if (meeting && (meeting.raw.source === 'crm' || meeting.typeKey === 'pre_10')) {
+    if (status === 'cancelled') {
+      label = 'Meeting Cancelled';
+      pillStatus = 'cancelled';
+    } else if (
+      meeting.raw.meetingStatus === 'rescheduled' ||
+      (meeting.rescheduleCount && meeting.rescheduleCount > 0)
+    ) {
+      const count = Math.max(1, meeting.rescheduleCount || 1);
+      label = `Meeting Rescheduled ${count}`;
+      pillStatus = 'rescheduled';
+    } else if (status === 'scheduled') {
+      label = 'Meeting Scheduled';
+      pillStatus = 'scheduled';
+    }
+  }
   return (
-    <span className={styles.pill} data-status={status}>
-      {STATUS_LABEL[status]}
+    <span className={styles.pill} data-status={pillStatus}>
+      {label}
     </span>
   );
 }
@@ -1995,7 +2016,7 @@ export default function MeetingManagementView() {
                   )}
                   <span className={styles.venue}>{selected.venue}</span>
                   <span className={styles.kind}>{selected.kind}</span>
-                  <StatusPill status={selected.status} />
+                  <StatusPill status={selected.status} meeting={selected} />
         </div>
               </div>
             </div>
@@ -2568,7 +2589,7 @@ function GroupRows({
             <div className={styles.whenTime}>{formatClock(meeting.minutes)}</div>
             <div className={styles.whenDay}>{dayHeading(meeting.day, today)}</div>
           </td>
-          <td className={styles.statusCell}><StatusPill status={meeting.status} /></td>
+          <td className={styles.statusCell}><StatusPill status={meeting.status} meeting={meeting} /></td>
           <td className={styles.quoteCell}>
             {meeting.personal ? (
               <span className={styles.moneyNone}>Personal</span>
@@ -2675,7 +2696,7 @@ function PersonalBoard({
                     <span className={styles.modeTag} data-personal={meeting.personalKind || 'block'}>
                       {meeting.personalKind === 'full_day' ? 'Leave' : 'Personal'}
                     </span>
-                    <StatusPill status={meeting.status} />
+                    <StatusPill status={meeting.status} meeting={meeting} />
                   </button>
                 ))
               )}
@@ -2881,7 +2902,7 @@ function CalendarBoard({
               </span>
               <span className={styles.tags}>
                 <ModeTag mode={spotlight.mode} />
-                <StatusPill status={spotlight.status} />
+                <StatusPill status={spotlight.status} meeting={spotlight} />
               </span>
             </button>
           ) : (
@@ -2910,7 +2931,7 @@ function CalendarBoard({
                 <button key={meeting.key} type="button" className={styles.tlBtn} data-personal={meeting.personal ? meeting.personalKind || 'block' : undefined} onClick={() => onOpen(meeting)}>
                   <span className={styles.tlTime}>{meeting.minutes == null ? '—' : formatClock(meeting.minutes)}</span>
                   <span className={styles.tlName}>{meeting.customer}</span>
-                  <StatusPill status={meeting.status} />
+                  <StatusPill status={meeting.status} meeting={meeting} />
                 </button>
               ))}
             </div>

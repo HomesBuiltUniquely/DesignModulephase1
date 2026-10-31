@@ -1626,7 +1626,123 @@ function normalizeQuotePricingRow(data: unknown): Record<string, unknown> | null
   return root;
 }
 
-/** Aligns with quote UI total extraction (totalPayableAmount / room sums). */
+function readHubCategoryPct(
+  row: Record<string, unknown>,
+  root: Record<string, unknown> | null,
+  key: string,
+): number | null {
+  for (const src of [row, root]) {
+    if (!src) continue;
+    let raw: unknown = src.hubCategoryDiscountPct;
+    if (typeof raw === "string" && raw.trim()) {
+      try {
+        raw = JSON.parse(raw) as unknown;
+      } catch {
+        raw = null;
+      }
+    }
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      const n = parseFiniteNum((raw as Record<string, unknown>)[key]);
+      if (n != null) return n;
+    }
+  }
+  return null;
+}
+
+function firstQuoteOptionRows(
+  row: Record<string, unknown>,
+  root: Record<string, unknown> | null,
+): Record<string, unknown>[] {
+  for (const src of [row, root]) {
+    if (!src) continue;
+    for (const key of ["quoteOptionsData", "optionDetails", "roomWiseSummary"] as const) {
+      const list = src[key];
+      if (!Array.isArray(list) || list.length === 0) continue;
+      return list.filter((item) => item && typeof item === "object") as Record<string, unknown>[];
+    }
+  }
+  return [];
+}
+
+function optionLineTotal(option: Record<string, unknown>): number | null {
+  const direct = parseFiniteNum(option.totalPrice) ?? parseFiniteNum(option.totalPriceOld);
+  if (direct != null && direct > 0) return direct;
+  const rooms = Array.isArray(option.rooms) ? option.rooms : [];
+  let nested = 0;
+  let found = false;
+  for (const room of rooms) {
+    if (!room || typeof room !== "object") continue;
+    const r = room as Record<string, unknown>;
+    const n = parseFiniteNum(r.totalPrice) ?? parseFiniteNum(r.totalPriceOld);
+    if (n != null) {
+      nested += n;
+      found = true;
+    }
+  }
+  if (found && nested > 0) return nested;
+  return direct;
+}
+
+/** Category % on this quote's prices, plus additional. Matches the quotation page. */
+function hubPayableDiscountForQuote(
+  row: Record<string, unknown>,
+  root: Record<string, unknown> | null,
+  options: Record<string, unknown>[],
+): number {
+  const pick = (key: string): number => {
+    const n = parseFiniteNum(row[key]) ?? (root ? parseFiniteNum(root[key]) : null);
+    return n != null && n > 0 ? n : 0;
+  };
+  const additional = pick("hubAdditionalDiscountAmount");
+  const storedCategory = pick("hubCategoryDiscountAmount");
+  const categories: { hubKey: string; prolanceKeys: string[]; price: (o: Record<string, unknown>) => number }[] = [
+    {
+      hubKey: "woodwork",
+      prolanceKeys: ["woodWorkDiscount"],
+      price: (o) =>
+        parseFiniteNum(o.woodWorkPrice) ??
+        (parseFiniteNum(o.unitsPrice) ?? 0) + (parseFiniteNum(o.loftsPrice) ?? 0),
+    },
+    {
+      hubKey: "accessories",
+      prolanceKeys: ["accessoriesDiscount"],
+      price: (o) => parseFiniteNum(o.accessoriesPrice) ?? 0,
+    },
+    {
+      hubKey: "services",
+      prolanceKeys: ["servicesDiscount"],
+      price: (o) => parseFiniteNum(o.servicesPrice) ?? 0,
+    },
+  ];
+  let computed = 0;
+  let anyPct = false;
+  let allPriced = true;
+  for (const cat of categories) {
+    const hubPct = readHubCategoryPct(row, root, cat.hubKey);
+    let pct = hubPct;
+    if (pct == null) {
+      for (const key of cat.prolanceKeys) {
+        const n = parseFiniteNum(row[key]) ?? (root ? parseFiniteNum(root[key]) : null);
+        if (n != null) {
+          pct = n;
+          break;
+        }
+      }
+    }
+    if (pct == null || pct <= 0) continue;
+    anyPct = true;
+    const price = options.reduce((sum, option) => sum + Math.max(0, cat.price(option)), 0);
+    if (!(price > 0)) {
+      allPriced = false;
+      continue;
+    }
+    computed += Math.round((price * pct) / 100);
+  }
+  if (anyPct && allPriced) return computed + additional;
+  return Math.max(storedCategory + additional, computed + additional);
+}
+
+/** Aligns with quote UI total extraction (room prices minus hub discount). */
 export function extractTotalPayableAmount(data: unknown): number | null {
   const row = normalizeQuotePricingRow(data);
   if (!row) return null;
@@ -1640,37 +1756,33 @@ export function extractTotalPayableAmount(data: unknown): number | null {
   };
   const pickedPayable = pick("totalPayableAmount", "finalTotalPrice", "finalPrice");
   const discount = pick("discount", "discountAmount") ?? 0;
-  const hubCategory = pick("hubCategoryDiscountAmount") ?? 0;
-  const hubAdditional = pick("hubAdditionalDiscountAmount") ?? 0;
-  const hubDisc = Math.max(0, hubCategory + hubAdditional);
-  const options = row.quoteOptionsData;
-  if (Array.isArray(options) && options.length > 0) {
-    let sumRoomTotals = 0;
-    for (const opt of options) {
-      if (!opt || typeof opt !== "object") continue;
-      const o = opt as Record<string, unknown>;
-      const rooms = Array.isArray(o.rooms) ? o.rooms : [];
-      for (const room of rooms) {
-        if (!room || typeof room !== "object") continue;
-        const r = room as Record<string, unknown>;
-        sumRoomTotals += parseFiniteNum(r.totalPrice) ?? parseFiniteNum(r.totalPriceOld) ?? 0;
+  const options = firstQuoteOptionRows(row, root);
+  const hubDisc = hubPayableDiscountForQuote(row, root, options);
+  let sumRoomTotals = 0;
+  for (const option of options) {
+    const n = optionLineTotal(option);
+    if (n != null && n > 0) sumRoomTotals += n;
+  }
+  if (sumRoomTotals > 0) {
+    const tolerance = Math.max(500, sumRoomTotals * 0.02);
+    const fees = pick("designAndManagementFees") ?? 0;
+    const grossFromRooms = sumRoomTotals + fees;
+    if (hubDisc > 0) {
+      if (pickedPayable != null && pickedPayable > 0) {
+        const looksNet =
+          Math.abs(pickedPayable - (grossFromRooms - hubDisc)) <= Math.max(500, hubDisc * 0.08);
+        const looksGross =
+          Math.abs(pickedPayable - grossFromRooms) <= Math.max(500, grossFromRooms * 0.02);
+        return looksNet && !looksGross ? pickedPayable : Math.max(0, pickedPayable - hubDisc);
       }
+      return Math.max(0, grossFromRooms - hubDisc);
     }
-    if (sumRoomTotals > 0) {
-      const tolerance = Math.max(500, sumRoomTotals * 0.02);
-      const fees = pick("designAndManagementFees") ?? 0;
-      let base: number;
-      if (
-        pickedPayable != null &&
-        pickedPayable >= sumRoomTotals - discount - tolerance &&
-        (Math.abs(pickedPayable - sumRoomTotals) <= tolerance || pickedPayable >= sumRoomTotals - discount)
-      ) {
-        base = pickedPayable;
-      } else {
-        base = sumRoomTotals + fees - discount;
-      }
-      return hubDisc > 0 ? Math.max(0, base - hubDisc) : base;
-    }
+    const apiPlausible =
+      pickedPayable != null &&
+      pickedPayable >= sumRoomTotals - discount - tolerance &&
+      (Math.abs(pickedPayable - sumRoomTotals) <= tolerance || pickedPayable >= sumRoomTotals - discount);
+    if (apiPlausible) return pickedPayable;
+    return Math.max(0, sumRoomTotals + fees - discount);
   }
   const fallback =
     pickedPayable ?? pick("interiorProjectAmount", "projectAmount", "subTotal", "totalPrice");
@@ -1862,8 +1974,7 @@ export async function resolveLeadQuotePaymentSummary(
     return n != null && Number.isFinite(n) && n > 0 ? n : null;
   };
 
-  // 1) Live Prolance: latest quote for project (preferred), then by stored quote id.
-  //    If live returns a body without a parseable total, keep trying — do not skip snapshots.
+  // 1) Live Prolance: latest quote for project, then by stored quote id.
   const session = await createProlanceServerSession();
   if (!("error" in session)) {
     if (prolanceProjectId != null && prolanceProjectId >= 1) {
@@ -1884,8 +1995,12 @@ export async function resolveLeadQuotePaymentSummary(
     }
   }
 
-  // 2) DB snapshot fallback — always when live Prolance did not yield a usable total.
-  if (usableTotal(quoteBody) == null) {
+  // 2) Hub snapshot. The quotation page totals rooms minus hub discount.
+  //    When this is the same quote Prolance returned, that page total wins over
+  //    a raw Prolance or case amount that does not include the discount.
+  let snapshotBody: unknown | null = null;
+  let snapshotQuoteId: number | null = null;
+  try {
     const [snapRows] = await pool.query(
       `SELECT quote_id AS quoteId, payload_json AS payloadJson
        FROM lead_prolance_quote_snapshots
@@ -1896,22 +2011,29 @@ export async function resolveLeadQuotePaymentSummary(
     );
     const snap = (snapRows as { quoteId?: unknown; payloadJson?: unknown }[])[0];
     if (snap?.quoteId != null && Number.isFinite(Number(snap.quoteId))) {
-      quoteId = Number(snap.quoteId);
+      snapshotQuoteId = Number(snap.quoteId);
     }
     if (snap?.payloadJson != null) {
       const raw = String(snap.payloadJson);
-      if (raw.length > 0) {
-        try {
-          const parsed = JSON.parse(raw) as unknown;
-          if (usableTotal(parsed) != null) {
-            quoteBody = parsed;
-            quoteDataSource = "snapshot";
-          }
-        } catch {
-          /* ignore */
-        }
-      }
+      if (raw.length > 0) snapshotBody = JSON.parse(raw) as unknown;
     }
+  } catch {
+    snapshotBody = null;
+  }
+  const snapshotRecord =
+    snapshotBody && typeof snapshotBody === "object" && !Array.isArray(snapshotBody)
+      ? (snapshotBody as Record<string, unknown>)
+      : null;
+  const snapshotPayable =
+    snapshotRecord && quoteSnapshotHasLineItems(snapshotRecord) ? usableTotal(snapshotRecord) : null;
+  const livePayable = usableTotal(quoteBody);
+  const sameQuote = snapshotQuoteId != null && quoteId != null && snapshotQuoteId === quoteId;
+  if (snapshotPayable != null && (livePayable == null || sameQuote || quoteBody == null)) {
+    quoteBody = snapshotBody;
+    if (snapshotQuoteId != null) quoteId = snapshotQuoteId;
+    quoteDataSource = "snapshot";
+  } else if (quoteBody == null && snapshotQuoteId != null) {
+    quoteId = snapshotQuoteId;
   }
 
   const totalPayableAmount = usableTotal(quoteBody);

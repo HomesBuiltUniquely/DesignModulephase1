@@ -166,8 +166,8 @@ export default function FilesCard({ cardClass, onToggleMaximize, isMaximized, le
             if (isD2Upload) {
                 window.alert(message);
                 onD2UploadComplete?.();
-            } else if (canApproveUploads) {
-                // Manager/admin direct D1 upload → auto-approved + task complete
+            } else if (canApproveUploads || roleLower === 'operation_manager') {
+                // Manager/admin/operation manager direct D1 upload → auto-approved + task complete
                 onD1FilesReady?.();
             }
             await loadUploads();

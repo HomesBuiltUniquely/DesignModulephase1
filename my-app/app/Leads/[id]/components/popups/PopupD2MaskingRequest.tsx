@@ -17,6 +17,7 @@ type D2RequestInfo = {
     maskingTime?: string | null;
     assignedProjectManagerId?: number | null;
     requestedSpmId?: number | null;
+    assignedSpmId?: number | null;
 };
 
 type SubmitInfo = {
@@ -43,7 +44,8 @@ function canAssignProjectManager(role: string | undefined): boolean {
         r === 'admin' ||
         r === 'territorial_design_manager' ||
         r === 'deputy_general_manager' ||
-        r === 'senior_project_manager'
+        r === 'senior_project_manager' ||
+        r === 'operation_manager'
     );
 }
 
@@ -141,6 +143,7 @@ export default function PopupD2MaskingRequest({
     const role = (userRole || '').toLowerCase();
     const canAssignPm = canAssignProjectManager(userRole);
     const isSpm = role === 'senior_project_manager';
+    const isOps = role === 'operation_manager';
     const canAdminApprove = canApproveAsAdmin(userRole);
 
     const [existing, setExisting] = useState<D2RequestInfo | null>(null);
@@ -182,7 +185,8 @@ export default function PopupD2MaskingRequest({
                 setExisting(data);
                 if (data.maskingDate) setMaskingDate(String(data.maskingDate).slice(0, 10));
                 if (data.maskingTime) setMaskingTime(data.maskingTime);
-                if (data.requestedSpmId) setSelectedSpmId(String(data.requestedSpmId));
+                const spmId = data.assignedSpmId || data.requestedSpmId;
+                if (spmId) setSelectedSpmId(String(spmId));
             })
             .catch(() => setExisting({ raised: false }))
             .finally(() => setLoaded(true));
@@ -224,8 +228,8 @@ export default function PopupD2MaskingRequest({
     }, [currentPmId, existing?.assignedProjectManagerId]);
 
     const requestRaised = !!existing?.raised;
-    const showDesignerForm = !isSpm && !requestRaised;
-    const showSpmAssignment = canAssignPm && requestRaised;
+    const showDesignerForm = !isSpm && !isOps && !requestRaised;
+    const showSpmAssignment = canAssignPm && (requestRaised || isOps);
 
     function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
         const files = Array.from(e.target.files || []);
@@ -274,6 +278,39 @@ export default function PopupD2MaskingRequest({
             setSubmitError('Could not reach server. Please try again.');
         } finally {
             setSubmitting(false);
+        }
+    }
+
+    async function handleAssignSpm() {
+        if (!leadId || !sessionId || !selectedSpmId) return;
+        setPmError(null);
+        setPmSuccess(null);
+        setPmSaving(true);
+        try {
+            const res = await fetch(`${API}/api/leads/${leadId}/assign-senior-project-manager`, {
+                method: 'PATCH',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${sessionId}`,
+                },
+                body: JSON.stringify({ seniorProjectManagerId: Number(selectedSpmId) }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                setPmError(data.message || 'Failed to assign senior project manager');
+                return;
+            }
+            const assigned = spmList.find((spm) => String(spm.id) === selectedSpmId);
+            setPmSuccess(`Senior Project Manager assigned: ${assigned?.name || data.name || 'SPM'}.`);
+            setExisting((prev) => ({
+                ...(prev || { raised: false }),
+                assignedSpmId: Number(selectedSpmId),
+                requestedSpmId: Number(selectedSpmId),
+            }));
+        } catch {
+            setPmError('Could not reach server. Please try again.');
+        } finally {
+            setPmSaving(false);
         }
     }
 
@@ -468,10 +505,39 @@ export default function PopupD2MaskingRequest({
                         <div className="font-bold text-[12px] text-gray-500 tracking-wide">ASSIGN PROJECT MANAGER</div>
                     </div>
                     <p className="text-sm text-gray-600">
-                        {isSpm
+                        {isOps
+                            ? 'Assign the Senior Project Manager for this project, then the Project Manager who will upload D2 files and approve at DQC2.'
+                            : isSpm
                             ? 'Assign the project manager who will upload D2 files and approve at DQC2.'
                             : 'Assign or update the project manager for this D2 masking request.'}
                     </p>
+                    {isOps && (
+                        <label className="block text-sm font-medium text-gray-700">
+                            Senior project manager
+                            <div className="mt-1">
+                                <CustomSelect
+                                    value={selectedSpmId}
+                                    onChange={(val) => {
+                                        setSelectedSpmId(val);
+                                        setPmSuccess(null);
+                                    }}
+                                    options={spmList.map((spm) => ({ value: String(spm.id), label: `${spm.name} (${spm.email})` }))}
+                                    placeholder="— Select SPM —"
+                                    className="w-full max-w-md"
+                                />
+                            </div>
+                        </label>
+                    )}
+                    {isOps && (
+                        <button
+                            type="button"
+                            onClick={handleAssignSpm}
+                            disabled={pmSaving || !selectedSpmId}
+                            className="px-6 py-2 bg-[#32261C] text-white text-sm font-medium rounded-lg hover:bg-[#32261C]/90 disabled:opacity-50"
+                        >
+                            {pmSaving ? 'Saving…' : 'Assign senior project manager'}
+                        </button>
+                    )}
                     {currentPmName && (
                         <p className="text-sm text-gray-700">
                             Currently assigned: <span className="font-medium">{currentPmName}</span>

@@ -285,7 +285,7 @@ export async function resolveNotificationRecipients(args: {
      WHERE role IN (
        'admin','deputy_general_manager','dgm','territorial_design_manager','design_manager',
        'finance','dqc_manager','dqe','mmt_manager','mmt_executive',
-       'project_manager','senior_project_manager'
+       'project_manager','senior_project_manager','operation_manager'
      )`,
   ) as [{ id: number; role: string }[], unknown];
 
@@ -385,7 +385,7 @@ export async function resolveNotificationRecipients(args: {
 
   const addPmSpm = () => {
     if (assignedPmId) add(assignedPmId, "project_manager");
-    allOf("senior_project_manager");
+    allOf("senior_project_manager", "operation_manager");
     if (requestedSpmId) add(requestedSpmId, "senior_project_manager");
   };
 

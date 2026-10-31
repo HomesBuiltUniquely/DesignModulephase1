@@ -59,6 +59,7 @@ import {
   markDesignMeetingCompleted,
   recordCrmMeeting,
   recordDesignMeetingFromSchedule,
+  loadMeeting,
   rescheduleLeadMeeting,
   startActiveCrmMeetingForLead,
   startCrmMeeting,
@@ -986,14 +987,15 @@ async function triggerMailRouteWithLog(args: {
       body: bodyStr,
     });
     if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
+      const contentType = resp.headers.get("content-type") || "unknown";
+      await resp.body?.cancel();
       console.error("[mail-trigger-failed]", {
         leadId: args.leadId,
         route: args.route,
         status: resp.status,
         taskName: args.taskName,
         visibility: args.visibility,
-        body,
+        contentType,
       });
       return false;
     }
@@ -1609,6 +1611,19 @@ async function initDb() {
       if ((pmCol as any[]).length === 0) {
         await conn.query(
           "ALTER TABLE leads ADD COLUMN assigned_project_manager_id INT NULL",
+        );
+      }
+    } catch {
+      // ignore
+    }
+
+    try {
+      const [spmCol] = await conn.query(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'leads' AND COLUMN_NAME = 'assigned_senior_project_manager_id'",
+      );
+      if ((spmCol as any[]).length === 0) {
+        await conn.query(
+          "ALTER TABLE leads ADD COLUMN assigned_senior_project_manager_id INT NULL",
         );
       }
     } catch {
@@ -4541,8 +4556,9 @@ async function triggerInternalMailRoute(
       body: JSON.stringify(payload),
     });
     if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
-      console.error("[internal-mail-failed]", { route, status: resp.status, body });
+      const contentType = resp.headers.get("content-type") || "unknown";
+      await resp.body?.cancel();
+      console.error("[internal-mail-failed]", { route, status: resp.status, contentType });
     }
   } catch (error) {
     console.error("[internal-mail-error]", { route, error });
@@ -5088,6 +5104,30 @@ function canAssignLeads(role: string | null | undefined): boolean {
   return r === "admin" || r === "territorial_design_manager" || r === "deputy_general_manager" || r === "design_manager";
 }
 
+function isOperationManagerRole(role: string | null | undefined): boolean {
+  return (role || "").toLowerCase() === "operation_manager";
+}
+
+/** Projects an operation manager can open: D1 site measurement through the end. */
+async function leadIsInOperationScope(leadId: number): Promise<boolean> {
+  const [rows] = await pool.query(
+    `SELECT 1
+     FROM leads l
+     WHERE l.id = ?
+       AND (
+         EXISTS (SELECT 1 FROM lead_d1_assignments a WHERE a.lead_id = l.id)
+         OR EXISTS (SELECT 1 FROM lead_d2_assignments d WHERE d.lead_id = l.id)
+         OR EXISTS (
+           SELECT 1 FROM lead_task_completions c
+           WHERE c.lead_id = l.id AND c.milestone_index IN (0, 1, 2, 3, 4, 5, 6, 7)
+         )
+       )
+     LIMIT 1`,
+    [leadId],
+  );
+  return (rows as unknown[]).length > 0;
+}
+
 /** Who may pick the project manager on a lead (after DQC 2 approval). */
 function canAssignProjectManagerRole(role: string | null | undefined): boolean {
   const r = (role || "").toLowerCase();
@@ -5095,7 +5135,8 @@ function canAssignProjectManagerRole(role: string | null | undefined): boolean {
     r === "admin" ||
     r === "territorial_design_manager" ||
     r === "deputy_general_manager" ||
-    r === "senior_project_manager"
+    r === "senior_project_manager" ||
+    r === "operation_manager"
   );
 }
 
@@ -5106,7 +5147,7 @@ function canCompleteProjectManagerApproval(
   assignedPmId: number | null | undefined,
 ): boolean {
   const r = (role || "").toLowerCase();
-  if (r === "admin" || r === "senior_project_manager") return true;
+  if (r === "admin" || r === "senior_project_manager" || r === "operation_manager") return true;
   if (r !== "project_manager") return false;
   const pmId = assignedPmId != null ? Number(assignedPmId) : NaN;
   return Number.isFinite(pmId) && pmId > 0 && pmId === userId;
@@ -5122,13 +5163,14 @@ const DQC2_PM_REVERT_TASKS = [
 /** Who may upload D2 masking files (SPM, assigned PM, or Admin). */
 function canUploadD2FilesRole(role: string | null | undefined): boolean {
   const r = (role || "").toLowerCase();
-  return r === "senior_project_manager" || r === "project_manager" || r === "admin";
+  return r === "senior_project_manager" || r === "project_manager" || r === "admin" || r === "operation_manager";
 }
 
 function d2UploadRoleLabel(role: string): string {
   const r = role.toLowerCase();
   if (r === "senior_project_manager") return "Senior Project Manager";
   if (r === "project_manager") return "Project Manager";
+  if (r === "operation_manager") return "Operation Manager";
   if (r === "admin") return "Admin";
   return role.replace(/_/g, " ");
 }
@@ -5136,6 +5178,7 @@ function d2UploadRoleLabel(role: string): string {
 function resolveD2UploadedAsRole(sessionRole: string, bodyRole?: string): string {
   const r = sessionRole.toLowerCase();
   const body = (bodyRole || "").toLowerCase();
+  if (r === "operation_manager") return "operation_manager";
   if (r === "project_manager") return "project_manager";
   if (r === "senior_project_manager") return "senior_project_manager";
   if (r === "admin") {
@@ -6360,13 +6403,14 @@ app.all("/api/auth/create-project-manager", async (req: Request, res: Response) 
     const allowed = [
       "admin",
       "senior_project_manager",
+      "operation_manager",
       "territorial_design_manager",
       "deputy_general_manager",
     ];
     if (!allowed.includes(r)) {
       return res.status(403).json({
         message:
-          "Only Admin, Senior Project Manager, Territory Design Manager, or Deputy General Manager can create a Project Manager",
+          "Only Admin, Operation Manager, Senior Project Manager, Territory Design Manager, or Deputy General Manager can create a Project Manager",
       });
     }
     const { email, password, name, phone, branch } = req.body || {};
@@ -6420,6 +6464,37 @@ app.all("/api/auth/create-senior-project-manager", async (req: Request, res: Res
   }
 });
 
+// Admin: create Operation Manager (D1 through project end; assigns SPM and PM; same actions as SPM)
+app.all("/api/auth/create-operation-manager", async (req: Request, res: Response) => {
+  if (req.method !== "POST") return res.status(405).json({ message: "Use POST" });
+  try {
+    const admin = await getUserFromSession(req);
+    if (!admin) return res.status(401).json({ message: "Unauthorized" });
+    if ((admin.role || "").toLowerCase() !== "admin") {
+      return res.status(403).json({ message: "Only admin can create an Operation Manager" });
+    }
+    const { email, password, name, phone, branch } = req.body || {};
+    const normalized = (email || "").trim().toLowerCase();
+    if (!normalized.endsWith("@hubinterior.com")) return res.status(400).json({ message: "Email must end with @hubinterior.com" });
+    if (!password || String(password).length < 1) return res.status(400).json({ message: "Password is required" });
+    const displayName = (name || normalized).trim() || normalized;
+    const phoneVal = phone != null ? String(phone).trim() : null;
+    const branchVal = normalizeUserBranch(branch);
+    const [result] = await pool.query(
+      "INSERT INTO users (email, password, name, role, phone, branch) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalized, String(password), displayName, "operation_manager", phoneVal || null, branchVal],
+    );
+    const insertId = (result as any).insertId;
+    return res.status(201).json({
+      user: { id: insertId, email: normalized, name: displayName, role: "operation_manager" },
+    });
+  } catch (err: any) {
+    if (err?.code === "ER_DUP_ENTRY") return res.status(400).json({ message: "A user with this email already exists" });
+    console.error("create-operation-manager error", err);
+    return res.status(500).json({ message: "Failed to create Operation Manager" });
+  }
+});
+
 // List project managers (for assigning to a lead after DQC 2)
 app.get("/api/auth/project-managers", async (req: Request, res: Response) => {
   try {
@@ -6445,9 +6520,9 @@ app.delete("/api/auth/project-managers/:id", async (req: Request, res: Response)
     const actor = await getUserFromSession(req);
     if (!actor) return res.status(401).json({ message: "Unauthorized" });
     const actorRole = (actor.role || "").toLowerCase();
-    if (actorRole !== "admin" && actorRole !== "senior_project_manager") {
+    if (actorRole !== "admin" && actorRole !== "senior_project_manager" && actorRole !== "operation_manager") {
       return res.status(403).json({
-        message: "Only Admin or Senior Project Manager can delete a Project Manager",
+        message: "Only Admin, Operation Manager, or Senior Project Manager can delete a Project Manager",
       });
     }
 
@@ -7155,6 +7230,128 @@ app.post("/api/sales-closure", async (req: Request, res: Response) => {
   }
 });
 
+// CRM helper to resolve a designer's design manager
+app.get("/api/crm/designer-manager", async (req: Request, res: Response) => {
+  try {
+    const email = String(req.query.email || "").trim();
+    const name = String(req.query.name || "").trim();
+    if (!email && !name) {
+      return res.status(400).json({ error: "email or name is required" });
+    }
+    const [rows] = await pool.query<any[]>(
+      `SELECT dm.id, dm.name, dm.email
+       FROM users u
+       JOIN users dm ON dm.id = u.design_manager_id
+       WHERE (? != '' AND LOWER(u.email) = LOWER(?))
+          OR (? != '' AND LOWER(u.name) = LOWER(?))
+       LIMIT 1`,
+      [email, email, name, name]
+    );
+    if (!rows || rows.length === 0) {
+      return res.status(404).json({ message: "Design manager not found" });
+    }
+    return res.json({
+      id: rows[0].id,
+      name: rows[0].name,
+      email: rows[0].email,
+    });
+  } catch (err: any) {
+    console.error("Error resolving design manager:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// CRM helper to resolve meeting CC recipients: assigned designer, design manager, all TDMs, all admins
+app.get("/api/crm/meeting-cc-emails", async (req: Request, res: Response) => {
+  try {
+    const designerEmail = String(req.query.designerEmail || "").trim();
+    const designerName = String(req.query.designerName || "").trim();
+    const leadId = req.query.leadId ? Number(req.query.leadId) : undefined;
+
+    let resolvedDesignerEmail = designerEmail;
+    if (!resolvedDesignerEmail && designerName) {
+      const [dRows] = await pool.query<any[]>(
+        "SELECT email FROM users WHERE role = 'designer' AND LOWER(name) = LOWER(?) AND email IS NOT NULL AND email != '' LIMIT 1",
+        [designerName]
+      );
+      if (dRows && dRows[0]?.email) {
+        resolvedDesignerEmail = dRows[0].email;
+      }
+    }
+
+    let designManagerEmail: string | null = null;
+    let designManagerName: string | null = null;
+    if (resolvedDesignerEmail || designerName) {
+      const [dmRows] = await pool.query<any[]>(
+        `SELECT dm.id, dm.name, dm.email
+         FROM users u
+         JOIN users dm ON dm.id = u.design_manager_id
+         WHERE (? != '' AND LOWER(u.email) = LOWER(?))
+            OR (? != '' AND LOWER(u.name) = LOWER(?))
+         LIMIT 1`,
+        [resolvedDesignerEmail, resolvedDesignerEmail, designerName, designerName]
+      );
+      if (dmRows && dmRows[0]?.email) {
+        designManagerEmail = dmRows[0].email;
+        designManagerName = dmRows[0].name;
+      }
+    }
+
+    if (!designManagerEmail && leadId && Number.isFinite(leadId)) {
+      const [dmLead] = await pool.query<any[]>(
+        `SELECT dm.id, dm.name, dm.email
+         FROM leads l
+         JOIN users d ON d.id = l.assigned_designer_id
+         JOIN users dm ON dm.id = d.design_manager_id
+         WHERE l.id = ? AND dm.email IS NOT NULL AND dm.email != '' LIMIT 1`,
+        [leadId]
+      );
+      if (dmLead && dmLead[0]?.email) {
+        designManagerEmail = dmLead[0].email;
+        designManagerName = dmLead[0].name;
+      }
+    }
+
+    // All TDMs
+    const [tdmRows] = await pool.query<any[]>(
+      "SELECT email FROM users WHERE role = 'territorial_design_manager' AND email IS NOT NULL AND email != ''"
+    );
+    const tdmEmails = (tdmRows || [])
+      .map((r) => String(r.email).trim().toLowerCase())
+      .filter((e) => e.length > 0 && e.includes("@"));
+
+    // All Admins
+    const [adminRows] = await pool.query<any[]>(
+      "SELECT email FROM users WHERE role = 'admin' AND email IS NOT NULL AND email != ''"
+    );
+    const adminEmails = (adminRows || [])
+      .map((r) => String(r.email).trim().toLowerCase())
+      .filter((e) => e.length > 0 && e.includes("@"));
+
+    const allCcSet = new Set<string>();
+    if (resolvedDesignerEmail && resolvedDesignerEmail.includes("@")) {
+      allCcSet.add(resolvedDesignerEmail.toLowerCase());
+    }
+    if (designManagerEmail && designManagerEmail.includes("@")) {
+      allCcSet.add(designManagerEmail.toLowerCase());
+    }
+    tdmEmails.forEach((e) => allCcSet.add(e));
+    adminEmails.forEach((e) => allCcSet.add(e));
+
+    return res.json({
+      designerEmail: resolvedDesignerEmail || null,
+      designManagerEmail: designManagerEmail || null,
+      designManagerName: designManagerName || null,
+      tdmEmails: Array.from(new Set(tdmEmails)),
+      adminEmails: Array.from(new Set(adminEmails)),
+      allCcEmails: Array.from(allCcSet),
+    });
+  } catch (err: any) {
+    console.error("Error fetching meeting CC emails:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // External system intake: create a lead directly in Pre 10%.
 // This endpoint is meant to be called by another project/service.
 app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
@@ -7559,7 +7756,13 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
         );
         try {
           const crmText = String(intakeMeetingType || "");
-          await recordCrmMeeting(pool, {
+          const [activeMtgRows] = await pool.query(
+            "SELECT id, DATE_FORMAT(meeting_date, '%Y-%m-%d') as meetingDate, meeting_time as meetingTime FROM lead_meetings WHERE lead_id = ? AND source = 'crm' AND meeting_status <> 'cancelled' AND progress <> 'completed' ORDER BY id DESC LIMIT 1",
+            [existingLeadId],
+          );
+          const activeMtg = (activeMtgRows as any[])[0];
+
+          const recordedMeeting = await recordCrmMeeting(pool, {
             leadId: existingLeadId,
             meetingDate: appointmentDate,
             meetingTime: appointmentSlot,
@@ -7568,6 +7771,30 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
             designerId: assignedDesignerId,
             actor: { name: "CRM" },
           });
+
+          if (
+            activeMtg &&
+            appointmentDate &&
+            (activeMtg.meetingDate !== appointmentDate || (appointmentSlot && activeMtg.meetingTime !== appointmentSlot))
+          ) {
+            const intakeRescheduleCount =
+              typeof ((req.body as any)?.rescheduleCount ?? (req.body as any)?.schedule?.rescheduleCount) === "number"
+                ? Number((req.body as any).rescheduleCount ?? (req.body as any)?.schedule?.rescheduleCount)
+                : (recordedMeeting?.rescheduleCount || 1);
+
+            void sendMeetingRescheduledMail(existingLeadId, {
+              previousDate: activeMtg.meetingDate,
+              previousTime: activeMtg.meetingTime,
+              newDate: appointmentDate,
+              newTime: appointmentSlot,
+              meetingType: intakeMeetingType || "pre_10",
+              meetingMode: /virtual/i.test(crmText) ? "online" : "offline",
+              rescheduleCount: intakeRescheduleCount,
+              actorEmail: null,
+            }).catch((mailErr) => {
+              console.error("[external-intake] reschedule mail error", mailErr);
+            });
+          }
         } catch (meetingErr) {
           console.error("[external-intake] crm meeting sync failed", meetingErr);
         }
@@ -7689,13 +7916,15 @@ async function resolveLatestQuoteLinkForLead(leadId: number): Promise<{
   versionNumber: number | null;
   source: "shared" | "latest";
 } | null> {
-  // Prefer the version shared with the customer at every project stage (DQC must match customer quote).
-  const selected = await loadCrmShareForLead(leadId);
+  // Prefer the quote selected for CRM or shared with the customer. DQC1 and DQC2 must review that version.
+  const selected = await loadSelectedQuoteForLead(leadId);
   if (selected) {
     const base = frontendBase();
+    const versionQuery =
+      selected.versionNumber > 0 ? `?version=${encodeURIComponent(String(selected.versionNumber))}` : "";
     return {
       quoteId: selected.quoteId,
-      customerQuoteUrl: `${base}/quote/${encodeURIComponent(String(selected.quoteId))}`,
+      customerQuoteUrl: `${base}/quote/${encodeURIComponent(String(selected.quoteId))}${versionQuery}`,
       internalQuoteUrl: crmQuoteInternalUrl(leadId, selected.quoteId),
       versionNumber: selected.versionNumber > 0 ? selected.versionNumber : null,
       source: "shared",
@@ -7792,29 +8021,79 @@ async function leadIsPre10Stage(leadId: number): Promise<boolean> {
   }
 }
 
+function asPositiveInt(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** CRM-selected quote, including shares stored on a snapshot tied to this lead by quote id. */
 async function loadCrmShareForLead(leadId: number): Promise<CrmShareSelection | null> {
   try {
     const [rows] = await pool.query(
-      `SELECT crm_shared_version_number AS versionNumber, crm_shared_quote_id AS quoteId
+      `SELECT s.crm_shared_version_number AS versionNumber, s.crm_shared_quote_id AS quoteId
+       FROM lead_prolance_quote_snapshots s
+       WHERE s.crm_shared_quote_id IS NOT NULL
+         AND s.crm_shared_quote_id > 0
+         AND (
+           s.lead_id = ?
+           OR s.quote_id IN (
+             SELECT v.quote_id FROM lead_prolance_quote_versions v WHERE v.lead_id = ?
+           )
+         )
+       ORDER BY (s.lead_id = ?) DESC, s.id DESC
+       LIMIT 1`,
+      [leadId, leadId, leadId],
+    );
+    const row = (rows as { versionNumber?: unknown; quoteId?: unknown }[])[0];
+    const quoteId = asPositiveInt(row?.quoteId);
+    if (quoteId == null) return null;
+    const versionNumber = asPositiveInt(row?.versionNumber) ?? 1;
+    return { quoteId, versionNumber };
+  } catch {
+    return null;
+  }
+}
+
+/** Version locked with Share this to customer, resolved to that version's quote id. */
+async function loadCustomerSharedQuoteForLead(leadId: number): Promise<CrmShareSelection | null> {
+  try {
+    const [rows] = await pool.query(
+      `SELECT customer_shared_version_number AS versionNumber
        FROM lead_prolance_quote_snapshots
        WHERE lead_id = ?
-         AND crm_shared_quote_id IS NOT NULL
-         AND crm_shared_quote_id > 0
+         AND customer_shared_version_number IS NOT NULL
+         AND customer_shared_version_number > 0
        ORDER BY id DESC
        LIMIT 1`,
       [leadId],
     );
-    const row = (rows as { versionNumber?: unknown; quoteId?: unknown }[])[0];
-    const quoteId = row?.quoteId != null ? Number(row.quoteId) : NaN;
-    const versionNumber = row?.versionNumber != null ? Number(row.versionNumber) : NaN;
-    if (!Number.isFinite(quoteId) || quoteId < 1) return null;
-    return {
-      quoteId,
-      versionNumber: Number.isFinite(versionNumber) && versionNumber > 0 ? versionNumber : 1,
-    };
+    const versionNumber = asPositiveInt((rows as { versionNumber?: unknown }[])[0]?.versionNumber);
+    if (versionNumber == null) return null;
+    const [verRows] = await pool.query(
+      `SELECT quote_id AS quoteId
+       FROM lead_prolance_quote_versions
+       WHERE lead_id = ? AND version_number = ?
+       ORDER BY id DESC
+       LIMIT 1`,
+      [leadId, versionNumber],
+    );
+    let quoteId = asPositiveInt((verRows as { quoteId?: unknown }[])[0]?.quoteId);
+    if (quoteId == null) {
+      const versions = await loadProlanceQuoteVersionsForLead(leadId);
+      const matched =
+        versions.find((row) => Number(row.versionNumber) === versionNumber) ||
+        versions[versionNumber - 1];
+      quoteId = asPositiveInt(matched?.quoteId);
+    }
+    if (quoteId == null) return null;
+    return { quoteId, versionNumber };
   } catch {
     return null;
   }
+}
+
+async function loadSelectedQuoteForLead(leadId: number): Promise<CrmShareSelection | null> {
+  return (await loadCrmShareForLead(leadId)) || (await loadCustomerSharedQuoteForLead(leadId));
 }
 
 function appendLatestQuoteLinkToMinutes(minutes: string, quoteUrl: string): string {
@@ -13710,7 +13989,11 @@ app.post(
       }
 
       const status =
-        isKT || (isD2 && canUploadD2FilesRole(role)) || role === "mmt_manager" || role === "admin"
+        isKT ||
+        (isD2 && canUploadD2FilesRole(role)) ||
+        role === "mmt_manager" ||
+        role === "admin" ||
+        role === "operation_manager"
           ? "approved"
           : "pending";
       const now = new Date();
@@ -13787,6 +14070,7 @@ app.post(
         if (
           role === "mmt_manager" ||
           role === "admin" ||
+          role === "operation_manager" ||
           (isD2 && canUploadD2FilesRole(role))
         ) {
           await pool.query(
@@ -13818,7 +14102,7 @@ app.post(
               approvedBy: user?.name ?? (isD2 ? "Uploader" : "MMT Manager"),
             });
           }
-          if (!isD2 && (role === "mmt_manager" || role === "admin")) {
+          if (!isD2 && (role === "mmt_manager" || role === "admin" || role === "operation_manager")) {
             void notifyD1FilesReadyInternal(
               leadId,
               { name: user?.name, email: user?.email },
@@ -14381,7 +14665,7 @@ app.get("/api/leads/:id/uploads", async (req: Request, res: Response) => {
     const role = (user?.role ?? "").toLowerCase();
     const isMmt = role === "mmt_manager" || role === "mmt_executive";
     const seesAllUploadStatuses =
-      role === "finance" || role === "admin" || role === "senior_project_manager";
+      role === "finance" || role === "admin" || role === "senior_project_manager" || role === "operation_manager";
     let onlyApproved = !isMmt && !seesAllUploadStatuses;
     if (user && role === "project_manager") {
       const [lr] = await pool.query(
@@ -14991,6 +15275,7 @@ async function persistDqc2SubmissionFromMeta(
   quotationFiles: { originalname: string; filename: string; path: string; mimetype: string; size: number }[],
   drawingS3Urls: (string | null)[],
   quotationS3Urls: (string | null)[],
+  quoteMeta?: { quoteId?: number | null; quotationLink?: string | null } | null,
 ): Promise<void> {
   const now = new Date();
   for (let i = 0; i < drawingFiles.length; i++) {
@@ -15013,18 +15298,35 @@ async function persistDqc2SubmissionFromMeta(
       [leadId, user.id, quotationFile.originalname, quotationFile.filename, quotationFile.path, quotationFile.mimetype, quotationFile.size, now, quotationS3],
     );
   }
+  const linkedQuoteId =
+    quoteMeta?.quoteId != null && Number.isFinite(Number(quoteMeta.quoteId)) && Number(quoteMeta.quoteId) > 0
+      ? Number(quoteMeta.quoteId)
+      : null;
+  const linkedQuotationLink =
+    typeof quoteMeta?.quotationLink === "string" && quoteMeta.quotationLink.trim()
+      ? quoteMeta.quotationLink.trim()
+      : null;
+  const fileNames = [
+    ...drawingFiles.map((f) => f.originalname),
+    ...quotationFiles.map((f) => f.originalname),
+  ];
+  if (linkedQuotationLink && quotationFiles.length === 0) {
+    fileNames.push(linkedQuoteId ? `quotation link #${linkedQuoteId}` : "quotation link");
+  }
   const ev = {
     id: `dqc2-submission-${Date.now()}`,
     type: "file_upload",
     taskName: "DQC 2 submission",
     milestoneName: "DQC2",
     timestamp: now.toISOString(),
-    description: `DQC 2 submission: ${[...drawingFiles.map((f) => f.originalname), ...quotationFiles.map((f) => f.originalname)].join(", ")}`,
+    description: `DQC 2 submission: ${fileNames.join(", ")}`,
     user: { name: user.name ?? "User" },
     details: {
       kind: "dqc2_submission",
       drawings: drawingFiles.map((f) => f.originalname),
       quotations: quotationFiles.map((f) => f.originalname),
+      ...(linkedQuoteId != null ? { quoteId: linkedQuoteId } : {}),
+      ...(linkedQuotationLink ? { quotationLink: linkedQuotationLink } : {}),
     },
   };
   await addLeadHistoryEvent(leadId, ev);
@@ -15313,8 +15615,8 @@ app.post("/api/leads/:id/dqc2-submission/presign", async (req: Request, res: Res
     const validQuotations = quotationsInput
       .map((q) => ({ name: (q?.name || "").trim(), mime: (q?.mime || "application/octet-stream").trim() || "application/octet-stream" }))
       .filter((q) => q.name);
-    if (validDrawings.length === 0 || validQuotations.length === 0) {
-      return res.status(400).json({ message: "At least one drawing and one quotation are required" });
+    if (validDrawings.length === 0) {
+      return res.status(400).json({ message: "At least one drawing is required" });
     }
     const ts = Date.now();
     const drawings = await Promise.all(
@@ -15374,6 +15676,8 @@ app.post("/api/leads/:id/dqc2-submission/complete", async (req: Request, res: Re
       quotationKeys?: string[];
       drawingNames?: string[];
       quotationNames?: string[];
+      quoteId?: number | string | null;
+      quotationLink?: string | null;
     };
     const drawingKeys =
       Array.isArray(body.drawingKeys) && body.drawingKeys.length > 0
@@ -15387,8 +15691,15 @@ app.post("/api/leads/:id/dqc2-submission/complete", async (req: Request, res: Re
         : body.quotationKey?.trim()
           ? [body.quotationKey.trim()]
           : [];
-    if (drawingKeys.length === 0 || quotationKeys.length === 0) {
-      return res.status(400).json({ message: "At least one drawingKey and one quotationKey are required" });
+    const quoteIdNum = body.quoteId != null ? Number(body.quoteId) : NaN;
+    const quotationLink =
+      typeof body.quotationLink === "string" && body.quotationLink.trim() ? body.quotationLink.trim() : null;
+    const hasLinkedQuote =
+      Number.isFinite(quoteIdNum) && quoteIdNum > 0 && Boolean(quotationLink);
+    if (drawingKeys.length === 0 || (quotationKeys.length === 0 && !hasLinkedQuote)) {
+      return res.status(400).json({
+        message: "At least one drawingKey and a selected quote (or quotationKey) are required",
+      });
     }
     const prefix = `lead-uploads/lead-${leadId}-`;
     if (drawingKeys.some((k) => !k.startsWith(prefix)) || quotationKeys.some((k) => !k.startsWith(prefix))) {
@@ -15445,6 +15756,7 @@ app.post("/api/leads/:id/dqc2-submission/complete", async (req: Request, res: Re
       quotationFilesMeta,
       drawingS3Urls,
       quotationS3Urls,
+      hasLinkedQuote ? { quoteId: quoteIdNum, quotationLink } : null,
     );
     return res.status(201).json({ ok: true });
   } catch (err) {
@@ -15554,6 +15866,7 @@ app.post(
         "admin",
         "project_manager",
         "senior_project_manager",
+        "operation_manager",
       ];
       if (!allowed.includes(role)) {
         return res.status(403).json({
@@ -15764,6 +16077,7 @@ app.get("/api/leads/:id/dqc-submission-files", async (req: Request, res: Respons
       role === "dqe" ||
       role === "admin" ||
       role === "senior_project_manager" ||
+      role === "operation_manager" ||
       role === "designer" ||
       role === "design_manager" ||
       role === "territorial_design_manager";
@@ -15868,8 +16182,14 @@ app.post(
       const files = (req as any).files as { drawing?: Express.Multer.File[]; quotation?: Express.Multer.File[] };
       const drawingFiles = files?.drawing ?? [];
       const quotationFiles = files?.quotation ?? [];
-      if (drawingFiles.length === 0 || quotationFiles.length === 0) {
-        return res.status(400).json({ message: "At least one drawing and one quotation file are required" });
+      const body = (req.body || {}) as { quoteId?: string | number | null; quotationLink?: string | null };
+      const quoteIdNum = body.quoteId != null ? Number(body.quoteId) : NaN;
+      const quotationLink =
+        typeof body.quotationLink === "string" && body.quotationLink.trim() ? body.quotationLink.trim() : null;
+      const hasLinkedQuote =
+        Number.isFinite(quoteIdNum) && quoteIdNum > 0 && Boolean(quotationLink);
+      if (drawingFiles.length === 0 || (quotationFiles.length === 0 && !hasLinkedQuote)) {
+        return res.status(400).json({ message: "At least one drawing and a selected quotation are required" });
       }
       let drawingS3Urls: (string | null)[] = [];
       let quotationS3Urls: (string | null)[] = [];
@@ -15881,7 +16201,15 @@ app.post(
           quotationFiles.map((f) => uploadLeadFileToS3(leadId, f.path, f.originalname, f.mimetype)),
         );
       }
-      await persistDqc2SubmissionFromMeta(leadId, user, drawingFiles, quotationFiles, drawingS3Urls, quotationS3Urls);
+      await persistDqc2SubmissionFromMeta(
+        leadId,
+        user,
+        drawingFiles,
+        quotationFiles,
+        drawingS3Urls,
+        quotationS3Urls,
+        hasLinkedQuote ? { quoteId: quoteIdNum, quotationLink } : null,
+      );
       return res.status(201).json({ ok: true });
     } catch (err) {
       console.error("dqc2-submission error", err);
@@ -15902,6 +16230,7 @@ app.get("/api/leads/:id/dqc2-submission-files", async (req: Request, res: Respon
       role === "dqe" ||
       role === "admin" ||
       role === "senior_project_manager" ||
+      role === "operation_manager" ||
       role === "designer" ||
       role === "design_manager" ||
       role === "territorial_design_manager";
@@ -15933,11 +16262,61 @@ app.get("/api/leads/:id/dqc2-submission-files", async (req: Request, res: Respon
       .map((r: any) => ({ id: r.id, originalName: originalName(r) }));
     const drawing = drawingFiles[0];
     const quotation = quotationFiles[0];
+    let quoteId: number | null = null;
+    let quotationLink: string | null = null;
+    if (quotationFiles.length === 0) {
+      try {
+        const [histRows] = await pool.query(
+          `SELECT event FROM lead_history WHERE lead_id = ? ORDER BY created_at DESC LIMIT 80`,
+          [leadId],
+        );
+        for (const row of (histRows as any[]) || []) {
+          let ev: any = row?.event;
+          if (typeof ev === "string") {
+            try {
+              ev = JSON.parse(ev);
+            } catch {
+              continue;
+            }
+          }
+          const details = ev?.details;
+          if (!details || details.kind !== "dqc2_submission") continue;
+          const link =
+            typeof details.quotationLink === "string" && details.quotationLink.trim()
+              ? details.quotationLink.trim()
+              : null;
+          const qid =
+            details.quoteId != null && Number.isFinite(Number(details.quoteId)) && Number(details.quoteId) > 0
+              ? Number(details.quoteId)
+              : null;
+          if (link || qid) {
+            quotationLink = link;
+            quoteId = qid;
+            break;
+          }
+        }
+      } catch (histErr) {
+        console.warn("dqc2-submission-files history quote lookup failed (non-fatal)", histErr);
+      }
+      if (!quotationLink) {
+        try {
+          const latest = await resolveLatestQuoteLinkForLead(leadId);
+          if (latest?.source === "shared" && latest.customerQuoteUrl) {
+            quotationLink = latest.customerQuoteUrl;
+            quoteId = latest.quoteId > 0 ? latest.quoteId : quoteId;
+          }
+        } catch (linkErr) {
+          console.warn("dqc2-submission-files quote link fallback failed (non-fatal)", linkErr);
+        }
+      }
+    }
     return res.json({
       drawing: drawing ?? null,
       quotation: quotation ?? null,
       drawingFiles,
       quotationFiles,
+      quoteId,
+      quotationLink,
     });
   } catch (err) {
     console.error("dqc2-submission-files error", err);
@@ -16488,7 +16867,8 @@ app.get("/api/leads/:id/d2-masking-request", async (req: Request, res: Response)
     const [rows] = await pool.query(
       `SELECT a.id, a.masking_date as maskingDate, a.masking_time as maskingTime, a.status, a.created_at as createdAt,
               a.requested_spm_id as requestedSpmId,
-              l.assigned_project_manager_id as assignedProjectManagerId
+              l.assigned_project_manager_id as assignedProjectManagerId,
+              l.assigned_senior_project_manager_id as assignedSpmId
        FROM leads l
        LEFT JOIN lead_d2_assignments a ON a.lead_id = l.id
        WHERE l.id = ?
@@ -16497,8 +16877,15 @@ app.get("/api/leads/:id/d2-masking-request", async (req: Request, res: Response)
       [leadId],
     );
     const row = (rows as any[])[0];
-    if (!row?.id) {
-      return res.json({ raised: false });
+    if (!row) return res.json({ raised: false });
+    const assignedSpmId = row.assignedSpmId ?? row.requestedSpmId ?? null;
+    if (!row.id) {
+      return res.json({
+        raised: false,
+        assignedProjectManagerId: row.assignedProjectManagerId ?? null,
+        requestedSpmId: assignedSpmId,
+        assignedSpmId,
+      });
     }
     // Repair: if request exists but task completion is missing, mark it complete
     try {
@@ -16518,7 +16905,8 @@ app.get("/api/leads/:id/d2-masking-request", async (req: Request, res: Response)
       status: row.status || "pending",
       createdAt: row.createdAt,
       assignedProjectManagerId: row.assignedProjectManagerId ?? null,
-      requestedSpmId: row.requestedSpmId ?? null,
+      requestedSpmId: row.requestedSpmId ?? row.assignedSpmId ?? null,
+      assignedSpmId: row.assignedSpmId ?? row.requestedSpmId ?? null,
     });
   } catch (err) {
     console.error("d2-masking-request get error", err);
@@ -16538,9 +16926,9 @@ app.post("/api/leads/:id/d2-masking-request", upload.array("files", 20), async (
     if (role === "mmt_executive" || role === "mmt_manager") {
       return res.status(403).json({ message: "MMT users cannot raise D2 masking requests" });
     }
-    if (role === "senior_project_manager") {
+    if (role === "senior_project_manager" || role === "operation_manager") {
       return res.status(403).json({
-        message: "As Senior Project Manager, assign the project manager from this task instead of submitting a new request.",
+        message: "Assign the project manager from this task instead of submitting a new request.",
       });
     }
     const { maskingDate, maskingTime, requestedSpmId } = req.body || {};
@@ -16818,6 +17206,7 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
     if (queueType === "d2") {
       const canD2Queue =
         role === "senior_project_manager" ||
+        role === "operation_manager" ||
         role === "project_manager" ||
         role === "admin" ||
         role === "service_readonly";
@@ -17073,6 +17462,22 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
       );
       const d2Ids = new Set((d2Rows as { leadId: number }[]).map((r) => r.leadId));
       const filtered = enrichedList.filter((l: any) => d2Ids.has(l.id));
+      return res.json(filtered);
+    }
+
+    if (user && role === "operation_manager") {
+      const [opsRows] = await pool.query(
+        `SELECT l.id
+         FROM leads l
+         WHERE EXISTS (SELECT 1 FROM lead_d1_assignments a WHERE a.lead_id = l.id)
+            OR EXISTS (SELECT 1 FROM lead_d2_assignments d WHERE d.lead_id = l.id)
+            OR EXISTS (
+              SELECT 1 FROM lead_task_completions c
+              WHERE c.lead_id = l.id AND c.milestone_index IN (0, 1, 2, 3, 4, 5, 6, 7)
+            )`,
+      );
+      const opsIds = new Set((opsRows as { id: number }[]).map((r) => r.id));
+      const filtered = enrichedList.filter((l: any) => opsIds.has(l.id));
       return res.json(filtered);
     }
 
@@ -17717,6 +18122,43 @@ app.patch("/api/leads/:id/assign-project-manager", async (req: Request, res: Res
   }
 });
 
+// Operation manager assigns the Senior Project Manager for a project (all SPMs report here).
+app.patch("/api/leads/:id/assign-senior-project-manager", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+  const spmId = Number((req.body || {}).seniorProjectManagerId);
+  if (!Number.isFinite(spmId) || spmId < 1) {
+    return res.status(400).json({ message: "seniorProjectManagerId is required" });
+  }
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user.role || "").toLowerCase();
+    if (!isOperationManagerRole(role) && role !== "admin") {
+      return res.status(403).json({
+        message: "Only an Operation Manager or Admin can assign a Senior Project Manager",
+      });
+    }
+    const [urows] = await pool.query("SELECT id, name, role FROM users WHERE id = ?", [spmId]);
+    const target = (urows as { id?: number; name?: string; role?: string }[])[0];
+    if (!target || String(target.role || "").toLowerCase() !== "senior_project_manager") {
+      return res.status(400).json({ message: "Invalid senior project manager" });
+    }
+    await pool.query(
+      "UPDATE leads SET assigned_senior_project_manager_id = ?, update_at = ? WHERE id = ?",
+      [spmId, new Date(), id],
+    );
+    await pool.query(
+      "UPDATE lead_d2_assignments SET requested_spm_id = ? WHERE lead_id = ?",
+      [spmId, id],
+    );
+    return res.json({ ok: true, seniorProjectManagerId: spmId, name: target.name || null });
+  } catch (err) {
+    console.error("assign-senior-project-manager error", err);
+    return res.status(500).json({ message: "Failed to assign senior project manager" });
+  }
+});
+
 // Reject PM approval: upload pointer-to-change file and revert workflow to DQC 2 submission
 app.post(
   "/api/leads/:id/reject-pm-approval",
@@ -17959,6 +18401,13 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
           [id],
         );
         if ((d2Rows as any[]).length === 0) {
+          return res.status(404).json({ message: "Lead not found" });
+        }
+      }
+
+      if (user && isOperationManagerRole(role)) {
+        const inScope = await leadIsInOperationScope(id);
+        if (!inScope) {
           return res.status(404).json({ message: "Lead not found" });
         }
       }
@@ -20901,133 +21350,249 @@ app.get("/api/meetings/scheduled", async (req: Request, res: Response) => {
   }
 });
 
-function meetingTypeEmailLabel(meetingType: string | null | undefined): { label: string; stageName: string } {
-  const key = String(meetingType || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[_-]+/g, " ");
-  if (key.includes("first cut") || key === "dqc1 first cut") {
-    return { label: "First cut", stageName: "DQC 1 · FIRST CUT DESIGN" };
+function friendlyMeetingLabel(meetingType?: string | null): string {
+  const t = String(meetingType || "").toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!t || t === "pre 10" || t === "pre10" || t === "crm appointment") {
+    return "Pre 10% Initial Consultation";
   }
-  if (key.includes("material")) {
-    return { label: "Material selection", stageName: "DQC 2 · MATERIAL SELECTION" };
+  if (t.includes("first cut") || t.includes("firstcut") || t.includes("dqc1")) {
+    return "First Cut Design Discussion";
   }
-  if (key.includes("signoff") || key.includes("sign off")) {
-    return { label: "Design sign off", stageName: "DESIGN SIGN-OFF" };
+  if (t.includes("material") || t.includes("dqc2")) {
+    return "Material Selection & Quotation Discussion";
   }
-  if (key.includes("pre 10") || key === "pre10" || key.includes("crm")) {
-    return { label: "Pre 10%", stageName: "PRE 10%" };
+  if (t.includes("signoff") || t.includes("sign off")) {
+    return "Design Sign-Off Meeting";
   }
-  return { label: meetingType?.trim() || "Design meeting", stageName: "DESIGN MEETING" };
+  if (t.includes("site")) {
+    return "Site Visit";
+  }
+  return String(meetingType || "Design Meeting").replace(/_/g, " ").trim();
 }
 
-function formatMeetingDateForEmail(dateIso: string | null | undefined): string {
-  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(dateIso || ""));
-  if (!match) return String(dateIso || "").trim() || "Date to be confirmed";
-  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  return `${Number(match[3])} ${months[Number(match[2]) - 1]} ${match[1]}`;
+function formatMeetingDateDisplay(dateStr?: string | null): string {
+  if (!dateStr) return "";
+  const match = String(dateStr).trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return String(dateStr);
+  const [, y, m, d] = match;
+  const months = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+  ];
+  const monthName = months[parseInt(m, 10) - 1] || m;
+  return `${monthName} ${parseInt(d, 10)}, ${y}`;
 }
 
-/** Customer mail-loop notice when Meeting management reschedules or cancels a milestone meeting. */
-async function notifyCustomerMeetingChange(args: {
-  leadId: number;
-  action: "rescheduled" | "cancelled";
-  meetingType: string | null;
-  meetingMode: string | null;
-  meetingDate: string | null;
-  meetingTime: string | null;
-  previousMeetingDate?: string | null;
-  previousMeetingTime?: string | null;
-  reason?: string | null;
-  designerName?: string | null;
-  actingUserEmail?: string | null;
-}): Promise<void> {
+async function sendMeetingRescheduledMail(
+  leadId: number,
+  args: {
+    previousDate?: string | null;
+    previousTime?: string | null;
+    newDate?: string | null;
+    newTime?: string | null;
+    meetingType?: string | null;
+    meetingMode?: string | null;
+    rescheduleCount?: number | null;
+    actorEmail?: string | null;
+  },
+): Promise<void> {
   try {
     const [rows] = await pool.query(
-      `SELECT l.pid, l.project_name AS projectName, l.client_email AS clientEmail, l.payload,
-              u.name AS designerName, u.email AS designerEmail
-         FROM leads l
-         LEFT JOIN users u ON u.id = l.assigned_designer_id
-        WHERE l.id = ?
-        LIMIT 1`,
-      [args.leadId],
+      `SELECT l.pid as projectPid,
+              l.project_name as projectName,
+              l.client_email as clientEmail,
+              l.client_email_alt as alternateClientEmail,
+              l.payload,
+              u.name as designerName,
+              u.email as designerEmail
+       FROM leads l
+       LEFT JOIN users u ON u.id = l.assigned_designer_id
+       WHERE l.id = ?`,
+      [leadId],
     );
-    const row = (rows as Record<string, unknown>[])[0];
+    const row = (rows as any[])[0];
     if (!row) return;
 
-    let payload: Record<string, unknown> = {};
+    let payload: any = {};
     try {
-      payload = row.payload ? (JSON.parse(String(row.payload)) as Record<string, unknown>) : {};
+      payload = row.payload ? (typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload) : {};
     } catch {
       payload = {};
     }
-    const formData =
-      (payload.formData as Record<string, unknown> | undefined) ||
-      (payload.form_data as Record<string, unknown> | undefined) ||
-      (payload.form as Record<string, unknown> | undefined) ||
-      payload;
-    const customerEmail =
-      (typeof row.clientEmail === "string" && row.clientEmail.trim()) ||
-      (typeof formData.email === "string" && formData.email.trim()) ||
-      (typeof formData.sales_email === "string" && formData.sales_email.trim()) ||
-      (typeof payload.email === "string" && payload.email.trim()) ||
-      null;
-    if (!customerEmail) {
-      console.warn("[meeting-update-email] skipped — no customer email", { leadId: args.leadId, action: args.action });
+
+    const customerTo = collectLeadClientEmails(
+      {
+        clientEmail: row.clientEmail,
+        alternateClientEmail: row.alternateClientEmail,
+      },
+      payload,
+    );
+    if (!customerTo.length) {
+      console.warn("[meeting-mail] No customer email found on lead for reschedule notify", leadId);
       return;
     }
 
     const customerName =
-      (typeof formData.customer_name === "string" && formData.customer_name.trim()) ||
-      (typeof formData.sales_lead_name === "string" && formData.sales_lead_name.trim()) ||
-      (typeof payload.customer_name === "string" && payload.customer_name.trim()) ||
-      (typeof row.projectName === "string" && row.projectName.trim()) ||
+      payload.customer_name ||
+      payload?.form?.customer_name ||
+      payload?.formData?.customer_name ||
+      row.projectName ||
       "Customer";
     const designerName =
-      args.designerName ||
-      (typeof row.designerName === "string" && row.designerName.trim()) ||
+      row.designerName ||
+      payload?.designer_name ||
+      payload?.designerName ||
       "Your Design Consultant";
-    const projectId = (typeof row.pid === "string" && row.pid.trim()) || `HUB-${args.leadId}`;
-    const typeMeta = meetingTypeEmailLabel(args.meetingType);
-    const modeRaw = String(args.meetingMode || "").toLowerCase();
-    const meetingMode = modeRaw.includes("online") || modeRaw.includes("virtual") ? "online" : "offline";
-    const branchName = resolveLeadBranchName(payload, null) || "HUB Experience Center";
 
-    void triggerMailRouteWithLog({
-      leadId: args.leadId,
-      taskName: args.action === "cancelled" ? `Cancel ${typeMeta.label} meeting` : `Reschedule ${typeMeta.label} meeting`,
-      route: "/api/email/send-meeting-update",
+    const isCrmPre10 =
+      String(args.meetingType || "").toLowerCase().includes("pre_10") ||
+      String(args.meetingType || "").toLowerCase().includes("pre 10");
+    const count = Math.max(1, Number(args.rescheduleCount || 1));
+    const meetingTypeLabel = isCrmPre10
+      ? `Meeting Rescheduled ${count}`
+      : friendlyMeetingLabel(args.meetingType);
+
+    const mailChainCc = await getMailLoopCcEmails(
+      [args.actorEmail || null, row.designerEmail || null],
+      leadId,
+    );
+    const toSet = new Set(customerTo.map((e) => e.toLowerCase()));
+    const ccOnly = mailChainCc.filter((e) => !toSet.has(e.toLowerCase()));
+
+    const subject = isCrmPre10
+      ? buildMailChainSubject(row.projectPid || null, row.projectName || null, customerName) + ` – Meeting Rescheduled ${count}`
+      : buildMailChainSubject(row.projectPid || null, row.projectName || null, customerName) + ` – Meeting Rescheduled: ${meetingTypeLabel}`;
+
+    const branchName = resolveLeadBranchName(payload) || "HUB Experience Center";
+    const meetingLink =
+      payload.meetingLink ||
+      payload.designScheduledMeeting?.meetingLink ||
+      payload.crmSchedule?.meetingLink ||
+      "";
+
+    await triggerMailRouteWithLog({
+      leadId,
+      taskName: `Meeting rescheduled: ${meetingTypeLabel}`,
+      route: "/api/email/send-meeting-rescheduled",
       visibility: "external",
       payload: {
-        to: customerEmail,
-        cc: await getMailLoopCcEmails(
-          [args.actingUserEmail || null, typeof row.designerEmail === "string" ? row.designerEmail : null],
-          args.leadId,
-        ),
-        subject: buildMailChainSubject(projectId, row.projectName as string | null, customerName),
-        action: args.action,
+        to: customerTo.length === 1 ? customerTo[0] : customerTo,
+        cc: ccOnly,
+        subject,
         customerName,
-        leadId: args.leadId,
-        projectId,
-        meetingTypeLabel: typeMeta.label,
-        stageName: typeMeta.stageName,
-        meetingDate: formatMeetingDateForEmail(args.meetingDate),
-        meetingTime: formatTime12Hour(args.meetingTime) || args.meetingTime || undefined,
-        previousMeetingDate: args.previousMeetingDate
-          ? formatMeetingDateForEmail(args.previousMeetingDate)
-          : undefined,
-        previousMeetingTime: args.previousMeetingTime
-          ? formatTime12Hour(args.previousMeetingTime) || args.previousMeetingTime
-          : undefined,
-        meetingMode,
+        projectId: row.projectPid || `HUB-${leadId}`,
+        meetingTypeLabel,
+        previousDate: formatMeetingDateDisplay(args.previousDate),
+        previousTime: args.previousTime || "",
+        newDate: formatMeetingDateDisplay(args.newDate),
+        newTime: args.newTime || "",
+        meetingMode: args.meetingMode || "offline",
+        meetingLink,
         branchName,
-        ecLocation: branchName,
         designerName,
-        reason: args.reason || undefined,
       },
     });
   } catch (err) {
-    console.error("[meeting-update-email] failed (non-fatal)", err);
+    console.error("[meeting-mail] sendMeetingRescheduledMail error", err);
+  }
+}
+
+async function sendMeetingCancelledMail(
+  leadId: number,
+  args: {
+    meetingDate?: string | null;
+    meetingTime?: string | null;
+    meetingType?: string | null;
+    meetingMode?: string | null;
+    reason?: string | null;
+    actorEmail?: string | null;
+  },
+): Promise<void> {
+  try {
+    const [rows] = await pool.query(
+      `SELECT l.pid as projectPid,
+              l.project_name as projectName,
+              l.client_email as clientEmail,
+              l.client_email_alt as alternateClientEmail,
+              l.payload,
+              u.name as designerName,
+              u.email as designerEmail
+       FROM leads l
+       LEFT JOIN users u ON u.id = l.assigned_designer_id
+       WHERE l.id = ?`,
+      [leadId],
+    );
+    const row = (rows as any[])[0];
+    if (!row) return;
+
+    let payload: any = {};
+    try {
+      payload = row.payload ? (typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload) : {};
+    } catch {
+      payload = {};
+    }
+
+    const customerTo = collectLeadClientEmails(
+      {
+        clientEmail: row.clientEmail,
+        alternateClientEmail: row.alternateClientEmail,
+      },
+      payload,
+    );
+    if (!customerTo.length) {
+      console.warn("[meeting-mail] No customer email found on lead for cancel notify", leadId);
+      return;
+    }
+
+    const customerName =
+      payload.customer_name ||
+      payload?.form?.customer_name ||
+      payload?.formData?.customer_name ||
+      row.projectName ||
+      "Customer";
+    const designerName =
+      row.designerName ||
+      payload?.designer_name ||
+      payload?.designerName ||
+      "Your Design Consultant";
+    const isCrmPre10 =
+      String(args.meetingType || "").toLowerCase().includes("pre_10") ||
+      String(args.meetingType || "").toLowerCase().includes("pre 10");
+    const meetingTypeLabel = isCrmPre10
+      ? "Meeting Cancelled"
+      : friendlyMeetingLabel(args.meetingType);
+
+    const mailChainCc = await getMailLoopCcEmails(
+      [args.actorEmail || null, row.designerEmail || null],
+      leadId,
+    );
+    const toSet = new Set(customerTo.map((e) => e.toLowerCase()));
+    const ccOnly = mailChainCc.filter((e) => !toSet.has(e.toLowerCase()));
+
+    const subject = isCrmPre10
+      ? buildMailChainSubject(row.projectPid || null, row.projectName || null, customerName) + ` – Meeting Cancelled`
+      : buildMailChainSubject(row.projectPid || null, row.projectName || null, customerName) + ` – Meeting Cancelled: ${meetingTypeLabel}`;
+
+    await triggerMailRouteWithLog({
+      leadId,
+      taskName: `Meeting cancelled: ${meetingTypeLabel}`,
+      route: "/api/email/send-meeting-cancelled",
+      visibility: "external",
+      payload: {
+        to: customerTo.length === 1 ? customerTo[0] : customerTo,
+        cc: ccOnly,
+        subject,
+        customerName,
+        projectId: row.projectPid || `HUB-${leadId}`,
+        meetingTypeLabel,
+        meetingDate: formatMeetingDateDisplay(args.meetingDate),
+        meetingTime: args.meetingTime || "",
+        reason: args.reason || "",
+        designerName,
+      },
+    });
+  } catch (err) {
+    console.error("[meeting-mail] sendMeetingCancelledMail error", err);
   }
 }
 
@@ -21041,16 +21606,10 @@ app.post("/api/meetings/:id/reschedule", async (req: Request, res: Response) => 
     const meetingId = Number(req.params.id);
     if (!Number.isFinite(meetingId)) return res.status(400).json({ message: "Invalid meeting id" });
     await assertMeetingInViewerScope(actingUser, meetingId);
+    const beforeMeeting = await loadMeeting(pool, meetingId);
+    if (!beforeMeeting) return res.status(404).json({ message: "Meeting not found" });
+
     const body = (req.body || {}) as { meetingDate?: unknown; meetingTime?: unknown; meetingMode?: unknown; reason?: unknown };
-
-    const [beforeRows] = await pool.query(
-      `SELECT meeting_date AS meetingDate, meeting_time AS meetingTime, meeting_type AS meetingType,
-              meeting_mode AS meetingMode, lead_id AS leadId
-         FROM lead_meetings WHERE id = ? LIMIT 1`,
-      [meetingId],
-    );
-    const before = (beforeRows as Record<string, unknown>[])[0];
-
     const meeting = await rescheduleLeadMeeting(pool, meetingId, {
       meetingDate: body.meetingDate,
       meetingTime: body.meetingTime,
@@ -21067,18 +21626,18 @@ app.post("/api/meetings/:id/reschedule", async (req: Request, res: Response) => 
     });
 
     if (meeting) {
-      void notifyCustomerMeetingChange({
-        leadId: Number(meeting.leadId),
-        action: "rescheduled",
+      const nextCount = Number(meeting.rescheduleCount || (beforeMeeting.rescheduleCount || 0) + 1);
+      void sendMeetingRescheduledMail(meeting.leadId, {
+        previousDate: beforeMeeting.meetingDate,
+        previousTime: beforeMeeting.meetingTime,
+        newDate: meeting.meetingDate,
+        newTime: meeting.meetingTime,
         meetingType: meeting.meetingType,
         meetingMode: meeting.meetingMode,
-        meetingDate: meeting.meetingDate,
-        meetingTime: meeting.meetingTime,
-        previousMeetingDate: before?.meetingDate != null ? String(before.meetingDate).slice(0, 10) : null,
-        previousMeetingTime: before?.meetingTime != null ? String(before.meetingTime) : null,
-        reason: body.reason != null ? String(body.reason) : null,
-        designerName: meeting.designerName,
-        actingUserEmail: actingUser.email,
+        rescheduleCount: nextCount,
+        actorEmail: actingUser.email,
+      }).catch((mailErr) => {
+        console.error("[reschedule-meeting] mail send failed (non-fatal)", mailErr);
       });
     }
 
@@ -21120,11 +21679,12 @@ app.post("/api/meetings/:id/cancel", acceptStatusNoteFiles, async (req: Request,
       return res.status(400).json({ message: "Invalid meeting id" });
     }
     await assertMeetingInViewerScope(actingUser, meetingId);
-    const [leadRows] = await pool.query(
-      "SELECT lead_id as leadId FROM lead_meetings WHERE id = ? LIMIT 1",
-      [meetingId],
-    );
-    const leadId = Number((leadRows as { leadId?: number }[])[0]?.leadId);
+    const beforeMeeting = await loadMeeting(pool, meetingId);
+    if (!beforeMeeting) {
+      unlinkUploaded(files);
+      return res.status(404).json({ message: "Meeting not found" });
+    }
+    const leadId = beforeMeeting.leadId;
     if (!Number.isFinite(leadId) || leadId <= 0) {
       unlinkUploaded(files);
       return res.status(404).json({ message: "Meeting not found" });
@@ -21136,20 +21696,16 @@ app.post("/api/meetings/:id/cancel", acceptStatusNoteFiles, async (req: Request,
       actor: { id: actingUser.id, name: actingUser.name },
     });
 
-    const cancelled = result?.meeting;
-    if (cancelled) {
-      void notifyCustomerMeetingChange({
-        leadId: Number(cancelled.leadId),
-        action: "cancelled",
-        meetingType: cancelled.meetingType,
-        meetingMode: cancelled.meetingMode,
-        meetingDate: cancelled.meetingDate,
-        meetingTime: cancelled.meetingTime,
-        reason: noteResult.note,
-        designerName: cancelled.designerName,
-        actingUserEmail: actingUser.email,
-      });
-    }
+    void sendMeetingCancelledMail(leadId, {
+      meetingDate: beforeMeeting.meetingDate,
+      meetingTime: beforeMeeting.meetingTime,
+      meetingType: beforeMeeting.meetingType,
+      meetingMode: beforeMeeting.meetingMode,
+      reason: noteResult.note,
+      actorEmail: actingUser.email,
+    }).catch((mailErr) => {
+      console.error("[cancel-meeting] mail send failed (non-fatal)", mailErr);
+    });
 
     return res.json(result);
   } catch (err) {

@@ -1582,6 +1582,11 @@
   color: var(--mm-blue);
 }
 
+.pill[data-status='rescheduled'] {
+  background: #fef3c7;
+  color: #b45309;
+}
+
 .pill[data-status='in_progress'] {
   background: #fbf0d8;
   color: var(--mm-amber);
