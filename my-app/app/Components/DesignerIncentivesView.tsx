@@ -1358,8 +1358,10 @@ export default function DesignerIncentivesView() {
         const rows: TeamIncentiveRow[] = [];
         for (const m of members.filter(
           (x) =>
-            (x.role || '').toLowerCase() === 'designer' ||
-            (x.role || '').toLowerCase() === 'design_manager',
+            // Only include actual designers — never the logged-in manager
+            // (who may appear in the assignable list) or other design_managers.
+            (x.role || '').toLowerCase() === 'designer' &&
+            x.id !== user?.id,
         )) {
           const d = await fetchDesignerIncentives(m);
           if (!d) continue;

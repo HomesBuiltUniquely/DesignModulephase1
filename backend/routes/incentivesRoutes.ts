@@ -633,20 +633,19 @@ export function registerIncentivesRoutes(
 
       let designers: { id: number; name: string; role: string; subRole: string | null }[] = [];
       if (role === "design_manager") {
+        // Only return designers that report to this manager — never the manager themselves.
         const [rows] = await pool.query(
           `SELECT id, name, role, sub_role AS subRole FROM users
-           WHERE role = 'design_manager' AND id = ?
-           UNION
-           SELECT id, name, role, sub_role AS subRole FROM users
            WHERE role = 'designer' AND design_manager_id = ?
            ORDER BY name ASC`,
-          [user.id, user.id],
+          [user.id],
         );
         designers = rows as typeof designers;
       } else {
+        // Admin / TDM / DGM: show only designers (role='designer'), not design_managers.
         const [rows] = await pool.query(
           `SELECT id, name, role, sub_role AS subRole FROM users
-           WHERE role IN ('designer', 'design_manager')
+           WHERE role = 'designer'
            ORDER BY name ASC`,
         );
         designers = rows as typeof designers;

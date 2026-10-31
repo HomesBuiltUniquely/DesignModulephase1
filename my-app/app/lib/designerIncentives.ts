@@ -1143,10 +1143,10 @@ export function buildTeamIncentivesSummary(
       : getCurrentCycleIndex(cycleIndexOrNow);
   const asOf = typeof cycleIndexOrNow === "number" ? now : cycleIndexOrNow;
   const cycle = getIncentiveCycleByIndex(cycleIndex, asOf);
+  // Exclude design_managers from team incentive rows — they must never appear
+  // in their own leaderboard. Only role='designer' members are included.
   const designers = members.filter(
-    (m) =>
-      (m.role || "").toLowerCase() === "designer" ||
-      (m.role || "").toLowerCase() === "design_manager",
+    (m) => (m.role || "").toLowerCase() === "designer",
   );
   const rows: TeamIncentiveRow[] = designers.map((m) => {
     const d = buildDemoIncentivesForDesigner(m, cycleIndex, asOf);
