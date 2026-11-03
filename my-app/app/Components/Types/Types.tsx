@@ -107,6 +107,9 @@ export type LeadshipTypes = {
     experience_center?: string | null;
     sales_closure_ec?: string | null;
     branch?: string | null;
+    designerBranch?: string | null;
+    projectBranch?: string | null;
+    fallbackBranch?: string | null;
     /** CRM / intake appointment date (from payload) */
     appointmentDate?: string | null;
     /** CRM / intake appointment slot (from payload) */

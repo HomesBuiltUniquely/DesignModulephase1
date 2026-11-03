@@ -15,6 +15,7 @@ export type DashboardAssignableDesigner = {
   id: number;
   name: string;
   role: "designer" | "design_manager";
+  branch?: string | null;
 };
 
 /** Minimal DQC queue row — kept loose so Dashboard can own the richer type. */

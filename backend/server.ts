@@ -17234,6 +17234,15 @@ function getCurrentMilestoneProgress(
 
 // Dashboard: list leads; role-specific filters (MMT → D1 assignments, SPM → D2 masking raised, PM → assigned leads)
 // Query param type=d2: return leads that have D2 masking assignment (for D2 uploads page); mmt_executive sees only their D2 assignments
+function toBranchCode(raw?: string | null): string {
+  const s = String(raw || "").trim().toUpperCase();
+  if (!s) return "";
+  if (s.includes("HBR")) return "HBR";
+  if (s.includes("JPN") || s.includes("JP NAGAR")) return "JPN";
+  if (s.includes("SJR") || s.includes("SARJAPUR")) return "SJR";
+  return s.slice(0, 3);
+}
+
 app.get("/api/leads/queue", async (req: Request, res: Response) => {
   const now = new Date();
   const queueType = (req.query.type as string) || "d1";
@@ -17333,6 +17342,7 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
                   '$.designerName'
                 ))), '')
               ) as designerName,
+              COALESCE(NULLIF(TRIM(u.branch), ''), NULLIF(TRIM(dm.branch), '')) AS designerBranchRaw,
               pm.name as projectManagerName,
               JSON_UNQUOTE(
                 JSON_EXTRACT(
@@ -17366,6 +17376,7 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
               l.payload AS leadPayloadRaw
        FROM leads l
        LEFT JOIN users u ON u.id = l.assigned_designer_id
+       LEFT JOIN users dm ON dm.id = u.design_manager_id
        LEFT JOIN users pm ON pm.id = l.assigned_project_manager_id
        ORDER BY l.id ASC`,
     );
@@ -17374,11 +17385,18 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
       .map((r) => {
         payloadByLeadId.set(r.id, r.leadPayloadRaw);
         const intake = extractLeadIntakeViewFromPayload(r.leadPayloadRaw);
-        const { leadPayloadRaw: _omitPayload, ...rest } = r;
+        const { leadPayloadRaw: _omitPayload, designerBranchRaw, ...rest } = r;
+        const desBranch = toBranchCode(designerBranchRaw) || null;
+        const fallbackBranch = toBranchCode(r.experienceCenter) || null;
+        const projectBranch = (r.assigned_designer_id ? desBranch : (desBranch || fallbackBranch)) || null;
         return {
           ...rest,
           isOnHold: !!r.isOnHold,
           designerName: r.designerName ?? null,
+          designerBranch: desBranch,
+          fallbackBranch,
+          projectBranch,
+          branch: projectBranch,
           projectManagerName: r.projectManagerName ?? null,
           experienceCenter: r.experienceCenter ?? null,
           appointmentDate: intake.appointmentDate,
@@ -17442,7 +17460,7 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
       pool,
       baseList.map((l: { id: number }) => l.id),
     );
-    const enrichedList = baseList.map((l: any) => {
+    let enrichedList = baseList.map((l: any) => {
       let comps = completionsByLead.get(l.id) ?? [];
       // Auto-complete KT TRANSFER for existing projects that have already started on other milestones.
       if (comps.length > 0 && !comps.some((r) => r.milestoneIndex === 7)) {
@@ -17475,6 +17493,11 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
         taskCompletions: comps,
       };
     });
+
+    const reqQueueBranch = (req.query.branch as string | undefined)?.trim()?.toUpperCase();
+    if (reqQueueBranch && reqQueueBranch !== "ALL" && ["HBR", "SJR", "JPN"].includes(reqQueueBranch)) {
+      enrichedList = enrichedList.filter((l: any) => l.projectBranch === reqQueueBranch);
+    }
 
     // Visibility rules for designers / design managers
     if (user && role === "designer") {
@@ -17796,6 +17819,7 @@ app.get("/api/designers", async (req: Request, res: Response) => {
                         u.email,
                         u.role,
                         u.sub_role AS subRole,
+                        COALESCE(NULLIF(TRIM(u.branch), ''), NULLIF(TRIM(m.branch), '')) as branchRaw,
                         COALESCE(m.name, '') as leadName
                  FROM users u
                  LEFT JOIN users m ON u.design_manager_id = m.id
@@ -17809,7 +17833,14 @@ app.get("/api/designers", async (req: Request, res: Response) => {
 
     console.log("[GET /api/designers] running query...");
     const [rows] = await pool.query(query, params);
-    const list = rows as any[];
+    let list = (rows as any[]).map((r) => ({
+      ...r,
+      branch: toBranchCode(r.branchRaw) || null,
+    }));
+    const reqDesBranch = (req.query.branch as string | undefined)?.trim()?.toUpperCase();
+    if (reqDesBranch && reqDesBranch !== "ALL" && ["HBR", "SJR", "JPN"].includes(reqDesBranch)) {
+      list = list.filter((d) => d.branch === reqDesBranch);
+    }
     console.log(`[GET /api/designers] found ${list.length} designers`);
 
     // Always return { designers: [...] } so CRM and legacy callers both work
@@ -17833,26 +17864,45 @@ app.get("/api/designers/assignable", async (req: Request, res: Response) => {
 
     if (role === "design_manager") {
       const [rows] = await pool.query(
-        `SELECT id, name, role, sub_role AS subRole
-         FROM users
-         WHERE role = 'design_manager' AND id = ?
-         UNION
-         SELECT id, name, role, sub_role AS subRole
-         FROM users
-         WHERE role = 'designer' AND design_manager_id = ?
-         ORDER BY name ASC`,
+        `SELECT u.id, u.name, u.role, u.sub_role AS subRole,
+                COALESCE(NULLIF(TRIM(u.branch), ''), NULLIF(TRIM(dm.branch), '')) as branchRaw
+         FROM users u
+         LEFT JOIN users dm ON dm.id = u.design_manager_id
+         WHERE (u.role = 'design_manager' AND u.id = ?)
+            OR (u.role = 'designer' AND u.design_manager_id = ?)
+         ORDER BY u.name ASC`,
         [user.id, user.id],
       );
-      return res.json(rows);
+      const list = (rows as any[]).map((r) => ({
+        id: r.id,
+        name: r.name,
+        role: r.role,
+        subRole: r.subRole,
+        branch: toBranchCode(r.branchRaw) || null,
+      }));
+      return res.json(list);
     }
 
     const [rows] = await pool.query(
-      `SELECT id, name, role, sub_role AS subRole
-       FROM users
-       WHERE role IN ('designer', 'design_manager')
-       ORDER BY name ASC`,
+      `SELECT u.id, u.name, u.role, u.sub_role AS subRole,
+              COALESCE(NULLIF(TRIM(u.branch), ''), NULLIF(TRIM(dm.branch), '')) as branchRaw
+       FROM users u
+       LEFT JOIN users dm ON dm.id = u.design_manager_id
+       WHERE u.role IN ('designer', 'design_manager')
+       ORDER BY u.name ASC`,
     );
-    return res.json(rows);
+    let list = (rows as any[]).map((r) => ({
+      id: r.id,
+      name: r.name,
+      role: r.role,
+      subRole: r.subRole,
+      branch: toBranchCode(r.branchRaw) || null,
+    }));
+    const reqAssignBranch = (req.query.branch as string | undefined)?.trim()?.toUpperCase();
+    if (reqAssignBranch && reqAssignBranch !== "ALL" && ["HBR", "SJR", "JPN"].includes(reqAssignBranch)) {
+      list = list.filter((d) => d.branch === reqAssignBranch);
+    }
+    return res.json(list);
   } catch (err) {
     console.error("designers/assignable error", err);
     return res.status(500).json({ message: "Failed to load assignable designers" });
