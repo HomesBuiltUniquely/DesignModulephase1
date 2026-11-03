@@ -1442,17 +1442,36 @@ export default function ProjectDetailPage() {
                 }
                 return res.json();
             })
-            .then((data: { drawing?: { id: number; originalName: string }; quotation?: { id: number; originalName: string }; drawingFiles?: Array<{ id: number; originalName: string }>; quotationFiles?: Array<{ id: number; originalName: string }> } | null) => {
+            .then((data: {
+                drawing?: { id: number; originalName: string };
+                quotation?: { id: number; originalName: string };
+                drawingFiles?: Array<{ id: number; originalName: string }>;
+                quotationFiles?: Array<{ id: number; originalName: string }>;
+                quotationLink?: string | null;
+                quoteId?: number | null;
+            } | null) => {
                 if (data === null) return;
                 const drawingFiles = Array.isArray(data?.drawingFiles) ? data.drawingFiles : [];
                 const quotationFiles = Array.isArray(data?.quotationFiles) ? data.quotationFiles : [];
                 const allFiles = [...drawingFiles, ...quotationFiles];
                 setDqcSubmissionFiles(allFiles);
-                setDqcQuotationLink(null);
-                setDqcQuoteId(null);
+                const link =
+                    typeof data?.quotationLink === 'string' && data.quotationLink.trim()
+                        ? data.quotationLink.trim()
+                        : null;
+                const qid =
+                    data?.quoteId != null && Number.isFinite(Number(data.quoteId)) && Number(data.quoteId) > 0
+                        ? Number(data.quoteId)
+                        : null;
+                setDqcQuotationLink(quotationFiles.length === 0 ? link : null);
+                setDqcQuoteId(quotationFiles.length === 0 ? qid : null);
                 const fileToLoad = allFiles[0] ?? data?.drawing ?? data?.quotation ?? null;
                 if (!fileToLoad) {
-                    setDqc1SubmissionLoadError('No DQC 2 submission files found for this lead.');
+                    setDqc1SubmissionLoadError(
+                        link
+                            ? 'No drawing files found. Open the linked quotation from the toolbar.'
+                            : 'No DQC 2 submission files found for this lead.',
+                    );
                     setDqc1SubmissionLoading(false);
                     return;
                 }
@@ -4058,7 +4077,7 @@ export default function ProjectDetailPage() {
                                 dqc1SubmissionLoadError={dqc1SubmissionLoadError}
                                 dqc1SubmissionNotPdf={dqc1SubmissionNotPdf}
                                 dqc1SubmissionLoading={dqc1SubmissionLoading}
-                                onLoadDqcSubmission={loadDqc2SubmissionFile}
+                                onLoadDqcSubmission={loadDqcSubmissionFile}
                                 dqcSubmissionFiles={dqcSubmissionFiles}
                                 selectedDqcSubmissionFileId={selectedDqcSubmissionFileId}
                                 onSelectDqcSubmissionFile={(id) => {
@@ -4382,6 +4401,7 @@ export default function ProjectDetailPage() {
                             submissionVariant="dqc2"
                             onClose={closePopup}
                             onSaveDraft={closePopup}
+                            onUploadSuccess={() => setUploadsVersion((v) => v + 1)}
                             onSubmit={() => { recordTaskComplete(4, 'DQC 2 submission'); closePopup(); }}
                         />
                     )}
@@ -4448,7 +4468,7 @@ export default function ProjectDetailPage() {
                                 dqc1SubmissionLoadError={dqc1SubmissionLoadError}
                                 dqc1SubmissionNotPdf={dqc1SubmissionNotPdf}
                                 dqc1SubmissionLoading={dqc1SubmissionLoading}
-                                onLoadDqcSubmission={loadDqcSubmissionFile}
+                                onLoadDqcSubmission={loadDqc2SubmissionFile}
                                 dqcSubmissionFiles={dqcSubmissionFiles}
                                 selectedDqcSubmissionFileId={selectedDqcSubmissionFileId}
                                 onSelectDqcSubmissionFile={(id) => {

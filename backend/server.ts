@@ -16301,9 +16301,10 @@ app.get("/api/leads/:id/dqc2-submission-files", async (req: Request, res: Respon
       if (!quotationLink) {
         try {
           const latest = await resolveLatestQuoteLinkForLead(leadId);
-          if (latest?.source === "shared" && latest.customerQuoteUrl) {
+          if (latest?.customerQuoteUrl) {
             quotationLink = latest.customerQuoteUrl;
-            quoteId = latest.quoteId > 0 ? latest.quoteId : quoteId;
+            quoteId =
+              latest.quoteId != null && Number(latest.quoteId) > 0 ? Number(latest.quoteId) : quoteId;
           }
         } catch (linkErr) {
           console.warn("dqc2-submission-files quote link fallback failed (non-fatal)", linkErr);
