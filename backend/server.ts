@@ -7908,6 +7908,56 @@ function frontendBase(): string {
   return (process.env.FRONTEND_BASE_URL || "http://localhost:3000").replace(/\/$/, "");
 }
 
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
+/** Browser origin when it is a real site, otherwise a non-local FRONTEND_BASE_URL. */
+function requestPublicFrontendBase(req: Request): string | null {
+  const candidates: string[] = [];
+  const origin = typeof req.headers.origin === "string" ? req.headers.origin.trim() : "";
+  if (origin) candidates.push(origin.replace(/\/$/, ""));
+  const referer = typeof req.headers.referer === "string" ? req.headers.referer.trim() : "";
+  if (referer) {
+    try {
+      candidates.push(new URL(referer).origin);
+    } catch {
+      /* ignore malformed referer */
+    }
+  }
+  const fromEnv = (process.env.FRONTEND_BASE_URL || "").replace(/\/$/, "");
+  if (fromEnv) candidates.push(fromEnv);
+  for (const candidate of candidates) {
+    try {
+      const url = new URL(candidate);
+      if (!isLoopbackHostname(url.hostname)) return url.origin;
+    } catch {
+      /* ignore */
+    }
+  }
+  return null;
+}
+
+/** Stored DQC quote links were built with localhost when the API had no public frontend URL. */
+function publicQuoteUrl(raw: string | null | undefined, req: Request): string | null {
+  if (raw == null) return null;
+  const trimmed = String(raw).trim();
+  if (!trimmed) return null;
+  const pub = requestPublicFrontendBase(req);
+  if (!pub) return trimmed;
+  try {
+    const url = new URL(trimmed);
+    if (!isLoopbackHostname(url.hostname)) return trimmed;
+    const hosted = new URL(pub);
+    url.protocol = hosted.protocol;
+    url.hostname = hosted.hostname;
+    url.port = hosted.port;
+    return url.toString();
+  } catch {
+    return trimmed;
+  }
+}
+
 /** Resolve the latest Prolance quote id + share URLs for a Design lead. */
 async function resolveLatestQuoteLinkForLead(leadId: number): Promise<{
   quoteId: number;
@@ -16158,7 +16208,7 @@ app.get("/api/leads/:id/dqc-submission-files", async (req: Request, res: Respons
       drawingFiles,
       quotationFiles,
       quoteId,
-      quotationLink,
+      quotationLink: publicQuoteUrl(quotationLink, req),
     });
   } catch (err) {
     console.error("dqc-submission-files error", err);
@@ -16317,7 +16367,7 @@ app.get("/api/leads/:id/dqc2-submission-files", async (req: Request, res: Respon
       drawingFiles,
       quotationFiles,
       quoteId,
-      quotationLink,
+      quotationLink: publicQuoteUrl(quotationLink, req),
     });
   } catch (err) {
     console.error("dqc2-submission-files error", err);
@@ -18967,7 +19017,7 @@ app.get("/api/leads/:id/latest-quote-link", async (req: Request, res: Response) 
       return res.json({
         ok: true,
         quoteId: latest.quoteId,
-        customerQuoteUrl: latest.customerQuoteUrl,
+        customerQuoteUrl: publicQuoteUrl(latest.customerQuoteUrl, req),
         versionNumber: latest.versionNumber,
         source: latest.source,
       });
@@ -18975,8 +19025,8 @@ app.get("/api/leads/:id/latest-quote-link", async (req: Request, res: Response) 
     return res.json({
       ok: true,
       quoteId: latest.quoteId,
-      customerQuoteUrl: latest.customerQuoteUrl,
-      internalQuoteUrl: latest.internalQuoteUrl,
+      customerQuoteUrl: publicQuoteUrl(latest.customerQuoteUrl, req),
+      internalQuoteUrl: publicQuoteUrl(latest.internalQuoteUrl, req),
       versionNumber: latest.versionNumber,
       source: latest.source,
     });

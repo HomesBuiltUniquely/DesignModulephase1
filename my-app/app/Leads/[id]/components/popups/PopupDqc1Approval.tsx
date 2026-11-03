@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import type { RefObject } from "react";
 import type { QCRemark, Dqc1Verdict } from "../../types";
 import CustomSelect from "@/app/Components/ui/CustomSelect";
+import { hostedQuoteHref } from "@/app/lib/prolanceLinks";
 
 const Dqc1PdfViewer = dynamic<{
   fileUrl: string;
@@ -198,7 +199,7 @@ export default function PopupDqc1Approval({
             )}
             {dqcQuotationLink && (
               <a
-                href={dqcQuotationLink}
+                href={hostedQuoteHref(dqcQuotationLink)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center rounded-md bg-[#00B0ED] px-3 py-1.5 text-sm font-medium text-white hover:bg-[#00B0ED]/90"
