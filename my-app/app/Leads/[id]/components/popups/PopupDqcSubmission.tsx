@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef } from 'react';
 
 import { getApiBase } from '@/app/lib/apiBase';
+import { hostedQuoteHref } from '@/app/lib/prolanceLinks';
 
 const API = getApiBase();
 
@@ -98,7 +99,7 @@ export default function PopupDqcSubmission({
       })
       .then((data) => {
         if (cancelled) return;
-        const url = data.customerQuoteUrl || null;
+        const url = hostedQuoteHref(data.customerQuoteUrl || null) || null;
         const qid = data.quoteId != null ? Number(data.quoteId) : null;
         const version =
           data.versionNumber != null && Number.isFinite(Number(data.versionNumber)) && Number(data.versionNumber) > 0
@@ -352,7 +353,7 @@ export default function PopupDqcSubmission({
                   </p>
                 </div>
                 <a
-                  href={quotationLink!}
+                  href={hostedQuoteHref(quotationLink)}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex shrink-0 items-center justify-center rounded-lg bg-[#00B0ED] px-4 py-2 text-sm font-medium text-white hover:bg-[#00B0ED]/90"

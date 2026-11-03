@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 
 import { getApiBase } from '@/app/lib/apiBase';
+import { hostedQuoteHref } from '@/app/lib/prolanceLinks';
 import CustomSelect from '@/app/Components/ui/CustomSelect';
 const API = getApiBase();
 
@@ -233,7 +234,7 @@ export default function PopupDqcDesignerView({
             )}
             {quotationLink && (
               <a
-                href={quotationLink}
+                href={hostedQuoteHref(quotationLink)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center rounded-lg bg-[#00B0ED] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#00B0ED]/90"
