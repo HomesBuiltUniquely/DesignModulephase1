@@ -254,7 +254,9 @@ export function ensureLeadMeetingsTable(pool: Pool): Promise<void> {
           designer_id INT NULL,
           source ENUM('design_module','crm') NOT NULL,
           branch VARCHAR(64) NULL,
-          reschedule_cancel_reason VARCHAR(500) NULL,
+          cancel_reason VARCHAR(500) NULL,
+          cancel_files TEXT NULL,
+          reschedule_count INT NOT NULL DEFAULT 0,
           started_at DATETIME NULL,
           ended_at DATETIME NULL,
           created_at DATETIME NOT NULL,
@@ -269,6 +271,23 @@ export function ensureLeadMeetingsTable(pool: Pool): Promise<void> {
       );
       if ((branchCol as unknown[]).length === 0) {
         await pool.query("ALTER TABLE lead_meetings ADD COLUMN branch VARCHAR(64) NULL AFTER source");
+      }
+      const [cancelReasonCol] = await pool.query(
+        `SELECT 1 FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'cancel_reason'`,
+      );
+      if ((cancelReasonCol as unknown[]).length === 0) {
+        const [legacyReasonCol] = await pool.query(
+          `SELECT 1 FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'reschedule_cancel_reason'`,
+        );
+        if ((legacyReasonCol as unknown[]).length > 0) {
+          await pool.query(
+            "ALTER TABLE lead_meetings CHANGE COLUMN reschedule_cancel_reason cancel_reason VARCHAR(500) NULL",
+          );
+        } else {
+          await pool.query("ALTER TABLE lead_meetings ADD COLUMN cancel_reason VARCHAR(500) NULL AFTER branch");
+        }
       }
       const [cancelFilesCol] = await pool.query(
         `SELECT 1 FROM information_schema.COLUMNS
@@ -1203,7 +1222,10 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
             m.cancel_files AS cancelFiles,
             m.ended_at AS endedAt,
             COALESCE(m.reschedule_count, 0) AS rescheduleCount,
-            (SELECT COUNT(*) FROM lead_history h WHERE h.lead_id = m.lead_id AND (h.event_title = 'Meeting rescheduled' OR JSON_UNQUOTE(JSON_EXTRACT(h.metadata, '$.action')) = 'rescheduled')) AS historyRescheduleCount,
+            (SELECT COUNT(*) FROM lead_history h WHERE h.lead_id = m.lead_id AND (
+              JSON_UNQUOTE(JSON_EXTRACT(h.event, '$.taskName')) = 'Meeting rescheduled'
+              OR JSON_UNQUOTE(JSON_EXTRACT(h.event, '$.meta.action')) = 'rescheduled'
+            )) AS historyRescheduleCount,
             u.name AS assignedDesignerName,
             JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.formData.customer_name')) AS customerName,
             JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.formData.customerName')) AS customerNameAlt,
