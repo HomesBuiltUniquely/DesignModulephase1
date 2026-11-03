@@ -940,7 +940,8 @@ export function registerIncentivesRoutes(
         role === "territorial_design_manager" ||
         role === "deputy_general_manager";
 
-      const period = Number(req.query.period) === 30 ? 30 : 15;
+      const periodParam = String(req.query.period || "").trim().toLowerCase();
+      const period = periodParam === "30" || periodParam === "monthly" ? 30 : 15;
 
       const reqManagerIdRaw = req.query.managerId as string | undefined;
       const reqManagerId =
@@ -951,9 +952,14 @@ export function registerIncentivesRoutes(
           ? Number(reqManagerIdRaw)
           : null;
 
-      // Reject unauthorized requests for 30-day mode or All Branches
+      // Reject unauthorized requests for monthly/30-day mode: restricted to Admin and TDM/DGM
+      if (period === 30 && !isAdminOrTdm) {
+        return res.status(403).json({ message: "Forbidden: Monthly period access is restricted to Admin and TDM" });
+      }
+
+      // Reject unauthorized requests for All Branches or other managers for DM
       if (isDM) {
-        if (period === 30 || reqManagerId === -1 || (reqManagerId !== null && reqManagerId !== user.id)) {
+        if (reqManagerId === -1 || (reqManagerId !== null && reqManagerId !== user.id)) {
           return res.status(403).json({ message: "Forbidden: Access restricted to authorized managers" });
         }
       }
@@ -1257,7 +1263,10 @@ export function registerIncentivesRoutes(
       const incentiveEarned = computedRows.reduce((s, r) => s + r.incentiveEarned, 0);
       const onSpotBonus = computedRows.reduce((s, r) => s + r.onSpotBonus, 0);
       const achievementPct = totalTarget > 0 ? Math.round((revenueAchieved / totalTarget) * 1000) / 10 : 0;
-      const meetingsGatePassedCount = computedRows.filter((r) => r.meetingsEligible).length;
+      const meetingsGatePassedCount =
+        period === 30
+          ? computedRows.filter((r) => (r.meetingsGateNote ? !r.meetingsGateNote.startsWith("Locked") : r.meetingsEligible)).length
+          : computedRows.filter((r) => r.meetingsEligible).length;
 
       const summary = {
         memberCount: computedRows.length,

@@ -17,6 +17,11 @@ import {
   getCurrentCycleIndex,
   getIncentiveCycleByIndex,
   listFortnightOptions,
+  listMonthOptions,
+  getCurrentMonthIndex,
+  buildIncentiveSubtitle,
+  canShowPeriodToggle,
+  type MonthOption,
   type DealLedgerRow,
   type DesignerIncentivesData,
   type IncentiveDealInput,
@@ -239,28 +244,30 @@ function exportDealsCsv(deals: DealLedgerRow[], filename: string) {
 }
 
 function exportTeamCsv(team: TeamIncentivesSummary) {
+  const isMonthly = team.period === 30;
+  const periodLabel = isMonthly ? 'Monthly' : 'Fortnight';
   const header = [
     'Designer',
     'Role',
-    'Target',
-    'Revenue',
+    `Target (${periodLabel})`,
+    'Revenue Achieved',
     'Achievement %',
     'Meetings',
     'Meeting Gate',
     'Slab',
-    'Incentive',
+    'Incentive Earned',
     'On-Spot Bonus',
   ];
   const rows = team.rows.map((r) =>
     [
-      r.designerName,
+      `"${(r.designerName || '').replace(/"/g, '""')}"`,
       r.role,
       String(r.totalTarget),
       String(r.revenueAchieved),
-      String(r.achievementPct),
-      `${r.meetingsCompleted}/${r.meetingsRequired}`,
-      r.meetingsEligible ? 'Eligible' : 'Locked',
-      String(r.currentSlabPct),
+      `${r.achievementPct}%`,
+      `"${r.meetingsCompleted}/${r.meetingsRequired}"`,
+      `"${r.meetingsGateNote || (r.meetingsEligible ? 'Eligible' : 'Locked')}"`,
+      `"${r.slabDisplay || (r.currentSlabPct > 0 ? `${r.currentSlabPct}%` : '—')}"`,
       String(r.incentiveEarned),
       String(r.onSpotBonus),
     ].join(','),
@@ -270,16 +277,19 @@ function exportTeamCsv(team: TeamIncentivesSummary) {
   const a = document.createElement('a');
   a.href = url;
 
-  let filename = 'team-incentives.csv';
+  const suffix = isMonthly ? '-monthly' : '';
+  let filename = `team-incentives${suffix}.csv`;
   if (team.teamInfo) {
-    if (team.teamInfo.managerId === 0 || team.teamInfo.code === 'UNASSIGNED') {
-      filename = 'team-incentives-unassigned.csv';
+    if (team.teamInfo.code === 'ALL') {
+      filename = `team-incentives-all-branches${suffix}.csv`;
+    } else if (team.teamInfo.managerId === 0 || team.teamInfo.code === 'UNASSIGNED') {
+      filename = `team-incentives-unassigned${suffix}.csv`;
     } else {
       const cleanManager = (team.teamInfo.managerName || 'team').trim().replace(/[^a-zA-Z0-9]+/g, '-').toLowerCase();
       const cleanBranch = (team.teamInfo.code || '').trim().replace(/[^a-zA-Z0-9]+/g, '-').toLowerCase();
       filename = cleanBranch
-        ? `team-incentives-${cleanManager}-${cleanBranch}.csv`
-        : `team-incentives-${cleanManager}.csv`;
+        ? `team-incentives-${cleanManager}-${cleanBranch}${suffix}.csv`
+        : `team-incentives-${cleanManager}${suffix}.csv`;
     }
   }
   a.download = filename;
@@ -315,10 +325,12 @@ function IndividualIncentivesPanel({
   data,
   subtitle,
   selectedDate,
+  openedFromMonthly,
 }: {
   data: DesignerIncentivesData;
   subtitle?: string;
   selectedDate: string | null;
+  openedFromMonthly?: boolean;
 }) {
   const [selectedPart, setSelectedPart] = useState<WeightedPartFilter | null>(null);
   const [meetingsOpen, setMeetingsOpen] = useState(false);
@@ -342,6 +354,19 @@ function IndividualIncentivesPanel({
 
   return (
     <div className="space-y-6">
+      {openedFromMonthly && (
+        <div className="rounded-xl border border-blue-200 bg-blue-50/80 p-4 text-sm text-blue-950 shadow-sm flex items-start gap-3">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5 text-blue-600 shrink-0 mt-0.5">
+            <path fillRule="evenodd" d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Zm-7-4a1 1 0 1 1-2 0 1 1 0 0 1 2 0ZM9 9a.75.75 0 0 0 0 1.5h.253a.25.25 0 0 1 .244.304l-.459 2.066A1.75 1.75 0 0 0 10.747 15H11a.75.75 0 0 0 0-1.5h-.253a.25.25 0 0 1-.244-.304l.459-2.066A1.75 1.75 0 0 0 9.253 9H9Z" clipRule="evenodd" />
+          </svg>
+          <div>
+            <div className="font-semibold text-blue-900">Fortnight View (Individual Detail)</div>
+            <div className="text-blue-800 text-xs mt-0.5">
+              Individual milestone progress, weighted collection stages, and meeting gate are evaluated on each 15-day fortnight cycle. Showing <strong>{data.cycle.cycleLabel}</strong>. Switch fortnights in the dropdown above or return to Team view to see combined monthly metrics.
+            </div>
+          </div>
+        </div>
+      )}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-xl font-bold tracking-tight text-gray-900">{data.designerName}</h2>
@@ -1025,10 +1050,12 @@ function TeamIncentivesPanel({
   selectedDate: string | null;
   isDesignManager?: boolean;
 }) {
+  const isMonthly = team.period === 30;
   const cycleDates = (
     <span className="font-medium text-gray-700">
-      {team.cycle.cycleDays}-day cycle ({team.cycle.cycleLabel})
-      {team.cycle.isCurrent ? '' : ' · past fortnight'}
+      {isMonthly
+        ? `Monthly cycle (${team.cycle.cycleLabel})`
+        : `${team.cycle.cycleDays}-day cycle (${team.cycle.cycleLabel})${team.cycle.isCurrent ? '' : ' · past fortnight'}`}
     </span>
   );
 
@@ -1087,14 +1114,16 @@ function TeamIncentivesPanel({
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6">
         <MetricCard label="Team Size" value={String(team.memberCount)} />
         <MetricCard
-          label="Combined Target (fortnight)"
+          label={isMonthly ? "Combined Target (Monthly)" : "Combined Target (Fortnight)"}
           value={formatInr(team.totalTarget)}
         />
         <MetricCard label="Weighted Revenue" value={formatInr(team.revenueAchieved)} />
         <MetricCard label="Team Achievement" value={`${team.achievementPct}%`} />
         <MetricCard
           label="Meeting Gate Passed"
-          value={`${team.rows.filter((r) => r.meetingsEligible).length}/${team.memberCount}`}
+          value={`${isMonthly
+            ? team.rows.filter((r) => r.meetingsGateNote ? !r.meetingsGateNote.startsWith('Locked') : r.meetingsEligible).length
+            : team.rows.filter((r) => r.meetingsEligible).length}/${team.memberCount}`}
         />
         <MetricCard label="Total Incentives" value={formatInr(team.incentiveEarned)} accent />
       </div>
@@ -1151,16 +1180,20 @@ function TeamIncentivesPanel({
                         </span>
                         <span
                           className={`text-[10px] font-bold uppercase tracking-wide ${
-                            row.meetingsEligible ? 'text-[#32261C]' : 'text-amber-600'
+                            row.meetingsEligible
+                              ? 'text-[#32261C]'
+                              : row.meetingsGateNote && row.meetingsGateNote.includes('1 of 2')
+                                ? 'text-amber-600'
+                                : 'text-amber-600'
                           }`}
                         >
-                          {row.meetingsEligible ? 'Eligible' : 'Locked'}
+                          {row.meetingsGateNote || (row.meetingsEligible ? 'Eligible' : 'Locked')}
                         </span>
                       </div>
                     </td>
                     <td className="py-3.5 pr-4">
                       <span className="rounded-full bg-[#DDCDC1]/20 px-2 py-0.5 text-[11px] font-bold text-[#32261C]">
-                        {row.currentSlabPct > 0 ? `${row.currentSlabPct}%` : '—'}
+                        {row.slabDisplay || (row.currentSlabPct > 0 ? `${row.currentSlabPct}%` : '—')}
                       </span>
                     </td>
                     <td className="py-3.5 pr-4 font-semibold text-[#32261C]">
@@ -1193,13 +1226,57 @@ export default function DesignerIncentivesView() {
   const isManager = canManageTeamIncentives(user?.role);
   const isDesignManager = (user?.role || '').toLowerCase() === 'design_manager';
   const isDesignerOnly = (user?.role || '').toLowerCase() === 'designer';
+  const canTogglePeriod = canShowPeriodToggle(user?.role);
+
+  const getInitialPeriodMode = (): 'fortnight' | 'monthly' => {
+    if (!canTogglePeriod || typeof window === 'undefined') return 'fortnight';
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const p = params.get('period')?.toLowerCase();
+      if (p === 'monthly' || p === '30') return 'monthly';
+      if (p === 'fortnight' || p === '15') return 'fortnight';
+      const saved = sessionStorage.getItem('design-incentives-period');
+      if (saved === 'monthly' || saved === 'fortnight') return saved;
+    } catch {}
+    return 'fortnight';
+  };
+
+  const getInitialMonthIndex = (): number => {
+    const cur = getCurrentMonthIndex();
+    if (typeof window === 'undefined') return cur;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const m = params.get('monthIndex') || params.get('month');
+      if (m && Number.isFinite(Number(m)) && Number(m) >= 0) return Number(m);
+      const saved = sessionStorage.getItem('design-incentives-monthIndex');
+      if (saved && Number.isFinite(Number(saved)) && Number(saved) >= 0) return Number(saved);
+    } catch {}
+    return cur;
+  };
+
+  const getInitialCycleIndex = (): number => {
+    const cur = getCurrentCycleIndex();
+    if (typeof window === 'undefined') return cur;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const c = params.get('cycleIndex') || params.get('cycle');
+      if (c && Number.isFinite(Number(c)) && Number(c) >= 0) return Number(c);
+      const saved = sessionStorage.getItem('design-incentives-cycleIndex');
+      if (saved && Number.isFinite(Number(saved)) && Number(saved) >= 0) return Number(saved);
+    } catch {}
+    return cur;
+  };
+
+  const [periodMode, setPeriodMode] = useState<'fortnight' | 'monthly'>(getInitialPeriodMode);
+  const [monthIndex, setMonthIndex] = useState<number>(getInitialMonthIndex);
+  const [cycleIndex, setCycleIndex] = useState<number>(getInitialCycleIndex);
+  const [openedFromMonthly, setOpenedFromMonthly] = useState<boolean>(false);
 
   const [viewMode, setViewMode] = useState<ViewMode>(isManager ? 'team' : 'individual');
   const [members, setMembers] = useState<IncentiveMember[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [loadingMembers, setLoadingMembers] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [cycleIndex, setCycleIndex] = useState(() => getCurrentCycleIndex());
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [individualData, setIndividualData] = useState<DesignerIncentivesData | null>(null);
   const [teamSummary, setTeamSummary] = useState<TeamIncentivesSummary | null>(null);
@@ -1211,7 +1288,66 @@ export default function DesignerIncentivesView() {
     () => fortnightOptions.find((f) => f.cycleIndex === cycleIndex) || fortnightOptions[0],
     [fortnightOptions, cycleIndex],
   );
+  const monthOptions = useMemo(() => listMonthOptions(24), []);
+  const selectedMonth = useMemo(
+    () => monthOptions.find((m) => m.monthIndex === monthIndex) || monthOptions[0],
+    [monthOptions, monthIndex],
+  );
   const cycle = useMemo(() => getIncentiveCycleByIndex(cycleIndex), [cycleIndex]);
+
+  const syncStateToUrlAndStorage = (
+    nextPeriod: 'fortnight' | 'monthly',
+    nextCycle: number,
+    nextMonth: number,
+  ) => {
+    if (typeof window === 'undefined') return;
+    try {
+      sessionStorage.setItem('design-incentives-period', nextPeriod);
+      sessionStorage.setItem('design-incentives-cycleIndex', String(nextCycle));
+      sessionStorage.setItem('design-incentives-monthIndex', String(nextMonth));
+      const url = new URL(window.location.href);
+      if (canTogglePeriod) {
+        url.searchParams.set('period', nextPeriod);
+        if (nextPeriod === 'monthly') {
+          url.searchParams.set('monthIndex', String(nextMonth));
+          url.searchParams.delete('cycleIndex');
+        } else {
+          url.searchParams.set('cycleIndex', String(nextCycle));
+          url.searchParams.delete('monthIndex');
+        }
+      }
+      window.history.replaceState(null, '', url.toString());
+    } catch {}
+  };
+
+  const onPeriodModeChange = (mode: 'fortnight' | 'monthly') => {
+    if (!canTogglePeriod) return;
+    setPeriodMode(mode);
+    setSelectedDate('');
+    if (mode === 'monthly') {
+      let targetMonth = monthIndex;
+      const saved = sessionStorage.getItem('design-incentives-monthIndex');
+      if (!saved) {
+        targetMonth = getCurrentMonthIndex();
+        setMonthIndex(targetMonth);
+      }
+      syncStateToUrlAndStorage('monthly', cycleIndex, targetMonth);
+    } else {
+      syncStateToUrlAndStorage('fortnight', cycleIndex, monthIndex);
+    }
+  };
+
+  const onMonthChange = (nextIndex: number) => {
+    setMonthIndex(nextIndex);
+    setSelectedDate('');
+    syncStateToUrlAndStorage('monthly', cycleIndex, nextIndex);
+  };
+
+  const onFortnightChange = (nextIndex: number) => {
+    setCycleIndex(nextIndex);
+    setSelectedDate('');
+    syncStateToUrlAndStorage('fortnight', nextIndex, monthIndex);
+  };
 
   const scopeLabel = useMemo(() => {
     const role = (user?.role || '').toLowerCase();
@@ -1427,7 +1563,14 @@ export default function DesignerIncentivesView() {
       setIncentivesError(null);
       try {
         const queryParams = new URLSearchParams();
-        queryParams.set('cycleIndex', String(cycleIndex));
+        const isMonthly = periodMode === 'monthly' && canTogglePeriod;
+        if (isMonthly) {
+          queryParams.set('period', '30');
+          queryParams.set('monthIndex', String(monthIndex));
+        } else {
+          queryParams.set('period', '15');
+          queryParams.set('cycleIndex', String(cycleIndex));
+        }
         if (!isDesignManager && selectedManagerId !== null) {
           queryParams.set('managerId', String(selectedManagerId));
         }
@@ -1441,61 +1584,24 @@ export default function DesignerIncentivesView() {
           throw new Error(body?.message || `Failed to load team (${teamRes.status})`);
         }
         const teamData = await teamRes.json();
-        const teamMembers = (teamData?.members || []) as {
-          id: number;
-          name: string;
-          role: string;
-          subRole: string | null;
-        }[];
+        const rows = (teamData?.rows || []) as TeamIncentiveRow[];
+        const summary = teamData?.summary || {};
         const teamInfo = teamData?.team as IncentiveTeam | undefined;
 
-        const rows: TeamIncentiveRow[] = [];
-        for (const m of teamMembers.filter(
-          (x) =>
-            // Only include actual designers — never the manager themselves or another manager
-            (x.role || '').toLowerCase() === 'designer' &&
-            x.id !== teamInfo?.managerId,
-        )) {
-          const d = await fetchDesignerIncentives({
-            id: m.id,
-            name: m.name,
-            role: m.role,
-            subRole: m.subRole,
-          });
-          if (!d) continue;
-          rows.push({
-            designerId: d.designerId,
-            designerName: d.designerName,
-            role: m.role,
-            subRole: d.subRole,
-            totalTarget: d.totalTarget,
-            revenueAchieved: d.revenueAchieved,
-            achievementPct: d.achievementPct,
-            incentiveEarned: d.incentiveEarned,
-            onSpotBonus: d.onSpotBonus,
-            currentSlabPct: d.currentSlabPct,
-            meetingsCompleted: d.meetingsCompleted,
-            meetingsRequired: d.meetingsRequired,
-            meetingsEligible: d.meetingsEligible,
-          });
-        }
-        const totalTarget = rows.reduce((s, r) => s + r.totalTarget, 0);
-        const revenueAchieved = rows.reduce((s, r) => s + r.revenueAchieved, 0);
-        const incentiveEarned = rows.reduce((s, r) => s + r.incentiveEarned, 0);
-        const onSpotBonus = rows.reduce((s, r) => s + r.onSpotBonus, 0);
-        const achievementPct =
-          totalTarget > 0 ? Math.round((revenueAchieved / totalTarget) * 1000) / 10 : 0;
         if (!cancelled) {
           setTeamSummary({
-            memberCount: rows.length,
-            totalTarget,
-            revenueAchieved,
-            achievementPct,
-            incentiveEarned,
-            onSpotBonus,
-            rows: rows.sort((a, b) => b.incentiveEarned - a.incentiveEarned),
-            cycle,
+            memberCount: Number(summary.memberCount) || rows.length,
+            totalTarget: Number(summary.totalTarget) || rows.reduce((s, r) => s + r.totalTarget, 0),
+            revenueAchieved: Number(summary.revenueAchieved) || rows.reduce((s, r) => s + r.revenueAchieved, 0),
+            achievementPct: Number(summary.achievementPct) || 0,
+            incentiveEarned: Number(summary.incentiveEarned) || rows.reduce((s, r) => s + r.incentiveEarned, 0),
+            onSpotBonus: Number(summary.onSpotBonus) || rows.reduce((s, r) => s + r.onSpotBonus, 0),
+            rows,
+            cycle: teamData.cycle || cycle,
             teamInfo,
+            period: teamData.period || (isMonthly ? 30 : 15),
+            monthIndex: teamData.monthIndex ?? monthIndex,
+            teamBreakdown: teamData.teamBreakdown,
           });
         }
       } catch (err) {
@@ -1511,16 +1617,22 @@ export default function DesignerIncentivesView() {
     return () => {
       cancelled = true;
     };
-  }, [apiBase, cycle, cycleIndex, fetchDesignerIncentives, isDesignManager, isManager, selectedManagerId, sessionId, viewMode]);
+  }, [apiBase, canTogglePeriod, cycle, cycleIndex, isDesignManager, isManager, monthIndex, periodMode, selectedManagerId, sessionId, viewMode]);
 
   const openDesigner = (designerId: number) => {
     setSelectedId(designerId);
     setViewMode('individual');
-  };
-
-  const onFortnightChange = (nextIndex: number) => {
-    setCycleIndex(nextIndex);
-    setSelectedDate('');
+    if (periodMode === 'monthly') {
+      setOpenedFromMonthly(true);
+      const curMonth = getCurrentMonthIndex();
+      if (monthIndex === curMonth) {
+        setCycleIndex(getCurrentCycleIndex());
+      } else {
+        setCycleIndex(monthIndex * 2);
+      }
+    } else {
+      setOpenedFromMonthly(false);
+    }
   };
 
   return (
@@ -1532,7 +1644,7 @@ export default function DesignerIncentivesView() {
             <p className="mt-1 text-sm text-gray-500">
               {viewMode === 'individual' && individualData
                 ? `${individualData.subRole || 'ID'} target ${formatTargetLakhs(individualData.totalTarget)} this fortnight (${formatTargetLakhs(individualData.monthlyTarget)} / month)`
-                : 'Fortnight target is half of the monthly sub-role target (JID ₹25L · ID ₹30L · SID ₹35L · PD ₹38L)'}
+                : buildIncentiveSubtitle(periodMode === 'monthly' && canTogglePeriod && viewMode === 'team' ? 30 : 15)}
               {isManager ? ` · ${scopeLabel}` : null}
             </p>
           </div>
@@ -1542,7 +1654,10 @@ export default function DesignerIncentivesView() {
               <div className="inline-flex rounded-lg border border-gray-200 bg-white p-1 shadow-sm">
                 <button
                   type="button"
-                  onClick={() => setViewMode('team')}
+                  onClick={() => {
+                    setViewMode('team');
+                    setOpenedFromMonthly(false);
+                  }}
                   className={`rounded-md px-3 py-1.5 text-xs font-semibold uppercase tracking-wide ${
                     viewMode === 'team'
                       ? 'bg-[#DDCDC1]/200 text-white'
@@ -1602,16 +1717,61 @@ export default function DesignerIncentivesView() {
         </div>
 
         <div className="flex flex-wrap items-end gap-3 rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-          <label className="flex min-w-[220px] flex-1 flex-col gap-1 text-sm text-gray-600">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-              Fortnight (1–15 / 16–end)
-            </span>
-            <CustomSelect
-              value={String(cycleIndex)}
-              onChange={(val) => onFortnightChange(Number(val))}
-              options={fortnightOptions.map((opt) => ({ value: String(opt.cycleIndex), label: opt.label }))}
-            />
-          </label>
+          {canTogglePeriod && viewMode === 'team' && (
+            <div className="flex flex-col gap-1">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                Period
+              </span>
+              <div className="inline-flex rounded-lg border border-gray-200 bg-white p-1 shadow-sm">
+                <button
+                  type="button"
+                  onClick={() => onPeriodModeChange('fortnight')}
+                  className={`rounded-md px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition-colors ${
+                    periodMode === 'fortnight'
+                      ? 'bg-[#DDCDC1]/200 text-white'
+                      : 'text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  Fortnight
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onPeriodModeChange('monthly')}
+                  className={`rounded-md px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition-colors ${
+                    periodMode === 'monthly'
+                      ? 'bg-[#DDCDC1]/200 text-white'
+                      : 'text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  Monthly
+                </button>
+              </div>
+            </div>
+          )}
+
+          {periodMode === 'monthly' && canTogglePeriod && viewMode === 'team' ? (
+            <label className="flex min-w-[240px] flex-1 flex-col gap-1 text-sm text-gray-600">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                Month
+              </span>
+              <CustomSelect
+                value={String(monthIndex)}
+                onChange={(val) => onMonthChange(Number(val))}
+                options={monthOptions.map((opt) => ({ value: String(opt.monthIndex), label: opt.label }))}
+              />
+            </label>
+          ) : (
+            <label className="flex min-w-[220px] flex-1 flex-col gap-1 text-sm text-gray-600">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                Fortnight (1–15 / 16–end)
+              </span>
+              <CustomSelect
+                value={String(cycleIndex)}
+                onChange={(val) => onFortnightChange(Number(val))}
+                options={fortnightOptions.map((opt) => ({ value: String(opt.cycleIndex), label: opt.label }))}
+              />
+            </label>
+          )}
 
           <label className="flex min-w-[180px] flex-col gap-1 text-sm text-gray-600">
             <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
@@ -1619,8 +1779,8 @@ export default function DesignerIncentivesView() {
             </span>
             <CustomDatePicker
               value={selectedDate}
-              min={selectedFortnight?.startIso}
-              max={selectedFortnight?.endIso}
+              min={periodMode === 'monthly' && viewMode === 'team' ? selectedMonth?.startIso : selectedFortnight?.startIso}
+              max={periodMode === 'monthly' && viewMode === 'team' ? selectedMonth?.endIso : selectedFortnight?.endIso}
               onChange={(date) => setSelectedDate(date)}
             />
           </label>
@@ -1637,7 +1797,9 @@ export default function DesignerIncentivesView() {
           <p className="w-full text-xs text-gray-500 sm:w-auto sm:flex-1 sm:text-right">
             {selectedDate
               ? `Showing activity for ${selectedDate}`
-              : `Showing full fortnight ${selectedFortnight?.startIso || ''} → ${selectedFortnight?.endIso || ''}`}
+              : periodMode === 'monthly' && viewMode === 'team'
+                ? `Showing full month ${selectedMonth?.startIso || ''} → ${selectedMonth?.endIso || ''}`
+                : `Showing full fortnight ${selectedFortnight?.startIso || ''} → ${selectedFortnight?.endIso || ''}`}
           </p>
         </div>
 
@@ -1677,6 +1839,7 @@ export default function DesignerIncentivesView() {
           <IndividualIncentivesPanel
             data={individualData}
             selectedDate={selectedDate || null}
+            openedFromMonthly={openedFromMonthly}
             subtitle={
               isDesignerOnly
                 ? 'Your personal incentive dashboard (live leads)'

@@ -499,16 +499,33 @@ export type MonthOption = {
   isCurrent: boolean;
 };
 
-/** Recent months for the 30-day filter dropdown (newest first). */
+export const ALLOWED_PERIOD_TOGGLE_ROLES = [
+  "admin",
+  "territorial_design_manager",
+  "deputy_general_manager",
+] as const;
+
+export function canShowPeriodToggle(role?: string | null): boolean {
+  if (!role) return false;
+  return ALLOWED_PERIOD_TOGGLE_ROLES.includes(role.toLowerCase().trim() as any);
+}
+
+export function getCurrentMonthIndex(now: Date = new Date()): number {
+  const ist = getIstYmd(now);
+  return (ist.year - FORTNIGHT_EPOCH_YEAR) * 12 + ist.month;
+}
+
+/** Recent months for the Monthly filter dropdown (newest first, capped at 24). */
 export function listMonthOptions(
-  count = 8,
+  count = 24,
   now: Date = new Date(),
 ): MonthOption[] {
   const ist = getIstYmd(now);
   const currentMonthIdx = (ist.year - FORTNIGHT_EPOCH_YEAR) * 12 + ist.month;
   const options: MonthOption[] = [];
+  const safeCount = Math.min(24, Math.max(1, count));
 
-  for (let i = 0; i < count; i++) {
+  for (let i = 0; i < safeCount; i++) {
     const mIdx = currentMonthIdx - i;
     if (mIdx < 0) break;
     const year = FORTNIGHT_EPOCH_YEAR + Math.floor(mIdx / 12);
@@ -517,12 +534,15 @@ export function listMonthOptions(
     const isCurrent = i === 0;
 
     const dStart = new Date(Date.UTC(year, month, 1));
-    const dEnd = new Date(Date.UTC(year, month, days));
-    const monthName = dStart.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
-    const fullMonthName = dStart.toLocaleString("en-US", { month: "long", timeZone: "UTC" });
+    const shortMonth = dStart.toLocaleDateString("en-IN", { month: "short", timeZone: "UTC" });
+    const fullMonthName = dStart.toLocaleDateString("en-IN", { month: "long", timeZone: "UTC" });
+    const startDayStr = "01";
+    const endDayStr = String(days).padStart(2, "0");
+
+    // Format: "Current · Nov 2026 · 01 Nov - 30 Nov" or "October 2026 · 01 Oct - 31 Oct"
     const label = isCurrent
-      ? `Current · ${fullMonthName} ${year} (01 ${monthName} – ${days} ${monthName})`
-      : `${fullMonthName} ${year} (01 ${monthName} – ${days} ${monthName})`;
+      ? `Current · ${shortMonth} ${year} · ${startDayStr} ${shortMonth} - ${endDayStr} ${shortMonth}`
+      : `${fullMonthName} ${year} · ${startDayStr} ${shortMonth} - ${endDayStr} ${shortMonth}`;
 
     options.push({
       monthIndex: mIdx,
@@ -538,15 +558,24 @@ export function listMonthOptions(
   return options;
 }
 
-export function buildIncentiveSubtitle(period: 15 | 30): string {
-  const jidMonth = formatTargetLakhs(SUB_ROLE_MONTHLY_TARGETS.JID);
-  const idMonth = formatTargetLakhs(SUB_ROLE_MONTHLY_TARGETS.ID);
-  const sidMonth = formatTargetLakhs(SUB_ROLE_MONTHLY_TARGETS.SID);
-  const pdMonth = formatTargetLakhs(SUB_ROLE_MONTHLY_TARGETS.PD);
-  const levels = `JID ${jidMonth} · ID ${idMonth} · SID ${sidMonth} · PD ${pdMonth}`;
+export function buildIncentiveSubtitle(period: 15 | 30 | "fortnight" | "monthly"): string {
+  const isMonth = period === 30 || period === "monthly";
+  const jidLakhs = formatTargetLakhs(
+    isMonth ? SUB_ROLE_MONTHLY_TARGETS.JID : Math.round(SUB_ROLE_MONTHLY_TARGETS.JID / 2),
+  );
+  const idLakhs = formatTargetLakhs(
+    isMonth ? SUB_ROLE_MONTHLY_TARGETS.ID : Math.round(SUB_ROLE_MONTHLY_TARGETS.ID / 2),
+  );
+  const sidLakhs = formatTargetLakhs(
+    isMonth ? SUB_ROLE_MONTHLY_TARGETS.SID : Math.round(SUB_ROLE_MONTHLY_TARGETS.SID / 2),
+  );
+  const pdLakhs = formatTargetLakhs(
+    isMonth ? SUB_ROLE_MONTHLY_TARGETS.PD : Math.round(SUB_ROLE_MONTHLY_TARGETS.PD / 2),
+  );
+  const levels = `JID ${jidLakhs} · ID ${idLakhs} · SID ${sidLakhs} · PD ${pdLakhs}`;
 
-  if (period === 30) {
-    return `30-day target equals the monthly sub-role target (${levels})`;
+  if (isMonth) {
+    return `Monthly target by sub-role (${levels})`;
   }
   return `Fortnight target is half of the monthly sub-role target (${levels})`;
 }

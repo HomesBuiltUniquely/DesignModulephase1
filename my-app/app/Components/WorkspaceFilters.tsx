@@ -15,7 +15,7 @@ function getInitialBranchFilter(): string {
     if (saved && ["HBR", "SJR", "JPN"].includes(saved.toUpperCase())) {
       return saved.toUpperCase();
     }
-  } catch {}
+  } catch { }
   return "";
 }
 
@@ -34,7 +34,7 @@ function syncBranchToUrlAndStorage(branch: string) {
       url.searchParams.delete("branch");
     }
     window.history.replaceState(null, "", url.toString());
-  } catch {}
+  } catch { }
 }
 
 type WorkspaceFiltersValue = {
