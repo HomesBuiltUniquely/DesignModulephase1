@@ -3,10 +3,8 @@
 /**
  * PaymentLinkCard — classic pending-link bar (Manrope + brand palette).
  *
- * Manrope is already loaded in `app/layout.tsx`:
- *   import { Manrope } from "next/font/google";
- *   const manrope = Manrope({ variable: "--font-manrope", subsets: ["latin"], ... });
- *   <body className={`${manrope.variable} antialiased`}>
+ * Manrope is already loaded in `app/layout.tsx` via next/font/local
+ * (`--font-manrope` CSS variable on <body>).
  *
  * Usage example (bottom of file).
  */
