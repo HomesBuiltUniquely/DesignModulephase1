@@ -22,6 +22,7 @@ import {
   type IncentiveDealInput,
   type IncentiveMeetingRow,
   type IncentiveMember,
+  type IncentiveTeam,
   type IncentiveWeightStageId,
   type TeamIncentiveRow,
   type TeamIncentivesSummary,
@@ -268,7 +269,20 @@ function exportTeamCsv(team: TeamIncentivesSummary) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'team-incentives.csv';
+
+  let filename = 'team-incentives.csv';
+  if (team.teamInfo) {
+    if (team.teamInfo.managerId === 0 || team.teamInfo.code === 'UNASSIGNED') {
+      filename = 'team-incentives-unassigned.csv';
+    } else {
+      const cleanManager = (team.teamInfo.managerName || 'team').trim().replace(/[^a-zA-Z0-9]+/g, '-').toLowerCase();
+      const cleanBranch = (team.teamInfo.code || '').trim().replace(/[^a-zA-Z0-9]+/g, '-').toLowerCase();
+      filename = cleanBranch
+        ? `team-incentives-${cleanManager}-${cleanBranch}.csv`
+        : `team-incentives-${cleanManager}.csv`;
+    }
+  }
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -1003,24 +1017,44 @@ function TeamIncentivesPanel({
   scopeLabel,
   onOpenDesigner,
   selectedDate,
+  isDesignManager,
 }: {
   team: TeamIncentivesSummary;
   scopeLabel: string;
   onOpenDesigner: (designerId: number) => void;
   selectedDate: string | null;
+  isDesignManager?: boolean;
 }) {
+  const cycleDates = (
+    <span className="font-medium text-gray-700">
+      {team.cycle.cycleDays}-day cycle ({team.cycle.cycleLabel})
+      {team.cycle.isCurrent ? '' : ' · past fortnight'}
+    </span>
+  );
+
+  let teamSubtitlePrefix: string;
+  if (isDesignManager) {
+    const branch = team.teamInfo?.code && team.teamInfo.code !== 'UNASSIGNED' ? team.teamInfo.code : '';
+    teamSubtitlePrefix = branch
+      ? `Your team · ${branch} · ${team.memberCount} designer${team.memberCount === 1 ? '' : 's'}`
+      : `Your team · ${team.memberCount} designer${team.memberCount === 1 ? '' : 's'}`;
+  } else if (team.teamInfo?.managerId === 0 || team.teamInfo?.code === 'UNASSIGNED') {
+    teamSubtitlePrefix = `Unassigned Designers · ${team.memberCount} designer${team.memberCount === 1 ? '' : 's'}`;
+  } else if (team.teamInfo) {
+    teamSubtitlePrefix = `${team.teamInfo.managerName}'s Team · ${team.teamInfo.code} · ${team.memberCount} designer${team.memberCount === 1 ? '' : 's'}`;
+  } else {
+    teamSubtitlePrefix = `${scopeLabel} · ${team.memberCount} designer${team.memberCount === 1 ? '' : 's'}`;
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-xl font-bold tracking-tight text-gray-900">Team Incentives</h2>
           <p className="mt-1 text-sm text-gray-500">
-            {scopeLabel} · {team.memberCount} designer{team.memberCount === 1 ? '' : 's'}
+            {teamSubtitlePrefix}
             {' · '}
-            <span className="font-medium text-gray-700">
-              {team.cycle.cycleDays}-day cycle ({team.cycle.cycleLabel})
-              {team.cycle.isCurrent ? '' : ' · past fortnight'}
-            </span>
+            {cycleDates}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -1157,6 +1191,7 @@ export default function DesignerIncentivesView() {
   const { user, sessionId } = useAuth();
   const apiBase = getApiBase();
   const isManager = canManageTeamIncentives(user?.role);
+  const isDesignManager = (user?.role || '').toLowerCase() === 'design_manager';
   const isDesignerOnly = (user?.role || '').toLowerCase() === 'designer';
 
   const [viewMode, setViewMode] = useState<ViewMode>(isManager ? 'team' : 'individual');
@@ -1279,13 +1314,16 @@ export default function DesignerIncentivesView() {
             }));
         }
       }
-      const designersFirst = [
+      let designersFiltered = [
         ...list.filter((m) => m.role === 'designer'),
         ...list.filter((m) => m.role !== 'designer'),
       ];
-      setMembers(designersFirst);
-      if (designersFirst.length) {
-        setSelectedId((prev) => prev ?? designersFirst[0].id);
+      if (isDesignManager) {
+        designersFiltered = designersFiltered.filter((m) => m.role === 'designer' && m.id !== user?.id);
+      }
+      setMembers(designersFiltered);
+      if (designersFiltered.length) {
+        setSelectedId((prev) => prev ?? designersFiltered[0].id);
       }
     } catch {
       setLoadError('Could not load designer list.');
@@ -1293,7 +1331,7 @@ export default function DesignerIncentivesView() {
     } finally {
       setLoadingMembers(false);
     }
-  }, [apiBase, isDesignerOnly, sessionId, user]);
+  }, [apiBase, isDesignManager, isDesignerOnly, sessionId, user]);
 
   useEffect(() => {
     void loadMembers();
@@ -1346,22 +1384,84 @@ export default function DesignerIncentivesView() {
     };
   }, [fetchDesignerIncentives, selectedMember, sessionId, user]);
 
+  const [teams, setTeams] = useState<IncentiveTeam[]>([]);
+  const [selectedManagerId, setSelectedManagerId] = useState<number | null>(null);
+  const [loadingTeams, setLoadingTeams] = useState(false);
+
+  const loadTeams = useCallback(async () => {
+    if (!isManager || !sessionId) return;
+    setLoadingTeams(true);
+    try {
+      const res = await fetch(`${apiBase}/api/incentives/teams`, {
+        headers: buildAuthHeaders(sessionId),
+        credentials: 'include',
+      });
+      if (res.ok) {
+        const body = await res.json();
+        const list = (body?.teams || []) as IncentiveTeam[];
+        setTeams(list);
+        if (list.length > 0) {
+          setSelectedManagerId((prev) =>
+            prev !== null && list.some((t) => t.managerId === prev) ? prev : list[0].managerId,
+          );
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load teams', err);
+    } finally {
+      setLoadingTeams(false);
+    }
+  }, [apiBase, isManager, sessionId]);
+
+  useEffect(() => {
+    void loadTeams();
+  }, [loadTeams]);
+
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
-      if (!isManager || viewMode !== 'team' || !sessionId || members.length === 0) {
+      if (!isManager || viewMode !== 'team' || !sessionId) {
         return;
       }
       setLoadingIncentives(true);
       setIncentivesError(null);
       try {
+        const queryParams = new URLSearchParams();
+        queryParams.set('cycleIndex', String(cycleIndex));
+        if (!isDesignManager && selectedManagerId !== null) {
+          queryParams.set('managerId', String(selectedManagerId));
+        }
+
+        const teamRes = await fetch(`${apiBase}/api/incentives/team?${queryParams.toString()}`, {
+          headers: buildAuthHeaders(sessionId),
+          credentials: 'include',
+        });
+        if (!teamRes.ok) {
+          const body = await teamRes.json().catch(() => ({}));
+          throw new Error(body?.message || `Failed to load team (${teamRes.status})`);
+        }
+        const teamData = await teamRes.json();
+        const teamMembers = (teamData?.members || []) as {
+          id: number;
+          name: string;
+          role: string;
+          subRole: string | null;
+        }[];
+        const teamInfo = teamData?.team as IncentiveTeam | undefined;
+
         const rows: TeamIncentiveRow[] = [];
-        for (const m of members.filter(
+        for (const m of teamMembers.filter(
           (x) =>
-            (x.role || '').toLowerCase() === 'designer' ||
-            (x.role || '').toLowerCase() === 'design_manager',
+            // Only include actual designers — never the manager themselves or another manager
+            (x.role || '').toLowerCase() === 'designer' &&
+            x.id !== teamInfo?.managerId,
         )) {
-          const d = await fetchDesignerIncentives(m);
+          const d = await fetchDesignerIncentives({
+            id: m.id,
+            name: m.name,
+            role: m.role,
+            subRole: m.subRole,
+          });
           if (!d) continue;
           rows.push({
             designerId: d.designerId,
@@ -1395,6 +1495,7 @@ export default function DesignerIncentivesView() {
             onSpotBonus,
             rows: rows.sort((a, b) => b.incentiveEarned - a.incentiveEarned),
             cycle,
+            teamInfo,
           });
         }
       } catch (err) {
@@ -1410,7 +1511,7 @@ export default function DesignerIncentivesView() {
     return () => {
       cancelled = true;
     };
-  }, [cycle, fetchDesignerIncentives, isManager, members, sessionId, viewMode]);
+  }, [apiBase, cycle, cycleIndex, fetchDesignerIncentives, isDesignManager, isManager, selectedManagerId, sessionId, viewMode]);
 
   const openDesigner = (designerId: number) => {
     setSelectedId(designerId);
@@ -1474,6 +1575,25 @@ export default function DesignerIncentivesView() {
                   onChange={(val) => setSelectedId(Number(val))}
                   options={members.length === 0 ? [{ value: '', label: 'No designers' }] : members.map((m) => ({ value: String(m.id), label: `${m.name}${m.role !== 'designer' ? ` (${formatUserRoleLabel(m.role)})` : ''}` }))}
                   disabled={loadingMembers || members.length === 0}
+                  className="min-w-[200px]"
+                />
+              </label>
+            ) : null}
+
+            {isManager && !isDesignManager && viewMode === 'team' ? (
+              <label className="flex items-center gap-2 text-sm text-gray-600">
+                <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  Team
+                </span>
+                <CustomSelect
+                  value={selectedManagerId !== null ? String(selectedManagerId) : ''}
+                  onChange={(val) => setSelectedManagerId(Number(val))}
+                  options={
+                    teams.length === 0
+                      ? [{ value: '', label: 'No teams' }]
+                      : teams.map((t) => ({ value: String(t.managerId), label: t.label }))
+                  }
+                  disabled={loadingTeams || teams.length <= 1}
                   className="min-w-[200px]"
                 />
               </label>
@@ -1548,6 +1668,7 @@ export default function DesignerIncentivesView() {
               scopeLabel={scopeLabel}
               onOpenDesigner={openDesigner}
               selectedDate={selectedDate || null}
+              isDesignManager={isDesignManager}
             />
           ) : !loadingIncentives ? (
             <p className="text-sm text-gray-500">No team incentive data available.</p>

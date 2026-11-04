@@ -194,15 +194,40 @@ export type TeamIncentiveRow = {
   designerName: string;
   role: string;
   subRole: string | null;
+  branch?: string;
+  managerId?: number | null;
+  managerName?: string;
   totalTarget: number;
   revenueAchieved: number;
   achievementPct: number;
   incentiveEarned: number;
   onSpotBonus: number;
   currentSlabPct: number;
+  slabDisplay?: string;
   meetingsCompleted: number;
   meetingsRequired: number;
   meetingsEligible: boolean;
+  meetingsGateNote?: string;
+};
+
+export type TeamBreakdownRow = {
+  teamKey: string;
+  teamLabel: string;
+  managerId: number;
+  branch: string;
+  designerCount: number;
+  combinedTarget: number;
+  revenue: number;
+  achievementPct: number;
+  totalIncentives: number;
+};
+
+export type IncentiveTeam = {
+  code: string;
+  name: string;
+  label: string;
+  managerId: number;
+  managerName: string;
 };
 
 export type TeamIncentivesSummary = {
@@ -214,6 +239,10 @@ export type TeamIncentivesSummary = {
   onSpotBonus: number;
   rows: TeamIncentiveRow[];
   cycle: IncentiveCycleInfo;
+  teamInfo?: IncentiveTeam;
+  period?: 15 | 30;
+  monthIndex?: number;
+  teamBreakdown?: TeamBreakdownRow[];
 };
 
 export type IncentiveMember = {
@@ -457,6 +486,69 @@ export function listFortnightOptions(
     });
   }
   return options;
+}
+
+export type MonthOption = {
+  monthIndex: number;
+  label: string;
+  year: number;
+  monthNumber: number;
+  startIso: string;
+  endIso: string;
+  daysInMonth: number;
+  isCurrent: boolean;
+};
+
+/** Recent months for the 30-day filter dropdown (newest first). */
+export function listMonthOptions(
+  count = 8,
+  now: Date = new Date(),
+): MonthOption[] {
+  const ist = getIstYmd(now);
+  const currentMonthIdx = (ist.year - FORTNIGHT_EPOCH_YEAR) * 12 + ist.month;
+  const options: MonthOption[] = [];
+
+  for (let i = 0; i < count; i++) {
+    const mIdx = currentMonthIdx - i;
+    if (mIdx < 0) break;
+    const year = FORTNIGHT_EPOCH_YEAR + Math.floor(mIdx / 12);
+    const month = mIdx % 12;
+    const days = daysInMonth(year, month);
+    const isCurrent = i === 0;
+
+    const dStart = new Date(Date.UTC(year, month, 1));
+    const dEnd = new Date(Date.UTC(year, month, days));
+    const monthName = dStart.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
+    const fullMonthName = dStart.toLocaleString("en-US", { month: "long", timeZone: "UTC" });
+    const label = isCurrent
+      ? `Current · ${fullMonthName} ${year} (01 ${monthName} – ${days} ${monthName})`
+      : `${fullMonthName} ${year} (01 ${monthName} – ${days} ${monthName})`;
+
+    options.push({
+      monthIndex: mIdx,
+      label,
+      year,
+      monthNumber: month + 1,
+      startIso: isoFromYmd(year, month, 1),
+      endIso: isoFromYmd(year, month, days),
+      daysInMonth: days,
+      isCurrent,
+    });
+  }
+  return options;
+}
+
+export function buildIncentiveSubtitle(period: 15 | 30): string {
+  const jidMonth = formatTargetLakhs(SUB_ROLE_MONTHLY_TARGETS.JID);
+  const idMonth = formatTargetLakhs(SUB_ROLE_MONTHLY_TARGETS.ID);
+  const sidMonth = formatTargetLakhs(SUB_ROLE_MONTHLY_TARGETS.SID);
+  const pdMonth = formatTargetLakhs(SUB_ROLE_MONTHLY_TARGETS.PD);
+  const levels = `JID ${jidMonth} · ID ${idMonth} · SID ${sidMonth} · PD ${pdMonth}`;
+
+  if (period === 30) {
+    return `30-day target equals the monthly sub-role target (${levels})`;
+  }
+  return `Fortnight target is half of the monthly sub-role target (${levels})`;
 }
 
 export function listDatesInCycle(cycle: IncentiveCycleInfo): string[] {
@@ -1143,10 +1235,10 @@ export function buildTeamIncentivesSummary(
       : getCurrentCycleIndex(cycleIndexOrNow);
   const asOf = typeof cycleIndexOrNow === "number" ? now : cycleIndexOrNow;
   const cycle = getIncentiveCycleByIndex(cycleIndex, asOf);
+  // Exclude design_managers from team incentive rows — they must never appear
+  // in their own leaderboard. Only role='designer' members are included.
   const designers = members.filter(
-    (m) =>
-      (m.role || "").toLowerCase() === "designer" ||
-      (m.role || "").toLowerCase() === "design_manager",
+    (m) => (m.role || "").toLowerCase() === "designer",
   );
   const rows: TeamIncentiveRow[] = designers.map((m) => {
     const d = buildDemoIncentivesForDesigner(m, cycleIndex, asOf);

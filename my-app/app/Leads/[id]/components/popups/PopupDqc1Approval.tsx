@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import type { RefObject } from "react";
 import type { QCRemark, Dqc1Verdict } from "../../types";
 import CustomSelect from "@/app/Components/ui/CustomSelect";
+import { hostedQuoteHref } from "@/app/lib/prolanceLinks";
 
 const Dqc1PdfViewer = dynamic<{
   fileUrl: string;
@@ -141,6 +142,8 @@ export default function PopupDqc1Approval({
   dqcQuotationLink = null,
   dqcQuoteId = null,
 }: Props) {
+  const isDqc2Review = (reviewTitle || "").toLowerCase().includes("dqc 2");
+  const submissionLabel = isDqc2Review ? "DQC 2 submission" : "DQC 1 submission – dwg + quotation";
   const visibleRemarks = dqc1Remarks.filter((r) => {
     if (selectedDqcSubmissionFileId == null) return true;
     return r.uploadId == null || r.uploadId === selectedDqcSubmissionFileId;
@@ -196,7 +199,7 @@ export default function PopupDqc1Approval({
             )}
             {dqcQuotationLink && (
               <a
-                href={dqcQuotationLink}
+                href={hostedQuoteHref(dqcQuotationLink)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center rounded-md bg-[#00B0ED] px-3 py-1.5 text-sm font-medium text-white hover:bg-[#00B0ED]/90"
@@ -294,7 +297,7 @@ export default function PopupDqc1Approval({
                   {dqc1SubmissionLoading ? (
                     <>
                       <div className="font-medium text-gray-700">Loading DQC submission file…</div>
-                      <div className="text-xs text-gray-500">Fetching the file uploaded in DQC 1 submission.</div>
+                      <div className="text-xs text-gray-500">Fetching the file uploaded in {submissionLabel}.</div>
                     </>
                   ) : dqc1SubmissionLoadError ? (
                     <>
@@ -339,7 +342,7 @@ export default function PopupDqc1Approval({
                     <>
                       <div className="font-medium">No PDF selected</div>
                       <div className="text-xs max-w-sm">
-                        Files uploaded in <strong>DQC 1 submission – dwg + quotation</strong> (the same as in “Files Uploaded”) are loaded here so you can do the quantity check. If nothing appeared, use the button below or “Choose PDF”.
+                        Files uploaded in <strong>{submissionLabel}</strong> (the same as in “Files Uploaded”) are loaded here so you can do the quantity check. If nothing appeared, use the button below or “Choose PDF”.
                       </div>
                       {onLoadDqcSubmission && (
                         <button
