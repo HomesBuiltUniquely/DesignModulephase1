@@ -31,7 +31,64 @@ function hasOwn(obj: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(obj, key);
 }
 
+function collectFloorPlanSources(
+  root: Record<string, unknown>,
+): Array<Record<string, unknown> | null | undefined> {
+  const connection = asRecord(root.connection);
+  const formData = asRecord(root.formData) || asRecord(root.form_data);
+  const rawPayload = asRecord(root.rawPayload) || asRecord(root.rawHubPayload);
+  const schedule =
+    asRecord(root.schedule) ||
+    asRecord(root.crmSchedule) ||
+    asRecord(root.crm_schedule);
+  const meeting = asRecord(root.meeting);
+  const discovery = asRecord(root.discovery);
+  const files = asRecord(root.files);
+  const rawConnection = rawPayload ? asRecord(rawPayload.connection) : null;
+  const rawForm =
+    rawPayload
+      ? asRecord(rawPayload.formData) || asRecord(rawPayload.form_data)
+      : null;
+  const rawSchedule = rawPayload
+    ? asRecord(rawPayload.schedule) ||
+      asRecord(rawPayload.crmSchedule) ||
+      asRecord(rawPayload.crm_schedule)
+    : null;
+  const rawMeeting = rawPayload ? asRecord(rawPayload.meeting) : null;
+  const connSchedule = connection
+    ? asRecord(connection.schedule) || asRecord(connection.crmSchedule)
+    : null;
+
+  return [
+    root,
+    connection,
+    formData,
+    schedule,
+    meeting,
+    discovery,
+    files,
+    rawPayload,
+    rawConnection,
+    rawForm,
+    rawSchedule,
+    rawMeeting,
+    connSchedule,
+  ];
+}
+
 function parseFloorPlanArray(raw: unknown): FloorPlanItem[] | null {
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    try {
+      return parseFloorPlanArray(JSON.parse(trimmed));
+    } catch {
+      if (/^https?:\/\//i.test(trimmed)) {
+        return [{ index: 0, filename: "Floor plan 1", publicUrl: trimmed }];
+      }
+      return null;
+    }
+  }
   if (!Array.isArray(raw)) return null;
   const items: FloorPlanItem[] = [];
   for (let i = 0; i < raw.length; i++) {
@@ -49,7 +106,17 @@ function parseFloorPlanArray(raw: unknown): FloorPlanItem[] | null {
     const rec = asRecord(row);
     if (!rec) continue;
     const publicUrl = trimStr(
-      rec.public_url ?? rec.publicUrl ?? rec.url ?? rec.link ?? rec.href,
+      rec.public_url ??
+        rec.publicUrl ??
+        rec.url ??
+        rec.link ??
+        rec.href ??
+        rec.fileUrl ??
+        rec.file_url ??
+        rec.s3Url ??
+        rec.s3_url ??
+        rec.pdfUrl ??
+        rec.pdf_url,
     );
     if (!publicUrl) continue;
     const indexRaw = rec.index ?? rec.Index;
@@ -76,17 +143,29 @@ function parseFloorPlanArray(raw: unknown): FloorPlanItem[] | null {
   return unique;
 }
 
+/**
+ * First explicit `floor_plans` / `floorPlans` key wins (incl. [] = clear).
+ * When preferNonEmpty is true (read path), skip empty arrays if a later nest has items.
+ */
 function findFloorPlansArray(
   sources: Array<Record<string, unknown> | null | undefined>,
+  opts?: { preferNonEmpty?: boolean },
 ): { found: boolean; items: FloorPlanItem[] } {
+  let emptyFound = false;
   for (const source of sources) {
     if (!source) continue;
     for (const key of ["floor_plans", "floorPlans"] as const) {
       if (!hasOwn(source, key)) continue;
       const parsed = parseFloorPlanArray(source[key]);
-      return { found: true, items: parsed || [] };
+      const items = parsed || [];
+      if (opts?.preferNonEmpty && items.length === 0) {
+        emptyFound = true;
+        continue;
+      }
+      return { found: true, items };
     }
   }
+  if (emptyFound) return { found: true, items: [] };
   return { found: false, items: [] };
 }
 
@@ -118,10 +197,7 @@ export function normalizeFloorPlansFromCrmBody(
   body: Record<string, unknown> | null | undefined,
 ): NormalizedFloorPlans {
   const root = body || {};
-  const connection = asRecord(root.connection);
-  const formData = asRecord(root.formData) || asRecord(root.form_data);
-  const rawPayload = asRecord(root.rawPayload) || asRecord(root.rawHubPayload);
-  const sources = [root, connection, formData, rawPayload];
+  const sources = collectFloorPlanSources(root);
 
   const fromArray = findFloorPlansArray(sources);
   if (fromArray.found) {
@@ -171,22 +247,17 @@ export function extractFloorPlansFromLeadPayload(
     return [];
   }
 
-  const connection = asRecord(root.connection);
-  const formData = asRecord(root.formData) || asRecord(root.form_data);
-  const rawPayload = asRecord(root.rawPayload) || asRecord(root.rawHubPayload);
-  const normalized = normalizeFloorPlansFromCrmBody({
-    ...root,
-    ...(connection ? { connection } : {}),
-    ...(formData ? { formData } : {}),
-    ...(rawPayload ? { rawPayload } : {}),
-  });
+  const sources = collectFloorPlanSources(root);
+  // Prefer a non-empty array when reading (legacy empty nests shouldn't hide CRM plans).
+  const fromArray = findFloorPlansArray(sources, { preferNonEmpty: true });
+  if (fromArray.found && fromArray.items.length) return fromArray.items;
 
-  if (normalized.items.length) return normalized.items;
+  const legacyUrl = findLegacyFloorPlanUrl(sources);
+  if (legacyUrl) {
+    return [{ index: 0, filename: "Floor plan", publicUrl: legacyUrl }];
+  }
 
-  // Fallback: stored array only (no legacy) already handled by normalize.
-  const fromStored =
-    parseFloorPlanArray(root.floorPlans) ||
-    parseFloorPlanArray(connection?.floorPlans) ||
-    parseFloorPlanArray(formData?.floorPlans);
-  return fromStored || [];
+  if (fromArray.found) return [];
+
+  return [];
 }
