@@ -4,6 +4,8 @@ import { useEffect, type ReactNode } from 'react';
 import type { ConfigScopeRoom, ConfigScopeSummary, LeadshipTypes } from './Types/Types';
 import { formatHubPid } from '@/app/lib/formatHubPid';
 import { StartMeetingButton } from '@/app/Components/MeetingWiz/StartMeetingButton';
+import styles from './pre10LeadViewModal.module.css';
+
 type Props = {
     lead: LeadshipTypes;
     timeSlotLabel: string;
@@ -18,11 +20,20 @@ function displayValue(value: string | number | null | undefined): string {
     return v || '—';
 }
 
-function Field({ label, value }: { label: string; value: string }) {
+function Field({
+    label,
+    value,
+    wide,
+}: {
+    label: string;
+    value: string;
+    wide?: boolean;
+}) {
+    const empty = value === '—';
     return (
-        <div>
-            <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">{label}</dt>
-            <dd className="mt-1 whitespace-pre-wrap text-sm text-gray-900">{value}</dd>
+        <div className={wide ? styles.fieldWide : styles.field}>
+            <p className={styles.fieldLabel}>{label}</p>
+            <p className={empty ? styles.fieldValueMuted : styles.fieldValue}>{value}</p>
         </div>
     );
 }
@@ -35,11 +46,12 @@ function Section({
     children: ReactNode;
 }) {
     return (
-        <section className="space-y-3">
-            <h3 className="border-b border-gray-100 pb-1 text-xs font-semibold uppercase tracking-wider text-[#32261C]">
+        <section className={styles.section}>
+            <h3 className={styles.sectionTitle}>
+                <span className={styles.sectionAccent} aria-hidden="true" />
                 {title}
             </h3>
-            <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">{children}</dl>
+            <div className={styles.grid}>{children}</div>
         </section>
     );
 }
@@ -65,51 +77,49 @@ function roomUnitsLabel(room: ConfigScopeRoom): string {
 
 function RoomsBlock({ rooms, fallbackNames }: { rooms: ConfigScopeRoom[]; fallbackNames?: string[] }) {
     if (!rooms.length && fallbackNames?.length) {
-        return <Field label="Rooms" value={fallbackNames.join(', ')} />;
+        return <Field label="Rooms" value={fallbackNames.join(', ')} wide />;
     }
     if (!rooms.length) {
-        return <Field label="Rooms" value="—" />;
+        return <Field label="Rooms" value="—" wide />;
     }
     return (
-        <div className="sm:col-span-2 space-y-3">
-            <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Rooms</dt>
-            <dd className="space-y-3">
-                {rooms.map((room) => (
-                    <div
-                        key={room.roomName || Math.random()}
-                        className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2.5"
-                    >
-                        <p className="text-sm font-semibold text-gray-900">{room.roomName || 'Room'}</p>
-                        <div className="mt-2 grid gap-2 sm:grid-cols-2">
+        <div className={styles.fieldWide}>
+            <p className={styles.fieldLabel}>Rooms</p>
+            <div className="mt-2 space-y-2.5">
+                {rooms.map((room, idx) => (
+                    <div key={room.roomName || `room-${idx}`} className={styles.roomCard}>
+                        <p className={styles.roomName}>{room.roomName || 'Room'}</p>
+                        <div className={styles.roomMeta}>
                             <div>
-                                <p className="text-[10px] font-medium uppercase tracking-wide text-gray-500">
-                                    Units required
-                                </p>
-                                <p className="mt-0.5 text-sm text-gray-900">{roomUnitsLabel(room)}</p>
+                                <p className={styles.fieldLabel}>Units required</p>
+                                <p className={styles.fieldValue}>{roomUnitsLabel(room)}</p>
                             </div>
                             <div>
-                                <p className="text-[10px] font-medium uppercase tracking-wide text-gray-500">
-                                    False ceiling required
-                                </p>
-                                <p className="mt-0.5 text-sm text-gray-900">
+                                <p className={styles.fieldLabel}>False ceiling required</p>
+                                <p className={styles.fieldValue}>
                                     {room.falseCeilingRequired ? 'Yes' : 'No'}
                                 </p>
                             </div>
                             {room.notes?.trim() ? (
-                                <div className="sm:col-span-2">
-                                    <p className="text-[10px] font-medium uppercase tracking-wide text-gray-500">
-                                        Room notes
-                                    </p>
-                                    <p className="mt-0.5 whitespace-pre-wrap text-sm text-gray-900">
-                                        {room.notes.trim()}
-                                    </p>
+                                <div className={styles.fieldWide} style={{ padding: 0, background: 'transparent' }}>
+                                    <p className={styles.fieldLabel}>Room notes</p>
+                                    <p className={styles.fieldValue}>{room.notes.trim()}</p>
                                 </div>
                             ) : null}
                         </div>
                     </div>
                 ))}
-            </dd>
+            </div>
         </div>
+    );
+}
+
+function ExternalIcon({ className }: { className?: string }) {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className={className} aria-hidden="true">
+            <path d="M11 3a1 1 0 1 0 0 2h2.586l-6.293 6.293a1 1 0 1 0 1.414 1.414L15 6.414V9a1 1 0 1 0 2 0V4a1 1 0 0 0-1-1h-5Z" />
+            <path d="M5 5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-3a1 1 0 1 0-2 0v3H5V7h3a1 1 0 0 0 0-2H5Z" />
+        </svg>
     );
 }
 
@@ -162,36 +172,39 @@ export function Pre10LeadViewModal({
 
     return (
         <div
-            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4"
+            className={styles.overlay}
             role="dialog"
             aria-modal="true"
             aria-labelledby="pre10-view-modal-title"
             onClick={onClose}
         >
-            <div
-                className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl"
-                onClick={(e) => e.stopPropagation()}
-            >
-                <div className="flex shrink-0 items-start justify-between gap-4 border-b border-gray-100 px-6 py-4">
-                    <div>
-                        <h2 id="pre10-view-modal-title" className="text-lg font-semibold text-gray-900">
-                            {projectLabel}
-                        </h2>
-                        <p className="mt-0.5 text-sm text-gray-600">{lead.projectName || '—'}</p>
+            <div className={styles.panel} onClick={(e) => e.stopPropagation()}>
+                <div className={styles.header}>
+                    <div className={styles.headerMain}>
+                        <span className={styles.headerBar} aria-hidden="true" />
+                        <div className={styles.headerText}>
+                            <div className={styles.headerTopRow}>
+                                <h2 id="pre10-view-modal-title" className={styles.headerTitle}>
+                                    {projectLabel}
+                                </h2>
+                                <span className={styles.headerBadge}>Pre 10%</span>
+                            </div>
+                            <p className={styles.headerSub}>{lead.projectName || '—'}</p>
+                        </div>
                     </div>
                     <button
                         type="button"
                         onClick={onClose}
-                        className="rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+                        className={styles.closeBtn}
                         aria-label="Close"
                     >
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-5 w-5">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} className="h-4 w-4">
                             <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
                         </svg>
                     </button>
                 </div>
 
-                <div className="space-y-6 overflow-y-auto px-6 py-5">
+                <div className={styles.body}>
                     <Section title="Customer">
                         <Field label="Customer name" value={displayValue(customerName)} />
                         <Field label="Pincode" value={displayValue(lead.intakePincode)} />
@@ -206,45 +219,44 @@ export function Pre10LeadViewModal({
                         <Field label="Language" value={displayValue(lead.intakeLanguage)} />
                         <Field label="Configuration" value={displayValue(lead.intakeConfiguration)} />
                         <Field label="Booking type" value={displayValue(lead.intakeBookingType)} />
-                        <div className="sm:col-span-2">
-                            <Field label="Property notes" value={displayValue(lead.intakeNotes)} />
-                        </div>
+                        <Field label="Property notes" value={displayValue(lead.intakeNotes)} wide />
                     </Section>
 
                     <Section title="Connection / Meeting">
                         <Field label="Meeting type" value={displayValue(lead.intakeMeetingType)} />
                         <Field label="Time slot" value={displayValue(timeSlotLabel)} />
                         <Field label="Designer" value={displayValue(lead.designerName)} />
-                        <div className="sm:col-span-2">
-                            <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">
+                        <div className={styles.fieldWide}>
+                            <p className={styles.fieldLabel}>
                                 Floor plan{floorPlans.length > 1 ? 's' : ''}
-                            </dt>
-                            <dd className="mt-1 text-sm text-gray-900">
-                                {floorPlans.length ? (
-                                    <ul className="flex flex-wrap gap-2">
-                                        {floorPlans.map((plan) => (
-                                            <li key={`${plan.index}-${plan.publicUrl}`}>
+                            </p>
+                            {floorPlans.length ? (
+                                <ul className={styles.floorPlanList}>
+                                    {floorPlans.map((plan, i) => {
+                                        const label =
+                                            floorPlans.length > 1
+                                                ? `View ${plan.filename || `Floor plan ${i + 1}`}`
+                                                : plan.filename || 'Floor plan';
+                                        return (
+                                            <li key={`${plan.index}-${plan.publicUrl}`} className="min-w-0">
                                                 <a
                                                     href={plan.publicUrl}
                                                     target="_blank"
                                                     rel="noopener noreferrer"
-                                                    className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-[#EF0101] bg-white px-3 py-1.5 text-sm font-semibold text-[#32261C] shadow-sm hover:bg-[#DDCDC1]/20"
-                                                    title={plan.filename}
+                                                    className={styles.floorPlanLink}
+                                                    title={plan.filename || `Floor plan ${i + 1}`}
                                                 >
-                                                    <span className="truncate">{plan.filename}</span>
-                                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0">
-                                                        <path d="M11 3a1 1 0 1 0 0 2h2.586l-6.293 6.293a1 1 0 1 0 1.414 1.414L15 6.414V9a1 1 0 1 0 2 0V4a1 1 0 0 0-1-1h-5Z" />
-                                                        <path d="M5 5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-3a1 1 0 1 0-2 0v3H5V7h3a1 1 0 0 0 0-2H5Z" />
-                                                    </svg>
+                                                    <span>{label}</span>
+                                                    <ExternalIcon className={styles.floorPlanIcon} />
                                                 </a>
                                             </li>
-                                        ))}
-                                    </ul>
-                                ) : (
-                                    '—'
-                                )}
-                            </dd>
-                        </div>₹
+                                        );
+                                    })}
+                                </ul>
+                            ) : (
+                                <p className={styles.fieldValueMuted}>—</p>
+                            )}
+                        </div>
                     </Section>
 
                     {scope ? (
@@ -255,65 +267,57 @@ export function Pre10LeadViewModal({
                                 <Field label="Material / finish" value={scopeText(scope, 'materialFinish')} />
                                 <Field label="WFH setup" value={scope.wfhSetup ? 'Yes' : 'No'} />
                                 <Field label="Pet friendly" value={scope.petFriendly ? 'Yes' : 'No'} />
-                                <div className="sm:col-span-2">
-                                    <Field
-                                        label="Family Size & Details"
-                                        value={displayValue(familySizeDetails)}
-                                    />
-                                </div>
+                                <Field label="Family Size & Details" value={displayValue(familySizeDetails)} wide />
                                 <Field label="Family contact" value={scopeText(scope, 'familyContactName')} />
                                 <Field label="Family phone" value={scopeText(scope, 'familyContactPhone')} />
                                 <RoomsBlock rooms={rooms} fallbackNames={scope.selectedRoomNames} />
                             </Section>
 
                             <Section title="Miscellaneous Add-ons">
-                                <div className="sm:col-span-2">
-                                    <Field
-                                        label="Add-ons"
-                                        value={
-                                            scope.miscAddOns?.length
-                                                ? scope.miscAddOns.join(', ')
-                                                : '—'
-                                        }
-                                    />
-                                </div>
+                                <Field
+                                    label="Add-ons"
+                                    value={
+                                        scope.miscAddOns?.length
+                                            ? scope.miscAddOns.join(', ')
+                                            : '—'
+                                    }
+                                    wide
+                                />
                             </Section>
 
                             <Section title="Reference & Inspiration">
-                                <div className="sm:col-span-2">
-                                    <Field
-                                        label="Aesthetic notes"
-                                        value={displayValue(scope.referenceInspiration?.aestheticNotes)}
-                                    />
-                                </div>
-                                <div className="sm:col-span-2">
-                                    <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">
-                                        Reference files
-                                    </dt>
-                                    <dd className="mt-1 text-sm text-gray-900">
-                                        {refs.length ? (
-                                            <ul className="space-y-1.5">
-                                                {refs.map((ref) => (
-                                                    <li key={ref.id || ref.fileName}>
-                                                        {ref.viewUrl ? (
-                                                            <a
-                                                                href={ref.viewUrl}
-                                                                target="_blank"
-                                                                rel="noopener noreferrer"
-                                                                className="font-medium text-[#32261C] underline-offset-2 hover:underline"
-                                                            >
-                                                                {ref.fileName || 'Open reference'}
-                                                            </a>
-                                                        ) : (
-                                                            ref.fileName || '—'
-                                                        )}
-                                                    </li>
-                                                ))}
-                                            </ul>
-                                        ) : (
-                                            '—'
-                                        )}
-                                    </dd>
+                                <Field
+                                    label="Aesthetic notes"
+                                    value={displayValue(scope.referenceInspiration?.aestheticNotes)}
+                                    wide
+                                />
+                                <div className={styles.fieldWide}>
+                                    <p className={styles.fieldLabel}>Reference files</p>
+                                    {refs.length ? (
+                                        <ul className={styles.refList}>
+                                            {refs.map((ref) => (
+                                                <li key={ref.id || ref.fileName}>
+                                                    {ref.viewUrl ? (
+                                                        <a
+                                                            href={ref.viewUrl}
+                                                            target="_blank"
+                                                            rel="noopener noreferrer"
+                                                            className={styles.refLink}
+                                                        >
+                                                            {ref.fileName || 'Open reference'}
+                                                            <ExternalIcon className="h-3.5 w-3.5" />
+                                                        </a>
+                                                    ) : (
+                                                        <span className={styles.fieldValue}>
+                                                            {ref.fileName || '—'}
+                                                        </span>
+                                                    )}
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    ) : (
+                                        <p className={styles.fieldValueMuted}>—</p>
+                                    )}
                                 </div>
                             </Section>
 
@@ -339,18 +343,16 @@ export function Pre10LeadViewModal({
                                     label="Closure probability"
                                     value={displayValue(internalNotes?.closureProbability)}
                                 />
-                                <div className="sm:col-span-2">
-                                    <Field
-                                        label="Executive summary"
-                                        value={displayValue(internalNotes?.executiveSummary)}
-                                    />
-                                </div>
-                                <div className="sm:col-span-2">
-                                    <Field
-                                        label="Internal notes"
-                                        value={displayValue(internalNotes?.internalNotes)}
-                                    />
-                                </div>
+                                <Field
+                                    label="Executive summary"
+                                    value={displayValue(internalNotes?.executiveSummary)}
+                                    wide
+                                />
+                                <Field
+                                    label="Internal notes"
+                                    value={displayValue(internalNotes?.internalNotes)}
+                                    wide
+                                />
                             </Section>
                         </>
                     ) : null}
@@ -380,15 +382,11 @@ export function Pre10LeadViewModal({
                     ) : null}
                 </div>
 
-                <div className="flex shrink-0 justify-end gap-2 border-t border-gray-100 px-6 py-4">
+                <div className={styles.footer}>
                     {showStartMeeting && onStartMeeting ? (
                         <StartMeetingButton onClick={onStartMeeting} size="md" />
                     ) : null}
-                    <button
-                        type="button"
-                        onClick={onClose}
-                        className="rounded-lg bg-gray-900 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-800"
-                    >
+                    <button type="button" onClick={onClose} className={styles.closeAction}>
                         Close
                     </button>
                 </div>

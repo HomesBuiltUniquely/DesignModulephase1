@@ -1,10 +1,12 @@
-import { Manrope } from 'next/font/google';
+import localFont from 'next/font/local';
 import './quoteFonts.css';
 
-const manrope = Manrope({
-  subsets: ['latin'],
+/* Same self-hosted Manrope as root layout — keeps quote pages off next/font/google. */
+const manrope = localFont({
+  src: '../fonts/Manrope-latin-wght-normal.woff2',
   variable: '--font-manrope',
-  weight: ['400', '500', '600', '700', '800'],
+  weight: '300 800',
+  display: 'swap',
 });
 
 export default function QuoteLayout({ children }: { children: React.ReactNode }) {
