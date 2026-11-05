@@ -1,22 +1,17 @@
 import type { Metadata } from "next";
-import { Manrope } from "next/font/google";
 import localFont from "next/font/local";
 import "./globals.css";
 import { ClientProviders } from "./providers/ClientProviders";
 import DesignAppShell from "./Components/DesignAppShell";
 
-/* ── Body font: Manrope — Google Fonts ── */
-const manrope = Manrope({
+/* Self-hosted Manrope — avoids next/font/google Turbopack deploy failures
+   (Can't resolve '@vercel/turbopack-next/internal/font/google/font'). */
+const manrope = localFont({
+  src: "./fonts/Manrope-latin-wght-normal.woff2",
   variable: "--font-manrope",
-  subsets: ["latin"],
-  weight: ["300", "400", "500", "600", "700", "800"],
+  weight: "300 800",
   display: "swap",
 });
-
-/* ── Heading font: Wulkan ──
-   Wulkan is loaded via standard @font-face in globals.css.
-   This avoids Next.js build errors when the .woff2 files are not yet in /public/fonts/.
-   It gracefully falls back to Georgia until the files are added. */
 
 export const metadata: Metadata = {
   title: "Design Module",
