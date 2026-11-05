@@ -104,14 +104,14 @@ function HeaderContext() {
 
   return (
     <div className="flex min-w-0 items-center gap-2 text-sm">
-        <span className="truncate text-[var(--foreground)]/75">{section}</span>
-        <svg viewBox="0 0 20 20" className="h-3.5 w-3.5 shrink-0 text-[var(--foreground)]/40" fill="currentColor" aria-hidden>
-          <path d="M7.2 4.5a.75.75 0 0 1 1.06 0l4.5 4.5a.75.75 0 0 1 0 1.06l-4.5 4.5a.75.75 0 1 1-1.06-1.06L11.17 10 7.2 5.56a.75.75 0 0 1 0-1.06Z" />
-        </svg>
-        <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full bg-[var(--brand-primary)]/10 px-2.5 py-1 font-medium text-[var(--brand-primary)]">
-          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--brand-primary)]" />
-          <span className="truncate">{page}</span>
-        </span>
+      <span className="truncate text-[var(--foreground)]/75">{section}</span>
+      <svg viewBox="0 0 20 20" className="h-3.5 w-3.5 shrink-0 text-[var(--foreground)]/40" fill="currentColor" aria-hidden>
+        <path d="M7.2 4.5a.75.75 0 0 1 1.06 0l4.5 4.5a.75.75 0 0 1 0 1.06l-4.5 4.5a.75.75 0 1 1-1.06-1.06L11.17 10 7.2 5.56a.75.75 0 0 1 0-1.06Z" />
+      </svg>
+      <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full bg-[var(--brand-primary)]/10 px-2.5 py-1 font-medium text-[var(--brand-primary)]">
+        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--brand-primary)]" />
+        <span className="truncate">{page}</span>
+      </span>
     </div>
   );
 }
@@ -189,17 +189,17 @@ export default function DesignAppShell({ children }: { children: React.ReactNode
   const financeLinks =
     role === "finance" || role === "admin"
       ? [
-          { href: "/finance", label: "10% Payment" },
-          { href: "/finance/refunds", label: "Refunds" },
-          { href: "/finance/sales-closure", label: "Sales Closure" },
-          { href: "/finance/40", label: "40% Payment" },
-        ]
+        { href: "/finance", label: "10% Payment" },
+        { href: "/finance/refunds", label: "Refunds" },
+        { href: "/finance/sales-closure", label: "Sales Closure" },
+        { href: "/finance/40", label: "40% Payment" },
+      ]
       : [];
   const operationLinks = [
     ...(role === "territorial_design_manager" || role === "deputy_general_manager"
       ? [{ href: "/tdm/register", label: "Register DM / Designer" }]
       : []),
-    ...(role === "territorial_design_manager" || role === "admin"
+    ...(role === "territorial_design_manager"
       ? [{ href: "/admin/manage-users", label: "Manage Design Roles" }]
       : []),
     ...(role === "deputy_general_manager"
@@ -222,9 +222,9 @@ export default function DesignAppShell({ children }: { children: React.ReactNode
       : []),
     ...(role === "operation_manager"
       ? [
-          { href: "/mmt", label: "D1 Uploads" },
-          { href: "/project-managers", label: "Project Managers" },
-        ]
+        { href: "/mmt", label: "D1 Uploads" },
+        { href: "/project-managers", label: "Project Managers" },
+      ]
       : []),
   ];
   const hallwayUrl = hallwayHomeUrl();
@@ -232,69 +232,69 @@ export default function DesignAppShell({ children }: { children: React.ReactNode
   return (
     <WorkspaceFilterProvider>
       <DashboardQueueCacheProvider>
-      <div className="flex min-h-screen bg-[var(--background)] text-[var(--foreground)]">
-        <DesignSidebar
-          role={role}
-          appointmentUnread={appointmentUnread}
-          financeLinks={financeLinks}
-          operationLinks={operationLinks}
-        />
-        <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-40 flex h-[57px] items-center justify-between gap-3 border-b border-[var(--border-color)] bg-[var(--card-bg)]/90 px-4 shadow-sm backdrop-blur-sm">
-            <HeaderContext />
-            <div className="flex shrink-0 items-center gap-3">
-            {isDesignManager && sessionId ? (
-              <button
-                type="button"
-                onClick={() => setAppointmentOpen(true)}
-                title="Block personal time on your calendar"
-                className="hidden rounded-lg border border-[var(--brand-primary)] px-3 py-2 text-sm font-medium text-[var(--brand-dark)] hover:bg-[var(--hover-bg)] sm:inline-flex"
-              >
-                Appointment
-              </button>
-            ) : null}
-            <NotificationBell />
-            <ThemeModeToggle />
-            <AppSwitcher
-              hallwayUrl={hallwayUrl}
-              hallwayUser={user}
-              hallwaySessionId={sessionId}
-              showAdmin={role === "admin"}
-            />
-            <div className="flex items-center gap-2">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full border border-[var(--border-color)] bg-[var(--hover-bg)]">
-                {user.profileImage ? (
-                  <img src={user.profileImage} alt="" className="h-full w-full object-cover" />
-                ) : (
-                  <span className="text-xs font-medium">{initials(user.name, user.email)}</span>
-                )}
+        <div className="flex min-h-screen bg-[var(--background)] text-[var(--foreground)]">
+          <DesignSidebar
+            role={role}
+            appointmentUnread={appointmentUnread}
+            financeLinks={financeLinks}
+            operationLinks={operationLinks}
+          />
+          <div className="flex min-w-0 flex-1 flex-col">
+            <header className="sticky top-0 z-40 flex h-[57px] items-center justify-between gap-3 border-b border-[var(--border-color)] bg-[var(--card-bg)]/90 px-4 shadow-sm backdrop-blur-sm">
+              <HeaderContext />
+              <div className="flex shrink-0 items-center gap-3">
+                {isDesignManager && sessionId ? (
+                  <button
+                    type="button"
+                    onClick={() => setAppointmentOpen(true)}
+                    title="Block personal time on your calendar"
+                    className="hidden rounded-lg border border-[var(--brand-primary)] px-3 py-2 text-sm font-medium text-[var(--brand-dark)] hover:bg-[var(--hover-bg)] sm:inline-flex"
+                  >
+                    Appointment
+                  </button>
+                ) : null}
+                <NotificationBell />
+                <ThemeModeToggle />
+                <AppSwitcher
+                  hallwayUrl={hallwayUrl}
+                  hallwayUser={user}
+                  hallwaySessionId={sessionId}
+                  showAdmin={role === "admin"}
+                />
+                <div className="flex items-center gap-2">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full border border-[var(--border-color)] bg-[var(--hover-bg)]">
+                    {user.profileImage ? (
+                      <img src={user.profileImage} alt="" className="h-full w-full object-cover" />
+                    ) : (
+                      <span className="text-xs font-medium">{initials(user.name, user.email)}</span>
+                    )}
+                  </div>
+                  <span className="hidden text-sm text-[var(--foreground)]/70 md:inline">
+                    {user.name} ({formatUserRoleLabel(user.role)})
+                  </span>
+                </div>
+                <LogoutButton />
               </div>
-              <span className="hidden text-sm text-[var(--foreground)]/70 md:inline">
-                {user.name} ({formatUserRoleLabel(user.role)})
-              </span>
-            </div>
-            <LogoutButton />
-            </div>
-        </header>
-        <div className="min-w-0 flex-1">{children}</div>
+            </header>
+            <div className="min-w-0 flex-1">{children}</div>
+          </div>
         </div>
-      </div>
-      {appointmentOpen && sessionId && isDesignManager ? (
-        <PersonalAppointmentModal
-          open={appointmentOpen}
-          apiBase={apiBase}
-          sessionId={sessionId}
-          designerName={user.name}
-          onClose={() => setAppointmentOpen(false)}
-          onSuccess={(payload) => {
-            setAppointmentOpen(false);
-            if (payload) setAppointmentToast(payload);
-          }}
-        />
-      ) : null}
-      {appointmentToast ? (
-        <AppointmentSuccessToast payload={appointmentToast} onDismiss={() => setAppointmentToast(null)} />
-      ) : null}
+        {appointmentOpen && sessionId && isDesignManager ? (
+          <PersonalAppointmentModal
+            open={appointmentOpen}
+            apiBase={apiBase}
+            sessionId={sessionId}
+            designerName={user.name}
+            onClose={() => setAppointmentOpen(false)}
+            onSuccess={(payload) => {
+              setAppointmentOpen(false);
+              if (payload) setAppointmentToast(payload);
+            }}
+          />
+        ) : null}
+        {appointmentToast ? (
+          <AppointmentSuccessToast payload={appointmentToast} onDismiss={() => setAppointmentToast(null)} />
+        ) : null}
       </DashboardQueueCacheProvider>
     </WorkspaceFilterProvider>
   );
