@@ -2131,52 +2131,6 @@ export default function MeetingManagementView() {
         )}
       </div>
               )}
-              {(() => {
-                if (selected.personal || selected.typeKey !== 'pre_10') return null;
-                const fromList = Array.isArray(panelLead?.floorPlans)
-                  ? panelLead.floorPlans
-                      .map((item, i) => ({
-                        index: typeof item?.index === 'number' ? item.index : i,
-                        filename: String(item?.filename || '').trim() || `Floor plan ${i + 1}`,
-                        publicUrl: String(item?.publicUrl || '').trim(),
-                      }))
-                      .filter((item) => item.publicUrl)
-                      .sort((a, b) => a.index - b.index)
-                  : [];
-                const plans =
-                  fromList.length > 0
-                    ? fromList
-                    : panelLead?.floorPlanPublicLink?.trim()
-                      ? [{ index: 0, filename: 'Floor plan', publicUrl: panelLead.floorPlanPublicLink.trim() }]
-                      : [];
-                if (!plans.length) return null;
-                return (
-                  <div className={styles.floorPlansBlock}>
-                    <span className={styles.metaLabel}>
-                      Floor plan{plans.length > 1 ? 's' : ''}
-                    </span>
-                    <ul className={styles.floorPlanList}>
-                      {plans.map((plan) => (
-                        <li key={`${plan.index}-${plan.publicUrl}`}>
-                          <a
-                            href={plan.publicUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className={styles.floorPlanLink}
-                            title={plan.filename}
-                          >
-                            <span>{plan.filename}</span>
-                            <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true">
-                              <path fill="currentColor" d="M11 3a1 1 0 1 0 0 2h2.586l-6.293 6.293a1 1 0 1 0 1.414 1.414L15 6.414V9a1 1 0 1 0 2 0V4a1 1 0 0 0-1-1h-5Z" />
-                              <path fill="currentColor" d="M5 5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-3a1 1 0 1 0-2 0v3H5V7h3a1 1 0 0 0 0-2H5Z" />
-                            </svg>
-                          </a>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                );
-              })()}
             </div>
             {canAct(selected, today, nowMinutes) ? (
               <div className={styles.foot}>

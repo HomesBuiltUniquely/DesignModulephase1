@@ -1,0 +1,506 @@
+/* Pre 10% lead View modal — slim Manrope UI */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  background: rgba(50, 38, 28, 0.45);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  font-family: var(--font-manrope), Manrope, Arial, sans-serif;
+  animation: overlayIn 200ms ease-out;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 40rem;
+  max-height: min(88vh, 860px);
+  overflow: hidden;
+  border-radius: 16px;
+  background: #fff;
+  border: 1px solid rgba(221, 205, 193, 0.7);
+  box-shadow:
+    0 18px 48px rgba(50, 38, 28, 0.2),
+    0 1px 4px rgba(50, 38, 28, 0.06);
+  animation: panelIn 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+  padding: 10px 14px 10px 12px;
+  background: #fff;
+  border-bottom: 1px solid rgba(221, 205, 193, 0.55);
+}
+
+.headerMain {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.headerBar {
+  width: 3px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #ef0101 0%, #c40000 100%);
+  flex-shrink: 0;
+  align-self: stretch;
+  min-height: 100%;
+}
+
+.headerText {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+}
+
+.headerTopRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.headerTitle {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  color: #32261c;
+  line-height: 1.2;
+}
+
+.headerBadge {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(239, 1, 1, 0.08);
+  border: 1px solid rgba(239, 1, 1, 0.16);
+  color: #ef0101;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.headerSub {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: #7a6b5f;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.closeBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border: 1px solid rgba(221, 205, 193, 0.8);
+  border-radius: 8px;
+  background: #f8f7f5;
+  color: #8a7a6c;
+  cursor: pointer;
+  transition:
+    background 150ms ease,
+    color 150ms ease,
+    border-color 150ms ease,
+    transform 150ms ease;
+}
+
+.closeBtn:hover {
+  background: rgba(239, 1, 1, 0.08);
+  border-color: rgba(239, 1, 1, 0.28);
+  color: #ef0101;
+  transform: rotate(90deg);
+}
+
+.closeBtn:focus-visible {
+  outline: 2px solid #ef0101;
+  outline-offset: 2px;
+}
+
+.body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  scroll-behavior: smooth;
+}
+
+.body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.body::-webkit-scrollbar-thumb {
+  background: rgba(50, 38, 28, 0.16);
+  border-radius: 999px;
+}
+
+.section {
+  border: 1px solid rgba(221, 205, 193, 0.55);
+  border-radius: 12px;
+  background: #fff;
+  padding: 10px 10px 9px;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+  animation: sectionRise 300ms ease both;
+}
+
+.section:hover {
+  border-color: rgba(221, 205, 193, 0.95);
+  box-shadow: 0 4px 14px rgba(50, 38, 28, 0.05);
+}
+
+.sectionTitle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #f1f2f6;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: #32261c;
+}
+
+.sectionAccent {
+  width: 2.5px;
+  height: 11px;
+  border-radius: 999px;
+  background: #ef0101;
+  flex-shrink: 0;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 7px;
+}
+
+@media (min-width: 640px) {
+  .grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.field,
+.fieldWide {
+  min-width: 0;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: #f8f7f5;
+  transition: background 140ms ease;
+}
+
+.field:hover,
+.fieldWide:hover {
+  background: rgba(221, 205, 193, 0.32);
+}
+
+@media (min-width: 640px) {
+  .fieldWide {
+    grid-column: 1 / -1;
+  }
+}
+
+.fieldLabel {
+  margin: 0;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #8a7a6c;
+}
+
+.fieldValue {
+  margin: 3px 0 0;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: #32261c;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.fieldValueMuted {
+  margin: 3px 0 0;
+  font-size: 0.84rem;
+  font-weight: 500;
+  color: #9a8d82;
+  line-height: 1.4;
+}
+
+.roomCard {
+  padding: 9px;
+  border-radius: 8px;
+  background: #f8f7f5;
+  border: 1px solid rgba(221, 205, 193, 0.4);
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    transform 140ms ease;
+}
+
+.roomCard:hover {
+  background: #fff;
+  border-color: rgba(239, 1, 1, 0.2);
+  transform: translateY(-1px);
+}
+
+.roomName {
+  margin: 0 0 6px;
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: #32261c;
+}
+
+.roomMeta {
+  display: grid;
+  gap: 6px;
+}
+
+@media (min-width: 640px) {
+  .roomMeta {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.floorPlanList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+@media (min-width: 640px) {
+  .floorPlanList {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+}
+
+.floorPlanLink {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 5px 11px;
+  border-radius: 9px;
+  border: 1.5px solid rgba(239, 1, 1, 0.38);
+  background: linear-gradient(180deg, #fff 0%, #fff8f7 100%);
+  color: #ef0101;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-decoration: none;
+  box-shadow: 0 1px 2px rgba(239, 1, 1, 0.05);
+  transition:
+    background 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease,
+    box-shadow 150ms ease,
+    transform 150ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.floorPlanLink:hover {
+  background: #ef0101;
+  border-color: #ef0101;
+  color: #fff;
+  box-shadow: 0 6px 14px rgba(239, 1, 1, 0.26);
+  transform: translateY(-1px);
+}
+
+.floorPlanLink:active {
+  transform: translateY(0);
+}
+
+.floorPlanLink span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+
+.floorPlanIcon {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  transition: transform 150ms ease;
+}
+
+.floorPlanLink:hover .floorPlanIcon {
+  transform: translate(1px, -1px);
+}
+
+.refList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.refLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #32261c;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition:
+    color 140ms ease,
+    border-color 140ms ease;
+}
+
+.refLink:hover {
+  color: #ef0101;
+  border-bottom-color: rgba(239, 1, 1, 0.4);
+}
+
+.footer {
+  display: flex;
+  flex-shrink: 0;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid rgba(221, 205, 193, 0.55);
+  background: #faf9f7;
+}
+
+.closeAction {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 8px;
+  background: #32261c;
+  color: #fff;
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    background 140ms ease,
+    transform 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.closeAction:hover {
+  background: #241c15;
+  box-shadow: 0 4px 12px rgba(50, 38, 28, 0.2);
+  transform: translateY(-1px);
+}
+
+.closeAction:active {
+  transform: translateY(0);
+}
+
+@keyframes overlayIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes panelIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes sectionRise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.section:nth-child(1) {
+  animation-delay: 30ms;
+}
+.section:nth-child(2) {
+  animation-delay: 55ms;
+}
+.section:nth-child(3) {
+  animation-delay: 80ms;
+}
+.section:nth-child(4) {
+  animation-delay: 105ms;
+}
+.section:nth-child(5) {
+  animation-delay: 130ms;
+}
+.section:nth-child(6) {
+  animation-delay: 155ms;
+}
+.section:nth-child(7) {
+  animation-delay: 180ms;
+}
+.section:nth-child(8) {
+  animation-delay: 205ms;
+}
+.section:nth-child(9) {
+  animation-delay: 230ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overlay,
+  .panel,
+  .section {
+    animation: none;
+  }
+
+  .closeBtn:hover,
+  .floorPlanLink:hover,
+  .closeAction:hover,
+  .roomCard:hover {
+    transform: none;
+  }
+}

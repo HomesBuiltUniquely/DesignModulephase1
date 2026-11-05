@@ -1037,6 +1037,21 @@ function IndividualIncentivesPanel({
   );
 }
 
+function DesignManagerTargetSummary({
+  totalTarget,
+  revenueAchieved,
+}: {
+  totalTarget: number;
+  revenueAchieved: number;
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <MetricCard label="Total Target to Achieve" value={formatInr(totalTarget)} />
+      <MetricCard label="Total Target Achieved" value={formatInr(revenueAchieved)} accent />
+    </div>
+  );
+}
+
 function TeamIncentivesPanel({
   team,
   scopeLabel,
@@ -1225,6 +1240,7 @@ export default function DesignerIncentivesView() {
   const apiBase = getApiBase();
   const isManager = canManageTeamIncentives(user?.role);
   const isDesignManager = (user?.role || '').toLowerCase() === 'design_manager';
+  const isTerritorialDesignManager = (user?.role || '').toLowerCase() === 'territorial_design_manager';
   const isDesignerOnly = (user?.role || '').toLowerCase() === 'designer';
   const canTogglePeriod = canShowPeriodToggle(user?.role);
 
@@ -1523,9 +1539,20 @@ export default function DesignerIncentivesView() {
   const [teams, setTeams] = useState<IncentiveTeam[]>([]);
   const [selectedManagerId, setSelectedManagerId] = useState<number | null>(null);
   const [loadingTeams, setLoadingTeams] = useState(false);
+  const canSetBranchTarget =
+    (user?.role || '').toLowerCase() === 'admin' ||
+    (user?.role || '').toLowerCase() === 'territorial_design_manager';
+  const [branchTargetInput, setBranchTargetInput] = useState('');
+  const [branchTargetLoading, setBranchTargetLoading] = useState(false);
+  const [branchTargetSaving, setBranchTargetSaving] = useState(false);
+  const [branchTargetError, setBranchTargetError] = useState<string | null>(null);
+  const [tdmTotals, setTdmTotals] = useState<{ totalTarget: number; revenueAchieved: number } | null>(null);
 
   const loadTeams = useCallback(async () => {
     if (!isManager || !sessionId) return;
+    const userRole = (user?.role || '').toLowerCase();
+    const preferBranchTeamForTarget =
+      userRole === 'admin' || userRole === 'territorial_design_manager';
     setLoadingTeams(true);
     try {
       const res = await fetch(`${apiBase}/api/incentives/teams`, {
@@ -1537,9 +1564,14 @@ export default function DesignerIncentivesView() {
         const list = (body?.teams || []) as IncentiveTeam[];
         setTeams(list);
         if (list.length > 0) {
-          setSelectedManagerId((prev) =>
-            prev !== null && list.some((t) => t.managerId === prev) ? prev : list[0].managerId,
-          );
+          setSelectedManagerId((prev) => {
+            if (prev !== null && list.some((t) => t.managerId === prev)) return prev;
+            if (preferBranchTeamForTarget) {
+              const firstDesignManagerTeam = list.find((t) => t.managerId > 0);
+              if (firstDesignManagerTeam) return firstDesignManagerTeam.managerId;
+            }
+            return list[0].managerId;
+          });
         }
       }
     } catch (err) {
@@ -1547,11 +1579,104 @@ export default function DesignerIncentivesView() {
     } finally {
       setLoadingTeams(false);
     }
-  }, [apiBase, isManager, sessionId]);
+  }, [apiBase, isManager, sessionId, user?.role]);
 
   useEffect(() => {
     void loadTeams();
   }, [loadTeams]);
+
+  useEffect(() => {
+    if (!canSetBranchTarget || viewMode !== 'team' || !sessionId || selectedManagerId == null || selectedManagerId <= 0) {
+      setBranchTargetInput('');
+      setBranchTargetError(null);
+      setBranchTargetLoading(false);
+      return;
+    }
+    let cancelled = false;
+    const run = async () => {
+      setBranchTargetLoading(true);
+      setBranchTargetError(null);
+      try {
+        const res = await fetch(
+          `${apiBase}/api/incentives/branch-target?managerId=${selectedManagerId}&cycleIndex=${cycleIndex}`,
+          { headers: buildAuthHeaders(sessionId), credentials: 'include' },
+        );
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body?.message || `Failed to load branch target (${res.status})`);
+        if (!cancelled) setBranchTargetInput(String(body?.applicableTarget ?? ''));
+      } catch (err) {
+        if (!cancelled) {
+          setBranchTargetInput('');
+          setBranchTargetError(err instanceof Error ? err.message : 'Failed to load branch target');
+        }
+      } finally {
+        if (!cancelled) setBranchTargetLoading(false);
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, canSetBranchTarget, cycleIndex, selectedManagerId, sessionId, viewMode]);
+
+  useEffect(() => {
+    if (!isTerritorialDesignManager || viewMode !== 'team' || !sessionId) {
+      setTdmTotals(null);
+      return;
+    }
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const res = await fetch(
+          `${apiBase}/api/incentives/tdm-totals?cycleIndex=${cycleIndex}`,
+          { headers: buildAuthHeaders(sessionId), credentials: 'include' },
+        );
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body?.message || `Failed to load combined targets (${res.status})`);
+        if (!cancelled) {
+          setTdmTotals({
+            totalTarget: Number(body?.totalTarget) || 0,
+            revenueAchieved: Number(body?.revenueAchieved) || 0,
+          });
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setTdmTotals(null);
+          setIncentivesError(err instanceof Error ? err.message : 'Failed to load combined targets');
+        }
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, cycleIndex, isTerritorialDesignManager, sessionId, viewMode]);
+
+  const saveBranchTarget = async () => {
+    if (!sessionId || selectedManagerId == null || selectedManagerId <= 0) return;
+    const minimumTarget = Number(branchTargetInput);
+    if (!Number.isFinite(minimumTarget) || minimumTarget < 0) {
+      setBranchTargetError('Enter a target amount in rupees.');
+      return;
+    }
+    setBranchTargetSaving(true);
+    setBranchTargetError(null);
+    try {
+      const res = await fetch(`${apiBase}/api/incentives/branch-target`, {
+        method: 'PUT',
+        headers: { ...buildAuthHeaders(sessionId), 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ managerId: selectedManagerId, cycleIndex, minimumTarget }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.message || `Failed to save branch target (${res.status})`);
+      setBranchTargetInput(String(body?.applicableTarget ?? minimumTarget));
+    } catch (err) {
+      setBranchTargetError(err instanceof Error ? err.message : 'Failed to save branch target');
+    } finally {
+      setBranchTargetSaving(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -1824,17 +1949,73 @@ export default function DesignerIncentivesView() {
         ) : null}
 
         {viewMode === 'team' && isManager ? (
-          teamSummary ? (
-            <TeamIncentivesPanel
-              team={teamSummary}
-              scopeLabel={scopeLabel}
-              onOpenDesigner={openDesigner}
-              selectedDate={selectedDate || null}
-              isDesignManager={isDesignManager}
-            />
-          ) : !loadingIncentives ? (
-            <p className="text-sm text-gray-500">No team incentive data available.</p>
-          ) : null
+          <>
+            {canSetBranchTarget ? (
+              <div className="flex max-w-md flex-col gap-1 rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-600 shadow-sm">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                  Branch target
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  inputMode="numeric"
+                  placeholder="Branch target"
+                  value={branchTargetInput}
+                  disabled={
+                    branchTargetLoading ||
+                    branchTargetSaving ||
+                    selectedManagerId == null ||
+                    selectedManagerId <= 0
+                  }
+                  onChange={(event) => setBranchTargetInput(event.target.value)}
+                  className="rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900 disabled:bg-gray-50"
+                />
+                <button
+                  type="button"
+                  onClick={() => void saveBranchTarget()}
+                  disabled={
+                    branchTargetLoading ||
+                    branchTargetSaving ||
+                    selectedManagerId == null ||
+                    selectedManagerId <= 0
+                  }
+                  className="mt-2 w-fit rounded-lg border border-[#EF0101] px-3 py-1.5 text-xs font-semibold text-[#32261C] disabled:opacity-40"
+                >
+                  {branchTargetSaving ? 'Saving…' : 'Save target'}
+                </button>
+                {branchTargetError ? (
+                  <p className="text-xs text-red-700">{branchTargetError}</p>
+                ) : selectedManagerId == null || selectedManagerId <= 0 ? (
+                  <p className="text-xs text-gray-500">
+                    Select a design manager team (not All Branches) to set the branch target.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+            {isDesignManager && teamSummary ? (
+              <DesignManagerTargetSummary
+                totalTarget={teamSummary.totalTarget}
+                revenueAchieved={teamSummary.revenueAchieved}
+              />
+            ) : null}
+            {isTerritorialDesignManager && tdmTotals ? (
+              <DesignManagerTargetSummary
+                totalTarget={tdmTotals.totalTarget}
+                revenueAchieved={tdmTotals.revenueAchieved}
+              />
+            ) : null}
+            {teamSummary ? (
+              <TeamIncentivesPanel
+                team={teamSummary}
+                scopeLabel={scopeLabel}
+                onOpenDesigner={openDesigner}
+                selectedDate={selectedDate || null}
+                isDesignManager={isDesignManager}
+              />
+            ) : !loadingIncentives ? (
+              <p className="text-sm text-gray-500">No team incentive data available.</p>
+            ) : null}
+          </>
         ) : individualData ? (
           <IndividualIncentivesPanel
             data={individualData}
