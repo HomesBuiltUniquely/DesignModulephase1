@@ -71,6 +71,22 @@ import {
   normalizeFloorPlansFromCrmBody,
   type FloorPlanItem,
 } from "./floorPlans";
+import {
+  ensureLeadProjectMembersTable,
+  getProjectMembersForLead,
+  ensureProjectMembersHydrated,
+  syncPhaseEntry,
+  syncMmtManager,
+  syncMmtExecutive,
+  syncDqcManager,
+  syncDqe,
+  syncFinance,
+  syncProjectManager,
+  syncDesignerChange,
+  addManualMember,
+  removeManualMember,
+  formatRoleLabel,
+} from "./leadProjectMembers";
 
 /**
  * Load backend/.env before dotenv. Supports `export KEY=value` and quoted values.
@@ -2085,6 +2101,7 @@ async function initDb() {
     await ensureDesignerXpTable(pool);
     await ensureLeadMeetingsTable(pool);
     await ensureLeadHoldPeriodsTable(pool);
+    await ensureLeadProjectMembersTable(pool);
 
     try {
       const [seenCol] = await conn.query(
@@ -3064,8 +3081,14 @@ async function getLeadAccessRowForUser(
       [leadId, user.id],
     );
     if ((assignRows as any[]).length === 0) {
-      res.status(404).json({ message: "Lead not found" });
-      return { ok: false };
+      const [d2Rows] = await pool.query(
+        "SELECT 1 FROM lead_d2_assignments WHERE lead_id = ? AND assigned_to_user_id = ?",
+        [leadId, user.id],
+      );
+      if ((d2Rows as any[]).length === 0) {
+        res.status(404).json({ message: "Lead not found" });
+        return { ok: false };
+      }
     }
   }
 
@@ -10006,6 +10029,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         `DELETE FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 2`,
         [id],
       );
+      void syncFinance(pool, id);
     }
 
     // Fire-and-forget: trigger milestone-specific customer emails where defined
@@ -12352,6 +12376,7 @@ app.post("/api/leads/:id/approve-sales-closure", async (req: Request, res: Respo
       `UPDATE leads SET project_stage = '10-20%', payload = ?, update_at = ? WHERE id = ?`,
       [JSON.stringify(payloadObj), new Date(), leadId]
     );
+    void syncPhaseEntry(pool, leadId);
 
     // Non-fatal hook to award Designer XP for New Sale
     try {
@@ -12924,6 +12949,7 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
         `UPDATE leads SET project_stage = '10-20%', payload = ?, update_at = ? WHERE id = ?`,
         [JSON.stringify(payload), now, leadId],
       );
+      void syncPhaseEntry(pool, leadId);
       await addLeadHistoryEvent(leadId, {
         id: `crm-booking-finance-${Date.now()}`,
         type: "note",
@@ -16415,6 +16441,12 @@ app.post("/api/leads/:id/dqc-review", async (req: Request, res: Response) => {
        VALUES (?, ?, ?, ?, ?)`,
       [leadId, verdict, JSON.stringify(remarks), new Date(), user.id],
     );
+    if (role === "dqe") {
+      void syncDqe(pool, leadId, user.id);
+    }
+    if ((verdict === "approved" || verdict === "approved_with_changes") && !isDqc2) {
+      void syncFinance(pool, leadId);
+    }
 
 
     // Send internal rejection / changes feedback email to assigned designer
@@ -16639,6 +16671,8 @@ app.post("/api/leads/:id/d1-request", async (req: Request, res: Response) => {
        VALUES (?, NULL, ?, ?, ?, 'awaiting_manager', ?)`,
       [leadId, managerId, measurementDate || null, measurementTime || null, new Date()],
     );
+    void syncPhaseEntry(pool, leadId);
+    void syncMmtManager(pool, leadId, managerId);
 
     let payload: any = {};
     try {
@@ -16847,6 +16881,7 @@ app.post("/api/leads/:id/assign-d1-executive", async (req: Request, res: Respons
        WHERE id = ?`,
       [executiveId, assignment.id],
     );
+    void syncMmtExecutive(pool, leadId, executiveId);
 
     console.log("[D1-MMT] Executive assigned", {
       leadId,
@@ -17185,6 +17220,12 @@ async function maybeNotifyMilestoneCompleted(
     );
     const allComps = allCompRows as { milestoneIndex: number; taskName: string }[];
     if (!isMilestoneFullyComplete(allComps, milestoneIndex)) return;
+
+    if (milestoneIndex === 0) {
+      void syncDqcManager(pool, leadId);
+    } else if (milestoneIndex === 1) {
+      void syncFinance(pool, leadId);
+    }
 
     const [nRows] = await pool.query(
       `SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
@@ -17972,6 +18013,7 @@ app.post("/api/leads/:id/assign-designer", async (req: Request, res: Response) =
       new Date(),
       leadId,
     ]);
+    void syncDesignerChange(pool, leadId, designerId);
 
     // Notify: 12 — Designer reassigned
     try {
@@ -18059,6 +18101,7 @@ app.post("/api/leads/assign-designer/bulk", async (req: Request, res: Response) 
         new Date(),
         leadId,
       ]);
+      void syncDesignerChange(pool, leadId, designerId);
       updatedLeadIds.push(leadId);
     }
 
@@ -18102,6 +18145,7 @@ app.patch("/api/leads/:id/assign-project-manager", async (req: Request, res: Res
       "UPDATE leads SET assigned_project_manager_id = ?, update_at = ? WHERE id = ?",
       [pmId, new Date(), id],
     );
+    void syncProjectManager(pool, id, pmId);
     await pool.query(
       "UPDATE lead_d2_assignments SET status = 'pm_assigned' WHERE lead_id = ?",
       [id],
@@ -20346,6 +20390,103 @@ app.patch("/api/leads/:id/client-emails", async (req: Request, res: Response) =>
 });
 
 // Involved users for a lead (D1/D2 assignees + uploaders); used for header avatars (profile images)
+
+// Project members endpoints (GET, POST manual member, DELETE manual member)
+app.get("/api/leads/:id/project-members", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const access = await getLeadAccessRowForUser(res, user, leadId);
+    if (!access.ok) return;
+    await ensureProjectMembersHydrated(pool, leadId);
+    const members = await getProjectMembersForLead(pool, leadId, API_BASE);
+    return res.json(members);
+  } catch (err) {
+    console.error("project-members GET error", err);
+    return res.status(500).json({ message: "Failed to load project members" });
+  }
+});
+
+app.post("/api/leads/:id/project-members", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const access = await getLeadAccessRowForUser(res, user, leadId);
+    if (!access.ok) return;
+
+    const targetUserId = Number(req.body?.userId);
+    const role = (req.body?.role || "manual").trim() || "manual";
+    if (!targetUserId) return res.status(400).json({ message: "userId is required" });
+
+    const [uRows] = await pool.query("SELECT id FROM users WHERE id = ? LIMIT 1", [targetUserId]);
+    if ((uRows as any[]).length === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    await ensureProjectMembersHydrated(pool, leadId);
+    await addManualMember(pool, leadId, targetUserId, role);
+    const updated = await getProjectMembersForLead(pool, leadId, API_BASE);
+    return res.json({ ok: true, members: updated });
+  } catch (err) {
+    console.error("project-members POST error", err);
+    return res.status(500).json({ message: "Failed to add project member" });
+  }
+});
+
+app.delete("/api/leads/:id/project-members/:userId", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  const targetUserId = Number(req.params.userId);
+  if (Number.isNaN(leadId) || Number.isNaN(targetUserId)) {
+    return res.status(400).json({ message: "Invalid id or userId" });
+  }
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const access = await getLeadAccessRowForUser(res, user, leadId);
+    if (!access.ok) return;
+
+    await removeManualMember(pool, leadId, targetUserId);
+    const updated = await getProjectMembersForLead(pool, leadId, API_BASE);
+    return res.json({ ok: true, members: updated });
+  } catch (err) {
+    console.error("project-members DELETE error", err);
+    return res.status(500).json({ message: "Failed to remove project member" });
+  }
+});
+
+// List assignable team members for "+" button modal
+app.get("/api/users/assignable-team", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const [rows] = await pool.query(
+      "SELECT id, name, email, role, profileImage FROM users ORDER BY name ASC"
+    );
+    const list = (rows as any[]).map((u) => {
+      let profileImage = u.profileImage || null;
+      if (profileImage && profileImage.startsWith("/") && !profileImage.startsWith("http")) {
+        profileImage = `${API_BASE}${profileImage}`;
+      }
+      return {
+        id: u.id,
+        name: u.name || "",
+        email: u.email || "",
+        role: formatRoleLabel(u.role || ""),
+        rawRole: u.role || "",
+        profileImage,
+      };
+    });
+    return res.json(list);
+  } catch (err) {
+    console.error("assignable-team error", err);
+    return res.status(500).json({ message: "Failed to load team users" });
+  }
+});
+
 app.get("/api/leads/:id/involved-users", async (req: Request, res: Response) => {
   const leadId = Number(req.params.id);
   if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
@@ -20353,65 +20494,53 @@ app.get("/api/leads/:id/involved-users", async (req: Request, res: Response) => 
     const user = await getUserFromSession(req);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
 
-    const [leadRows] = await pool.query("SELECT id FROM leads WHERE id = ?", [leadId]);
-    if ((leadRows as any[]).length === 0) return res.status(404).json({ message: "Lead not found" });
+    const access = await getLeadAccessRowForUser(res, user, leadId);
+    if (!access.ok) return;
 
-    if ((user?.role ?? "").toLowerCase() === "mmt_executive") {
-      const [assignRows] = await pool.query(
-        "SELECT 1 FROM lead_d1_assignments WHERE lead_id = ? AND assigned_to_user_id = ?",
-        [leadId, user.id],
-      );
-      if ((assignRows as any[]).length === 0) {
-        const [d2Rows] = await pool.query(
-          "SELECT 1 FROM lead_d2_assignments WHERE lead_id = ? AND assigned_to_user_id = ?",
-          [leadId, user.id],
-        );
-        if ((d2Rows as any[]).length === 0) return res.status(404).json({ message: "Lead not found" });
-      }
+    // Source of truth: lead_project_members (hydrate empty historical leads once on read).
+    await ensureProjectMembersHydrated(pool, leadId);
+    const storedMembers = await getProjectMembersForLead(pool, leadId, API_BASE);
+    if (storedMembers.length > 0) {
+      return res.json(storedMembers);
     }
 
+    // Pre-10 / not yet hydrated: show only this lead's assigned designer & PM (never all role holders).
+    const [coreRows] = await pool.query(
+      `SELECT assigned_designer_id AS designerId, assigned_project_manager_id AS pmId
+       FROM leads WHERE id = ? LIMIT 1`,
+      [leadId],
+    );
+    const core = (coreRows as { designerId?: number | null; pmId?: number | null }[])[0];
     const userIds = new Set<number>();
-    const [d1] = await pool.query(
-      "SELECT assigned_to_user_id FROM lead_d1_assignments WHERE lead_id = ?",
-      [leadId],
-    );
-    (d1 as { assigned_to_user_id: number }[]).forEach((r) =>
-      userIds.add(r.assigned_to_user_id),
-    );
-    const [d2] = await pool.query(
-      "SELECT assigned_to_user_id FROM lead_d2_assignments WHERE lead_id = ?",
-      [leadId],
-    );
-    (d2 as { assigned_to_user_id: number }[]).forEach((r) =>
-      userIds.add(r.assigned_to_user_id),
-    );
-    const [up] = await pool.query(
-      "SELECT uploader_id FROM lead_uploads WHERE lead_id = ? AND uploader_id IS NOT NULL",
-      [leadId],
-    );
-    (up as { uploader_id: number | null }[]).forEach((r) => {
-      if (r.uploader_id) userIds.add(r.uploader_id);
-    });
-
-    // Also include core project team roles so DQC manager, DQE, TDM, and design managers appear
-    const [coreTeamRows] = await pool.query(
-      "SELECT id FROM users WHERE role IN ('dqc_manager', 'dqe', 'territorial_design_manager', 'design_manager')",
-    );
-    (coreTeamRows as { id: number }[]).forEach((u) => userIds.add(u.id));
-
+    if (core?.designerId) userIds.add(Number(core.designerId));
+    if (core?.pmId) userIds.add(Number(core.pmId));
     if (userIds.size === 0) return res.json([]);
 
     const placeholders = Array.from(userIds).map(() => "?").join(",");
     const [userRows] = await pool.query(
-      `SELECT id, name, profileImage FROM users WHERE id IN (${placeholders}) ORDER BY name ASC`,
+      `SELECT id, name, email, profileImage, role FROM users WHERE id IN (${placeholders}) ORDER BY name ASC`,
       Array.from(userIds),
     );
-    const list = (userRows as { id: number; name: string | null; profileImage: string | null }[]).map((u) => {
+    const list = (userRows as {
+      id: number;
+      name: string | null;
+      email: string | null;
+      profileImage: string | null;
+      role: string | null;
+    }[]).map((u) => {
       let profileImage = u.profileImage || null;
       if (profileImage && profileImage.startsWith("/") && !profileImage.startsWith("http")) {
         profileImage = `${API_BASE}${profileImage}`;
       }
-      return { id: u.id, name: u.name || "", profileImage };
+      const roleKey = String(u.role || "").toLowerCase();
+      return {
+        id: u.id,
+        name: u.name || "",
+        email: u.email || null,
+        profileImage,
+        projectRole: formatRoleLabel(roleKey || "manual"),
+        isManual: false,
+      };
     });
     return res.json(list);
   } catch (err) {

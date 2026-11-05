@@ -12,6 +12,7 @@ import MileStonesArray, {
 import type { ImageType, QCRemark, HistoryEvent } from './types';
 import {
     LeadDetailHeader,
+    AddMemberModal,
     ClientEmailsSection,
     MilestonesCard,
     HistoryCard,
@@ -1532,24 +1533,31 @@ export default function ProjectDetailPage() {
     }, [viewDqc, isDqcUser, dqcStage, projectId, sessionId, loadDqcSubmissionFile, loadDqc2SubmissionFile]);
 
     const [image, setImage] = useState<ImageType[]>([]);
+    const [showAddMemberModal, setShowAddMemberModal] = useState(false);
 
-    // Fetch involved users (D1/D2 assignees + uploaders) and their profile images for header avatars
-    useEffect(() => {
+    // Fetch involved users and their profile images for header avatars
+    const fetchInvolvedUsers = useCallback(() => {
         if (!projectId || !sessionId) return;
         const headers: Record<string, string> = { Authorization: `Bearer ${sessionId}` };
         fetch(`${API}/api/leads/${projectId}/involved-users`, { headers })
             .then((res) => res.json())
-            .then((data: { id: number; name: string; profileImage: string | null }[]) => {
+            .then((data: any[]) => {
                 if (Array.isArray(data)) {
                     setImage(data.map((u) => ({
                         id: u.id,
                         img: u.profileImage || '',
                         name: u.name || '',
+                        projectRole: u.projectRole || '',
+                        isManual: Boolean(u.isManual),
                     })));
                 }
             })
             .catch(() => {});
-    }, [projectId, sessionId]);
+    }, [projectId, sessionId, API]);
+
+    useEffect(() => {
+        fetchInvolvedUsers();
+    }, [fetchInvolvedUsers]);
 
     useEffect(() => {
         return () => {
@@ -1569,10 +1577,7 @@ export default function ProjectDetailPage() {
     );
 
     const handleImageAdding = () => {
-        // TODO: wire to "add user to project" when backend supports it
-        const maxId = image.length > 0 ? Math.max(...image.map((img) => img.id)) : 0;
-        const newImage: ImageType = { id: maxId + 1, img: '', name: '' };
-        setImage([...image, newImage]);
+        setShowAddMemberModal(true);
     };
    
     // Toggle function: If clicking the same card, close it. If new card, open it.
@@ -2410,6 +2415,17 @@ export default function ProjectDetailPage() {
                         }
                         setMeetingWizOpen(true);
                     }}
+                />
+            )}
+
+            {projectId != null && (
+                <AddMemberModal
+                    isOpen={showAddMemberModal}
+                    onClose={() => setShowAddMemberModal(false)}
+                    leadId={projectId}
+                    sessionId={sessionId}
+                    existingMembers={image}
+                    onMemberChanged={fetchInvolvedUsers}
                 />
             )}
 

@@ -6,7 +6,11 @@
     "dev": "nodemon --watch server.ts --watch routes --ext ts --exec ts-node server.ts",
     "start": "ts-node server.ts",
     "build": "tsc",
-    "start:prod": "node dist/server.js"
+    "start:prod": "node dist/server.js",
+    "test:dqc-upload": "node scripts/dqcSubmissionUpload.test.mjs",
+    "verify:dqc-contract": "node scripts/verify-dqc-submission-contract.mjs",
+    "backfill:project-members": "node scripts/backfill-project-members.cjs",
+    "backfill:project-members:apply": "node scripts/backfill-project-members.cjs --apply"
   },
   "keywords": [],
   "author": "",

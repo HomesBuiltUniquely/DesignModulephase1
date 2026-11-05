@@ -38,6 +38,8 @@ export type ImageType = {
     img: string;
     /** Used for avatar fallback when img is empty (e.g. user has no profile photo). */
     name?: string;
+    projectRole?: string;
+    isManual?: boolean;
 };
 
 // --- Progress History / View Task Details ---
