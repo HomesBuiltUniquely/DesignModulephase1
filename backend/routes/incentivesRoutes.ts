@@ -315,6 +315,54 @@ const SLAB_TIERS = [
   { targetPct: 40, incentivePct: 0.25 },
 ];
 
+/** Design lead / design manager slabs, applied to that team's total weighted revenue. */
+const DESIGN_LEAD_SLAB_TIERS = [
+  { targetPct: 120, incentivePct: 0.45 },
+  { targetPct: 100, incentivePct: 0.35 },
+  { targetPct: 80, incentivePct: 0.3 },
+  { targetPct: 60, incentivePct: 0.25 },
+  { targetPct: 50, incentivePct: 0.2 },
+];
+
+function designLeadIncentive(totalTarget: number, weighted: number): {
+  achievementPct: number;
+  slabPct: number;
+  incentivePct: number;
+  incentiveEarned: number;
+} {
+  return incentiveFromSlabs(DESIGN_LEAD_SLAB_TIERS, totalTarget, weighted);
+}
+
+/** TDM slabs, applied to the combined weighted total of the design managers. */
+const TDM_SLAB_TIERS = [
+  { targetPct: 100, incentivePct: 0.2 },
+  { targetPct: 75, incentivePct: 0.13 },
+  { targetPct: 65, incentivePct: 0.11 },
+  { targetPct: 50, incentivePct: 0.07 },
+  { targetPct: 40, incentivePct: 0.05 },
+];
+
+function incentiveFromSlabs(
+  tiers: { targetPct: number; incentivePct: number }[],
+  totalTarget: number,
+  weighted: number,
+): {
+  achievementPct: number;
+  slabPct: number;
+  incentivePct: number;
+  incentiveEarned: number;
+} {
+  const achievementPct = totalTarget > 0 ? Math.round((weighted / totalTarget) * 1000) / 10 : 0;
+  const tier = tiers.find((row) => achievementPct >= row.targetPct);
+  const incentivePct = tier?.incentivePct ?? 0;
+  return {
+    achievementPct,
+    slabPct: tier?.targetPct ?? 0,
+    incentivePct,
+    incentiveEarned: Math.round((weighted * incentivePct) / 100),
+  };
+}
+
 function pickSlabPct(achievementPct: number): number {
   for (const tier of SLAB_TIERS) {
     if (achievementPct >= tier.targetPct) return tier.targetPct;
@@ -1375,6 +1423,9 @@ export function registerIncentivesRoutes(
         meetingsGatePassedCount,
         incentiveEarned,
         onSpotBonus,
+        ...(targetTeam.managerId > 0
+          ? { designLead: designLeadIncentive(totalTarget, revenueAchieved) }
+          : {}),
       };
 
       // Construct cycle info
@@ -1482,6 +1533,27 @@ export function registerIncentivesRoutes(
       }),
       { totalTarget: 0, revenueAchieved: 0 },
     );
+  }
+
+  /** A design manager's weighted total is the sum of that team's designer weighted revenue. */
+  async function sumManagerTeamWeighted(
+    managerId: number,
+    period: 15 | 30,
+    cycleIndex: number,
+    monthIndex: number,
+  ): Promise<{ totalTarget: number; weighted: number }> {
+    if (period === 30) {
+      const [first, second] = await Promise.all([
+        sumDesignerFortnightTotals([managerId], monthIndex * 2),
+        sumDesignerFortnightTotals([managerId], monthIndex * 2 + 1),
+      ]);
+      return {
+        totalTarget: first.totalTarget + second.totalTarget,
+        weighted: first.revenueAchieved + second.revenueAchieved,
+      };
+    }
+    const fortnight = await sumDesignerFortnightTotals([managerId], cycleIndex);
+    return { totalTarget: fortnight.totalTarget, weighted: fortnight.revenueAchieved };
   }
 
   async function sumBranchAchievement(managerId: number, cycleIndex: number): Promise<number> {
@@ -1604,14 +1676,41 @@ export function registerIncentivesRoutes(
       if (!Number.isFinite(cycleIndex) || cycleIndex < 0) {
         return res.status(400).json({ message: "Invalid cycleIndex" });
       }
-      const [managerRows] = await pool.query(
-        `SELECT id FROM users
-         WHERE role = 'design_manager' AND territorial_design_manager_id = ?`,
-        [user.id],
+      const periodParam = String(req.query.period || "").trim().toLowerCase();
+      const period: 15 | 30 = periodParam === "30" || periodParam === "monthly" ? 30 : 15;
+      let monthIndex = Math.floor(cycleIndex / 2);
+      if (req.query.monthIndex != null && String(req.query.monthIndex).trim() !== "") {
+        const parsedMonth = Number(req.query.monthIndex);
+        if (Number.isFinite(parsedMonth) && parsedMonth >= 0) monthIndex = parsedMonth;
+      }
+      const teams = await resolveActiveTeams();
+      const branchManagers = teams.filter((team) => isBranchTargetCode(team.code));
+      const managers = branchManagers.length > 0 ? branchManagers : teams;
+      const rows = await Promise.all(
+        managers.map(async (manager) => {
+          const totals = await sumManagerTeamWeighted(manager.managerId, period, cycleIndex, monthIndex);
+          const slab = designLeadIncentive(totals.totalTarget, totals.weighted);
+          return {
+            managerId: manager.managerId,
+            managerName: manager.managerName,
+            branch: manager.code,
+            totalTarget: totals.totalTarget,
+            weighted: totals.weighted,
+            achievementPct: slab.achievementPct,
+            slabPct: slab.slabPct,
+            incentivePct: slab.incentivePct,
+            incentiveEarned: slab.incentiveEarned,
+          };
+        }),
       );
-      const managerIds = (managerRows as { id: number }[]).map((row) => Number(row.id));
-      const totals = await sumDesignerFortnightTotals(managerIds, cycleIndex);
-      return res.json(totals);
+      const totalTarget = rows.reduce((sum, row) => sum + row.totalTarget, 0);
+      const revenueAchieved = rows.reduce((sum, row) => sum + row.weighted, 0);
+      return res.json({
+        totalTarget,
+        revenueAchieved,
+        managers: rows,
+        tdm: incentiveFromSlabs(TDM_SLAB_TIERS, totalTarget, revenueAchieved),
+      });
     } catch (err) {
       console.error("[GET /api/incentives/tdm-totals] error", err);
       return res.status(500).json({ message: "Failed to load combined targets" });
