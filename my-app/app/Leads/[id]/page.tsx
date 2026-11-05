@@ -1557,7 +1557,7 @@ export default function ProjectDetailPage() {
 
     useEffect(() => {
         fetchInvolvedUsers();
-    }, [fetchInvolvedUsers]);
+    }, [fetchInvolvedUsers, uploadsVersion]);
 
     useEffect(() => {
         return () => {

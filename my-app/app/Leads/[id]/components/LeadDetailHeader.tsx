@@ -154,61 +154,39 @@ export default function LeadDetailHeader({
                     >
                         {getQuoteBusy ? 'Get Quote...' : 'Get Quote'}
                     </button>
-                    <div className="flex items-center -space-x-3">
-                        {(() => {
-                            const MAX_VISIBLE = 5;
-                            const hasOverflow = image.length > MAX_VISIBLE;
-                            const visibleMembers = hasOverflow ? image.slice(0, MAX_VISIBLE) : image;
-                            const overflowMembers = hasOverflow ? image.slice(MAX_VISIBLE) : [];
+                    <div className="flex max-w-[min(100%,28rem)] flex-wrap items-center gap-y-1 -space-x-3 pr-1">
+                        {image.map((imgdata) => {
+                            const initials = (imgdata.name || '').trim()
+                                ? (imgdata.name!.trim().split(/\s+/).length >= 2
+                                    ? (imgdata.name!.trim().split(/\s+/)[0][0] + imgdata.name!.trim().split(/\s+/).pop()![0]).toUpperCase()
+                                    : imgdata.name!.trim().slice(0, 2).toUpperCase())
+                                : '?';
+                            const tooltip = imgdata.projectRole
+                                ? `${imgdata.name || ''} · ${imgdata.projectRole}`
+                                : (imgdata.name || undefined);
 
-                            return (
-                                <>
-                                    {visibleMembers.map((imgdata) => {
-                                        const initials = (imgdata.name || '').trim()
-                                            ? (imgdata.name!.trim().split(/\s+/).length >= 2
-                                                ? (imgdata.name!.trim().split(/\s+/)[0][0] + imgdata.name!.trim().split(/\s+/).pop()![0]).toUpperCase()
-                                                : imgdata.name!.trim().slice(0, 2).toUpperCase())
-                                            : '?';
-                                        const tooltip = imgdata.projectRole
-                                            ? `${imgdata.name || ''} · ${imgdata.projectRole}`
-                                            : (imgdata.name || undefined);
-
-                                        return imgdata.img ? (
-                                            <img
-                                                key={imgdata.id}
-                                                src={imgdata.img}
-                                                alt={imgdata.name || ''}
-                                                className="w-10 h-10 xl:w-12 xl:h-12 rounded-full border-2 border-slate-800 object-cover hover:z-10 relative bg-gray-200"
-                                                title={tooltip}
-                                            />
-                                        ) : (
-                                            <div
-                                                key={imgdata.id}
-                                                className="w-10 h-10 xl:w-12 xl:h-12 rounded-full border-2 border-slate-800 flex items-center justify-center bg-slate-700 text-white text-xs xl:text-sm font-bold hover:z-10 relative"
-                                                title={tooltip}
-                                            >
-                                                {initials}
-                                            </div>
-                                        );
-                                    })}
-                                    {hasOverflow && (
-                                        <div
-                                            className="w-10 h-10 xl:w-12 xl:h-12 rounded-full border-2 border-slate-800 flex items-center justify-center bg-slate-800 text-white text-xs xl:text-sm font-bold hover:z-10 relative cursor-pointer"
-                                            title={overflowMembers
-                                                .map((m) => `${m.name || 'Member'} · ${m.projectRole || 'Team Member'}`)
-                                                .join('\n')}
-                                            onClick={onAddImage}
-                                        >
-                                            +{overflowMembers.length}
-                                        </div>
-                                    )}
-                                </>
+                            return imgdata.img ? (
+                                <img
+                                    key={imgdata.id}
+                                    src={imgdata.img}
+                                    alt={imgdata.name || ''}
+                                    className="w-10 h-10 xl:w-12 xl:h-12 rounded-full border-2 border-slate-800 object-cover hover:z-10 relative bg-gray-200"
+                                    title={tooltip}
+                                />
+                            ) : (
+                                <div
+                                    key={imgdata.id}
+                                    className="w-10 h-10 xl:w-12 xl:h-12 rounded-full border-2 border-slate-800 flex items-center justify-center bg-slate-700 text-white text-xs xl:text-sm font-bold hover:z-10 relative"
+                                    title={tooltip}
+                                >
+                                    {initials}
+                                </div>
                             );
-                        })()}
+                        })}
                         <button
                             type="button"
                             onClick={onAddImage}
-                            className="w-10 h-10 xl:w-12 xl:h-12 rounded-full border-2 border-gray-400 flex items-center justify-center bg-slate-800 text-white hover:bg-[#EF0101]/80/50 text-xl font-bold ml-4 z-10"
+                            className="w-10 h-10 xl:w-12 xl:h-12 rounded-full border-2 border-gray-400 flex items-center justify-center bg-slate-800 text-white hover:bg-[#EF0101]/80/50 text-xl font-bold ml-4 z-10 shrink-0"
                             title="Add team member"
                         >
                             +

@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import type { ImageType } from '../types';
+import { getApiBase, buildAuthHeaders } from '@/app/lib/apiBase';
 
 type AssignableUser = {
     id: number;
@@ -35,13 +36,7 @@ export default function AddMemberModal({
     const [saving, setSaving] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
 
-    const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
-
-    const authHeaders = (): Record<string, string> => {
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (sessionId) headers.Authorization = `Bearer ${sessionId}`;
-        return headers;
-    };
+    const API = getApiBase();
 
     useEffect(() => {
         if (!isOpen || !sessionId) return;
@@ -51,7 +46,7 @@ export default function AddMemberModal({
         setSelectedRole('Team Member');
 
         fetch(`${API}/api/users/assignable-team`, {
-            headers: authHeaders(),
+            headers: buildAuthHeaders(sessionId),
             credentials: 'include',
         })
             .then((res) => {
@@ -65,10 +60,9 @@ export default function AddMemberModal({
             })
             .catch((err) => {
                 console.error('Error loading assignable users:', err);
-                setError('Could not load user list');
+                setError('Could not load user list. Check that the API is running.');
             })
             .finally(() => setLoading(false));
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isOpen, API, sessionId]);
 
     if (!isOpen) return null;
@@ -101,7 +95,10 @@ export default function AddMemberModal({
         try {
             const res = await fetch(`${API}/api/leads/${leadId}/project-members`, {
                 method: 'POST',
-                headers: authHeaders(),
+                headers: {
+                    ...buildAuthHeaders(sessionId),
+                    'Content-Type': 'application/json',
+                },
                 credentials: 'include',
                 body: JSON.stringify({ userId, role: selectedRole || 'manual' }),
             });
@@ -129,7 +126,7 @@ export default function AddMemberModal({
         try {
             const res = await fetch(`${API}/api/leads/${leadId}/project-members/${userId}`, {
                 method: 'DELETE',
-                headers: authHeaders(),
+                headers: buildAuthHeaders(sessionId),
                 credentials: 'include',
             });
             if (!res.ok) {
