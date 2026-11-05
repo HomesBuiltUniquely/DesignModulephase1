@@ -331,6 +331,63 @@ const SLAB_DEFS: { targetPct: number; incentivePct: number }[] = [
   { targetPct: 100, incentivePct: 1.0 },
 ];
 
+/** Design lead / design manager slabs. Incentive % is applied to the team's total weighted revenue. */
+export const DESIGN_LEAD_SLAB_DEFS: { targetPct: number; incentivePct: number }[] = [
+  { targetPct: 50, incentivePct: 0.2 },
+  { targetPct: 60, incentivePct: 0.25 },
+  { targetPct: 80, incentivePct: 0.3 },
+  { targetPct: 100, incentivePct: 0.35 },
+  { targetPct: 120, incentivePct: 0.45 },
+];
+
+export function designLeadIncentive(totalTarget: number, weighted: number): {
+  achievementPct: number;
+  slabPct: number;
+  incentivePct: number;
+  incentiveEarned: number;
+} {
+  return incentiveFromSlabs(DESIGN_LEAD_SLAB_DEFS, totalTarget, weighted);
+}
+
+/** TDM slabs. Incentive % is applied to the combined design-manager weighted total. */
+export const TDM_SLAB_DEFS: { targetPct: number; incentivePct: number }[] = [
+  { targetPct: 40, incentivePct: 0.05 },
+  { targetPct: 50, incentivePct: 0.07 },
+  { targetPct: 65, incentivePct: 0.11 },
+  { targetPct: 75, incentivePct: 0.13 },
+  { targetPct: 100, incentivePct: 0.2 },
+];
+
+export function tdmIncentive(totalTarget: number, weighted: number): {
+  achievementPct: number;
+  slabPct: number;
+  incentivePct: number;
+  incentiveEarned: number;
+} {
+  return incentiveFromSlabs(TDM_SLAB_DEFS, totalTarget, weighted);
+}
+
+function incentiveFromSlabs(
+  slabs: { targetPct: number; incentivePct: number }[],
+  totalTarget: number,
+  weighted: number,
+): {
+  achievementPct: number;
+  slabPct: number;
+  incentivePct: number;
+  incentiveEarned: number;
+} {
+  const achievementPct = totalTarget > 0 ? Math.round((weighted / totalTarget) * 1000) / 10 : 0;
+  const tier = [...slabs].reverse().find((row) => achievementPct >= row.targetPct);
+  const incentivePct = tier?.incentivePct ?? 0;
+  return {
+    achievementPct,
+    slabPct: tier?.targetPct ?? 0,
+    incentivePct,
+    incentiveEarned: Math.round((weighted * incentivePct) / 100),
+  };
+}
+
 function buildSlabsForTarget(totalTarget: number): IncentiveSlab[] {
   return SLAB_DEFS.map((s) => {
     const revenue = Math.round((totalTarget * s.targetPct) / 100);

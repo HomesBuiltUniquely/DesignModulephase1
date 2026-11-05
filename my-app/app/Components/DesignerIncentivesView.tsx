@@ -10,6 +10,9 @@ import {
   buildDayActivitySummary,
   buildIncentivesFromDealInputs,
   canManageTeamIncentives,
+  DESIGN_LEAD_SLAB_DEFS,
+  designLeadIncentive,
+  TDM_SLAB_DEFS,
   filterDealsByDate,
   formatInr,
   formatInrCompact,
@@ -1037,6 +1040,138 @@ function IndividualIncentivesPanel({
   );
 }
 
+function IncentiveSlabTable({
+  slabs,
+  totalTarget,
+  weighted,
+  earnedLabel,
+}: {
+  slabs: { targetPct: number; incentivePct: number }[];
+  totalTarget: number;
+  weighted: number;
+  earnedLabel: string;
+}) {
+  const achievementPct = totalTarget > 0 ? Math.round((weighted / totalTarget) * 1000) / 10 : 0;
+  const tier = [...slabs].reverse().find((slab) => achievementPct >= slab.targetPct);
+  const result = {
+    achievementPct,
+    slabPct: tier?.targetPct ?? 0,
+    incentivePct: tier?.incentivePct ?? 0,
+  };
+  const active = slabs.find((slab) => slab.targetPct === result.slabPct);
+  const incentiveEarned = Math.round((weighted * (active?.incentivePct ?? 0)) / 100);
+  return (
+    <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white">
+      <table className="min-w-full text-left text-sm">
+        <thead>
+          <tr className="border-b border-gray-100 text-[11px] uppercase tracking-wide text-gray-500">
+            <th className="px-4 py-3 font-semibold">Target achievement</th>
+            <th className="px-4 py-3 font-semibold">Incentives achievement</th>
+          </tr>
+        </thead>
+        <tbody>
+          {slabs.map((slab) => {
+            const isActive = result.slabPct === slab.targetPct;
+            const cleared = result.achievementPct >= slab.targetPct;
+            return (
+              <tr key={slab.targetPct} className={isActive ? 'bg-[#DDCDC1]/30' : 'border-b border-gray-50'}>
+                <td className="px-4 py-3 font-semibold text-gray-900">
+                  {slab.targetPct}%
+                  {isActive ? (
+                    <span className="ml-2 rounded-full bg-slate-900 px-2 py-0.5 text-[10px] font-bold uppercase text-white">
+                      Active
+                    </span>
+                  ) : cleared ? (
+                    <span className="ml-2 rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-bold uppercase text-slate-600">
+                      Cleared
+                    </span>
+                  ) : null}
+                </td>
+                <td className="px-4 py-3 text-gray-800">{slab.incentivePct.toFixed(2)}%</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p className="border-t border-gray-100 px-4 py-3 text-sm text-gray-700">
+        Achievement {result.achievementPct}% · incentive {(active?.incentivePct ?? 0).toFixed(2)}% of {earnedLabel} ={' '}
+        <strong>{formatInr(incentiveEarned)}</strong>
+      </p>
+    </div>
+  );
+}
+
+function DesignManagerTargetSummary({
+  totalTarget,
+  revenueAchieved,
+  weightedLabel,
+  note,
+  showDesignLeadSlab,
+  showTdmSlab,
+  managers,
+}: {
+  totalTarget: number;
+  revenueAchieved: number;
+  weightedLabel: string;
+  note: string;
+  showDesignLeadSlab?: boolean;
+  showTdmSlab?: boolean;
+  managers?: Array<{
+    managerId: number;
+    managerName: string;
+    branch: string;
+    totalTarget: number;
+    weighted: number;
+    incentivePct?: number;
+    incentiveEarned?: number;
+  }>;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <MetricCard label="Total Target to Achieve" value={formatInr(totalTarget)} />
+        <MetricCard label={weightedLabel} value={formatInr(revenueAchieved)} accent />
+      </div>
+      <p className="text-xs text-gray-500">{note}</p>
+      {showDesignLeadSlab ? (
+        <IncentiveSlabTable
+          slabs={DESIGN_LEAD_SLAB_DEFS}
+          totalTarget={totalTarget}
+          weighted={revenueAchieved}
+          earnedLabel="team weighted"
+        />
+      ) : null}
+      {showTdmSlab ? (
+        <IncentiveSlabTable
+          slabs={TDM_SLAB_DEFS}
+          totalTarget={totalTarget}
+          weighted={revenueAchieved}
+          earnedLabel="combined weighted"
+        />
+      ) : null}
+      {managers && managers.length > 0 ? (
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          {managers.map((manager) => {
+            const slab = designLeadIncentive(manager.totalTarget, manager.weighted);
+            return (
+              <div key={manager.managerId} className="rounded-lg border border-gray-200 bg-white px-3 py-2">
+                <p className="text-xs font-semibold text-gray-900">
+                  {manager.managerName}
+                  {manager.branch ? ` · ${manager.branch}` : ''}
+                </p>
+                <p className="mt-1 text-sm font-bold text-gray-800">{formatInr(manager.weighted)}</p>
+                <p className="text-[11px] text-gray-500">
+                  Team weighted · {slab.achievementPct}% · {slab.incentivePct.toFixed(2)}% · {formatInr(slab.incentiveEarned)}
+                </p>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function TeamIncentivesPanel({
   team,
   scopeLabel,
@@ -1225,6 +1360,7 @@ export default function DesignerIncentivesView() {
   const apiBase = getApiBase();
   const isManager = canManageTeamIncentives(user?.role);
   const isDesignManager = (user?.role || '').toLowerCase() === 'design_manager';
+  const isTerritorialDesignManager = (user?.role || '').toLowerCase() === 'territorial_design_manager';
   const isDesignerOnly = (user?.role || '').toLowerCase() === 'designer';
   const canTogglePeriod = canShowPeriodToggle(user?.role);
 
@@ -1523,9 +1659,30 @@ export default function DesignerIncentivesView() {
   const [teams, setTeams] = useState<IncentiveTeam[]>([]);
   const [selectedManagerId, setSelectedManagerId] = useState<number | null>(null);
   const [loadingTeams, setLoadingTeams] = useState(false);
+  const canSetBranchTarget =
+    (user?.role || '').toLowerCase() === 'admin' ||
+    (user?.role || '').toLowerCase() === 'territorial_design_manager';
+  const [branchTargetInput, setBranchTargetInput] = useState('');
+  const [branchTargetLoading, setBranchTargetLoading] = useState(false);
+  const [branchTargetSaving, setBranchTargetSaving] = useState(false);
+  const [branchTargetError, setBranchTargetError] = useState<string | null>(null);
+  const [tdmTotals, setTdmTotals] = useState<{
+    totalTarget: number;
+    revenueAchieved: number;
+    managers: Array<{
+      managerId: number;
+      managerName: string;
+      branch: string;
+      totalTarget: number;
+      weighted: number;
+    }>;
+  } | null>(null);
 
   const loadTeams = useCallback(async () => {
     if (!isManager || !sessionId) return;
+    const userRole = (user?.role || '').toLowerCase();
+    const preferBranchTeamForTarget =
+      userRole === 'admin' || userRole === 'territorial_design_manager';
     setLoadingTeams(true);
     try {
       const res = await fetch(`${apiBase}/api/incentives/teams`, {
@@ -1537,9 +1694,14 @@ export default function DesignerIncentivesView() {
         const list = (body?.teams || []) as IncentiveTeam[];
         setTeams(list);
         if (list.length > 0) {
-          setSelectedManagerId((prev) =>
-            prev !== null && list.some((t) => t.managerId === prev) ? prev : list[0].managerId,
-          );
+          setSelectedManagerId((prev) => {
+            if (prev !== null && list.some((t) => t.managerId === prev)) return prev;
+            if (preferBranchTeamForTarget) {
+              const firstDesignManagerTeam = list.find((t) => t.managerId > 0);
+              if (firstDesignManagerTeam) return firstDesignManagerTeam.managerId;
+            }
+            return list[0].managerId;
+          });
         }
       }
     } catch (err) {
@@ -1547,11 +1709,122 @@ export default function DesignerIncentivesView() {
     } finally {
       setLoadingTeams(false);
     }
-  }, [apiBase, isManager, sessionId]);
+  }, [apiBase, isManager, sessionId, user?.role]);
 
   useEffect(() => {
     void loadTeams();
   }, [loadTeams]);
+
+  useEffect(() => {
+    if (!canSetBranchTarget || viewMode !== 'team' || !sessionId || selectedManagerId == null || selectedManagerId <= 0) {
+      setBranchTargetInput('');
+      setBranchTargetError(null);
+      setBranchTargetLoading(false);
+      return;
+    }
+    let cancelled = false;
+    const run = async () => {
+      setBranchTargetLoading(true);
+      setBranchTargetError(null);
+      try {
+        const res = await fetch(
+          `${apiBase}/api/incentives/branch-target?managerId=${selectedManagerId}&cycleIndex=${cycleIndex}`,
+          { headers: buildAuthHeaders(sessionId), credentials: 'include' },
+        );
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body?.message || `Failed to load branch target (${res.status})`);
+        if (!cancelled) setBranchTargetInput(String(body?.applicableTarget ?? ''));
+      } catch (err) {
+        if (!cancelled) {
+          setBranchTargetInput('');
+          setBranchTargetError(err instanceof Error ? err.message : 'Failed to load branch target');
+        }
+      } finally {
+        if (!cancelled) setBranchTargetLoading(false);
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, canSetBranchTarget, cycleIndex, selectedManagerId, sessionId, viewMode]);
+
+  useEffect(() => {
+    if (!isTerritorialDesignManager || viewMode !== 'team' || !sessionId) {
+      setTdmTotals(null);
+      return;
+    }
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const query = new URLSearchParams();
+        query.set('cycleIndex', String(cycleIndex));
+        if (periodMode === 'monthly' && canTogglePeriod) {
+          query.set('period', '30');
+          query.set('monthIndex', String(monthIndex));
+        } else {
+          query.set('period', '15');
+        }
+        const res = await fetch(
+          `${apiBase}/api/incentives/tdm-totals?${query.toString()}`,
+          { headers: buildAuthHeaders(sessionId), credentials: 'include' },
+        );
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body?.message || `Failed to load combined targets (${res.status})`);
+        if (!cancelled) {
+          const managers = Array.isArray(body?.managers)
+            ? body.managers.map((row: { managerId?: number; managerName?: string; branch?: string; totalTarget?: number; weighted?: number }) => ({
+                managerId: Number(row.managerId) || 0,
+                managerName: String(row.managerName || 'Design manager'),
+                branch: String(row.branch || ''),
+                totalTarget: Number(row.totalTarget) || 0,
+                weighted: Number(row.weighted) || 0,
+              }))
+            : [];
+          setTdmTotals({
+            totalTarget: Number(body?.totalTarget) || 0,
+            revenueAchieved: Number(body?.revenueAchieved) || managers.reduce((sum: number, row: { weighted: number }) => sum + row.weighted, 0),
+            managers,
+          });
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setTdmTotals(null);
+          setIncentivesError(err instanceof Error ? err.message : 'Failed to load combined targets');
+        }
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, canTogglePeriod, cycleIndex, isTerritorialDesignManager, monthIndex, periodMode, sessionId, viewMode]);
+
+  const saveBranchTarget = async () => {
+    if (!sessionId || selectedManagerId == null || selectedManagerId <= 0) return;
+    const minimumTarget = Number(branchTargetInput);
+    if (!Number.isFinite(minimumTarget) || minimumTarget < 0) {
+      setBranchTargetError('Enter a target amount in rupees.');
+      return;
+    }
+    setBranchTargetSaving(true);
+    setBranchTargetError(null);
+    try {
+      const res = await fetch(`${apiBase}/api/incentives/branch-target`, {
+        method: 'PUT',
+        headers: { ...buildAuthHeaders(sessionId), 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ managerId: selectedManagerId, cycleIndex, minimumTarget }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.message || `Failed to save branch target (${res.status})`);
+      setBranchTargetInput(String(body?.applicableTarget ?? minimumTarget));
+    } catch (err) {
+      setBranchTargetError(err instanceof Error ? err.message : 'Failed to save branch target');
+    } finally {
+      setBranchTargetSaving(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -1824,17 +2097,80 @@ export default function DesignerIncentivesView() {
         ) : null}
 
         {viewMode === 'team' && isManager ? (
-          teamSummary ? (
-            <TeamIncentivesPanel
-              team={teamSummary}
-              scopeLabel={scopeLabel}
-              onOpenDesigner={openDesigner}
-              selectedDate={selectedDate || null}
-              isDesignManager={isDesignManager}
-            />
-          ) : !loadingIncentives ? (
-            <p className="text-sm text-gray-500">No team incentive data available.</p>
-          ) : null
+          <>
+            {canSetBranchTarget ? (
+              <div className="flex max-w-md flex-col gap-1 rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-600 shadow-sm">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                  Branch target
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  inputMode="numeric"
+                  placeholder="Branch target"
+                  value={branchTargetInput}
+                  disabled={
+                    branchTargetLoading ||
+                    branchTargetSaving ||
+                    selectedManagerId == null ||
+                    selectedManagerId <= 0
+                  }
+                  onChange={(event) => setBranchTargetInput(event.target.value)}
+                  className="rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900 disabled:bg-gray-50"
+                />
+                <button
+                  type="button"
+                  onClick={() => void saveBranchTarget()}
+                  disabled={
+                    branchTargetLoading ||
+                    branchTargetSaving ||
+                    selectedManagerId == null ||
+                    selectedManagerId <= 0
+                  }
+                  className="mt-2 w-fit rounded-lg border border-[#EF0101] px-3 py-1.5 text-xs font-semibold text-[#32261C] disabled:opacity-40"
+                >
+                  {branchTargetSaving ? 'Saving…' : 'Save target'}
+                </button>
+                {branchTargetError ? (
+                  <p className="text-xs text-red-700">{branchTargetError}</p>
+                ) : selectedManagerId == null || selectedManagerId <= 0 ? (
+                  <p className="text-xs text-gray-500">
+                    Select a design manager team (not All Branches) to set the branch target.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+            {isDesignManager && teamSummary ? (
+              <DesignManagerTargetSummary
+                totalTarget={teamSummary.totalTarget}
+                revenueAchieved={teamSummary.revenueAchieved}
+                weightedLabel="Team weighted"
+                note="Weighted is the total of this team's weighted revenue. The slab below is the design lead incentive on that total."
+                showDesignLeadSlab
+              />
+            ) : null}
+            {isTerritorialDesignManager && tdmTotals ? (
+              <DesignManagerTargetSummary
+                totalTarget={tdmTotals.totalTarget}
+                revenueAchieved={tdmTotals.revenueAchieved}
+                weightedLabel="Weighted"
+                note="Weighted is the total of the design managers' team weighted amounts. The slab below is the TDM incentive on that combined total."
+                showTdmSlab
+                managers={tdmTotals.managers}
+              />
+            ) : null}
+            {teamSummary ? (
+              <TeamIncentivesPanel
+                team={teamSummary}
+                scopeLabel={scopeLabel}
+                onOpenDesigner={openDesigner}
+                selectedDate={selectedDate || null}
+                isDesignManager={isDesignManager}
+              />
+            ) : !loadingIncentives ? (
+              <p className="text-sm text-gray-500">No team incentive data available.</p>
+            ) : null}
+          </>
         ) : individualData ? (
           <IndividualIncentivesPanel
             data={individualData}
