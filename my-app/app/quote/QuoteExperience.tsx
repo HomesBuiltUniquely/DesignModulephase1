@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { getApiBase } from '@/app/lib/apiBase';
+import { getApiBase, isProductionQuoteHost } from '@/app/lib/apiBase';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/app/auth/AuthContext';
 import { extractQuoteIdFromBody } from '@/app/lib/prolanceApiGetQuote';
@@ -684,8 +684,11 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
   }, [quoteIdProp, payload, quote.quotationId]);
 
   useEffect(() => {
+    // Production customer quote links only — local /quote/:id does not count.
     const isCustomerAudience = !isInternalMode && !crmAudience && preloadedPayload === undefined;
-    if (!isCustomerAudience || loading || !payload || !quoteBodyHasRooms(payload)) return;
+    if (!isCustomerAudience || !isProductionQuoteHost() || loading || !payload || !quoteBodyHasRooms(payload)) {
+      return;
+    }
     const q = versionFetchId || quoteIdProp.trim();
     if (!q || !/^\d+$/.test(q)) return;
     if (typeof sessionStorage === 'undefined') return;
