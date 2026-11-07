@@ -5472,13 +5472,39 @@ function resolveCrmLeadPutPaths(leadType: string | null | undefined, crmLeadId: 
   }
 }
 
+/** Same auth style as quote-link / Hub proofs — API key + optional static bearer. No ERP username/password. */
+function crmSyncAuthHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "X-Activity-Performed-By": "Design Module Auto",
+  };
+  const ingestKey =
+    process.env.EXTERNAL_LEAD_INGEST_API_KEY?.trim() ||
+    process.env.CRM_EXTERNAL_API_KEY?.trim() ||
+    process.env.HUB_SYNC_API_KEY?.trim() ||
+    process.env.DESIGN_SERVICE_API_KEY?.trim() ||
+    "";
+  if (ingestKey) {
+    headers["x-external-api-key"] = ingestKey;
+    headers["x-api-key"] = ingestKey;
+  }
+  const bearer = String(process.env.HUB_PROOF_BEARER_TOKEN || process.env.CRM_DEV_BEARER_TOKEN || "").trim();
+  if (bearer && !/^https?:\/\//i.test(bearer)) {
+    headers.Authorization = bearer.startsWith("Bearer ") ? bearer : `Bearer ${bearer}`;
+  }
+  return headers;
+}
+
+/**
+ * Push CRM milestone to "Meeting Successful".
+ * Prefer CRM FE / Hub API-key callbacks (no ERP_USERNAME/PASSWORD). Direct lead PUT with the same key/bearer is fallback.
+ */
 async function notifyCrmMeetingCompleted(
   crmLeadId: number,
   leadType?: string | null,
 ): Promise<void> {
   if (!Number.isFinite(crmLeadId) || crmLeadId <= 0) return;
 
-  // If leadType wasn't explicitly provided, attempt to look it up from MySQL leads table
   let resolvedLeadType = leadType && typeof leadType === "string" ? leadType.trim() : null;
   if (!resolvedLeadType) {
     try {
@@ -5503,11 +5529,11 @@ async function notifyCrmMeetingCompleted(
           null;
       }
     } catch {
-      // Non-fatal, fallback to candidate probing
+      // fall through — path probing still works
     }
   }
 
-  const payload = JSON.stringify({
+  const stageBody = {
     stage: {
       milestoneStage: "Experience & Design",
       milestoneStageCategory: "Experience & Design Won",
@@ -5517,40 +5543,143 @@ async function notifyCrmMeetingCompleted(
         substage: "Meeting Successful",
       },
     },
-  });
+  };
+  const callbackBody = {
+    ...stageBody,
+    crmLeadId,
+    leadId: crmLeadId,
+    leadType: resolvedLeadType,
+    crmLeadType: resolvedLeadType,
+    milestoneSubStage: "Meeting Successful",
+    progress: "completed",
+    progressLabel: "Meeting Successful",
+  };
+  const headers = crmSyncAuthHeaders();
+  const errors: string[] = [];
 
-  const pathsToTry = resolveCrmLeadPutPaths(resolvedLeadType, crmLeadId);
-  let lastError: any = null;
-
-  for (let i = 0; i < pathsToTry.length; i++) {
-    const endpoint = pathsToTry[i];
-    try {
-      await callErpApi(endpoint, {
-        method: "PUT",
-        body: payload,
-        // CRM activity history should show Design Module Auto, not the ERP service login (admin).
-        headers: { "X-Activity-Performed-By": "Design Module Auto" },
-      });
-      console.info(
-        `[meeting-wiz-completed] Successfully updated CRM lead ${crmLeadId} to Meeting Successful via ${endpoint}`,
-      );
-      return;
-    } catch (err: any) {
-      lastError = err;
-      const is404 =
-        err?.status === 404 ||
-        String(err?.message || "").includes("404");
-      if (is404 && i < pathsToTry.length - 1) {
-        continue;
+  // 1) CRM Next / FE callback — same pattern as quote-link-sync (API key, no ERP login).
+  const crmBases = Array.from(
+    new Set(
+      [
+        String(CRM_CALLBACK_BASE || "").trim(),
+        process.env.CRM_FRONTEND_URL || "",
+        process.env.CRM_API_BASE_URL || "",
+        "https://crm.hubinterior.com",
+        "https://hows.hubinterior.com",
+        "https://app.hubinterior.com",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+      ]
+        .map((b) => b.replace(/\/+$/, ""))
+        .filter(Boolean),
+    ),
+  );
+  const callbackPaths = [
+    "/api/design/meeting-successful",
+    "/api/design/meeting-success",
+    "/api/design/meeting-wiz-completed",
+    "/api/crm/meeting-successful",
+  ];
+  for (const base of crmBases) {
+    for (const pathName of callbackPaths) {
+      try {
+        const res = await fetch(`${base}${pathName}`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(callbackBody),
+        });
+        const text = await res.text().catch(() => "");
+        if (res.ok) {
+          console.info(
+            `[meeting-successful] CRM callback OK ${base}${pathName} for lead ${crmLeadId}`,
+          );
+          return;
+        }
+        if (res.status !== 404) {
+          errors.push(`${base}${pathName} → ${res.status} ${text.slice(0, 160)}`);
+        }
+      } catch (err) {
+        errors.push(`${base}${pathName} → ${(err as Error)?.message || err}`);
       }
-      break;
     }
   }
 
-  console.error(
-    `[meeting-wiz-completed] Failed to update CRM lead ${crmLeadId} to Meeting Successful:`,
-    lastError?.message || lastError,
+  // 2) Hub API direct — API key / static bearer only (no username/password login).
+  // Prefer hows.hubinterior.com — API-key / static bearer lead PUTs succeed there (no ERP login).
+  const hubBases = Array.from(
+    new Set(
+      [
+        "https://hows.hubinterior.com",
+        String(ERP_BASE_URL || "").replace(/\/$/, ""),
+        "https://api.hubinterior.com",
+      ].filter(Boolean),
+    ),
   );
+  const hubPaths = [
+    `/v1/meetings/success`,
+    `/api/v1/meetings/success`,
+    ...resolveCrmLeadPutPaths(resolvedLeadType, crmLeadId),
+  ];
+  for (const base of hubBases) {
+    for (const endpoint of hubPaths) {
+      const method = endpoint.includes("meetings/success") ? "POST" : "PUT";
+      const body = endpoint.includes("meetings/success")
+        ? JSON.stringify(callbackBody)
+        : JSON.stringify(stageBody);
+      try {
+        const res = await fetch(`${base}${endpoint}`, { method, headers, body });
+        const text = await res.text().catch(() => "");
+        if (res.ok) {
+          console.info(
+            `[meeting-successful] Hub ${method} OK ${base}${endpoint} for lead ${crmLeadId}`,
+          );
+          return;
+        }
+        if (res.status !== 404) {
+          errors.push(`${method} ${base}${endpoint} → ${res.status} ${text.slice(0, 160)}`);
+        }
+      } catch (err) {
+        errors.push(`${base}${endpoint} → ${(err as Error)?.message || err}`);
+      }
+    }
+  }
+
+  const detail = errors.slice(0, 8).join(" | ") || "no reachable CRM meeting-successful endpoint";
+  console.error(`[meeting-successful] Failed for CRM lead ${crmLeadId}:`, detail);
+  throw new Error(`Failed to update CRM lead ${crmLeadId} to Meeting Successful (${detail})`);
+}
+
+/** Resolve Design lead → CRM lead and PUT milestoneSubStage "Meeting Successful". Required after End meeting. */
+async function notifyCrmMeetingSuccessfulForDesignLead(leadId: number): Promise<{ crmLeadId: number; leadType: string | null }> {
+  if (!Number.isFinite(leadId) || leadId <= 0) {
+    throw new Error("Invalid Design lead id for CRM Meeting Successful sync");
+  }
+  const [rows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [leadId]);
+  const row = (rows as { payload?: string | null }[])[0];
+  if (!row) throw new Error(`Design lead ${leadId} not found for CRM Meeting Successful sync`);
+
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = row.payload ? (JSON.parse(row.payload) as Record<string, unknown>) : {};
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = {};
+  } catch {
+    payload = {};
+  }
+
+  const crmLeadIdNum = Number(payload.crmLeadId);
+  if (!Number.isFinite(crmLeadIdNum) || crmLeadIdNum <= 0) {
+    throw new Error(
+      `Design lead ${leadId} has no crmLeadId — CRM milestone cannot be set to Meeting Successful`,
+    );
+  }
+  const crmLeadType =
+    (typeof payload.crmLeadType === "string" && payload.crmLeadType.trim()) ||
+    (typeof payload.leadType === "string" && payload.leadType.trim()) ||
+    (typeof payload.crm_lead_type === "string" && payload.crm_lead_type.trim()) ||
+    null;
+
+  await notifyCrmMeetingCompleted(crmLeadIdNum, crmLeadType);
+  return { crmLeadId: crmLeadIdNum, leadType: crmLeadType };
 }
 
 /**
@@ -5747,22 +5876,18 @@ async function persistLeadMeetingWizCompleted(
     (typeof payload.leadType === "string" && payload.leadType.trim()) ||
     (typeof payload.crm_lead_type === "string" && payload.crm_lead_type.trim()) ||
     null;
-  if (crmLeadIdNum != null) {
-    void notifyCrmMeetingCompleted(crmLeadIdNum, crmLeadType).catch((err) => {
-      console.error("[meeting-wiz-completed] CRM notify error (non-fatal)", {
-        leadId,
-        crmLeadIdNum,
-        crmLeadType,
-        error: err,
-      });
-    });
-  }
-
   await pool.query("UPDATE leads SET payload = ?, update_at = ? WHERE id = ?", [
     JSON.stringify(payload),
     new Date(),
     leadId,
   ]);
+
+  // Required: Meeting Wizard completion must move CRM to Meeting Successful.
+  if (crmLeadIdNum != null) {
+    await notifyCrmMeetingCompleted(crmLeadIdNum, crmLeadType);
+  } else {
+    console.warn("[meeting-wiz-completed] skip CRM Meeting Successful — no crmLeadId on lead", { leadId });
+  }
 }
 
 // ----- Auth -----
@@ -10441,18 +10566,15 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             (typeof payload.crm_lead_type === "string" && payload.crm_lead_type.trim()) ||
             null;
           if (Number.isFinite(crmLeadIdNum) && crmLeadIdNum > 0) {
-            void notifyCrmMeetingCompleted(crmLeadIdNum, crmLeadType).catch((err) => {
-              console.error("[complete-task] CRM notify error (non-fatal)", {
-                leadId: id,
-                crmLeadIdNum,
-                crmLeadType,
-                error: err,
-              });
-            });
+            await notifyCrmMeetingCompleted(crmLeadIdNum, crmLeadType);
+          } else {
+            console.warn("[complete-task] skip CRM Meeting Successful — no crmLeadId", { leadId: id });
           }
         }
       } catch (err) {
-        console.error("[complete-task] failed to notify CRM of meeting completed (non-fatal)", err);
+        console.error("[complete-task] failed to notify CRM of Meeting Successful", err);
+        // Surface after local task save so ops can see CRM sync failed.
+        throw err;
       }
     }
 
@@ -22426,8 +22548,32 @@ app.post("/api/meetings/:id/end", async (req: Request, res: Response) => {
     if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
     const meetingId = Number(req.params.id);
     if (!Number.isFinite(meetingId)) return res.status(400).json({ message: "Invalid meeting id" });
+    // Local board → Meeting Successful first, then CRM milestone MUST follow.
     const meeting = await endCrmMeeting(pool, meetingId, { id: actingUser.id, name: actingUser.name });
-    return res.json({ meeting });
+    try {
+      const crm = await notifyCrmMeetingSuccessfulForDesignLead(Number(meeting?.leadId));
+      return res.json({
+        meeting,
+        crmMilestoneUpdated: true,
+        crmLeadId: crm.crmLeadId,
+        progressLabel: "Meeting Successful",
+      });
+    } catch (crmErr) {
+      console.error("[meetings/end] CRM Meeting Successful sync failed", {
+        meetingId,
+        leadId: meeting?.leadId,
+        error: crmErr,
+      });
+      return res.status(502).json({
+        meeting,
+        crmMilestoneUpdated: false,
+        progressLabel: "Meeting Successful",
+        message:
+          crmErr instanceof Error
+            ? `Meeting ended in Design, but CRM milestone was not updated: ${crmErr.message}`
+            : "Meeting ended in Design, but CRM milestone was not updated to Meeting Successful",
+      });
+    }
   } catch (err) {
     if (err instanceof MeetingActionError) return res.status(err.status).json({ message: err.message });
     console.error("end meeting error", err);

@@ -75,6 +75,8 @@ type ScheduledMeeting = {
   meetingMode: string | null;
   meetingStatus?: string | null;
   progress?: string | null;
+  /** Backend display label, e.g. "Meeting Successful" for design + Pre 10%. */
+  progressLabel?: string | null;
   source?: string | null;
   cancelReason?: string | null;
   cancelFiles?: { id: number; name: string; mimeType?: string | null }[] | null;
@@ -147,12 +149,12 @@ const STATUS_LABEL: Record<ViewStatus, string> = {
   scheduled: 'Scheduled',
   rescheduled: 'Meeting Rescheduled',
   in_progress: 'In progress',
-  completed: 'Successful',
+  completed: 'Meeting Successful',
   cancelled: 'Cancelled',
   abandoned: 'Meeting never happened',
 };
 
-const STEP_LABELS = ['Scheduled', 'In progress', 'Successful'] as const;
+const STEP_LABELS = ['Scheduled', 'In progress', 'Meeting Successful'] as const;
 const TYPE_FILTERS: { id: TypeFilter; label: string }[] = [
   { id: 'all', label: 'All' },
   { id: 'pre_10', label: 'Pre 10%' },
@@ -809,17 +811,18 @@ function Avatar({ name }: { name: string }) {
 }
 
 function StatusPill({ status, meeting }: { status: ViewStatus; meeting?: ViewMeeting }) {
-  let label = STATUS_LABEL[status];
+  let label = (meeting?.raw.progressLabel || '').trim() || STATUS_LABEL[status];
   let pillStatus: string = status;
-  if (meeting && (meeting.raw.source === 'crm' || meeting.typeKey === 'pre_10')) {
+  // Prefer backend progressLabel for all client meetings (design Material selection + Pre 10%).
+  if (meeting && !meeting.personal) {
     if (status === 'completed') {
-      label = 'Meeting Successful';
+      label = (meeting.raw.progressLabel || '').trim() || 'Meeting Successful';
       pillStatus = 'completed';
     } else if (status === 'cancelled') {
-      label = 'Meeting Cancelled';
+      label = (meeting.raw.progressLabel || '').trim() || 'Meeting Cancelled';
       pillStatus = 'cancelled';
     } else if (status === 'abandoned') {
-      label = 'Meeting never happened';
+      label = (meeting.raw.progressLabel || '').trim() || 'Meeting never happened';
       pillStatus = 'abandoned';
     } else if (
       status === 'rescheduled' ||
@@ -830,8 +833,11 @@ function StatusPill({ status, meeting }: { status: ViewStatus; meeting?: ViewMee
       label = `Meeting Rescheduled ${count}`;
       pillStatus = 'rescheduled';
     } else if (status === 'scheduled') {
-      label = 'Meeting Scheduled';
+      label = (meeting.raw.progressLabel || '').trim() || 'Meeting Scheduled';
       pillStatus = 'scheduled';
+    } else if (status === 'in_progress') {
+      label = (meeting.raw.progressLabel || '').trim() || 'In progress';
+      pillStatus = 'in_progress';
     }
   }
   return (
@@ -1200,7 +1206,7 @@ export default function MeetingManagementView() {
     { id: 'scheduled', label: 'Scheduled' },
     { id: 'rescheduled', label: 'Meeting Rescheduled' },
     { id: 'in_progress', label: 'In progress' },
-    { id: 'completed', label: 'Successful' },
+    { id: 'completed', label: 'Meeting Successful' },
     { id: 'cancelled', label: 'Cancelled' },
     { id: 'abandoned', label: 'Meeting never happened' },
   ];
@@ -1651,19 +1657,36 @@ export default function MeetingManagementView() {
         credentials: 'include',
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data?.message || 'Could not end this meeting.');
+      const endedLocally = data?.meeting != null || data?.crmMilestoneUpdated === true || res.ok;
+      if (endedLocally) {
+        await loadMeetings();
+        setSelected((prev) =>
+          prev && prev.key === selected.key
+            ? {
+                ...prev,
+                status: 'completed',
+                raw: {
+                  ...prev.raw,
+                  progress: 'completed',
+                  progressLabel: 'Meeting Successful',
+                },
+              }
+            : prev,
+        );
       }
-      await loadMeetings();
-      setSelected((prev) =>
-        prev && prev.key === selected.key
-          ? {
-              ...prev,
-              status: 'completed',
-              raw: { ...prev.raw, progress: 'completed' },
-            }
-          : prev,
-      );
+      if (!res.ok) {
+        throw new Error(
+          data?.message ||
+            (data?.crmMilestoneUpdated === false
+              ? 'Meeting ended here, but CRM milestone was not updated to Meeting Successful.'
+              : 'Could not end this meeting.'),
+        );
+      }
+      if (data?.crmMilestoneUpdated === false) {
+        setPre10ActionError(
+          data?.message || 'Meeting ended here, but CRM milestone was not updated to Meeting Successful.',
+        );
+      }
     } catch (err) {
       setPre10ActionError(err instanceof Error ? err.message : 'Could not end meeting.');
     } finally {
@@ -1794,7 +1817,7 @@ export default function MeetingManagementView() {
           <span className={styles.statSub}>{loading ? '' : `${stats.scheduledToday} today`}</span>
         </button>
         <button type="button" className={styles.stat} data-static="false" data-on={statusFilters.includes('completed')} aria-pressed={statusFilters.includes('completed')} onClick={() => toggleStatus('completed')}>
-          <span className={styles.statLabel}>Successful</span>
+          <span className={styles.statLabel}>Meeting Successful</span>
           <span className={styles.statValue}>{loading ? '—' : stats.successful}</span>
           <span className={styles.statSub}>{'\u00a0'}</span>
         </button>
@@ -2952,7 +2975,7 @@ function CalendarBoard({
           <span><i className={styles.statusDot} data-status="scheduled" /> Scheduled</span>
           <span><i className={styles.statusDot} data-status="rescheduled" /> Meeting Rescheduled</span>
           <span><i className={styles.statusDot} data-status="in_progress" /> In progress</span>
-          <span><i className={styles.statusDot} data-status="completed" /> Successful</span>
+          <span><i className={styles.statusDot} data-status="completed" /> Meeting Successful</span>
           <span><i className={styles.statusDot} data-status="abandoned" /> Meeting never happened</span>
         </div>
         </section>
