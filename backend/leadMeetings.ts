@@ -435,8 +435,13 @@ export function ensureLeadMeetingsTable(pool: Pool): Promise<void> {
                 meeting_type = 'pre_10'
           WHERE source = 'crm' AND meeting_type <> 'pre_10'`,
       );
-      await backfillLeadMeetings(pool);
-      await reconcileCompletedDesignMeetings(pool);
+      // Never block API requests on backfill/reconcile — that timed out hosted Meeting Management.
+      void backfillLeadMeetings(pool).catch((err) =>
+        console.error("[lead-meetings] background backfill failed", err),
+      );
+      void reconcileCompletedDesignMeetings(pool).catch((err) =>
+        console.error("[lead-meetings] background reconcile failed", err),
+      );
     })().catch((err) => {
       tableReady = null;
       throw err;
@@ -1373,15 +1378,7 @@ async function quoteShareByLead(
   const ids = [...new Set(leadIds.filter((id) => Number.isInteger(id) && id > 0))];
   if (ids.length === 0) return out;
   const placeholders = ids.map(() => "?").join(",");
-  const [leadRows] = await pool.query(
-    `SELECT id AS leadId,
-            prolance_quote_id AS quoteId,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(payload), payload, '{}'), '$.quotation_total')) AS quotationTotal,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(payload), payload, '{}'), '$.quotationTotal')) AS quotationTotalAlt
-       FROM leads
-      WHERE id IN (${placeholders})`,
-    ids,
-  );
+  // Board-fast path: no JSON_VALID / payload scraping — those timed out hosted Meeting Management.
   const [snapRows] = await pool.query(
     `SELECT lead_id AS leadId,
             MAX(CASE
@@ -1391,50 +1388,57 @@ async function quoteShareByLead(
             MAX(CASE
                   WHEN crm_shared_quote_id > 0 THEN crm_shared_quote_id
                   ELSE 0
-                END) AS sharedQuoteId,
-            MAX(CASE
-                  WHEN JSON_VALID(payload_json) THEN GREATEST(
-                    COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.totalPayableAmount')) AS DECIMAL(18,2)), 0),
-                    COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.finalTotalPrice')) AS DECIMAL(18,2)), 0),
-                    COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.finalPrice')) AS DECIMAL(18,2)), 0)
-                  )
-                  ELSE 0
-                END) AS snapshotAmount
+                END) AS sharedQuoteId
        FROM lead_prolance_quote_snapshots
       WHERE lead_id IN (${placeholders})
       GROUP BY lead_id`,
     ids,
   );
-  const leads = new Map<number, { code: boolean; amount: number | null }>();
-  for (const row of leadRows as Record<string, unknown>[]) {
-    const id = Number(row.leadId);
-    const quoteId = Number(row.quoteId);
-    leads.set(id, {
-      code: Number.isFinite(quoteId) && quoteId > 0,
-      amount: positiveAmount(row.quotationTotal) ?? positiveAmount(row.quotationTotalAlt),
-    });
-  }
-  const snaps = new Map<number, { shared: boolean; sharedQuoteId: number; amount: number | null }>();
   for (const row of snapRows as Record<string, unknown>[]) {
     const id = Number(row.leadId);
-    const snapshotAmount = positiveAmount(row.snapshotAmount);
-    snaps.set(id, {
-      shared: Number(row.crmShared) === 1,
-      sharedQuoteId: Number(row.sharedQuoteId) || 0,
-      amount: snapshotAmount,
+    const shared = Number(row.crmShared) === 1;
+    const sharedQuoteId = Number(row.sharedQuoteId) || 0;
+    out.set(id, {
+      quoteSent: shared && sharedQuoteId > 0,
+      quoteFinalAmount: null,
     });
   }
   for (const id of ids) {
-    const lead = leads.get(id);
-    const snap = snaps.get(id);
-    const finalAmount = snap?.amount ?? lead?.amount ?? null;
-    const code = lead?.code === true || (snap?.sharedQuoteId ?? 0) > 0;
-    out.set(id, {
-      quoteSent: code && finalAmount != null && snap?.shared === true,
-      quoteFinalAmount: finalAmount,
-    });
+    if (!out.has(id)) out.set(id, { quoteSent: false, quoteFinalAmount: null });
   }
   return out;
+}
+
+function payloadText(payload: Record<string, unknown> | null, ...paths: string[]): string {
+  if (!payload) return "";
+  for (const path of paths) {
+    const parts = path.split(".");
+    let cur: unknown = payload;
+    for (const part of parts) {
+      if (cur == null || typeof cur !== "object") {
+        cur = null;
+        break;
+      }
+      cur = (cur as Record<string, unknown>)[part];
+    }
+    const text = cleanText(cur);
+    if (text) return text;
+  }
+  return "";
+}
+
+function parseLeadPayload(raw: unknown): Record<string, unknown> | null {
+  if (raw == null || raw === "") return null;
+  if (typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
+  if (typeof raw !== "string") return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1565,8 +1569,8 @@ async function reconcileCompletedDesignMeetings(pool: Pool) {
 let lastMeetingListReconcileAt = 0;
 const MEETING_LIST_RECONCILE_MS = 60_000;
 /** Board list window — keeps hosted `/api/meetings/scheduled` under ~5s. */
-const MEETING_BOARD_PAST_DAYS = 90;
-const MEETING_BOARD_FUTURE_DAYS = 60;
+const MEETING_BOARD_PAST_DAYS = 60;
+const MEETING_BOARD_FUTURE_DAYS = 45;
 
 function meetingBoardDateWindow(now = new Date()): { fromIso: string; toIso: string } {
   const today = kolkataParts(now).date;
@@ -1647,13 +1651,16 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
     queryParams.push(...designerIds!);
   }
 
-  // Do not await per-row progress writes — that was timing out hosted Meeting Management.
-  scheduleOpenMeetingProgressRefresh(pool, {
-    leadId: opts?.leadId,
-    designerIds: scoped ? designerIds : undefined,
-    now,
-  });
+  // Defer background writes so they never steal pool connections from this request.
+  setTimeout(() => {
+    scheduleOpenMeetingProgressRefresh(pool, {
+      leadId: opts?.leadId,
+      designerIds: scoped ? designerIds : undefined,
+      now,
+    });
+  }, 0);
 
+  // Board-fast select: scalar columns only (no payload JSON — huge blobs timed out hosted).
   const [rows] = await pool.query(
     `SELECT m.id,
             l.id AS leadId,
@@ -1678,50 +1685,54 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
             m.feedback_designer_at AS feedbackDesignerAt,
             m.feedback_designer_by AS feedbackDesignerBy,
             m.started_at AS startedAt,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.crmSchedule.slot')) AS payloadCrmSlot,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.formData.appointment_slot')) AS payloadFormSlot,
-            u.name AS assignedDesignerName,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.formData.customer_name')) AS customerName,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.formData.customerName')) AS customerNameAlt,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.customer_name')) AS customerNameRoot,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.formData.phone')) AS formPhone,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.formData.mobile')) AS formMobile,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.formData.sales_executive')) AS salesExec,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.formData.salesExecutive')) AS salesExecAlt,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.salesExecutive')) AS salesExecRoot,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.quotation_total')) AS quotationTotal,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.quotationTotal')) AS quotationTotalAlt,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.discovery.budget')) AS discoveryBudget,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.formData.budget')) AS formBudget,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.budget')) AS rootBudget,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.formData.sales_closure_ec')) AS ecFormSales,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.formData.branch')) AS ecFormBranch,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.formData.experience_center')) AS ecFormCenter,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.form_data.sales_closure_ec')) AS ecDataSales,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.form_data.branch')) AS ecDataBranch,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.form_data.experience_center')) AS ecDataCenter,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.sales_closure_ec')) AS ecRootSales,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.branch')) AS ecRootBranch,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.experience_center')) AS ecRootCenter,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.form.sales_closure_ec')) AS ecAltSales,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.form.branch')) AS ecAltBranch,
-            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.form.experience_center')) AS ecAltCenter
+            u.name AS assignedDesignerName
        FROM lead_meetings m
        JOIN leads l ON l.id = m.lead_id
        LEFT JOIN users u ON u.id = COALESCE(m.designer_id, l.assigned_designer_id)
       WHERE ${whereParts.join(" AND ")}
       ORDER BY m.meeting_date ASC, m.meeting_time ASC, m.id ASC
-      LIMIT 2500`,
+      LIMIT 1500`,
     queryParams,
   );
+
+  // Recover slot only for rows missing meeting_time (small set), not for the whole board.
+  const missingTimeLeadIds = [
+    ...new Set(
+      (rows as Record<string, unknown>[])
+        .filter((row) => !normalizeTimeLabel(row.meetingTime) && !cleanText(row.meetingTime))
+        .map((row) => Number(row.leadId))
+        .filter((id) => Number.isFinite(id) && id > 0),
+    ),
+  ].slice(0, 80);
+  const slotByLead = new Map<number, string>();
+  if (missingTimeLeadIds.length > 0) {
+    try {
+      const [slotRows] = await pool.query(
+        `SELECT id AS leadId, payload
+           FROM leads
+          WHERE id IN (${missingTimeLeadIds.map(() => "?").join(",")})`,
+        missingTimeLeadIds,
+      );
+      for (const slotRow of slotRows as Record<string, unknown>[]) {
+        const payload = parseLeadPayload(slotRow.payload);
+        const slot =
+          payloadText(payload, "crmSchedule.slot", "formData.appointment_slot") ||
+          normalizeTimeLabel((payload?.crmSchedule as Record<string, unknown> | undefined)?.slot) ||
+          "";
+        const label = normalizeTimeLabel(slot) || cleanText(slot);
+        if (label) slotByLead.set(Number(slotRow.leadId), label);
+      }
+    } catch (err) {
+      console.error("meeting slot recovery failed", err);
+    }
+  }
 
   let shareByLead = new Map<number, { quoteSent: boolean; quoteFinalAmount: number | null }>();
   try {
     const leadIds = [...new Set((rows as Record<string, unknown>[]).map((row) => Number(row.leadId)))].filter(
       (id) => Number.isFinite(id) && id > 0,
     );
-    // Cap quote enrichment — full board quote share was a major hosted timeout source.
-    shareByLead = await quoteShareByLead(pool, leadIds.slice(0, 400));
+    shareByLead = await quoteShareByLead(pool, leadIds.slice(0, 500));
   } catch (err) {
     console.error("quote share lookup failed", err);
   }
@@ -1747,44 +1758,25 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
             },
             now,
           );
-    const resolvedTime = (() => {
-      const stored = normalizeTimeLabel(row.meetingTime) || cleanText(row.meetingTime);
-      if (stored) return stored;
-      // Recover time wiped by older Hub upserts that omitted slot.
-      return (
-        normalizeTimeLabel(row.payloadCrmSlot) ||
-        normalizeTimeLabel(row.payloadFormSlot) ||
-        cleanText(row.payloadCrmSlot) ||
-        cleanText(row.payloadFormSlot)
-      );
-    })();
+    const resolvedTime =
+      normalizeTimeLabel(row.meetingTime) ||
+      cleanText(row.meetingTime) ||
+      slotByLead.get(Number(row.leadId)) ||
+      "";
+    const projectName = cleanText(row.projectName);
     return {
     id: Number(row.id),
     leadId: Number(row.leadId),
     projectId: cleanText(row.projectId),
-    projectName: cleanText(row.projectName),
+    projectName,
     projectStage: cleanText(row.projectStage),
     isOnHold: row.isOnHold === 1 || row.isOnHold === true || row.isOnHold === "1",
-    customerName:
-      cleanText(row.customerName) || cleanText(row.customerNameAlt) || cleanText(row.customerNameRoot) || cleanText(row.projectName) || "Customer",
-    phone: cleanText(row.contactNo) || cleanText(row.formPhone) || cleanText(row.formMobile),
-    salesName: cleanText(row.salesExec) || cleanText(row.salesExecAlt) || cleanText(row.salesExecRoot),
-    quotationTotal: cleanText(row.quotationTotal) || cleanText(row.quotationTotalAlt),
-    budget: cleanText(row.discoveryBudget) || cleanText(row.formBudget) || cleanText(row.rootBudget),
-    branchName:
-      cleanText(row.meetingBranch) ||
-      cleanText(row.ecFormSales) ||
-      cleanText(row.ecFormBranch) ||
-      cleanText(row.ecFormCenter) ||
-      cleanText(row.ecDataSales) ||
-      cleanText(row.ecDataBranch) ||
-      cleanText(row.ecDataCenter) ||
-      cleanText(row.ecRootSales) ||
-      cleanText(row.ecRootBranch) ||
-      cleanText(row.ecRootCenter) ||
-      cleanText(row.ecAltSales) ||
-      cleanText(row.ecAltBranch) ||
-      cleanText(row.ecAltCenter),
+    customerName: projectName || "Customer",
+    phone: cleanText(row.contactNo),
+    salesName: "",
+    quotationTotal: "",
+    budget: "",
+    branchName: cleanText(row.meetingBranch),
     designerName: cleanText(row.assignedDesignerName) || "Unassigned",
     meetingDate: String(row.meetingDate || "").slice(0, 10),
     meetingTime: resolvedTime,
