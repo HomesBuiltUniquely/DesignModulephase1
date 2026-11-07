@@ -1562,35 +1562,97 @@ async function reconcileCompletedDesignMeetings(pool: Pool) {
   );
 }
 
+let lastMeetingListReconcileAt = 0;
+const MEETING_LIST_RECONCILE_MS = 60_000;
+/** Board list window — keeps hosted `/api/meetings/scheduled` under ~5s. */
+const MEETING_BOARD_PAST_DAYS = 90;
+const MEETING_BOARD_FUTURE_DAYS = 60;
+
+function meetingBoardDateWindow(now = new Date()): { fromIso: string; toIso: string } {
+  const today = kolkataParts(now).date;
+  return {
+    fromIso: addDaysIso(today, -MEETING_BOARD_PAST_DAYS),
+    toIso: addDaysIso(today, MEETING_BOARD_FUTURE_DAYS),
+  };
+}
+
+/** Persist open-meeting progress in the background — never block the board response. */
+function scheduleOpenMeetingProgressRefresh(
+  pool: Pool,
+  opts: { leadId?: number; designerIds?: number[]; now: Date },
+): void {
+  void (async () => {
+    try {
+      const designerIds = opts.designerIds?.filter((id) => Number.isInteger(id) && id > 0);
+      const scoped = Boolean(designerIds?.length);
+      const params: unknown[] = [];
+      let sql = `${MEETING_SELECT}
+        ${scoped ? "JOIN leads l ON l.id = m.lead_id" : ""}
+        WHERE m.meeting_status <> 'cancelled' AND m.progress <> 'completed'
+          AND m.meeting_date >= DATE_SUB(CURDATE(), INTERVAL 14 DAY)
+          AND m.meeting_date <= DATE_ADD(CURDATE(), INTERVAL 2 DAY)`;
+      if (opts.leadId) {
+        sql += " AND m.lead_id = ?";
+        params.push(opts.leadId);
+      }
+      if (scoped) {
+        sql += ` AND COALESCE(m.designer_id, l.assigned_designer_id) IN (${designerIds!.map(() => "?").join(",")})`;
+        params.push(...designerIds!);
+      }
+      sql += " ORDER BY m.meeting_date ASC, m.id ASC LIMIT 200";
+      const [openRows] = await pool.query(sql, params);
+      for (const raw of openRows as Record<string, unknown>[]) {
+        // Skip history writes on list refresh — history was making hosted loads time out.
+        await refreshStoredProgress(pool, mapRow(raw), opts.now, false);
+      }
+    } catch (err) {
+      console.error("[lead-meetings] background progress refresh failed", err);
+    }
+  })();
+}
+
 export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now?: Date; designerIds?: number[] }) {
   await ensureLeadMeetingsTable(pool);
-  await reconcileCompletedDesignMeetings(pool);
-  try {
-    await reconcilePre10MeetingsAfterCrmQuoteShare(pool);
-  } catch (err) {
-    console.error("pre10 crm-quote-share meeting reconcile failed", err);
-  }
   const now = opts?.now || new Date();
+  if (Date.now() - lastMeetingListReconcileAt >= MEETING_LIST_RECONCILE_MS) {
+    lastMeetingListReconcileAt = Date.now();
+    void (async () => {
+      try {
+        await reconcileCompletedDesignMeetings(pool);
+        await reconcilePre10MeetingsAfterCrmQuoteShare(pool);
+      } catch (err) {
+        console.error("meeting list reconcile failed", err);
+      }
+    })();
+  }
+
   const designerIds = opts?.designerIds?.filter((id) => Number.isInteger(id) && id > 0);
   if (opts?.designerIds && (!designerIds || designerIds.length === 0)) return [];
   const scoped = Boolean(designerIds);
-  const scopeSql = scoped
-    ? `AND COALESCE(m.designer_id, l.assigned_designer_id) IN (${designerIds!.map(() => "?").join(",")})`
-    : "";
-  const openParams: unknown[] = [];
-  if (opts?.leadId) openParams.push(opts.leadId);
-  if (scoped) openParams.push(...designerIds!);
-  const [openRows] = await pool.query(
-    `${MEETING_SELECT}
-      ${scoped ? "JOIN leads l ON l.id = m.lead_id" : ""}
-      WHERE m.meeting_status <> 'cancelled' AND m.progress <> 'completed'
-        ${opts?.leadId ? "AND m.lead_id = ?" : ""}
-        ${scopeSql}`,
-    openParams,
-  );
-  for (const raw of openRows as Record<string, unknown>[]) {
-    await refreshStoredProgress(pool, mapRow(raw), now, true);
+  const { fromIso, toIso } = meetingBoardDateWindow(now);
+  const whereParts: string[] = [];
+  const queryParams: unknown[] = [];
+  if (opts?.leadId) {
+    whereParts.push("m.lead_id = ?");
+    queryParams.push(opts.leadId);
+  } else {
+    whereParts.push("m.meeting_date >= ?");
+    whereParts.push("m.meeting_date <= ?");
+    queryParams.push(fromIso, toIso);
   }
+  if (scoped) {
+    whereParts.push(
+      `COALESCE(m.designer_id, l.assigned_designer_id) IN (${designerIds!.map(() => "?").join(",")})`,
+    );
+    queryParams.push(...designerIds!);
+  }
+
+  // Do not await per-row progress writes — that was timing out hosted Meeting Management.
+  scheduleOpenMeetingProgressRefresh(pool, {
+    leadId: opts?.leadId,
+    designerIds: scoped ? designerIds : undefined,
+    now,
+  });
 
   const [rows] = await pool.query(
     `SELECT m.id,
@@ -1615,12 +1677,9 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
             m.feedback_designer AS feedbackDesigner,
             m.feedback_designer_at AS feedbackDesignerAt,
             m.feedback_designer_by AS feedbackDesignerBy,
+            m.started_at AS startedAt,
             JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.crmSchedule.slot')) AS payloadCrmSlot,
             JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.formData.appointment_slot')) AS payloadFormSlot,
-            (SELECT COUNT(*) FROM lead_history h WHERE h.lead_id = m.lead_id AND (
-              JSON_UNQUOTE(JSON_EXTRACT(h.event, '$.taskName')) = 'Meeting rescheduled'
-              OR JSON_UNQUOTE(JSON_EXTRACT(h.event, '$.meta.action')) = 'rescheduled'
-            )) AS historyRescheduleCount,
             u.name AS assignedDesignerName,
             JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.formData.customer_name')) AS customerName,
             JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.formData.customerName')) AS customerNameAlt,
@@ -1650,23 +1709,55 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
        FROM lead_meetings m
        JOIN leads l ON l.id = m.lead_id
        LEFT JOIN users u ON u.id = COALESCE(m.designer_id, l.assigned_designer_id)
-      ${opts?.leadId || scoped ? `WHERE ${[opts?.leadId ? "m.lead_id = ?" : "", scoped ? `COALESCE(m.designer_id, l.assigned_designer_id) IN (${designerIds!.map(() => "?").join(",")})` : ""].filter(Boolean).join(" AND ")}` : ""}
-      ORDER BY m.meeting_date ASC, m.meeting_time ASC, m.id ASC`,
-    [...(opts?.leadId ? [opts.leadId] : []), ...(scoped ? designerIds! : [])],
+      WHERE ${whereParts.join(" AND ")}
+      ORDER BY m.meeting_date ASC, m.meeting_time ASC, m.id ASC
+      LIMIT 2500`,
+    queryParams,
   );
 
   let shareByLead = new Map<number, { quoteSent: boolean; quoteFinalAmount: number | null }>();
   try {
-    shareByLead = await quoteShareByLead(
-      pool,
-      (rows as Record<string, unknown>[]).map((row) => Number(row.leadId)),
+    const leadIds = [...new Set((rows as Record<string, unknown>[]).map((row) => Number(row.leadId)))].filter(
+      (id) => Number.isFinite(id) && id > 0,
     );
+    // Cap quote enrichment — full board quote share was a major hosted timeout source.
+    shareByLead = await quoteShareByLead(pool, leadIds.slice(0, 400));
   } catch (err) {
     console.error("quote share lookup failed", err);
   }
 
   return (rows as Record<string, unknown>[]).map((row) => {
     const share = shareByLead.get(Number(row.leadId));
+    const storedProgress = (() => {
+      const raw = String(row.progress || "scheduled");
+      if (raw === "meeting_abandoned") return "meeting_never_happened";
+      return raw;
+    })();
+    const liveProgress =
+      storedProgress === "completed" || String(row.meetingStatus || "") === "cancelled"
+        ? storedProgress
+        : nextMeetingProgress(
+            {
+              meetingStatus: String(row.meetingStatus || "scheduled") as MeetingBookingStatus,
+              progress: storedProgress as MeetingProgress,
+              meetingDate: String(row.meetingDate || "").slice(0, 10),
+              meetingTime: row.meetingTime == null ? null : String(row.meetingTime),
+              source: (String(row.source || "crm") as MeetingSource) || "crm",
+              startedAt: (row.startedAt as Date | string | null) ?? null,
+            },
+            now,
+          );
+    const resolvedTime = (() => {
+      const stored = normalizeTimeLabel(row.meetingTime) || cleanText(row.meetingTime);
+      if (stored) return stored;
+      // Recover time wiped by older Hub upserts that omitted slot.
+      return (
+        normalizeTimeLabel(row.payloadCrmSlot) ||
+        normalizeTimeLabel(row.payloadFormSlot) ||
+        cleanText(row.payloadCrmSlot) ||
+        cleanText(row.payloadFormSlot)
+      );
+    })();
     return {
     id: Number(row.id),
     leadId: Number(row.leadId),
@@ -1696,31 +1787,12 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
       cleanText(row.ecAltCenter),
     designerName: cleanText(row.assignedDesignerName) || "Unassigned",
     meetingDate: String(row.meetingDate || "").slice(0, 10),
-    meetingTime: (() => {
-      const stored = normalizeTimeLabel(row.meetingTime) || cleanText(row.meetingTime);
-      if (stored) return stored;
-      // Recover time wiped by older Hub upserts that omitted slot.
-      return (
-        normalizeTimeLabel(row.payloadCrmSlot) ||
-        normalizeTimeLabel(row.payloadFormSlot) ||
-        cleanText(row.payloadCrmSlot) ||
-        cleanText(row.payloadFormSlot)
-      );
-    })(),
-    meetingTimeLabel: (() => {
-      const stored = normalizeTimeLabel(row.meetingTime) || cleanText(row.meetingTime);
-      if (stored) return stored;
-      return (
-        normalizeTimeLabel(row.payloadCrmSlot) ||
-        normalizeTimeLabel(row.payloadFormSlot) ||
-        cleanText(row.payloadCrmSlot) ||
-        cleanText(row.payloadFormSlot)
-      );
-    })(),
+    meetingTime: resolvedTime,
+    meetingTimeLabel: resolvedTime,
     meetingType: cleanText(row.meetingType),
     meetingMode: cleanText(row.meetingMode),
     meetingStatus: cleanText(row.meetingStatus),
-    progress: cleanText(row.progress),
+    progress: liveProgress,
     source: cleanText(row.source),
     cancelReason: cleanText(row.cancelReason),
     cancelFiles: parseCancelFiles(row.cancelFiles),
@@ -1728,7 +1800,7 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
     endedAt: meetingEndedIso(row.endedAt),
     quoteSent: share?.quoteSent === true,
     quoteFinalAmount: share?.quoteFinalAmount != null ? String(share.quoteFinalAmount) : null,
-    rescheduleCount: Math.max(Number(row.rescheduleCount || 0), Number(row.historyRescheduleCount || 0)),
+    rescheduleCount: Number(row.rescheduleCount || 0),
     feedbackDesigner: cleanText(row.feedbackDesigner),
     feedbackDesignerAt: meetingEndedIso(row.feedbackDesignerAt),
     feedbackDesignerBy: cleanText(row.feedbackDesignerBy),
