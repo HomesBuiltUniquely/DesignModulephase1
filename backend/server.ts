@@ -31,6 +31,10 @@ import {
 import { registerCrmHubBookingRoutes, notifyHubFinanceReview, getHubBookingSyncForLead, buildFinance10pQueueList, buildCrmSalesClosureQueueRows, buildCrmSalesClosureLeadDetail, leadHasDqc1Approval, isCrmBookingFinanceApproved } from "./routes/crmHubBookingRoutes";
 import { readCrmFinanceHandlingMode } from "./routes/crmEasebuzzAutoFinance";
 import { registerDesignPaymentRoutes } from "./routes/designPaymentRoutes";
+import {
+  ensureQuoteCustomerViewTables,
+  registerQuoteCustomerViewRoutes,
+} from "./quoteCustomerView";
 import { registerIncentivesRoutes } from "./routes/incentivesRoutes";
 import {
   ensureDesignerXpTable,
@@ -1867,6 +1871,8 @@ async function initDb() {
     } catch {
       // ignore
     }
+
+    await ensureQuoteCustomerViewTables(conn);
 
     await conn.query(`
       CREATE TABLE IF NOT EXISTS checklists (
@@ -21444,6 +21450,13 @@ registerCrmHubBookingRoutes(app, {
   },
 });
 registerProlanceRoutes(app, getUserFromSession, pool);
+registerQuoteCustomerViewRoutes(app, pool, {
+  erpBaseUrl: ERP_BASE_URL,
+  webhookSecret:
+    process.env.CRM_QUOTE_WEBHOOK_SECRET ||
+    process.env.crm_quote_webhook_secret ||
+    "",
+});
 registerIncentivesRoutes(app, { pool, getUserFromSession });
 registerDesignerXpRoutes(app, { pool, getUserFromSession });
 registerDesignPaymentRoutes(app, {

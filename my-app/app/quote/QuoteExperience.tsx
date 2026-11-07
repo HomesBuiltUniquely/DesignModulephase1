@@ -684,6 +684,50 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
   }, [quoteIdProp, payload, quote.quotationId]);
 
   useEffect(() => {
+    const isCustomerAudience = !isInternalMode && !crmAudience && preloadedPayload === undefined;
+    if (!isCustomerAudience || loading || !payload || !quoteBodyHasRooms(payload)) return;
+    const q = versionFetchId || quoteIdProp.trim();
+    if (!q || !/^\d+$/.test(q)) return;
+    if (typeof sessionStorage === 'undefined') return;
+    const storageKey = `hubQuoteViewRecorded:${q}`;
+    if (sessionStorage.getItem(storageKey)) return;
+    let viewSessionId = sessionStorage.getItem(`hubQuoteViewSid:${q}`);
+    if (!viewSessionId) {
+      viewSessionId =
+        typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+      sessionStorage.setItem(`hubQuoteViewSid:${q}`, viewSessionId);
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API}/api/public/quote/${encodeURIComponent(q)}/view`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ viewSessionId }),
+        });
+        if (!cancelled && res.ok) {
+          sessionStorage.setItem(storageKey, '1');
+        }
+      } catch {
+        /* non-fatal */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isInternalMode,
+    crmAudience,
+    preloadedPayload,
+    loading,
+    payload,
+    quoteIdProp,
+    versionFetchId,
+  ]);
+
+  useEffect(() => {
     if (!versionFetchId) return;
     let cancelled = false;
     (async () => {
