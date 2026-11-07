@@ -5835,10 +5835,15 @@ async function notifyCrmQuoteLinkShared(opts: {
     : new Error(String(lastError || "CRM quoteLink push failed"));
 }
 
-/** Mark Meeting Wizard session completed so Start Meeting stays hidden until a newer schedule. */
+/** Mark Meeting Wizard / End Meeting session completed so Pre 10% Start Meeting stays hidden. */
 async function persistLeadMeetingWizCompleted(
   leadId: number,
-  opts: { completedAt?: string | null; meetingDate?: string | null },
+  opts: {
+    completedAt?: string | null;
+    meetingDate?: string | null;
+    /** When End Meeting already synced CRM, skip a second CRM PUT. */
+    skipCrmNotify?: boolean;
+  },
 ) {
   const completedAt =
     (opts.completedAt && String(opts.completedAt).trim()) || new Date().toISOString();
@@ -5864,7 +5869,7 @@ async function persistLeadMeetingWizCompleted(
     meetingDate,
   };
 
-    // Design internal lead ID (leadId param) is NOT the CRM lead ID — the CRM lead id is
+  // Design internal lead ID (leadId param) is NOT the CRM lead ID — the CRM lead id is
   // stored in payload.crmLeadId (set during /api/leads/external-intake). Only notify CRM
   // when this lead actually has one; older/manually-created leads may not.
   const crmLeadIdNum = (() => {
@@ -5881,6 +5886,8 @@ async function persistLeadMeetingWizCompleted(
     new Date(),
     leadId,
   ]);
+
+  if (opts.skipCrmNotify) return;
 
   // Required: Meeting Wizard completion must move CRM to Meeting Successful.
   if (crmLeadIdNum != null) {
@@ -17988,6 +17995,54 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
         };
       });
 
+    // Backfill Start Meeting hide-flag when End Meeting already completed CRM progress
+    // but older rows never wrote meetingWizLastCompleted (Pre 10% dashboard still showed Start).
+    try {
+      const missingWiz = baseList
+        .filter((l: { id: number; meetingWizLastCompleted?: unknown }) => !l.meetingWizLastCompleted)
+        .map((l: { id: number }) => l.id);
+      if (missingWiz.length > 0) {
+        const placeholders = missingWiz.map(() => "?").join(",");
+        const [doneRows] = await pool.query(
+          `SELECT m.lead_id AS leadId,
+                  DATE_FORMAT(m.meeting_date, '%Y-%m-%d') AS meetingDate,
+                  m.ended_at AS endedAt,
+                  m.updated_at AS updatedAt
+             FROM lead_meetings m
+            WHERE m.source = 'crm'
+              AND m.progress = 'completed'
+              AND m.meeting_status <> 'cancelled'
+              AND m.lead_id IN (${placeholders})
+            ORDER BY m.ended_at DESC, m.updated_at DESC, m.id DESC`,
+          missingWiz,
+        );
+        const doneByLead = new Map<number, { at: string; meetingDate: string }>();
+        for (const row of doneRows as {
+          leadId: number;
+          meetingDate?: string;
+          endedAt?: Date | string | null;
+          updatedAt?: Date | string | null;
+        }[]) {
+          const leadId = Number(row.leadId);
+          if (!Number.isFinite(leadId) || doneByLead.has(leadId)) continue;
+          const atRaw = row.endedAt || row.updatedAt || new Date();
+          const at = atRaw instanceof Date ? atRaw.toISOString() : new Date(String(atRaw)).toISOString();
+          const meetingDate = String(row.meetingDate || at).slice(0, 10);
+          doneByLead.set(leadId, { at, meetingDate });
+        }
+        for (const lead of baseList as {
+          id: number;
+          meetingWizLastCompleted?: { at: string; meetingDate: string } | null;
+        }[]) {
+          if (lead.meetingWizLastCompleted) continue;
+          const done = doneByLead.get(lead.id);
+          if (done) lead.meetingWizLastCompleted = done;
+        }
+      }
+    } catch (wizBackfillErr) {
+      console.error("[leads-list] meetingWizLastCompleted backfill failed", wizBackfillErr);
+    }
+
     // Enrich with current milestone (from task completions) for Design Phase dashboard
     const [completionRows] = await pool.query(
       `SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName, completed_at as completedAt FROM lead_task_completions`,
@@ -19133,7 +19188,36 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
       scheduledMeetingDate: intake.scheduledMeetingDate,
       scheduledMeetingSlot: intake.scheduledMeetingSlot,
       designScheduledMeetingUpdatedAt: intake.designScheduledMeetingUpdatedAt,
-      meetingWizLastCompleted: intake.meetingWizLastCompleted,
+      meetingWizLastCompleted:
+        intake.meetingWizLastCompleted ||
+        (await (async () => {
+          try {
+            const [doneRows] = await pool.query(
+              `SELECT DATE_FORMAT(meeting_date, '%Y-%m-%d') AS meetingDate,
+                      ended_at AS endedAt,
+                      updated_at AS updatedAt
+                 FROM lead_meetings
+                WHERE lead_id = ?
+                  AND source = 'crm'
+                  AND progress = 'completed'
+                  AND meeting_status <> 'cancelled'
+                ORDER BY ended_at DESC, updated_at DESC, id DESC
+                LIMIT 1`,
+              [id],
+            );
+            const done = (doneRows as {
+              meetingDate?: string;
+              endedAt?: Date | string | null;
+              updatedAt?: Date | string | null;
+            }[])[0];
+            if (!done) return null;
+            const atRaw = done.endedAt || done.updatedAt || new Date();
+            const at = atRaw instanceof Date ? atRaw.toISOString() : new Date(String(atRaw)).toISOString();
+            return { at, meetingDate: String(done.meetingDate || at).slice(0, 10) };
+          } catch {
+            return null;
+          }
+        })()),
       intakeCustomerName: intake.intakeCustomerName,
       intakeConfiguration: intake.intakeConfiguration,
       intakeNotes: intake.intakeNotes,
@@ -22550,6 +22634,16 @@ app.post("/api/meetings/:id/end", async (req: Request, res: Response) => {
     if (!Number.isFinite(meetingId)) return res.status(400).json({ message: "Invalid meeting id" });
     // Local board → Meeting Successful first, then CRM milestone MUST follow.
     const meeting = await endCrmMeeting(pool, meetingId, { id: actingUser.id, name: actingUser.name });
+    // Hide Pre 10% dashboard Start Meeting (same flag Meeting Wizard uses).
+    try {
+      await persistLeadMeetingWizCompleted(Number(meeting?.leadId), {
+        completedAt: new Date().toISOString(),
+        meetingDate: meeting?.meetingDate || null,
+        skipCrmNotify: true,
+      });
+    } catch (persistErr) {
+      console.error("[meetings/end] persist meetingWizLastCompleted failed", persistErr);
+    }
     try {
       const crm = await notifyCrmMeetingSuccessfulForDesignLead(Number(meeting?.leadId));
       return res.json({
