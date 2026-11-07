@@ -21982,52 +21982,47 @@ app.get("/api/meetings/scheduled", async (req: Request, res: Response) => {
     const scope = await meetingViewerScope(actingUser);
     if (!scope) return res.status(403).json({ message: "Not allowed to open meeting management" });
 
-    // Personal ERP board can be slow — never let it block client meetings past 2.5s.
-    const PERSONAL_BOARD_BUDGET_MS = 2500;
-    const personalPromise = listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds)
-      .then((board) => ({ ok: true as const, board }))
-      .catch((personalErr) => {
-        console.error("[meeting-board] personal appointments failed", personalErr);
-        return {
-          ok: false as const,
-          warning: "Personal appointments could not be loaded. Client meetings are still shown.",
-        };
-      });
-    const personalRace = Promise.race([
-      personalPromise,
-      new Promise<{ ok: false; warning: string }>((resolve) => {
-        setTimeout(
-          () =>
-            resolve({
-              ok: false,
-              warning: "Personal appointments are still loading. Client meetings are shown now.",
-            }),
-          PERSONAL_BOARD_BUDGET_MS,
-        );
-      }),
-    ]);
-
-    const [meetings, personalResult] = await Promise.all([
-      listLeadMeetings(pool, scope.all ? undefined : { designerIds: scope.userIds }),
-      personalRace,
-    ]);
+    // Client meetings first — personal ERP must never block the board (hosted timed out at 8s).
+    const meetings = await listLeadMeetings(pool, scope.all ? undefined : { designerIds: scope.userIds });
 
     let personal: Record<string, unknown>[] = [];
     let personalWarning: string | null = null;
-    if (personalResult.ok) {
-      personal = personalResult.board.meetings;
-      personalWarning = personalResult.board.warning;
-    } else {
-      personalWarning = personalResult.warning;
-      // Keep filling cache in background after we already responded with client meetings.
-      void personalPromise.then((late) => {
-        if (late.ok) {
-          console.log(
-            `[meeting-board] personal appointments finished after response in ${Date.now() - startedAt}ms (${late.board.meetings.length} rows)`,
+    const PERSONAL_BOARD_BUDGET_MS = 800;
+    try {
+      const personalResult = await Promise.race([
+        listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds)
+          .then((board) => ({ ok: true as const, board }))
+          .catch((personalErr) => {
+            console.error("[meeting-board] personal appointments failed", personalErr);
+            return {
+              ok: false as const,
+              warning: "Personal appointments could not be loaded. Client meetings are still shown.",
+            };
+          }),
+        new Promise<{ ok: false; warning: string }>((resolve) => {
+          setTimeout(
+            () =>
+              resolve({
+                ok: false,
+                warning: "Personal appointments are still loading. Client meetings are shown now.",
+              }),
+            PERSONAL_BOARD_BUDGET_MS,
           );
-        }
-      });
+        }),
+      ]);
+      if (personalResult.ok) {
+        personal = personalResult.board.meetings;
+        personalWarning = personalResult.board.warning;
+      } else {
+        personalWarning = personalResult.warning;
+        // Warm cache in background for the next refresh.
+        void listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds).catch(() => undefined);
+      }
+    } catch (personalErr) {
+      console.error("[meeting-board] personal appointments failed", personalErr);
+      personalWarning = "Personal appointments could not be loaded. Client meetings are still shown.";
     }
+
     console.log(
       `[meeting-board] scheduled list ready in ${Date.now() - startedAt}ms (client=${meetings.length}, personal=${personal.length})`,
     );
