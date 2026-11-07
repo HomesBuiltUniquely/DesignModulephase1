@@ -315,6 +315,54 @@ const SLAB_TIERS = [
   { targetPct: 40, incentivePct: 0.25 },
 ];
 
+/** Design lead / design manager slabs, applied to that team's total weighted revenue. */
+const DESIGN_LEAD_SLAB_TIERS = [
+  { targetPct: 120, incentivePct: 0.45 },
+  { targetPct: 100, incentivePct: 0.35 },
+  { targetPct: 80, incentivePct: 0.3 },
+  { targetPct: 60, incentivePct: 0.25 },
+  { targetPct: 50, incentivePct: 0.2 },
+];
+
+function designLeadIncentive(totalTarget: number, weighted: number): {
+  achievementPct: number;
+  slabPct: number;
+  incentivePct: number;
+  incentiveEarned: number;
+} {
+  return incentiveFromSlabs(DESIGN_LEAD_SLAB_TIERS, totalTarget, weighted);
+}
+
+/** TDM slabs, applied to the combined weighted total of the design managers. */
+const TDM_SLAB_TIERS = [
+  { targetPct: 100, incentivePct: 0.2 },
+  { targetPct: 75, incentivePct: 0.13 },
+  { targetPct: 65, incentivePct: 0.11 },
+  { targetPct: 50, incentivePct: 0.07 },
+  { targetPct: 40, incentivePct: 0.05 },
+];
+
+function incentiveFromSlabs(
+  tiers: { targetPct: number; incentivePct: number }[],
+  totalTarget: number,
+  weighted: number,
+): {
+  achievementPct: number;
+  slabPct: number;
+  incentivePct: number;
+  incentiveEarned: number;
+} {
+  const achievementPct = totalTarget > 0 ? Math.round((weighted / totalTarget) * 1000) / 10 : 0;
+  const tier = tiers.find((row) => achievementPct >= row.targetPct);
+  const incentivePct = tier?.incentivePct ?? 0;
+  return {
+    achievementPct,
+    slabPct: tier?.targetPct ?? 0,
+    incentivePct,
+    incentiveEarned: Math.round((weighted * incentivePct) / 100),
+  };
+}
+
 function pickSlabPct(achievementPct: number): number {
   for (const tier of SLAB_TIERS) {
     if (achievementPct >= tier.targetPct) return tier.targetPct;
@@ -738,6 +786,93 @@ function computeDesignerFortnightMetrics(
   };
 }
 
+export const BRANCH_TARGET_CODES = ["HBR", "SJR", "JPN"] as const;
+export type BranchTargetCode = (typeof BRANCH_TARGET_CODES)[number];
+/** ₹1.5 crore. The per-branch floor starts here and never decreases. */
+export const INITIAL_BRANCH_MINIMUM_INR = 15_000_000;
+
+export function isBranchTargetCode(code: string): code is BranchTargetCode {
+  return (BRANCH_TARGET_CODES as readonly string[]).includes(code);
+}
+
+/** Highest of the stored floor and any candidate. Lower candidates are ignored. */
+export function nextStoredMinimum(storedMinimum: number, ...amounts: number[]): number {
+  let next = Number.isFinite(storedMinimum) ? storedMinimum : INITIAL_BRANCH_MINIMUM_INR;
+  for (const amount of amounts) {
+    if (Number.isFinite(amount) && amount > next) next = amount;
+  }
+  return next;
+}
+
+export function applicableBranchTarget(storedMinimum: number, achievement: number): number {
+  const stored = Number.isFinite(storedMinimum) ? storedMinimum : INITIAL_BRANCH_MINIMUM_INR;
+  const achieved = Number.isFinite(achievement) && achievement > 0 ? achievement : 0;
+  return Math.max(stored, achieved);
+}
+
+export type BranchFloors = Record<BranchTargetCode, number>;
+
+export function initialBranchFloors(): BranchFloors {
+  return {
+    HBR: INITIAL_BRANCH_MINIMUM_INR,
+    SJR: INITIAL_BRANCH_MINIMUM_INR,
+    JPN: INITIAL_BRANCH_MINIMUM_INR,
+  };
+}
+
+/** Raise one branch only. Other branches keep their own floors. */
+export function raiseBranchFloor(
+  floors: BranchFloors,
+  branchCode: BranchTargetCode,
+  ...amounts: number[]
+): BranchFloors {
+  return {
+    ...floors,
+    [branchCode]: nextStoredMinimum(floors[branchCode], ...amounts),
+  };
+}
+
+export type BranchTargetDecision =
+  | { allowed: true }
+  | { allowed: false; status: 400 | 403; message: string };
+
+/**
+ * Admin may raise any of the three branches.
+ * A TDM may raise a branch only when that design manager's territorial_design_manager_id is the TDM.
+ */
+export function authorizeBranchTargetWrite(input: {
+  role: string | null | undefined;
+  viewerId: number;
+  managerTerritorialDesignManagerId: number | null;
+  branchCode: string;
+}): BranchTargetDecision {
+  const role = (input.role || "").toLowerCase();
+  if (role !== "admin" && role !== "territorial_design_manager") {
+    return { allowed: false, status: 403, message: "Forbidden" };
+  }
+  if (role === "territorial_design_manager") {
+    const ownerId =
+      input.managerTerritorialDesignManagerId == null
+        ? null
+        : Number(input.managerTerritorialDesignManagerId);
+    if (ownerId == null || ownerId !== Number(input.viewerId)) {
+      return {
+        allowed: false,
+        status: 403,
+        message: "You can only set targets for design managers in your territory",
+      };
+    }
+  }
+  if (!isBranchTargetCode(input.branchCode)) {
+    return {
+      allowed: false,
+      status: 400,
+      message: "Branch target applies to HBR, Sarjapur, and JP Nagar only",
+    };
+  }
+  return { allowed: true };
+}
+
 export function registerIncentivesRoutes(
   app: Express,
   deps: {
@@ -887,6 +1022,18 @@ export function registerIncentivesRoutes(
         return res.json({ teams: myTeam });
       }
 
+      let managerTeams = allTeams;
+      if (role === "territorial_design_manager") {
+        const [allowedRows] = await pool.query(
+          `SELECT id FROM users WHERE role = 'design_manager' AND territorial_design_manager_id = ?`,
+          [user.id],
+        );
+        const allowedIds = new Set(
+          (allowedRows as { id: number }[]).map((row) => Number(row.id)),
+        );
+        managerTeams = allTeams.filter((t) => allowedIds.has(t.managerId));
+      }
+
       // Admin / TDM / DGM:
       // "All Branches" is the FIRST option in the dropdown, followed by manager teams, and "Unassigned"
       const [unassignedRows] = await pool.query(
@@ -902,7 +1049,7 @@ export function registerIncentivesRoutes(
           managerId: -1,
           managerName: "All Branches",
         },
-        ...allTeams,
+        ...managerTeams,
       ];
 
       if (unassignedCount > 0) {
@@ -940,7 +1087,8 @@ export function registerIncentivesRoutes(
         role === "territorial_design_manager" ||
         role === "deputy_general_manager";
 
-      const period = Number(req.query.period) === 30 ? 30 : 15;
+      const periodParam = String(req.query.period || "").trim().toLowerCase();
+      const period = periodParam === "30" || periodParam === "monthly" ? 30 : 15;
 
       const reqManagerIdRaw = req.query.managerId as string | undefined;
       const reqManagerId =
@@ -951,9 +1099,14 @@ export function registerIncentivesRoutes(
           ? Number(reqManagerIdRaw)
           : null;
 
-      // Reject unauthorized requests for 30-day mode or All Branches
+      // Reject unauthorized requests for monthly/30-day mode: restricted to Admin and TDM/DGM
+      if (period === 30 && !isAdminOrTdm) {
+        return res.status(403).json({ message: "Forbidden: Monthly period access is restricted to Admin and TDM" });
+      }
+
+      // Reject unauthorized requests for All Branches or other managers for DM
       if (isDM) {
-        if (period === 30 || reqManagerId === -1 || (reqManagerId !== null && reqManagerId !== user.id)) {
+        if (reqManagerId === -1 || (reqManagerId !== null && reqManagerId !== user.id)) {
           return res.status(403).json({ message: "Forbidden: Access restricted to authorized managers" });
         }
       }
@@ -1257,7 +1410,10 @@ export function registerIncentivesRoutes(
       const incentiveEarned = computedRows.reduce((s, r) => s + r.incentiveEarned, 0);
       const onSpotBonus = computedRows.reduce((s, r) => s + r.onSpotBonus, 0);
       const achievementPct = totalTarget > 0 ? Math.round((revenueAchieved / totalTarget) * 1000) / 10 : 0;
-      const meetingsGatePassedCount = computedRows.filter((r) => r.meetingsEligible).length;
+      const meetingsGatePassedCount =
+        period === 30
+          ? computedRows.filter((r) => (r.meetingsGateNote ? !r.meetingsGateNote.startsWith("Locked") : r.meetingsEligible)).length
+          : computedRows.filter((r) => r.meetingsEligible).length;
 
       const summary = {
         memberCount: computedRows.length,
@@ -1267,6 +1423,9 @@ export function registerIncentivesRoutes(
         meetingsGatePassedCount,
         incentiveEarned,
         onSpotBonus,
+        ...(targetTeam.managerId > 0
+          ? { designLead: designLeadIncentive(totalTarget, revenueAchieved) }
+          : {}),
       };
 
       // Construct cycle info
@@ -1316,6 +1475,267 @@ export function registerIncentivesRoutes(
     } catch (err) {
       console.error("[GET /api/incentives/team] error", err);
       return res.status(500).json({ message: "Failed to load team incentives" });
+    }
+  });
+
+  let branchTargetTableReady: Promise<void> | null = null;
+  function ensureBranchTargetTable(): Promise<void> {
+    if (!branchTargetTableReady) {
+      branchTargetTableReady = (async () => {
+        await pool.query(
+          `CREATE TABLE IF NOT EXISTS branch_design_manager_targets (
+             branch_code VARCHAR(8) NOT NULL PRIMARY KEY,
+             minimum_target_inr DECIMAL(18,2) NOT NULL,
+             updated_by INT NULL,
+             updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+           )`,
+        );
+        await pool.query(
+          `INSERT IGNORE INTO branch_design_manager_targets (branch_code, minimum_target_inr)
+           VALUES ('HBR', ?), ('SJR', ?), ('JPN', ?)`,
+          [INITIAL_BRANCH_MINIMUM_INR, INITIAL_BRANCH_MINIMUM_INR, INITIAL_BRANCH_MINIMUM_INR],
+        );
+      })().catch((err) => {
+        branchTargetTableReady = null;
+        throw err;
+      });
+    }
+    return branchTargetTableReady;
+  }
+
+  async function sumDesignerFortnightTotals(
+    managerIds: number[],
+    cycleIndex: number,
+  ): Promise<{ totalTarget: number; revenueAchieved: number }> {
+    if (managerIds.length === 0) return { totalTarget: 0, revenueAchieved: 0 };
+    const [rows] = await pool.query(
+      `SELECT id, sub_role AS subRole
+       FROM users
+       WHERE role = 'designer' AND design_manager_id IN (?)`,
+      [managerIds],
+    );
+    const designers = rows as { id: number; subRole: string | null }[];
+    const parts = await Promise.all(
+      designers.map(async (designer) => {
+        const raw = await fetchDesignerFortnightData(pool, designer.id, cycleIndex);
+        const metrics = computeDesignerFortnightMetrics(
+          designer.subRole,
+          raw.deals,
+          raw.meetingsCompleted,
+        );
+        return { totalTarget: metrics.target, revenueAchieved: metrics.revenueAchieved };
+      }),
+    );
+    return parts.reduce(
+      (sum, part) => ({
+        totalTarget: sum.totalTarget + part.totalTarget,
+        revenueAchieved: sum.revenueAchieved + part.revenueAchieved,
+      }),
+      { totalTarget: 0, revenueAchieved: 0 },
+    );
+  }
+
+  /** A design manager's weighted total is the sum of that team's designer weighted revenue. */
+  async function sumManagerTeamWeighted(
+    managerId: number,
+    period: 15 | 30,
+    cycleIndex: number,
+    monthIndex: number,
+  ): Promise<{ totalTarget: number; weighted: number }> {
+    if (period === 30) {
+      const [first, second] = await Promise.all([
+        sumDesignerFortnightTotals([managerId], monthIndex * 2),
+        sumDesignerFortnightTotals([managerId], monthIndex * 2 + 1),
+      ]);
+      return {
+        totalTarget: first.totalTarget + second.totalTarget,
+        weighted: first.revenueAchieved + second.revenueAchieved,
+      };
+    }
+    const fortnight = await sumDesignerFortnightTotals([managerId], cycleIndex);
+    return { totalTarget: fortnight.totalTarget, weighted: fortnight.revenueAchieved };
+  }
+
+  async function sumBranchAchievement(managerId: number, cycleIndex: number): Promise<number> {
+    const totals = await sumDesignerFortnightTotals([managerId], cycleIndex);
+    return totals.revenueAchieved;
+  }
+
+  /**
+   * Persist a higher floor in one row update. GREATEST reads the current value under InnoDB's row lock,
+   * so overlapping requests cannot write a lower minimum.
+   */
+  async function raiseStoredBranchMinimum(
+    branchCode: BranchTargetCode,
+    candidate: number,
+    updatedBy: number,
+  ): Promise<number> {
+    await pool.query(
+      `UPDATE branch_design_manager_targets
+       SET updated_by = IF(? > minimum_target_inr, ?, updated_by),
+           minimum_target_inr = GREATEST(minimum_target_inr, ?)
+       WHERE branch_code = ?`,
+      [candidate, updatedBy, candidate, branchCode],
+    );
+    const [rows] = await pool.query(
+      `SELECT minimum_target_inr AS minimumTarget
+       FROM branch_design_manager_targets
+       WHERE branch_code = ?
+       LIMIT 1`,
+      [branchCode],
+    );
+    const stored = Number((rows as { minimumTarget: number | string }[])[0]?.minimumTarget);
+    return Number.isFinite(stored) ? stored : INITIAL_BRANCH_MINIMUM_INR;
+  }
+
+  async function resolveBranchTargetRequest(
+    req: Request,
+    res: Response,
+    submitted: number | null,
+  ): Promise<void> {
+    const user = await getUserFromSession(req);
+    if (!user) {
+      res.status(401).json({ message: "Unauthorized" });
+      return;
+    }
+
+    const managerId = Number(req.method === "GET" ? req.query.managerId : (req.body || {}).managerId);
+    if (!Number.isFinite(managerId) || managerId <= 0) {
+      res.status(400).json({ message: "Select a branch design manager" });
+      return;
+    }
+
+    const cycleRaw = req.method === "GET" ? req.query.cycleIndex : (req.body || {}).cycleIndex;
+    const cycleIndex =
+      cycleRaw != null && String(cycleRaw).trim() !== "" ? Number(cycleRaw) : getCurrentCycleIndex();
+    if (!Number.isFinite(cycleIndex) || cycleIndex < 0) {
+      res.status(400).json({ message: "Invalid cycleIndex" });
+      return;
+    }
+
+    const [managerRows] = await pool.query(
+      `SELECT m.id,
+              m.branch,
+              m.territorial_design_manager_id AS territorialDesignManagerId,
+              COALESCE(
+                NULLIF(TRIM(m.branch), ''),
+                (SELECT branch FROM users WHERE design_manager_id = m.id AND branch IS NOT NULL AND TRIM(branch) != '' LIMIT 1)
+              ) AS resolvedBranch
+       FROM users m
+       WHERE m.id = ? AND m.role = 'design_manager'
+       LIMIT 1`,
+      [managerId],
+    );
+    const manager = (managerRows as {
+      id: number;
+      branch: string | null;
+      territorialDesignManagerId: number | null;
+      resolvedBranch: string | null;
+    }[])[0];
+    if (!manager) {
+      res.status(404).json({ message: "Design manager not found" });
+      return;
+    }
+
+    const branchCode = toBranchCode(manager.resolvedBranch || manager.branch);
+    const decision = authorizeBranchTargetWrite({
+      role: user.role,
+      viewerId: user.id,
+      managerTerritorialDesignManagerId:
+        manager.territorialDesignManagerId == null ? null : Number(manager.territorialDesignManagerId),
+      branchCode,
+    });
+    if (!decision.allowed) {
+      res.status(decision.status).json({ message: decision.message });
+      return;
+    }
+    if (!isBranchTargetCode(branchCode)) {
+      res.status(400).json({ message: "Branch target applies to HBR, Sarjapur, and JP Nagar only" });
+      return;
+    }
+
+    await ensureBranchTargetTable();
+    const achievement = await sumBranchAchievement(managerId, cycleIndex);
+    const candidate =
+      submitted == null ? achievement : nextStoredMinimum(INITIAL_BRANCH_MINIMUM_INR, achievement, submitted);
+    const storedMinimum = await raiseStoredBranchMinimum(branchCode, candidate, user.id);
+    const applicableTarget = applicableBranchTarget(storedMinimum, achievement);
+    res.json({ branchCode, storedMinimum, achievement, applicableTarget });
+  }
+
+  app.get("/api/incentives/tdm-totals", async (req: Request, res: Response) => {
+    try {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+      if ((user.role || "").toLowerCase() !== "territorial_design_manager") {
+        return res.status(403).json({ message: "Forbidden" });
+      }
+      const cycleRaw = req.query.cycleIndex;
+      const cycleIndex =
+        cycleRaw != null && String(cycleRaw).trim() !== "" ? Number(cycleRaw) : getCurrentCycleIndex();
+      if (!Number.isFinite(cycleIndex) || cycleIndex < 0) {
+        return res.status(400).json({ message: "Invalid cycleIndex" });
+      }
+      const periodParam = String(req.query.period || "").trim().toLowerCase();
+      const period: 15 | 30 = periodParam === "30" || periodParam === "monthly" ? 30 : 15;
+      let monthIndex = Math.floor(cycleIndex / 2);
+      if (req.query.monthIndex != null && String(req.query.monthIndex).trim() !== "") {
+        const parsedMonth = Number(req.query.monthIndex);
+        if (Number.isFinite(parsedMonth) && parsedMonth >= 0) monthIndex = parsedMonth;
+      }
+      const teams = await resolveActiveTeams();
+      const branchManagers = teams.filter((team) => isBranchTargetCode(team.code));
+      const managers = branchManagers.length > 0 ? branchManagers : teams;
+      const rows = await Promise.all(
+        managers.map(async (manager) => {
+          const totals = await sumManagerTeamWeighted(manager.managerId, period, cycleIndex, monthIndex);
+          const slab = designLeadIncentive(totals.totalTarget, totals.weighted);
+          return {
+            managerId: manager.managerId,
+            managerName: manager.managerName,
+            branch: manager.code,
+            totalTarget: totals.totalTarget,
+            weighted: totals.weighted,
+            achievementPct: slab.achievementPct,
+            slabPct: slab.slabPct,
+            incentivePct: slab.incentivePct,
+            incentiveEarned: slab.incentiveEarned,
+          };
+        }),
+      );
+      const totalTarget = rows.reduce((sum, row) => sum + row.totalTarget, 0);
+      const revenueAchieved = rows.reduce((sum, row) => sum + row.weighted, 0);
+      return res.json({
+        totalTarget,
+        revenueAchieved,
+        managers: rows,
+        tdm: incentiveFromSlabs(TDM_SLAB_TIERS, totalTarget, revenueAchieved),
+      });
+    } catch (err) {
+      console.error("[GET /api/incentives/tdm-totals] error", err);
+      return res.status(500).json({ message: "Failed to load combined targets" });
+    }
+  });
+
+  app.get("/api/incentives/branch-target", async (req: Request, res: Response) => {
+    try {
+      await resolveBranchTargetRequest(req, res, null);
+    } catch (err) {
+      console.error("[GET /api/incentives/branch-target] error", err);
+      if (!res.headersSent) res.status(500).json({ message: "Failed to load branch target" });
+    }
+  });
+
+  app.put("/api/incentives/branch-target", async (req: Request, res: Response) => {
+    try {
+      const submitted = Number((req.body || {}).minimumTarget);
+      if (!Number.isFinite(submitted) || submitted < 0) {
+        return res.status(400).json({ message: "Invalid minimum target" });
+      }
+      await resolveBranchTargetRequest(req, res, submitted);
+    } catch (err) {
+      console.error("[PUT /api/incentives/branch-target] error", err);
+      if (!res.headersSent) res.status(500).json({ message: "Failed to update branch target" });
     }
   });
 }
