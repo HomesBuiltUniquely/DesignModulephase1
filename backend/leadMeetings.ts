@@ -5,6 +5,21 @@ export type MeetingProgress = "scheduled" | "in_progress" | "meeting_never_happe
 export type MeetingBookingStatus = "scheduled" | "rescheduled" | "cancelled";
 export type MeetingSource = "design_module" | "crm";
 
+/** Board / history display labels — same for Pre 10% and design meetings (Material selection, etc.). */
+export function meetingProgressLabel(
+  progress: string | null | undefined,
+  meetingStatus?: string | null,
+): string {
+  const status = String(meetingStatus || "").toLowerCase();
+  const prog = String(progress || "").toLowerCase();
+  if (status === "cancelled" || prog === "cancelled") return "Meeting Cancelled";
+  if (prog === "completed") return "Meeting Successful";
+  if (prog === "meeting_never_happened" || prog === "meeting_abandoned") return "Meeting never happened";
+  if (prog === "in_progress") return "In progress";
+  if (status === "rescheduled") return "Meeting Rescheduled";
+  return "Meeting Scheduled";
+}
+
 export type MeetingActor = { id?: number | null; name?: string | null };
 
 export class MeetingActionError extends Error {
@@ -885,7 +900,7 @@ export async function markDesignMeetingCompleted(
     `UPDATE lead_meetings SET progress = 'completed', ended_at = ?, updated_at = ? WHERE id = ?`,
     [now, now, active.id],
   );
-  await writeHistory(pool, input.leadId, input.actor, "Meeting completed", `${def.bookingTask} marked completed.`, {
+  await writeHistory(pool, input.leadId, input.actor, "Meeting Successful", `${def.bookingTask} marked Meeting Successful.`, {
     action: "completed",
     meetingId: active.id,
     meetingType: def.meetingType,
@@ -900,7 +915,7 @@ async function assertDesignMutable(pool: Pool, row: MeetingRow) {
     throw new MeetingActionError(409, "This meeting is already cancelled");
   }
   if (row.progress === "completed") {
-    throw new MeetingActionError(409, "This meeting is already completed");
+    throw new MeetingActionError(409, "This meeting is already Meeting Successful");
   }
   if (row.source === "crm") {
     throw new MeetingActionError(409, "Pre 10% meetings from CRM are changed in CRM");
@@ -913,7 +928,7 @@ async function assertDesignMutable(pool: Pool, row: MeetingRow) {
       `UPDATE lead_meetings SET progress = 'completed', ended_at = COALESCE(ended_at, ?), updated_at = ? WHERE id = ?`,
       [now, now, row.id],
     );
-    throw new MeetingActionError(409, "This meeting is already completed");
+    throw new MeetingActionError(409, "This meeting is already Meeting Successful");
   }
 }
 
@@ -1225,7 +1240,7 @@ export async function startCrmMeeting(
   if (!row) throw new MeetingActionError(404, "Meeting not found");
   if (row.source !== "crm") throw new MeetingActionError(400, "Start Meeting is for CRM meetings");
   if (row.meetingStatus === "cancelled") throw new MeetingActionError(409, "This meeting is cancelled");
-  if (row.progress === "completed") throw new MeetingActionError(409, "This meeting is already completed");
+  if (row.progress === "completed") throw new MeetingActionError(409, "This meeting is already Meeting Successful");
   const today = kolkataParts(now).date;
   if (row.meetingDate !== today) {
     throw new MeetingActionError(409, "Start Meeting is available on the meeting day");
@@ -1257,7 +1272,7 @@ export async function endCrmMeeting(pool: Pool, meetingId: number, actor?: Meeti
     `UPDATE lead_meetings SET progress = 'completed', ended_at = ?, updated_at = ? WHERE id = ?`,
     [now, now, row.id],
   );
-  await writeHistory(pool, row.leadId, actor, "Meeting completed", "CRM meeting ended.", {
+  await writeHistory(pool, row.leadId, actor, "Meeting Successful", "CRM meeting ended.", {
     action: "completed",
     meetingId: row.id,
     source: "crm",
@@ -1484,8 +1499,8 @@ export async function completePre10CrmMeetingAfterQuoteShare(
     pool,
     leadId,
     actor,
-    "Meeting completed",
-    "Pre 10% meeting marked successful after quote Shared to CRM.",
+    "Meeting Successful",
+    "Pre 10% meeting marked Meeting Successful after quote Shared to CRM.",
     {
       action: "completed",
       source: "crm",
@@ -1785,6 +1800,7 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
     meetingMode: cleanText(row.meetingMode),
     meetingStatus: cleanText(row.meetingStatus),
     progress: liveProgress,
+    progressLabel: meetingProgressLabel(liveProgress, cleanText(row.meetingStatus)),
     source: cleanText(row.source),
     cancelReason: cleanText(row.cancelReason),
     cancelFiles: parseCancelFiles(row.cancelFiles),
