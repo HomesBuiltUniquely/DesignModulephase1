@@ -1,7 +1,7 @@
 import type { Pool, ResultSetHeader } from "mysql2/promise";
 import { awardTaskCompletionXp } from "./routes/designerXpRoutes";
 
-export type MeetingProgress = "scheduled" | "in_progress" | "meeting_abandoned" | "completed";
+export type MeetingProgress = "scheduled" | "in_progress" | "meeting_never_happened" | "completed";
 export type MeetingBookingStatus = "scheduled" | "rescheduled" | "cancelled";
 export type MeetingSource = "design_module" | "crm";
 
@@ -62,6 +62,11 @@ export type MeetingRow = {
   /** Shared reason for cancel or reschedule. */
   cancelReason: string | null;
   rescheduleCount?: number;
+  /** CRM Pre-10% note for designer (progress unchanged). */
+  feedbackDesigner?: string | null;
+  feedbackDesignerAt?: Date | string | null;
+  feedbackDesignerBy?: string | null;
+  crmAppointmentId?: number | null;
   startedAt: Date | string | null;
   endedAt: Date | string | null;
 };
@@ -133,11 +138,45 @@ export function formatMinutesLabel(total: number): string {
   return `${hour}:${String(minute).padStart(2, "0")} ${suffix}`;
 }
 
+/** Pull a displayable start clock from Hub slot strings/objects (ranges + JSON). */
 export function normalizeTimeLabel(value: unknown): string | null {
-  const text = String(value || "").trim();
+  if (value == null) return null;
+  if (typeof value === "object" && !Array.isArray(value)) {
+    const row = value as Record<string, unknown>;
+    const nested =
+      row.start ??
+      row.startTime ??
+      row.start_time ??
+      row.from ??
+      row.slot ??
+      row.time ??
+      row.label ??
+      row.appointmentSlot;
+    const fromNested = normalizeTimeLabel(nested);
+    if (fromNested) return fromNested;
+  }
+  let text = String(value || "").trim();
   if (!text) return null;
+  if (text.startsWith("{") || text.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      const fromJson = normalizeTimeLabel(parsed);
+      if (fromJson) return fromJson;
+    } catch {
+      /* keep raw text */
+    }
+  }
+  // Ranges like "4:00 PM - 5:30 PM" → use the start clock.
+  const rangeMatch = text.match(
+    /(\d{1,2}:\d{2}(?::\d{2})?\s*(?:[ap]m)?)\s*[-–—to]+\s*\d{1,2}:\d{2}/i,
+  );
+  if (rangeMatch?.[1]) text = rangeMatch[1].trim();
   const minutes = clockLabelToMinutes(text);
-  if (minutes == null) return text.slice(0, 64);
+  if (minutes == null) {
+    // Unparseable blob — don't store JSON/garbage as meeting_time.
+    if (/[{}\[\]"]/.test(text) || text.length > 32) return null;
+    return text.slice(0, 64);
+  }
   return formatMinutesLabel(minutes);
 }
 
@@ -168,8 +207,8 @@ export function isFutureKolkataSlot(dateIso: string, timeLabel: string | null, n
 const HUB_DAY_START_MIN = 10 * 60;
 const HUB_MEETING_DURATION_MIN = 90;
 const HUB_EARLY_SLOT_DURATION_MIN = 60;
-/** After the slot end, wait this long before marking an unstarted meeting abandoned. */
-const MEETING_ABANDON_BUFFER_MIN = 2 * 60;
+/** After the slot end, wait this long before marking an unstarted meeting as never happened. */
+const MEETING_ABANDON_BUFFER_MIN = 4 * 60;
 
 function hubMeetingDurationForStart(startMin: number): number {
   return startMin === HUB_DAY_START_MIN ? HUB_EARLY_SLOT_DURATION_MIN : HUB_MEETING_DURATION_MIN;
@@ -190,13 +229,14 @@ function isAtOrPastKolkata(dateIso: string, minutes: number, now: Date): boolean
 }
 
 /**
- * Abandoned only after the meeting end time + 2 hours, and only when the
- * meeting was never started. Started meetings stay in progress until completed.
+ * After slot end, keep unstarted meetings In progress for the 4h buffer,
+ * then Meeting never happened. Started meetings stay in progress until completed.
+ * Feedback UI for never-happened reason is Pre 10% only (frontend).
  */
 export function nextMeetingProgress(
   row: {
     meetingStatus: MeetingBookingStatus;
-    progress: MeetingProgress;
+    progress: MeetingProgress | "meeting_abandoned";
     meetingDate: string;
     meetingTime: string | null;
     source: MeetingSource;
@@ -204,8 +244,13 @@ export function nextMeetingProgress(
   },
   now = new Date(),
 ): MeetingProgress {
-  if (row.meetingStatus === "cancelled") return row.progress;
+  if (row.meetingStatus === "cancelled") {
+    return row.progress === "meeting_abandoned" ? "meeting_never_happened" : (row.progress as MeetingProgress);
+  }
   if (row.progress === "completed") return "completed";
+  if (row.progress === "meeting_never_happened" || row.progress === "meeting_abandoned") {
+    return "meeting_never_happened";
+  }
 
   const today = kolkataParts(now);
   const startMin = clockLabelToMinutes(row.meetingTime);
@@ -221,16 +266,19 @@ export function nextMeetingProgress(
 
   const pastAbandonWindow = isAtOrPastKolkata(abandonDate, abandonMin, now);
   const neverStarted = !row.startedAt;
-  if (pastAbandonWindow && neverStarted) return "meeting_abandoned";
+  if (pastAbandonWindow && neverStarted) return "meeting_never_happened";
 
   if (row.startedAt) return "in_progress";
+
+  // Slot ended but still inside the 4h buffer → In progress (then never happened).
+  const pastSlotEnd = isAtOrPastKolkata(row.meetingDate, endMin, now);
+  if (pastSlotEnd && neverStarted) return "in_progress";
+
   if (row.meetingDate > today.date) return "scheduled";
-  if (row.meetingDate < today.date) {
-    // Past the meeting day but still inside the end+2h window (late slot).
-    return "scheduled";
-  }
+  if (row.meetingDate < today.date) return "scheduled";
 
   const timeReached = startMin == null ? true : today.minutes >= startMin;
+  // CRM Pre 10%: stay Scheduled until slot end (then buffer → In progress above).
   if (row.source === "crm") return "scheduled";
   if (!timeReached) return "scheduled";
   return "in_progress";
@@ -250,7 +298,7 @@ export function ensureLeadMeetingsTable(pool: Pool): Promise<void> {
           meeting_type VARCHAR(64) NOT NULL,
           meeting_mode VARCHAR(32) NULL,
           meeting_status ENUM('scheduled','rescheduled','cancelled') NOT NULL DEFAULT 'scheduled',
-          progress ENUM('scheduled','in_progress','meeting_abandoned','completed') NOT NULL DEFAULT 'scheduled',
+          progress ENUM('scheduled','in_progress','meeting_never_happened','completed') NOT NULL DEFAULT 'scheduled',
           designer_id INT NULL,
           source ENUM('design_module','crm') NOT NULL,
           branch VARCHAR(64) NULL,
@@ -302,6 +350,79 @@ export function ensureLeadMeetingsTable(pool: Pool): Promise<void> {
       );
       if ((rescheduleCountCol as unknown[]).length === 0) {
         await pool.query("ALTER TABLE lead_meetings ADD COLUMN reschedule_count INT NOT NULL DEFAULT 0 AFTER cancel_files");
+      }
+      const [feedbackDesignerCol] = await pool.query(
+        `SELECT 1 FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'feedback_designer'`,
+      );
+      if ((feedbackDesignerCol as unknown[]).length === 0) {
+        await pool.query(
+          "ALTER TABLE lead_meetings ADD COLUMN feedback_designer TEXT NULL AFTER reschedule_count",
+        );
+      }
+      const [feedbackDesignerAtCol] = await pool.query(
+        `SELECT 1 FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'feedback_designer_at'`,
+      );
+      if ((feedbackDesignerAtCol as unknown[]).length === 0) {
+        await pool.query(
+          "ALTER TABLE lead_meetings ADD COLUMN feedback_designer_at DATETIME NULL AFTER feedback_designer",
+        );
+      }
+      const [feedbackDesignerByCol] = await pool.query(
+        `SELECT 1 FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'feedback_designer_by'`,
+      );
+      if ((feedbackDesignerByCol as unknown[]).length === 0) {
+        await pool.query(
+          "ALTER TABLE lead_meetings ADD COLUMN feedback_designer_by VARCHAR(255) NULL AFTER feedback_designer_at",
+        );
+      }
+      const [crmAppointmentIdCol] = await pool.query(
+        `SELECT 1 FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'crm_appointment_id'`,
+      );
+      if ((crmAppointmentIdCol as unknown[]).length === 0) {
+        await pool.query(
+          "ALTER TABLE lead_meetings ADD COLUMN crm_appointment_id BIGINT NULL AFTER feedback_designer_by",
+        );
+      }
+      // Rename progress: meeting_abandoned → meeting_never_happened (DB + rows).
+      try {
+        const [progressCol] = await pool.query(
+          `SELECT COLUMN_TYPE AS columnType FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'progress'
+            LIMIT 1`,
+        );
+        const columnType = String((progressCol as { columnType?: string }[])[0]?.columnType || "");
+        if (columnType.includes("meeting_abandoned")) {
+          await pool.query(
+            `ALTER TABLE lead_meetings
+             MODIFY COLUMN progress ENUM(
+               'scheduled','in_progress','meeting_abandoned','meeting_never_happened','completed'
+             ) NOT NULL DEFAULT 'scheduled'`,
+          );
+          await pool.query(
+            `UPDATE lead_meetings
+                SET progress = 'meeting_never_happened'
+              WHERE progress = 'meeting_abandoned'`,
+          );
+          await pool.query(
+            `ALTER TABLE lead_meetings
+             MODIFY COLUMN progress ENUM(
+               'scheduled','in_progress','meeting_never_happened','completed'
+             ) NOT NULL DEFAULT 'scheduled'`,
+          );
+        } else if (columnType && !columnType.includes("meeting_never_happened")) {
+          await pool.query(
+            `ALTER TABLE lead_meetings
+             MODIFY COLUMN progress ENUM(
+               'scheduled','in_progress','meeting_never_happened','completed'
+             ) NOT NULL DEFAULT 'scheduled'`,
+          );
+        }
+      } catch (progressRenameErr) {
+        console.error("[lead-meetings] progress rename meeting_never_happened failed", progressRenameErr);
       }
       await pool.query(
         `UPDATE lead_meetings
@@ -358,12 +479,20 @@ function mapRow(row: Record<string, unknown>): MeetingRow {
     meetingType: String(row.meetingType || ""),
     meetingMode: row.meetingMode == null ? null : String(row.meetingMode),
     meetingStatus: String(row.meetingStatus || "scheduled") as MeetingBookingStatus,
-    progress: String(row.progress || "scheduled") as MeetingProgress,
+    progress: (() => {
+      const raw = String(row.progress || "scheduled");
+      if (raw === "meeting_abandoned") return "meeting_never_happened" as MeetingProgress;
+      return raw as MeetingProgress;
+    })(),
     designerId: row.designerId == null ? null : Number(row.designerId),
     designerName: row.designerName == null ? null : String(row.designerName),
     source: String(row.source || "design_module") as MeetingSource,
     cancelReason: row.cancelReason == null ? null : String(row.cancelReason),
     rescheduleCount: Number(row.rescheduleCount || 0),
+    feedbackDesigner: row.feedbackDesigner == null ? null : String(row.feedbackDesigner),
+    feedbackDesignerAt: (row.feedbackDesignerAt as Date | string | null) ?? null,
+    feedbackDesignerBy: row.feedbackDesignerBy == null ? null : String(row.feedbackDesignerBy),
+    crmAppointmentId: row.crmAppointmentId == null ? null : Number(row.crmAppointmentId),
     startedAt: (row.startedAt as Date | string | null) ?? null,
     endedAt: (row.endedAt as Date | string | null) ?? null,
   };
@@ -383,6 +512,10 @@ const MEETING_SELECT = `
          m.source,
          m.cancel_reason AS cancelReason,
          COALESCE(m.reschedule_count, 0) AS rescheduleCount,
+         m.feedback_designer AS feedbackDesigner,
+         m.feedback_designer_at AS feedbackDesignerAt,
+         m.feedback_designer_by AS feedbackDesignerBy,
+         m.crm_appointment_id AS crmAppointmentId,
          m.started_at AS startedAt,
          m.ended_at AS endedAt
     FROM lead_meetings m
@@ -420,7 +553,7 @@ async function refreshStoredProgress(pool: Pool, row: MeetingRow, now: Date, wri
   );
   if (Number((updated as ResultSetHeader).affectedRows) === 0) return row;
   if (writeHistoryOnChange) {
-    const label = next === "in_progress" ? "Meeting in progress" : "Meeting abandoned";
+    const label = next === "in_progress" ? "Meeting in progress" : "Meeting never happened";
     await writeHistory(pool, row.leadId, { name: "System" }, label, `${label} for ${row.meetingDate}.`, {
       action: next,
       meetingId: row.id,
@@ -622,9 +755,21 @@ export async function recordCrmMeeting(
   const dateIso = normalizeDateIso(input.meetingDate);
   if (!dateIso) return null;
   await ensureLeadMeetingsTable(pool);
-  const timeLabel = normalizeTimeLabel(input.meetingTime);
+  const incomingTime = normalizeTimeLabel(input.meetingTime);
   const mode = crmChannel(input.meetingType) || crmChannel(input.meetingMode);
   const meetingType = "pre_10";
+
+  // Successful CRM meetings are frozen — Hub null/omit slot must never rewrite them.
+  const [successfulRows] = await pool.query(
+    `SELECT id FROM lead_meetings
+      WHERE lead_id = ? AND source = 'crm' AND progress = 'completed' AND meeting_status <> 'cancelled'
+      ORDER BY id DESC LIMIT 1`,
+    [input.leadId],
+  );
+  if ((successfulRows as { id?: unknown }[])[0]?.id != null) {
+    return loadMeeting(pool, Number((successfulRows as { id: number }[])[0].id));
+  }
+
   const [rows] = await pool.query(
     `${MEETING_SELECT}
       WHERE m.lead_id = ? AND m.source = 'crm' AND m.meeting_status <> 'cancelled' AND m.progress <> 'completed'
@@ -634,8 +779,20 @@ export async function recordCrmMeeting(
   const active = (rows as Record<string, unknown>[])[0] ? mapRow((rows as Record<string, unknown>[])[0]) : null;
   const now = new Date();
   if (active) {
+    // Hub null/omit slot is a bug upstream — keep existing meeting_time as-is.
+    const timeLabel = incomingTime ?? normalizeTimeLabel(active.meetingTime) ?? active.meetingTime;
+    if (!incomingTime && active.meetingTime) {
+      console.warn("[recordCrmMeeting] Hub sent null/empty slot — keeping existing meeting_time", {
+        leadId: input.leadId,
+        meetingId: active.id,
+        keptTime: active.meetingTime,
+        dateIso,
+      });
+    }
     const nextMode = mode || active.meetingMode;
-    if (active.meetingDate === dateIso && normalizeTimeLabel(active.meetingTime) === timeLabel) {
+    const sameDate = active.meetingDate === dateIso;
+    const sameTime = normalizeTimeLabel(active.meetingTime) === normalizeTimeLabel(timeLabel);
+    if (sameDate && sameTime) {
       if (active.meetingType !== meetingType || (active.meetingMode || null) !== (nextMode || null)) {
         await pool.query(
           `UPDATE lead_meetings SET meeting_type = ?, meeting_mode = ?, updated_at = ? WHERE id = ?`,
@@ -645,13 +802,14 @@ export async function recordCrmMeeting(
       }
       return active;
     }
+    // Date/time truly changed → reschedule. COALESCE so null never wipes time in SQL.
     const progress = nextMeetingProgress(
       { ...active, meetingDate: dateIso, meetingTime: timeLabel, meetingStatus: "rescheduled", progress: "scheduled", startedAt: null },
       now,
     );
     await pool.query(
       `UPDATE lead_meetings
-          SET meeting_date = ?, meeting_time = ?, meeting_mode = ?, meeting_type = ?, meeting_status = 'rescheduled',
+          SET meeting_date = ?, meeting_time = COALESCE(?, meeting_time), meeting_mode = ?, meeting_type = ?, meeting_status = 'rescheduled',
               reschedule_count = reschedule_count + 1,
               progress = ?, started_at = NULL, ended_at = NULL, updated_at = ?
         WHERE id = ?`,
@@ -668,15 +826,17 @@ export async function recordCrmMeeting(
     });
     return loadMeeting(pool, active.id);
   }
-  const [done] = await pool.query(
-    `SELECT id, DATE_FORMAT(meeting_date, '%Y-%m-%d') AS meetingDate
-       FROM lead_meetings
-      WHERE lead_id = ? AND source = 'crm' AND progress = 'completed'
-      ORDER BY id DESC LIMIT 1`,
-    [input.leadId],
-  );
-  const doneRow = (done as { meetingDate?: string }[])[0];
-  if (doneRow && String(doneRow.meetingDate).slice(0, 10) === dateIso) return null;
+
+  // New schedule must include a real slot — null slot from Hub is a bug; do not create "Time not set".
+  if (!incomingTime) {
+    console.warn("[recordCrmMeeting] skip create — Hub sent date without slot", {
+      leadId: input.leadId,
+      dateIso,
+      rawSlot: input.meetingTime ?? null,
+    });
+    return null;
+  }
+  const timeLabel = incomingTime;
   const progress = nextMeetingProgress(
     {
       meetingStatus: "scheduled",
@@ -831,6 +991,149 @@ export async function rescheduleLeadMeeting(
     reason,
   });
   return loadMeeting(pool, row.id);
+}
+
+/**
+ * Hub/CRM cancel via external-upsert — marks open Pre 10% CRM meetings cancelled.
+ * Design-board cancel stays blocked for CRM rows (`assertDesignMutable`).
+ */
+export async function cancelCrmMeetingsForLead(
+  pool: Pool,
+  leadId: number,
+  input: { reason?: string | null; actor?: MeetingActor | null },
+): Promise<number> {
+  if (!Number.isInteger(leadId) || leadId < 1) return 0;
+  await ensureLeadMeetingsTable(pool);
+  const reason = String(input.reason || "").trim() || "Meeting Cancelled from CRM";
+  const [rows] = await pool.query(
+    `SELECT id FROM lead_meetings
+      WHERE lead_id = ? AND source = 'crm'
+        AND meeting_status <> 'cancelled' AND progress <> 'completed'`,
+    [leadId],
+  );
+  const ids = (rows as { id?: unknown }[])
+    .map((row) => Number(row.id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  if (ids.length === 0) return 0;
+
+  const now = new Date();
+  await pool.query(
+    `UPDATE lead_meetings
+        SET meeting_status = 'cancelled', cancel_reason = ?, updated_at = ?
+      WHERE id IN (${ids.map(() => "?").join(",")})`,
+    [reason.slice(0, 500), now, ...ids],
+  );
+  await writeHistory(
+    pool,
+    leadId,
+    input.actor,
+    "Meeting cancelled",
+    `CRM Pre 10% meeting cancelled. ${reason}`.trim(),
+    {
+      action: "cancelled",
+      source: "crm",
+      reason,
+      meetingIds: ids,
+      from: "external_upsert",
+    },
+  );
+  return ids.length;
+}
+
+/**
+ * CRM Pre-10% designer feedback. Updates matching CRM meeting only —
+ * does not change meeting_status / progress.
+ */
+export async function applyCrmMeetingFeedback(
+  pool: Pool,
+  input: {
+    leadId: number;
+    feedbackDesigner: string;
+    feedbackBy?: string | null;
+    appointmentDate?: string | null;
+    appointmentSlot?: string | null;
+    crmAppointmentId?: number | null;
+    actor?: MeetingActor | null;
+  },
+) {
+  await ensureLeadMeetingsTable(pool);
+  const feedback = String(input.feedbackDesigner || "").trim();
+  if (!feedback) throw new MeetingActionError(400, "feedbackDesigner is required");
+  if (feedback.length > 4000) {
+    throw new MeetingActionError(400, "feedbackDesigner must be 4000 characters or less");
+  }
+  const now = new Date();
+  const by = String(input.feedbackBy || input.actor?.name || "CRM").trim() || "CRM";
+  const crmAppointmentId =
+    input.crmAppointmentId != null && Number.isFinite(Number(input.crmAppointmentId))
+      ? Number(input.crmAppointmentId)
+      : null;
+  const dateIso = normalizeDateIso(input.appointmentDate);
+
+  let meetingId: number | null = null;
+  if (crmAppointmentId != null) {
+    const [byAppt] = await pool.query(
+      `SELECT id FROM lead_meetings
+        WHERE lead_id = ? AND source = 'crm' AND crm_appointment_id = ?
+        ORDER BY id DESC LIMIT 1`,
+      [input.leadId, crmAppointmentId],
+    );
+    meetingId = Number((byAppt as { id?: number }[])[0]?.id) || null;
+  }
+  if (meetingId == null && dateIso) {
+    const [byDate] = await pool.query(
+      `SELECT id FROM lead_meetings
+        WHERE lead_id = ? AND source = 'crm' AND meeting_date = ?
+        ORDER BY id DESC LIMIT 1`,
+      [input.leadId, dateIso],
+    );
+    meetingId = Number((byDate as { id?: number }[])[0]?.id) || null;
+  }
+  if (meetingId == null) {
+    const [latest] = await pool.query(
+      `SELECT id FROM lead_meetings
+        WHERE lead_id = ? AND source = 'crm'
+        ORDER BY id DESC LIMIT 1`,
+      [input.leadId],
+    );
+    meetingId = Number((latest as { id?: number }[])[0]?.id) || null;
+  }
+  if (meetingId == null) {
+    // Create a lightweight CRM meeting row so feedback still lands on Pre 10%.
+    if (!dateIso) {
+      throw new MeetingActionError(404, "No CRM meeting found for feedback");
+    }
+    const created = await recordCrmMeeting(pool, {
+      leadId: input.leadId,
+      meetingDate: dateIso,
+      meetingTime: input.appointmentSlot || null,
+      meetingType: "pre_10",
+      actor: input.actor || { name: "CRM" },
+    });
+    meetingId = created?.id ?? null;
+  }
+  if (meetingId == null) {
+    throw new MeetingActionError(404, "No CRM meeting found for feedback");
+  }
+
+  await pool.query(
+    `UPDATE lead_meetings
+        SET feedback_designer = ?,
+            feedback_designer_at = ?,
+            feedback_designer_by = ?,
+            crm_appointment_id = COALESCE(?, crm_appointment_id),
+            updated_at = ?
+      WHERE id = ?`,
+    [feedback, now, by, crmAppointmentId, now, meetingId],
+  );
+  await writeHistory(pool, input.leadId, input.actor || { name: by }, "CRM designer feedback", feedback, {
+    action: "feedback_designer",
+    meetingId,
+    crmAppointmentId,
+    feedbackBy: by,
+    from: "crm_hub",
+  });
+  return loadMeeting(pool, meetingId);
 }
 
 export async function cancelLeadMeeting(
@@ -1134,6 +1437,88 @@ async function quoteShareByLead(
   return out;
 }
 
+/**
+ * Pre 10% only: if any quote version was Shared to CRM, mark open CRM meetings Successful.
+ * Covers share-time push and board reload for older shares.
+ */
+export async function completePre10CrmMeetingAfterQuoteShare(
+  pool: Pool,
+  leadId: number,
+  actor?: MeetingActor | null,
+): Promise<number> {
+  if (!Number.isInteger(leadId) || leadId < 1) return 0;
+  await ensureLeadMeetingsTable(pool);
+  const now = new Date();
+  const [openRows] = await pool.query(
+    `SELECT id FROM lead_meetings
+      WHERE lead_id = ?
+        AND source = 'crm'
+        AND meeting_status <> 'cancelled'
+        AND progress <> 'completed'
+        AND (
+          meeting_type = 'pre_10'
+          OR meeting_type = 'pre10'
+          OR meeting_type IS NULL
+          OR TRIM(meeting_type) = ''
+        )`,
+    [leadId],
+  );
+  const ids = (openRows as { id?: unknown }[])
+    .map((row) => Number(row.id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  if (ids.length === 0) return 0;
+
+  await pool.query(
+    `UPDATE lead_meetings
+        SET progress = 'completed',
+            ended_at = COALESCE(ended_at, ?),
+            updated_at = ?
+      WHERE id IN (${ids.map(() => "?").join(",")})`,
+    [now, now, ...ids],
+  );
+  await writeHistory(
+    pool,
+    leadId,
+    actor,
+    "Meeting completed",
+    "Pre 10% meeting marked successful after quote Shared to CRM.",
+    {
+      action: "completed",
+      source: "crm",
+      reason: "crm_quote_share",
+      meetingIds: ids,
+    },
+  );
+  return ids.length;
+}
+
+/** Backfill: Pre 10% CRM meetings become Successful once a quote version is shared to CRM. */
+async function reconcilePre10MeetingsAfterCrmQuoteShare(pool: Pool) {
+  await pool.query(
+    `UPDATE lead_meetings m
+       JOIN (
+         SELECT DISTINCT lead_id AS leadId
+           FROM lead_prolance_quote_snapshots
+          WHERE crm_shared_quote_id IS NOT NULL
+            AND crm_shared_quote_id > 0
+            AND crm_shared_version_number IS NOT NULL
+            AND crm_shared_version_number >= 1
+       ) s ON s.leadId = m.lead_id
+        SET m.progress = 'completed',
+            m.ended_at = COALESCE(m.ended_at, NOW()),
+            m.updated_at = NOW()
+      WHERE m.source = 'crm'
+        AND m.meeting_status <> 'cancelled'
+        AND m.progress <> 'completed'
+        AND (
+          m.meeting_type = 'pre_10'
+          OR m.meeting_type = 'pre10'
+          OR m.meeting_type IS NULL
+          OR TRIM(m.meeting_type) = ''
+        )`,
+  );
+}
+
 /** Design meetings whose MOM / meeting-completed milestone is already done are successful, not abandoned. */
 async function reconcileCompletedDesignMeetings(pool: Pool) {
   await pool.query(
@@ -1180,6 +1565,11 @@ async function reconcileCompletedDesignMeetings(pool: Pool) {
 export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now?: Date; designerIds?: number[] }) {
   await ensureLeadMeetingsTable(pool);
   await reconcileCompletedDesignMeetings(pool);
+  try {
+    await reconcilePre10MeetingsAfterCrmQuoteShare(pool);
+  } catch (err) {
+    console.error("pre10 crm-quote-share meeting reconcile failed", err);
+  }
   const now = opts?.now || new Date();
   const designerIds = opts?.designerIds?.filter((id) => Number.isInteger(id) && id > 0);
   if (opts?.designerIds && (!designerIds || designerIds.length === 0)) return [];
@@ -1222,6 +1612,11 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
             m.cancel_files AS cancelFiles,
             m.ended_at AS endedAt,
             COALESCE(m.reschedule_count, 0) AS rescheduleCount,
+            m.feedback_designer AS feedbackDesigner,
+            m.feedback_designer_at AS feedbackDesignerAt,
+            m.feedback_designer_by AS feedbackDesignerBy,
+            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.crmSchedule.slot')) AS payloadCrmSlot,
+            JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.formData.appointment_slot')) AS payloadFormSlot,
             (SELECT COUNT(*) FROM lead_history h WHERE h.lead_id = m.lead_id AND (
               JSON_UNQUOTE(JSON_EXTRACT(h.event, '$.taskName')) = 'Meeting rescheduled'
               OR JSON_UNQUOTE(JSON_EXTRACT(h.event, '$.meta.action')) = 'rescheduled'
@@ -1301,8 +1696,27 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
       cleanText(row.ecAltCenter),
     designerName: cleanText(row.assignedDesignerName) || "Unassigned",
     meetingDate: String(row.meetingDate || "").slice(0, 10),
-    meetingTime: cleanText(row.meetingTime),
-    meetingTimeLabel: cleanText(row.meetingTime),
+    meetingTime: (() => {
+      const stored = normalizeTimeLabel(row.meetingTime) || cleanText(row.meetingTime);
+      if (stored) return stored;
+      // Recover time wiped by older Hub upserts that omitted slot.
+      return (
+        normalizeTimeLabel(row.payloadCrmSlot) ||
+        normalizeTimeLabel(row.payloadFormSlot) ||
+        cleanText(row.payloadCrmSlot) ||
+        cleanText(row.payloadFormSlot)
+      );
+    })(),
+    meetingTimeLabel: (() => {
+      const stored = normalizeTimeLabel(row.meetingTime) || cleanText(row.meetingTime);
+      if (stored) return stored;
+      return (
+        normalizeTimeLabel(row.payloadCrmSlot) ||
+        normalizeTimeLabel(row.payloadFormSlot) ||
+        cleanText(row.payloadCrmSlot) ||
+        cleanText(row.payloadFormSlot)
+      );
+    })(),
     meetingType: cleanText(row.meetingType),
     meetingMode: cleanText(row.meetingMode),
     meetingStatus: cleanText(row.meetingStatus),
@@ -1315,6 +1729,9 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
     quoteSent: share?.quoteSent === true,
     quoteFinalAmount: share?.quoteFinalAmount != null ? String(share.quoteFinalAmount) : null,
     rescheduleCount: Math.max(Number(row.rescheduleCount || 0), Number(row.historyRescheduleCount || 0)),
+    feedbackDesigner: cleanText(row.feedbackDesigner),
+    feedbackDesignerAt: meetingEndedIso(row.feedbackDesignerAt),
+    feedbackDesignerBy: cleanText(row.feedbackDesignerBy),
   };
   });
 }

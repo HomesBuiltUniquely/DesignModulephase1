@@ -30,6 +30,30 @@ export function canShowMeetingManagement(role: string | undefined | null): boole
   return value === 'admin' || value === 'designer' || value === 'design_manager' || value === 'territorial_design_manager';
 }
 
+/** CRM Pre 10% designer feedback — Super Admin / Sales Admin / Admin only. */
+export function canSeeCrmFeedback(role: string | undefined | null): boolean {
+  const value = String(role || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^(role_|crm_)/i, '');
+  return value === 'super_admin' || value === 'superadmin' || value === 'sales_admin' || value === 'admin';
+}
+
+function formatFeedbackAt(value: string | null | undefined): string {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const parsed = new Date(raw.includes('T') ? raw : raw.replace(' ', 'T'));
+  if (Number.isNaN(parsed.getTime())) return raw;
+  return parsed.toLocaleString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+}
+
 type ScheduledMeeting = {
   id?: number;
   leadId: number;
@@ -59,6 +83,9 @@ type ScheduledMeeting = {
   quoteSent?: boolean;
   quoteFinalAmount?: string | null;
   rescheduleCount?: number | null;
+  feedbackDesigner?: string | null;
+  feedbackDesignerAt?: string | null;
+  feedbackDesignerBy?: string | null;
   personalKey?: string | null;
   personalKind?: 'block' | 'full_day' | null;
   personalReason?: string | null;
@@ -70,8 +97,8 @@ type MeetingMode = 'online' | 'offline';
 type ClientMeetingType = 'pre_10' | 'dqc1_first_cut' | 'dqc2_material_selection' | 'design_signoff';
 type TypeFilter = 'all' | ClientMeetingType;
 type Venue = 'Showroom visit' | 'Virtual meeting' | 'Site visit';
-type ViewStatus = 'scheduled' | 'in_progress' | 'completed' | 'cancelled' | 'abandoned';
-type StatusKey = 'scheduled' | 'in_progress' | 'completed' | 'cancelled' | 'abandoned';
+type ViewStatus = 'scheduled' | 'rescheduled' | 'in_progress' | 'completed' | 'cancelled' | 'abandoned';
+type StatusKey = 'scheduled' | 'rescheduled' | 'in_progress' | 'completed' | 'cancelled' | 'abandoned';
 type DatePreset = 'all' | 'month' | '3m' | '6m' | '1y' | 'prev' | 'custom';
 type PersonalKindFilter = 'all' | 'block' | 'full_day';
 
@@ -118,10 +145,11 @@ const AVATARS = [
 
 const STATUS_LABEL: Record<ViewStatus, string> = {
   scheduled: 'Scheduled',
+  rescheduled: 'Meeting Rescheduled',
   in_progress: 'In progress',
   completed: 'Successful',
   cancelled: 'Cancelled',
-  abandoned: 'Meeting abandoned',
+  abandoned: 'Meeting never happened',
 };
 
 const STEP_LABELS = ['Scheduled', 'In progress', 'Successful'] as const;
@@ -433,8 +461,12 @@ function mapStatus(meeting: ScheduledMeeting): ViewStatus {
   const progress = (meeting.progress || '').toLowerCase();
   if (meetingStatus === 'cancelled' || progress === 'cancelled') return 'cancelled';
   if (progress === 'completed') return 'completed';
+  if (progress === 'meeting_never_happened' || progress === 'meeting_abandoned') return 'abandoned';
+  // Rescheduled is its own filter — not merged with abandoned / never happened.
+  const rescheduleCount = Number(meeting.rescheduleCount || 0);
+  const wasRescheduled = meetingStatus === 'rescheduled' || rescheduleCount > 0;
   if (progress === 'in_progress') return 'in_progress';
-  if (progress === 'meeting_abandoned') return 'abandoned';
+  if (wasRescheduled) return 'rescheduled';
   return 'scheduled';
 }
 
@@ -549,6 +581,7 @@ function uniqueNames(values: string[]): string[] {
 /** Prefer the live visit when the same Pre 10% lead has duplicate rows for one day. */
 const PRE10_STATUS_RANK: Record<ViewStatus, number> = {
   in_progress: 5,
+  rescheduled: 4,
   scheduled: 4,
   completed: 3,
   abandoned: 2,
@@ -719,7 +752,9 @@ function slotHasPassed(meeting: ViewMeeting, today: string, nowMinutes: number):
 function canAct(meeting: ViewMeeting, today: string, nowMinutes: number): boolean {
   if (meeting.personal) return false;
   if (slotHasPassed(meeting, today, nowMinutes)) return false;
-  if (meeting.status !== 'scheduled' && meeting.status !== 'in_progress') return false;
+  if (meeting.status !== 'scheduled' && meeting.status !== 'rescheduled' && meeting.status !== 'in_progress') {
+    return false;
+  }
   if ((meeting.raw.source || '').toLowerCase() === 'crm') return false;
   return canManageMeeting(meeting.raw);
 }
@@ -777,10 +812,17 @@ function StatusPill({ status, meeting }: { status: ViewStatus; meeting?: ViewMee
   let label = STATUS_LABEL[status];
   let pillStatus: string = status;
   if (meeting && (meeting.raw.source === 'crm' || meeting.typeKey === 'pre_10')) {
-    if (status === 'cancelled') {
+    if (status === 'completed') {
+      label = 'Meeting Successful';
+      pillStatus = 'completed';
+    } else if (status === 'cancelled') {
       label = 'Meeting Cancelled';
       pillStatus = 'cancelled';
+    } else if (status === 'abandoned') {
+      label = 'Meeting never happened';
+      pillStatus = 'abandoned';
     } else if (
+      status === 'rescheduled' ||
       meeting.raw.meetingStatus === 'rescheduled' ||
       (meeting.rescheduleCount && meeting.rescheduleCount > 0)
     ) {
@@ -833,8 +875,9 @@ function ChevronIcon() {
 }
 
 export default function MeetingManagementView() {
-  const { sessionId } = useAuth();
+  const { sessionId, user } = useAuth();
   const apiBase = getApiBase();
+  const showCrmFeedback = canSeeCrmFeedback(user?.role);
   const [meetings, setMeetings] = useState<ScheduledMeeting[]>([]);
   const [personalWarning, setPersonalWarning] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -899,6 +942,8 @@ export default function MeetingManagementView() {
   const [pre10ActionError, setPre10ActionError] = useState<string | null>(null);
   const [meetingWizOpen, setMeetingWizOpen] = useState(false);
   const [meetingWizLead, setMeetingWizLead] = useState<LeadshipTypes | null>(null);
+  /** UI-only abandon feedback — not persisted. */
+  const [abandonedFeedbackByKey, setAbandonedFeedbackByKey] = useState<Record<string, string>>({});
 
   const loadMeetings = useCallback(async () => {
     if (!sessionId) return;
@@ -1113,10 +1158,11 @@ export default function MeetingManagementView() {
   }, [mapped]);
   const statusChoices: { id: StatusKey; label: string }[] = [
     { id: 'scheduled', label: 'Scheduled' },
+    { id: 'rescheduled', label: 'Meeting Rescheduled' },
     { id: 'in_progress', label: 'In progress' },
     { id: 'completed', label: 'Successful' },
     { id: 'cancelled', label: 'Cancelled' },
-    { id: 'abandoned', label: 'Meeting abandoned' },
+    { id: 'abandoned', label: 'Meeting never happened' },
   ];
   const statusClosedLabel =
     statusFilters.length === 0
@@ -1215,7 +1261,7 @@ export default function MeetingManagementView() {
     let quotes = 0;
     let quoteDelayed = 0;
     for (const meeting of baseFiltered) {
-      if (meeting.status === 'scheduled') {
+      if (meeting.status === 'scheduled' || meeting.status === 'rescheduled') {
         scheduled += 1;
         if (meeting.day === today) scheduledToday += 1;
       } else if (meeting.status === 'completed') successful += 1;
@@ -1466,7 +1512,7 @@ export default function MeetingManagementView() {
       case 'completed':
         return 'This Pre 10% meeting is already successful. Start returns after a newer schedule.';
       case 'abandoned':
-        return 'This meeting was abandoned. Schedule a new Pre 10% visit to start again.';
+        return 'This meeting never happened. Schedule a new Pre 10% visit to start again.';
       case 'cancelled':
         return 'This meeting is cancelled, so Start meeting stays hidden.';
       case 'phase_passed':
@@ -2035,11 +2081,11 @@ export default function MeetingManagementView() {
                         ? 'This personal time was cancelled'
                         : selected.status === 'cancelled'
                           ? 'This meeting was cancelled'
-                          : 'This meeting was abandoned'}
+                          : 'This meeting never happened'}
                   </p>
                   {selected.status === 'abandoned' ? (
                     <p className={styles.noteSub}>
-                      The slot end plus 2 hours passed and this meeting was never started.
+                      The slot end plus 4 hours passed and this meeting was never started.
                     </p>
                   ) : null}
                   {(selected.raw.reason || selected.raw.cancelReason) ? (
@@ -2059,6 +2105,26 @@ export default function MeetingManagementView() {
                         </li>
                       ))}
                     </ul>
+                  ) : null}
+                  {selected.status === 'abandoned' && selected.typeKey === 'pre_10' ? (
+                    <div className={styles.abandonFeedback}>
+                      <label className={styles.abandonFeedbackLabel} htmlFor={`abandon-feedback-${selected.key}`}>
+                        Feedback
+                        <span className={styles.abandonFeedbackOptional}>Optional</span>
+                      </label>
+                      <textarea
+                        id={`abandon-feedback-${selected.key}`}
+                        className={styles.abandonFeedbackInput}
+                        rows={3}
+                        placeholder="Why did this Pre 10% meeting never happen?"
+                        value={abandonedFeedbackByKey[selected.key] ?? ''}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          setAbandonedFeedbackByKey((prev) => ({ ...prev, [selected.key]: value }));
+                        }}
+                      />
+                      <p className={styles.abandonFeedbackHint}>Not saved — for your notes only.</p>
+                    </div>
                   ) : null}
                         </div>
               ) : (
@@ -2131,6 +2197,27 @@ export default function MeetingManagementView() {
         )}
       </div>
               )}
+              {showCrmFeedback &&
+              selected.typeKey === 'pre_10' &&
+              (selected.raw.feedbackDesigner || '').trim() ? (
+                <div className={styles.crmFeedback}>
+                  <div className={styles.crmFeedbackTop}>
+                    <span className={styles.crmFeedbackTitle}>CRM feedback for designer</span>
+                    <span className={styles.crmFeedbackBadge}>CRM note</span>
+                  </div>
+                  <p className={styles.crmFeedbackBody}>{(selected.raw.feedbackDesigner || '').trim()}</p>
+                  {(selected.raw.feedbackDesignerBy || selected.raw.feedbackDesignerAt) ? (
+                    <p className={styles.crmFeedbackMeta}>
+                      {[
+                        (selected.raw.feedbackDesignerBy || '').trim(),
+                        formatFeedbackAt(selected.raw.feedbackDesignerAt),
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
             {canAct(selected, today, nowMinutes) ? (
               <div className={styles.foot}>
@@ -2147,7 +2234,7 @@ export default function MeetingManagementView() {
                   Personal time is booked by the designer. Change or cancel it from Personal Appointments.
                 </p>
               </div>
-            ) : selected.typeKey === 'pre_10' && (selected.status === 'scheduled' || selected.status === 'in_progress' || selected.status === 'completed' || selected.status === 'abandoned') ? (
+            ) : selected.typeKey === 'pre_10' && (selected.status === 'scheduled' || selected.status === 'rescheduled' || selected.status === 'in_progress' || selected.status === 'completed' || selected.status === 'abandoned') ? (
               <div className={`${styles.foot} ${styles.pre10Foot}`}>
                 <div
                   className={styles.pre10ActionCard}
@@ -2724,7 +2811,7 @@ function CalendarBoard({
   const inProgress = meetings.filter((meeting) => meeting.status === 'in_progress').sort((a, b) => compareMeetings(a, b, 1));
   const live = inProgress.find((meeting) => meeting.day === today) || inProgress[0] || null;
   const nextToday = todayMeetings.find((meeting) => {
-    if (meeting.status !== 'scheduled') return false;
+    if (meeting.status !== 'scheduled' && meeting.status !== 'rescheduled') return false;
     if (clock == null || meeting.minutes == null) return true;
     return meeting.minutes >= clock;
   });
@@ -2823,9 +2910,10 @@ function CalendarBoard({
           <span><i className={styles.swatch} data-mode="offline" /> Offline</span>
           <span><i className={styles.swatch} data-mode="online" /> Online</span>
           <span><i className={styles.statusDot} data-status="scheduled" /> Scheduled</span>
+          <span><i className={styles.statusDot} data-status="rescheduled" /> Meeting Rescheduled</span>
           <span><i className={styles.statusDot} data-status="in_progress" /> In progress</span>
           <span><i className={styles.statusDot} data-status="completed" /> Successful</span>
-          <span><i className={styles.statusDot} data-status="abandoned" /> Abandoned</span>
+          <span><i className={styles.statusDot} data-status="abandoned" /> Meeting never happened</span>
         </div>
         </section>
         <button

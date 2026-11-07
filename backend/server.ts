@@ -53,6 +53,7 @@ import {
 import {
   MeetingActionError,
   cancelLeadMeeting,
+  cancelCrmMeetingsForLead,
   endActiveCrmMeeting,
   ensureLeadMeetingsTable,
   listLeadMeetings,
@@ -64,6 +65,7 @@ import {
   startActiveCrmMeetingForLead,
   startCrmMeeting,
   endCrmMeeting,
+  completePre10CrmMeetingAfterQuoteShare,
 } from "./leadMeetings";
 import {
   extractFloorPlansFromLeadPayload,
@@ -266,11 +268,13 @@ const CRM_CALLBACK_BASE =
 const ERP_BASE_URL =
   process.env.ERP_BASE_URL ||
   process.env.HUB_API_BASE_URL ||
-  "https://hows.hubinterior.com";
+  "https://api.hubinterior.com";
 const ERP_USERNAME = process.env.ERP_USERNAME || "admin@hubinterior.com";
 const ERP_PASSWORD = process.env.ERP_PASSWORD || "admin123";
 
 let cachedErpToken: string | null = null;
+/** Host that last issued a valid ERP token (may differ from dead localhost stubs). */
+let resolvedErpBaseUrl = ERP_BASE_URL.replace(/\/$/, "");
 
 function normalizePaymentReceivedForCrm(input: unknown): string | null {
   const raw = String(input ?? "").trim().toUpperCase();
@@ -317,28 +321,55 @@ async function notifyCrmSalesClosureStatus(payload: Record<string, unknown>): Pr
 async function getErpToken(forceRefresh = false): Promise<string | null> {
   if (cachedErpToken && !forceRefresh) return cachedErpToken;
 
+  const bases = Array.from(
+    new Set(
+      [
+        resolvedErpBaseUrl,
+        ERP_BASE_URL,
+        process.env.HUB_API_BASE_URL || "",
+        "https://api.hubinterior.com",
+        "https://hows.hubinterior.com",
+      ]
+        .map((b) => String(b || "").trim().replace(/\/$/, ""))
+        .filter(Boolean),
+    ),
+  );
+
   try {
-    let res = await fetch(`${ERP_BASE_URL}/api/auth/signin`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: ERP_USERNAME, password: ERP_PASSWORD })
-    });
+    for (const base of bases) {
+      try {
+        let res = await fetch(`${base}/api/auth/signin`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: ERP_USERNAME, password: ERP_PASSWORD }),
+        });
 
-    if (!res.ok) {
-      res = await fetch(`${ERP_BASE_URL}/api/auth/login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: ERP_USERNAME, password: ERP_PASSWORD })
-      });
+        if (!res.ok) {
+          res = await fetch(`${base}/api/auth/login`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username: ERP_USERNAME, password: ERP_PASSWORD }),
+          });
+        }
+
+        if (res.ok) {
+          const data = await res.json();
+          cachedErpToken = data.accessToken || data.token || data.jwt || null;
+          if (cachedErpToken) {
+            resolvedErpBaseUrl = base;
+            if (base !== ERP_BASE_URL.replace(/\/$/, "")) {
+              console.info(`[erp-auth] Authenticated via ${base}`);
+            }
+            return cachedErpToken;
+          }
+        } else {
+          console.error(`[erp-auth] Login failed for ${base}:`, await res.text());
+        }
+      } catch (err) {
+        console.warn(`[erp-auth] Unreachable ${base}:`, (err as Error)?.message || err);
+      }
     }
 
-    if (res.ok) {
-      const data = await res.json();
-      cachedErpToken = data.accessToken || data.token || data.jwt || null;
-      return cachedErpToken;
-    }
-
-    console.error("Failed to login to ERP:", await res.text());
     return null;
   } catch (err) {
     console.error("Error logging into ERP:", err);
@@ -350,7 +381,7 @@ async function fetchFromErpWithRetry(endpoint: string) {
   let token = await getErpToken();
   if (!token) throw new Error("Could not get ERP auth token");
 
-  let res = await fetch(`${ERP_BASE_URL}${endpoint}`, {
+  let res = await fetch(`${resolvedErpBaseUrl}${endpoint}`, {
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
@@ -361,7 +392,7 @@ async function fetchFromErpWithRetry(endpoint: string) {
     token = await getErpToken(true);
     if (!token) throw new Error("Could not refresh ERP auth token");
 
-    res = await fetch(`${ERP_BASE_URL}${endpoint}`, {
+    res = await fetch(`${resolvedErpBaseUrl}${endpoint}`, {
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
@@ -373,7 +404,10 @@ async function fetchFromErpWithRetry(endpoint: string) {
   return res.json();
 }
 
-async function callErpApi(endpoint: string, options: { method?: string; body?: string } = {}): Promise<any> {
+async function callErpApi(
+  endpoint: string,
+  options: { method?: string; body?: string; headers?: Record<string, string> } = {},
+): Promise<any> {
   const method = options.method || "GET";
   let token = await getErpToken();
   if (!token) throw new Error("Could not get ERP auth token");
@@ -381,15 +415,16 @@ async function callErpApi(endpoint: string, options: { method?: string; body?: s
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
+    ...(options.headers || {}),
   };
 
-  let res = await fetch(`${ERP_BASE_URL}${endpoint}`, { method, headers, body: options.body });
+  let res = await fetch(`${resolvedErpBaseUrl}${endpoint}`, { method, headers, body: options.body });
 
   if (res.status === 401) {
     token = await getErpToken(true);
     if (!token) throw new Error("Could not refresh ERP auth token");
     headers.Authorization = `Bearer ${token}`;
-    res = await fetch(`${ERP_BASE_URL}${endpoint}`, { method, headers, body: options.body });
+    res = await fetch(`${resolvedErpBaseUrl}${endpoint}`, { method, headers, body: options.body });
   }
 
   if (!res.ok) {
@@ -3798,7 +3833,13 @@ function resolveCrmLeadRefFromPayload(payload: Record<string, unknown> | null | 
 } {
   if (!payload || typeof payload !== "object") return { crmLeadId: null, leadType: null };
   const crmLeadId = Number(
-    payload.crmLeadId ?? payload.crm_lead_id ?? payload.CRMLeadId ?? payload.crmLeadID,
+    payload.crmLeadId ??
+      payload.crm_lead_id ??
+      payload.CRMLeadId ??
+      payload.crmLeadID ??
+      payload.hubLeadId ??
+      payload.hub_lead_id ??
+      payload.erpLeadId,
   );
   const leadTypeRaw = String(
     payload.leadType ?? payload.lead_type ?? payload.crmLeadType ?? payload.crm_lead_type ?? "",
@@ -3806,6 +3847,68 @@ function resolveCrmLeadRefFromPayload(payload: Record<string, unknown> | null | 
   return {
     crmLeadId: Number.isFinite(crmLeadId) && crmLeadId > 0 ? crmLeadId : null,
     leadType: leadTypeRaw || null,
+  };
+}
+
+/** Load Design lead payload and resolve CRM lead id (for quote-share / meeting wiz). */
+async function resolveCrmLeadRefForDesignLead(
+  designLeadId: number,
+  body?: Record<string, unknown> | null,
+): Promise<{ crmLeadId: number | null; leadType: string | null; designLeadIdUsed: number }> {
+  const tryLead = async (id: number) => {
+    if (!Number.isFinite(id) || id < 1) return null;
+    const [leadRows] = await pool.query(`SELECT payload FROM leads WHERE id = ? LIMIT 1`, [id]);
+    const leadPayloadRaw = (leadRows as { payload?: string | null }[])[0]?.payload;
+    if (leadPayloadRaw == null) return null;
+    let leadPayload: Record<string, unknown> = {};
+    try {
+      leadPayload = leadPayloadRaw ? (JSON.parse(leadPayloadRaw) as Record<string, unknown>) : {};
+      if (!leadPayload || typeof leadPayload !== "object" || Array.isArray(leadPayload)) {
+        leadPayload = {};
+      }
+    } catch {
+      leadPayload = {};
+    }
+    const ref = resolveCrmLeadRefFromPayload(leadPayload);
+    return { ...ref, designLeadIdUsed: id, found: true as const };
+  };
+
+  const primary = await tryLead(designLeadId);
+  if (primary?.crmLeadId != null) {
+    return {
+      crmLeadId: primary.crmLeadId,
+      leadType: primary.leadType,
+      designLeadIdUsed: primary.designLeadIdUsed,
+    };
+  }
+
+  const hintIds = [
+    Number(body?.designLeadIdHint ?? body?.hubLeadId ?? body?.crmDesignLeadId ?? 0),
+    Number(body?.crmLeadId ?? 0),
+  ].filter((id) => Number.isFinite(id) && id > 0 && id !== designLeadId);
+
+  for (const hintId of hintIds) {
+    const hinted = await tryLead(hintId);
+    if (hinted?.crmLeadId != null) {
+      return {
+        crmLeadId: hinted.crmLeadId,
+        leadType: hinted.leadType,
+        designLeadIdUsed: hinted.designLeadIdUsed,
+      };
+    }
+  }
+
+  // Body may already carry the CRM numeric id (not Design id).
+  const bodyCrmId = Number(body?.crmLeadId ?? body?.erpLeadId ?? 0);
+  const bodyLeadType = String(body?.leadType ?? body?.crmLeadType ?? "").trim() || null;
+  if (Number.isFinite(bodyCrmId) && bodyCrmId > 0 && bodyLeadType) {
+    return { crmLeadId: bodyCrmId, leadType: bodyLeadType, designLeadIdUsed: designLeadId };
+  }
+
+  return {
+    crmLeadId: primary?.crmLeadId ?? null,
+    leadType: primary?.leadType ?? null,
+    designLeadIdUsed: designLeadId,
   };
 }
 
@@ -5425,6 +5528,8 @@ async function notifyCrmMeetingCompleted(
       await callErpApi(endpoint, {
         method: "PUT",
         body: payload,
+        // CRM activity history should show Design Module Auto, not the ERP service login (admin).
+        headers: { "X-Activity-Performed-By": "Design Module Auto" },
       });
       console.info(
         `[meeting-wiz-completed] Successfully updated CRM lead ${crmLeadId} to Meeting Successful via ${endpoint}`,
@@ -5447,6 +5552,160 @@ async function notifyCrmMeetingCompleted(
     lastError?.message || lastError,
   );
 }
+
+/**
+ * Push customer quote link onto the CRM lead after Design "Share to CRM".
+ * Prefer CRM Next callback (no Design ERP login). Fallback: direct Hub PUT via ERP_*.
+ * `quoteLink` must be the public customer URL (never `internal=1`).
+ */
+async function notifyCrmQuoteLinkShared(opts: {
+  crmLeadId: number;
+  leadType?: string | null;
+  quoteId: number | string;
+  quoteLink: string;
+  customerQuoteUrl: string;
+  internalQuoteUrl?: string | null;
+}): Promise<void> {
+  const crmLeadId = Number(opts.crmLeadId);
+  if (!Number.isFinite(crmLeadId) || crmLeadId <= 0) return;
+
+  const quoteLink = String(opts.quoteLink || "").trim();
+  if (!quoteLink || /(?:\?|&)internal=1(?:&|$)/i.test(quoteLink)) {
+    console.warn("[crm-quote-share] Refusing to push non-customer quoteLink", {
+      crmLeadId,
+      quoteLink,
+    });
+    return;
+  }
+
+  let resolvedLeadType =
+    opts.leadType && typeof opts.leadType === "string" ? opts.leadType.trim() : null;
+  if (!resolvedLeadType) {
+    try {
+      const [rows] = await pool.query(
+        `SELECT payload FROM leads
+         WHERE payload IS NOT NULL
+           AND JSON_VALID(payload) = 1
+           AND (
+             JSON_UNQUOTE(JSON_EXTRACT(payload, '$.crmLeadId')) = ?
+             OR JSON_UNQUOTE(JSON_EXTRACT(payload, '$.leadId')) = ?
+           )
+         ORDER BY id DESC LIMIT 1`,
+        [String(crmLeadId), String(crmLeadId)],
+      );
+      const row = (rows as { payload?: string | null }[])[0];
+      if (row?.payload) {
+        const p = JSON.parse(row.payload);
+        resolvedLeadType =
+          (typeof p.crmLeadType === "string" && p.crmLeadType.trim()) ||
+          (typeof p.leadType === "string" && p.leadType.trim()) ||
+          (typeof p.crm_lead_type === "string" && p.crm_lead_type.trim()) ||
+          null;
+      }
+    } catch {
+      // Non-fatal — fall through to path probing
+    }
+  }
+
+  const customerQuoteUrl = String(opts.customerQuoteUrl || quoteLink).trim() || quoteLink;
+  const payload: Record<string, unknown> = {
+    leadType: resolvedLeadType,
+    crmLeadType: resolvedLeadType,
+    crmLeadId,
+    leadId: crmLeadId,
+    quoteId: String(opts.quoteId),
+    quoteLink,
+    customerQuoteUrl,
+    quoteURL: quoteLink,
+    proposalLink: quoteLink,
+  };
+  const internalQuoteUrl = String(opts.internalQuoteUrl || "").trim();
+  if (internalQuoteUrl) payload.internalQuoteUrl = internalQuoteUrl;
+
+  // 1) CRM FE callback — uses CRM_DEV_BEARER_TOKEN; Design needs no ERP_USERNAME/PASSWORD.
+  const crmBases = Array.from(
+    new Set(
+      [
+        String(CRM_CALLBACK_BASE || "").trim(),
+        process.env.CRM_FRONTEND_URL || "",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+      ]
+        .map((b) => b.replace(/\/+$/, ""))
+        .filter(Boolean),
+    ),
+  );
+  const ingestKey =
+    process.env.EXTERNAL_LEAD_INGEST_API_KEY?.trim() ||
+    process.env.CRM_EXTERNAL_API_KEY?.trim() ||
+    process.env.HUB_SYNC_API_KEY?.trim() ||
+    "";
+
+  for (const base of crmBases) {
+    try {
+      const res = await fetch(`${base}/api/design/quote-link-sync`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(ingestKey
+            ? { "x-external-api-key": ingestKey, "x-api-key": ingestKey }
+            : {}),
+        },
+        body: JSON.stringify(payload),
+      });
+      const text = await res.text().catch(() => "");
+      if (res.ok) {
+        console.info(
+          `[crm-quote-share] Pushed quoteLink via CRM callback ${base} for lead ${crmLeadId}`,
+          { quoteId: opts.quoteId, quoteLink },
+        );
+        return;
+      }
+      console.warn(`[crm-quote-share] CRM callback ${base} → ${res.status}`, text.slice(0, 200));
+    } catch (err) {
+      console.warn(
+        `[crm-quote-share] CRM callback unreachable ${base}:`,
+        (err as Error)?.message || err,
+      );
+    }
+  }
+
+  // 2) Optional direct Hub PUT (only if Design ERP_* login works).
+  const body = JSON.stringify(payload);
+  const pathsToTry = resolveCrmLeadPutPaths(resolvedLeadType, crmLeadId);
+  let lastError: unknown = null;
+
+  for (let i = 0; i < pathsToTry.length; i++) {
+    const endpoint = pathsToTry[i];
+    try {
+      await callErpApi(endpoint, {
+        method: "PUT",
+        body,
+        headers: { "X-Activity-Performed-By": "Design Quote Sync" },
+      });
+      console.info(
+        `[crm-quote-share] Pushed customer quoteLink to CRM lead ${crmLeadId} via ${endpoint}`,
+        { quoteId: opts.quoteId, quoteLink },
+      );
+      return;
+    } catch (err: unknown) {
+      lastError = err;
+      const status = (err as { status?: number })?.status;
+      const is404 = status === 404 || String((err as Error)?.message || "").includes("404");
+      if (is404 && i < pathsToTry.length - 1) continue;
+      break;
+    }
+  }
+
+  console.error(
+    `[crm-quote-share] Failed to push quoteLink to CRM lead ${crmLeadId}:`,
+    (lastError as Error)?.message || lastError,
+  );
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(String(lastError || "CRM quoteLink push failed"));
+}
+
 /** Mark Meeting Wizard session completed so Start Meeting stays hidden until a newer schedule. */
 async function persistLeadMeetingWizCompleted(
   leadId: number,
@@ -7352,9 +7611,9 @@ app.get("/api/crm/meeting-cc-emails", async (req: Request, res: Response) => {
   }
 });
 
-// External system intake: create a lead directly in Pre 10%.
-// This endpoint is meant to be called by another project/service.
-app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
+// External system intake / upsert: create or update a lead in Pre 10%.
+// Alias /api/leads/external-upsert kept for CRM Hub reschedule + cancellation sync.
+const handleExternalLeadUpsert = async (req: Request, res: Response) => {
   const expectedKey = (process.env.EXTERNAL_LEAD_INGEST_API_KEY || "").trim();
   if (!expectedKey) {
     return res.status(503).json({
@@ -7465,10 +7724,26 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
   let slotDetails: unknown = null;
   if (slotCandidate != null && typeof slotCandidate === "object") {
     slotDetails = slotCandidate;
-    try {
-      appointmentSlot = JSON.stringify(slotCandidate);
-    } catch {
-      appointmentSlot = String(slotCandidate);
+    const row = slotCandidate as Record<string, unknown>;
+    const nestedStart =
+      row.start ??
+      row.startTime ??
+      row.start_time ??
+      row.from ??
+      row.slot ??
+      row.time ??
+      row.label ??
+      row.appointmentSlot;
+    appointmentSlot =
+      nestedStart != null && String(nestedStart).trim()
+        ? String(nestedStart).trim()
+        : null;
+    if (!appointmentSlot) {
+      try {
+        appointmentSlot = JSON.stringify(slotCandidate);
+      } catch {
+        appointmentSlot = String(slotCandidate);
+      }
     }
   } else if (slotCandidate != null && String(slotCandidate).trim()) {
     appointmentSlot = String(slotCandidate).trim();
@@ -7549,7 +7824,19 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
       }
     }
 
-    if (designerName && appointmentDate) {
+    const meetingActionRaw = String(
+      payload.meetingStatus ||
+        payload.action ||
+        payload.subStage ||
+        payload.meetingAction ||
+        payload.meeting_status ||
+        "",
+    ).trim();
+    const isCancelMeeting = /cancel/i.test(meetingActionRaw);
+    const isRescheduleMeeting = /reschedul/i.test(meetingActionRaw);
+
+    // Cancel must not be blocked by designer leave. Schedule/reschedule still checks leave.
+    if (!isCancelMeeting && designerName && appointmentDate) {
       const dateIso = normalizeBlockDateIso(appointmentDate);
       if (dateIso) {
         const activeBlock = await getActiveFullDayBlock(designerName, dateIso);
@@ -7676,8 +7963,10 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
       rawPayload: payload,
     };
 
-    // Prefer update-or-insert so Meeting Schedule does not create a second Design row
+    // Prefer update-or-insert so Meeting Schedule does not create a second Design row.
+    // Lookup by pid / external ref, then CRM lead id (Hub reschedule/cancel may send leadId only).
     let existingLeadId: number | null = null;
+    let existingPayloadRaw: unknown = null;
     if (pid) {
       const [existingRows] = await pool.query(
         `SELECT id, payload FROM leads
@@ -7695,88 +7984,203 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
         [pid, pid, pid],
       );
       const existing = (existingRows as { id: number; payload: unknown }[])[0];
-      if (existing?.id) existingLeadId = Number(existing.id);
-      if (existingLeadId && existing) {
-        let prev: Record<string, unknown> = {};
+      if (existing?.id) {
+        existingLeadId = Number(existing.id);
+        existingPayloadRaw = existing.payload;
+      }
+    }
+    if (existingLeadId == null && crmLeadIdNum != null) {
+      const [byCrmRows] = await pool.query(
+        `SELECT id, payload FROM leads
+         WHERE payload IS NOT NULL AND JSON_VALID(payload) = 1
+           AND (
+             JSON_UNQUOTE(JSON_EXTRACT(payload, '$.crmLeadId')) = ?
+             OR JSON_UNQUOTE(JSON_EXTRACT(payload, '$.leadId')) = ?
+             OR JSON_UNQUOTE(JSON_EXTRACT(payload, '$.crm_lead_id')) = ?
+           )
+         ORDER BY id DESC
+         LIMIT 1`,
+        [String(crmLeadIdNum), String(crmLeadIdNum), String(crmLeadIdNum)],
+      );
+      const byCrm = (byCrmRows as { id: number; payload: unknown }[])[0];
+      if (byCrm?.id) {
+        existingLeadId = Number(byCrm.id);
+        existingPayloadRaw = byCrm.payload;
+      }
+    }
+
+    if (existingLeadId != null) {
+      if (isCancelMeeting) {
+        const cancelReason =
+          String(payload.cancelReason || payload.cancel_reason || payload.reason || "").trim() ||
+          "Meeting Cancelled from CRM";
+        let cancelledMeetings = 0;
         try {
-          prev =
-            typeof existing.payload === "string"
-              ? (JSON.parse(existing.payload) as Record<string, unknown>)
-              : existing.payload && typeof existing.payload === "object"
-                ? (existing.payload as Record<string, unknown>)
-                : {};
-        } catch {
-          prev = {};
+          cancelledMeetings = await cancelCrmMeetingsForLead(pool, existingLeadId, {
+            reason: cancelReason,
+            actor: { name: "CRM" },
+          });
+        } catch (cancelErr) {
+          console.error("[external-upsert] cancel CRM meeting failed", cancelErr);
         }
-        const prevForm =
-          prev.formData && typeof prev.formData === "object"
-            ? (prev.formData as Record<string, unknown>)
-            : {};
-        const newForm = payloadToPersist.formData as Record<string, unknown>;
-        const prevDiscovery =
-          prev.discovery && typeof prev.discovery === "object"
-            ? (prev.discovery as Record<string, unknown>)
-            : {};
-        const newDiscovery = payloadToPersist.discovery as Record<string, unknown>;
-        const prevConnection =
-          prev.connection && typeof prev.connection === "object"
-            ? (prev.connection as Record<string, unknown>)
-            : {};
-        const newConnection = payloadToPersist.connection as Record<string, unknown>;
-        const merged = {
-          ...prev,
-          ...payloadToPersist,
-          formData: { ...prevForm, ...newForm },
-          discovery: { ...prevDiscovery, ...newDiscovery },
-          connection: { ...prevConnection, ...newConnection },
-          crmLeadType:
-            crmLeadType ||
-            (typeof prev.crmLeadType === "string" ? prev.crmLeadType : undefined),
-          crmLeadId:
-            crmLeadIdNum != null
-              ? crmLeadIdNum
-              : prev.crmLeadId != null
-                ? prev.crmLeadId
-                : undefined,
-        };
-        await pool.query(
-          `UPDATE leads
-           SET project_name = ?, contact_no = COALESCE(?, contact_no), client_email = COALESCE(?, client_email),
-               payload = ?, assigned_designer_id = COALESCE(?, assigned_designer_id), update_at = ?
-           WHERE id = ?`,
-          [
-            projectName,
-            contactNo,
-            clientEmail,
-            JSON.stringify(merged),
-            assignedDesignerId,
+        try {
+          let prevCancel: Record<string, unknown> = {};
+          try {
+            prevCancel =
+              typeof existingPayloadRaw === "string"
+                ? (JSON.parse(existingPayloadRaw) as Record<string, unknown>)
+                : existingPayloadRaw && typeof existingPayloadRaw === "object"
+                  ? (existingPayloadRaw as Record<string, unknown>)
+                  : {};
+          } catch {
+            prevCancel = {};
+          }
+          const prevFormCancel =
+            prevCancel.formData && typeof prevCancel.formData === "object"
+              ? (prevCancel.formData as Record<string, unknown>)
+              : {};
+          const mergedCancel = {
+            ...prevCancel,
+            crmSchedule: null,
+            meetingStatus: "CANCELLED",
+            action: "CANCELLED",
+            formData: {
+              ...prevFormCancel,
+              appointment_date: "",
+              appointment_slot: "",
+            },
+          };
+          await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
+            JSON.stringify(mergedCancel),
             now,
             existingLeadId,
-          ],
-        );
-        try {
-          const crmText = String(intakeMeetingType || "");
-          const [activeMtgRows] = await pool.query(
-            "SELECT id, DATE_FORMAT(meeting_date, '%Y-%m-%d') as meetingDate, meeting_time as meetingTime FROM lead_meetings WHERE lead_id = ? AND source = 'crm' AND meeting_status <> 'cancelled' AND progress <> 'completed' ORDER BY id DESC LIMIT 1",
-            [existingLeadId],
-          );
-          const activeMtg = (activeMtgRows as any[])[0];
+          ]);
+        } catch (payloadErr) {
+          console.error("[external-upsert] cancel payload update failed", payloadErr);
+        }
+        return res.status(200).json({
+          ok: true,
+          cancelled: true,
+          leadId: existingLeadId,
+          cancelledMeetings,
+          meetingStatus: "CANCELLED",
+          message: "Meeting cancelled via external upsert",
+        });
+      }
 
-          const recordedMeeting = await recordCrmMeeting(pool, {
+      let prev: Record<string, unknown> = {};
+      try {
+        prev =
+          typeof existingPayloadRaw === "string"
+            ? (JSON.parse(existingPayloadRaw) as Record<string, unknown>)
+            : existingPayloadRaw && typeof existingPayloadRaw === "object"
+              ? (existingPayloadRaw as Record<string, unknown>)
+              : {};
+      } catch {
+        prev = {};
+      }
+      const prevForm =
+        prev.formData && typeof prev.formData === "object"
+          ? (prev.formData as Record<string, unknown>)
+          : {};
+      const newForm = payloadToPersist.formData as Record<string, unknown>;
+      const prevDiscovery =
+        prev.discovery && typeof prev.discovery === "object"
+          ? (prev.discovery as Record<string, unknown>)
+          : {};
+      const newDiscovery = payloadToPersist.discovery as Record<string, unknown>;
+      const prevConnection =
+        prev.connection && typeof prev.connection === "object"
+          ? (prev.connection as Record<string, unknown>)
+          : {};
+      const newConnection = payloadToPersist.connection as Record<string, unknown>;
+      const merged = {
+        ...prev,
+        ...payloadToPersist,
+        formData: { ...prevForm, ...newForm },
+        discovery: { ...prevDiscovery, ...newDiscovery },
+        connection: { ...prevConnection, ...newConnection },
+        crmLeadType:
+          crmLeadType ||
+          (typeof prev.crmLeadType === "string" ? prev.crmLeadType : undefined),
+        crmLeadId:
+          crmLeadIdNum != null
+            ? crmLeadIdNum
+            : prev.crmLeadId != null
+              ? prev.crmLeadId
+              : undefined,
+        meetingStatus: isRescheduleMeeting ? "RESCHEDULED" : payload.meetingStatus || prev.meetingStatus || null,
+        action: isRescheduleMeeting ? "RESCHEDULED" : payload.action || prev.action || null,
+      };
+      await pool.query(
+        `UPDATE leads
+         SET project_name = ?, contact_no = COALESCE(?, contact_no), client_email = COALESCE(?, client_email),
+             payload = ?, assigned_designer_id = COALESCE(?, assigned_designer_id), update_at = ?
+         WHERE id = ?`,
+        [
+          projectName,
+          contactNo,
+          clientEmail,
+          JSON.stringify(merged),
+          assignedDesignerId,
+          now,
+          existingLeadId,
+        ],
+      );
+
+      let recordedMeeting: Awaited<ReturnType<typeof recordCrmMeeting>> = null;
+      let didReschedule = false;
+      try {
+        const crmText = String(intakeMeetingType || "");
+        const [activeMtgRows] = await pool.query(
+          "SELECT id, DATE_FORMAT(meeting_date, '%Y-%m-%d') as meetingDate, meeting_time as meetingTime, progress FROM lead_meetings WHERE lead_id = ? AND source = 'crm' AND meeting_status <> 'cancelled' ORDER BY (progress = 'completed') ASC, id DESC LIMIT 1",
+          [existingLeadId],
+        );
+        const activeMtg = (activeMtgRows as any[])[0];
+        const alreadySuccessful = String(activeMtg?.progress || "").toLowerCase() === "completed";
+        const normalizedIncomingSlot =
+          typeof appointmentSlot === "string" || appointmentSlot != null
+            ? String(appointmentSlot).trim()
+            : "";
+        // Hub bug: null/empty slot on upsert must not touch schedule (esp. successful meetings).
+        const shouldSyncMeeting =
+          Boolean(appointmentDate) &&
+          !alreadySuccessful &&
+          (Boolean(normalizedIncomingSlot) || isRescheduleMeeting);
+
+        if (alreadySuccessful) {
+          console.info("[external-upsert] skip meeting sync — CRM meeting already successful", {
+            leadId: existingLeadId,
+            meetingId: activeMtg?.id ?? null,
+          });
+        } else if (!appointmentDate) {
+          console.info("[external-upsert] skip meeting sync — no appointmentDate", { leadId: existingLeadId });
+        } else if (!normalizedIncomingSlot && !isRescheduleMeeting) {
+          console.warn("[external-upsert] Hub sent null/empty slot — keeping existing meeting time", {
+            leadId: existingLeadId,
+            appointmentDate,
+            keptTime: activeMtg?.meetingTime ?? null,
+          });
+        } else if (shouldSyncMeeting) {
+          recordedMeeting = await recordCrmMeeting(pool, {
             leadId: existingLeadId,
             meetingDate: appointmentDate,
-            meetingTime: appointmentSlot,
+            // Pass null when empty so recordCrmMeeting keeps the previous time.
+            meetingTime: normalizedIncomingSlot || null,
             meetingType: intakeMeetingType,
             meetingMode: /virtual/i.test(crmText) ? "online" : /showroom|site/i.test(crmText) ? "offline" : null,
             designerId: assignedDesignerId,
             actor: { name: "CRM" },
           });
 
-          if (
-            activeMtg &&
-            appointmentDate &&
-            (activeMtg.meetingDate !== appointmentDate || (appointmentSlot && activeMtg.meetingTime !== appointmentSlot))
-          ) {
+          const slotChanged =
+            Boolean(activeMtg) &&
+            Boolean(appointmentDate) &&
+            (activeMtg.meetingDate !== appointmentDate ||
+              (normalizedIncomingSlot && activeMtg.meetingTime !== normalizedIncomingSlot));
+          didReschedule = Boolean(isRescheduleMeeting || slotChanged);
+
+          if (slotChanged && normalizedIncomingSlot) {
             const intakeRescheduleCount =
               typeof ((req.body as any)?.rescheduleCount ?? (req.body as any)?.schedule?.rescheduleCount) === "number"
                 ? Number((req.body as any).rescheduleCount ?? (req.body as any)?.schedule?.rescheduleCount)
@@ -7786,37 +8190,52 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
               previousDate: activeMtg.meetingDate,
               previousTime: activeMtg.meetingTime,
               newDate: appointmentDate,
-              newTime: appointmentSlot,
+              newTime: normalizedIncomingSlot,
               meetingType: intakeMeetingType || "pre_10",
               meetingMode: /virtual/i.test(crmText) ? "online" : "offline",
               rescheduleCount: intakeRescheduleCount,
               actorEmail: null,
             }).catch((mailErr) => {
-              console.error("[external-intake] reschedule mail error", mailErr);
+              console.error("[external-upsert] reschedule mail error", mailErr);
             });
           }
-        } catch (meetingErr) {
-          console.error("[external-intake] crm meeting sync failed", meetingErr);
         }
-        return res.status(200).json({
-          ok: true,
-          leadId: existingLeadId,
-          created: false,
-          projectName,
-          projectStage: "Pre 10%",
-          designerName,
-          assignedDesignerId,
-          salesExecutive,
-          salesExecutiveEmail,
-          crmSchedule: {
-            date: appointmentDate,
-            slot: appointmentSlot,
-            timezone: scheduleTimezone,
-            ...(slotDetails != null ? { slotDetails } : {}),
-          },
-          message: "Lead updated via external intake",
-        });
+      } catch (meetingErr) {
+        console.error("[external-upsert] crm meeting sync failed", meetingErr);
       }
+
+      return res.status(200).json({
+        ok: true,
+        leadId: existingLeadId,
+        created: false,
+        rescheduled: didReschedule,
+        meetingStatus: didReschedule ? "RESCHEDULED" : "SCHEDULED",
+        rescheduleCount: recordedMeeting?.rescheduleCount ?? null,
+        projectName,
+        projectStage: "Pre 10%",
+        designerName,
+        assignedDesignerId,
+        salesExecutive,
+        salesExecutiveEmail,
+        crmSchedule: {
+          date: appointmentDate,
+          slot: appointmentSlot,
+          timezone: scheduleTimezone,
+          ...(slotDetails != null ? { slotDetails } : {}),
+        },
+        message: didReschedule
+          ? "Meeting rescheduled via external upsert"
+          : "Lead updated via external intake",
+      });
+    }
+
+    // Cancel/reschedule for unknown lead — do not create a ghost lead.
+    if (isCancelMeeting || isRescheduleMeeting) {
+      return res.status(404).json({
+        ok: false,
+        message: "Lead not found for CRM meeting sync (pid / crmLeadId required)",
+        meetingStatus: isCancelMeeting ? "CANCELLED" : "RESCHEDULED",
+      });
     }
 
     const [result] = await pool.query(
@@ -7886,7 +8305,10 @@ app.post("/api/leads/external-intake", async (req: Request, res: Response) => {
     console.error("external-intake error", err);
     return res.status(500).json({ message: "Failed to create lead from external intake" });
   }
-});
+};
+
+app.post("/api/leads/external-intake", handleExternalLeadUpsert);
+app.post("/api/leads/external-upsert", handleExternalLeadUpsert);
 
 function requireExternalApiKey(req: Request, res: Response, featureName: string): boolean {
   const expectedKey = (process.env.EXTERNAL_LEAD_INGEST_API_KEY || "").trim();
@@ -8045,6 +8467,11 @@ type CrmShareSelection = {
   versionNumber: number;
   quoteId: number;
 };
+
+/** Public customer quote page — never include `internal=1` (CRM quoteLink / Send Quote). */
+function crmCustomerQuoteUrl(quoteId: number | string): string {
+  return `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}`;
+}
 
 function crmQuoteInternalUrl(leadId: number, quoteId: number): string {
   return `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}?internal=1&leadId=${encodeURIComponent(String(leadId))}&audience=crm`;
@@ -8830,24 +9257,31 @@ async function handleCrmInternalLinkByExternalLeadId(req: Request, res: Response
           quoteId: null,
           crmSharedQuoteId: null,
           crmSharedVersionNumber: null,
+          quoteLink: null,
           internalQuoteUrl: null,
           customerQuoteUrl: null,
+          customerLink: null,
           message: "Designer has not selected a quote version for CRM yet",
         });
         return;
       }
-      res.json({
-        ok: true,
-        selectedForCrm: true,
-        isPre10: true,
-        externalLeadId,
-        leadId,
-        quoteId: selected.quoteId,
-        crmSharedQuoteId: selected.quoteId,
-        crmSharedVersionNumber: selected.versionNumber,
-        internalQuoteUrl: crmQuoteInternalUrl(leadId, selected.quoteId),
-        customerQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(selected.quoteId))}`,
-      });
+      {
+        const customerUrl = crmCustomerQuoteUrl(selected.quoteId);
+        res.json({
+          ok: true,
+          selectedForCrm: true,
+          isPre10: true,
+          externalLeadId,
+          leadId,
+          quoteId: selected.quoteId,
+          crmSharedQuoteId: selected.quoteId,
+          crmSharedVersionNumber: selected.versionNumber,
+          quoteLink: customerUrl,
+          customerQuoteUrl: customerUrl,
+          customerLink: customerUrl,
+          internalQuoteUrl: crmQuoteInternalUrl(leadId, selected.quoteId),
+        });
+      }
       return;
     }
 
@@ -8901,18 +9335,24 @@ async function handleCrmInternalLinkByExternalLeadId(req: Request, res: Response
       return;
     }
 
-    res.json({
-      ok: true,
-      selectedForCrm: selected != null,
-      isPre10: false,
-      externalLeadId,
-      leadId,
-      quoteId: selected?.quoteId ?? quoteId,
-      crmSharedQuoteId: selected?.quoteId ?? null,
-      crmSharedVersionNumber: selected?.versionNumber ?? null,
-      internalQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(selected?.quoteId ?? quoteId))}?internal=1&leadId=${encodeURIComponent(String(leadId))}`,
-      customerQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(selected?.quoteId ?? quoteId))}`,
-    });
+    {
+      const resolvedQuoteId = selected?.quoteId ?? quoteId;
+      const customerUrl = crmCustomerQuoteUrl(resolvedQuoteId);
+      res.json({
+        ok: true,
+        selectedForCrm: selected != null,
+        isPre10: false,
+        externalLeadId,
+        leadId,
+        quoteId: resolvedQuoteId,
+        crmSharedQuoteId: selected?.quoteId ?? null,
+        crmSharedVersionNumber: selected?.versionNumber ?? null,
+        quoteLink: customerUrl,
+        customerQuoteUrl: customerUrl,
+        customerLink: customerUrl,
+        internalQuoteUrl: crmQuoteInternalUrl(leadId, resolvedQuoteId),
+      });
+    }
   } catch (err) {
     console.error("crm internal quote link error", err);
     res.status(500).json({ message: "Failed to resolve internal quote link" });
@@ -8921,8 +9361,9 @@ async function handleCrmInternalLinkByExternalLeadId(req: Request, res: Response
 
 // Canonical route
 app.get("/api/crm/quotes/internal-link/:externalLeadId", handleCrmInternalLinkByExternalLeadId);
-// CRM compatibility alias (requested path pattern)
+// CRM compatibility aliases (by-lead + by-external — same Design lead lookup)
 app.get("/api/new-crm/quotes/internal-link/by-lead/:externalLeadId", handleCrmInternalLinkByExternalLeadId);
+app.get("/api/new-crm/quotes/internal-link/by-external/:externalLeadId", handleCrmInternalLinkByExternalLeadId);
 
 async function sendCrmSelectedQuotePayload(
   res: Response,
@@ -8967,8 +9408,11 @@ async function sendCrmSelectedQuotePayload(
   }
 
   const snapshotPayload: Record<string, unknown> = parseStoredJsonObject(snap.payloadJson) ?? {};
+  const customerUrl = crmCustomerQuoteUrl(quoteId);
   const links = {
-    customerQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}`,
+    quoteLink: customerUrl,
+    customerQuoteUrl: customerUrl,
+    customerLink: customerUrl,
     internalQuoteUrl: crmQuoteInternalUrl(leadId, quoteId),
   };
   const discount = readDiscountMetaFromSnapshot(snapshotPayload);
@@ -8981,6 +9425,8 @@ async function sendCrmSelectedQuotePayload(
     crmSharedQuoteId: quoteId,
     crmSharedVersionNumber: selected.versionNumber,
     createdAt: snap.createdAt,
+    quoteLink: customerUrl,
+    customerQuoteUrl: customerUrl,
     links,
     discount,
     rawSnapshot: snapshotPayload,
@@ -9010,6 +9456,7 @@ app.get("/api/crm/leads/:leadId/quotes/:quoteId", async (req: Request, res: Resp
       return res.status(404).json({ message: "Quote snapshot not found" });
     }
     const snapshotPayload: Record<string, unknown> = parseStoredJsonObject(snap.payloadJson) ?? {};
+    const customerUrl = crmCustomerQuoteUrl(quoteId);
     return res.json({
       ok: true,
       selectedForCrm: false,
@@ -9017,9 +9464,13 @@ app.get("/api/crm/leads/:leadId/quotes/:quoteId", async (req: Request, res: Resp
       leadId,
       quoteId,
       createdAt: snap.createdAt,
+      quoteLink: customerUrl,
+      customerQuoteUrl: customerUrl,
       links: {
-        customerQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}`,
-        internalQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}?internal=1&leadId=${encodeURIComponent(String(leadId))}`,
+        quoteLink: customerUrl,
+        customerQuoteUrl: customerUrl,
+        customerLink: customerUrl,
+        internalQuoteUrl: crmQuoteInternalUrl(leadId, quoteId),
       },
       discount: readDiscountMetaFromSnapshot(snapshotPayload),
       rawSnapshot: snapshotPayload,
@@ -9147,17 +9598,24 @@ app.patch("/api/crm/leads/:leadId/quotes/:quoteId/discount", async (req: Request
       [leadId, quoteId, json, new Date()],
     );
     const ins = result as mysql.ResultSetHeader;
-    return res.json({
-      ok: true,
-      leadId,
-      quoteId,
-      updated: ins.affectedRows > 0,
-      discount: { ...discountMeta, amount },
-      links: {
-        customerQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}`,
-        internalQuoteUrl: `${frontendBase()}/quote/${encodeURIComponent(String(quoteId))}?internal=1&leadId=${encodeURIComponent(String(leadId))}`,
-      },
-    });
+    {
+      const customerUrl = crmCustomerQuoteUrl(quoteId);
+      return res.json({
+        ok: true,
+        leadId,
+        quoteId,
+        updated: ins.affectedRows > 0,
+        discount: { ...discountMeta, amount },
+        quoteLink: customerUrl,
+        customerQuoteUrl: customerUrl,
+        links: {
+          quoteLink: customerUrl,
+          customerQuoteUrl: customerUrl,
+          customerLink: customerUrl,
+          internalQuoteUrl: crmQuoteInternalUrl(leadId, quoteId),
+        },
+      });
+    }
   } catch (err) {
     console.error("crm quote discount update error", err);
     return res.status(500).json({ message: "Failed to update quote discount" });
@@ -19937,14 +20395,48 @@ const handleCrmShareQuoteVersion = async (req: Request, res: Response) => {
     }
     const snapLead = Number(snap.leadId);
     if (Number.isFinite(snapLead) && snapLead > 0 && snapLead !== leadId) {
-      return res.status(404).json({ message: "Quote snapshot not found for this lead" });
+      // Orphan / stale snapshot lead_id (row missing) vs CRM-linked Design lead from URL.
+      const [snapLeadRows] = await pool.query(`SELECT id FROM leads WHERE id = ? LIMIT 1`, [snapLead]);
+      const [reqLeadRows] = await pool.query(`SELECT id FROM leads WHERE id = ? LIMIT 1`, [leadId]);
+      const snapLeadMissing = (snapLeadRows as { id?: number }[]).length === 0;
+      const requestLeadExists = (reqLeadRows as { id?: number }[]).length > 0;
+      if (snapLeadMissing && requestLeadExists) {
+        await pool.query(
+          `UPDATE lead_prolance_quote_snapshots SET lead_id = ? WHERE quote_id = ? OR lead_id = ?`,
+          [leadId, quoteId, snapLead],
+        );
+        try {
+          await pool.query(
+            `UPDATE lead_prolance_quote_versions SET lead_id = ? WHERE quote_id = ? OR lead_id = ?`,
+            [leadId, quoteId, snapLead],
+          );
+        } catch (rehomeVersionsErr) {
+          console.warn("[crm-share] quote_versions rehome skipped", rehomeVersionsErr);
+        }
+        snap.leadId = leadId;
+        console.info("[crm-share] Re-homed orphan quote snapshot", {
+          quoteId,
+          fromLeadId: snapLead,
+          toLeadId: leadId,
+        });
+      } else {
+        return res.status(404).json({ message: "Quote snapshot not found for this lead" });
+      }
     }
 
     const selectedQuoteIdRaw = Number(body.selectedQuoteId ?? body.quoteId);
     const selectedQuoteId =
       Number.isFinite(selectedQuoteIdRaw) && selectedQuoteIdRaw > 0 ? selectedQuoteIdRaw : quoteId;
 
-    const leadVersions = await loadProlanceQuoteVersionsForLead(leadId);
+    let leadVersions = await loadProlanceQuoteVersionsForLead(leadId);
+    if (
+      leadVersions.length === 0 &&
+      Number.isFinite(snapLead) &&
+      snapLead > 0 &&
+      snapLead !== leadId
+    ) {
+      leadVersions = await loadProlanceQuoteVersionsForLead(snapLead);
+    }
     const matched =
       leadVersions.find(
         (row) => Number(row.quoteId) === selectedQuoteId && Number(row.versionNumber) === versionNumber,
@@ -19999,12 +20491,117 @@ const handleCrmShareQuoteVersion = async (req: Request, res: Response) => {
       persistQuoteId,
     ]);
 
+    const customerQuoteUrl = crmCustomerQuoteUrl(persistQuoteId);
+    const internalQuoteUrl = crmQuoteInternalUrl(leadId, persistQuoteId);
+
+    // Preferred: push customer quoteLink onto the CRM lead so sales need no Get Quote.
+    let crmPush: { ok: boolean; crmLeadId?: number; error?: string } = { ok: false };
+    let designLeadIdForMeeting = leadId;
+    try {
+      const { crmLeadId, leadType, designLeadIdUsed } = await resolveCrmLeadRefForDesignLead(
+        leadId,
+        body,
+      );
+      designLeadIdForMeeting = designLeadIdUsed > 0 ? designLeadIdUsed : leadId;
+      if (crmLeadId != null) {
+        // Re-home orphan / stale snapshot rows onto the Design lead that owns the CRM linkage.
+        await pool.query(
+          `UPDATE lead_prolance_quote_snapshots
+           SET lead_id = ?
+           WHERE quote_id IN (?, ?) AND lead_id <> ?`,
+          [designLeadIdUsed, quoteId, persistQuoteId, designLeadIdUsed],
+        );
+        try {
+          await pool.query(
+            `UPDATE lead_prolance_quote_versions
+             SET lead_id = ?
+             WHERE quote_id IN (?, ?) AND lead_id <> ?`,
+            [designLeadIdUsed, quoteId, persistQuoteId, designLeadIdUsed],
+          );
+        } catch (rehomeVersionsErr) {
+          console.warn("[crm-share] quote_versions rehome skipped", rehomeVersionsErr);
+        }
+        if (designLeadIdUsed !== leadId) {
+          await pool.query(
+            `UPDATE lead_prolance_quote_snapshots
+             SET crm_shared_version_number = ?, crm_shared_quote_id = ?, crm_visible_version_numbers = ?
+             WHERE lead_id = ?`,
+            [persistVersion, persistQuoteId, crmVisibleJson, designLeadIdUsed],
+          );
+        }
+        try {
+          await notifyCrmQuoteLinkShared({
+            crmLeadId,
+            leadType,
+            quoteId: persistQuoteId,
+            quoteLink: customerQuoteUrl,
+            customerQuoteUrl,
+            internalQuoteUrl: crmQuoteInternalUrl(designLeadIdUsed, persistQuoteId),
+          });
+          crmPush = { ok: true, crmLeadId };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          crmPush = { ok: false, crmLeadId, error: message };
+          console.error("[crm-quote-share] CRM push error", {
+            leadId,
+            designLeadIdUsed,
+            crmLeadId,
+            quoteId: persistQuoteId,
+            error: message,
+          });
+        }
+      } else {
+        crmPush = {
+          ok: false,
+          error: "No crmLeadId on Design lead — cannot push quoteLink to Hub CRM",
+        };
+        console.info("[crm-quote-share] No crmLeadId on Design lead; skip CRM quoteLink push", {
+          leadId,
+          quoteId: persistQuoteId,
+          hints: {
+            designLeadIdHint: body.designLeadIdHint ?? null,
+            hubLeadId: body.hubLeadId ?? null,
+            crmLeadId: body.crmLeadId ?? null,
+          },
+        });
+      }
+    } catch (pushLookupErr) {
+      const message =
+        pushLookupErr instanceof Error ? pushLookupErr.message : String(pushLookupErr);
+      crmPush = { ok: false, error: message };
+      console.error("[crm-quote-share] Failed to resolve CRM lead for quoteLink push", pushLookupErr);
+    }
+
+    // Pre 10% only: any Share to CRM version → mark CRM meeting Successful.
+    let pre10MeetingCompleted = 0;
+    try {
+      const actor = { id: user.id, name: user.name };
+      const leadIds = Array.from(
+        new Set([leadId, designLeadIdForMeeting].filter((id) => Number.isFinite(id) && id > 0)),
+      );
+      for (const id of leadIds) {
+        pre10MeetingCompleted += await completePre10CrmMeetingAfterQuoteShare(pool, id, actor);
+      }
+    } catch (meetingCompleteErr) {
+      console.error("[crm-quote-share] Pre 10% meeting auto-complete failed (non-fatal)", {
+        leadId,
+        designLeadIdForMeeting,
+        quoteId: persistQuoteId,
+        error: meetingCompleteErr,
+      });
+    }
+
     return res.json({
       ok: true,
       leadId,
       quoteId: persistQuoteId,
       crmSharedQuoteId: persistQuoteId,
       crmSharedVersionNumber: persistVersion,
+      quoteLink: customerQuoteUrl,
+      customerQuoteUrl,
+      internalQuoteUrl,
+      crmPush,
+      pre10MeetingCompleted,
       discount: hubMeta,
       payload: nextPayload,
     });

@@ -15,7 +15,11 @@ Base URL (prod): `https://api.hubinterior.com`
 
 **GET** `/api/crm/quotes/internal-link/:externalLeadId`
 
-Alias: `/api/new-crm/quotes/internal-link/by-lead/:externalLeadId`
+Aliases:
+- `/api/new-crm/quotes/internal-link/by-lead/:externalLeadId`
+- `/api/new-crm/quotes/internal-link/by-external/:externalLeadId`
+
+On **Share to CRM**, Design also **pushes** the customer URL onto the CRM lead (`quoteLink` / `customerQuoteUrl`, never `internal=1`). Pull below remains the fallback when the lead is opened.
 
 `externalLeadId` is CRM pid / Hub `leads.pid` / `payload.externalReferenceId`.
 
@@ -30,8 +34,10 @@ Alias: `/api/new-crm/quotes/internal-link/by-lead/:externalLeadId`
   "quoteId": null,
   "crmSharedQuoteId": null,
   "crmSharedVersionNumber": null,
+  "quoteLink": null,
   "internalQuoteUrl": null,
   "customerQuoteUrl": null,
+  "customerLink": null,
   "message": "Designer has not selected a quote version for CRM yet"
 }
 ```
@@ -49,8 +55,10 @@ CRM UI: show waiting copy. **Do not** fall back to the latest quote.
   "quoteId": 67558,
   "crmSharedQuoteId": 67558,
   "crmSharedVersionNumber": 2,
-  "internalQuoteUrl": "https://app.hubinterior.com/quote/67558?internal=1&leadId=36&audience=crm",
-  "customerQuoteUrl": "https://app.hubinterior.com/quote/67558"
+  "quoteLink": "https://app.hubinterior.com/quote/67558",
+  "customerQuoteUrl": "https://app.hubinterior.com/quote/67558",
+  "customerLink": "https://app.hubinterior.com/quote/67558",
+  "internalQuoteUrl": "https://app.hubinterior.com/quote/67558?internal=1&leadId=36&audience=crm"
 }
 ```
 

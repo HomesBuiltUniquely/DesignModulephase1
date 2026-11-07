@@ -236,7 +236,13 @@ export function canShowStartMeetingForBoardMeeting(
   if (!isPre10CrmBoardMeeting(meeting)) return false;
   if ((meeting?.meetingStatus || '').toLowerCase() === 'cancelled') return false;
   const progress = (meeting?.progress || '').toLowerCase();
-  if (progress === 'completed' || progress === 'meeting_abandoned') return false;
+  if (
+    progress === 'completed' ||
+    progress === 'meeting_never_happened' ||
+    progress === 'meeting_abandoned'
+  ) {
+    return false;
+  }
 
   const meetingDay = parseMeetingDateToIsoDay(meeting?.meetingDate);
   const today = todayIso || todayIsoDay();
@@ -276,7 +282,7 @@ export function getBoardStartMeetingBlockReason(
 
   const progress = (meeting?.progress || '').toLowerCase();
   if (progress === 'completed') return 'completed';
-  if (progress === 'meeting_abandoned') return 'abandoned';
+  if (progress === 'meeting_never_happened' || progress === 'meeting_abandoned') return 'abandoned';
 
   const meetingDay = parseMeetingDateToIsoDay(meeting?.meetingDate);
   if (!isMeetingOnToday(meetingDay, todayIso)) {
