@@ -2050,6 +2050,11 @@
   box-shadow: 0 0 0 2px #e5f4ec;
 }
 
+.statusDot[data-status='rescheduled'] {
+  background: #d97706;
+  box-shadow: 0 0 0 2px #fef3c7;
+}
+
 .statusDot[data-status='abandoned'] {
   background: #c45b78;
   box-shadow: 0 0 0 2px #fde8ee;
@@ -2092,6 +2097,10 @@
 
 .chip[data-status='completed'] {
   background: #f5fbf8;
+}
+
+.chip[data-status='rescheduled'] {
+  background: #fffbeb;
 }
 
 .chip[data-status='abandoned'] {
@@ -2615,6 +2624,109 @@
 .noteSub {
   margin-top: 4px;
   font-size: 12px;
+  font-weight: 600;
+}
+
+.abandonFeedback {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.abandonFeedbackLabel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #5c524c;
+}
+
+.abandonFeedbackOptional {
+  font-size: 11px;
+  font-weight: 600;
+  color: #9a8f87;
+}
+
+.abandonFeedbackInput {
+  width: 100%;
+  resize: vertical;
+  min-height: 72px;
+  border-radius: 10px;
+  border: 1px solid #e0d6cf;
+  background: #fff;
+  padding: 10px 12px;
+  color: #3f3834;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  line-height: 1.4;
+}
+
+.abandonFeedbackInput:focus {
+  outline: none;
+  border-color: #c4b4a8;
+  box-shadow: 0 0 0 3px rgba(154, 60, 60, 0.08);
+}
+
+.abandonFeedbackHint {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: #9a8f87;
+}
+
+.crmFeedback {
+  margin-top: 12px;
+  border-radius: 12px;
+  border: 1px solid #e8ddd3;
+  background: #fffaf5;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.crmFeedbackTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.crmFeedbackTitle {
+  font-size: 12px;
+  font-weight: 800;
+  color: #5c524c;
+  letter-spacing: 0.01em;
+}
+
+.crmFeedbackBadge {
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: #f3e6da;
+  color: #8a5230;
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.crmFeedbackBody {
+  margin: 0;
+  color: #3f3834;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.crmFeedbackMeta {
+  margin: 0;
+  color: #9a8f87;
+  font-size: 11px;
   font-weight: 600;
 }
 
