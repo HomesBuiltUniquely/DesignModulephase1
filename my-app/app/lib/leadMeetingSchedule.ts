@@ -129,9 +129,15 @@ function getLatestMeetingWizCompletion(
   }
 
   if (!historyEvents?.length) return null;
+  const completionTasks = new Set([
+    MEETING_WIZ_COMPLETED_TASK,
+    'Meeting Successful',
+    'Meeting completed',
+  ]);
   let best: { at: string; meetingDate: string | null } | null = null;
   for (const ev of historyEvents) {
-    if (String(ev.taskName || '').trim() !== MEETING_WIZ_COMPLETED_TASK) continue;
+    const task = String(ev.taskName || '').trim();
+    if (!completionTasks.has(task)) continue;
     const meta = ev.meta && typeof ev.meta === 'object' ? ev.meta : {};
     const at = String(meta.completedAt || ev.timestamp || '').trim();
     if (!at) continue;
