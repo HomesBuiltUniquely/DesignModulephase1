@@ -949,10 +949,13 @@ export default function MeetingManagementView() {
     if (!sessionId) return;
     setLoading(true);
     setError(null);
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 8000);
     try {
       const res = await fetch(`${apiBase}/api/meetings/scheduled`, {
         headers: buildAuthHeaders(sessionId),
         credentials: 'include',
+        signal: controller.signal,
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -961,10 +964,24 @@ export default function MeetingManagementView() {
       setMeetings(Array.isArray(data?.meetings) ? data.meetings : []);
       setPersonalWarning(typeof data?.personalWarning === 'string' && data.personalWarning.trim() ? data.personalWarning : null);
     } catch (err) {
-      setMeetings([]);
+      const aborted = err instanceof DOMException && err.name === 'AbortError';
+      const networkFail =
+        err instanceof TypeError ||
+        (err instanceof Error && /failed to fetch|networkerror|load failed/i.test(err.message));
       setPersonalWarning(null);
-      setError(err instanceof Error ? err.message : 'Failed to load scheduled meetings');
+      setError(
+        aborted
+          ? 'Meeting Management timed out. Retry — the board should load within a few seconds.'
+          : networkFail
+            ? 'Could not reach the server for Meeting Management. Check your connection and retry.'
+            : err instanceof Error
+              ? err.message
+              : 'Failed to load scheduled meetings',
+      );
+      // Keep prior meetings on soft network/timeout failures so the board is not wiped.
+      if (!aborted && !networkFail) setMeetings([]);
     } finally {
+      window.clearTimeout(timeoutId);
       setLoading(false);
     }
   }, [apiBase, sessionId]);
