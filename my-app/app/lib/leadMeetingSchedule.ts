@@ -154,8 +154,8 @@ function getLatestMeetingWizCompletion(
 
 /**
  * Start Meeting only for Pre 10% leads, while a meeting is scheduled for today
- * and that session has not been completed. After Meeting Completed, hides until
- * a newer meeting is scheduled.
+ * and that session has not been completed. After Meeting Completed / End Meeting,
+ * hides until a newer meeting is scheduled on a different day.
  */
 export function canShowStartMeetingButton(
   lead: LeadshipTypes | null | undefined,
@@ -163,29 +163,58 @@ export function canShowStartMeetingButton(
 ): boolean {
   if (!lead || getPhaseBucket(lead) !== 'Pre 10%') return false;
 
+  // Authoritative board/DB signal (queue enriches this from lead_meetings).
+  const crmProgress = String(
+    (lead as { crmMeetingProgress?: string | null }).crmMeetingProgress || '',
+  )
+    .trim()
+    .toLowerCase();
+  if (
+    crmProgress === 'completed' ||
+    crmProgress === 'meeting_never_happened' ||
+    crmProgress === 'meeting_abandoned'
+  ) {
+    return false;
+  }
+
   if (!isLeadMeetingScheduledToday(lead, historyEvents)) return false;
 
+  const today = todayIsoDay();
+  const appointmentDay = parseMeetingDateToIsoDay(lead.appointmentDate);
   const scheduleDay =
     getLeadScheduledMeetingIsoDay(lead) ||
-    (historyHasMeetingScheduledToday(historyEvents) ? todayIsoDay() : null);
+    appointmentDay ||
+    (historyHasMeetingScheduledToday(historyEvents) ? today : null);
   if (!scheduleDay) return false;
 
   const completed = getLatestMeetingWizCompletion(lead, historyEvents);
   if (!completed) return true;
 
+  const completedDay =
+    completed.meetingDate || parseMeetingDateToIsoDay(completed.at);
+
+  // Unlock only when a newer schedule points at a DIFFERENT calendar day.
+  // Same-day payload touches (designScheduledMeetingUpdatedAt) must not revive Start.
   const scheduleUpdatedAt = getScheduleUpdatedAt(lead);
-  // A meeting scheduled/rescheduled after completion unlocks Start Meeting again.
-  if (scheduleUpdatedAt && scheduleUpdatedAt > completed.at) {
+  if (
+    scheduleUpdatedAt &&
+    scheduleUpdatedAt > completed.at &&
+    completedDay &&
+    scheduleDay !== completedDay &&
+    (!appointmentDay || appointmentDay !== completedDay)
+  ) {
     return true;
   }
 
-  if (completed.meetingDate && completed.meetingDate === scheduleDay) {
+  // Hide when completion matches CRM appointment day, design schedule day, or today.
+  if (
+    completedDay &&
+    (completedDay === scheduleDay ||
+      completedDay === appointmentDay ||
+      (completedDay === today && isMeetingOnToday(scheduleDay, today)))
+  ) {
     return false;
   }
-
-  // Fallback: completed on the same calendar day as today's schedule.
-  const completedDay = parseMeetingDateToIsoDay(completed.at);
-  if (completedDay === scheduleDay) return false;
 
   return true;
 }

@@ -66,6 +66,7 @@ import {
   startCrmMeeting,
   endCrmMeeting,
   completePre10CrmMeetingAfterQuoteShare,
+  applyCrmMeetingFeedback,
 } from "./leadMeetings";
 import {
   extractFloorPlansFromLeadPayload,
@@ -17995,52 +17996,77 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
         };
       });
 
-    // Backfill Start Meeting hide-flag when End Meeting already completed CRM progress
-    // but older rows never wrote meetingWizLastCompleted (Pre 10% dashboard still showed Start).
+    // Enrich CRM Pre 10% meeting progress + backfill meetingWizLastCompleted so Start Meeting
+    // hides on the Pre 10% dashboard after End Meeting / Meeting Successful (not only on the board).
     try {
-      const missingWiz = baseList
-        .filter((l: { id: number; meetingWizLastCompleted?: unknown }) => !l.meetingWizLastCompleted)
-        .map((l: { id: number }) => l.id);
-      if (missingWiz.length > 0) {
-        const placeholders = missingWiz.map(() => "?").join(",");
-        const [doneRows] = await pool.query(
+      const allLeadIds = (baseList as { id: number }[])
+        .map((l) => Number(l.id))
+        .filter((id) => Number.isFinite(id) && id > 0);
+      if (allLeadIds.length > 0) {
+        const placeholders = allLeadIds.map(() => "?").join(",");
+        const [crmRows] = await pool.query(
           `SELECT m.lead_id AS leadId,
+                  m.progress AS progress,
                   DATE_FORMAT(m.meeting_date, '%Y-%m-%d') AS meetingDate,
                   m.ended_at AS endedAt,
                   m.updated_at AS updatedAt
              FROM lead_meetings m
             WHERE m.source = 'crm'
-              AND m.progress = 'completed'
               AND m.meeting_status <> 'cancelled'
               AND m.lead_id IN (${placeholders})
-            ORDER BY m.ended_at DESC, m.updated_at DESC, m.id DESC`,
-          missingWiz,
+            ORDER BY m.meeting_date DESC, m.id DESC`,
+          allLeadIds,
         );
-        const doneByLead = new Map<number, { at: string; meetingDate: string }>();
-        for (const row of doneRows as {
+        const crmByLead = new Map<
+          number,
+          {
+            progress: string;
+            meetingDate: string;
+            at: string;
+          }
+        >();
+        for (const row of crmRows as {
           leadId: number;
+          progress?: string;
           meetingDate?: string;
           endedAt?: Date | string | null;
           updatedAt?: Date | string | null;
         }[]) {
           const leadId = Number(row.leadId);
-          if (!Number.isFinite(leadId) || doneByLead.has(leadId)) continue;
+          if (!Number.isFinite(leadId) || crmByLead.has(leadId)) continue;
           const atRaw = row.endedAt || row.updatedAt || new Date();
           const at = atRaw instanceof Date ? atRaw.toISOString() : new Date(String(atRaw)).toISOString();
-          const meetingDate = String(row.meetingDate || at).slice(0, 10);
-          doneByLead.set(leadId, { at, meetingDate });
+          crmByLead.set(leadId, {
+            progress: String(row.progress || "scheduled"),
+            meetingDate: String(row.meetingDate || at).slice(0, 10),
+            at,
+          });
         }
         for (const lead of baseList as {
           id: number;
           meetingWizLastCompleted?: { at: string; meetingDate: string } | null;
+          crmMeetingProgress?: string | null;
+          crmMeetingDate?: string | null;
+          appointmentDate?: string | null;
         }[]) {
-          if (lead.meetingWizLastCompleted) continue;
-          const done = doneByLead.get(lead.id);
-          if (done) lead.meetingWizLastCompleted = done;
+          const crm = crmByLead.get(Number(lead.id));
+          if (!crm) continue;
+          lead.crmMeetingProgress = crm.progress;
+          lead.crmMeetingDate = crm.meetingDate;
+          // Prefer CRM appointment day when missing so Start gating matches Meeting Management.
+          if (!lead.appointmentDate) lead.appointmentDate = crm.meetingDate;
+          if (
+            !lead.meetingWizLastCompleted &&
+            (crm.progress === "completed" ||
+              crm.progress === "meeting_never_happened" ||
+              crm.progress === "meeting_abandoned")
+          ) {
+            lead.meetingWizLastCompleted = { at: crm.at, meetingDate: crm.meetingDate };
+          }
         }
       }
     } catch (wizBackfillErr) {
-      console.error("[leads-list] meetingWizLastCompleted backfill failed", wizBackfillErr);
+      console.error("[leads-list] CRM meeting progress enrichment failed", wizBackfillErr);
     }
 
     // Enrich with current milestone (from task completions) for Design Phase dashboard
@@ -19188,36 +19214,57 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
       scheduledMeetingDate: intake.scheduledMeetingDate,
       scheduledMeetingSlot: intake.scheduledMeetingSlot,
       designScheduledMeetingUpdatedAt: intake.designScheduledMeetingUpdatedAt,
-      meetingWizLastCompleted:
-        intake.meetingWizLastCompleted ||
-        (await (async () => {
-          try {
-            const [doneRows] = await pool.query(
-              `SELECT DATE_FORMAT(meeting_date, '%Y-%m-%d') AS meetingDate,
-                      ended_at AS endedAt,
-                      updated_at AS updatedAt
-                 FROM lead_meetings
-                WHERE lead_id = ?
-                  AND source = 'crm'
-                  AND progress = 'completed'
-                  AND meeting_status <> 'cancelled'
-                ORDER BY ended_at DESC, updated_at DESC, id DESC
-                LIMIT 1`,
-              [id],
-            );
-            const done = (doneRows as {
-              meetingDate?: string;
-              endedAt?: Date | string | null;
-              updatedAt?: Date | string | null;
-            }[])[0];
-            if (!done) return null;
-            const atRaw = done.endedAt || done.updatedAt || new Date();
-            const at = atRaw instanceof Date ? atRaw.toISOString() : new Date(String(atRaw)).toISOString();
-            return { at, meetingDate: String(done.meetingDate || at).slice(0, 10) };
-          } catch {
-            return null;
+      ...(await (async () => {
+        try {
+          const [crmRows] = await pool.query(
+            `SELECT progress,
+                    DATE_FORMAT(meeting_date, '%Y-%m-%d') AS meetingDate,
+                    ended_at AS endedAt,
+                    updated_at AS updatedAt
+               FROM lead_meetings
+              WHERE lead_id = ?
+                AND source = 'crm'
+                AND meeting_status <> 'cancelled'
+              ORDER BY meeting_date DESC, id DESC
+              LIMIT 1`,
+            [id],
+          );
+          const crm = (crmRows as {
+            progress?: string;
+            meetingDate?: string;
+            endedAt?: Date | string | null;
+            updatedAt?: Date | string | null;
+          }[])[0];
+          if (!crm) {
+            return {
+              meetingWizLastCompleted: intake.meetingWizLastCompleted,
+              crmMeetingProgress: null as string | null,
+              crmMeetingDate: null as string | null,
+            };
           }
-        })()),
+          const progress = String(crm.progress || "scheduled");
+          const atRaw = crm.endedAt || crm.updatedAt || new Date();
+          const at = atRaw instanceof Date ? atRaw.toISOString() : new Date(String(atRaw)).toISOString();
+          const meetingDate = String(crm.meetingDate || at).slice(0, 10);
+          const completedLike =
+            progress === "completed" ||
+            progress === "meeting_never_happened" ||
+            progress === "meeting_abandoned";
+          return {
+            crmMeetingProgress: progress,
+            crmMeetingDate: meetingDate,
+            meetingWizLastCompleted:
+              intake.meetingWizLastCompleted ||
+              (completedLike ? { at, meetingDate } : null),
+          };
+        } catch {
+          return {
+            meetingWizLastCompleted: intake.meetingWizLastCompleted,
+            crmMeetingProgress: null as string | null,
+            crmMeetingDate: null as string | null,
+          };
+        }
+      })()),
       intakeCustomerName: intake.intakeCustomerName,
       intakeConfiguration: intake.intakeConfiguration,
       intakeNotes: intake.intakeNotes,
@@ -22623,6 +22670,292 @@ app.post("/api/meetings/:id/start", async (req: Request, res: Response) => {
     if (err instanceof MeetingActionError) return res.status(err.status).json({ message: err.message });
     console.error("start meeting error", err);
     return res.status(500).json({ message: "Failed to start meeting" });
+  }
+});
+
+/**
+ * CRM → Design: Pre-10% designer feedback push.
+ * POST /api/hub/crm-meeting/feedback
+ * Auth: x-external-api-key / x-api-key (EXTERNAL_LEAD_INGEST_API_KEY).
+ * Does not change meeting progress.
+ */
+app.post("/api/hub/crm-meeting/feedback", async (req: Request, res: Response) => {
+  try {
+    const expectedKey =
+      (process.env.EXTERNAL_LEAD_INGEST_API_KEY || "").trim() ||
+      (process.env.HUB_SYNC_API_KEY || "").trim() ||
+      (process.env.CRM_EXTERNAL_API_KEY || "").trim();
+    if (!expectedKey) {
+      return res.status(503).json({
+        message: "CRM meeting feedback is disabled (missing EXTERNAL_LEAD_INGEST_API_KEY)",
+      });
+    }
+    const providedKey = String(
+      req.headers["x-external-api-key"] ||
+        req.headers["x-api-key"] ||
+        String(req.headers.authorization || "").replace(/^Bearer\s+/i, ""),
+    ).trim();
+    if (!providedKey || providedKey !== expectedKey) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const body = (req.body || {}) as Record<string, unknown>;
+    const action = String(body.action ?? body.meetingStatus ?? "").trim().toUpperCase();
+    if (action && action !== "FEEDBACK_DESIGNER") {
+      return res.status(400).json({
+        message: 'action/meetingStatus must be "FEEDBACK_DESIGNER"',
+      });
+    }
+
+    const feedback = String(body.feedbackDesigner ?? body.feedback_designer ?? "").trim();
+    if (!feedback) {
+      return res.status(400).json({ message: "feedbackDesigner is required" });
+    }
+    if (feedback.length > 4000) {
+      return res.status(400).json({ message: "feedbackDesigner must be 4000 characters or less" });
+    }
+    const feedbackBy =
+      String(body.feedbackBy ?? body.feedback_designer_by ?? body.salesExecutive ?? "CRM").trim() ||
+      "CRM";
+    const crmAppointmentIdRaw = Number(body.crmAppointmentId ?? body.appointmentId);
+    const crmAppointmentId =
+      Number.isFinite(crmAppointmentIdRaw) && crmAppointmentIdRaw > 0 ? crmAppointmentIdRaw : null;
+    const crmLeadIdRaw = Number(body.crmLeadId ?? body.leadId);
+    const crmLeadId = Number.isFinite(crmLeadIdRaw) && crmLeadIdRaw > 0 ? crmLeadIdRaw : null;
+    const pid = String(
+      body.pid ?? body.externalLeadId ?? body.leadIdentifier ?? body.externalReferenceId ?? "",
+    ).trim();
+    const appointmentDate = String(body.appointmentDate ?? "").trim() || null;
+    const appointmentSlot = String(body.appointmentSlot ?? "").trim() || null;
+
+    let designLeadId: number | null = null;
+    if (pid) {
+      const [byPid] = await pool.query(
+        `SELECT id FROM leads
+         WHERE pid = ?
+            OR JSON_UNQUOTE(JSON_EXTRACT(
+              CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END,
+              '$.externalReferenceId'
+            )) = ?
+         ORDER BY id DESC LIMIT 1`,
+        [pid, pid],
+      );
+      designLeadId = Number((byPid as { id?: number }[])[0]?.id) || null;
+    }
+    if (designLeadId == null && crmLeadId != null) {
+      const [byCrm] = await pool.query(
+        `SELECT id FROM leads
+         WHERE payload IS NOT NULL AND JSON_VALID(payload) = 1
+           AND (
+             JSON_UNQUOTE(JSON_EXTRACT(payload, '$.crmLeadId')) = ?
+             OR JSON_UNQUOTE(JSON_EXTRACT(payload, '$.leadId')) = ?
+             OR JSON_UNQUOTE(JSON_EXTRACT(payload, '$.crm_lead_id')) = ?
+           )
+         ORDER BY id DESC LIMIT 1`,
+        [String(crmLeadId), String(crmLeadId), String(crmLeadId)],
+      );
+      designLeadId = Number((byCrm as { id?: number }[])[0]?.id) || null;
+    }
+    if (designLeadId == null && crmAppointmentId != null) {
+      const [byAppt] = await pool.query(
+        `SELECT lead_id AS leadId FROM lead_meetings
+          WHERE source = 'crm' AND crm_appointment_id = ?
+          ORDER BY id DESC LIMIT 1`,
+        [crmAppointmentId],
+      );
+      designLeadId = Number((byAppt as { leadId?: number }[])[0]?.leadId) || null;
+    }
+    if (designLeadId == null) {
+      return res.status(404).json({
+        ok: false,
+        message: "Design lead not found for CRM feedback (pid / crmLeadId / crmAppointmentId)",
+      });
+    }
+
+    const meeting = await applyCrmMeetingFeedback(pool, {
+      leadId: designLeadId,
+      feedbackDesigner: feedback,
+      feedbackBy,
+      appointmentDate,
+      appointmentSlot,
+      crmAppointmentId,
+      actor: { name: feedbackBy },
+    });
+
+    return res.status(200).json({
+      ok: true,
+      success: true,
+      message: "Feedback saved for designer; meeting progress unchanged",
+      leadId: designLeadId,
+      meetingId: meeting?.id ?? null,
+      appointmentId: crmAppointmentId ?? meeting?.crmAppointmentId ?? null,
+      feedbackDesigner: meeting?.feedbackDesigner ?? feedback,
+      feedbackDesignerAt: meeting?.feedbackDesignerAt ?? null,
+      feedbackDesignerBy: meeting?.feedbackDesignerBy ?? feedbackBy,
+      meetingStatus: meeting?.meetingStatus ?? null,
+      meetingProgress: meeting?.progress ?? null,
+      progressUnchanged: true,
+    });
+  } catch (err) {
+    if (err instanceof MeetingActionError) return res.status(err.status).json({ message: err.message });
+    console.error("hub crm-meeting feedback error", err);
+    return res.status(500).json({ message: "Failed to save CRM designer feedback" });
+  }
+});
+
+/**
+ * Design → CRM: save Pre 10% designer feedback locally, then PUT Hub appointment feedback.
+ * Does not change meeting progress. Min 50 / max 4000 chars (Design UI rule).
+ */
+app.post("/api/meetings/:id/feedback-designer", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+    const role = String(actingUser.role || "")
+      .trim()
+      .toLowerCase()
+      .replace(/^(role_|crm_)/i, "");
+    if (
+      ![
+        "design_manager",
+        "manager",
+        "admin",
+        "super_admin",
+        "superadmin",
+        "territorial_design_manager",
+        "tdm",
+      ].includes(role)
+    ) {
+      return res.status(403).json({
+        message: "Only Design Manager, Super Admin, and TDM can submit designer feedback",
+      });
+    }
+    const meetingId = Number(req.params.id);
+    if (!Number.isFinite(meetingId) || meetingId < 1) {
+      return res.status(400).json({ message: "Invalid meeting id" });
+    }
+    const body = (req.body || {}) as Record<string, unknown>;
+    const feedback = String(body.feedbackDesigner ?? body.feedback_designer ?? "").trim();
+    if (feedback.length < 50) {
+      return res.status(400).json({ message: "Feedback must be at least 50 characters" });
+    }
+    if (feedback.length > 4000) {
+      return res.status(400).json({ message: "Feedback must be 4000 characters or less" });
+    }
+    const feedbackBy =
+      String(body.feedbackBy ?? body.feedback_designer_by ?? actingUser.name ?? "Design Admin").trim() ||
+      "Design Admin";
+
+    const row = await loadMeeting(pool, meetingId);
+    if (!row) return res.status(404).json({ message: "Meeting not found" });
+    if (row.source !== "crm") {
+      return res.status(400).json({ message: "Designer feedback is only for Pre 10% CRM meetings" });
+    }
+    if (String(row.feedbackDesigner || "").trim()) {
+      return res.status(409).json({
+        message: "Your one-time feedback is already done",
+        alreadySubmitted: true,
+        feedbackDesigner: row.feedbackDesigner,
+        feedbackDesignerAt: row.feedbackDesignerAt,
+        feedbackDesignerBy: row.feedbackDesignerBy,
+      });
+    }
+
+    const meeting = await applyCrmMeetingFeedback(pool, {
+      leadId: row.leadId,
+      feedbackDesigner: feedback,
+      feedbackBy,
+      appointmentDate: row.meetingDate,
+      appointmentSlot: row.meetingTime,
+      crmAppointmentId: row.crmAppointmentId ?? null,
+      actor: { id: actingUser.id, name: actingUser.name },
+    });
+
+    // Resolve CRM appointment id for Hub PUT (may have been filled by applyCrmMeetingFeedback).
+    let crmAppointmentId =
+      meeting?.crmAppointmentId != null && Number(meeting.crmAppointmentId) > 0
+        ? Number(meeting.crmAppointmentId)
+        : row.crmAppointmentId != null && Number(row.crmAppointmentId) > 0
+          ? Number(row.crmAppointmentId)
+          : null;
+
+    // Fallback: try payload crm appointment id on the Design lead.
+    if (crmAppointmentId == null) {
+      try {
+        const [leadRows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [row.leadId]);
+        const payloadRaw = (leadRows as { payload?: string | null }[])[0]?.payload;
+        const payload = payloadRaw ? (JSON.parse(payloadRaw) as Record<string, unknown>) : {};
+        const fromPayload = Number(
+          (payload as { crmAppointmentId?: unknown; appointmentId?: unknown }).crmAppointmentId ??
+            (payload as { appointmentId?: unknown }).appointmentId ??
+            (payload as { crmSchedule?: { appointmentId?: unknown } }).crmSchedule?.appointmentId,
+        );
+        if (Number.isFinite(fromPayload) && fromPayload > 0) crmAppointmentId = fromPayload;
+      } catch {
+        /* ignore */
+      }
+    }
+
+    let crmSynced = false;
+    let crmSyncError: string | null = null;
+    if (crmAppointmentId != null) {
+      const headers = crmSyncAuthHeaders();
+      const bases = Array.from(
+        new Set(
+          [
+            "https://hows.hubinterior.com",
+            String(ERP_BASE_URL || "").replace(/\/$/, ""),
+            "https://api.hubinterior.com",
+          ].filter(Boolean),
+        ),
+      );
+      const pathName = `/v1/Appointment/${crmAppointmentId}/feedback-designer`;
+      const payload = JSON.stringify({
+        feedbackDesigner: feedback,
+        feedback_designer: feedback,
+        feedbackBy,
+        feedback_designer_by: feedbackBy,
+      });
+      for (const base of bases) {
+        try {
+          const crmRes = await fetch(`${base}${pathName}`, {
+            method: "PUT",
+            headers,
+            body: payload,
+          });
+          const text = await crmRes.text().catch(() => "");
+          if (crmRes.ok) {
+            crmSynced = true;
+            console.info(
+              `[meeting-feedback] CRM PUT OK ${base}${pathName} meeting=${meetingId}`,
+            );
+            break;
+          }
+          crmSyncError = `${crmRes.status} ${text.slice(0, 180)}`;
+          if (crmRes.status !== 404) continue;
+        } catch (err) {
+          crmSyncError = err instanceof Error ? err.message : String(err);
+        }
+      }
+    } else {
+      crmSyncError = "No crmAppointmentId on this meeting — feedback saved in Design only";
+    }
+
+    return res.json({
+      ok: true,
+      meeting,
+      progressUnchanged: true,
+      crmSynced,
+      crmAppointmentId,
+      crmSyncError: crmSynced ? null : crmSyncError,
+      feedbackDesigner: meeting?.feedbackDesigner ?? feedback,
+      feedbackDesignerAt: meeting?.feedbackDesignerAt ?? null,
+      feedbackDesignerBy: meeting?.feedbackDesignerBy ?? feedbackBy,
+    });
+  } catch (err) {
+    if (err instanceof MeetingActionError) return res.status(err.status).json({ message: err.message });
+    console.error("meeting feedback-designer error", err);
+    return res.status(500).json({ message: "Failed to save designer feedback" });
   }
 });
 

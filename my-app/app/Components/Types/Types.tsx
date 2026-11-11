@@ -122,6 +122,10 @@ export type LeadshipTypes = {
         at: string;
         meetingDate: string;
     } | null;
+    /** Latest CRM Pre 10% meeting progress from lead_meetings (queue enrichment). */
+    crmMeetingProgress?: string | null;
+    /** Latest CRM Pre 10% meeting date (YYYY-MM-DD) from lead_meetings. */
+    crmMeetingDate?: string | null;
     /** External intake customer name (formData.customer_name) */
     intakeCustomerName?: string | null;
     /** External intake configuration (e.g. rawPayload.configuration) */
