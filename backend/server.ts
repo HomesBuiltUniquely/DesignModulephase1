@@ -22805,7 +22805,7 @@ app.post("/api/hub/crm-meeting/feedback", async (req: Request, res: Response) =>
 
 /**
  * Design → CRM: save Pre 10% designer feedback locally, then PUT Hub appointment feedback.
- * Does not change meeting progress. Min 50 / max 4000 chars (Design UI rule).
+ * Does not change meeting progress. Max 50 chars (Design UI rule). One-time only.
  */
 app.post("/api/meetings/:id/feedback-designer", async (req: Request, res: Response) => {
   try {
@@ -22836,11 +22836,11 @@ app.post("/api/meetings/:id/feedback-designer", async (req: Request, res: Respon
     }
     const body = (req.body || {}) as Record<string, unknown>;
     const feedback = String(body.feedbackDesigner ?? body.feedback_designer ?? "").trim();
-    if (feedback.length < 50) {
-      return res.status(400).json({ message: "Feedback must be at least 50 characters" });
+    if (!feedback) {
+      return res.status(400).json({ message: "Feedback is required" });
     }
-    if (feedback.length > 4000) {
-      return res.status(400).json({ message: "Feedback must be 4000 characters or less" });
+    if (feedback.length > 50) {
+      return res.status(400).json({ message: "Feedback must be 50 characters or less" });
     }
     const feedbackBy =
       String(body.feedbackBy ?? body.feedback_designer_by ?? actingUser.name ?? "Design Admin").trim() ||
