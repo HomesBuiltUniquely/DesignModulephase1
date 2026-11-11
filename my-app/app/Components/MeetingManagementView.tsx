@@ -1202,13 +1202,13 @@ export default function MeetingManagementView() {
   const submitDesignerFeedback = async () => {
     if (!sessionId || !selected?.id) return;
     const text = designerFeedbackDraft.trim();
-    if (text.length < 50) {
-      setDesignerFeedbackError('Write at least 50 characters');
+    if (!text) {
+      setDesignerFeedbackError('Write a short note');
       setDesignerFeedbackOk(null);
       return;
     }
-    if (text.length > 4000) {
-      setDesignerFeedbackError('Keep feedback under 4000 characters');
+    if (text.length > 50) {
+      setDesignerFeedbackError('Keep feedback under 50 characters');
       setDesignerFeedbackOk(null);
       return;
     }
@@ -1631,6 +1631,22 @@ export default function MeetingManagementView() {
     !panelLeadLoading &&
     canShowStartMeetingForBoardMeeting(selected.raw, panelLead, panelHistory, today);
   const showPre10End = selected ? canShowEndMeetingForBoardMeeting(selected.raw) : false;
+  /** Feedback composer unlocks at meeting start (e.g. 5 PM today) and stays until one-time submit. */
+  const feedbackAlreadySubmitted = !!(selected?.raw.feedbackDesigner || '').trim();
+  const feedbackMeetingReached = (() => {
+    if (!selected || selected.typeKey !== 'pre_10') return false;
+    if (selected.day < today) return true;
+    if (selected.day > today) return false;
+    const startMins = parseMinutes(selected.raw.meetingTime, selected.raw.meetingTimeLabel);
+    if (startMins == null) return true;
+    return nowMinutes >= startMins;
+  })();
+  const showDesignerFeedbackPanel =
+    showCrmFeedback &&
+    !!selected &&
+    selected.typeKey === 'pre_10' &&
+    !!selected.id &&
+    (feedbackAlreadySubmitted || feedbackMeetingReached);
   const pre10StartBlock = selected
     ? getBoardStartMeetingBlockReason(selected.raw, panelLead, panelHistory, today, {
         loading: panelLeadLoading,
@@ -2352,15 +2368,15 @@ export default function MeetingManagementView() {
         )}
       </div>
               )}
-              {showCrmFeedback && selected.typeKey === 'pre_10' && selected.id ? (
+              {showDesignerFeedbackPanel ? (
                 <div className={styles.crmFeedback}>
                   <div className={styles.crmFeedbackTop}>
                     <span className={styles.crmFeedbackTitle}>Designer feedback</span>
                     <span className={styles.crmFeedbackBadge}>
-                      {(selected.raw.feedbackDesigner || '').trim() ? 'One-time done' : 'One-time'}
+                      {feedbackAlreadySubmitted ? 'One-time done' : 'One-time'}
                     </span>
                   </div>
-                  {(selected.raw.feedbackDesigner || '').trim() ? (
+                  {feedbackAlreadySubmitted ? (
                     <>
                       <p className={styles.crmFeedbackOnceNote}>Your one-time feedback is done</p>
                       <p className={styles.crmFeedbackBody}>{(selected.raw.feedbackDesigner || '').trim()}</p>
@@ -2381,13 +2397,13 @@ export default function MeetingManagementView() {
                       <textarea
                         id={`designer-feedback-${selected.key}`}
                         className={styles.crmFeedbackTextarea}
-                        rows={5}
-                        maxLength={4000}
-                        placeholder="Share Pre 10% notes for the designer (at least 50 characters)…"
+                        rows={2}
+                        maxLength={50}
+                        placeholder="Short note (max 50)…"
                         value={designerFeedbackDraft}
                         disabled={designerFeedbackBusy}
                         onChange={(e) => {
-                          setDesignerFeedbackDraft(e.target.value);
+                          setDesignerFeedbackDraft(e.target.value.slice(0, 50));
                           setDesignerFeedbackError(null);
                           setDesignerFeedbackOk(null);
                         }}
@@ -2395,23 +2411,23 @@ export default function MeetingManagementView() {
                       <div className={styles.crmFeedbackComposerFoot}>
                         <span
                           className={styles.crmFeedbackCount}
-                          data-ready={designerFeedbackDraft.trim().length >= 50 ? '1' : '0'}
+                          data-ready={designerFeedbackDraft.trim().length > 0 ? '1' : '0'}
                         >
-                          {designerFeedbackDraft.trim().length}/4000 · min 50
+                          {designerFeedbackDraft.trim().length}/50
                         </span>
                         <button
                           type="button"
                           className={styles.crmFeedbackSubmit}
                           disabled={
                             designerFeedbackBusy ||
-                            designerFeedbackDraft.trim().length < 50 ||
-                            designerFeedbackDraft.trim().length > 4000
+                            !designerFeedbackDraft.trim() ||
+                            designerFeedbackDraft.trim().length > 50
                           }
                           onClick={() => void submitDesignerFeedback()}
                         >
                           <span className={styles.crmFeedbackSubmitShine} aria-hidden="true" />
                           <span className={styles.crmFeedbackSubmitLabel}>
-                            {designerFeedbackBusy ? 'Sending…' : 'Submit'}
+                            {designerFeedbackBusy ? '…' : 'Submit'}
                           </span>
                         </button>
                       </div>

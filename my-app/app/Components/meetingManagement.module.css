@@ -2678,14 +2678,14 @@
 }
 
 .crmFeedback {
-  margin-top: 12px;
-  border-radius: 12px;
+  margin-top: 10px;
+  border-radius: 10px;
   border: 1px solid #e8ddd3;
   background: #fffaf5;
-  padding: 12px 14px;
+  padding: 8px 10px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .crmFeedbackTop {
@@ -2696,7 +2696,7 @@
 }
 
 .crmFeedbackTitle {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
   color: #5c524c;
   letter-spacing: 0.01em;
@@ -2707,8 +2707,8 @@
   border-radius: 999px;
   background: #f3e6da;
   color: #8a5230;
-  padding: 3px 8px;
-  font-size: 10px;
+  padding: 2px 7px;
+  font-size: 9px;
   font-weight: 800;
   letter-spacing: 0.02em;
   text-transform: uppercase;
@@ -2717,27 +2717,27 @@
 .crmFeedbackBody {
   margin: 0;
   color: #3f3834;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
-  line-height: 1.45;
+  line-height: 1.4;
   white-space: pre-wrap;
 }
 
 .crmFeedbackMeta {
   margin: 0;
   color: #9a8f87;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
 }
 
 .crmFeedbackOnceNote {
   margin: 0;
-  padding: 8px 10px;
-  border-radius: 10px;
+  padding: 5px 8px;
+  border-radius: 8px;
   background: #eef6ea;
   border: 1px solid #d5e8cb;
   color: #3f7a45;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.01em;
 }
@@ -2745,12 +2745,12 @@
 .crmFeedbackComposer {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 8px;
-  margin-top: 2px;
+  gap: 5px;
+  margin-top: 0;
 }
 
 .crmFeedbackComposerLabel {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   color: #7a6f66;
   letter-spacing: 0.01em;
@@ -2758,17 +2758,18 @@
 
 .crmFeedbackTextarea {
   width: 100%;
-  min-height: 112px;
+  min-height: 52px;
+  max-height: 72px;
   resize: vertical;
-  border-radius: 12px;
+  border-radius: 8px;
   border: 1px solid #e4d6c8;
   background: #fff;
-  padding: 12px 14px;
+  padding: 8px 10px;
   color: #3f3834;
   font: inherit;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
-  line-height: 1.5;
+  line-height: 1.35;
   box-sizing: border-box;
   transition: border-color 160ms ease, box-shadow 160ms ease;
 }
@@ -2781,7 +2782,7 @@
 .crmFeedbackTextarea:focus {
   outline: none;
   border-color: #d4a574;
-  box-shadow: 0 0 0 3px rgba(212, 165, 116, 0.18);
+  box-shadow: 0 0 0 2px rgba(212, 165, 116, 0.16);
 }
 
 .crmFeedbackTextarea:disabled {
@@ -2793,12 +2794,12 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
+  gap: 8px;
+  flex-wrap: nowrap;
 }
 
 .crmFeedbackCount {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   color: #b09a86;
 }
@@ -2814,19 +2815,19 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 92px;
-  height: 34px;
-  padding: 0 16px;
+  min-width: 72px;
+  height: 28px;
+  padding: 0 12px;
   border: 0;
   border-radius: 999px;
   background: linear-gradient(135deg, #f0b27a 0%, #e18a4d 55%, #d4783a 100%);
   color: #fff;
   font: inherit;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.02em;
   cursor: pointer;
-  box-shadow: 0 6px 14px rgba(209, 120, 58, 0.28);
+  box-shadow: 0 4px 10px rgba(209, 120, 58, 0.24);
   transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 180ms ease, filter 180ms ease;
 }
 
