@@ -19,6 +19,7 @@ import {
 } from "./crmEasebuzzAutoFinance";
 import {
   floorPlanPersistFields,
+  mergeFloorPlanPersistFields,
   normalizeFloorPlansFromCrmBody,
 } from "../floorPlans";
 import {
@@ -863,15 +864,18 @@ async function upsertCrmDesignLead(
       newConnection.configurationScope && typeof newConnection.configurationScope === "object"
         ? (newConnection.configurationScope as Record<string, unknown>)
         : {};
+    const floorPlansNorm = normalizeFloorPlansFromCrmBody(body);
+    const floorPersist = mergeFloorPlanPersistFields(prev, floorPlansNorm);
     const merged = {
       ...prev,
       ...payloadToPersist,
       fetchedData: { ...prevFetched, ...newFetched },
-      formData: { ...prevForm, ...newForm },
+      formData: { ...prevForm, ...newForm, ...floorPersist },
       discovery: { ...prevDiscovery, ...newDiscovery },
       connection: {
         ...prevConnection,
         ...newConnection,
+        ...floorPersist,
         configurationScope:
           Object.keys(newScope).length > 0
             ? {
@@ -900,6 +904,7 @@ async function upsertCrmDesignLead(
               ? prevScope
               : null,
       },
+      ...floorPersist,
     };
     await pool.query(
       `UPDATE leads SET project_name = ?, contact_no = COALESCE(?, contact_no), client_email = COALESCE(?, client_email),

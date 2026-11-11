@@ -71,6 +71,7 @@ import {
 import {
   extractFloorPlansFromLeadPayload,
   floorPlanPersistFields,
+  mergeFloorPlanPersistFields,
   normalizeFloorPlansFromCrmBody,
   type FloorPlanItem,
 } from "./floorPlans";
@@ -8029,7 +8030,8 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
     const floorPlansNorm = normalizeFloorPlansFromCrmBody(
       payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {},
     );
-    const floorPersist = floorPlanPersistFields(floorPlansNorm);
+    // Default persist for create; update path re-merges with previous payload so multi plans survive.
+    let floorPersist = floorPlanPersistFields(floorPlansNorm);
     const intakeBudget = pickTrimmedString(payload.budget, discoveryIn.budget);
     const intakeLanguage = pickTrimmedString(payload.language, discoveryIn.language);
     const intakeBookingType = pickTrimmedString(
@@ -8227,12 +8229,17 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
           ? (prev.connection as Record<string, unknown>)
           : {};
       const newConnection = payloadToPersist.connection as Record<string, unknown>;
+      // Keep multi floor plans across CRM upsert/reschedule (legacy single URL must not wipe list).
+      floorPersist = mergeFloorPlanPersistFields(prev, floorPlansNorm);
+      const mergedForm = { ...prevForm, ...newForm, ...floorPersist };
+      const mergedConnection = { ...prevConnection, ...newConnection, ...floorPersist };
       const merged = {
         ...prev,
         ...payloadToPersist,
-        formData: { ...prevForm, ...newForm },
+        formData: mergedForm,
         discovery: { ...prevDiscovery, ...newDiscovery },
-        connection: { ...prevConnection, ...newConnection },
+        connection: mergedConnection,
+        ...floorPersist,
         crmLeadType:
           crmLeadType ||
           (typeof prev.crmLeadType === "string" ? prev.crmLeadType : undefined),
