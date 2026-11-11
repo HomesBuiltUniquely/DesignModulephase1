@@ -350,27 +350,6 @@ export default function Dashboard() {
         return () => { cancelled = true; };
     }, [sessionId, isDqcUser, queueFetched, setDqcProjects, setProjects, setQueueFetched]);
 
-    // Pre 10% Start Meeting depends on CRM meeting progress — refetch when opening that tab
-    // so End Meeting from Meeting Management is reflected (session cache alone stays stale).
-    useEffect(() => {
-        if (!sessionId || isDqcUser) return;
-        if (isSelected !== SideDashboard.Pre_10) return;
-        let cancelled = false;
-        const headers: Record<string, string> = {};
-        if (sessionId) headers.Authorization = `Bearer ${sessionId}`;
-        fetch(`${API}/api/leads/queue`, { headers })
-            .then((res) => res.json().catch(() => null))
-            .then((data) => {
-                if (cancelled || !Array.isArray(data)) return;
-                setProjects([...data].sort((a, b) => b.id - a.id));
-                setQueueFetched(true);
-            })
-            .catch(() => undefined);
-        return () => {
-            cancelled = true;
-        };
-    }, [isSelected, sessionId, isDqcUser, setProjects, setQueueFetched]);
-
     // Branch/designer filters are shown for TDM/DM/admin/etc (not designer/DQC/MMT/finance/SPM).
     const showBranchDesignerFilters =
         !isDesigner && !isDqcUser && !isMmtUser && !isFinanceUser && !isSpmUser && !isOpsUser;
@@ -496,6 +475,28 @@ export default function Dashboard() {
         hasQueueFilters,
         clearQueueFilters,
     } = useWorkspaceFilters();
+
+    // Pre 10% Start Meeting depends on CRM meeting progress — refetch when opening that tab
+    // so End Meeting from Meeting Management is reflected (session cache alone stays stale).
+    useEffect(() => {
+        if (!sessionId || isDqcUser) return;
+        if (isSelected !== SideDashboard.Pre_10) return;
+        let cancelled = false;
+        const headers: Record<string, string> = {};
+        if (sessionId) headers.Authorization = `Bearer ${sessionId}`;
+        fetch(`${API}/api/leads/queue`, { headers })
+            .then((res) => res.json().catch(() => null))
+            .then((data) => {
+                if (cancelled || !Array.isArray(data)) return;
+                setProjects([...data].sort((a, b) => b.id - a.id));
+                setQueueFetched(true);
+            })
+            .catch(() => undefined);
+        return () => {
+            cancelled = true;
+        };
+    }, [isSelected, sessionId, isDqcUser, setProjects, setQueueFetched]);
+
     const [showDelayedOnly, setShowDelayedOnly] = useState(false);
     const [filterDropdownOpen, setFilterDropdownOpen] = useState(false);
     const filterDropdownRef = useRef<HTMLDivElement>(null);
