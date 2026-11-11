@@ -1390,20 +1390,145 @@ export function meetingEndedIso(value: unknown): string | null {
   return parsed.toISOString();
 }
 
+const QUOTE_AMOUNT_KEYS = [
+  "totalPayableAmount",
+  "totalPayable",
+  "quotation_total",
+  "quotationTotal",
+  "quotation_total_at_sales_closure",
+  "grandTotal",
+  "netPayable",
+  "finalTotalPrice",
+  "finalPrice",
+  "final_amount",
+  "finalAmount",
+  "totalAmount",
+  "totalPrice",
+  "payableAmount",
+  "amountPayable",
+] as const;
+
+function pickQuoteAmountFromObject(source: Record<string, unknown> | null | undefined): number | null {
+  if (!source) return null;
+  for (const key of QUOTE_AMOUNT_KEYS) {
+    const amount = positiveAmount(source[key]);
+    if (amount != null) return amount;
+  }
+  return null;
+}
+
+/** Regex fallback when nested JSON shape varies / partial parse fails. */
+function quoteAmountFromRawText(raw: string): number | null {
+  if (!raw || raw.length < 8) return null;
+  // Prefer earlier (root) matches — scan a capped prefix so huge room arrays stay fast.
+  const sample = raw.length > 120_000 ? raw.slice(0, 120_000) : raw;
+  for (const key of QUOTE_AMOUNT_KEYS) {
+    const re = new RegExp(`"${key}"\\s*:\\s*"?([0-9][0-9,]*(?:\\.[0-9]+)?)"?`, "i");
+    const match = sample.match(re);
+    if (!match) continue;
+    const amount = positiveAmount(match[1]);
+    if (amount != null) return amount;
+  }
+  return null;
+}
+
+/** Pull payable amount from a quote snapshot / lead payload (object + nested + text). */
+function quoteAmountFromPayloadRaw(raw: unknown): number | null {
+  if (raw == null || raw === "") return null;
+  if (typeof raw === "string") {
+    const fromText = quoteAmountFromRawText(raw);
+    const payload = parseLeadPayload(raw);
+    if (!payload) return fromText;
+    const fromObj = quoteAmountFromParsedPayload(payload);
+    return fromObj ?? fromText;
+  }
+  if (typeof raw === "object" && !Array.isArray(raw)) {
+    return quoteAmountFromParsedPayload(raw as Record<string, unknown>);
+  }
+  return null;
+}
+
+function quoteAmountFromParsedPayload(payload: Record<string, unknown>): number | null {
+  const hosts: Record<string, unknown>[] = [payload];
+  const data = payload.data ?? payload.Data;
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    hosts.push(data as Record<string, unknown>);
+  } else if (Array.isArray(data) && data[0] && typeof data[0] === "object") {
+    hosts.push(data[0] as Record<string, unknown>);
+  }
+  for (const nestKey of ["breakdown", "quoteSummary", "summary", "pricing", "totals", "quote", "formData"] as const) {
+    for (const host of [...hosts]) {
+      const nested = host[nestKey];
+      if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+        hosts.push(nested as Record<string, unknown>);
+      }
+    }
+  }
+  for (const host of hosts) {
+    const amount = pickQuoteAmountFromObject(host);
+    if (amount != null) return amount;
+  }
+  return null;
+}
+
+function preferAmount(current: number | null | undefined, next: number | null | undefined): number | null {
+  if (next != null && next > 0) return next;
+  if (current != null && current > 0) return current;
+  return null;
+}
+
 /**
- * Quote sent only when the lead has a generated quote code, a final amount,
- * and at least one version whose CRM share is finished.
+ * Quote amount for Meeting Management board + CRM-shared flag.
+ * Covers: latest snapshot, CRM-shared snapshot, prolance quote snapshot,
+ * any snapshot with an amount, lead.payload quotation fields.
+ * Chunked so every board lead is covered (no silent 500-cap miss).
  */
 async function quoteShareByLead(
   pool: Pool,
   leadIds: number[],
-): Promise<Map<number, { quoteSent: boolean; quoteFinalAmount: number | null }>> {
-  const out = new Map<number, { quoteSent: boolean; quoteFinalAmount: number | null }>();
+): Promise<Map<number, { quoteSent: boolean; quoteFinalAmount: number | null; hasQuote: boolean }>> {
+  const out = new Map<number, { quoteSent: boolean; quoteFinalAmount: number | null; hasQuote: boolean }>();
   const ids = [...new Set(leadIds.filter((id) => Number.isInteger(id) && id > 0))];
   if (ids.length === 0) return out;
+
+  const CHUNK = 400;
+  for (let offset = 0; offset < ids.length; offset += CHUNK) {
+    const chunk = ids.slice(offset, offset + CHUNK);
+    const chunkResult = await quoteShareByLeadChunk(pool, chunk);
+    for (const [id, value] of chunkResult) out.set(id, value);
+  }
+  return out;
+}
+
+async function quoteShareByLeadChunk(
+  pool: Pool,
+  ids: number[],
+): Promise<Map<number, { quoteSent: boolean; quoteFinalAmount: number | null; hasQuote: boolean }>> {
+  const out = new Map<number, { quoteSent: boolean; quoteFinalAmount: number | null; hasQuote: boolean }>();
+  if (ids.length === 0) return out;
   const placeholders = ids.map(() => "?").join(",");
-  // Board-fast path: no JSON_VALID / payload scraping — those timed out hosted Meeting Management.
-  const [snapRows] = await pool.query(
+
+  const amountByLead = new Map<number, number | null>();
+  const hasSnapshotByLead = new Map<number, boolean>();
+  const sharedByLead = new Map<number, { shared: boolean; sharedQuoteId: number }>();
+  const leadQuoteId = new Map<number, number>();
+
+  const [leadRows] = await pool.query(
+    `SELECT id AS leadId, prolance_quote_id AS quoteId
+       FROM leads
+      WHERE id IN (${placeholders})`,
+    ids,
+  );
+  for (const row of leadRows as Record<string, unknown>[]) {
+    const id = Number(row.leadId);
+    const quoteId = Number(row.quoteId);
+    if (Number.isFinite(id) && id > 0) {
+      leadQuoteId.set(id, Number.isFinite(quoteId) && quoteId > 0 ? quoteId : 0);
+    }
+  }
+
+  // Share flags across all snapshots for the lead.
+  const [shareAggRows] = await pool.query(
     `SELECT lead_id AS leadId,
             MAX(CASE
                   WHEN crm_shared_version_number >= 1 AND crm_shared_quote_id > 0 THEN 1
@@ -1412,23 +1537,156 @@ async function quoteShareByLead(
             MAX(CASE
                   WHEN crm_shared_quote_id > 0 THEN crm_shared_quote_id
                   ELSE 0
-                END) AS sharedQuoteId
+                END) AS sharedQuoteId,
+            MAX(CASE WHEN quote_id > 0 THEN 1 ELSE 0 END) AS hasSnap
        FROM lead_prolance_quote_snapshots
       WHERE lead_id IN (${placeholders})
       GROUP BY lead_id`,
     ids,
   );
-  for (const row of snapRows as Record<string, unknown>[]) {
+  for (const row of shareAggRows as Record<string, unknown>[]) {
     const id = Number(row.leadId);
-    const shared = Number(row.crmShared) === 1;
+    if (!Number.isFinite(id) || id < 1) continue;
     const sharedQuoteId = Number(row.sharedQuoteId) || 0;
-    out.set(id, {
-      quoteSent: shared && sharedQuoteId > 0,
-      quoteFinalAmount: null,
+    sharedByLead.set(id, {
+      shared: Number(row.crmShared) === 1 && sharedQuoteId > 0,
+      sharedQuoteId,
     });
+    if (Number(row.hasSnap) === 1) hasSnapshotByLead.set(id, true);
   }
+
+  // Latest snapshot amount.
+  const [latestRows] = await pool.query(
+    `SELECT s.lead_id AS leadId, s.payload_json AS payloadJson
+       FROM lead_prolance_quote_snapshots s
+       INNER JOIN (
+         SELECT lead_id, MAX(id) AS maxId
+           FROM lead_prolance_quote_snapshots
+          WHERE lead_id IN (${placeholders})
+          GROUP BY lead_id
+       ) latest ON latest.maxId = s.id`,
+    ids,
+  );
+  for (const row of latestRows as Record<string, unknown>[]) {
+    const id = Number(row.leadId);
+    if (!Number.isFinite(id) || id < 1) continue;
+    hasSnapshotByLead.set(id, true);
+    amountByLead.set(id, preferAmount(amountByLead.get(id), quoteAmountFromPayloadRaw(row.payloadJson)));
+  }
+
+  // CRM-shared snapshot amount (may differ from latest).
+  const sharedPairs = [...sharedByLead.entries()].filter(([, v]) => v.sharedQuoteId > 0);
+  if (sharedPairs.length > 0) {
+    const sharedQuoteIds = [...new Set(sharedPairs.map(([, v]) => v.sharedQuoteId))];
+    const sharedPlaceholders = sharedQuoteIds.map(() => "?").join(",");
+    try {
+      const [sharedSnapRows] = await pool.query(
+        `SELECT lead_id AS leadId, quote_id AS quoteId, payload_json AS payloadJson
+           FROM lead_prolance_quote_snapshots
+          WHERE quote_id IN (${sharedPlaceholders})`,
+        sharedQuoteIds,
+      );
+      for (const row of sharedSnapRows as Record<string, unknown>[]) {
+        const id = Number(row.leadId);
+        if (!Number.isFinite(id) || id < 1) continue;
+        hasSnapshotByLead.set(id, true);
+        amountByLead.set(id, preferAmount(amountByLead.get(id), quoteAmountFromPayloadRaw(row.payloadJson)));
+      }
+    } catch (err) {
+      console.error("quote amount shared snapshot failed", err);
+    }
+  }
+
+  // Snapshot by leads.prolance_quote_id when amount still missing.
+  const missingAfterLatest = ids.filter((id) => !(amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0));
+  const prolancePairs = missingAfterLatest
+    .map((id) => ({ id, quoteId: leadQuoteId.get(id) || 0 }))
+    .filter((row) => row.quoteId > 0);
+  if (prolancePairs.length > 0) {
+    const quoteIds = [...new Set(prolancePairs.map((row) => row.quoteId))];
+    const qPlaceholders = quoteIds.map(() => "?").join(",");
+    try {
+      const [prolanceSnapRows] = await pool.query(
+        `SELECT lead_id AS leadId, quote_id AS quoteId, payload_json AS payloadJson
+           FROM lead_prolance_quote_snapshots
+          WHERE quote_id IN (${qPlaceholders})`,
+        quoteIds,
+      );
+      const byQuoteId = new Map<number, unknown>();
+      for (const row of prolanceSnapRows as Record<string, unknown>[]) {
+        byQuoteId.set(Number(row.quoteId), row.payloadJson);
+        const leadId = Number(row.leadId);
+        if (Number.isFinite(leadId) && leadId > 0) hasSnapshotByLead.set(leadId, true);
+      }
+      for (const pair of prolancePairs) {
+        const amount = quoteAmountFromPayloadRaw(byQuoteId.get(pair.quoteId));
+        amountByLead.set(pair.id, preferAmount(amountByLead.get(pair.id), amount));
+        if (byQuoteId.has(pair.quoteId)) hasSnapshotByLead.set(pair.id, true);
+      }
+    } catch (err) {
+      console.error("quote amount prolance snapshot failed", err);
+    }
+  }
+
+  // Any other snapshot for leads still missing amount (older versions may hold totals).
+  const stillMissing = ids.filter((id) => !(amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0));
+  if (stillMissing.length > 0) {
+    const missPlaceholders = stillMissing.map(() => "?").join(",");
+    try {
+      const [anySnapRows] = await pool.query(
+        `SELECT lead_id AS leadId, payload_json AS payloadJson
+           FROM lead_prolance_quote_snapshots
+          WHERE lead_id IN (${missPlaceholders})
+          ORDER BY id DESC`,
+        stillMissing,
+      );
+      for (const row of anySnapRows as Record<string, unknown>[]) {
+        const id = Number(row.leadId);
+        if (!Number.isFinite(id) || id < 1) continue;
+        hasSnapshotByLead.set(id, true);
+        if (amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0) continue;
+        const amount = quoteAmountFromPayloadRaw(row.payloadJson);
+        if (amount != null) amountByLead.set(id, amount);
+      }
+    } catch (err) {
+      console.error("quote amount any-snapshot failed", err);
+    }
+  }
+
+  // Lead.payload fallback — only remaining misses.
+  const missingAmountIds = ids.filter((id) => !(amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0));
+  if (missingAmountIds.length > 0) {
+    const missingPlaceholders = missingAmountIds.map(() => "?").join(",");
+    try {
+      const [fallbackRows] = await pool.query(
+        `SELECT id AS leadId, payload
+           FROM leads
+          WHERE id IN (${missingPlaceholders})`,
+        missingAmountIds,
+      );
+      for (const row of fallbackRows as Record<string, unknown>[]) {
+        const id = Number(row.leadId);
+        const amount = quoteAmountFromPayloadRaw(row.payload);
+        if (amount != null) amountByLead.set(id, amount);
+      }
+    } catch (err) {
+      console.error("quote amount lead fallback failed", err);
+    }
+  }
+
   for (const id of ids) {
-    if (!out.has(id)) out.set(id, { quoteSent: false, quoteFinalAmount: null });
+    const amount = amountByLead.get(id) ?? null;
+    const share = sharedByLead.get(id);
+    const hasQuoteCode =
+      (leadQuoteId.get(id) ?? 0) > 0 ||
+      (share?.sharedQuoteId ?? 0) > 0 ||
+      hasSnapshotByLead.get(id) === true ||
+      amount != null;
+    out.set(id, {
+      quoteSent: hasQuoteCode && amount != null && share?.shared === true,
+      quoteFinalAmount: amount,
+      hasQuote: hasQuoteCode,
+    });
   }
   return out;
 }
@@ -1752,12 +2010,16 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
     }
   }
 
-  let shareByLead = new Map<number, { quoteSent: boolean; quoteFinalAmount: number | null }>();
+  let shareByLead = new Map<
+    number,
+    { quoteSent: boolean; quoteFinalAmount: number | null; hasQuote: boolean }
+  >();
   try {
     const leadIds = [...new Set((rows as Record<string, unknown>[]).map((row) => Number(row.leadId)))].filter(
       (id) => Number.isFinite(id) && id > 0,
     );
-    shareByLead = await quoteShareByLead(pool, leadIds.slice(0, 500));
+    // Every board lead — chunked inside quoteShareByLead (no silent 500-cap miss).
+    shareByLead = await quoteShareByLead(pool, leadIds);
   } catch (err) {
     console.error("quote share lookup failed", err);
   }
@@ -1789,6 +2051,10 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
       slotByLead.get(Number(row.leadId)) ||
       "";
     const projectName = cleanText(row.projectName);
+    const quoteAmount =
+      share?.quoteFinalAmount != null && Number(share.quoteFinalAmount) > 0
+        ? String(share.quoteFinalAmount)
+        : null;
     return {
     id: Number(row.id),
     leadId: Number(row.leadId),
@@ -1799,7 +2065,7 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
     customerName: projectName || "Customer",
     phone: cleanText(row.contactNo),
     salesName: "",
-    quotationTotal: "",
+    quotationTotal: quoteAmount || "",
     budget: "",
     branchName: cleanText(row.meetingBranch),
     designerName: cleanText(row.assignedDesignerName) || "Unassigned",
@@ -1817,7 +2083,8 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
     reason: cleanText(row.cancelReason),
     endedAt: meetingEndedIso(row.endedAt),
     quoteSent: share?.quoteSent === true,
-    quoteFinalAmount: share?.quoteFinalAmount != null ? String(share.quoteFinalAmount) : null,
+    hasQuote: share?.hasQuote === true || quoteAmount != null,
+    quoteFinalAmount: quoteAmount,
     rescheduleCount: Number(row.rescheduleCount || 0),
     feedbackDesigner: cleanText(row.feedbackDesigner),
     feedbackDesignerAt: meetingEndedIso(row.feedbackDesignerAt),

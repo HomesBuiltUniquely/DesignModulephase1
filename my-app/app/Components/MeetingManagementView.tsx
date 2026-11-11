@@ -91,6 +91,8 @@ type ScheduledMeeting = {
   reason?: string | null;
   endedAt?: string | null;
   quoteSent?: boolean;
+  /** True when a quote code/snapshot exists even if amount parse failed. */
+  hasQuote?: boolean;
   quoteFinalAmount?: string | null;
   rescheduleCount?: number | null;
   feedbackDesigner?: string | null;
@@ -133,6 +135,8 @@ type ViewMeeting = {
   minutes: number | null;
   status: ViewStatus;
   quote: number | null;
+  /** Quote exists but amount could not be resolved — never show as "No quote". */
+  quotePending: boolean;
   quoteSent: boolean;
   endedAt: string | null;
   personal: boolean;
@@ -528,6 +532,10 @@ function toViewMeeting(meeting: ScheduledMeeting, index: number): ViewMeeting | 
     minutes,
     status: mapStatus(meeting),
     quote: personal ? null : mapQuote(meeting.quoteFinalAmount || meeting.quotationTotal || null),
+    quotePending:
+      !personal &&
+      mapQuote(meeting.quoteFinalAmount || meeting.quotationTotal || null) == null &&
+      (meeting.hasQuote === true || meeting.quoteSent === true),
     quoteSent: !personal && meeting.quoteSent === true,
     endedAt: personal ? null : meeting.endedAt || null,
     personal,
@@ -2359,10 +2367,12 @@ export default function MeetingManagementView() {
                 ) : null}
               </div>
               {selected.personal ? null : (
-              <div className={styles.leadQuote} data-empty={selected.quote == null}>
+              <div className={styles.leadQuote} data-empty={selected.quote == null && !selected.quotePending}>
                 <span className={styles.metaLabel}>Lead quote</span>
                 {selected.quote != null ? (
                   <span className={styles.leadAmount}>{formatInr(selected.quote)}</span>
+                ) : selected.quotePending ? (
+                  <span className={styles.leadAmount}>Quoted</span>
                 ) : (
                   <span className={styles.metaValue}>No quote yet</span>
         )}
@@ -2859,6 +2869,8 @@ function GroupRows({
               <span className={styles.moneyNone}>Personal</span>
             ) : meeting.quote != null ? (
               <span className={styles.money}>{formatInr(meeting.quote)}</span>
+            ) : meeting.quotePending ? (
+              <span className={styles.money}>Quoted</span>
             ) : (
               <span className={styles.moneyNone}>No quote</span>
             )}
