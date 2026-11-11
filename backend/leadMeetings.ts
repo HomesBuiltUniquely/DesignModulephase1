@@ -1092,13 +1092,22 @@ export async function applyCrmMeetingFeedback(
 
   let meetingId: number | null = null;
   if (crmAppointmentId != null) {
-    const [byAppt] = await pool.query(
+    const [byApptLead] = await pool.query(
       `SELECT id FROM lead_meetings
         WHERE lead_id = ? AND source = 'crm' AND crm_appointment_id = ?
         ORDER BY id DESC LIMIT 1`,
       [input.leadId, crmAppointmentId],
     );
-    meetingId = Number((byAppt as { id?: number }[])[0]?.id) || null;
+    meetingId = Number((byApptLead as { id?: number }[])[0]?.id) || null;
+    if (meetingId == null) {
+      const [byApptOnly] = await pool.query(
+        `SELECT id FROM lead_meetings
+          WHERE source = 'crm' AND crm_appointment_id = ?
+          ORDER BY id DESC LIMIT 1`,
+        [crmAppointmentId],
+      );
+      meetingId = Number((byApptOnly as { id?: number }[])[0]?.id) || null;
+    }
   }
   if (meetingId == null && dateIso) {
     const [byDate] = await pool.query(
@@ -1699,6 +1708,7 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
             m.feedback_designer AS feedbackDesigner,
             m.feedback_designer_at AS feedbackDesignerAt,
             m.feedback_designer_by AS feedbackDesignerBy,
+            m.crm_appointment_id AS crmAppointmentId,
             m.started_at AS startedAt,
             u.name AS assignedDesignerName
        FROM lead_meetings m
@@ -1812,6 +1822,10 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
     feedbackDesigner: cleanText(row.feedbackDesigner),
     feedbackDesignerAt: meetingEndedIso(row.feedbackDesignerAt),
     feedbackDesignerBy: cleanText(row.feedbackDesignerBy),
+    crmAppointmentId: (() => {
+      const id = Number(row.crmAppointmentId);
+      return Number.isFinite(id) && id > 0 ? id : null;
+    })(),
   };
   });
 }

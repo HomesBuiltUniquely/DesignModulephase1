@@ -30,13 +30,21 @@ export function canShowMeetingManagement(role: string | undefined | null): boole
   return value === 'admin' || value === 'designer' || value === 'design_manager' || value === 'territorial_design_manager';
 }
 
-/** CRM Pre 10% designer feedback — Super Admin / Sales Admin / Admin only. */
+/** Pre 10% designer feedback — Design Manager / Super Admin / TDM only (detail popup). */
 export function canSeeCrmFeedback(role: string | undefined | null): boolean {
   const value = String(role || '')
     .trim()
     .toLowerCase()
     .replace(/^(role_|crm_)/i, '');
-  return value === 'super_admin' || value === 'superadmin' || value === 'sales_admin' || value === 'admin';
+  return (
+    value === 'design_manager' ||
+    value === 'manager' ||
+    value === 'admin' ||
+    value === 'super_admin' ||
+    value === 'superadmin' ||
+    value === 'territorial_design_manager' ||
+    value === 'tdm'
+  );
 }
 
 function formatFeedbackAt(value: string | null | undefined): string {
@@ -88,6 +96,7 @@ type ScheduledMeeting = {
   feedbackDesigner?: string | null;
   feedbackDesignerAt?: string | null;
   feedbackDesignerBy?: string | null;
+  crmAppointmentId?: number | null;
   personalKey?: string | null;
   personalKind?: 'block' | 'full_day' | null;
   personalReason?: string | null;
@@ -950,6 +959,11 @@ export default function MeetingManagementView() {
   const [meetingWizLead, setMeetingWizLead] = useState<LeadshipTypes | null>(null);
   /** UI-only abandon feedback — not persisted. */
   const [abandonedFeedbackByKey, setAbandonedFeedbackByKey] = useState<Record<string, string>>({});
+  /** Pre-10% designer feedback draft (admin) — min 50 / max 4000. */
+  const [designerFeedbackDraft, setDesignerFeedbackDraft] = useState('');
+  const [designerFeedbackBusy, setDesignerFeedbackBusy] = useState(false);
+  const [designerFeedbackError, setDesignerFeedbackError] = useState<string | null>(null);
+  const [designerFeedbackOk, setDesignerFeedbackOk] = useState<string | null>(null);
 
   const loadMeetings = useCallback(async () => {
     if (!sessionId) return;
@@ -1178,6 +1192,84 @@ export default function MeetingManagementView() {
       return mapped.find((meeting) => meeting.key === current.key) ?? null;
     });
   }, [mapped]);
+
+  useEffect(() => {
+    setDesignerFeedbackDraft((selected?.raw.feedbackDesigner || '').trim());
+    setDesignerFeedbackError(null);
+    setDesignerFeedbackOk(null);
+  }, [selected?.key, selected?.raw.feedbackDesigner]);
+
+  const submitDesignerFeedback = async () => {
+    if (!sessionId || !selected?.id) return;
+    const text = designerFeedbackDraft.trim();
+    if (text.length < 50) {
+      setDesignerFeedbackError('Write at least 50 characters');
+      setDesignerFeedbackOk(null);
+      return;
+    }
+    if (text.length > 4000) {
+      setDesignerFeedbackError('Keep feedback under 4000 characters');
+      setDesignerFeedbackOk(null);
+      return;
+    }
+    setDesignerFeedbackBusy(true);
+    setDesignerFeedbackError(null);
+    setDesignerFeedbackOk(null);
+    try {
+      const res = await fetch(`${apiBase}/api/meetings/${selected.id}/feedback-designer`, {
+        method: 'POST',
+        headers: buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' }),
+        credentials: 'include',
+        body: JSON.stringify({
+          feedbackDesigner: text,
+          feedbackBy: user?.name || undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 409 && data?.alreadySubmitted) {
+          const existing = String(data?.feedbackDesigner || '').trim();
+          setMeetings((prev) =>
+            prev.map((meeting) =>
+              meeting.id === selected.id
+                ? {
+                    ...meeting,
+                    feedbackDesigner: existing || meeting.feedbackDesigner,
+                    feedbackDesignerAt: data?.feedbackDesignerAt ?? meeting.feedbackDesignerAt,
+                    feedbackDesignerBy: data?.feedbackDesignerBy ?? meeting.feedbackDesignerBy,
+                  }
+                : meeting,
+            ),
+          );
+          setDesignerFeedbackError(null);
+          setDesignerFeedbackOk(null);
+          return;
+        }
+        throw new Error(data?.message || 'Could not save feedback');
+      }
+      const saved = String(data?.feedbackDesigner || text).trim();
+      setDesignerFeedbackDraft(saved);
+      setMeetings((prev) =>
+        prev.map((meeting) =>
+          meeting.id === selected.id
+            ? {
+                ...meeting,
+                feedbackDesigner: saved,
+                feedbackDesignerAt: data?.feedbackDesignerAt ?? meeting.feedbackDesignerAt,
+                feedbackDesignerBy: data?.feedbackDesignerBy ?? user?.name ?? meeting.feedbackDesignerBy,
+                crmAppointmentId:
+                  data?.crmAppointmentId != null ? Number(data.crmAppointmentId) : meeting.crmAppointmentId,
+              }
+            : meeting,
+        ),
+      );
+      setDesignerFeedbackOk(null);
+    } catch (err) {
+      setDesignerFeedbackError(err instanceof Error ? err.message : 'Could not save feedback');
+    } finally {
+      setDesignerFeedbackBusy(false);
+    }
+  };
 
   const designers = useMemo(() => uniqueNames(mapped.map((meeting) => meeting.designer)), [mapped]);
   const salesPeople = useMemo(() => uniqueNames(mapped.map((meeting) => meeting.sales)), [mapped]);
@@ -2260,25 +2352,77 @@ export default function MeetingManagementView() {
         )}
       </div>
               )}
-              {showCrmFeedback &&
-              selected.typeKey === 'pre_10' &&
-              (selected.raw.feedbackDesigner || '').trim() ? (
+              {showCrmFeedback && selected.typeKey === 'pre_10' && selected.id ? (
                 <div className={styles.crmFeedback}>
                   <div className={styles.crmFeedbackTop}>
-                    <span className={styles.crmFeedbackTitle}>CRM feedback for designer</span>
-                    <span className={styles.crmFeedbackBadge}>CRM note</span>
+                    <span className={styles.crmFeedbackTitle}>Designer feedback</span>
+                    <span className={styles.crmFeedbackBadge}>
+                      {(selected.raw.feedbackDesigner || '').trim() ? 'One-time done' : 'One-time'}
+                    </span>
                   </div>
-                  <p className={styles.crmFeedbackBody}>{(selected.raw.feedbackDesigner || '').trim()}</p>
-                  {(selected.raw.feedbackDesignerBy || selected.raw.feedbackDesignerAt) ? (
-                    <p className={styles.crmFeedbackMeta}>
-                      {[
-                        (selected.raw.feedbackDesignerBy || '').trim(),
-                        formatFeedbackAt(selected.raw.feedbackDesignerAt),
-                      ]
-                        .filter(Boolean)
-                        .join(' · ')}
-                    </p>
-                  ) : null}
+                  {(selected.raw.feedbackDesigner || '').trim() ? (
+                    <>
+                      <p className={styles.crmFeedbackOnceNote}>Your one-time feedback is done</p>
+                      <p className={styles.crmFeedbackBody}>{(selected.raw.feedbackDesigner || '').trim()}</p>
+                      {(selected.raw.feedbackDesignerBy || selected.raw.feedbackDesignerAt) ? (
+                        <p className={styles.crmFeedbackMeta}>
+                          {[
+                            (selected.raw.feedbackDesignerBy || '').trim(),
+                            formatFeedbackAt(selected.raw.feedbackDesignerAt),
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </p>
+                      ) : null}
+                    </>
+                  ) : (
+                    <label className={styles.crmFeedbackComposer} htmlFor={`designer-feedback-${selected.key}`}>
+                      <span className={styles.crmFeedbackComposerLabel}>Note for designer</span>
+                      <textarea
+                        id={`designer-feedback-${selected.key}`}
+                        className={styles.crmFeedbackTextarea}
+                        rows={5}
+                        maxLength={4000}
+                        placeholder="Share Pre 10% notes for the designer (at least 50 characters)…"
+                        value={designerFeedbackDraft}
+                        disabled={designerFeedbackBusy}
+                        onChange={(e) => {
+                          setDesignerFeedbackDraft(e.target.value);
+                          setDesignerFeedbackError(null);
+                          setDesignerFeedbackOk(null);
+                        }}
+                      />
+                      <div className={styles.crmFeedbackComposerFoot}>
+                        <span
+                          className={styles.crmFeedbackCount}
+                          data-ready={designerFeedbackDraft.trim().length >= 50 ? '1' : '0'}
+                        >
+                          {designerFeedbackDraft.trim().length}/4000 · min 50
+                        </span>
+                        <button
+                          type="button"
+                          className={styles.crmFeedbackSubmit}
+                          disabled={
+                            designerFeedbackBusy ||
+                            designerFeedbackDraft.trim().length < 50 ||
+                            designerFeedbackDraft.trim().length > 4000
+                          }
+                          onClick={() => void submitDesignerFeedback()}
+                        >
+                          <span className={styles.crmFeedbackSubmitShine} aria-hidden="true" />
+                          <span className={styles.crmFeedbackSubmitLabel}>
+                            {designerFeedbackBusy ? 'Sending…' : 'Submit'}
+                          </span>
+                        </button>
+                      </div>
+                      {designerFeedbackError ? (
+                        <p className={styles.crmFeedbackError}>{designerFeedbackError}</p>
+                      ) : null}
+                      {designerFeedbackOk ? (
+                        <p className={styles.crmFeedbackSuccess}>{designerFeedbackOk}</p>
+                      ) : null}
+                    </label>
+                  )}
                 </div>
               ) : null}
             </div>
