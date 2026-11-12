@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { getApiBase } from '@/app/lib/apiBase';
+import { getApiBase, isProductionQuoteHost } from '@/app/lib/apiBase';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/app/auth/AuthContext';
 import { extractQuoteIdFromBody } from '@/app/lib/prolanceApiGetQuote';
@@ -682,6 +682,53 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     if (/^\d+$/.test(shown) && Number(shown) > 0) return shown;
     return '';
   }, [quoteIdProp, payload, quote.quotationId]);
+
+  useEffect(() => {
+    // Production customer quote links only — local /quote/:id does not count.
+    const isCustomerAudience = !isInternalMode && !crmAudience && preloadedPayload === undefined;
+    if (!isCustomerAudience || !isProductionQuoteHost() || loading || !payload || !quoteBodyHasRooms(payload)) {
+      return;
+    }
+    const q = versionFetchId || quoteIdProp.trim();
+    if (!q || !/^\d+$/.test(q)) return;
+    if (typeof sessionStorage === 'undefined') return;
+    const storageKey = `hubQuoteViewRecorded:${q}`;
+    if (sessionStorage.getItem(storageKey)) return;
+    let viewSessionId = sessionStorage.getItem(`hubQuoteViewSid:${q}`);
+    if (!viewSessionId) {
+      viewSessionId =
+        typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+      sessionStorage.setItem(`hubQuoteViewSid:${q}`, viewSessionId);
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API}/api/public/quote/${encodeURIComponent(q)}/view`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ viewSessionId }),
+        });
+        if (!cancelled && res.ok) {
+          sessionStorage.setItem(storageKey, '1');
+        }
+      } catch {
+        /* non-fatal */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isInternalMode,
+    crmAudience,
+    preloadedPayload,
+    loading,
+    payload,
+    quoteIdProp,
+    versionFetchId,
+  ]);
 
   useEffect(() => {
     if (!versionFetchId) return;
