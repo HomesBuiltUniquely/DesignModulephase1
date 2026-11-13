@@ -30,13 +30,21 @@ export function canShowMeetingManagement(role: string | undefined | null): boole
   return value === 'admin' || value === 'designer' || value === 'design_manager' || value === 'territorial_design_manager';
 }
 
-/** CRM Pre 10% designer feedback — Super Admin / Sales Admin / Admin only. */
+/** Pre 10% designer feedback — Design Manager / Super Admin / TDM only (detail popup). */
 export function canSeeCrmFeedback(role: string | undefined | null): boolean {
   const value = String(role || '')
     .trim()
     .toLowerCase()
     .replace(/^(role_|crm_)/i, '');
-  return value === 'super_admin' || value === 'superadmin' || value === 'sales_admin' || value === 'admin';
+  return (
+    value === 'design_manager' ||
+    value === 'manager' ||
+    value === 'admin' ||
+    value === 'super_admin' ||
+    value === 'superadmin' ||
+    value === 'territorial_design_manager' ||
+    value === 'tdm'
+  );
 }
 
 function formatFeedbackAt(value: string | null | undefined): string {
@@ -75,17 +83,22 @@ type ScheduledMeeting = {
   meetingMode: string | null;
   meetingStatus?: string | null;
   progress?: string | null;
+  /** Backend display label, e.g. "Meeting Successful" for design + Pre 10%. */
+  progressLabel?: string | null;
   source?: string | null;
   cancelReason?: string | null;
   cancelFiles?: { id: number; name: string; mimeType?: string | null }[] | null;
   reason?: string | null;
   endedAt?: string | null;
   quoteSent?: boolean;
+  /** True when a quote code/snapshot exists even if amount parse failed. */
+  hasQuote?: boolean;
   quoteFinalAmount?: string | null;
   rescheduleCount?: number | null;
   feedbackDesigner?: string | null;
   feedbackDesignerAt?: string | null;
   feedbackDesignerBy?: string | null;
+  crmAppointmentId?: number | null;
   personalKey?: string | null;
   personalKind?: 'block' | 'full_day' | null;
   personalReason?: string | null;
@@ -122,6 +135,8 @@ type ViewMeeting = {
   minutes: number | null;
   status: ViewStatus;
   quote: number | null;
+  /** Quote exists but amount could not be resolved — never show as "No quote". */
+  quotePending: boolean;
   quoteSent: boolean;
   endedAt: string | null;
   personal: boolean;
@@ -147,12 +162,12 @@ const STATUS_LABEL: Record<ViewStatus, string> = {
   scheduled: 'Scheduled',
   rescheduled: 'Meeting Rescheduled',
   in_progress: 'In progress',
-  completed: 'Successful',
+  completed: 'Meeting Successful',
   cancelled: 'Cancelled',
   abandoned: 'Meeting never happened',
 };
 
-const STEP_LABELS = ['Scheduled', 'In progress', 'Successful'] as const;
+const STEP_LABELS = ['Scheduled', 'In progress', 'Meeting Successful'] as const;
 const TYPE_FILTERS: { id: TypeFilter; label: string }[] = [
   { id: 'all', label: 'All' },
   { id: 'pre_10', label: 'Pre 10%' },
@@ -517,6 +532,10 @@ function toViewMeeting(meeting: ScheduledMeeting, index: number): ViewMeeting | 
     minutes,
     status: mapStatus(meeting),
     quote: personal ? null : mapQuote(meeting.quoteFinalAmount || meeting.quotationTotal || null),
+    quotePending:
+      !personal &&
+      mapQuote(meeting.quoteFinalAmount || meeting.quotationTotal || null) == null &&
+      (meeting.hasQuote === true || meeting.quoteSent === true),
     quoteSent: !personal && meeting.quoteSent === true,
     endedAt: personal ? null : meeting.endedAt || null,
     personal,
@@ -809,17 +828,18 @@ function Avatar({ name }: { name: string }) {
 }
 
 function StatusPill({ status, meeting }: { status: ViewStatus; meeting?: ViewMeeting }) {
-  let label = STATUS_LABEL[status];
+  let label = (meeting?.raw.progressLabel || '').trim() || STATUS_LABEL[status];
   let pillStatus: string = status;
-  if (meeting && (meeting.raw.source === 'crm' || meeting.typeKey === 'pre_10')) {
+  // Prefer backend progressLabel for all client meetings (design Material selection + Pre 10%).
+  if (meeting && !meeting.personal) {
     if (status === 'completed') {
-      label = 'Meeting Successful';
+      label = (meeting.raw.progressLabel || '').trim() || 'Meeting Successful';
       pillStatus = 'completed';
     } else if (status === 'cancelled') {
-      label = 'Meeting Cancelled';
+      label = (meeting.raw.progressLabel || '').trim() || 'Meeting Cancelled';
       pillStatus = 'cancelled';
     } else if (status === 'abandoned') {
-      label = 'Meeting never happened';
+      label = (meeting.raw.progressLabel || '').trim() || 'Meeting never happened';
       pillStatus = 'abandoned';
     } else if (
       status === 'rescheduled' ||
@@ -830,8 +850,11 @@ function StatusPill({ status, meeting }: { status: ViewStatus; meeting?: ViewMee
       label = `Meeting Rescheduled ${count}`;
       pillStatus = 'rescheduled';
     } else if (status === 'scheduled') {
-      label = 'Meeting Scheduled';
+      label = (meeting.raw.progressLabel || '').trim() || 'Meeting Scheduled';
       pillStatus = 'scheduled';
+    } else if (status === 'in_progress') {
+      label = (meeting.raw.progressLabel || '').trim() || 'In progress';
+      pillStatus = 'in_progress';
     }
   }
   return (
@@ -944,26 +967,71 @@ export default function MeetingManagementView() {
   const [meetingWizLead, setMeetingWizLead] = useState<LeadshipTypes | null>(null);
   /** UI-only abandon feedback — not persisted. */
   const [abandonedFeedbackByKey, setAbandonedFeedbackByKey] = useState<Record<string, string>>({});
+  /** Pre-10% designer feedback draft (admin) — min 50 / max 4000. */
+  const [designerFeedbackDraft, setDesignerFeedbackDraft] = useState('');
+  const [designerFeedbackBusy, setDesignerFeedbackBusy] = useState(false);
+  const [designerFeedbackError, setDesignerFeedbackError] = useState<string | null>(null);
+  const [designerFeedbackOk, setDesignerFeedbackOk] = useState<string | null>(null);
 
   const loadMeetings = useCallback(async () => {
     if (!sessionId) return;
     setLoading(true);
     setError(null);
-    try {
-      const res = await fetch(`${apiBase}/api/meetings/scheduled`, {
-        headers: buildAuthHeaders(sessionId),
-        credentials: 'include',
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data?.message || 'Failed to load scheduled meetings');
+
+    const fetchBoard = async (timeoutMs: number) => {
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const res = await fetch(`${apiBase}/api/meetings/scheduled`, {
+          headers: buildAuthHeaders(sessionId),
+          credentials: 'include',
+          signal: controller.signal,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data?.message || 'Failed to load scheduled meetings');
+        }
+        return data;
+      } finally {
+        window.clearTimeout(timeoutId);
       }
-      setMeetings(Array.isArray(data?.meetings) ? data.meetings : []);
-      setPersonalWarning(typeof data?.personalWarning === 'string' && data.personalWarning.trim() ? data.personalWarning : null);
+    };
+
+    try {
+      let data: Record<string, unknown>;
+      try {
+        data = await fetchBoard(12000);
+      } catch (firstErr) {
+        const aborted = firstErr instanceof DOMException && firstErr.name === 'AbortError';
+        const networkFail =
+          firstErr instanceof TypeError ||
+          (firstErr instanceof Error && /failed to fetch|networkerror|load failed/i.test(firstErr.message));
+        if (!aborted && !networkFail) throw firstErr;
+        // One automatic retry — hosted can be cold on the first hit after deploy.
+        data = await fetchBoard(15000);
+      }
+      setMeetings(Array.isArray(data?.meetings) ? (data.meetings as ScheduledMeeting[]) : []);
+      setPersonalWarning(
+        typeof data?.personalWarning === 'string' && String(data.personalWarning).trim()
+          ? String(data.personalWarning)
+          : null,
+      );
     } catch (err) {
-      setMeetings([]);
+      const aborted = err instanceof DOMException && err.name === 'AbortError';
+      const networkFail =
+        err instanceof TypeError ||
+        (err instanceof Error && /failed to fetch|networkerror|load failed/i.test(err.message));
       setPersonalWarning(null);
-      setError(err instanceof Error ? err.message : 'Failed to load scheduled meetings');
+      setError(
+        aborted
+          ? 'Meeting Management timed out. Retry — the board should load within a few seconds.'
+          : networkFail
+            ? 'Could not reach the server for Meeting Management. Check your connection and retry.'
+            : err instanceof Error
+              ? err.message
+              : 'Failed to load scheduled meetings',
+      );
+      if (!aborted && !networkFail) setMeetings([]);
     } finally {
       setLoading(false);
     }
@@ -1133,6 +1201,84 @@ export default function MeetingManagementView() {
     });
   }, [mapped]);
 
+  useEffect(() => {
+    setDesignerFeedbackDraft((selected?.raw.feedbackDesigner || '').trim());
+    setDesignerFeedbackError(null);
+    setDesignerFeedbackOk(null);
+  }, [selected?.key, selected?.raw.feedbackDesigner]);
+
+  const submitDesignerFeedback = async () => {
+    if (!sessionId || !selected?.id) return;
+    const text = designerFeedbackDraft.trim();
+    if (!text) {
+      setDesignerFeedbackError('Write a short note');
+      setDesignerFeedbackOk(null);
+      return;
+    }
+    if (text.length > 50) {
+      setDesignerFeedbackError('Keep feedback under 50 characters');
+      setDesignerFeedbackOk(null);
+      return;
+    }
+    setDesignerFeedbackBusy(true);
+    setDesignerFeedbackError(null);
+    setDesignerFeedbackOk(null);
+    try {
+      const res = await fetch(`${apiBase}/api/meetings/${selected.id}/feedback-designer`, {
+        method: 'POST',
+        headers: buildAuthHeaders(sessionId, { 'Content-Type': 'application/json' }),
+        credentials: 'include',
+        body: JSON.stringify({
+          feedbackDesigner: text,
+          feedbackBy: user?.name || undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 409 && data?.alreadySubmitted) {
+          const existing = String(data?.feedbackDesigner || '').trim();
+          setMeetings((prev) =>
+            prev.map((meeting) =>
+              meeting.id === selected.id
+                ? {
+                    ...meeting,
+                    feedbackDesigner: existing || meeting.feedbackDesigner,
+                    feedbackDesignerAt: data?.feedbackDesignerAt ?? meeting.feedbackDesignerAt,
+                    feedbackDesignerBy: data?.feedbackDesignerBy ?? meeting.feedbackDesignerBy,
+                  }
+                : meeting,
+            ),
+          );
+          setDesignerFeedbackError(null);
+          setDesignerFeedbackOk(null);
+          return;
+        }
+        throw new Error(data?.message || 'Could not save feedback');
+      }
+      const saved = String(data?.feedbackDesigner || text).trim();
+      setDesignerFeedbackDraft(saved);
+      setMeetings((prev) =>
+        prev.map((meeting) =>
+          meeting.id === selected.id
+            ? {
+                ...meeting,
+                feedbackDesigner: saved,
+                feedbackDesignerAt: data?.feedbackDesignerAt ?? meeting.feedbackDesignerAt,
+                feedbackDesignerBy: data?.feedbackDesignerBy ?? user?.name ?? meeting.feedbackDesignerBy,
+                crmAppointmentId:
+                  data?.crmAppointmentId != null ? Number(data.crmAppointmentId) : meeting.crmAppointmentId,
+              }
+            : meeting,
+        ),
+      );
+      setDesignerFeedbackOk(null);
+    } catch (err) {
+      setDesignerFeedbackError(err instanceof Error ? err.message : 'Could not save feedback');
+    } finally {
+      setDesignerFeedbackBusy(false);
+    }
+  };
+
   const designers = useMemo(() => uniqueNames(mapped.map((meeting) => meeting.designer)), [mapped]);
   const salesPeople = useMemo(() => uniqueNames(mapped.map((meeting) => meeting.sales)), [mapped]);
   const designerOptions = useMemo(
@@ -1160,7 +1306,7 @@ export default function MeetingManagementView() {
     { id: 'scheduled', label: 'Scheduled' },
     { id: 'rescheduled', label: 'Meeting Rescheduled' },
     { id: 'in_progress', label: 'In progress' },
-    { id: 'completed', label: 'Successful' },
+    { id: 'completed', label: 'Meeting Successful' },
     { id: 'cancelled', label: 'Cancelled' },
     { id: 'abandoned', label: 'Meeting never happened' },
   ];
@@ -1493,6 +1639,22 @@ export default function MeetingManagementView() {
     !panelLeadLoading &&
     canShowStartMeetingForBoardMeeting(selected.raw, panelLead, panelHistory, today);
   const showPre10End = selected ? canShowEndMeetingForBoardMeeting(selected.raw) : false;
+  /** Feedback composer unlocks at meeting start (e.g. 5 PM today) and stays until one-time submit. */
+  const feedbackAlreadySubmitted = !!(selected?.raw.feedbackDesigner || '').trim();
+  const feedbackMeetingReached = (() => {
+    if (!selected || selected.typeKey !== 'pre_10') return false;
+    if (selected.day < today) return true;
+    if (selected.day > today) return false;
+    const startMins = parseMinutes(selected.raw.meetingTime, selected.raw.meetingTimeLabel);
+    if (startMins == null) return true;
+    return nowMinutes >= startMins;
+  })();
+  const showDesignerFeedbackPanel =
+    showCrmFeedback &&
+    !!selected &&
+    selected.typeKey === 'pre_10' &&
+    !!selected.id &&
+    (feedbackAlreadySubmitted || feedbackMeetingReached);
   const pre10StartBlock = selected
     ? getBoardStartMeetingBlockReason(selected.raw, panelLead, panelHistory, today, {
         loading: panelLeadLoading,
@@ -1611,19 +1773,36 @@ export default function MeetingManagementView() {
         credentials: 'include',
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data?.message || 'Could not end this meeting.');
+      const endedLocally = data?.meeting != null || data?.crmMilestoneUpdated === true || res.ok;
+      if (endedLocally) {
+        await loadMeetings();
+        setSelected((prev) =>
+          prev && prev.key === selected.key
+            ? {
+                ...prev,
+                status: 'completed',
+                raw: {
+                  ...prev.raw,
+                  progress: 'completed',
+                  progressLabel: 'Meeting Successful',
+                },
+              }
+            : prev,
+        );
       }
-      await loadMeetings();
-      setSelected((prev) =>
-        prev && prev.key === selected.key
-          ? {
-              ...prev,
-              status: 'completed',
-              raw: { ...prev.raw, progress: 'completed' },
-            }
-          : prev,
-      );
+      if (!res.ok) {
+        throw new Error(
+          data?.message ||
+            (data?.crmMilestoneUpdated === false
+              ? 'Meeting ended here, but CRM milestone was not updated to Meeting Successful.'
+              : 'Could not end this meeting.'),
+        );
+      }
+      if (data?.crmMilestoneUpdated === false) {
+        setPre10ActionError(
+          data?.message || 'Meeting ended here, but CRM milestone was not updated to Meeting Successful.',
+        );
+      }
     } catch (err) {
       setPre10ActionError(err instanceof Error ? err.message : 'Could not end meeting.');
     } finally {
@@ -1754,7 +1933,7 @@ export default function MeetingManagementView() {
           <span className={styles.statSub}>{loading ? '' : `${stats.scheduledToday} today`}</span>
         </button>
         <button type="button" className={styles.stat} data-static="false" data-on={statusFilters.includes('completed')} aria-pressed={statusFilters.includes('completed')} onClick={() => toggleStatus('completed')}>
-          <span className={styles.statLabel}>Successful</span>
+          <span className={styles.statLabel}>Meeting Successful</span>
           <span className={styles.statValue}>{loading ? '—' : stats.successful}</span>
           <span className={styles.statSub}>{'\u00a0'}</span>
         </button>
@@ -2188,34 +2367,88 @@ export default function MeetingManagementView() {
                 ) : null}
               </div>
               {selected.personal ? null : (
-              <div className={styles.leadQuote} data-empty={selected.quote == null}>
+              <div className={styles.leadQuote} data-empty={selected.quote == null && !selected.quotePending}>
                 <span className={styles.metaLabel}>Lead quote</span>
                 {selected.quote != null ? (
                   <span className={styles.leadAmount}>{formatInr(selected.quote)}</span>
+                ) : selected.quotePending ? (
+                  <span className={styles.leadAmount}>Quoted</span>
                 ) : (
                   <span className={styles.metaValue}>No quote yet</span>
         )}
       </div>
               )}
-              {showCrmFeedback &&
-              selected.typeKey === 'pre_10' &&
-              (selected.raw.feedbackDesigner || '').trim() ? (
+              {showDesignerFeedbackPanel ? (
                 <div className={styles.crmFeedback}>
                   <div className={styles.crmFeedbackTop}>
-                    <span className={styles.crmFeedbackTitle}>CRM feedback for designer</span>
-                    <span className={styles.crmFeedbackBadge}>CRM note</span>
+                    <span className={styles.crmFeedbackTitle}>Designer feedback</span>
+                    <span className={styles.crmFeedbackBadge}>
+                      {feedbackAlreadySubmitted ? 'One-time done' : 'One-time'}
+                    </span>
                   </div>
-                  <p className={styles.crmFeedbackBody}>{(selected.raw.feedbackDesigner || '').trim()}</p>
-                  {(selected.raw.feedbackDesignerBy || selected.raw.feedbackDesignerAt) ? (
-                    <p className={styles.crmFeedbackMeta}>
-                      {[
-                        (selected.raw.feedbackDesignerBy || '').trim(),
-                        formatFeedbackAt(selected.raw.feedbackDesignerAt),
-                      ]
-                        .filter(Boolean)
-                        .join(' · ')}
-                    </p>
-                  ) : null}
+                  {feedbackAlreadySubmitted ? (
+                    <>
+                      <p className={styles.crmFeedbackOnceNote}>Your one-time feedback is done</p>
+                      <p className={styles.crmFeedbackBody}>{(selected.raw.feedbackDesigner || '').trim()}</p>
+                      {(selected.raw.feedbackDesignerBy || selected.raw.feedbackDesignerAt) ? (
+                        <p className={styles.crmFeedbackMeta}>
+                          {[
+                            (selected.raw.feedbackDesignerBy || '').trim(),
+                            formatFeedbackAt(selected.raw.feedbackDesignerAt),
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </p>
+                      ) : null}
+                    </>
+                  ) : (
+                    <label className={styles.crmFeedbackComposer} htmlFor={`designer-feedback-${selected.key}`}>
+                      <span className={styles.crmFeedbackComposerLabel}>Note for designer</span>
+                      <textarea
+                        id={`designer-feedback-${selected.key}`}
+                        className={styles.crmFeedbackTextarea}
+                        rows={2}
+                        maxLength={50}
+                        placeholder="Short note (max 50)…"
+                        value={designerFeedbackDraft}
+                        disabled={designerFeedbackBusy}
+                        onChange={(e) => {
+                          setDesignerFeedbackDraft(e.target.value.slice(0, 50));
+                          setDesignerFeedbackError(null);
+                          setDesignerFeedbackOk(null);
+                        }}
+                      />
+                      <div className={styles.crmFeedbackComposerFoot}>
+                        <span
+                          className={styles.crmFeedbackCount}
+                          data-ready={designerFeedbackDraft.trim().length > 0 ? '1' : '0'}
+                        >
+                          {designerFeedbackDraft.trim().length}/50
+                        </span>
+                        <button
+                          type="button"
+                          className={styles.crmFeedbackSubmit}
+                          disabled={
+                            designerFeedbackBusy ||
+                            !designerFeedbackDraft.trim() ||
+                            designerFeedbackDraft.trim().length > 50
+                          }
+                          onClick={() => void submitDesignerFeedback()}
+                        >
+                          <span className={styles.crmFeedbackSubmitShine} aria-hidden="true" />
+                          <span className={styles.crmFeedbackSubmitLabel}>
+                            {designerFeedbackBusy ? '…' : 'Submit'}
+                          </span>
+                        </button>
+                      </div>
+                      {designerFeedbackError ? (
+                        <p className={styles.crmFeedbackError}>{designerFeedbackError}</p>
+                      ) : null}
+                      {designerFeedbackOk ? (
+                        <p className={styles.crmFeedbackSuccess}>{designerFeedbackOk}</p>
+                      ) : null}
+                    </label>
+                  )}
                 </div>
               ) : null}
             </div>
@@ -2636,6 +2869,8 @@ function GroupRows({
               <span className={styles.moneyNone}>Personal</span>
             ) : meeting.quote != null ? (
               <span className={styles.money}>{formatInr(meeting.quote)}</span>
+            ) : meeting.quotePending ? (
+              <span className={styles.money}>Quoted</span>
             ) : (
               <span className={styles.moneyNone}>No quote</span>
             )}
@@ -2912,7 +3147,7 @@ function CalendarBoard({
           <span><i className={styles.statusDot} data-status="scheduled" /> Scheduled</span>
           <span><i className={styles.statusDot} data-status="rescheduled" /> Meeting Rescheduled</span>
           <span><i className={styles.statusDot} data-status="in_progress" /> In progress</span>
-          <span><i className={styles.statusDot} data-status="completed" /> Successful</span>
+          <span><i className={styles.statusDot} data-status="completed" /> Meeting Successful</span>
           <span><i className={styles.statusDot} data-status="abandoned" /> Meeting never happened</span>
         </div>
         </section>

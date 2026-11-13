@@ -70,10 +70,12 @@ import {
   startCrmMeeting,
   endCrmMeeting,
   completePre10CrmMeetingAfterQuoteShare,
+  applyCrmMeetingFeedback,
 } from "./leadMeetings";
 import {
   extractFloorPlansFromLeadPayload,
   floorPlanPersistFields,
+  mergeFloorPlanPersistFields,
   normalizeFloorPlansFromCrmBody,
   type FloorPlanItem,
 } from "./floorPlans";
@@ -5478,13 +5480,39 @@ function resolveCrmLeadPutPaths(leadType: string | null | undefined, crmLeadId: 
   }
 }
 
+/** Same auth style as quote-link / Hub proofs — API key + optional static bearer. No ERP username/password. */
+function crmSyncAuthHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "X-Activity-Performed-By": "Design Module Auto",
+  };
+  const ingestKey =
+    process.env.EXTERNAL_LEAD_INGEST_API_KEY?.trim() ||
+    process.env.CRM_EXTERNAL_API_KEY?.trim() ||
+    process.env.HUB_SYNC_API_KEY?.trim() ||
+    process.env.DESIGN_SERVICE_API_KEY?.trim() ||
+    "";
+  if (ingestKey) {
+    headers["x-external-api-key"] = ingestKey;
+    headers["x-api-key"] = ingestKey;
+  }
+  const bearer = String(process.env.HUB_PROOF_BEARER_TOKEN || process.env.CRM_DEV_BEARER_TOKEN || "").trim();
+  if (bearer && !/^https?:\/\//i.test(bearer)) {
+    headers.Authorization = bearer.startsWith("Bearer ") ? bearer : `Bearer ${bearer}`;
+  }
+  return headers;
+}
+
+/**
+ * Push CRM milestone to "Meeting Successful".
+ * Prefer CRM FE / Hub API-key callbacks (no ERP_USERNAME/PASSWORD). Direct lead PUT with the same key/bearer is fallback.
+ */
 async function notifyCrmMeetingCompleted(
   crmLeadId: number,
   leadType?: string | null,
 ): Promise<void> {
   if (!Number.isFinite(crmLeadId) || crmLeadId <= 0) return;
 
-  // If leadType wasn't explicitly provided, attempt to look it up from MySQL leads table
   let resolvedLeadType = leadType && typeof leadType === "string" ? leadType.trim() : null;
   if (!resolvedLeadType) {
     try {
@@ -5509,11 +5537,11 @@ async function notifyCrmMeetingCompleted(
           null;
       }
     } catch {
-      // Non-fatal, fallback to candidate probing
+      // fall through — path probing still works
     }
   }
 
-  const payload = JSON.stringify({
+  const stageBody = {
     stage: {
       milestoneStage: "Experience & Design",
       milestoneStageCategory: "Experience & Design Won",
@@ -5523,40 +5551,143 @@ async function notifyCrmMeetingCompleted(
         substage: "Meeting Successful",
       },
     },
-  });
+  };
+  const callbackBody = {
+    ...stageBody,
+    crmLeadId,
+    leadId: crmLeadId,
+    leadType: resolvedLeadType,
+    crmLeadType: resolvedLeadType,
+    milestoneSubStage: "Meeting Successful",
+    progress: "completed",
+    progressLabel: "Meeting Successful",
+  };
+  const headers = crmSyncAuthHeaders();
+  const errors: string[] = [];
 
-  const pathsToTry = resolveCrmLeadPutPaths(resolvedLeadType, crmLeadId);
-  let lastError: any = null;
-
-  for (let i = 0; i < pathsToTry.length; i++) {
-    const endpoint = pathsToTry[i];
-    try {
-      await callErpApi(endpoint, {
-        method: "PUT",
-        body: payload,
-        // CRM activity history should show Design Module Auto, not the ERP service login (admin).
-        headers: { "X-Activity-Performed-By": "Design Module Auto" },
-      });
-      console.info(
-        `[meeting-wiz-completed] Successfully updated CRM lead ${crmLeadId} to Meeting Successful via ${endpoint}`,
-      );
-      return;
-    } catch (err: any) {
-      lastError = err;
-      const is404 =
-        err?.status === 404 ||
-        String(err?.message || "").includes("404");
-      if (is404 && i < pathsToTry.length - 1) {
-        continue;
+  // 1) CRM Next / FE callback — same pattern as quote-link-sync (API key, no ERP login).
+  const crmBases = Array.from(
+    new Set(
+      [
+        String(CRM_CALLBACK_BASE || "").trim(),
+        process.env.CRM_FRONTEND_URL || "",
+        process.env.CRM_API_BASE_URL || "",
+        "https://crm.hubinterior.com",
+        "https://hows.hubinterior.com",
+        "https://app.hubinterior.com",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+      ]
+        .map((b) => b.replace(/\/+$/, ""))
+        .filter(Boolean),
+    ),
+  );
+  const callbackPaths = [
+    "/api/design/meeting-successful",
+    "/api/design/meeting-success",
+    "/api/design/meeting-wiz-completed",
+    "/api/crm/meeting-successful",
+  ];
+  for (const base of crmBases) {
+    for (const pathName of callbackPaths) {
+      try {
+        const res = await fetch(`${base}${pathName}`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(callbackBody),
+        });
+        const text = await res.text().catch(() => "");
+        if (res.ok) {
+          console.info(
+            `[meeting-successful] CRM callback OK ${base}${pathName} for lead ${crmLeadId}`,
+          );
+          return;
+        }
+        if (res.status !== 404) {
+          errors.push(`${base}${pathName} → ${res.status} ${text.slice(0, 160)}`);
+        }
+      } catch (err) {
+        errors.push(`${base}${pathName} → ${(err as Error)?.message || err}`);
       }
-      break;
     }
   }
 
-  console.error(
-    `[meeting-wiz-completed] Failed to update CRM lead ${crmLeadId} to Meeting Successful:`,
-    lastError?.message || lastError,
+  // 2) Hub API direct — API key / static bearer only (no username/password login).
+  // Prefer hows.hubinterior.com — API-key / static bearer lead PUTs succeed there (no ERP login).
+  const hubBases = Array.from(
+    new Set(
+      [
+        "https://hows.hubinterior.com",
+        String(ERP_BASE_URL || "").replace(/\/$/, ""),
+        "https://api.hubinterior.com",
+      ].filter(Boolean),
+    ),
   );
+  const hubPaths = [
+    `/v1/meetings/success`,
+    `/api/v1/meetings/success`,
+    ...resolveCrmLeadPutPaths(resolvedLeadType, crmLeadId),
+  ];
+  for (const base of hubBases) {
+    for (const endpoint of hubPaths) {
+      const method = endpoint.includes("meetings/success") ? "POST" : "PUT";
+      const body = endpoint.includes("meetings/success")
+        ? JSON.stringify(callbackBody)
+        : JSON.stringify(stageBody);
+      try {
+        const res = await fetch(`${base}${endpoint}`, { method, headers, body });
+        const text = await res.text().catch(() => "");
+        if (res.ok) {
+          console.info(
+            `[meeting-successful] Hub ${method} OK ${base}${endpoint} for lead ${crmLeadId}`,
+          );
+          return;
+        }
+        if (res.status !== 404) {
+          errors.push(`${method} ${base}${endpoint} → ${res.status} ${text.slice(0, 160)}`);
+        }
+      } catch (err) {
+        errors.push(`${base}${endpoint} → ${(err as Error)?.message || err}`);
+      }
+    }
+  }
+
+  const detail = errors.slice(0, 8).join(" | ") || "no reachable CRM meeting-successful endpoint";
+  console.error(`[meeting-successful] Failed for CRM lead ${crmLeadId}:`, detail);
+  throw new Error(`Failed to update CRM lead ${crmLeadId} to Meeting Successful (${detail})`);
+}
+
+/** Resolve Design lead → CRM lead and PUT milestoneSubStage "Meeting Successful". Required after End meeting. */
+async function notifyCrmMeetingSuccessfulForDesignLead(leadId: number): Promise<{ crmLeadId: number; leadType: string | null }> {
+  if (!Number.isFinite(leadId) || leadId <= 0) {
+    throw new Error("Invalid Design lead id for CRM Meeting Successful sync");
+  }
+  const [rows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [leadId]);
+  const row = (rows as { payload?: string | null }[])[0];
+  if (!row) throw new Error(`Design lead ${leadId} not found for CRM Meeting Successful sync`);
+
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = row.payload ? (JSON.parse(row.payload) as Record<string, unknown>) : {};
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = {};
+  } catch {
+    payload = {};
+  }
+
+  const crmLeadIdNum = Number(payload.crmLeadId);
+  if (!Number.isFinite(crmLeadIdNum) || crmLeadIdNum <= 0) {
+    throw new Error(
+      `Design lead ${leadId} has no crmLeadId — CRM milestone cannot be set to Meeting Successful`,
+    );
+  }
+  const crmLeadType =
+    (typeof payload.crmLeadType === "string" && payload.crmLeadType.trim()) ||
+    (typeof payload.leadType === "string" && payload.leadType.trim()) ||
+    (typeof payload.crm_lead_type === "string" && payload.crm_lead_type.trim()) ||
+    null;
+
+  await notifyCrmMeetingCompleted(crmLeadIdNum, crmLeadType);
+  return { crmLeadId: crmLeadIdNum, leadType: crmLeadType };
 }
 
 /**
@@ -5712,10 +5843,15 @@ async function notifyCrmQuoteLinkShared(opts: {
     : new Error(String(lastError || "CRM quoteLink push failed"));
 }
 
-/** Mark Meeting Wizard session completed so Start Meeting stays hidden until a newer schedule. */
+/** Mark Meeting Wizard / End Meeting session completed so Pre 10% Start Meeting stays hidden. */
 async function persistLeadMeetingWizCompleted(
   leadId: number,
-  opts: { completedAt?: string | null; meetingDate?: string | null },
+  opts: {
+    completedAt?: string | null;
+    meetingDate?: string | null;
+    /** When End Meeting already synced CRM, skip a second CRM PUT. */
+    skipCrmNotify?: boolean;
+  },
 ) {
   const completedAt =
     (opts.completedAt && String(opts.completedAt).trim()) || new Date().toISOString();
@@ -5741,7 +5877,7 @@ async function persistLeadMeetingWizCompleted(
     meetingDate,
   };
 
-    // Design internal lead ID (leadId param) is NOT the CRM lead ID — the CRM lead id is
+  // Design internal lead ID (leadId param) is NOT the CRM lead ID — the CRM lead id is
   // stored in payload.crmLeadId (set during /api/leads/external-intake). Only notify CRM
   // when this lead actually has one; older/manually-created leads may not.
   const crmLeadIdNum = (() => {
@@ -5753,22 +5889,20 @@ async function persistLeadMeetingWizCompleted(
     (typeof payload.leadType === "string" && payload.leadType.trim()) ||
     (typeof payload.crm_lead_type === "string" && payload.crm_lead_type.trim()) ||
     null;
-  if (crmLeadIdNum != null) {
-    void notifyCrmMeetingCompleted(crmLeadIdNum, crmLeadType).catch((err) => {
-      console.error("[meeting-wiz-completed] CRM notify error (non-fatal)", {
-        leadId,
-        crmLeadIdNum,
-        crmLeadType,
-        error: err,
-      });
-    });
-  }
-
   await pool.query("UPDATE leads SET payload = ?, update_at = ? WHERE id = ?", [
     JSON.stringify(payload),
     new Date(),
     leadId,
   ]);
+
+  if (opts.skipCrmNotify) return;
+
+  // Required: Meeting Wizard completion must move CRM to Meeting Successful.
+  if (crmLeadIdNum != null) {
+    await notifyCrmMeetingCompleted(crmLeadIdNum, crmLeadType);
+  } else {
+    console.warn("[meeting-wiz-completed] skip CRM Meeting Successful — no crmLeadId on lead", { leadId });
+  }
 }
 
 // ----- Auth -----
@@ -7902,7 +8036,8 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
     const floorPlansNorm = normalizeFloorPlansFromCrmBody(
       payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {},
     );
-    const floorPersist = floorPlanPersistFields(floorPlansNorm);
+    // Default persist for create; update path re-merges with previous payload so multi plans survive.
+    let floorPersist = floorPlanPersistFields(floorPlansNorm);
     const intakeBudget = pickTrimmedString(payload.budget, discoveryIn.budget);
     const intakeLanguage = pickTrimmedString(payload.language, discoveryIn.language);
     const intakeBookingType = pickTrimmedString(
@@ -8100,12 +8235,17 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
           ? (prev.connection as Record<string, unknown>)
           : {};
       const newConnection = payloadToPersist.connection as Record<string, unknown>;
+      // Keep multi floor plans across CRM upsert/reschedule (legacy single URL must not wipe list).
+      floorPersist = mergeFloorPlanPersistFields(prev, floorPlansNorm);
+      const mergedForm = { ...prevForm, ...newForm, ...floorPersist };
+      const mergedConnection = { ...prevConnection, ...newConnection, ...floorPersist };
       const merged = {
         ...prev,
         ...payloadToPersist,
-        formData: { ...prevForm, ...newForm },
+        formData: mergedForm,
         discovery: { ...prevDiscovery, ...newDiscovery },
-        connection: { ...prevConnection, ...newConnection },
+        connection: mergedConnection,
+        ...floorPersist,
         crmLeadType:
           crmLeadType ||
           (typeof prev.crmLeadType === "string" ? prev.crmLeadType : undefined),
@@ -10447,18 +10587,15 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
             (typeof payload.crm_lead_type === "string" && payload.crm_lead_type.trim()) ||
             null;
           if (Number.isFinite(crmLeadIdNum) && crmLeadIdNum > 0) {
-            void notifyCrmMeetingCompleted(crmLeadIdNum, crmLeadType).catch((err) => {
-              console.error("[complete-task] CRM notify error (non-fatal)", {
-                leadId: id,
-                crmLeadIdNum,
-                crmLeadType,
-                error: err,
-              });
-            });
+            await notifyCrmMeetingCompleted(crmLeadIdNum, crmLeadType);
+          } else {
+            console.warn("[complete-task] skip CRM Meeting Successful — no crmLeadId", { leadId: id });
           }
         }
       } catch (err) {
-        console.error("[complete-task] failed to notify CRM of meeting completed (non-fatal)", err);
+        console.error("[complete-task] failed to notify CRM of Meeting Successful", err);
+        // Surface after local task save so ops can see CRM sync failed.
+        throw err;
       }
     }
 
@@ -17872,6 +18009,79 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
         };
       });
 
+    // Enrich CRM Pre 10% meeting progress + backfill meetingWizLastCompleted so Start Meeting
+    // hides on the Pre 10% dashboard after End Meeting / Meeting Successful (not only on the board).
+    try {
+      const allLeadIds = (baseList as { id: number }[])
+        .map((l) => Number(l.id))
+        .filter((id) => Number.isFinite(id) && id > 0);
+      if (allLeadIds.length > 0) {
+        const placeholders = allLeadIds.map(() => "?").join(",");
+        const [crmRows] = await pool.query(
+          `SELECT m.lead_id AS leadId,
+                  m.progress AS progress,
+                  DATE_FORMAT(m.meeting_date, '%Y-%m-%d') AS meetingDate,
+                  m.ended_at AS endedAt,
+                  m.updated_at AS updatedAt
+             FROM lead_meetings m
+            WHERE m.source = 'crm'
+              AND m.meeting_status <> 'cancelled'
+              AND m.lead_id IN (${placeholders})
+            ORDER BY m.meeting_date DESC, m.id DESC`,
+          allLeadIds,
+        );
+        const crmByLead = new Map<
+          number,
+          {
+            progress: string;
+            meetingDate: string;
+            at: string;
+          }
+        >();
+        for (const row of crmRows as {
+          leadId: number;
+          progress?: string;
+          meetingDate?: string;
+          endedAt?: Date | string | null;
+          updatedAt?: Date | string | null;
+        }[]) {
+          const leadId = Number(row.leadId);
+          if (!Number.isFinite(leadId) || crmByLead.has(leadId)) continue;
+          const atRaw = row.endedAt || row.updatedAt || new Date();
+          const at = atRaw instanceof Date ? atRaw.toISOString() : new Date(String(atRaw)).toISOString();
+          crmByLead.set(leadId, {
+            progress: String(row.progress || "scheduled"),
+            meetingDate: String(row.meetingDate || at).slice(0, 10),
+            at,
+          });
+        }
+        for (const lead of baseList as {
+          id: number;
+          meetingWizLastCompleted?: { at: string; meetingDate: string } | null;
+          crmMeetingProgress?: string | null;
+          crmMeetingDate?: string | null;
+          appointmentDate?: string | null;
+        }[]) {
+          const crm = crmByLead.get(Number(lead.id));
+          if (!crm) continue;
+          lead.crmMeetingProgress = crm.progress;
+          lead.crmMeetingDate = crm.meetingDate;
+          // Prefer CRM appointment day when missing so Start gating matches Meeting Management.
+          if (!lead.appointmentDate) lead.appointmentDate = crm.meetingDate;
+          if (
+            !lead.meetingWizLastCompleted &&
+            (crm.progress === "completed" ||
+              crm.progress === "meeting_never_happened" ||
+              crm.progress === "meeting_abandoned")
+          ) {
+            lead.meetingWizLastCompleted = { at: crm.at, meetingDate: crm.meetingDate };
+          }
+        }
+      }
+    } catch (wizBackfillErr) {
+      console.error("[leads-list] CRM meeting progress enrichment failed", wizBackfillErr);
+    }
+
     // Enrich with current milestone (from task completions) for Design Phase dashboard
     const [completionRows] = await pool.query(
       `SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName, completed_at as completedAt FROM lead_task_completions`,
@@ -19017,7 +19227,57 @@ app.get("/api/leads/:id", async (req: Request, res: Response) => {
       scheduledMeetingDate: intake.scheduledMeetingDate,
       scheduledMeetingSlot: intake.scheduledMeetingSlot,
       designScheduledMeetingUpdatedAt: intake.designScheduledMeetingUpdatedAt,
-      meetingWizLastCompleted: intake.meetingWizLastCompleted,
+      ...(await (async () => {
+        try {
+          const [crmRows] = await pool.query(
+            `SELECT progress,
+                    DATE_FORMAT(meeting_date, '%Y-%m-%d') AS meetingDate,
+                    ended_at AS endedAt,
+                    updated_at AS updatedAt
+               FROM lead_meetings
+              WHERE lead_id = ?
+                AND source = 'crm'
+                AND meeting_status <> 'cancelled'
+              ORDER BY meeting_date DESC, id DESC
+              LIMIT 1`,
+            [id],
+          );
+          const crm = (crmRows as {
+            progress?: string;
+            meetingDate?: string;
+            endedAt?: Date | string | null;
+            updatedAt?: Date | string | null;
+          }[])[0];
+          if (!crm) {
+            return {
+              meetingWizLastCompleted: intake.meetingWizLastCompleted,
+              crmMeetingProgress: null as string | null,
+              crmMeetingDate: null as string | null,
+            };
+          }
+          const progress = String(crm.progress || "scheduled");
+          const atRaw = crm.endedAt || crm.updatedAt || new Date();
+          const at = atRaw instanceof Date ? atRaw.toISOString() : new Date(String(atRaw)).toISOString();
+          const meetingDate = String(crm.meetingDate || at).slice(0, 10);
+          const completedLike =
+            progress === "completed" ||
+            progress === "meeting_never_happened" ||
+            progress === "meeting_abandoned";
+          return {
+            crmMeetingProgress: progress,
+            crmMeetingDate: meetingDate,
+            meetingWizLastCompleted:
+              intake.meetingWizLastCompleted ||
+              (completedLike ? { at, meetingDate } : null),
+          };
+        } catch {
+          return {
+            meetingWizLastCompleted: intake.meetingWizLastCompleted,
+            crmMeetingProgress: null as string | null,
+            crmMeetingDate: null as string | null,
+          };
+        }
+      })()),
       intakeCustomerName: intake.intakeCustomerName,
       intakeConfiguration: intake.intakeConfiguration,
       intakeNotes: intake.intakeNotes,
@@ -21985,6 +22245,7 @@ async function listPersonalAppointmentsForMeetingBoard(limitToUserIds?: number[]
  * GET /api/meetings/scheduled
  */
 app.get("/api/meetings/scheduled", async (req: Request, res: Response) => {
+  const startedAt = Date.now();
   try {
     const actingUser = await getUserFromSession(req);
     if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
@@ -21993,17 +22254,51 @@ app.get("/api/meetings/scheduled", async (req: Request, res: Response) => {
     }
     const scope = await meetingViewerScope(actingUser);
     if (!scope) return res.status(403).json({ message: "Not allowed to open meeting management" });
+
+    // Client meetings first — personal ERP must never block the board (hosted timed out at 8s).
     const meetings = await listLeadMeetings(pool, scope.all ? undefined : { designerIds: scope.userIds });
+
     let personal: Record<string, unknown>[] = [];
     let personalWarning: string | null = null;
+    const PERSONAL_BOARD_BUDGET_MS = 800;
     try {
-      const board = await listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds);
-      personal = board.meetings;
-      personalWarning = board.warning;
+      const personalResult = await Promise.race([
+        listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds)
+          .then((board) => ({ ok: true as const, board }))
+          .catch((personalErr) => {
+            console.error("[meeting-board] personal appointments failed", personalErr);
+            return {
+              ok: false as const,
+              warning: "Personal appointments could not be loaded. Client meetings are still shown.",
+            };
+          }),
+        new Promise<{ ok: false; warning: string }>((resolve) => {
+          setTimeout(
+            () =>
+              resolve({
+                ok: false,
+                warning: "Personal appointments are still loading. Client meetings are shown now.",
+              }),
+            PERSONAL_BOARD_BUDGET_MS,
+          );
+        }),
+      ]);
+      if (personalResult.ok) {
+        personal = personalResult.board.meetings;
+        personalWarning = personalResult.board.warning;
+      } else {
+        personalWarning = personalResult.warning;
+        // Warm cache in background for the next refresh.
+        void listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds).catch(() => undefined);
+      }
     } catch (personalErr) {
       console.error("[meeting-board] personal appointments failed", personalErr);
       personalWarning = "Personal appointments could not be loaded. Client meetings are still shown.";
     }
+
+    console.log(
+      `[meeting-board] scheduled list ready in ${Date.now() - startedAt}ms (client=${meetings.length}, personal=${personal.length})`,
+    );
     return res.json({ meetings: [...meetings, ...personal], personalWarning });
   } catch (err) {
     console.error("scheduled meetings list error", err);
@@ -22398,14 +22693,334 @@ app.post("/api/meetings/:id/start", async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * CRM → Design: Pre-10% designer feedback push.
+ * POST /api/hub/crm-meeting/feedback
+ * Auth: x-external-api-key / x-api-key (EXTERNAL_LEAD_INGEST_API_KEY).
+ * Does not change meeting progress.
+ */
+app.post("/api/hub/crm-meeting/feedback", async (req: Request, res: Response) => {
+  try {
+    const expectedKey =
+      (process.env.EXTERNAL_LEAD_INGEST_API_KEY || "").trim() ||
+      (process.env.HUB_SYNC_API_KEY || "").trim() ||
+      (process.env.CRM_EXTERNAL_API_KEY || "").trim();
+    if (!expectedKey) {
+      return res.status(503).json({
+        message: "CRM meeting feedback is disabled (missing EXTERNAL_LEAD_INGEST_API_KEY)",
+      });
+    }
+    const providedKey = String(
+      req.headers["x-external-api-key"] ||
+        req.headers["x-api-key"] ||
+        String(req.headers.authorization || "").replace(/^Bearer\s+/i, ""),
+    ).trim();
+    if (!providedKey || providedKey !== expectedKey) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const body = (req.body || {}) as Record<string, unknown>;
+    const action = String(body.action ?? body.meetingStatus ?? "").trim().toUpperCase();
+    if (action && action !== "FEEDBACK_DESIGNER") {
+      return res.status(400).json({
+        message: 'action/meetingStatus must be "FEEDBACK_DESIGNER"',
+      });
+    }
+
+    const feedback = String(body.feedbackDesigner ?? body.feedback_designer ?? "").trim();
+    if (!feedback) {
+      return res.status(400).json({ message: "feedbackDesigner is required" });
+    }
+    if (feedback.length > 4000) {
+      return res.status(400).json({ message: "feedbackDesigner must be 4000 characters or less" });
+    }
+    const feedbackBy =
+      String(body.feedbackBy ?? body.feedback_designer_by ?? body.salesExecutive ?? "CRM").trim() ||
+      "CRM";
+    const crmAppointmentIdRaw = Number(body.crmAppointmentId ?? body.appointmentId);
+    const crmAppointmentId =
+      Number.isFinite(crmAppointmentIdRaw) && crmAppointmentIdRaw > 0 ? crmAppointmentIdRaw : null;
+    const crmLeadIdRaw = Number(body.crmLeadId ?? body.leadId);
+    const crmLeadId = Number.isFinite(crmLeadIdRaw) && crmLeadIdRaw > 0 ? crmLeadIdRaw : null;
+    const pid = String(
+      body.pid ?? body.externalLeadId ?? body.leadIdentifier ?? body.externalReferenceId ?? "",
+    ).trim();
+    const appointmentDate = String(body.appointmentDate ?? "").trim() || null;
+    const appointmentSlot = String(body.appointmentSlot ?? "").trim() || null;
+
+    let designLeadId: number | null = null;
+    if (pid) {
+      const [byPid] = await pool.query(
+        `SELECT id FROM leads
+         WHERE pid = ?
+            OR JSON_UNQUOTE(JSON_EXTRACT(
+              CASE WHEN payload IS NULL OR TRIM(payload) = '' OR JSON_VALID(payload) = 0 THEN '{}' ELSE payload END,
+              '$.externalReferenceId'
+            )) = ?
+         ORDER BY id DESC LIMIT 1`,
+        [pid, pid],
+      );
+      designLeadId = Number((byPid as { id?: number }[])[0]?.id) || null;
+    }
+    if (designLeadId == null && crmLeadId != null) {
+      const [byCrm] = await pool.query(
+        `SELECT id FROM leads
+         WHERE payload IS NOT NULL AND JSON_VALID(payload) = 1
+           AND (
+             JSON_UNQUOTE(JSON_EXTRACT(payload, '$.crmLeadId')) = ?
+             OR JSON_UNQUOTE(JSON_EXTRACT(payload, '$.leadId')) = ?
+             OR JSON_UNQUOTE(JSON_EXTRACT(payload, '$.crm_lead_id')) = ?
+           )
+         ORDER BY id DESC LIMIT 1`,
+        [String(crmLeadId), String(crmLeadId), String(crmLeadId)],
+      );
+      designLeadId = Number((byCrm as { id?: number }[])[0]?.id) || null;
+    }
+    if (designLeadId == null && crmAppointmentId != null) {
+      const [byAppt] = await pool.query(
+        `SELECT lead_id AS leadId FROM lead_meetings
+          WHERE source = 'crm' AND crm_appointment_id = ?
+          ORDER BY id DESC LIMIT 1`,
+        [crmAppointmentId],
+      );
+      designLeadId = Number((byAppt as { leadId?: number }[])[0]?.leadId) || null;
+    }
+    if (designLeadId == null) {
+      return res.status(404).json({
+        ok: false,
+        message: "Design lead not found for CRM feedback (pid / crmLeadId / crmAppointmentId)",
+      });
+    }
+
+    const meeting = await applyCrmMeetingFeedback(pool, {
+      leadId: designLeadId,
+      feedbackDesigner: feedback,
+      feedbackBy,
+      appointmentDate,
+      appointmentSlot,
+      crmAppointmentId,
+      actor: { name: feedbackBy },
+    });
+
+    return res.status(200).json({
+      ok: true,
+      success: true,
+      message: "Feedback saved for designer; meeting progress unchanged",
+      leadId: designLeadId,
+      meetingId: meeting?.id ?? null,
+      appointmentId: crmAppointmentId ?? meeting?.crmAppointmentId ?? null,
+      feedbackDesigner: meeting?.feedbackDesigner ?? feedback,
+      feedbackDesignerAt: meeting?.feedbackDesignerAt ?? null,
+      feedbackDesignerBy: meeting?.feedbackDesignerBy ?? feedbackBy,
+      meetingStatus: meeting?.meetingStatus ?? null,
+      meetingProgress: meeting?.progress ?? null,
+      progressUnchanged: true,
+    });
+  } catch (err) {
+    if (err instanceof MeetingActionError) return res.status(err.status).json({ message: err.message });
+    console.error("hub crm-meeting feedback error", err);
+    return res.status(500).json({ message: "Failed to save CRM designer feedback" });
+  }
+});
+
+/**
+ * Design → CRM: save Pre 10% designer feedback locally, then PUT Hub appointment feedback.
+ * Does not change meeting progress. Max 50 chars (Design UI rule). One-time only.
+ */
+app.post("/api/meetings/:id/feedback-designer", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+    const role = String(actingUser.role || "")
+      .trim()
+      .toLowerCase()
+      .replace(/^(role_|crm_)/i, "");
+    if (
+      ![
+        "design_manager",
+        "manager",
+        "admin",
+        "super_admin",
+        "superadmin",
+        "territorial_design_manager",
+        "tdm",
+      ].includes(role)
+    ) {
+      return res.status(403).json({
+        message: "Only Design Manager, Super Admin, and TDM can submit designer feedback",
+      });
+    }
+    const meetingId = Number(req.params.id);
+    if (!Number.isFinite(meetingId) || meetingId < 1) {
+      return res.status(400).json({ message: "Invalid meeting id" });
+    }
+    const body = (req.body || {}) as Record<string, unknown>;
+    const feedback = String(body.feedbackDesigner ?? body.feedback_designer ?? "").trim();
+    if (!feedback) {
+      return res.status(400).json({ message: "Feedback is required" });
+    }
+    if (feedback.length > 50) {
+      return res.status(400).json({ message: "Feedback must be 50 characters or less" });
+    }
+    const feedbackBy =
+      String(body.feedbackBy ?? body.feedback_designer_by ?? actingUser.name ?? "Design Admin").trim() ||
+      "Design Admin";
+
+    const row = await loadMeeting(pool, meetingId);
+    if (!row) return res.status(404).json({ message: "Meeting not found" });
+    if (row.source !== "crm") {
+      return res.status(400).json({ message: "Designer feedback is only for Pre 10% CRM meetings" });
+    }
+    if (String(row.feedbackDesigner || "").trim()) {
+      return res.status(409).json({
+        message: "Your one-time feedback is already done",
+        alreadySubmitted: true,
+        feedbackDesigner: row.feedbackDesigner,
+        feedbackDesignerAt: row.feedbackDesignerAt,
+        feedbackDesignerBy: row.feedbackDesignerBy,
+      });
+    }
+
+    const meeting = await applyCrmMeetingFeedback(pool, {
+      leadId: row.leadId,
+      feedbackDesigner: feedback,
+      feedbackBy,
+      appointmentDate: row.meetingDate,
+      appointmentSlot: row.meetingTime,
+      crmAppointmentId: row.crmAppointmentId ?? null,
+      actor: { id: actingUser.id, name: actingUser.name },
+    });
+
+    // Resolve CRM appointment id for Hub PUT (may have been filled by applyCrmMeetingFeedback).
+    let crmAppointmentId =
+      meeting?.crmAppointmentId != null && Number(meeting.crmAppointmentId) > 0
+        ? Number(meeting.crmAppointmentId)
+        : row.crmAppointmentId != null && Number(row.crmAppointmentId) > 0
+          ? Number(row.crmAppointmentId)
+          : null;
+
+    // Fallback: try payload crm appointment id on the Design lead.
+    if (crmAppointmentId == null) {
+      try {
+        const [leadRows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [row.leadId]);
+        const payloadRaw = (leadRows as { payload?: string | null }[])[0]?.payload;
+        const payload = payloadRaw ? (JSON.parse(payloadRaw) as Record<string, unknown>) : {};
+        const fromPayload = Number(
+          (payload as { crmAppointmentId?: unknown; appointmentId?: unknown }).crmAppointmentId ??
+            (payload as { appointmentId?: unknown }).appointmentId ??
+            (payload as { crmSchedule?: { appointmentId?: unknown } }).crmSchedule?.appointmentId,
+        );
+        if (Number.isFinite(fromPayload) && fromPayload > 0) crmAppointmentId = fromPayload;
+      } catch {
+        /* ignore */
+      }
+    }
+
+    let crmSynced = false;
+    let crmSyncError: string | null = null;
+    if (crmAppointmentId != null) {
+      const headers = crmSyncAuthHeaders();
+      const bases = Array.from(
+        new Set(
+          [
+            "https://hows.hubinterior.com",
+            String(ERP_BASE_URL || "").replace(/\/$/, ""),
+            "https://api.hubinterior.com",
+          ].filter(Boolean),
+        ),
+      );
+      const pathName = `/v1/Appointment/${crmAppointmentId}/feedback-designer`;
+      const payload = JSON.stringify({
+        feedbackDesigner: feedback,
+        feedback_designer: feedback,
+        feedbackBy,
+        feedback_designer_by: feedbackBy,
+      });
+      for (const base of bases) {
+        try {
+          const crmRes = await fetch(`${base}${pathName}`, {
+            method: "PUT",
+            headers,
+            body: payload,
+          });
+          const text = await crmRes.text().catch(() => "");
+          if (crmRes.ok) {
+            crmSynced = true;
+            console.info(
+              `[meeting-feedback] CRM PUT OK ${base}${pathName} meeting=${meetingId}`,
+            );
+            break;
+          }
+          crmSyncError = `${crmRes.status} ${text.slice(0, 180)}`;
+          if (crmRes.status !== 404) continue;
+        } catch (err) {
+          crmSyncError = err instanceof Error ? err.message : String(err);
+        }
+      }
+    } else {
+      crmSyncError = "No crmAppointmentId on this meeting — feedback saved in Design only";
+    }
+
+    return res.json({
+      ok: true,
+      meeting,
+      progressUnchanged: true,
+      crmSynced,
+      crmAppointmentId,
+      crmSyncError: crmSynced ? null : crmSyncError,
+      feedbackDesigner: meeting?.feedbackDesigner ?? feedback,
+      feedbackDesignerAt: meeting?.feedbackDesignerAt ?? null,
+      feedbackDesignerBy: meeting?.feedbackDesignerBy ?? feedbackBy,
+    });
+  } catch (err) {
+    if (err instanceof MeetingActionError) return res.status(err.status).json({ message: err.message });
+    console.error("meeting feedback-designer error", err);
+    return res.status(500).json({ message: "Failed to save designer feedback" });
+  }
+});
+
 app.post("/api/meetings/:id/end", async (req: Request, res: Response) => {
   try {
     const actingUser = await getUserFromSession(req);
     if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
     const meetingId = Number(req.params.id);
     if (!Number.isFinite(meetingId)) return res.status(400).json({ message: "Invalid meeting id" });
+    // Local board → Meeting Successful first, then CRM milestone MUST follow.
     const meeting = await endCrmMeeting(pool, meetingId, { id: actingUser.id, name: actingUser.name });
-    return res.json({ meeting });
+    // Hide Pre 10% dashboard Start Meeting (same flag Meeting Wizard uses).
+    try {
+      await persistLeadMeetingWizCompleted(Number(meeting?.leadId), {
+        completedAt: new Date().toISOString(),
+        meetingDate: meeting?.meetingDate || null,
+        skipCrmNotify: true,
+      });
+    } catch (persistErr) {
+      console.error("[meetings/end] persist meetingWizLastCompleted failed", persistErr);
+    }
+    try {
+      const crm = await notifyCrmMeetingSuccessfulForDesignLead(Number(meeting?.leadId));
+      return res.json({
+        meeting,
+        crmMilestoneUpdated: true,
+        crmLeadId: crm.crmLeadId,
+        progressLabel: "Meeting Successful",
+      });
+    } catch (crmErr) {
+      console.error("[meetings/end] CRM Meeting Successful sync failed", {
+        meetingId,
+        leadId: meeting?.leadId,
+        error: crmErr,
+      });
+      return res.status(502).json({
+        meeting,
+        crmMilestoneUpdated: false,
+        progressLabel: "Meeting Successful",
+        message:
+          crmErr instanceof Error
+            ? `Meeting ended in Design, but CRM milestone was not updated: ${crmErr.message}`
+            : "Meeting ended in Design, but CRM milestone was not updated to Meeting Successful",
+      });
+    }
   } catch (err) {
     if (err instanceof MeetingActionError) return res.status(err.status).json({ message: err.message });
     console.error("end meeting error", err);
