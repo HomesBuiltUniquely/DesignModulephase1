@@ -6,7 +6,7 @@ import { LeadshipTypes } from "./Types/Types";
 import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { useAuth } from "../auth/AuthContext";
 import { getApiBase } from "@/app/lib/apiBase";
-import { BRANCH_OPTIONS } from "../constants/branches";
+import { BRANCH_OPTIONS, resolveBranchCode } from "../constants/branches";
 import { getPhaseBucket } from "@/app/lib/leadPhaseBucket";
 import {
     buildTaskCompletionMap,
@@ -285,6 +285,194 @@ type AssignableDesigner = {
     role: "designer" | "design_manager";
 };
 
+function lockedProjectBranch(row: LeadshipTypes): "HBR" | "SJR" | "JPN" | null {
+    const code = (row.assignedBranch || "").trim().toUpperCase();
+    if (code === "HBR" || code === "SJR" || code === "JPN") return code;
+    return null;
+}
+
+function presentProjectBranch(row: LeadshipTypes): string {
+    const locked = lockedProjectBranch(row);
+    if (locked) return locked;
+    const fromCenter = resolveBranchCode(
+        row.experienceCenter || row.branch || row.experience_center || row.sales_closure_ec,
+    );
+    if (fromCenter) return fromCenter;
+    const raw = (row.experienceCenter || row.branch || "").trim();
+    return raw || "Not set";
+}
+
+function ProjectBranchMenu({
+    row,
+    open,
+    sessionId,
+    onToggle,
+    onClose,
+    onAssigned,
+}: {
+    row: LeadshipTypes;
+    open: boolean;
+    sessionId: string | null;
+    onToggle: () => void;
+    onClose: () => void;
+    onAssigned: (branch: "HBR" | "SJR" | "JPN") => void;
+}) {
+    const rootRef = useRef<HTMLDivElement>(null);
+    const onCloseRef = useRef(onClose);
+    onCloseRef.current = onClose;
+    const [picking, setPicking] = useState(false);
+    const [saving, setSaving] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
+    const locked = lockedProjectBranch(row);
+
+    useEffect(() => {
+        if (!open) {
+            setPicking(false);
+            setError(null);
+            return;
+        }
+        const place = () => {
+            const btn = rootRef.current?.querySelector("button");
+            if (!btn) return;
+            const rect = btn.getBoundingClientRect();
+            setMenuPos({ top: rect.bottom + 4, left: Math.max(8, rect.right - 208) });
+        };
+        place();
+        const onDoc = (event: MouseEvent) => {
+            if (!rootRef.current?.contains(event.target as Node)) onCloseRef.current();
+        };
+        document.addEventListener("mousedown", onDoc);
+        window.addEventListener("resize", place);
+        window.addEventListener("scroll", place, true);
+        return () => {
+            document.removeEventListener("mousedown", onDoc);
+            window.removeEventListener("resize", place);
+            window.removeEventListener("scroll", place, true);
+        };
+    }, [open]);
+
+    const setBranch = async (branch: "HBR" | "SJR" | "JPN") => {
+        if (!sessionId || saving || locked) return;
+        setSaving(true);
+        setError(null);
+        try {
+            const res = await fetch(`${API}/api/leads/${row.id}/set-branch`, {
+                method: "PATCH",
+                headers: {
+                    Authorization: `Bearer ${sessionId}`,
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ branch }),
+            });
+            const data = await res.json().catch(() => null);
+            const lockedFromServer = resolveBranchCode(typeof data?.branch === "string" ? data.branch : null);
+            if (res.status === 409 && lockedFromServer) {
+                onAssigned(lockedFromServer);
+                setPicking(false);
+                setError("Branch is locked and cannot be changed");
+                return;
+            }
+            if (!res.ok) {
+                setError(typeof data?.message === "string" ? data.message : "Could not set branch");
+                return;
+            }
+            onAssigned(branch);
+            setPicking(false);
+        } catch {
+            setError("Could not set branch");
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    return (
+        <div ref={rootRef} className="relative">
+            <button
+                type="button"
+                aria-label="Project branch"
+                aria-expanded={open}
+                onClick={onToggle}
+                className="inline-flex h-7 w-7 items-center justify-center rounded border border-gray-300 bg-white text-gray-700 shadow-sm hover:bg-gray-50"
+            >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                    <circle cx="10" cy="4.5" r="1.4" />
+                    <circle cx="10" cy="10" r="1.4" />
+                    <circle cx="10" cy="15.5" r="1.4" />
+                </svg>
+            </button>
+            {open && menuPos ? (
+                <div
+                    className="fixed z-50 w-52 rounded-xl border border-[#DDCDC1] bg-white p-2 shadow-xl"
+                    style={{ top: menuPos.top, left: menuPos.left }}
+                >
+                    <p className="text-[11px] text-gray-500">Current branch</p>
+                    <p className="text-xs font-semibold text-gray-900">{presentProjectBranch(row)}</p>
+                    {locked ? (
+                        <p className="mt-1 text-[11px] font-medium text-gray-500">Locked</p>
+                    ) : (
+                        <button
+                            type="button"
+                            onClick={() => setPicking((openPicker) => !openPicker)}
+                            className={`mt-2 flex w-full items-center justify-between gap-2 rounded-xl border px-3 py-2 text-sm font-medium text-[#32261C] ${
+                                picking
+                                    ? "border-[#EF0101] bg-white shadow-md ring-2 ring-[#EF0101]/10"
+                                    : "border-gray-300 bg-white hover:border-[#EF0101]/60"
+                            }`}
+                        >
+                            <span>Set branch</span>
+                            <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                viewBox="0 0 20 20"
+                                fill="currentColor"
+                                className={`h-4 w-4 flex-shrink-0 text-[#32261C]/50 transition-transform duration-200 ${picking ? "rotate-180" : ""}`}
+                            >
+                                <path
+                                    fillRule="evenodd"
+                                    d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z"
+                                    clipRule="evenodd"
+                                />
+                            </svg>
+                        </button>
+                    )}
+                    {!locked && picking ? (
+                        <div className="mt-1 overflow-hidden rounded-xl border border-[#DDCDC1] bg-white shadow-xl">
+                            {BRANCH_OPTIONS.map((branch) => {
+                                const isSelected = presentProjectBranch(row) === branch;
+                                return (
+                                    <button
+                                        key={branch}
+                                        type="button"
+                                        disabled={saving || !sessionId}
+                                        onClick={() => void setBranch(branch)}
+                                        className={`flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-sm transition-colors duration-100 disabled:cursor-not-allowed disabled:opacity-60 ${
+                                            isSelected
+                                                ? "bg-[#EF0101] font-semibold text-white"
+                                                : "text-[#32261C] hover:bg-[#F1F2F6]"
+                                        }`}
+                                    >
+                                        <span className={`flex h-4 w-4 flex-shrink-0 ${isSelected ? "opacity-100" : "opacity-0"}`}>
+                                            <svg viewBox="0 0 16 16" fill="currentColor">
+                                                <path
+                                                    fillRule="evenodd"
+                                                    d="M12.416 3.376a.75.75 0 0 1 .208 1.04l-5 7.5a.75.75 0 0 1-1.154.114l-3-3a.75.75 0 0 1 1.06-1.06l2.353 2.353 4.493-6.74a.75.75 0 0 1 1.04-.207Z"
+                                                    clipRule="evenodd"
+                                                />
+                                            </svg>
+                                        </span>
+                                        {saving && isSelected ? "Saving…" : branch}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    ) : null}
+                    {error ? <p className="mt-1 text-[11px] text-red-600">{error}</p> : null}
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
 export default function Dashboard() {
     const { user, sessionId } = useAuth();
     const {
@@ -309,10 +497,13 @@ export default function Dashboard() {
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const targetLeadRef = useRef<number | null>(null);
     const [uploadToast, setUploadToast] = useState<string | null>(null);
+    const [branchMenuLeadId, setBranchMenuLeadId] = useState<number | null>(null);
 
     const isMmtUser = ["mmt_manager", "mmt_executive"].includes((user?.role || "").toLowerCase());
     const isDesigner = (user?.role || "").toLowerCase() === "designer";
     const isDesignManager = (user?.role || "").toLowerCase() === "design_manager";
+    const isTdm = (user?.role || "").toLowerCase() === "territorial_design_manager";
+    const canManageProjectBranch = isDesignManager || isTdm;
     const isAdmin = (user?.role || "").toLowerCase() === "admin";
     const canBookPersonalAppointment = isDesigner || isDesignManager;
     const isDqcUser = ["dqc_manager", "dqe"].includes((user?.role || "").toLowerCase());
@@ -1467,14 +1658,36 @@ export default function Dashboard() {
                                                     </button>
                                                 </td>
                                                 <td className="py-3 px-2">
-                                                    <button
-                                                        type="button"
-                                                        disabled={!sessionId || getQuoteRowBusy}
-                                                        onClick={() => void runGetQuoteForDashboardLead(row)}
-                                                        className="w-full min-w-[5.5rem] rounded bg-[#EF0101] px-2 py-1 text-[11px] font-bold text-white shadow-sm hover:bg-[#EF0101]/90 disabled:cursor-not-allowed disabled:opacity-50 transition-all duration-200"
-                                                    >
-                                                        {getQuoteRowBusy ? "Working…" : "Get quote"}
-                                                    </button>
+                                                    <div className="flex items-center gap-1.5">
+                                                        <button
+                                                            type="button"
+                                                            disabled={!sessionId || getQuoteRowBusy}
+                                                            onClick={() => void runGetQuoteForDashboardLead(row)}
+                                                            className="w-full min-w-[5.5rem] rounded bg-[#EF0101] px-2 py-1 text-[11px] font-bold text-white shadow-sm hover:bg-[#EF0101]/90 disabled:cursor-not-allowed disabled:opacity-50 transition-all duration-200"
+                                                        >
+                                                            {getQuoteRowBusy ? "Working…" : "Get quote"}
+                                                        </button>
+                                                        {canManageProjectBranch ? (
+                                                            <ProjectBranchMenu
+                                                                row={row}
+                                                                open={branchMenuLeadId === row.id}
+                                                                sessionId={sessionId}
+                                                                onToggle={() =>
+                                                                    setBranchMenuLeadId((id) => (id === row.id ? null : row.id))
+                                                                }
+                                                                onClose={() =>
+                                                                    setBranchMenuLeadId((id) => (id === row.id ? null : id))
+                                                                }
+                                                                onAssigned={(branch) =>
+                                                                    setProjects((prev) =>
+                                                                        prev.map((p) =>
+                                                                            p.id === row.id ? { ...p, assignedBranch: branch } : p,
+                                                                        ),
+                                                                    )
+                                                                }
+                                                            />
+                                                        ) : null}
+                                                    </div>
                                                 </td>
                                             </tr>
                                         );
@@ -1619,14 +1832,36 @@ export default function Dashboard() {
                                                 <td className="px-2 py-3" onClick={(e) => e.stopPropagation()}>
                                                     <div className="flex flex-wrap items-center gap-1.5">
                                                         {isPre10 ? (
-                                                            <button
-                                                                type="button"
-                                                                disabled={!sessionId || getQuoteLeadId === row.id}
-                                                                onClick={() => void runGetQuoteForDashboardLead(row)}
-                                                                className="rounded bg-[#EF0101] px-2 py-1 text-[11px] font-bold text-white shadow-sm hover:bg-[#EF0101]/90 transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50"
-                                                            >
-                                                                {getQuoteLeadId === row.id ? "Working…" : "Get quote"}
-                                                            </button>
+                                                            <div className="flex items-center gap-1.5">
+                                                                <button
+                                                                    type="button"
+                                                                    disabled={!sessionId || getQuoteLeadId === row.id}
+                                                                    onClick={() => void runGetQuoteForDashboardLead(row)}
+                                                                    className="rounded bg-[#EF0101] px-2 py-1 text-[11px] font-bold text-white shadow-sm hover:bg-[#EF0101]/90 transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50"
+                                                                >
+                                                                    {getQuoteLeadId === row.id ? "Working…" : "Get quote"}
+                                                                </button>
+                                                                {canManageProjectBranch ? (
+                                                                    <ProjectBranchMenu
+                                                                        row={row}
+                                                                        open={branchMenuLeadId === row.id}
+                                                                        sessionId={sessionId}
+                                                                        onToggle={() =>
+                                                                            setBranchMenuLeadId((id) => (id === row.id ? null : row.id))
+                                                                        }
+                                                                        onClose={() =>
+                                                                            setBranchMenuLeadId((id) => (id === row.id ? null : id))
+                                                                        }
+                                                                        onAssigned={(branch) =>
+                                                                            setProjects((prev) =>
+                                                                                prev.map((p) =>
+                                                                                    p.id === row.id ? { ...p, assignedBranch: branch } : p,
+                                                                                ),
+                                                                            )
+                                                                        }
+                                                                    />
+                                                                ) : null}
+                                                            </div>
                                                         ) : (
                                                             <div className="flex flex-col gap-1.5">
                                                                 <div className="flex items-center gap-1.5">
@@ -1652,6 +1887,26 @@ export default function Dashboard() {
                                                                             <path fillRule="evenodd" d="M2 8a.75.75 0 0 1 .75-.75h8.69L8.22 4.03a.75.75 0 0 1 1.06-1.06l4.5 4.5a.75.75 0 0 1 0 1.06l-4.5 4.5a.75.75 0 0 1-1.06-1.06l3.22-3.22H2.75A.75.75 0 0 1 2 8Z" clipRule="evenodd" />
                                                                         </svg>
                                                                     </button>
+                                                                    {canManageProjectBranch ? (
+                                                                        <ProjectBranchMenu
+                                                                            row={row}
+                                                                            open={branchMenuLeadId === row.id}
+                                                                            sessionId={sessionId}
+                                                                            onToggle={() =>
+                                                                                setBranchMenuLeadId((id) => (id === row.id ? null : row.id))
+                                                                            }
+                                                                            onClose={() =>
+                                                                                setBranchMenuLeadId((id) => (id === row.id ? null : id))
+                                                                            }
+                                                                            onAssigned={(branch) =>
+                                                                                setProjects((prev) =>
+                                                                                    prev.map((p) =>
+                                                                                        p.id === row.id ? { ...p, assignedBranch: branch } : p,
+                                                                                    ),
+                                                                                )
+                                                                            }
+                                                                        />
+                                                                    ) : null}
                                                                 </div>
                                                                 {canImportLeads && (
                                                                     <div className="flex items-center gap-1">

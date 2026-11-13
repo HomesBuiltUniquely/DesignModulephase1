@@ -1657,6 +1657,7 @@ async function initDb() {
       ["hold_files", "ALTER TABLE leads ADD COLUMN hold_files TEXT NULL"],
       ["cancel_note", "ALTER TABLE leads ADD COLUMN cancel_note TEXT NULL"],
       ["cancel_files", "ALTER TABLE leads ADD COLUMN cancel_files TEXT NULL"],
+      ["assigned_branch", "ALTER TABLE leads ADD COLUMN assigned_branch VARCHAR(8) NULL"],
     ] as const) {
       try {
         const [col] = await conn.query(
@@ -17317,6 +17318,7 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
               l.create_at as createAt, l.update_at as updateAt,
               l.prolance_project_id as prolanceProjectId,
               l.prolance_quote_id as prolanceQuoteId,
+              l.assigned_branch as assignedBranch,
               l.assigned_designer_id,
               l.assigned_project_manager_id,
               COALESCE(u.name, 
@@ -17954,6 +17956,81 @@ app.post("/api/leads/:id/assign-designer", async (req: Request, res: Response) =
   } catch (err) {
     console.error("assign-designer error", err);
     return res.status(500).json({ message: "Failed to assign lead" });
+  }
+});
+
+// Design manager or TDM: set a project branch once. After it is set, it stays locked.
+app.patch("/api/leads/:id/set-branch", async (req: Request, res: Response) => {
+  try {
+    const leadId = Number(req.params.id);
+    if (!leadId) return res.status(400).json({ message: "Invalid lead id" });
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const role = (user.role || "").toLowerCase();
+    if (role !== "design_manager" && role !== "territorial_design_manager") {
+      return res.status(403).json({ message: "Only design managers and TDM can set a project branch" });
+    }
+
+    const branch = resolveHubBranchCode(String(req.body?.branch ?? ""));
+    if (!branch) return res.status(400).json({ message: "Branch must be HBR, SJR, or JPN" });
+
+    const [leadRows] = await pool.query(
+      "SELECT id, assigned_branch FROM leads WHERE id = ? LIMIT 1",
+      [leadId],
+    );
+    const lead = (leadRows as { id: number; assigned_branch?: string | null }[])[0];
+    if (!lead) return res.status(404).json({ message: "Lead not found" });
+
+    if (role === "design_manager") {
+      const [visibilityRows] = await pool.query(
+        `SELECT 1
+         FROM leads l
+         INNER JOIN users d ON d.id = l.assigned_designer_id
+         WHERE l.id = ? AND d.design_manager_id = ?`,
+        [leadId, user.id],
+      );
+      if ((visibilityRows as unknown[]).length === 0) {
+        return res.status(403).json({ message: "You can set a branch only for projects in your team" });
+      }
+    }
+
+    const already = resolveHubBranchCode(lead.assigned_branch);
+    if (already) {
+      return res.status(409).json({
+        message: "Branch is locked and cannot be changed",
+        branch: already,
+        locked: true,
+      });
+    }
+
+    const [updateResult] = await pool.query(
+      `UPDATE leads
+       SET assigned_branch = ?, update_at = ?
+       WHERE id = ? AND (assigned_branch IS NULL OR TRIM(assigned_branch) = '')`,
+      [branch, new Date(), leadId],
+    );
+    if (Number((updateResult as { affectedRows?: number })?.affectedRows || 0) === 0) {
+      const [again] = await pool.query(
+        "SELECT assigned_branch FROM leads WHERE id = ? LIMIT 1",
+        [leadId],
+      );
+      const current = resolveHubBranchCode(
+        (again as { assigned_branch?: string | null }[])[0]?.assigned_branch,
+      );
+      if (current) {
+        return res.status(409).json({
+          message: "Branch is locked and cannot be changed",
+          branch: current,
+          locked: true,
+        });
+      }
+      return res.status(409).json({ message: "Branch could not be set" });
+    }
+
+    return res.json({ ok: true, leadId, branch, locked: true });
+  } catch (err) {
+    console.error("set-branch error", err);
+    return res.status(500).json({ message: "Failed to set branch" });
   }
 });
 

@@ -104,6 +104,8 @@ export type LeadshipTypes = {
     projectManagerName?: string | null;
     /** Sales closure experience center / branch (from lead payload) */
     experienceCenter?: string | null;
+    /** Branch set once by a design manager or TDM. Locked after it is set. */
+    assignedBranch?: string | null;
     experience_center?: string | null;
     sales_closure_ec?: string | null;
     branch?: string | null;
