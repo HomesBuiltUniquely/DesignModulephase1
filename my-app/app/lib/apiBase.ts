@@ -39,12 +39,37 @@ export const getApiBase = (): string => {
   if (fromEnv) return fromEnv;
   if (typeof window !== "undefined") {
     const host = window.location.hostname.toLowerCase();
-    if (host === "design.hubinterior.com" || host.endsWith(".hubinterior.com")) {
+    if (
+      host === "design.hubinterior.com" ||
+      host.endsWith(".hubinterior.com") ||
+      host === "homesbuiltuniquely.com" ||
+      host.endsWith(".homesbuiltuniquely.com") ||
+      host === "app.hubinterior.com"
+    ) {
       return PROD_API_BASE;
     }
   }
   return "http://localhost:3001";
 };
+
+/** Customer quote opens are tracked only on production quote hosts (not localhost). */
+export function isProductionQuoteHost(hostname?: string): boolean {
+  const host = String(
+    hostname ?? (typeof window !== "undefined" ? window.location.hostname : ""),
+  )
+    .trim()
+    .toLowerCase();
+  if (!host || host === "localhost" || host === "127.0.0.1" || host.endsWith(".local")) {
+    return false;
+  }
+  return (
+    host === "design.hubinterior.com" ||
+    host.endsWith(".hubinterior.com") ||
+    host === "homesbuiltuniquely.com" ||
+    host.endsWith(".homesbuiltuniquely.com") ||
+    host === "app.hubinterior.com"
+  );
+}
 
 /** Server-side / Vercel proxy target. Never the Next.js frontend origin. */
 export function resolveBackendApiBase(): string {
