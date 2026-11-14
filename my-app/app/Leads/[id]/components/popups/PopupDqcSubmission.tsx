@@ -372,9 +372,6 @@ export default function PopupDqcSubmission({
                       .filter(Boolean)
                       .join(' · ')}
                   </p>
-                  <p className="text-xs text-gray-500 mt-1">
-                    This version will be locked for {submissionVariant === 'dqc2' ? 'DQC 2' : 'DQC 1'} after you submit.
-                  </p>
                 </div>
                 <a
                   href={hostedQuoteHref(quotationLink)}
