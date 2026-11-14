@@ -3709,11 +3709,10 @@ async function getDesignerBusyBlocksForDate(
   } catch (err) {
     console.error("[getDesignerBusyBlocksForDate] lead schedule busy failed", designerName, err);
   }
-
   return { leaveReason: null, busy, erpFailed };
 }
 
-/** Meetings saved on leads (design schedule or CRM schedule) for this designer and day. */
+/** Legacy: lead JSON schedules. Not used for designer availability (see getDesignerBusyBlocksForDate). */
 async function leadScheduleBusyBlocksForDesigner(
   designerName: string,
   dateIso: string,
@@ -3830,6 +3829,77 @@ async function leadScheduleBusyBlocksForDesigner(
   }
 
   return blocks;
+}
+
+function mergePayloadAfterHubAppointmentCancelled(
+  prev: Record<string, unknown>,
+): Record<string, unknown> {
+  const prevForm =
+    prev.formData && typeof prev.formData === "object"
+      ? (prev.formData as Record<string, unknown>)
+      : {};
+  return {
+    ...prev,
+    crmSchedule: null,
+    designScheduledMeeting: null,
+    scheduledMeetingDate: null,
+    scheduledMeetingSlot: null,
+    meetingStatus: "CANCELLED",
+    action: "CANCELLED",
+    formData: {
+      ...prevForm,
+      appointment_date: "",
+      appointment_slot: "",
+    },
+  };
+}
+
+async function findDesignLeadIdByCrmLeadId(crmLeadId: number): Promise<number | null> {
+  if (!Number.isFinite(crmLeadId) || crmLeadId <= 0) return null;
+  const [byCrmRows] = await pool.query(
+    `SELECT id FROM leads
+     WHERE payload IS NOT NULL AND JSON_VALID(payload) = 1
+       AND (
+         JSON_UNQUOTE(JSON_EXTRACT(payload, '$.crmLeadId')) = ?
+         OR JSON_UNQUOTE(JSON_EXTRACT(payload, '$.leadId')) = ?
+         OR JSON_UNQUOTE(JSON_EXTRACT(payload, '$.crm_lead_id')) = ?
+       )
+     ORDER BY id DESC
+     LIMIT 1`,
+    [String(crmLeadId), String(crmLeadId), String(crmLeadId)],
+  );
+  const row = (byCrmRows as { id?: number }[])[0];
+  return row?.id != null && Number(row.id) > 0 ? Number(row.id) : null;
+}
+
+async function clearDesignLeadScheduleForCrmLeadId(
+  crmLeadId: number,
+): Promise<{ updated: boolean; designLeadId: number | null }> {
+  const designLeadId = await findDesignLeadIdByCrmLeadId(crmLeadId);
+  if (designLeadId == null) {
+    return { updated: false, designLeadId: null };
+  }
+  const [leadRows] = await pool.query(`SELECT payload FROM leads WHERE id = ? LIMIT 1`, [designLeadId]);
+  const payloadRaw = (leadRows as { payload?: string | null }[])[0]?.payload;
+  let prev: Record<string, unknown> = {};
+  try {
+    prev =
+      typeof payloadRaw === "string"
+        ? (JSON.parse(payloadRaw) as Record<string, unknown>)
+        : payloadRaw && typeof payloadRaw === "object"
+          ? (payloadRaw as Record<string, unknown>)
+          : {};
+  } catch {
+    prev = {};
+  }
+  const merged = mergePayloadAfterHubAppointmentCancelled(prev);
+  const now = new Date();
+  await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
+    JSON.stringify(merged),
+    now,
+    designLeadId,
+  ]);
+  return { updated: true, designLeadId };
 }
 
 /** Fields for Java CRM `/v1/Appointment` so the appointment table shows the correct client/project (not a stale CRM lead lookup). */
@@ -8271,21 +8341,7 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
           } catch {
             prevCancel = {};
           }
-          const prevFormCancel =
-            prevCancel.formData && typeof prevCancel.formData === "object"
-              ? (prevCancel.formData as Record<string, unknown>)
-              : {};
-          const mergedCancel = {
-            ...prevCancel,
-            crmSchedule: null,
-            meetingStatus: "CANCELLED",
-            action: "CANCELLED",
-            formData: {
-              ...prevFormCancel,
-              appointment_date: "",
-              appointment_slot: "",
-            },
-          };
+          const mergedCancel = mergePayloadAfterHubAppointmentCancelled(prevCancel);
           await pool.query(`UPDATE leads SET payload = ?, update_at = ? WHERE id = ?`, [
             JSON.stringify(mergedCancel),
             now,
@@ -23171,6 +23227,51 @@ app.get("/api/appointment/designer/:designerName", async (req: Request, res: Res
 });
 
 /**
+ * Hub ERP → Design: clear lead JSON schedule when appointment is cancelled (API delete).
+ * POST /api/appointment/hub-appointment-cancelled
+ * Body: { crmLeadId | leadId, erpAppointmentId? }
+ * Auth: HUB_SYNC_API_KEY / EXTERNAL_LEAD_INGEST_API_KEY (same as CRM sales proxies).
+ */
+app.post("/api/appointment/hub-appointment-cancelled", async (req: Request, res: Response) => {
+  try {
+    const expectedKey =
+      (process.env.EXTERNAL_LEAD_INGEST_API_KEY || "").trim() ||
+      (process.env.HUB_SYNC_API_KEY || "").trim();
+    const providedKey = String(
+      req.headers["x-api-key"] ||
+        req.headers["x-external-api-key"] ||
+        String(req.headers.authorization || "").replace(/^Bearer\s+/i, ""),
+    ).trim();
+    const apiKeyOk = Boolean(expectedKey && providedKey && providedKey === expectedKey);
+    if (!apiKeyOk) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
+    const crmLeadId = Number(body.crmLeadId ?? body.leadId ?? body.crm_lead_id);
+    if (!Number.isFinite(crmLeadId) || crmLeadId <= 0) {
+      return res.status(400).json({ message: "crmLeadId (or leadId) is required" });
+    }
+
+    const result = await clearDesignLeadScheduleForCrmLeadId(crmLeadId);
+    return res.json({
+      ok: true,
+      crmLeadId,
+      erpAppointmentId: body.erpAppointmentId ?? body.appointmentId ?? null,
+      designLeadId: result.designLeadId,
+      scheduleCleared: result.updated,
+      message: result.updated
+        ? "Design lead meeting schedule cleared"
+        : "No linked Design lead found (nothing to clear)",
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[hub-appointment-cancelled]", message);
+    return res.status(500).json({ message: "Failed to clear Design lead schedule", error: message });
+  }
+});
+
+/**
  * P0 — Sales: date/time → which designers are free (rich objects).
  * GET /api/appointment/available-designers
  *   ?date=YYYY-MM-DD
@@ -23180,7 +23281,7 @@ app.get("/api/appointment/designer/:designerName", async (req: Request, res: Res
  *
  * Auth: Design Module session, or EXTERNAL_LEAD_INGEST_API_KEY / HUB_SYNC_API_KEY (CRM sales).
  * Accuracy: calendar day from `date` (required); times parsed as local wall-clock (no TZ drift).
- * Conflicts: ERP appointments for that designer on that date + Design Module full-day leave.
+ * Conflicts: Hub ERP `appointment` rows for that designer (+ full-day leave). Not Google Calendar.
  */
 app.get("/api/appointment/available-designers", async (req: Request, res: Response) => {
   try {
