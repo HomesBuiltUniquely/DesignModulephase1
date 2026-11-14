@@ -3675,7 +3675,7 @@ function findOverlappingBusyBlocks(
 async function getDesignerBusyBlocksForDate(
   designerName: string,
   dateIso: string,
-): Promise<{ leaveReason: string | null; busy: HubBusyBlock[] }> {
+): Promise<{ leaveReason: string | null; busy: HubBusyBlock[]; erpFailed: boolean }> {
   const leave = await getActiveFullDayBlock(designerName, dateIso);
   if (leave && (leave.status === "pending" || leave.status === "approved")) {
     const leaveReason =
@@ -3685,17 +3685,31 @@ async function getDesignerBusyBlocksForDate(
     return {
       leaveReason,
       busy: [{ startMin: HUB_DAY_START_MIN, endMin: HUB_DAY_END_MIN, label: "Full-day leave" }],
+      erpFailed: false,
     };
   }
-  const appointments = await fetchDesignerErpAppointments(designerName);
+
   const busy: HubBusyBlock[] = [];
-  for (const row of appointments) {
-    const block = erpAppointmentToBusyBlock(row, dateIso);
-    if (block) busy.push(block);
+  let erpFailed = false;
+  try {
+    const appointments = await fetchDesignerErpAppointments(designerName);
+    for (const row of appointments) {
+      const block = erpAppointmentToBusyBlock(row, dateIso);
+      if (block) busy.push(block);
+    }
+  } catch (err) {
+    erpFailed = true;
+    console.error("[getDesignerBusyBlocksForDate] ERP appointments failed", designerName, err);
   }
-  // Availability single source of truth: Hub ERP `appointment` rows (+ full-day leave above).
-  // Design lead payload schedules are cleared when Hub cancels via hub-appointment-cancelled sync.
-  return { leaveReason: null, busy };
+
+  // Always merge Design-side meetings (lead_meetings + payload) even when ERP is down.
+  try {
+    const leadBlocks = await leadScheduleBusyBlocksForDesigner(designerName, dateIso);
+    for (const block of leadBlocks) busy.push(block);
+  } catch (err) {
+    console.error("[getDesignerBusyBlocksForDate] lead schedule busy failed", designerName, err);
+  }
+  return { leaveReason: null, busy, erpFailed };
 }
 
 /** Legacy: lead JSON schedules. Not used for designer availability (see getDesignerBusyBlocksForDate). */
@@ -3705,45 +3719,115 @@ async function leadScheduleBusyBlocksForDesigner(
 ): Promise<HubBusyBlock[]> {
   const name = designerName.trim();
   if (!name) return [];
-  const likeDate = `${dateIso}%`;
-  const [rows] = await pool.query(
-    `SELECT
-       JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.scheduledMeetingDate')) AS schedDate,
-       JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.scheduledMeetingSlot')) AS schedSlot,
-       JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.date')) AS designDate,
-       JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.time')) AS designTime,
-       JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.crmSchedule.date')) AS crmDate,
-       JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.crmSchedule.slot')) AS crmSlot
-     FROM leads l
-     LEFT JOIN users u ON u.id = l.assigned_designer_id
-     WHERE JSON_VALID(l.payload) = 1
-       AND (
-         LOWER(TRIM(u.name)) = LOWER(TRIM(?))
-         OR LOWER(TRIM(JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.connection.designerName')))) = LOWER(TRIM(?))
-         OR LOWER(TRIM(JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.designer_name')))) = LOWER(TRIM(?))
-       )
-       AND (
-         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.scheduledMeetingDate')) LIKE ?
-         OR JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.date')) LIKE ?
-         OR JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.crmSchedule.date')) LIKE ?
-       )`,
-    [name, name, name, likeDate, likeDate, likeDate],
-  );
   const blocks: HubBusyBlock[] = [];
-  for (const row of rows as Record<string, unknown>[]) {
-    const designDate = meetingDateFromRaw(row.schedDate) || meetingDateFromRaw(row.designDate);
-    const crmDate = meetingDateFromRaw(row.crmDate);
-    const meetingDate = designDate || crmDate;
-    if (meetingDate !== dateIso) continue;
-    const designTime =
-      cleanScheduledMeetingText(row.schedSlot) || cleanScheduledMeetingText(row.designTime);
-    const crmTime =
-      crmDate === meetingDate
-        ? cleanScheduledMeetingText(row.crmSlot) || meetingTimeEmbeddedInDate(row.crmDate)
-        : null;
-    const block = meetingSlotToBusyBlock(designTime || crmTime);
-    if (block) blocks.push(block);
+
+  // Source of truth for Meeting Management / Pre 10% CRM meetings.
+  try {
+    const [meetingRows] = await pool.query(
+      `SELECT
+          m.id AS meetingId,
+          DATE_FORMAT(m.meeting_date, '%Y-%m-%d') AS meetingDate,
+          m.meeting_time AS meetingTime,
+          m.progress,
+          m.meeting_status AS meetingStatus,
+          m.source,
+          JSON_UNQUOTE(JSON_EXTRACT(
+            CASE WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}' ELSE l.payload END,
+            '$.crmSchedule.slot'
+          )) AS crmSlot,
+          JSON_UNQUOTE(JSON_EXTRACT(
+            CASE WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}' ELSE l.payload END,
+            '$.scheduledMeetingSlot'
+          )) AS schedSlot,
+          JSON_UNQUOTE(JSON_EXTRACT(
+            CASE WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}' ELSE l.payload END,
+            '$.designScheduledMeeting.time'
+          )) AS designTime,
+          JSON_UNQUOTE(JSON_EXTRACT(
+            CASE WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}' ELSE l.payload END,
+            '$.formData.appointment_slot'
+          )) AS formSlot
+        FROM lead_meetings m
+        LEFT JOIN users du ON du.id = m.designer_id
+        LEFT JOIN leads l ON l.id = m.lead_id
+        LEFT JOIN users au ON au.id = l.assigned_designer_id
+       WHERE m.meeting_date = ?
+         AND (m.meeting_status IS NULL OR LOWER(m.meeting_status) <> 'cancelled')
+         AND LOWER(COALESCE(m.progress, '')) NOT IN ('completed', 'meeting_never_happened', 'meeting_abandoned')
+         AND (
+           LOWER(TRIM(COALESCE(du.name, ''))) = LOWER(TRIM(?))
+           OR LOWER(TRIM(COALESCE(au.name, ''))) = LOWER(TRIM(?))
+         )`,
+      [dateIso, name, name],
+    );
+    for (const row of meetingRows as Record<string, unknown>[]) {
+      // Prefer stored meeting_time; if empty, recover from lead payload (do NOT block whole day).
+      const slot =
+        cleanScheduledMeetingText(row.meetingTime) ||
+        cleanScheduledMeetingText(row.crmSlot) ||
+        cleanScheduledMeetingText(row.schedSlot) ||
+        cleanScheduledMeetingText(row.designTime) ||
+        cleanScheduledMeetingText(row.formSlot);
+      const source = String(row.source || "").toLowerCase() === "crm" ? "CRM meeting" : "Design meeting";
+      const block = meetingSlotToBusyBlock(slot);
+      if (block) {
+        blocks.push({ ...block, label: slot ? `${source} ${slot}` : source });
+        continue;
+      }
+      // Still no parseable time → skip busy mark (keeps other slots bookable).
+      console.warn(
+        "[leadScheduleBusyBlocksForDesigner] meeting has no usable time; not blocking full day",
+        { meetingId: row.meetingId, designer: name, dateIso },
+      );
+    }
+  } catch (err) {
+    console.error("[leadScheduleBusyBlocksForDesigner] lead_meetings query failed", name, err);
   }
+
+  // Legacy payload fields (older schedule paths).
+  try {
+    const likeDate = `${dateIso}%`;
+    const [rows] = await pool.query(
+      `SELECT
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.scheduledMeetingDate')) AS schedDate,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.scheduledMeetingSlot')) AS schedSlot,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.date')) AS designDate,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.time')) AS designTime,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.crmSchedule.date')) AS crmDate,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.crmSchedule.slot')) AS crmSlot
+       FROM leads l
+       LEFT JOIN users u ON u.id = l.assigned_designer_id
+       WHERE JSON_VALID(l.payload) = 1
+         AND (
+           LOWER(TRIM(u.name)) = LOWER(TRIM(?))
+           OR LOWER(TRIM(JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.connection.designerName')))) = LOWER(TRIM(?))
+           OR LOWER(TRIM(JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.designer_name')))) = LOWER(TRIM(?))
+         )
+         AND (
+           JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.scheduledMeetingDate')) LIKE ?
+           OR JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.date')) LIKE ?
+           OR JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.crmSchedule.date')) LIKE ?
+         )`,
+      [name, name, name, likeDate, likeDate, likeDate],
+    );
+    for (const row of rows as Record<string, unknown>[]) {
+      const designDate = meetingDateFromRaw(row.schedDate) || meetingDateFromRaw(row.designDate);
+      const crmDate = meetingDateFromRaw(row.crmDate);
+      const meetingDate = designDate || crmDate;
+      if (meetingDate !== dateIso) continue;
+      const designTime =
+        cleanScheduledMeetingText(row.schedSlot) || cleanScheduledMeetingText(row.designTime);
+      const crmTime =
+        crmDate === meetingDate
+          ? cleanScheduledMeetingText(row.crmSlot) || meetingTimeEmbeddedInDate(row.crmDate)
+          : null;
+      const block = meetingSlotToBusyBlock(designTime || crmTime);
+      if (block) blocks.push(block);
+    }
+  } catch (err) {
+    console.error("[leadScheduleBusyBlocksForDesigner] payload query failed", name, err);
+  }
+
   return blocks;
 }
 
@@ -4073,24 +4157,34 @@ async function assertDesignerSlotFree(opts: {
 }): Promise<{ ok: true } | { ok: false; message: string; conflictCount: number }> {
   const { designerName, dateIso, startMin, endMin } = opts;
   try {
-    const { leaveReason, busy } = await getDesignerBusyBlocksForDate(designerName, dateIso);
+    const { leaveReason, busy, erpFailed } = await getDesignerBusyBlocksForDate(designerName, dateIso);
     if (leaveReason) {
       return { ok: false, message: leaveReason, conflictCount: 1 };
     }
     const conflicts = findOverlappingBusyBlocks(busy, startMin, endMin);
-    if (conflicts.length === 0) return { ok: true };
-    const first = conflicts[0];
+    if (conflicts.length > 0) {
+      const first = conflicts[0];
+      return {
+        ok: false,
+        message: `Slot overlaps existing meeting ${minutesToHubLabel(first.startMin)}–${minutesToHubLabel(first.endMin)}${
+          first.label && first.label !== "Existing meeting" ? ` — ${first.label}` : ""
+        }. Overlapping bookings are not allowed.`,
+        conflictCount: conflicts.length,
+      };
+    }
+    // ERP may be down — Design lead_meetings/payload blocks above still apply.
+    // Do not fail-open by ignoring known Design meetings, and do not wipe the free list.
+    if (erpFailed) {
+      console.warn("[assertDesignerSlotFree] ERP calendar unavailable; using Design-side busy blocks only", designerName);
+    }
+    return { ok: true };
+  } catch (err) {
+    console.error("[assertDesignerSlotFree] availability check failed", designerName, err);
     return {
       ok: false,
-      message: `Slot overlaps existing meeting ${minutesToHubLabel(first.startMin)}–${minutesToHubLabel(first.endMin)}${
-        first.label && first.label !== "Existing meeting" ? ` — ${first.label}` : ""
-      }. Overlapping bookings are not allowed.`,
-      conflictCount: conflicts.length,
+      message: "Could not verify designer availability",
+      conflictCount: 1,
     };
-  } catch (err) {
-    // Fail open when ERP/calendar sync is down — UI slot picker also cannot load busy blocks.
-    console.error("[assertDesignerSlotFree] availability check skipped (ERP error)", designerName, err);
-    return { ok: true };
   }
 }
 
@@ -23318,6 +23412,8 @@ app.get("/api/appointment/available-designers", async (req: Request, res: Respon
       available: boolean;
       conflictCount: number;
       conflictReason?: string;
+      erpCalendarOk: boolean;
+      warning?: string;
     };
 
     const results = await mapPoolLimit(designers, 5, async (d): Promise<DesignerAvailability> => {
@@ -23325,20 +23421,37 @@ app.get("/api/appointment/available-designers", async (req: Request, res: Respon
       const base = { id: Number(d.id), name: d.name, email };
 
       try {
-        const check = await assertDesignerSlotFree({
-          designerName: d.name,
-          dateIso,
-          startMin,
-          endMin,
-        });
-        if (check.ok) {
-          return { ...base, available: true, conflictCount: 0 };
+        const { leaveReason, busy, erpFailed } = await getDesignerBusyBlocksForDate(d.name, dateIso);
+        if (leaveReason) {
+          return {
+            ...base,
+            available: false,
+            conflictCount: 1,
+            conflictReason: leaveReason,
+            erpCalendarOk: !erpFailed,
+          };
+        }
+        const conflicts = findOverlappingBusyBlocks(busy, startMin, endMin);
+        if (conflicts.length > 0) {
+          const first = conflicts[0];
+          return {
+            ...base,
+            available: false,
+            conflictCount: conflicts.length,
+            conflictReason: `Slot overlaps existing meeting ${minutesToHubLabel(first.startMin)}–${minutesToHubLabel(first.endMin)}${
+              first.label && first.label !== "Existing meeting" ? ` — ${first.label}` : ""
+            }. Overlapping bookings are not allowed.`,
+            erpCalendarOk: !erpFailed,
+          };
         }
         return {
           ...base,
-          available: false,
-          conflictCount: check.conflictCount,
-          conflictReason: check.message,
+          available: true,
+          conflictCount: 0,
+          erpCalendarOk: !erpFailed,
+          ...(erpFailed
+            ? { warning: "ERP calendar unavailable; checked Design meetings only" }
+            : {}),
         };
       } catch (err) {
         console.error("[available-designers] designer check failed", d.name, err);
@@ -23347,11 +23460,13 @@ app.get("/api/appointment/available-designers", async (req: Request, res: Respon
           available: false,
           conflictCount: 1,
           conflictReason: "Availability check failed",
+          erpCalendarOk: false,
         };
       }
     });
 
     const freeOnly = includeUnavailable ? results : results.filter((d) => d.available);
+    const erpDegraded = results.some((d) => !d.erpCalendarOk);
 
     freeOnly.sort((a, b) => {
       if (a.available !== b.available) return a.available ? -1 : 1;
@@ -23366,6 +23481,7 @@ app.get("/api/appointment/available-designers", async (req: Request, res: Respon
       hubWindow: { start: HUB_DAY_START_TIME, end: HUB_DAY_END_TIME },
       ...(meetingType ? { meetingType } : {}),
       onlyAvailable: !includeUnavailable,
+      erpDegraded,
       designers: freeOnly,
     });
   } catch (err: any) {
@@ -23420,7 +23536,7 @@ app.get("/api/appointment/availability-by-date", async (req: Request, res: Respo
     const rows = await mapPoolLimit(designers, 5, async (d) => {
       const email = String(d.email || "").trim();
       try {
-        const { leaveReason, busy } = await getDesignerBusyBlocksForDate(d.name, dateIso);
+        const { leaveReason, busy, erpFailed } = await getDesignerBusyBlocksForDate(d.name, dateIso);
         if (leaveReason) {
           return {
             id: Number(d.id),
@@ -23444,12 +23560,14 @@ app.get("/api/appointment/availability-by-date", async (req: Request, res: Respo
           email,
           available: freeMins.length > 0,
           fullDayBlocked: false,
+          erpCalendarOk: !erpFailed,
           freeStarts: freeMins.map((m) => formatHubLocalDateTime(dateIso, m)),
           busyBlocks: busy.map((b) => ({
             startTime: formatHubLocalDateTime(dateIso, b.startMin),
             endTime: formatHubLocalDateTime(dateIso, Math.min(b.endMin, HUB_DAY_END_MIN)),
             label: b.label,
           })),
+          ...(erpFailed ? { warning: "ERP calendar unavailable; Design meetings only" } : {}),
         };
       } catch (err) {
         console.error("[availability-by-date] failed", d.name, err);
