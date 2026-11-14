@@ -79,6 +79,14 @@ import {
   normalizeFloorPlansFromCrmBody,
   type FloorPlanItem,
 } from "./floorPlans";
+import {
+  ensureLeadDqcSubmissionQuotesTable,
+  upsertDqcQuoteLock,
+  resolveDqcQuoteLinkForLead,
+  parseVersionFromQuoteLink,
+  buildCustomerQuoteUrl,
+  type DqcQuoteRound,
+} from "./dqcQuoteLinks";
 
 /**
  * Load backend/.env before dotenv. Supports `export KEY=value` and quoted values.
@@ -2128,6 +2136,7 @@ async function initDb() {
     await ensureDesignerXpTable(pool);
     await ensureLeadMeetingsTable(pool);
     await ensureLeadHoldPeriodsTable(pool);
+    await ensureLeadDqcSubmissionQuotesTable(pool);
 
     try {
       const [seenCol] = await conn.query(
@@ -8719,6 +8728,75 @@ async function loadSelectedQuoteForLead(leadId: number): Promise<CrmShareSelecti
   return (await loadCrmShareForLead(leadId)) || (await loadCustomerSharedQuoteForLead(leadId));
 }
 
+/** DQC popup / reviewer: customer-shared (live) or per-round lock (never CRM-first). */
+async function resolveDqcQuoteForLead(
+  leadId: number,
+  round: DqcQuoteRound,
+  mode: "live" | "locked",
+) {
+  return resolveDqcQuoteLinkForLead(pool, leadId, round, mode, {
+    frontendBase: frontendBase(),
+    loadCustomerShared: loadCustomerSharedQuoteForLead,
+  });
+}
+
+/** Canonical customer-shared link for a DQC submit (rejects CRM-only / missing customer share). */
+async function resolveCanonicalCustomerQuoteForDqcSubmit(leadId: number): Promise<{
+  quoteId: number;
+  versionNumber: number | null;
+  quotationLink: string;
+} | null> {
+  const customer = await loadCustomerSharedQuoteForLead(leadId);
+  if (!customer) return null;
+  return {
+    quoteId: customer.quoteId,
+    versionNumber: customer.versionNumber > 0 ? customer.versionNumber : null,
+    quotationLink: buildCustomerQuoteUrl(frontendBase(), customer.quoteId, customer.versionNumber),
+  };
+}
+
+/**
+ * For link-only DQC submits: require current customer share and persist that canonical URL.
+ * If quotation files are uploaded, keep client quote meta as optional annotation.
+ */
+async function resolveQuoteMetaForDqcSubmit(
+  leadId: number,
+  quotationFileOrKeyCount: number,
+  clientQuoteId: number | null,
+  clientQuotationLink: string | null,
+): Promise<
+  | { ok: true; meta: { quoteId: number; quotationLink: string; versionNumber: number | null } | null }
+  | { ok: false; message: string }
+> {
+  if (quotationFileOrKeyCount > 0) {
+    if (
+      clientQuoteId != null &&
+      Number.isFinite(clientQuoteId) &&
+      clientQuoteId > 0 &&
+      clientQuotationLink
+    ) {
+      return {
+        ok: true,
+        meta: {
+          quoteId: clientQuoteId,
+          quotationLink: clientQuotationLink,
+          versionNumber: parseVersionFromQuoteLink(clientQuotationLink),
+        },
+      };
+    }
+    return { ok: true, meta: null };
+  }
+  const canonical = await resolveCanonicalCustomerQuoteForDqcSubmit(leadId);
+  if (!canonical) {
+    return {
+      ok: false,
+      message:
+        "Share a quotation to the customer first (quote revision history → Share this to customer), then retry DQC submission.",
+    };
+  }
+  return { ok: true, meta: canonical };
+}
+
 function appendLatestQuoteLinkToMinutes(minutes: string, quoteUrl: string): string {
   const trimmed = (minutes || "").trim();
   if (trimmed.includes(quoteUrl)) return trimmed;
@@ -11224,6 +11302,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
 
             // Collect latest DQC2 drawing & quotation uploads for this lead (if S3 is configured)
             let attachments: { filename: string; path: string }[] | undefined;
+            let hasDqc2QuotationFile = false;
             if (process.env.AWS_ACCESS_KEY_ID) {
               try {
                 const [uploadRows] = await pool.query(
@@ -11240,6 +11319,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                     const type = (r.uploadType || r.uploadtype || "").toString();
                     if (!type || seenTypes.has(type)) return null;
                     seenTypes.add(type);
+                    if (type === "dqc2_quotation") hasDqc2QuotationFile = true;
                     const name = (r.originalName || "").toString();
                     const url = (r.s3Url || "").toString();
                     return name && url ? { filename: name, path: url } : null;
@@ -11253,6 +11333,20 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   leadId: id,
                   error: attachErr,
                 });
+              }
+            }
+
+            let dqc2QuotationLink: string | undefined;
+            let dqc2QuoteId: number | undefined;
+            if (!hasDqc2QuotationFile) {
+              try {
+                const locked = await resolveDqcQuoteForLead(id, "dqc2", "locked");
+                if (locked?.customerQuoteUrl) {
+                  dqc2QuotationLink = locked.customerQuoteUrl;
+                  dqc2QuoteId = locked.quoteId;
+                }
+              } catch {
+                /* non-fatal */
               }
             }
 
@@ -11278,6 +11372,8 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
                   designerName,
                   dqcRepName: dqcUser.name || "DQC Team",
                   projectValue: String(projectValue || ""),
+                  ...(dqc2QuotationLink ? { quotationLink: dqc2QuotationLink } : {}),
+                  ...(dqc2QuoteId != null && dqc2QuoteId > 0 ? { quoteId: dqc2QuoteId } : {}),
                   ...(attachments ? { attachments } : {}),
                 },
               });
@@ -15772,7 +15868,11 @@ async function persistDqc1SubmissionFromMeta(
   quotationFiles: { originalname: string; filename: string; path: string; mimetype: string; size: number }[],
   drawingS3Urls: (string | null)[],
   quotationS3Urls: (string | null)[],
-  quoteMeta?: { quoteId?: number | null; quotationLink?: string | null } | null,
+  quoteMeta?: {
+    quoteId?: number | null;
+    quotationLink?: string | null;
+    versionNumber?: number | null;
+  } | null,
 ): Promise<void> {
   const now = new Date();
   for (let i = 0; i < drawingFiles.length; i++) {
@@ -15803,6 +15903,24 @@ async function persistDqc1SubmissionFromMeta(
     typeof quoteMeta?.quotationLink === "string" && quoteMeta.quotationLink.trim()
       ? quoteMeta.quotationLink.trim()
       : null;
+  const linkedVersion =
+    quoteMeta?.versionNumber != null && Number(quoteMeta.versionNumber) > 0
+      ? Number(quoteMeta.versionNumber)
+      : parseVersionFromQuoteLink(linkedQuotationLink);
+  if (linkedQuoteId != null && linkedQuotationLink) {
+    try {
+      await upsertDqcQuoteLock(pool, {
+        leadId,
+        round: "dqc1",
+        quoteId: linkedQuoteId,
+        versionNumber: linkedVersion,
+        quotationLink: linkedQuotationLink,
+        lockedByUserId: user.id,
+      });
+    } catch (lockErr) {
+      console.warn("[dqc-quote] DQC1 lock upsert failed (non-fatal)", { leadId, lockErr });
+    }
+  }
   const fileNames = [
     ...drawingFiles.map((f) => f.originalname),
     ...quotationFiles.map((f) => f.originalname),
@@ -15824,6 +15942,7 @@ async function persistDqc1SubmissionFromMeta(
       quotations: quotationFiles.map((f) => f.originalname),
       ...(linkedQuoteId != null ? { quoteId: linkedQuoteId } : {}),
       ...(linkedQuotationLink ? { quotationLink: linkedQuotationLink } : {}),
+      ...(linkedVersion != null ? { versionNumber: linkedVersion } : {}),
     },
   };
   await addLeadHistoryEvent(leadId, ev);
@@ -15926,7 +16045,11 @@ async function persistDqc2SubmissionFromMeta(
   quotationFiles: { originalname: string; filename: string; path: string; mimetype: string; size: number }[],
   drawingS3Urls: (string | null)[],
   quotationS3Urls: (string | null)[],
-  quoteMeta?: { quoteId?: number | null; quotationLink?: string | null } | null,
+  quoteMeta?: {
+    quoteId?: number | null;
+    quotationLink?: string | null;
+    versionNumber?: number | null;
+  } | null,
 ): Promise<void> {
   const now = new Date();
   for (let i = 0; i < drawingFiles.length; i++) {
@@ -15957,6 +16080,24 @@ async function persistDqc2SubmissionFromMeta(
     typeof quoteMeta?.quotationLink === "string" && quoteMeta.quotationLink.trim()
       ? quoteMeta.quotationLink.trim()
       : null;
+  const linkedVersion =
+    quoteMeta?.versionNumber != null && Number(quoteMeta.versionNumber) > 0
+      ? Number(quoteMeta.versionNumber)
+      : parseVersionFromQuoteLink(linkedQuotationLink);
+  if (linkedQuoteId != null && linkedQuotationLink) {
+    try {
+      await upsertDqcQuoteLock(pool, {
+        leadId,
+        round: "dqc2",
+        quoteId: linkedQuoteId,
+        versionNumber: linkedVersion,
+        quotationLink: linkedQuotationLink,
+        lockedByUserId: user.id,
+      });
+    } catch (lockErr) {
+      console.warn("[dqc-quote] DQC2 lock upsert failed (non-fatal)", { leadId, lockErr });
+    }
+  }
   const fileNames = [
     ...drawingFiles.map((f) => f.originalname),
     ...quotationFiles.map((f) => f.originalname),
@@ -15978,6 +16119,7 @@ async function persistDqc2SubmissionFromMeta(
       quotations: quotationFiles.map((f) => f.originalname),
       ...(linkedQuoteId != null ? { quoteId: linkedQuoteId } : {}),
       ...(linkedQuotationLink ? { quotationLink: linkedQuotationLink } : {}),
+      ...(linkedVersion != null ? { versionNumber: linkedVersion } : {}),
     },
   };
   await addLeadHistoryEvent(leadId, ev);
@@ -16132,15 +16274,17 @@ app.post("/api/leads/:id/dqc-submission/complete", async (req: Request, res: Res
     const quoteIdNum = body.quoteId != null && String(body.quoteId).trim() !== "" ? Number(body.quoteId) : null;
     const quotationLink =
       typeof body.quotationLink === "string" && body.quotationLink.trim() ? body.quotationLink.trim() : null;
-    const hasLinkedQuote =
-      quoteIdNum != null && Number.isFinite(quoteIdNum) && quoteIdNum > 0 && Boolean(quotationLink);
     if (drawingKeys.length === 0) {
       return res.status(400).json({ message: "At least one drawingKey is required" });
     }
-    if (quotationKeys.length === 0 && !hasLinkedQuote) {
-      return res.status(400).json({
-        message: "Provide quotationKeys or a linked quoteId and quotationLink",
-      });
+    const quoteMetaRes = await resolveQuoteMetaForDqcSubmit(
+      leadId,
+      quotationKeys.length,
+      quoteIdNum != null && Number.isFinite(quoteIdNum) ? quoteIdNum : null,
+      quotationLink,
+    );
+    if (!quoteMetaRes.ok) {
+      return res.status(400).json({ message: quoteMetaRes.message });
     }
     const prefix = `lead-uploads/lead-${leadId}-`;
     if (drawingKeys.some((k) => !k.startsWith(prefix)) || quotationKeys.some((k) => !k.startsWith(prefix))) {
@@ -16197,7 +16341,7 @@ app.post("/api/leads/:id/dqc-submission/complete", async (req: Request, res: Res
       quotationFilesMeta,
       drawingS3Urls,
       quotationS3Urls,
-      hasLinkedQuote ? { quoteId: quoteIdNum, quotationLink } : null,
+      quoteMetaRes.meta,
     );
 
     // Notify: 06 — DQC submission (S3 flow)
@@ -16345,12 +16489,17 @@ app.post("/api/leads/:id/dqc2-submission/complete", async (req: Request, res: Re
     const quoteIdNum = body.quoteId != null ? Number(body.quoteId) : NaN;
     const quotationLink =
       typeof body.quotationLink === "string" && body.quotationLink.trim() ? body.quotationLink.trim() : null;
-    const hasLinkedQuote =
-      Number.isFinite(quoteIdNum) && quoteIdNum > 0 && Boolean(quotationLink);
-    if (drawingKeys.length === 0 || (quotationKeys.length === 0 && !hasLinkedQuote)) {
-      return res.status(400).json({
-        message: "At least one drawingKey and a selected quote (or quotationKey) are required",
-      });
+    if (drawingKeys.length === 0) {
+      return res.status(400).json({ message: "At least one drawingKey is required" });
+    }
+    const quoteMetaRes = await resolveQuoteMetaForDqcSubmit(
+      leadId,
+      quotationKeys.length,
+      Number.isFinite(quoteIdNum) && quoteIdNum > 0 ? quoteIdNum : null,
+      quotationLink,
+    );
+    if (!quoteMetaRes.ok) {
+      return res.status(400).json({ message: quoteMetaRes.message });
     }
     const prefix = `lead-uploads/lead-${leadId}-`;
     if (drawingKeys.some((k) => !k.startsWith(prefix)) || quotationKeys.some((k) => !k.startsWith(prefix))) {
@@ -16407,7 +16556,7 @@ app.post("/api/leads/:id/dqc2-submission/complete", async (req: Request, res: Re
       quotationFilesMeta,
       drawingS3Urls,
       quotationS3Urls,
-      hasLinkedQuote ? { quoteId: quoteIdNum, quotationLink } : null,
+      quoteMetaRes.meta,
     );
     return res.status(201).json({ ok: true });
   } catch (err) {
@@ -16436,15 +16585,17 @@ app.post(
       const quoteIdNum = body.quoteId != null && String(body.quoteId).trim() !== "" ? Number(body.quoteId) : null;
       const quotationLink =
         typeof body.quotationLink === "string" && body.quotationLink.trim() ? body.quotationLink.trim() : null;
-      const hasLinkedQuote =
-        quoteIdNum != null && Number.isFinite(quoteIdNum) && quoteIdNum > 0 && Boolean(quotationLink);
       if (drawingFiles.length === 0) {
         return res.status(400).json({ message: "At least one drawing file is required" });
       }
-      if (quotationFiles.length === 0 && !hasLinkedQuote) {
-        return res.status(400).json({
-          message: "Provide quotation files or a linked quoteId and quotationLink",
-        });
+      const quoteMetaRes = await resolveQuoteMetaForDqcSubmit(
+        leadId,
+        quotationFiles.length,
+        quoteIdNum != null && Number.isFinite(quoteIdNum) ? quoteIdNum : null,
+        quotationLink,
+      );
+      if (!quoteMetaRes.ok) {
+        return res.status(400).json({ message: quoteMetaRes.message });
       }
       let drawingS3Urls: (string | null)[] = [];
       let quotationS3Urls: (string | null)[] = [];
@@ -16463,7 +16614,7 @@ app.post(
         quotationFiles,
         drawingS3Urls,
         quotationS3Urls,
-        hasLinkedQuote ? { quoteId: quoteIdNum, quotationLink } : null,
+        quoteMetaRes.meta,
       );
 
       // Notify: 06 — DQC submission (legacy multipart flow)
@@ -16755,51 +16906,17 @@ app.get("/api/leads/:id/dqc-submission-files", async (req: Request, res: Respons
 
     let quoteId: number | null = null;
     let quotationLink: string | null = null;
+    let quoteVersionNumber: number | null = null;
     if (quotationFiles.length === 0) {
       try {
-        const [histRows] = await pool.query(
-          `SELECT event FROM lead_history WHERE lead_id = ? ORDER BY created_at DESC LIMIT 80`,
-          [leadId],
-        );
-        for (const row of (histRows as any[]) || []) {
-          let ev: any = row?.event;
-          if (typeof ev === "string") {
-            try {
-              ev = JSON.parse(ev);
-            } catch {
-              continue;
-            }
-          }
-          const details = ev?.details;
-          if (!details || details.kind !== "dqc_submission") continue;
-          const link =
-            typeof details.quotationLink === "string" && details.quotationLink.trim()
-              ? details.quotationLink.trim()
-              : null;
-          const qid =
-            details.quoteId != null && Number.isFinite(Number(details.quoteId)) && Number(details.quoteId) > 0
-              ? Number(details.quoteId)
-              : null;
-          if (link || qid) {
-            quotationLink = link;
-            quoteId = qid;
-            break;
-          }
+        const locked = await resolveDqcQuoteForLead(leadId, "dqc1", "locked");
+        if (locked) {
+          quotationLink = locked.customerQuoteUrl;
+          quoteId = locked.quoteId;
+          quoteVersionNumber = locked.versionNumber;
         }
-      } catch (histErr) {
-        console.warn("dqc-submission-files history quote lookup failed (non-fatal)", histErr);
-      }
-      if (!quotationLink) {
-        try {
-          const latest = await resolveLatestQuoteLinkForLead(leadId);
-          if (latest?.customerQuoteUrl) {
-            quotationLink = latest.customerQuoteUrl;
-            quoteId =
-              latest.quoteId != null && Number(latest.quoteId) > 0 ? Number(latest.quoteId) : quoteId;
-          }
-        } catch (linkErr) {
-          console.warn("dqc-submission-files latest-quote-link fallback failed (non-fatal)", linkErr);
-        }
+      } catch (linkErr) {
+        console.warn("dqc-submission-files locked quote lookup failed (non-fatal)", linkErr);
       }
     }
 
@@ -16809,6 +16926,7 @@ app.get("/api/leads/:id/dqc-submission-files", async (req: Request, res: Respons
       drawingFiles,
       quotationFiles,
       quoteId,
+      versionNumber: quoteVersionNumber,
       quotationLink: publicQuoteUrl(quotationLink, req),
     });
   } catch (err) {
@@ -16837,10 +16955,17 @@ app.post(
       const quoteIdNum = body.quoteId != null ? Number(body.quoteId) : NaN;
       const quotationLink =
         typeof body.quotationLink === "string" && body.quotationLink.trim() ? body.quotationLink.trim() : null;
-      const hasLinkedQuote =
-        Number.isFinite(quoteIdNum) && quoteIdNum > 0 && Boolean(quotationLink);
-      if (drawingFiles.length === 0 || (quotationFiles.length === 0 && !hasLinkedQuote)) {
-        return res.status(400).json({ message: "At least one drawing and a selected quotation are required" });
+      if (drawingFiles.length === 0) {
+        return res.status(400).json({ message: "At least one drawing file is required" });
+      }
+      const quoteMetaRes = await resolveQuoteMetaForDqcSubmit(
+        leadId,
+        quotationFiles.length,
+        Number.isFinite(quoteIdNum) && quoteIdNum > 0 ? quoteIdNum : null,
+        quotationLink,
+      );
+      if (!quoteMetaRes.ok) {
+        return res.status(400).json({ message: quoteMetaRes.message });
       }
       let drawingS3Urls: (string | null)[] = [];
       let quotationS3Urls: (string | null)[] = [];
@@ -16859,7 +16984,7 @@ app.post(
         quotationFiles,
         drawingS3Urls,
         quotationS3Urls,
-        hasLinkedQuote ? { quoteId: quoteIdNum, quotationLink } : null,
+        quoteMetaRes.meta,
       );
       return res.status(201).json({ ok: true });
     } catch (err) {
@@ -16915,51 +17040,17 @@ app.get("/api/leads/:id/dqc2-submission-files", async (req: Request, res: Respon
     const quotation = quotationFiles[0];
     let quoteId: number | null = null;
     let quotationLink: string | null = null;
+    let quoteVersionNumber: number | null = null;
     if (quotationFiles.length === 0) {
       try {
-        const [histRows] = await pool.query(
-          `SELECT event FROM lead_history WHERE lead_id = ? ORDER BY created_at DESC LIMIT 80`,
-          [leadId],
-        );
-        for (const row of (histRows as any[]) || []) {
-          let ev: any = row?.event;
-          if (typeof ev === "string") {
-            try {
-              ev = JSON.parse(ev);
-            } catch {
-              continue;
-            }
-          }
-          const details = ev?.details;
-          if (!details || details.kind !== "dqc2_submission") continue;
-          const link =
-            typeof details.quotationLink === "string" && details.quotationLink.trim()
-              ? details.quotationLink.trim()
-              : null;
-          const qid =
-            details.quoteId != null && Number.isFinite(Number(details.quoteId)) && Number(details.quoteId) > 0
-              ? Number(details.quoteId)
-              : null;
-          if (link || qid) {
-            quotationLink = link;
-            quoteId = qid;
-            break;
-          }
+        const locked = await resolveDqcQuoteForLead(leadId, "dqc2", "locked");
+        if (locked) {
+          quotationLink = locked.customerQuoteUrl;
+          quoteId = locked.quoteId;
+          quoteVersionNumber = locked.versionNumber;
         }
-      } catch (histErr) {
-        console.warn("dqc2-submission-files history quote lookup failed (non-fatal)", histErr);
-      }
-      if (!quotationLink) {
-        try {
-          const latest = await resolveLatestQuoteLinkForLead(leadId);
-          if (latest?.customerQuoteUrl) {
-            quotationLink = latest.customerQuoteUrl;
-            quoteId =
-              latest.quoteId != null && Number(latest.quoteId) > 0 ? Number(latest.quoteId) : quoteId;
-          }
-        } catch (linkErr) {
-          console.warn("dqc2-submission-files quote link fallback failed (non-fatal)", linkErr);
-        }
+      } catch (linkErr) {
+        console.warn("dqc2-submission-files locked quote lookup failed (non-fatal)", linkErr);
       }
     }
     return res.json({
@@ -16968,6 +17059,7 @@ app.get("/api/leads/:id/dqc2-submission-files", async (req: Request, res: Respon
       drawingFiles,
       quotationFiles,
       quoteId,
+      versionNumber: quoteVersionNumber,
       quotationLink: publicQuoteUrl(quotationLink, req),
     });
   } catch (err) {
@@ -19712,6 +19804,52 @@ app.patch("/api/leads/:id/prolance-ids", async (req: Request, res: Response) => 
   } catch (err) {
     console.error("prolance-ids patch error", err);
     return res.status(500).json({ message: "Failed to update Prolance IDs" });
+  }
+});
+
+/** DQC1/DQC2 quotation: live = customer-shared only; locked = per-round frozen link. */
+app.get("/api/leads/:id/dqc-quote-link", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+
+  const roundRaw = String(req.query.round || "dqc1").toLowerCase();
+  const round: DqcQuoteRound = roundRaw === "dqc2" ? "dqc2" : "dqc1";
+  const modeRaw = String(req.query.mode || "live").toLowerCase();
+  const mode: "live" | "locked" = modeRaw === "locked" ? "locked" : "live";
+
+  const user = await getUserFromSession(req);
+  const access = await getLeadAccessRowForUser(res, user, id);
+  if (!access.ok) return;
+
+  try {
+    const resolved = await resolveDqcQuoteForLead(id, round, mode);
+    if (!resolved) {
+      return res.json({
+        ok: true,
+        quoteId: null,
+        customerQuoteUrl: null,
+        versionNumber: null,
+        source: "none",
+        round,
+        mode,
+        message:
+          mode === "live"
+            ? "Share a quotation to the customer first (quote revision → Share this to customer)."
+            : `No locked ${round.toUpperCase()} quotation yet.`,
+      });
+    }
+    return res.json({
+      ok: true,
+      quoteId: resolved.quoteId,
+      customerQuoteUrl: publicQuoteUrl(resolved.customerQuoteUrl, req),
+      versionNumber: resolved.versionNumber,
+      source: resolved.source,
+      round,
+      mode,
+    });
+  } catch (err) {
+    console.error("dqc-quote-link error", err);
+    return res.status(500).json({ message: "Failed to load DQC quotation link" });
   }
 });
 
