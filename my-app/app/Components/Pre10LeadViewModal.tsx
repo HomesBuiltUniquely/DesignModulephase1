@@ -3,6 +3,7 @@
 import { useEffect, type ReactNode } from 'react';
 import type { ConfigScopeRoom, ConfigScopeSummary, LeadshipTypes } from './Types/Types';
 import { formatHubPid } from '@/app/lib/formatHubPid';
+import { getPhaseBucket } from '@/app/lib/leadPhaseBucket';
 import { StartMeetingButton } from '@/app/Components/MeetingWiz/StartMeetingButton';
 import styles from './pre10LeadViewModal.module.css';
 
@@ -131,6 +132,7 @@ export function Pre10LeadViewModal({
     onStartMeeting,
 }: Props) {
     const projectLabel = formatHubPid(lead.pid, lead.id);
+    const phaseLabel = getPhaseBucket(lead);
     const customerName =
         lead.intakeCustomerName?.trim() ||
         lead.projectName?.trim() ||
@@ -205,7 +207,7 @@ export function Pre10LeadViewModal({
                                 <h2 id="pre10-view-modal-title" className={styles.headerTitle}>
                                     {projectLabel}
                                 </h2>
-                                <span className={styles.headerBadge}>Pre 10%</span>
+                                <span className={styles.headerBadge}>{phaseLabel}</span>
                             </div>
                             <p className={styles.headerSub}>{lead.projectName || '—'}</p>
                         </div>
