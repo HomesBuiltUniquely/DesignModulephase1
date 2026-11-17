@@ -199,7 +199,7 @@ export default function DesignAppShell({ children }: { children: React.ReactNode
     ...(role === "territorial_design_manager" || role === "deputy_general_manager"
       ? [{ href: "/tdm/register", label: "Register DM / Designer" }]
       : []),
-    ...(role === "territorial_design_manager" || role === "admin"
+    ...(role === "territorial_design_manager"
       ? [{ href: "/admin/manage-users", label: "Manage Design Roles" }]
       : []),
     ...(role === "deputy_general_manager"

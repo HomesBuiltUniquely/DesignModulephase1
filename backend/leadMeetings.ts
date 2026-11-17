@@ -1897,6 +1897,62 @@ function scheduleOpenMeetingProgressRefresh(
   })();
 }
 
+const LEAD_PAYLOAD_JSON = "IF(JSON_VALID(payload), payload, '{}')";
+
+function leadPayloadJsonText(jsonPath: string): string {
+  return `NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(${LEAD_PAYLOAD_JSON}, '${jsonPath}'))), '')`;
+}
+
+const SALES_EXECUTIVE_FROM_PAYLOAD_SQL = `COALESCE(
+  ${leadPayloadJsonText("$.formData.salesExecutive")},
+  ${leadPayloadJsonText("$.formData.sales_executive")},
+  ${leadPayloadJsonText("$.formData.sales_person")},
+  ${leadPayloadJsonText("$.form_data.salesExecutive")},
+  ${leadPayloadJsonText("$.form_data.sales_executive")},
+  ${leadPayloadJsonText("$.form_data.sales_person")},
+  ${leadPayloadJsonText("$.fetchedData.salesExecutive")},
+  ${leadPayloadJsonText("$.fetchedData.sales_person")},
+  ${leadPayloadJsonText("$.fetched_data.salesExecutive")},
+  ${leadPayloadJsonText("$.fetched_data.sales_person")},
+  ${leadPayloadJsonText("$.rawPayload.salesExecutive")},
+  ${leadPayloadJsonText("$.rawPayload.sales_executive")},
+  ${leadPayloadJsonText("$.salesExecutive")},
+  ${leadPayloadJsonText("$.sales_executive")},
+  ${leadPayloadJsonText("$.sales_person")}
+)`;
+
+async function salesExecutiveByLeadChunk(pool: Pool, ids: number[]): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  if (ids.length === 0) return out;
+  const placeholders = ids.map(() => "?").join(",");
+  const [leadRows] = await pool.query(
+    `SELECT id AS leadId, ${SALES_EXECUTIVE_FROM_PAYLOAD_SQL} AS salesExecutiveName
+       FROM leads
+      WHERE id IN (${placeholders})`,
+    ids,
+  );
+  for (const row of leadRows as Record<string, unknown>[]) {
+    const leadId = Number(row.leadId);
+    const name = cleanText(row.salesExecutiveName);
+    if (Number.isFinite(leadId) && leadId > 0 && name) out.set(leadId, name);
+  }
+  return out;
+}
+
+/** CRM sales executive name from lead payload (batched JSON paths — no full payload fetch per meeting). */
+async function salesExecutiveByLeadIds(pool: Pool, leadIds: number[]): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  const ids = [...new Set(leadIds.filter((id) => Number.isInteger(id) && id > 0))];
+  if (ids.length === 0) return out;
+  const CHUNK = 200;
+  for (let offset = 0; offset < ids.length; offset += CHUNK) {
+    const chunk = ids.slice(offset, offset + CHUNK);
+    const chunkResult = await salesExecutiveByLeadChunk(pool, chunk);
+    for (const [id, value] of chunkResult) out.set(id, value);
+  }
+  return out;
+}
+
 export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now?: Date; designerIds?: number[] }) {
   await ensureLeadMeetingsTable(pool);
   const now = opts?.now || new Date();
@@ -2024,8 +2080,19 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
     console.error("quote share lookup failed", err);
   }
 
+  let salesByLead = new Map<number, string>();
+  try {
+    const meetingLeadIds = [
+      ...new Set((rows as Record<string, unknown>[]).map((row) => Number(row.leadId))),
+    ].filter((id) => Number.isFinite(id) && id > 0);
+    salesByLead = await salesExecutiveByLeadIds(pool, meetingLeadIds);
+  } catch (err) {
+    console.error("sales executive lookup failed", err);
+  }
+
   return (rows as Record<string, unknown>[]).map((row) => {
     const share = shareByLead.get(Number(row.leadId));
+    const leadIdNum = Number(row.leadId);
     const storedProgress = (() => {
       const raw = String(row.progress || "scheduled");
       if (raw === "meeting_abandoned") return "meeting_never_happened";
@@ -2064,7 +2131,7 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
     isOnHold: row.isOnHold === 1 || row.isOnHold === true || row.isOnHold === "1",
     customerName: projectName || "Customer",
     phone: cleanText(row.contactNo),
-    salesName: "",
+    salesName: salesByLead.get(leadIdNum) || "",
     quotationTotal: quoteAmount || "",
     budget: "",
     branchName: cleanText(row.meetingBranch),
