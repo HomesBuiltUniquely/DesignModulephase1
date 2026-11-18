@@ -62,6 +62,7 @@ import {
   ensureLeadMeetingsTable,
   listLeadMeetings,
   markDesignMeetingCompleted,
+  designMeetingFromBookingTask,
   recordCrmMeeting,
   recordDesignMeetingFromSchedule,
   loadMeeting,
@@ -10517,7 +10518,12 @@ app.post("/api/leads/:id/history", async (req: Request, res: Response) => {
           ? (req.body.meta as Record<string, unknown>)
           : null;
       const meetingDate = meta?.meetingDate ?? meta?.signoffDate ?? null;
-      if (meetingDate) {
+      const historyMilestone =
+        typeof req.body?.milestoneIndex === "number" ? req.body.milestoneIndex : null;
+      const historyTaskName = req.body?.taskName != null ? String(req.body.taskName) : "";
+      const isDesignBookingHistory =
+        historyMilestone != null && Boolean(designMeetingFromBookingTask(historyMilestone, historyTaskName));
+      if (meetingDate && !isDesignBookingHistory) {
         await persistLeadDesignScheduledMeeting(id, {
           meetingDate: String(meetingDate),
           meetingTime:
@@ -10526,7 +10532,7 @@ app.post("/api/leads/:id/history", async (req: Request, res: Response) => {
               : meta?.signoffTime != null
                 ? String(meta.signoffTime)
                 : null,
-          meetingType: req.body?.taskName != null ? String(req.body.taskName) : null,
+          meetingType: historyTaskName || null,
           meetingMode: meta?.meetingMode != null ? String(meta.meetingMode) : null,
           actor: {
             name:
@@ -10784,7 +10790,8 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
     try {
       const meetingDate = meta?.meetingDate ?? meta?.signoffDate ?? null;
       const meetingTime = meta?.meetingTime ?? meta?.signoffTime ?? null;
-      if (meetingDate) {
+      const isDesignBookingTask = Boolean(designMeetingFromBookingTask(milestoneIndex, tNormComplete));
+      if (meetingDate && !isDesignBookingTask) {
         await persistLeadDesignScheduledMeeting(id, {
           meetingDate: String(meetingDate),
           meetingTime: meetingTime != null ? String(meetingTime) : null,

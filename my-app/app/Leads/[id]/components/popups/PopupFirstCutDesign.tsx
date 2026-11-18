@@ -64,7 +64,7 @@ type Props = {
   onClose?: () => void;
   onSubmit?: (meta?: MeetingMeta) => Promise<InviteSubmitResult | void> | InviteSubmitResult | void;
   /** Called when designer marks 100% complete; parent should record task complete and close. */
-  onCompleteAndProceed?: (meta?: MeetingMeta) => void;
+  onCompleteAndProceed?: (meta?: MeetingMeta) => void | Promise<void>;
 };
 
 /**
@@ -96,6 +96,7 @@ export default function PopupFirstCutDesign({
   const [meetingTime, setMeetingTime] = useState(initialTime || "");
   const [meetingMode, setMeetingMode] = useState<"online" | "offline">(initialMode || "online");
   const [meetingLink, setMeetingLink] = useState(initialLink || "");
+  const [inviteSentThisSession, setInviteSentThisSession] = useState(false);
   const [completionPercent, setCompletionPercent] = useState(
     hideDesignCompletion ? 100 : initialCompletionPercent || 0,
   );
@@ -164,6 +165,7 @@ export default function PopupFirstCutDesign({
         setInviteError(result.message || "Failed to send invite. Please try again.");
         return;
       }
+      setInviteSentThisSession(true);
       if (result?.mailSent === false) {
         setToast("Meeting scheduled. Meeting mail could not be sent — check client email on the lead.");
       } else {
@@ -179,6 +181,31 @@ export default function PopupFirstCutDesign({
       }, 3000);
     } catch {
       setInviteError("Failed to send invite. Please try again.");
+    } finally {
+      setIsSendingInvite(false);
+    }
+  };
+
+  const handleCompleteAndProceed = async () => {
+    if (isSendingInvite || isMeetingScheduleIncomplete || !onCompleteAndProceed) return;
+    if (!hideDesignCompletion && completionPercent < 100) return;
+
+    setIsSendingInvite(true);
+    setInviteError(null);
+    try {
+      if (!inviteSentThisSession && onSubmit) {
+        const result = await onSubmit(buildMeta());
+        if (result && result.ok === false) {
+          setInviteError(result.message || "Failed to send invite. Complete the meeting invite before proceeding.");
+          return;
+        }
+        setInviteSentThisSession(true);
+      }
+      await onCompleteAndProceed(
+        hideDesignCompletion ? { ...buildMeta(), completionPercent: 100 } : buildMeta(),
+      );
+    } catch {
+      setInviteError("Failed to complete. Please try again.");
     } finally {
       setIsSendingInvite(false);
     }
@@ -540,13 +567,7 @@ export default function PopupFirstCutDesign({
           </button>
           <button
             type="button"
-            onClick={() =>
-              onCompleteAndProceed?.(
-                hideDesignCompletion
-                  ? { ...buildMeta(), completionPercent: 100 }
-                  : buildMeta(),
-              )
-            }
+            onClick={() => void handleCompleteAndProceed()}
             disabled={
               (!hideDesignCompletion && completionPercent < 100) ||
               isMeetingScheduleIncomplete ||

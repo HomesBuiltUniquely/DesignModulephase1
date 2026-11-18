@@ -109,6 +109,16 @@ export function designMeetingFromCompletion(milestoneIndex: number, taskName: un
   );
 }
 
+/** Booking-request tasks (First cut / Material selection / Design sign off) — meeting rows come from schedule-meeting-invite only. */
+export function designMeetingFromBookingTask(milestoneIndex: number, taskName: unknown): DesignMeetingDef | null {
+  const key = normalizeMeetingKey(taskName);
+  return (
+    DESIGN_MEETINGS.find(
+      (item) => item.milestoneIndex === milestoneIndex && normalizeMeetingKey(item.bookingTask) === key,
+    ) || null
+  );
+}
+
 export function kolkataParts(now = new Date()): { date: string; minutes: number } {
   const fmt = new Intl.DateTimeFormat("en-US", {
     timeZone: "Asia/Kolkata",
