@@ -20,6 +20,13 @@ import {
 } from "@/lib/hub-meeting-schedule";
 import CustomDatePicker from "@/app/Components/ui/CustomDatePicker";
 import CustomSelect from "@/app/Components/ui/CustomSelect";
+import { todayIsoDay } from "@/app/lib/leadMeetingSchedule";
+
+function meetingDateNotBeforeToday(iso: string | undefined): string {
+  const day = (iso || "").trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return "";
+  return day >= todayIsoDay() ? day : "";
+}
 
 type MeetingMeta = {
   meetingDate?: string;
@@ -95,7 +102,7 @@ export default function PopupFirstCutDesign({
   onSubmit,
   onCompleteAndProceed,
 }: Props) {
-  const [meetingDate, setMeetingDate] = useState(initialDate || "");
+  const [meetingDate, setMeetingDate] = useState(() => meetingDateNotBeforeToday(initialDate));
   const [meetingTime, setMeetingTime] = useState(initialTime || "");
   const [meetingMode, setMeetingMode] = useState<"online" | "offline">(initialMode || "online");
   const [meetingLink, setMeetingLink] = useState(initialLink || "");
@@ -261,6 +268,7 @@ export default function PopupFirstCutDesign({
         <div className="px-6 py-2">
           <div className="font-bold text-sm text-black mb-1">Date <span className="text-red-500">*</span></div>
           <CustomDatePicker
+            disablePast
             value={meetingDate}
             onChange={(date) => {
               setMeetingDate(date);

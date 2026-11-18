@@ -561,7 +561,7 @@ export async function loadMeeting(pool: Pool, id: number): Promise<MeetingRow | 
 async function refreshStoredProgress(pool: Pool, row: MeetingRow, now: Date, writeHistoryOnChange: boolean) {
   if (row.source === "design_module" && row.meetingStatus !== "cancelled" && row.progress !== "completed") {
     const def = DESIGN_MEETINGS.find((item) => item.meetingType === row.meetingType) || designMeetingFromLabel(row.meetingType);
-    if (def && (await completionTaskDone(pool, row.leadId, def))) {
+    if (def && (await designMeetingCycleComplete(pool, row.leadId, def))) {
       const nowStamp = new Date();
       await pool.query(
         `UPDATE lead_meetings
@@ -616,13 +616,38 @@ async function bookingTaskStillComplete(pool: Pool, leadId: number, def: DesignM
   return (rows as unknown[]).length > 0;
 }
 
-async function completionTaskDone(pool: Pool, leadId: number, def: DesignMeetingDef): Promise<boolean> {
+async function taskCompletionAt(
+  pool: Pool,
+  leadId: number,
+  milestoneIndex: number,
+  taskName: string,
+): Promise<Date | null> {
   const [rows] = await pool.query(
-    `SELECT 1 FROM lead_task_completions
+    `SELECT completed_at FROM lead_task_completions
       WHERE lead_id = ? AND milestone_index = ? AND task_name = ? LIMIT 1`,
-    [leadId, def.milestoneIndex, def.completionTask],
+    [leadId, milestoneIndex, taskName],
   );
-  return (rows as unknown[]).length > 0;
+  const at = (rows as { completed_at?: Date | string }[])[0]?.completed_at;
+  if (!at) return null;
+  const parsed = new Date(at);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+async function completionTaskDone(pool: Pool, leadId: number, def: DesignMeetingDef): Promise<boolean> {
+  return (await taskCompletionAt(pool, leadId, def.milestoneIndex, def.completionTask)) != null;
+}
+
+/**
+ * "meeting completed" only counts for the current booking cycle.
+ * If booking was marked done again after an old MOM, the stale completion must not
+ * block scheduling or instantly mark the new row as Meeting Successful.
+ */
+async function designMeetingCycleComplete(pool: Pool, leadId: number, def: DesignMeetingDef): Promise<boolean> {
+  const completionAt = await taskCompletionAt(pool, leadId, def.milestoneIndex, def.completionTask);
+  if (!completionAt) return false;
+  const bookingAt = await taskCompletionAt(pool, leadId, def.milestoneIndex, def.bookingTask);
+  if (bookingAt && completionAt < bookingAt) return false;
+  return true;
 }
 
 async function readPayload(pool: Pool, leadId: number): Promise<Record<string, unknown> | null> {
@@ -682,7 +707,7 @@ export async function recordDesignMeetingFromSchedule(
   const dateIso = normalizeDateIso(input.meetingDate);
   if (!def || !dateIso) return null;
   await ensureLeadMeetingsTable(pool);
-  if (await completionTaskDone(pool, input.leadId, def)) return null;
+  if (await designMeetingCycleComplete(pool, input.leadId, def)) return null;
   const timeLabel = normalizeTimeLabel(input.meetingTime);
   const mode = input.meetingMode ? String(input.meetingMode).trim().slice(0, 32) : null;
   const active = await activeDesignRow(pool, input.leadId, def.meetingType);
@@ -932,7 +957,7 @@ async function assertDesignMutable(pool: Pool, row: MeetingRow) {
   }
   if (row.source !== "design_module") return;
   const def = DESIGN_MEETINGS.find((item) => item.meetingType === row.meetingType);
-  if (def && (await completionTaskDone(pool, row.leadId, def))) {
+  if (def && (await designMeetingCycleComplete(pool, row.leadId, def))) {
     const now = new Date();
     await pool.query(
       `UPDATE lead_meetings SET progress = 'completed', ended_at = COALESCE(ended_at, ?), updated_at = ? WHERE id = ?`,

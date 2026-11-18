@@ -72,6 +72,7 @@ import {
   endCrmMeeting,
   completePre10CrmMeetingAfterQuoteShare,
   applyCrmMeetingFeedback,
+  kolkataParts,
 } from "./leadMeetings";
 import {
   extractFloorPlansFromLeadPayload,
@@ -15213,6 +15214,10 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
 
     const meetingDateIso = normalizeBlockDateIso(meetingDate);
     if (meetingDateIso) {
+      const todayKolkata = kolkataParts().date;
+      if (meetingDateIso < todayKolkata) {
+        return res.status(400).json({ message: "Meeting date cannot be in the past." });
+      }
       const approvedBlock = await getActiveFullDayBlock(actingUser.name, meetingDateIso);
       if (approvedBlock?.status === "approved") {
         return res.status(409).json({
