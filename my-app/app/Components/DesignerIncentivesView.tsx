@@ -10,6 +10,7 @@ import {
   buildDayActivitySummary,
   buildIncentivesFromDealInputs,
   canManageTeamIncentives,
+  canSetIncentiveEligibility,
   DESIGN_LEAD_SLAB_DEFS,
   designLeadIncentive,
   TDM_SLAB_DEFS,
@@ -32,6 +33,7 @@ import {
   type IncentiveMember,
   type IncentiveTeam,
   type IncentiveWeightStageId,
+  type Part1DisplayKind,
   type TeamIncentiveRow,
   type TeamIncentivesSummary,
 } from '../lib/designerIncentives';
@@ -40,7 +42,7 @@ const JOURNEY_MARKS = [0, 40, 50, 60, 80, 100] as const;
 
 type ViewMode = 'individual' | 'team';
 
-type WeightedPartFilter = IncentiveWeightStageId;
+type WeightedPartFilter = IncentiveWeightStageId | 'part1_crm_token';
 
 const WEIGHTED_PART_META: Record<
   WeightedPartFilter,
@@ -67,11 +69,18 @@ const WEIGHTED_PART_META: Record<
     ring: 'border-[#DDCDC1] bg-[#DDCDC1]/20 hover:border-[#EF0101]/50',
     selected: 'border-[#EF0101] ring-2 ring-[#EF0101]/20 bg-[#DDCDC1]/20',
   },
+  part1_crm_token: {
+    short: 'CRM token',
+    title: 'CRM token · Booking & Token (pre-convert)',
+    accent: 'text-violet-800',
+    ring: 'border-violet-200 bg-violet-50/80 hover:border-violet-300',
+    selected: 'border-violet-600 ring-2 ring-violet-200 bg-violet-50/80',
+  },
 };
 
 function dealsForWeightedPart(
   deals: DealLedgerRow[],
-  stageId: WeightedPartFilter,
+  stageId: IncentiveWeightStageId,
 ): Array<DealLedgerRow & { stageWeighted: number; stageUpsale: number }> {
   return deals
     .map((deal) => {
@@ -84,6 +93,29 @@ function dealsForWeightedPart(
       };
     })
     .filter((d): d is DealLedgerRow & { stageWeighted: number; stageUpsale: number } => d != null);
+}
+
+type Part1LeadRow = DealLedgerRow & { stageWeighted: number; stageUpsale: number };
+
+function part1KindOf(deal: DealLedgerRow): Part1DisplayKind {
+  return deal.part1DisplayKind ?? 'booking';
+}
+
+function part1LeadsForKind(deals: DealLedgerRow[], kind: Part1DisplayKind): Part1LeadRow[] {
+  return dealsForWeightedPart(deals, 'pre_d1_finance_10').filter((d) => part1KindOf(d) === kind);
+}
+
+function sumPart1Weighted(leads: Part1LeadRow[]): number {
+  return leads.reduce((sum, lead) => sum + lead.stageWeighted, 0);
+}
+
+function sortPartLeadsByEligibility<T extends DealLedgerRow>(rows: T[]): T[] {
+  return [...rows].sort((a, b) => {
+    const aEx = a.incentiveEligibleForCycle === false ? 1 : 0;
+    const bEx = b.incentiveEligibleForCycle === false ? 1 : 0;
+    if (aEx !== bEx) return aEx - bEx;
+    return a.activityDate.localeCompare(b.activityDate);
+  });
 }
 
 function MetricCard({
@@ -329,14 +361,28 @@ function IndividualIncentivesPanel({
   subtitle,
   selectedDate,
   openedFromMonthly,
+  canSetEligibility,
+  cycleIndex,
+  apiBase,
+  sessionId,
+  onReloadIncentives,
 }: {
   data: DesignerIncentivesData;
   subtitle?: string;
   selectedDate: string | null;
   openedFromMonthly?: boolean;
+  canSetEligibility: boolean;
+  cycleIndex: number;
+  apiBase: string;
+  sessionId: string;
+  onReloadIncentives: () => Promise<void>;
 }) {
   const [selectedPart, setSelectedPart] = useState<WeightedPartFilter | null>(null);
   const [meetingsOpen, setMeetingsOpen] = useState(false);
+  const [eligibilityModalLead, setEligibilityModalLead] = useState<Part1LeadRow | null>(null);
+  const [eligibilityReason, setEligibilityReason] = useState('');
+  const [eligibilitySaving, setEligibilitySaving] = useState(false);
+  const [eligibilityError, setEligibilityError] = useState<string | null>(null);
   const visibleDeals = filterDealsByDate(data.deals, selectedDate);
   const dayActivity = selectedDate ? buildDayActivitySummary(data.deals, selectedDate) : null;
   const totalClosures = data.sameDayClosures + data.fortyEightHourClosures;
@@ -348,7 +394,61 @@ function IndividualIncentivesPanel({
     setMeetingsOpen(false);
   }, [data.designerId, data.cycle.cycleIndex, selectedDate]);
 
-  const partLeads = selectedPart ? dealsForWeightedPart(visibleDeals, selectedPart) : [];
+  const part1BookingLeads = useMemo(
+    () => part1LeadsForKind(visibleDeals, 'booking'),
+    [visibleDeals],
+  );
+  const part1TokenLeads = useMemo(() => part1LeadsForKind(visibleDeals, 'token'), [visibleDeals]);
+  const eligibleOnly = (rows: Part1LeadRow[]) =>
+    rows.filter((d) => d.incentiveEligibleForCycle !== false);
+  const part1BookingWeighted = useMemo(
+    () => sumPart1Weighted(eligibleOnly(part1BookingLeads)),
+    [part1BookingLeads],
+  );
+  const part1TokenWeighted = useMemo(
+    () => sumPart1Weighted(eligibleOnly(part1TokenLeads)),
+    [part1TokenLeads],
+  );
+
+  const partLeads = useMemo((): Part1LeadRow[] => {
+    if (!selectedPart) return [];
+    let rows: Part1LeadRow[] = [];
+    if (selectedPart === 'part1_crm_token') rows = part1TokenLeads;
+    else if (selectedPart === 'pre_d1_finance_10') rows = part1BookingLeads;
+    else rows = dealsForWeightedPart(visibleDeals, selectedPart);
+    return sortPartLeadsByEligibility(rows);
+  }, [selectedPart, visibleDeals, part1BookingLeads, part1TokenLeads]);
+
+  const submitEligibilityChange = async (lead: Part1LeadRow, eligible: boolean, reason: string) => {
+    setEligibilitySaving(true);
+    setEligibilityError(null);
+    try {
+      const leadId = Number(lead.id);
+      if (!Number.isFinite(leadId)) throw new Error('Invalid lead id');
+      const res = await fetch(`${apiBase}/api/incentives/leads/${leadId}/eligibility`, {
+        method: 'PATCH',
+        headers: {
+          ...buildAuthHeaders(sessionId),
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          cycleIndex,
+          eligible,
+          reason: eligible ? undefined : reason.trim(),
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.message || 'Failed to update eligibility');
+      setEligibilityModalLead(null);
+      setEligibilityReason('');
+      await onReloadIncentives();
+    } catch (err) {
+      setEligibilityError(err instanceof Error ? err.message : 'Failed to update eligibility');
+    } finally {
+      setEligibilitySaving(false);
+    }
+  };
   const partMeta = selectedPart ? WEIGHTED_PART_META[selectedPart] : null;
 
   const togglePart = (part: WeightedPartFilter) => {
@@ -552,11 +652,12 @@ function IndividualIncentivesPanel({
         <div className="mb-4 flex flex-wrap items-end justify-between gap-2">
           <div>
             <h3 className="text-sm font-bold uppercase tracking-wide text-gray-800">
-              Weighted collection (Parts 1–3)
+              Weighted collection (CRM token + Parts 1–3)
             </h3>
             <p className="mt-1 text-sm text-gray-500">
-              Click a part to see which leads contribute. Weighted credit uses quotation milestones —
-              not raw cash collected.
+              Click a card to see contributing leads. Weighted credit always uses the{' '}
+              <strong>quotation at finance approval</strong>, not token cash alone. CRM token is listed
+              first for visibility; net weighted and incentive math are unchanged.
             </p>
           </div>
           <div className="text-right text-sm">
@@ -573,7 +674,32 @@ function IndividualIncentivesPanel({
             ) : null}
           </div>
         </div>
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <button
+            type="button"
+            onClick={() => togglePart('part1_crm_token')}
+            className={`rounded-lg border p-4 text-left transition ${
+              selectedPart === 'part1_crm_token'
+                ? WEIGHTED_PART_META.part1_crm_token.selected
+                : WEIGHTED_PART_META.part1_crm_token.ring
+            }`}
+          >
+            <p
+              className={`text-[11px] font-bold uppercase tracking-wide ${WEIGHTED_PART_META.part1_crm_token.accent}`}
+            >
+              CRM token · Booking & Token
+            </p>
+            <p className="mt-2 text-xl font-bold text-gray-900">{formatInr(part1TokenWeighted)}</p>
+            <p className="mt-1 text-xs text-gray-600">
+              Customer pays a <strong>token</strong> in CRM (before convert-to-booking) → proof syncs to
+              Design → <strong>finance approval</strong> in Sales Closure → weighted credit{' '}
+              <strong>50%</strong> of the quotation at that approval (Part 1 rule — not the token ₹ alone)
+              · {eligibleOnly(part1TokenLeads).length} deal(s)
+            </p>
+            <p className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-violet-700">
+              {selectedPart === 'part1_crm_token' ? 'Showing leads · click to hide' : 'Click to view leads'}
+            </p>
+          </button>
           <button
             type="button"
             onClick={() => togglePart('pre_d1_finance_10')}
@@ -584,15 +710,13 @@ function IndividualIncentivesPanel({
             }`}
           >
             <p className={`text-[11px] font-bold uppercase tracking-wide ${WEIGHTED_PART_META.pre_d1_finance_10.accent}`}>
-              Part 1 · Pre-D1 finance 10%
+              Part 1 · Booking done (10%)
             </p>
-            <p className="mt-2 text-xl font-bold text-gray-900">
-              {formatInr(data.weightedBreakdown.preD1Weighted)}
-            </p>
+            <p className="mt-2 text-xl font-bold text-gray-900">{formatInr(part1BookingWeighted)}</p>
             <p className="mt-1 text-xs text-gray-600">
-              Collect 10% of quotation → <strong>finance approval</strong> → credit{' '}
-              <strong>50%</strong> of that quotation · {data.weightedBreakdown.dealsWithPart1}{' '}
-              deal(s)
+              CRM <strong>convert to booking</strong> or manual Sales Closure with full 10% collected →{' '}
+              <strong>finance approval</strong> → credit <strong>50%</strong> of that quotation ·{' '}
+              {eligibleOnly(part1BookingLeads).length} deal(s)
             </p>
             <p className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-[#32261C]">
               {selectedPart === 'pre_d1_finance_10' ? 'Showing leads · click to hide' : 'Click to view leads'}
@@ -683,12 +807,21 @@ function IndividualIncentivesPanel({
                         <th className="pb-2 pr-3 font-semibold">Upsale</th>
                       ) : null}
                       <th className="pb-2 pr-3 font-semibold">Downsale</th>
-                      <th className="pb-2 font-semibold">Weighted credit</th>
+                      <th className="pb-2 pr-3 font-semibold">Weighted credit</th>
+                      <th className="pb-2 pr-3 font-semibold">Status / reason</th>
+                      {canSetEligibility ? (
+                        <th className="pb-2 font-semibold">Action</th>
+                      ) : null}
                     </tr>
                   </thead>
                   <tbody>
-                    {partLeads.map((lead) => (
-                      <tr key={`${selectedPart}-${lead.id}`} className="border-b border-gray-100 last:border-0">
+                    {partLeads.map((lead) => {
+                      const excluded = lead.incentiveEligibleForCycle === false;
+                      return (
+                      <tr
+                        key={`${selectedPart}-${lead.id}`}
+                        className={`border-b border-gray-100 last:border-0 ${excluded ? 'bg-gray-50/90 opacity-80' : ''}`}
+                      >
                         <td className="py-2.5 pr-3 text-xs text-gray-600">{lead.activityDate}</td>
                         <td className="py-2.5 pr-3">
                           <div className="flex items-center gap-2">
@@ -710,21 +843,132 @@ function IndividualIncentivesPanel({
                         <td className="py-2.5 pr-3 text-[#EF0101]">
                           {lead.downsaleAmount > 0 ? `−${formatInr(lead.downsaleAmount)}` : '—'}
                         </td>
-                        <td className="py-2.5 font-semibold text-[#32261C]">
+                        <td
+                          className={`py-2.5 pr-3 font-semibold ${excluded ? 'text-gray-400 line-through' : 'text-[#32261C]'}`}
+                        >
                           {formatInr(lead.stageWeighted)}
-                          {lead.downsaleDeduction > 0 ? (
+                          {excluded ? (
+                            <span className="mt-0.5 block text-[10px] font-medium text-gray-500 no-underline">
+                              Not counted this fortnight
+                            </span>
+                          ) : lead.downsaleDeduction > 0 ? (
                             <span className="mt-0.5 block text-[10px] font-medium text-[#EF0101]">
                               Net deal: {formatInr(lead.weightedRevenue)} (after −
                               {formatInr(lead.downsaleDeduction)} downsale)
                             </span>
                           ) : null}
                         </td>
+                        <td className="py-2.5 pr-3 text-xs">
+                          {excluded ? (
+                            <div className="space-y-1">
+                              <span className="inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold uppercase text-amber-900">
+                                Not eligible
+                              </span>
+                              <p className="text-gray-700">{lead.incentiveExclusionReason || '—'}</p>
+                              {lead.incentiveExclusionUpdatedByName ? (
+                                <p className="text-[10px] text-gray-500">
+                                  By {lead.incentiveExclusionUpdatedByName}
+                                  {lead.incentiveExclusionUpdatedAt
+                                    ? ` · ${formatIstDate(lead.incentiveExclusionUpdatedAt)}`
+                                    : ''}
+                                </p>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <span className="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold uppercase text-emerald-800">
+                              Eligible
+                            </span>
+                          )}
+                        </td>
+                        {canSetEligibility ? (
+                          <td className="py-2.5">
+                            {excluded ? (
+                              <button
+                                type="button"
+                                disabled={eligibilitySaving}
+                                onClick={() =>
+                                  void submitEligibilityChange(lead, true, '')
+                                }
+                                className="rounded-lg border border-emerald-300 bg-white px-2.5 py-1 text-[10px] font-bold uppercase text-emerald-800 hover:bg-emerald-50 disabled:opacity-50"
+                              >
+                                Mark eligible
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={eligibilitySaving}
+                                onClick={() => {
+                                  setEligibilityModalLead(lead);
+                                  setEligibilityReason('');
+                                  setEligibilityError(null);
+                                }}
+                                className="rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-[10px] font-bold uppercase text-amber-900 hover:bg-amber-50 disabled:opacity-50"
+                              >
+                                Not eligible
+                              </button>
+                            )}
+                          </td>
+                        ) : null}
                       </tr>
-                    ))}
+                    )})}
                   </tbody>
                 </table>
               </div>
             )}
+          </div>
+        ) : null}
+
+        {eligibilityModalLead ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+            <div className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-5 shadow-xl">
+              <h4 className="text-sm font-bold text-gray-900">Exclude from this fortnight</h4>
+              <p className="mt-1 text-xs text-gray-600">
+                <strong>{eligibilityModalLead.customerName}</strong> will not count toward weighted revenue,
+                slabs, or incentive for <strong>{data.cycle.cycleLabel}</strong> only.
+              </p>
+              <label className="mt-4 block text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                Reason (required — visible to designer)
+              </label>
+              <textarea
+                value={eligibilityReason}
+                onChange={(e) => setEligibilityReason(e.target.value)}
+                rows={3}
+                maxLength={512}
+                placeholder="Why is this lead excluded from incentives this fortnight?"
+                className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+              />
+              {eligibilityError ? (
+                <p className="mt-2 text-xs text-red-700">{eligibilityError}</p>
+              ) : null}
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={eligibilitySaving}
+                  onClick={() => {
+                    setEligibilityModalLead(null);
+                    setEligibilityReason('');
+                    setEligibilityError(null);
+                  }}
+                  className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={eligibilitySaving || !eligibilityReason.trim()}
+                  onClick={() =>
+                    void submitEligibilityChange(
+                      eligibilityModalLead,
+                      false,
+                      eligibilityReason,
+                    )
+                  }
+                  className="rounded-lg bg-amber-700 px-3 py-1.5 text-xs font-bold uppercase text-white disabled:opacity-50"
+                >
+                  {eligibilitySaving ? 'Saving…' : 'Confirm not eligible'}
+                </button>
+              </div>
+            </div>
           </div>
         ) : null}
       </section>
@@ -1618,6 +1862,25 @@ export default function DesignerIncentivesView() {
     [members, selectedId],
   );
 
+  const canSetEligibility = canSetIncentiveEligibility(user?.role);
+
+  const reloadIndividualIncentives = useCallback(async () => {
+    if (!sessionId) return;
+    const member =
+      selectedMember ||
+      (user
+        ? ({
+            id: user.id,
+            name: user.name,
+            role: user.role,
+            subRole: user.subRole ?? null,
+          } as IncentiveMember)
+        : null);
+    if (!member) return;
+    const data = await fetchDesignerIncentives(member);
+    if (data) setIndividualData(data);
+  }, [fetchDesignerIncentives, selectedMember, sessionId, user]);
+
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
@@ -2176,6 +2439,11 @@ export default function DesignerIncentivesView() {
             data={individualData}
             selectedDate={selectedDate || null}
             openedFromMonthly={openedFromMonthly}
+            canSetEligibility={canSetEligibility}
+            cycleIndex={cycleIndex}
+            apiBase={apiBase}
+            sessionId={sessionId || ''}
+            onReloadIncentives={reloadIndividualIncentives}
             subtitle={
               isDesignerOnly
                 ? 'Your personal incentive dashboard (live leads)'

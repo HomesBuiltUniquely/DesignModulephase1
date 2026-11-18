@@ -39,6 +39,9 @@ export type IncentiveWeightStageId =
   | "post_dqc1_design_10"
   | "part3_forty_percent";
 
+/** UI-only: split Part 1 leads into booking done vs CRM token (no effect on weighted math). */
+export type Part1DisplayKind = "booking" | "token";
+
 export type WeightedStageCredit = {
   stageId: IncentiveWeightStageId;
   label: string;
@@ -86,6 +89,12 @@ export type DealLedgerRow = {
   incentive: number;
   /** ISO date YYYY-MM-DD within the selected fortnight */
   activityDate: string;
+  /** Booking-done vs CRM token — display split for Part 1 only */
+  part1DisplayKind?: Part1DisplayKind;
+  incentiveEligibleForCycle?: boolean;
+  incentiveExclusionReason?: string | null;
+  incentiveExclusionUpdatedAt?: string | null;
+  incentiveExclusionUpdatedByName?: string | null;
 };
 
 export type IncentiveCycleInfo = {
@@ -937,6 +946,11 @@ export type IncentiveDealInput = {
   creditPart3InCycle: boolean;
   activityDate: string;
   closureTime?: DealLedgerRow["closureTime"];
+  part1DisplayKind?: Part1DisplayKind;
+  incentiveEligibleForCycle?: boolean;
+  incentiveExclusionReason?: string | null;
+  incentiveExclusionUpdatedAt?: string | null;
+  incentiveExclusionUpdatedByName?: string | null;
 };
 
 function initialsFromName(name: string): string {
@@ -1066,11 +1080,17 @@ export function buildIncentivesFromDealInputs(
         stages,
         incentive: 0,
         activityDate: d.activityDate,
+        part1DisplayKind: d.part1DisplayKind ?? "booking",
+        incentiveEligibleForCycle: d.incentiveEligibleForCycle !== false,
+        incentiveExclusionReason: d.incentiveExclusionReason ?? null,
+        incentiveExclusionUpdatedAt: d.incentiveExclusionUpdatedAt ?? null,
+        incentiveExclusionUpdatedByName: d.incentiveExclusionUpdatedByName ?? null,
       };
     })
     .sort((a, b) => a.activityDate.localeCompare(b.activityDate));
 
-  const weightedBreakdown = summarizeWeightedBreakdown(deals);
+  const dealsForIncentiveMath = deals.filter((d) => d.incentiveEligibleForCycle !== false);
+  const weightedBreakdown = summarizeWeightedBreakdown(dealsForIncentiveMath);
   const revenueAchieved = weightedBreakdown.totalWeighted;
   const achievementPct =
     totalTarget > 0 ? Math.round((revenueAchieved / totalTarget) * 1000) / 10 : 0;
@@ -1089,9 +1109,11 @@ export function buildIncentivesFromDealInputs(
   const potentialIncentiveEarned = Math.round((revenueAchieved * incentiveMultiplierPct) / 100);
   const meetingsEligible = resolvedMeetingsCompleted >= meetingsRequired;
   const incentiveEarned = meetingsEligible ? potentialIncentiveEarned : 0;
-  const sameDayClosures = dealsWithIncentive.filter((row) => row.closureTime === "SAME DAY").length;
+  const sameDayClosures = dealsWithIncentive.filter(
+    (row) => row.incentiveEligibleForCycle !== false && row.closureTime === "SAME DAY",
+  ).length;
   const fortyEightHourClosures = dealsWithIncentive.filter(
-    (row) => row.closureTime === "48 HOURS",
+    (row) => row.incentiveEligibleForCycle !== false && row.closureTime === "48 HOURS",
   ).length;
   const sameDayBonus = sameDayClosures * 750;
   const fortyEightHourBonus = fortyEightHourClosures * 375;
@@ -1220,12 +1242,15 @@ export function buildDemoIncentivesForDesigner(
     const closureTime: DealLedgerRow["closureTime"] =
       closureRoll === 0 ? "SAME DAY" : closureRoll === 1 ? "48 HOURS" : "72 HOURS+";
     const activityDate = daysForDeals[(seed + i * 5) % daysForDeals.length];
+    const part1DisplayKind: Part1DisplayKind =
+      stageProgress >= 1 && (seed + i) % 5 === 0 ? "token" : "booking";
     return {
       id: `${member.id}-${cycle.cycleIndex}-${i + 1}`,
       customerName,
       initials: initialsFromName(customerName),
       dealValue: quotationCurrent,
       quotationAtFinanceApproval,
+      part1DisplayKind,
       closureTime,
       contributionPct,
       grossWeightedRevenue,
@@ -1384,4 +1409,10 @@ export function canManageTeamIncentives(role: string | undefined | null): boolea
     r === "deputy_general_manager" ||
     r === "admin"
   );
+}
+
+/** DM / TDM / Admin may mark leads not eligible for a fortnight (not DGM). */
+export function canSetIncentiveEligibility(role: string | undefined | null): boolean {
+  const r = (role || "").toLowerCase();
+  return r === "design_manager" || r === "territorial_design_manager" || r === "admin";
 }

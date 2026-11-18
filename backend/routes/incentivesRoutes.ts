@@ -136,6 +136,82 @@ function customerNameFrom(payload: Record<string, unknown>, projectName: string 
   );
 }
 
+type HubBookingSyncSnapshot = {
+  amountReceived: number | null;
+  tenPercentAmount: number | null;
+  paymentPayload: unknown;
+};
+
+function parsePaymentPayload(raw: unknown): Record<string, unknown> {
+  if (raw && typeof raw === "object") return raw as Record<string, unknown>;
+  if (typeof raw === "string" && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function normalizedPaymentReceived(payload: Record<string, unknown>): string {
+  const form = formDataOf(payload);
+  return (
+    asStr(payload.payment_received) ||
+    asStr(payload.paymentReceived) ||
+    asStr(form.payment_received) ||
+    asStr(form.paymentReceived) ||
+    ""
+  ).toUpperCase();
+}
+
+/** UI-only bucket for incentives Part 1 vs CRM token (does not affect weighted math). */
+function resolvePart1DisplayKind(
+  payload: Record<string, unknown>,
+  sync: HubBookingSyncSnapshot | null,
+): "token" | "booking" {
+  const paymentReceived = normalizedPaymentReceived(payload);
+  if (paymentReceived === "TOKEN") return "token";
+
+  if (sync) {
+    const paymentPayload = parsePaymentPayload(sync.paymentPayload);
+    const paymentKind = (
+      asStr(paymentPayload.paymentKind) ||
+      asStr(paymentPayload.payment_kind) ||
+      asStr(paymentPayload.paymentReceived) ||
+      asStr(paymentPayload.payment_received) ||
+      ""
+    ).toUpperCase();
+    if (paymentKind === "TOKEN") return "token";
+
+    const bookingMode = asStr(
+      paymentPayload.bookingApprovalMode || paymentPayload.booking_approval_mode,
+    ).toUpperCase();
+    const amountToward10 =
+      asNum(sync.amountReceived) ??
+      asNum(paymentPayload.amountToward10) ??
+      asNum(paymentPayload.amount_received) ??
+      asNum(paymentPayload.amountReceived);
+    const tenTarget =
+      asNum(sync.tenPercentAmount) ??
+      asNum(paymentPayload.tenPercentAmount) ??
+      asNum(paymentPayload.ten_percent_amount);
+
+    if (
+      amountToward10 != null &&
+      tenTarget != null &&
+      tenTarget > 0 &&
+      amountToward10 < tenTarget &&
+      bookingMode !== "FULL_10"
+    ) {
+      return "token";
+    }
+  }
+
+  return "booking";
+}
+
 function pickQuote(
   payload: Record<string, unknown>,
   breakdownTotal: number | null,
@@ -412,6 +488,80 @@ function getMonthCycleInfo(monthIndex: number): {
   };
 }
 
+type IncentiveExclusionRow = {
+  reason: string;
+  updatedAt: string;
+  updatedByName: string | null;
+};
+
+async function ensureIncentiveEligibilityTables(pool: Pool): Promise<void> {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS lead_incentive_eligibility_override (
+      lead_id INT NOT NULL,
+      cycle_index INT NOT NULL,
+      eligible TINYINT(1) NOT NULL DEFAULT 0,
+      reason VARCHAR(512) NOT NULL,
+      updated_by_user_id INT NOT NULL,
+      updated_at DATETIME NOT NULL,
+      version INT NOT NULL DEFAULT 1,
+      PRIMARY KEY (lead_id, cycle_index),
+      INDEX idx_incentive_elig_cycle (cycle_index)
+    );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS lead_incentive_eligibility_log (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      lead_id INT NOT NULL,
+      cycle_index INT NOT NULL,
+      eligible TINYINT(1) NOT NULL,
+      reason VARCHAR(512) NULL,
+      changed_by_user_id INT NOT NULL,
+      changed_at DATETIME NOT NULL,
+      INDEX idx_incentive_elig_log_lead (lead_id, cycle_index)
+    );
+  `);
+}
+
+async function loadIncentiveExclusionsForCycle(
+  pool: Pool,
+  leadIds: number[],
+  cycleIndex: number,
+): Promise<Map<number, IncentiveExclusionRow>> {
+  const map = new Map<number, IncentiveExclusionRow>();
+  if (leadIds.length === 0) return map;
+  const placeholders = leadIds.map(() => "?").join(",");
+  const [rows] = await pool.query(
+    `SELECT o.lead_id AS leadId, o.reason,
+            o.updated_at AS updatedAt,
+            u.name AS updatedByName
+     FROM lead_incentive_eligibility_override o
+     LEFT JOIN users u ON u.id = o.updated_by_user_id
+     WHERE o.cycle_index = ? AND o.eligible = 0 AND o.lead_id IN (${placeholders})`,
+    [cycleIndex, ...leadIds],
+  );
+  for (const row of rows as {
+    leadId: number;
+    reason: string;
+    updatedAt: Date | string;
+    updatedByName: string | null;
+  }[]) {
+    const leadId = Number(row.leadId);
+    if (!Number.isFinite(leadId)) continue;
+    const updatedAt =
+      row.updatedAt instanceof Date
+        ? row.updatedAt.toISOString()
+        : typeof row.updatedAt === "string"
+          ? row.updatedAt
+          : new Date().toISOString();
+    map.set(leadId, {
+      reason: String(row.reason || "").trim(),
+      updatedAt,
+      updatedByName: row.updatedByName ? String(row.updatedByName) : null,
+    });
+  }
+  return map;
+}
+
 async function fetchDesignerFortnightData(
   pool: Pool,
   designerId: number,
@@ -461,6 +611,39 @@ async function fetchDesignerFortnightData(
 
   const findComp = (leadId: number, taskName: string) =>
     (compsByLead.get(leadId) || []).find((c) => c.taskName === taskName);
+
+  const hubSyncByLeadId = new Map<number, HubBookingSyncSnapshot>();
+  if (leadIds.length > 0) {
+    try {
+      const [syncRows] = await pool.query(
+        `SELECT lead_id AS leadId, amount_received AS amountReceived,
+                ten_percent_amount AS tenPercentAmount, payment_payload AS paymentPayload,
+                synced_at AS syncedAt
+         FROM lead_hub_booking_sync
+         WHERE lead_id IN (${placeholders})
+         ORDER BY synced_at DESC`,
+        leadIds,
+      );
+      for (const row of syncRows as {
+        leadId: number;
+        amountReceived: unknown;
+        tenPercentAmount: unknown;
+        paymentPayload: unknown;
+      }[]) {
+        const leadId = Number(row.leadId);
+        if (!Number.isFinite(leadId) || hubSyncByLeadId.has(leadId)) continue;
+        hubSyncByLeadId.set(leadId, {
+          amountReceived: asNum(row.amountReceived),
+          tenPercentAmount: asNum(row.tenPercentAmount),
+          paymentPayload: row.paymentPayload,
+        });
+      }
+    } catch (err) {
+      console.error("[incentives] lead_hub_booking_sync batch load failed", err);
+    }
+  }
+
+  const incentiveExclusions = await loadIncentiveExclusionsForCycle(pool, leadIds, cycleIndex);
 
   // Meeting gate: count only Meeting Wizard "Meeting Completed" history events in-cycle.
   const [histRows] = await pool.query(
@@ -567,6 +750,11 @@ async function fetchDesignerFortnightData(
     creditPart3InCycle: boolean;
     activityDate: string;
     closureTime: "SAME DAY" | "48 HOURS" | "72 HOURS+";
+    part1DisplayKind: "token" | "booking";
+    incentiveEligibleForCycle: boolean;
+    incentiveExclusionReason: string | null;
+    incentiveExclusionUpdatedAt: string | null;
+    incentiveExclusionUpdatedByName: string | null;
   }> = [];
 
   for (const lead of leads) {
@@ -672,6 +860,9 @@ async function fetchDesignerFortnightData(
       toDateIso(lead.updateAt) ||
       startIso;
 
+    const exclusion = incentiveExclusions.get(lead.id);
+    const incentiveEligibleForCycle = !exclusion;
+
     deals.push({
       id: String(lead.id),
       customerName: customerNameFrom(payload, lead.projectName),
@@ -695,6 +886,11 @@ async function fetchDesignerFortnightData(
       creditPart3InCycle: p3Credit,
       activityDate,
       closureTime: "48 HOURS",
+      part1DisplayKind: resolvePart1DisplayKind(payload, hubSyncByLeadId.get(lead.id) ?? null),
+      incentiveEligibleForCycle,
+      incentiveExclusionReason: exclusion?.reason ?? null,
+      incentiveExclusionUpdatedAt: exclusion?.updatedAt ?? null,
+      incentiveExclusionUpdatedByName: exclusion?.updatedByName ?? null,
     });
   }
 
@@ -718,6 +914,7 @@ function computeDesignerFortnightMetrics(
     creditPart2InCycle: boolean;
     creditPart3InCycle: boolean;
     closureTime: "SAME DAY" | "48 HOURS" | "72 HOURS+";
+    incentiveEligibleForCycle?: boolean;
   }>,
   meetingsCompleted: number,
 ) {
@@ -727,6 +924,7 @@ function computeDesignerFortnightMetrics(
   let fortyEightHourClosures = 0;
 
   for (const d of deals) {
+    if (d.incentiveEligibleForCycle === false) continue;
     if (!d.creditPart1InCycle && !d.creditPart2InCycle && !d.creditPart3InCycle) continue;
 
     const q1 = d.quotationAtFinanceApproval;
@@ -882,6 +1080,35 @@ export function registerIncentivesRoutes(
 ): void {
   const { pool, getUserFromSession } = deps;
 
+  void ensureIncentiveEligibilityTables(pool).catch((err) => {
+    console.error("[incentives] ensure eligibility tables failed", err);
+  });
+
+  const canSetIncentiveEligibilityForLead = async (
+    user: SessionUser,
+    leadId: number,
+  ): Promise<boolean> => {
+    const role = (user.role || "").toLowerCase();
+    if (role !== "admin" && role !== "territorial_design_manager" && role !== "design_manager") {
+      return false;
+    }
+    const [leadRows] = await pool.query(
+      `SELECT assigned_designer_id AS assignedDesignerId FROM leads WHERE id = ? LIMIT 1`,
+      [leadId],
+    );
+    const assignedDesignerId = (leadRows as { assignedDesignerId: number | null }[])[0]
+      ?.assignedDesignerId;
+    if (assignedDesignerId == null || !Number.isFinite(Number(assignedDesignerId))) {
+      return false;
+    }
+    if (role === "admin" || role === "territorial_design_manager") return true;
+    const [rows] = await pool.query(
+      `SELECT id FROM users WHERE id = ? AND design_manager_id = ? LIMIT 1`,
+      [assignedDesignerId, user.id],
+    );
+    return (rows as { id: number }[]).length > 0;
+  };
+
   const canViewDesigner = async (
     viewer: SessionUser,
     designerId: number,
@@ -947,6 +1174,92 @@ export function registerIncentivesRoutes(
     } catch (err) {
       console.error("[GET /api/incentives/designer/:id] error", err);
       return res.status(500).json({ message: "Failed to load incentives" });
+    }
+  });
+
+  app.patch("/api/incentives/leads/:leadId/eligibility", async (req: Request, res: Response) => {
+    try {
+      const user = await getUserFromSession(req);
+      if (!user) return res.status(401).json({ message: "Unauthorized" });
+
+      const leadId = Number(req.params.leadId);
+      if (!Number.isFinite(leadId) || leadId <= 0) {
+        return res.status(400).json({ message: "Invalid lead id" });
+      }
+      if (!(await canSetIncentiveEligibilityForLead(user, leadId))) {
+        return res.status(403).json({ message: "Forbidden" });
+      }
+
+      const body = (req.body && typeof req.body === "object" ? req.body : {}) as Record<string, unknown>;
+      const cycleIndexRaw = body.cycleIndex;
+      const cycleIndex =
+        cycleIndexRaw != null && String(cycleIndexRaw).trim() !== ""
+          ? Number(cycleIndexRaw)
+          : getCurrentCycleIndex();
+      if (!Number.isFinite(cycleIndex) || cycleIndex < 0) {
+        return res.status(400).json({ message: "Invalid cycleIndex" });
+      }
+
+      let wantsEligible: boolean;
+      if (body.eligible === true || body.eligible === "true" || body.eligible === 1) {
+        wantsEligible = true;
+      } else if (body.eligible === false || body.eligible === "false" || body.eligible === 0) {
+        wantsEligible = false;
+      } else {
+        return res.status(400).json({ message: "eligible must be true or false" });
+      }
+
+      let reason = asStr(body.reason);
+      if (!wantsEligible) {
+        reason = reason.trim();
+        if (!reason) {
+          return res.status(400).json({ message: "Reason is required when marking not eligible" });
+        }
+        if (reason.length > 512) {
+          return res.status(400).json({ message: "Reason must be 512 characters or fewer" });
+        }
+      } else {
+        reason = "";
+      }
+
+      const now = new Date();
+      if (wantsEligible) {
+        await pool.query(
+          `DELETE FROM lead_incentive_eligibility_override WHERE lead_id = ? AND cycle_index = ?`,
+          [leadId, cycleIndex],
+        );
+      } else {
+        await pool.query(
+          `INSERT INTO lead_incentive_eligibility_override
+             (lead_id, cycle_index, eligible, reason, updated_by_user_id, updated_at, version)
+           VALUES (?, ?, 0, ?, ?, ?, 1)
+           ON DUPLICATE KEY UPDATE
+             eligible = 0,
+             reason = VALUES(reason),
+             updated_by_user_id = VALUES(updated_by_user_id),
+             updated_at = VALUES(updated_at),
+             version = version + 1`,
+          [leadId, cycleIndex, reason, user.id, now],
+        );
+      }
+
+      await pool.query(
+        `INSERT INTO lead_incentive_eligibility_log
+           (lead_id, cycle_index, eligible, reason, changed_by_user_id, changed_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [leadId, cycleIndex, wantsEligible ? 1 : 0, wantsEligible ? null : reason, user.id, now],
+      );
+
+      return res.json({
+        ok: true,
+        leadId,
+        cycleIndex,
+        eligible: wantsEligible,
+        reason: wantsEligible ? null : reason,
+      });
+    } catch (err) {
+      console.error("[PATCH /api/incentives/leads/:leadId/eligibility] error", err);
+      return res.status(500).json({ message: "Failed to update incentive eligibility" });
     }
   });
 
