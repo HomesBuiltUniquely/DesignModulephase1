@@ -3744,6 +3744,7 @@ export default function ProjectDetailPage() {
                             designerName={project?.designerName?.trim() || authUser?.name}
                             apiBase={API}
                             sessionId={sessionId}
+                            leadId={projectId ?? null}
                             initialDate={(() => {
                                 const ev = historyEvents.find(e => e.taskName === 'First cut design + quotation discussion meeting request' && (e.meta as any)?.meetingDate);
                                 return (ev?.meta as any)?.meetingDate || '';
@@ -4214,6 +4215,7 @@ export default function ProjectDetailPage() {
                             designerName={project?.designerName?.trim() || authUser?.name}
                             apiBase={API}
                             sessionId={sessionId}
+                            leadId={projectId ?? null}
                             initialDate={(() => {
                                 const ev = historyEvents.find(e => e.taskName === 'Material selection meeting + quotation discussion' && (e.meta as any)?.meetingDate);
                                 return (ev?.meta as any)?.meetingDate || '';
@@ -4543,6 +4545,7 @@ export default function ProjectDetailPage() {
                             designerName={project?.designerName?.trim() || authUser?.name}
                             apiBase={API}
                             sessionId={sessionId}
+                            leadId={projectId ?? null}
                             hideDesignCompletion
                             initialDate={(() => {
                                 const ev = historyEvents.find(e => e.taskName === 'Design sign off' && (e.meta as any)?.meetingDate);

@@ -3566,7 +3566,7 @@ function rangesOverlapMin(aStart: number, aEnd: number, bStart: number, bEnd: nu
   return aStart < bEnd && aEnd > bStart;
 }
 
-type HubBusyBlock = { startMin: number; endMin: number; label: string };
+type HubBusyBlock = { startMin: number; endMin: number; label: string; leadId?: number };
 
 /** Minutes on `dateIso` in Asia/Kolkata. Zoned values convert; plain wall-clock stays as written. */
 function erpDateTimeToMinutesOnDate(rawIso: string, dateIso: string): number | null {
@@ -3685,6 +3685,7 @@ function findOverlappingBusyBlocks(
 async function getDesignerBusyBlocksForDate(
   designerName: string,
   dateIso: string,
+  opts?: { excludeLeadId?: number },
 ): Promise<{ leaveReason: string | null; busy: HubBusyBlock[]; erpFailed: boolean }> {
   const leave = await getActiveFullDayBlock(designerName, dateIso);
   if (leave && (leave.status === "pending" || leave.status === "approved")) {
@@ -3719,7 +3720,12 @@ async function getDesignerBusyBlocksForDate(
   } catch (err) {
     console.error("[getDesignerBusyBlocksForDate] lead schedule busy failed", designerName, err);
   }
-  return { leaveReason: null, busy, erpFailed };
+  const excludeLeadId = opts?.excludeLeadId;
+  const filteredBusy =
+    excludeLeadId != null && Number.isFinite(excludeLeadId)
+      ? busy.filter((b) => b.leadId == null || b.leadId !== excludeLeadId)
+      : busy;
+  return { leaveReason: null, busy: filteredBusy, erpFailed };
 }
 
 /** Legacy: lead JSON schedules. Not used for designer availability (see getDesignerBusyBlocksForDate). */
@@ -3735,6 +3741,7 @@ async function leadScheduleBusyBlocksForDesigner(
   try {
     const [meetingRows] = await pool.query(
       `SELECT
+          m.lead_id AS leadId,
           m.id AS meetingId,
           DATE_FORMAT(m.meeting_date, '%Y-%m-%d') AS meetingDate,
           m.meeting_time AS meetingTime,
@@ -3781,7 +3788,12 @@ async function leadScheduleBusyBlocksForDesigner(
       const source = String(row.source || "").toLowerCase() === "crm" ? "CRM meeting" : "Design meeting";
       const block = meetingSlotToBusyBlock(slot);
       if (block) {
-        blocks.push({ ...block, label: slot ? `${source} ${slot}` : source });
+        const leadId = Number(row.leadId);
+        blocks.push({
+          ...block,
+          label: slot ? `${source} ${slot}` : source,
+          leadId: Number.isFinite(leadId) && leadId > 0 ? leadId : undefined,
+        });
         continue;
       }
       // Still no parseable time → skip busy mark (keeps other slots bookable).
@@ -3799,6 +3811,7 @@ async function leadScheduleBusyBlocksForDesigner(
     const likeDate = `${dateIso}%`;
     const [rows] = await pool.query(
       `SELECT
+         l.id AS leadId,
          JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.scheduledMeetingDate')) AS schedDate,
          JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.scheduledMeetingSlot')) AS schedSlot,
          JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.date')) AS designDate,
@@ -3832,13 +3845,78 @@ async function leadScheduleBusyBlocksForDesigner(
           ? cleanScheduledMeetingText(row.crmSlot) || meetingTimeEmbeddedInDate(row.crmDate)
           : null;
       const block = meetingSlotToBusyBlock(designTime || crmTime);
-      if (block) blocks.push(block);
+      if (block) {
+        const leadId = Number(row.leadId);
+        blocks.push({
+          ...block,
+          label: "Design meeting (payload)",
+          leadId: Number.isFinite(leadId) && leadId > 0 ? leadId : undefined,
+        });
+      }
     }
   } catch (err) {
     console.error("[leadScheduleBusyBlocksForDesigner] payload query failed", name, err);
   }
 
   return blocks;
+}
+
+/** Merge Design `lead_meetings` into ERP appointment list for slot timeline (ERP alone misses ghost/pending rows). */
+async function appendDesignModuleMeetingsToDesignerAppointments(
+  designerName: string,
+  base: unknown,
+  opts?: { excludeLeadId?: number },
+): Promise<unknown[]> {
+  const list = Array.isArray(base) ? [...base] : [];
+  const name = designerName.trim();
+  if (!name) return list;
+  const excludeLeadId = opts?.excludeLeadId;
+  try {
+    const params: unknown[] = [name, name];
+    let excludeSql = "";
+    if (excludeLeadId != null && Number.isFinite(excludeLeadId) && excludeLeadId > 0) {
+      excludeSql = " AND m.lead_id <> ?";
+      params.push(excludeLeadId);
+    }
+    const [meetingRows] = await pool.query(
+      `SELECT
+          m.lead_id AS leadId,
+          DATE_FORMAT(m.meeting_date, '%Y-%m-%d') AS meetingDate,
+          m.meeting_time AS meetingTime,
+          m.meeting_type AS meetingType,
+          l.project_name AS projectName,
+          l.pid AS pid
+        FROM lead_meetings m
+        INNER JOIN leads l ON l.id = m.lead_id
+        LEFT JOIN users du ON du.id = m.designer_id
+        LEFT JOIN users au ON au.id = l.assigned_designer_id
+       WHERE (m.meeting_status IS NULL OR LOWER(m.meeting_status) <> 'cancelled')
+         AND LOWER(COALESCE(m.progress, '')) NOT IN ('completed', 'meeting_never_happened', 'meeting_abandoned')
+         AND (
+           LOWER(TRIM(COALESCE(du.name, ''))) = LOWER(TRIM(?))
+           OR LOWER(TRIM(COALESCE(au.name, ''))) = LOWER(TRIM(?))
+         )${excludeSql}`,
+      params,
+    );
+    for (const row of meetingRows as Record<string, unknown>[]) {
+      const meetingDate = String(row.meetingDate || "").trim().slice(0, 10);
+      const slot = cleanScheduledMeetingText(row.meetingTime);
+      const block = meetingSlotToBusyBlock(slot);
+      if (!meetingDate || !block) continue;
+      const leadId = Number(row.leadId);
+      const label = String(row.projectName || row.pid || (Number.isFinite(leadId) ? `Lead ${leadId}` : "Design meeting"));
+      list.push({
+        id: `design-meeting-${row.meetingType || "meeting"}-${leadId}-${meetingDate}-${block.startMin}`,
+        startTime: formatHubLocalDateTime(meetingDate, block.startMin),
+        endTime: formatHubLocalDateTime(meetingDate, block.endMin),
+        customerName: label,
+        description: `Design module — Lead ID: ${leadId}`,
+      });
+    }
+  } catch (err) {
+    console.error("[appendDesignModuleMeetingsToDesignerAppointments] failed", designerName, err);
+  }
+  return list;
 }
 
 function mergePayloadAfterHubAppointmentCancelled(
@@ -4164,10 +4242,14 @@ async function assertDesignerSlotFree(opts: {
   dateIso: string;
   startMin: number;
   endMin: number;
+  /** When re-booking for the same lead, ignore that lead's pending Design meeting rows. */
+  excludeLeadId?: number;
 }): Promise<{ ok: true } | { ok: false; message: string; conflictCount: number }> {
-  const { designerName, dateIso, startMin, endMin } = opts;
+  const { designerName, dateIso, startMin, endMin, excludeLeadId } = opts;
   try {
-    const { leaveReason, busy, erpFailed } = await getDesignerBusyBlocksForDate(designerName, dateIso);
+    const { leaveReason, busy, erpFailed } = await getDesignerBusyBlocksForDate(designerName, dateIso, {
+      excludeLeadId,
+    });
     if (leaveReason) {
       return { ok: false, message: leaveReason, conflictCount: 1 };
     }
@@ -15199,6 +15281,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
           dateIso: meetingDateIso,
           startMin: hubLocalPartsToMinutes(sp),
           endMin: hubLocalPartsToMinutes(ep),
+          excludeLeadId: leadId,
         });
         if (!free.ok) {
           return res.status(409).json({
@@ -15231,6 +15314,7 @@ app.post("/api/leads/:id/schedule-meeting-invite", async (req: Request, res: Res
             dateIso: meetingDateIso,
             startMin: sMin,
             endMin: eMin,
+            excludeLeadId: leadId,
           });
           if (!free.ok) {
             return res.status(409).json({
@@ -23364,7 +23448,12 @@ app.get("/api/appointment/designer/:designerName", async (req: Request, res: Res
     const data = await callErpApi(
       `/v1/Appointment/designer/${encodeURIComponent(designerName)}`,
     );
-    return res.json(data);
+    const excludeRaw = req.query.excludeLeadId ?? req.query.exclude_lead_id;
+    const excludeLeadId = excludeRaw != null ? Number(excludeRaw) : undefined;
+    const merged = await appendDesignModuleMeetingsToDesignerAppointments(designerName, data, {
+      excludeLeadId: Number.isFinite(excludeLeadId) ? excludeLeadId : undefined,
+    });
+    return res.json(merged);
   } catch (err: any) {
     console.error("designer appointments proxy error", err);
     return res.status(500).json({ message: "Failed to fetch designer appointments", error: err?.message });

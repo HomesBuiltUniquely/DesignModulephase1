@@ -19,6 +19,7 @@ type Props = {
   initialStartMin: number | null;
   durationMin?: number;
   sessionId?: string | null;
+  excludeLeadId?: number | null;
 };
 
 function formatDateLabel(dateIso: string): string {
@@ -42,6 +43,7 @@ export default function MeetingSlotPickerModal({
   initialStartMin,
   durationMin = HUB_MEETING_DURATION_MIN,
   sessionId = null,
+  excludeLeadId = null,
 }: Props) {
   const [draftStartMin, setDraftStartMin] = useState<number | null>(initialStartMin);
 
@@ -120,6 +122,7 @@ export default function MeetingSlotPickerModal({
             onSelectStartMin={setDraftStartMin}
             durationMin={durationMin}
             sessionId={sessionId}
+            excludeLeadId={excludeLeadId}
           />
         </div>
 

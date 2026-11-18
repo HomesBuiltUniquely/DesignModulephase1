@@ -44,6 +44,8 @@ type Props = {
   /** Meeting length in minutes (default 90 for client meetings). */
   durationMin?: number;
   sessionId?: string | null;
+  /** When scheduling for this lead, ignore its pending Design meeting on the timeline. */
+  excludeLeadId?: number | null;
 };
 
 export default function MeetingSlotTimeline({
@@ -55,6 +57,7 @@ export default function MeetingSlotTimeline({
   disabled = false,
   durationMin = HUB_MEETING_DURATION_MIN,
   sessionId = null,
+  excludeLeadId = null,
 }: Props) {
   const [bookedBlocks, setBookedBlocks] = useState<BookedTimelineBlock[]>([]);
   const [loading, setLoading] = useState(false);
@@ -66,8 +69,12 @@ export default function MeetingSlotTimeline({
     }
     let cancelled = false;
     setLoading(true);
+    const excludeQ =
+      excludeLeadId != null && Number.isFinite(excludeLeadId)
+        ? `?excludeLeadId=${encodeURIComponent(String(excludeLeadId))}`
+        : "";
     fetch(
-      `${apiBase}/api/appointment/designer/${encodeURIComponent(designerName.trim())}`,
+      `${apiBase}/api/appointment/designer/${encodeURIComponent(designerName.trim())}${excludeQ}`,
       {
         credentials: "include",
         headers: buildAuthHeaders(sessionId),
@@ -92,7 +99,7 @@ export default function MeetingSlotTimeline({
     return () => {
       cancelled = true;
     };
-  }, [apiBase, designerName, meetingDate, sessionId]);
+  }, [apiBase, designerName, meetingDate, sessionId, excludeLeadId]);
 
   const startOptions = useMemo(() => listHubMeetingStartOptions(durationMin), [durationMin]);
   const fullDayBlocked = useMemo(() => isFullDayBlockedOnTimeline(bookedBlocks), [bookedBlocks]);

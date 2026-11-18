@@ -52,6 +52,8 @@ type Props = {
   /** API base URL for slot fetching */
   apiBase?: string;
   sessionId?: string | null;
+  /** Hub lead id — excludes this lead's pending meeting from slot overlap checks. */
+  leadId?: number | null;
   /** Pre-fill values if available */
   initialDate?: string;
   initialTime?: string;
@@ -82,6 +84,7 @@ export default function PopupFirstCutDesign({
   designerName,
   apiBase = "",
   sessionId = null,
+  leadId = null,
   initialDate,
   initialTime,
   initialMode,
@@ -314,6 +317,7 @@ export default function PopupFirstCutDesign({
           initialStartMin={selectedStartMin}
           durationMin={HUB_MEETING_DURATION_MIN}
           sessionId={sessionId}
+          excludeLeadId={leadId}
         />
 
         {/* Meeting mode */}
