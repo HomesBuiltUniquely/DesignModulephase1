@@ -20803,32 +20803,21 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       }
     }
 
-    if (viaCrmInternal && createdVersionNumber != null) {
-      try {
-        const hubMetaAfter = await loadHubDiscountMetaForQuote(pool, quoteId, {
-          applySharedVersion: false,
-          forceSharedVersion: createdVersionNumber,
-        });
-        if (hubMetaAfter && Object.keys(hubMetaAfter).length > 0) {
-          nextPayload = applyHubDiscountMetaToPayload(nextPayload, hubMetaAfter);
-          const payableAfter = extractTotalPayableAmount(nextPayload);
-          if (payableAfter != null) {
-            nextPayload = applyHubDiscountMetaToPayload(
-              { ...nextPayload, totalPayableAmount: payableAfter, finalTotalPrice: payableAfter },
-              hubMetaAfter,
-            );
-          }
-          await pool.query(`UPDATE lead_prolance_quote_snapshots SET payload_json = ? WHERE quote_id = ?`, [
-            JSON.stringify(nextPayload),
-            quoteId,
-          ]);
-        }
-      } catch (recomputeErr) {
-        console.error("CRM quote snapshot recompute after discount save failed", recomputeErr);
-      }
-    }
 
     const updatedVersions = await loadProlanceQuoteVersionsForLead(effectiveLeadId);
+
+    let crmSharedVersionNumber: number | null = null;
+    try {
+      const [shareMetaRows] = await pool.query(
+        `SELECT crm_shared_version_number AS crmShared
+         FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
+        [quoteId],
+      );
+      const n = Number((shareMetaRows as { crmShared?: unknown }[])[0]?.crmShared);
+      if (Number.isFinite(n) && n > 0) crmSharedVersionNumber = n;
+    } catch {
+      /* optional */
+    }
 
     return res.json({
       ok: true,
@@ -20836,6 +20825,8 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       quoteId,
       updated: ins.affectedRows > 0,
       alreadyExists: isDuplicateVersion,
+      versionNumber: createdVersionNumber ?? crmSharedVersionNumber,
+      crmSharedVersionNumber,
       discount: discountMeta,
       payload: nextPayload,
       versions: updatedVersions,
