@@ -826,6 +826,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           versions?: unknown;
           message?: unknown;
           sharedVersionNumber?: unknown;
+          crmActiveVersionNumber?: unknown;
           crmSharedVersionNumber?: unknown;
           crmVisibleVersionNumbers?: unknown;
           isPre10?: unknown;
