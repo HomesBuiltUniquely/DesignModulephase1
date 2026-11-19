@@ -540,6 +540,15 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     quoteRoleEarly === 'super_admin' ||
     quoteRoleEarly === 'superadmin' ||
     (isInternalMode && isCrmSalesQuoteRole);
+  /** Matches backend crm-share allowlist — designers / design leadership only (not CRM sales). */
+  const canShareQuoteVersionToCrm =
+    quoteRoleEarly === 'designer' ||
+    quoteRoleEarly === 'design_manager' ||
+    quoteRoleEarly === 'territorial_design_manager' ||
+    quoteRoleEarly === 'deputy_general_manager' ||
+    quoteRoleEarly === 'admin' ||
+    quoteRoleEarly === 'super_admin' ||
+    quoteRoleEarly === 'superadmin';
   const canEditDiscountByRole = canEditDiscountByDesignRole || (isInternalMode && isCrmSalesQuoteRole);
 
   useEffect(() => {
@@ -1450,12 +1459,11 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       }
       onSelectVersionForCrm={
         isPre10Lead &&
+        !crmAudience &&
         Boolean(sessionId) &&
         resolvedLeadId != null &&
         resolvedLeadId > 0 &&
-        (!crmAudience ||
-          viaCrmDiscountEdit ||
-          canEditDiscountByCrmRole)
+        canShareQuoteVersionToCrm
           ? (versionNumber, quoteId) => handleShareQuoteVersion(versionNumber, quoteId, 'crm')
           : undefined
       }
