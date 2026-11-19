@@ -933,7 +933,7 @@ function computeDesignerFortnightMetrics(
 
     let dealGross = 0;
     if (d.creditPart1InCycle && d.salesTenPercentFinanceApproved) {
-      dealGross += Math.round((q1 * 50) / 100);
+      dealGross += Math.round((q1 * 25) / 100);
     }
     if (d.creditPart2InCycle && d.designTenPercentFinanceApproved) {
       dealGross += Math.round((q2 * 25) / 100);

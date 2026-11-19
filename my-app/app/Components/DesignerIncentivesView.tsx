@@ -693,7 +693,7 @@ function IndividualIncentivesPanel({
             <p className="mt-1 text-xs text-gray-600">
               Customer pays a <strong>token</strong> in CRM (before convert-to-booking) → proof syncs to
               Design → <strong>finance approval</strong> in Sales Closure → weighted credit{' '}
-              <strong>50%</strong> of the quotation at that approval (Part 1 rule — not the token ₹ alone)
+              <strong>25%</strong> of the quotation at that approval (Part 1 rule — not the token ₹ alone)
               · {eligibleOnly(part1TokenLeads).length} deal(s)
             </p>
             <p className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-violet-700">
@@ -715,7 +715,7 @@ function IndividualIncentivesPanel({
             <p className="mt-2 text-xl font-bold text-gray-900">{formatInr(part1BookingWeighted)}</p>
             <p className="mt-1 text-xs text-gray-600">
               CRM <strong>convert to booking</strong> or manual Sales Closure with full 10% collected →{' '}
-              <strong>finance approval</strong> → credit <strong>50%</strong> of that quotation ·{' '}
+              <strong>finance approval</strong> → credit <strong>25%</strong> of that quotation ·{' '}
               {eligibleOnly(part1BookingLeads).length} deal(s)
             </p>
             <p className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-[#32261C]">
@@ -1240,7 +1240,7 @@ function IndividualIncentivesPanel({
                               {s.stageId === 'pre_d1_finance_10'
                                 ? pendingFinance
                                   ? 'P1 pending'
-                                  : 'P1 50%'
+                                  : 'P1 25%'
                                 : s.stageId === 'post_dqc1_design_10'
                                   ? pendingFinance
                                     ? 'P2 pending'

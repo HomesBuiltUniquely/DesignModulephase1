@@ -16,8 +16,8 @@ export const COLLECTION_FORTY_PERCENT_PCT = 40;
  * Weighted credit toward incentive revenue when a collection stage clears.
  */
 export const WEIGHTED_CREDIT_PCT = {
-  /** Part 1: finance-approved first 10% (pre-D1) → 50% of quotation at that time */
-  preD1Finance10: 50,
+  /** Part 1: finance-approved first 10% (pre-D1) → 25% of quotation at that time */
+  preD1Finance10: 25,
   /**
    * Part 2: post-DQC1 design 10% finance-approved → 25% of the *current* quotation
    * (same for upsale or downsale).
@@ -686,7 +686,7 @@ export function buildDayActivitySummary(
 /**
  * Weighted incentive revenue from collection milestones.
  *
- * Part 1 (pre-D1): finance approves first 10% → credit 50% of that quotation.
+ * Part 1 (pre-D1): finance approves first 10% → credit 25% of that quotation.
  * Part 2 (post-DQC1): design 10% of current quote finance-approved
  *   → credit 25% of the current quotation (upsale or downsale).
  * Part 3 (40% payment):
