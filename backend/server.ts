@@ -8925,16 +8925,22 @@ async function loadCrmShareForLead(leadId: number): Promise<CrmShareSelection | 
 async function loadCustomerSharedQuoteForLead(leadId: number): Promise<CrmShareSelection | null> {
   try {
     const [rows] = await pool.query(
-      `SELECT customer_shared_version_number AS versionNumber
-       FROM lead_prolance_quote_snapshots
-       WHERE lead_id = ?
-         AND customer_shared_version_number IS NOT NULL
-         AND customer_shared_version_number > 0
-       ORDER BY id DESC
+      `SELECT s.customer_shared_version_number AS versionNumber, s.quote_id AS quoteId
+       FROM lead_prolance_quote_snapshots s
+       WHERE s.customer_shared_version_number IS NOT NULL
+         AND s.customer_shared_version_number > 0
+         AND (
+           s.lead_id = ?
+           OR s.quote_id IN (
+             SELECT v.quote_id FROM lead_prolance_quote_versions v WHERE v.lead_id = ?
+           )
+         )
+       ORDER BY (s.lead_id = ?) DESC, s.id DESC
        LIMIT 1`,
-      [leadId],
+      [leadId, leadId, leadId],
     );
-    const versionNumber = asPositiveInt((rows as { versionNumber?: unknown }[])[0]?.versionNumber);
+    const row = (rows as { versionNumber?: unknown; quoteId?: unknown }[])[0];
+    const versionNumber = asPositiveInt(row?.versionNumber);
     if (versionNumber == null) return null;
     const [verRows] = await pool.query(
       `SELECT quote_id AS quoteId
@@ -8945,6 +8951,9 @@ async function loadCustomerSharedQuoteForLead(leadId: number): Promise<CrmShareS
       [leadId, versionNumber],
     );
     let quoteId = asPositiveInt((verRows as { quoteId?: unknown }[])[0]?.quoteId);
+    if (quoteId == null) {
+      quoteId = asPositiveInt(row?.quoteId);
+    }
     if (quoteId == null) {
       const versions = await loadProlanceQuoteVersionsForLead(leadId);
       const matched =
@@ -8963,7 +8972,7 @@ async function loadSelectedQuoteForLead(leadId: number): Promise<CrmShareSelecti
   return (await loadCrmShareForLead(leadId)) || (await loadCustomerSharedQuoteForLead(leadId));
 }
 
-/** DQC popup / reviewer: customer-shared (live) or per-round lock (never CRM-first). */
+/** DQC popup / reviewer: customer-shared then CRM (live), or per-round lock. */
 async function resolveDqcQuoteForLead(
   leadId: number,
   round: DqcQuoteRound,
@@ -8972,26 +8981,28 @@ async function resolveDqcQuoteForLead(
   return resolveDqcQuoteLinkForLead(pool, leadId, round, mode, {
     frontendBase: frontendBase(),
     loadCustomerShared: loadCustomerSharedQuoteForLead,
+    loadCrmShared: loadCrmShareForLead,
   });
 }
 
-/** Canonical customer-shared link for a DQC submit (rejects CRM-only / missing customer share). */
+/** Canonical quote for a DQC submit: customer share first, then CRM selection. */
 async function resolveCanonicalCustomerQuoteForDqcSubmit(leadId: number): Promise<{
   quoteId: number;
   versionNumber: number | null;
   quotationLink: string;
 } | null> {
-  const customer = await loadCustomerSharedQuoteForLead(leadId);
-  if (!customer) return null;
+  const selected =
+    (await loadCustomerSharedQuoteForLead(leadId)) || (await loadCrmShareForLead(leadId));
+  if (!selected) return null;
   return {
-    quoteId: customer.quoteId,
-    versionNumber: customer.versionNumber > 0 ? customer.versionNumber : null,
-    quotationLink: buildCustomerQuoteUrl(frontendBase(), customer.quoteId, customer.versionNumber),
+    quoteId: selected.quoteId,
+    versionNumber: selected.versionNumber > 0 ? selected.versionNumber : null,
+    quotationLink: buildCustomerQuoteUrl(frontendBase(), selected.quoteId, selected.versionNumber),
   };
 }
 
 /**
- * For link-only DQC submits: require current customer share and persist that canonical URL.
+ * For link-only DQC submits: require customer share or CRM selection and persist that URL.
  * If quotation files are uploaded, keep client quote meta as optional annotation.
  */
 async function resolveQuoteMetaForDqcSubmit(
@@ -9026,7 +9037,7 @@ async function resolveQuoteMetaForDqcSubmit(
     return {
       ok: false,
       message:
-        "Share a quotation to the customer first (quote revision history → Share this to customer), then retry DQC submission.",
+        "Share a quotation first (quote revision → Share this to customer, or select for CRM), then retry DQC submission.",
     };
   }
   return { ok: true, meta: canonical };
@@ -20054,7 +20065,7 @@ app.patch("/api/leads/:id/prolance-ids", async (req: Request, res: Response) => 
   }
 });
 
-/** DQC1/DQC2 quotation: live = customer-shared only; locked = per-round frozen link. */
+/** DQC1/DQC2 quotation: live = customer-shared then CRM; locked = per-round frozen link. */
 app.get("/api/leads/:id/dqc-quote-link", async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
@@ -20081,7 +20092,7 @@ app.get("/api/leads/:id/dqc-quote-link", async (req: Request, res: Response) => 
         mode,
         message:
           mode === "live"
-            ? "Share a quotation to the customer first (quote revision → Share this to customer)."
+            ? "Share a quotation first (quote revision → Share this to customer, or select for CRM)."
             : `No locked ${round.toUpperCase()} quotation yet.`,
       });
     }
