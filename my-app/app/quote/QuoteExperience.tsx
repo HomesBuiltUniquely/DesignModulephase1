@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { getApiBase } from '@/app/lib/apiBase';
+import { getApiBase, isProductionQuoteHost } from '@/app/lib/apiBase';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/app/auth/AuthContext';
 import { extractQuoteIdFromBody } from '@/app/lib/prolanceApiGetQuote';
@@ -684,6 +684,53 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
   }, [quoteIdProp, payload, quote.quotationId]);
 
   useEffect(() => {
+    // Production customer quote links only — local /quote/:id does not count.
+    const isCustomerAudience = !isInternalMode && !crmAudience && preloadedPayload === undefined;
+    if (!isCustomerAudience || !isProductionQuoteHost() || loading || !payload || !quoteBodyHasRooms(payload)) {
+      return;
+    }
+    const q = versionFetchId || quoteIdProp.trim();
+    if (!q || !/^\d+$/.test(q)) return;
+    if (typeof sessionStorage === 'undefined') return;
+    const storageKey = `hubQuoteViewRecorded:${q}`;
+    if (sessionStorage.getItem(storageKey)) return;
+    let viewSessionId = sessionStorage.getItem(`hubQuoteViewSid:${q}`);
+    if (!viewSessionId) {
+      viewSessionId =
+        typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+      sessionStorage.setItem(`hubQuoteViewSid:${q}`, viewSessionId);
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API}/api/public/quote/${encodeURIComponent(q)}/view`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ viewSessionId }),
+        });
+        if (!cancelled && res.ok) {
+          sessionStorage.setItem(storageKey, '1');
+        }
+      } catch {
+        /* non-fatal */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isInternalMode,
+    crmAudience,
+    preloadedPayload,
+    loading,
+    payload,
+    quoteIdProp,
+    versionFetchId,
+  ]);
+
+  useEffect(() => {
     if (!versionFetchId) return;
     let cancelled = false;
     (async () => {
@@ -692,6 +739,12 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           `${API}/api/prolance-test/public/quote-revisions/${encodeURIComponent(versionFetchId)}`,
           { cache: 'no-store' },
         );
+        // Prefer explicit ?leadId= from CRM/Design URL. Public quote snapshots can point at
+        // orphan/stale lead ids that have no crmLeadId — those skip the Hub quoteLink push.
+        if (leadIdNum != null && leadIdNum > 0) {
+          if (!cancelled) setResolvedLeadId(leadIdNum);
+          return;
+        }
         if (pubRes.ok) {
           const pubBody = (await pubRes.json().catch(() => ({}))) as { leadId?: unknown };
           const pubLid = Number(pubBody.leadId);
@@ -699,10 +752,6 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
             setResolvedLeadId(pubLid);
             return;
           }
-        }
-        if (leadIdNum != null && leadIdNum > 0) {
-          if (!cancelled) setResolvedLeadId(leadIdNum);
-          return;
         }
         if (sessionId && canEditDiscountByRole) {
           const res = await fetch(
@@ -1166,6 +1215,10 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       const shareBody = JSON.stringify({
         versionNumber,
         selectedQuoteId: selectedQuoteId ?? Number(versionFetchId),
+        // Hub push needs CRM lead id; URL ?leadId= is the Design lead that usually carries crmLeadId.
+        ...(selectingForCrm && leadIdNum != null && leadIdNum > 0
+          ? { designLeadIdHint: leadIdNum, hubLeadId: leadIdNum }
+          : {}),
         ...(!selectingForCrm && (isInternalMode || viaCrmDiscountEdit) ? { sourceModule: 'CRM' } : {}),
         ...(!selectingForCrm && viaCrmDiscountEdit
           ? { crmRole: effectiveCrmRole, crmUser: effectiveCrmUser }
@@ -1203,6 +1256,14 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       if (selectingForCrm) {
         const shared = asNum(bodyObj?.crmSharedVersionNumber) ?? versionNumber;
         setCrmSharedVersionNumber(shared);
+        const crmPush =
+          bodyObj?.crmPush && typeof bodyObj.crmPush === 'object'
+            ? (bodyObj.crmPush as { ok?: unknown; error?: unknown })
+            : null;
+        if (crmPush && crmPush.ok !== true) {
+          // Optional Hub push — CRM pulls the shared quote when sales opens the lead.
+          console.info('[crm-share] Hub push skipped/failed; CRM will pull on lead open', crmPush);
+        }
       } else {
         const shared = asNum(bodyObj?.sharedVersionNumber) ?? versionNumber;
         setSharedVersionNumber(shared);

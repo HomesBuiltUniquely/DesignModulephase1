@@ -131,7 +131,13 @@ export function matchesBoardFilter(meeting: CalendarMeeting, filter: BoardFilter
     const start = meetingStartMs(meeting);
     return isCompleted(meeting) && !isCancelled(meeting) && !hasQuote(meeting) && start != null && now.getTime() - start >= 4 * 60 * 60 * 1000;
   }
-  return !isCancelled(meeting) && !isCompleted(meeting) && (meeting.progress || 'scheduled') !== 'meeting_abandoned';
+  const progress = (meeting.progress || 'scheduled');
+  return (
+    !isCancelled(meeting) &&
+    !isCompleted(meeting) &&
+    progress !== 'meeting_never_happened' &&
+    progress !== 'meeting_abandoned'
+  );
 }
 
 function formatClock(minutes: number): string {
@@ -170,7 +176,9 @@ function progressLabel(meeting: CalendarMeeting): string {
   if (isCancelled(meeting)) return 'Cancelled';
   const progress = (meeting.progress || '').toLowerCase();
   if (progress === 'completed') return 'Completed';
-  if (progress === 'meeting_abandoned') return 'Meeting Abandoned';
+  if (progress === 'meeting_never_happened' || progress === 'meeting_abandoned') {
+    return 'Meeting never happened';
+  }
   if (progress === 'in_progress') return 'In progress';
   return 'Scheduled';
 }

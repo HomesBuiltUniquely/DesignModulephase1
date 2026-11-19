@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { useAuth } from '@/app/auth/AuthContext';
 import BookingCelebration from './BookingCelebration';
 
@@ -15,9 +16,30 @@ function hallwayBase(): string {
 /** Corner celebration for people already signed into Design. */
 export default function BookingCelebrationHost() {
   const { user } = useAuth();
+  const [consume, setConsume] = useState(true);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem('hw-cele-surface', 'design');
+    } catch {
+      /* ignore */
+    }
+    const sync = () => {
+      try {
+        setConsume(sessionStorage.getItem('hw-cele-surface') === 'design');
+      } catch {
+        setConsume(true);
+      }
+    };
+    sync();
+    const id = window.setInterval(sync, 1500);
+    return () => window.clearInterval(id);
+  }, []);
+
   if (!user) return null;
   const viewerKey = (user.email || String(user.id) || user.name || '').trim();
   if (!viewerKey) return null;
+
   const aliases = [
     user.email,
     String(user.id || ''),
@@ -31,6 +53,7 @@ export default function BookingCelebrationHost() {
       viewerKey={viewerKey}
       viewerAliases={aliases}
       viewerName={user.name || viewerKey}
+      enabled={consume}
     />
   );
 }

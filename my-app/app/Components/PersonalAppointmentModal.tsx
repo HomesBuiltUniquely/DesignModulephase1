@@ -34,11 +34,6 @@ const fieldLabelClass = "block text-sm font-semibold text-gray-800 mb-1.5";
 const inputClass =
   "w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-900 outline-none focus:border-[#EF0101] focus:ring-2 focus:ring-emerald-500/20";
 
-function todayIso(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
 export function PersonalAppointmentModal({
   open,
   apiBase,
@@ -260,7 +255,7 @@ export function PersonalAppointmentModal({
                 Date <span className="text-red-500">*</span>
               </span>
               <CustomDatePicker
-                min={todayIso()}
+                disablePast
                 value={meetingDate}
                 onChange={(date) => {
                   setMeetingDate(date);

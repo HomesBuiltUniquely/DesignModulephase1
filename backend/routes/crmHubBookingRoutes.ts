@@ -19,8 +19,13 @@ import {
 } from "./crmEasebuzzAutoFinance";
 import {
   floorPlanPersistFields,
+  mergeFloorPlanPersistFields,
   normalizeFloorPlansFromCrmBody,
 } from "../floorPlans";
+import {
+  applyCrmMeetingFeedback,
+  MeetingActionError,
+} from "../leadMeetings";
 
 const HUB_PROOFS_DIR = path.join(process.cwd(), "uploads", "hub-payment-proofs");
 
@@ -859,15 +864,18 @@ async function upsertCrmDesignLead(
       newConnection.configurationScope && typeof newConnection.configurationScope === "object"
         ? (newConnection.configurationScope as Record<string, unknown>)
         : {};
+    const floorPlansNorm = normalizeFloorPlansFromCrmBody(body);
+    const floorPersist = mergeFloorPlanPersistFields(prev, floorPlansNorm);
     const merged = {
       ...prev,
       ...payloadToPersist,
       fetchedData: { ...prevFetched, ...newFetched },
-      formData: { ...prevForm, ...newForm },
+      formData: { ...prevForm, ...newForm, ...floorPersist },
       discovery: { ...prevDiscovery, ...newDiscovery },
       connection: {
         ...prevConnection,
         ...newConnection,
+        ...floorPersist,
         configurationScope:
           Object.keys(newScope).length > 0
             ? {
@@ -896,6 +904,7 @@ async function upsertCrmDesignLead(
               ? prevScope
               : null,
       },
+      ...floorPersist,
     };
     await pool.query(
       `UPDATE leads SET project_name = ?, contact_no = COALESCE(?, contact_no), client_email = COALESCE(?, client_email),
@@ -2259,6 +2268,51 @@ export function registerCrmHubBookingRoutes(app: Express, deps: RouteDeps): void
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Upsert failed";
       console.error("[crm-hub] upsert error:", err);
+      return res.status(400).json({ ok: false, message: msg });
+    }
+  });
+
+  /**
+   * CRM Pre-10% designer feedback. Saves on Design CRM meeting only —
+   * does not change meeting progress/status.
+   */
+  app.post("/api/hub/crm-meeting/feedback", requireHubApiKey, async (req: Request, res: Response) => {
+    try {
+      const body = (req.body || {}) as HubLeadBody;
+      const feedback = pickStr(body.feedbackDesigner, body.feedback_designer);
+      if (!feedback) {
+        return res.status(400).json({ ok: false, message: "feedbackDesigner is required" });
+      }
+      let designLeadId = await resolveDesignLeadIdForHubSync(pool, body);
+      if (designLeadId == null) {
+        // Ensure Design lead exists so feedback can attach to Pre 10% CRM meeting.
+        const upserted = await upsertCrmDesignLead(pool, body, addLeadHistoryEvent, onCrmLeadCreated);
+        designLeadId = upserted.designLeadId;
+      }
+      const meeting = await applyCrmMeetingFeedback(pool, {
+        leadId: designLeadId,
+        feedbackDesigner: feedback,
+        feedbackBy: pickStr(body.feedbackBy, body.feedback_designer_by) || "CRM",
+        appointmentDate: pickStr(body.appointmentDate, body.appointment_date, body.meetingDate),
+        appointmentSlot: pickStr(body.appointmentSlot, body.appointment_slot, body.slot),
+        crmAppointmentId: pickNum(body.appointmentId, body.crmAppointmentId, body.crm_appointment_id),
+        actor: { name: pickStr(body.feedbackBy, body.feedback_designer_by) || "CRM" },
+      });
+      return res.json({
+        ok: true,
+        designLeadId,
+        meetingId: meeting?.id ?? null,
+        feedbackDesigner: meeting?.feedbackDesigner ?? feedback,
+        feedbackDesignerAt: meeting?.feedbackDesignerAt ?? null,
+        feedbackDesignerBy: meeting?.feedbackDesignerBy ?? null,
+        progressUnchanged: true,
+      });
+    } catch (err) {
+      if (err instanceof MeetingActionError) {
+        return res.status(err.status).json({ ok: false, message: err.message });
+      }
+      const msg = err instanceof Error ? err.message : "Meeting feedback sync failed";
+      console.error("[crm-hub] meeting feedback error:", err);
       return res.status(400).json({ ok: false, message: msg });
     }
   });

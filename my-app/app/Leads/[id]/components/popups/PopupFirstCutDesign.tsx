@@ -20,6 +20,13 @@ import {
 } from "@/lib/hub-meeting-schedule";
 import CustomDatePicker from "@/app/Components/ui/CustomDatePicker";
 import CustomSelect from "@/app/Components/ui/CustomSelect";
+import { todayIsoDay } from "@/app/lib/leadMeetingSchedule";
+
+function meetingDateNotBeforeToday(iso: string | undefined): string {
+  const day = (iso || "").trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return "";
+  return day >= todayIsoDay() ? day : "";
+}
 
 type MeetingMeta = {
   meetingDate?: string;
@@ -52,6 +59,8 @@ type Props = {
   /** API base URL for slot fetching */
   apiBase?: string;
   sessionId?: string | null;
+  /** Hub lead id — excludes this lead's pending meeting from slot overlap checks. */
+  leadId?: number | null;
   /** Pre-fill values if available */
   initialDate?: string;
   initialTime?: string;
@@ -64,7 +73,7 @@ type Props = {
   onClose?: () => void;
   onSubmit?: (meta?: MeetingMeta) => Promise<InviteSubmitResult | void> | InviteSubmitResult | void;
   /** Called when designer marks 100% complete; parent should record task complete and close. */
-  onCompleteAndProceed?: (meta?: MeetingMeta) => void;
+  onCompleteAndProceed?: (meta?: MeetingMeta) => void | Promise<void>;
 };
 
 /**
@@ -82,6 +91,7 @@ export default function PopupFirstCutDesign({
   designerName,
   apiBase = "",
   sessionId = null,
+  leadId = null,
   initialDate,
   initialTime,
   initialMode,
@@ -92,10 +102,11 @@ export default function PopupFirstCutDesign({
   onSubmit,
   onCompleteAndProceed,
 }: Props) {
-  const [meetingDate, setMeetingDate] = useState(initialDate || "");
+  const [meetingDate, setMeetingDate] = useState(() => meetingDateNotBeforeToday(initialDate));
   const [meetingTime, setMeetingTime] = useState(initialTime || "");
   const [meetingMode, setMeetingMode] = useState<"online" | "offline">(initialMode || "online");
   const [meetingLink, setMeetingLink] = useState(initialLink || "");
+  const [inviteSentThisSession, setInviteSentThisSession] = useState(false);
   const [completionPercent, setCompletionPercent] = useState(
     hideDesignCompletion ? 100 : initialCompletionPercent || 0,
   );
@@ -164,6 +175,7 @@ export default function PopupFirstCutDesign({
         setInviteError(result.message || "Failed to send invite. Please try again.");
         return;
       }
+      setInviteSentThisSession(true);
       if (result?.mailSent === false) {
         setToast("Meeting scheduled. Meeting mail could not be sent — check client email on the lead.");
       } else {
@@ -179,6 +191,31 @@ export default function PopupFirstCutDesign({
       }, 3000);
     } catch {
       setInviteError("Failed to send invite. Please try again.");
+    } finally {
+      setIsSendingInvite(false);
+    }
+  };
+
+  const handleCompleteAndProceed = async () => {
+    if (isSendingInvite || isMeetingScheduleIncomplete || !onCompleteAndProceed) return;
+    if (!hideDesignCompletion && completionPercent < 100) return;
+
+    setIsSendingInvite(true);
+    setInviteError(null);
+    try {
+      if (!inviteSentThisSession && onSubmit) {
+        const result = await onSubmit(buildMeta());
+        if (result && result.ok === false) {
+          setInviteError(result.message || "Failed to send invite. Complete the meeting invite before proceeding.");
+          return;
+        }
+        setInviteSentThisSession(true);
+      }
+      await onCompleteAndProceed(
+        hideDesignCompletion ? { ...buildMeta(), completionPercent: 100 } : buildMeta(),
+      );
+    } catch {
+      setInviteError("Failed to complete. Please try again.");
     } finally {
       setIsSendingInvite(false);
     }
@@ -231,6 +268,7 @@ export default function PopupFirstCutDesign({
         <div className="px-6 py-2">
           <div className="font-bold text-sm text-black mb-1">Date <span className="text-red-500">*</span></div>
           <CustomDatePicker
+            disablePast
             value={meetingDate}
             onChange={(date) => {
               setMeetingDate(date);
@@ -287,6 +325,7 @@ export default function PopupFirstCutDesign({
           initialStartMin={selectedStartMin}
           durationMin={HUB_MEETING_DURATION_MIN}
           sessionId={sessionId}
+          excludeLeadId={leadId}
         />
 
         {/* Meeting mode */}
@@ -540,13 +579,7 @@ export default function PopupFirstCutDesign({
           </button>
           <button
             type="button"
-            onClick={() =>
-              onCompleteAndProceed?.(
-                hideDesignCompletion
-                  ? { ...buildMeta(), completionPercent: 100 }
-                  : buildMeta(),
-              )
-            }
+            onClick={() => void handleCompleteAndProceed()}
             disabled={
               (!hideDesignCompletion && completionPercent < 100) ||
               isMeetingScheduleIncomplete ||

@@ -509,7 +509,7 @@ export function attachInboxWebSocketProxy(server: HttpServer): void {
   server.on("upgrade", (req, socket, head) => {
     const pathname = String(req.url || "").split("?")[0].replace(/\/$/, "");
     if (pathname !== "/v1/design/inbox/ws") return;
-    wss.handleUpgrade(req, socket, head, (client) => {
+    wss.handleUpgrade(req, socket, head, (client: WebSocket) => {
       const url = new URL(req.url || "", "http://localhost");
       const ticket = url.searchParams.get("ticket") || "";
       const target = `${notifyUpstreamWebSocketBase()}/v1/design/inbox/ws?ticket=${encodeURIComponent(ticket)}`;
@@ -527,10 +527,10 @@ export function attachInboxWebSocketProxy(server: HttpServer): void {
         }
       };
       upstream.on("open", () => {
-        client.on("message", (data, isBinary) => {
+        client.on("message", (data: Buffer | ArrayBuffer | Buffer[], isBinary: boolean) => {
           if (upstream.readyState === WebSocket.OPEN) upstream.send(data, { binary: isBinary });
         });
-        upstream.on("message", (data, isBinary) => {
+        upstream.on("message", (data: Buffer | ArrayBuffer | Buffer[], isBinary: boolean) => {
           if (client.readyState === WebSocket.OPEN) client.send(data, { binary: isBinary });
         });
       });

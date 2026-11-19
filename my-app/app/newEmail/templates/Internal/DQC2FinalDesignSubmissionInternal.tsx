@@ -13,6 +13,8 @@ export interface DQC2FinalDesignSubmissionInternalEmailProps {
   designerName?: string;
   projectValue?: string;
   attachments?: any[];
+  quotationLink?: string;
+  quoteId?: number;
 }
 
 export default function DQC2FinalDesignSubmissionInternalEmail({
@@ -23,6 +25,8 @@ export default function DQC2FinalDesignSubmissionInternalEmail({
   designerName = 'Designer',
   projectValue = '',
   attachments = [],
+  quotationLink = '',
+  quoteId,
 }: DQC2FinalDesignSubmissionInternalEmailProps) {
   const details: DetailItem[] = [
     { label: 'Project Name', value: customerName },
@@ -30,6 +34,7 @@ export default function DQC2FinalDesignSubmissionInternalEmail({
     { label: 'Experience Center', value: ecName },
     { label: 'Designer', value: designerName },
     ...(projectValue ? [{ label: 'Final Project Value', value: `₹ ${projectValue}` }] : []),
+    ...(quoteId ? [{ label: 'Quote ID', value: String(quoteId) }] : []),
   ];
 
   return (
@@ -49,8 +54,17 @@ export default function DQC2FinalDesignSubmissionInternalEmail({
           The project is now ready for DQC 2 review following completion of color selection and final design updates.
         </Text>
         <Text className="m-0 text-[15px] leading-relaxed text-neutral-nearBlack pb-4">
-          Kindly review the attached documents to ensure all standards are met.
+          Kindly review the attached documents{quotationLink ? ' and quotation link' : ''} to ensure all standards are met.
         </Text>
+
+        {quotationLink ? (
+          <Text className="m-0 text-[15px] leading-relaxed text-neutral-nearBlack pb-4">
+            Quotation:{' '}
+            <a href={quotationLink} style={{ color: '#00B0ED' }}>
+              Open quotation
+            </a>
+          </Text>
+        ) : null}
 
         {/* Project Details */}
         <DetailsList title="REVIEW DETAILS" items={details} />

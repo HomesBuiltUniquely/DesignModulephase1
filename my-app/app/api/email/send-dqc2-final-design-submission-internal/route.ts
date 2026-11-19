@@ -16,6 +16,8 @@ export async function POST(request: Request) {
     const dqcRepName = body.dqcRepName as string | undefined;
     const projectValue = body.projectValue as string | number | undefined;
     const projectId = body.projectId as string | undefined;
+    const quotationLink = body.quotationLink as string | undefined;
+    const quoteId = body.quoteId as number | undefined;
 
     if (!to || !customerName || !ecName || !designerName || !dqcRepName) {
       return NextResponse.json(
@@ -34,6 +36,8 @@ export async function POST(request: Request) {
       designerName,
       projectValue: projectValue != null ? String(projectValue) : undefined,
       attachments,
+      quotationLink,
+      quoteId,
     });
 
     const html = await render(emailComponent);

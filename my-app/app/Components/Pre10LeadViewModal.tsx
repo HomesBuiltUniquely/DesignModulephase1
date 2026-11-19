@@ -3,6 +3,7 @@
 import { useEffect, type ReactNode } from 'react';
 import type { ConfigScopeRoom, ConfigScopeSummary, LeadshipTypes } from './Types/Types';
 import { formatHubPid } from '@/app/lib/formatHubPid';
+import { getPhaseBucket } from '@/app/lib/leadPhaseBucket';
 import { StartMeetingButton } from '@/app/Components/MeetingWiz/StartMeetingButton';
 import styles from './pre10LeadViewModal.module.css';
 
@@ -131,6 +132,7 @@ export function Pre10LeadViewModal({
     onStartMeeting,
 }: Props) {
     const projectLabel = formatHubPid(lead.pid, lead.id);
+    const phaseLabel = getPhaseBucket(lead);
     const customerName =
         lead.intakeCustomerName?.trim() ||
         lead.projectName?.trim() ||
@@ -138,17 +140,35 @@ export function Pre10LeadViewModal({
     const floorPlans = (() => {
         const fromList = Array.isArray(lead.floorPlans)
             ? lead.floorPlans
-                  .map((item, i) => ({
-                      index: typeof item?.index === 'number' ? item.index : i,
-                      filename: String(item?.filename || '').trim() || `Floor plan ${i + 1}`,
-                      publicUrl: String(item?.publicUrl || '').trim(),
-                  }))
+                  .map((item, i) => {
+                      const raw = item as {
+                          index?: number;
+                          filename?: string;
+                          publicUrl?: string;
+                          public_url?: string;
+                          url?: string;
+                      };
+                      return {
+                          index: typeof raw?.index === 'number' ? raw.index : i,
+                          filename: String(raw?.filename || '').trim() || `Floor plan ${i + 1}`,
+                          publicUrl: String(raw?.publicUrl || raw?.public_url || raw?.url || '').trim(),
+                      };
+                  })
                   .filter((item) => item.publicUrl)
                   .sort((a, b) => a.index - b.index)
             : [];
-        if (fromList.length) return fromList;
         const legacy = lead.floorPlanPublicLink?.trim() || '';
-        return legacy ? [{ index: 0, filename: 'Floor plan', publicUrl: legacy }] : [];
+        if (!fromList.length) {
+            return legacy ? [{ index: 0, filename: 'Floor plan', publicUrl: legacy }] : [];
+        }
+        // If CRM also sent a legacy primary link not in the list, keep it visible.
+        if (legacy && !fromList.some((item) => item.publicUrl === legacy)) {
+            return [
+                ...fromList,
+                { index: fromList.length, filename: `Floor plan ${fromList.length + 1}`, publicUrl: legacy },
+            ];
+        }
+        return fromList;
     })();
     const scope = lead.configScopeSummary ?? null;
     const experience = lead.experienceSummary ?? null;
@@ -187,7 +207,7 @@ export function Pre10LeadViewModal({
                                 <h2 id="pre10-view-modal-title" className={styles.headerTitle}>
                                     {projectLabel}
                                 </h2>
-                                <span className={styles.headerBadge}>Pre 10%</span>
+                                <span className={styles.headerBadge}>{phaseLabel}</span>
                             </div>
                             <p className={styles.headerSub}>{lead.projectName || '—'}</p>
                         </div>
