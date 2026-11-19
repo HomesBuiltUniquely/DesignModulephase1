@@ -3377,12 +3377,29 @@ function formatProlancePName(
         }
       }
       if (forCrm) {
-        if (crmSharedQuoteId != null && versions.length > 0) {
-          versions = filterQuoteVersionsForCrm(versions, {
-            quoteId: crmSharedQuoteId,
-            latest: crmSharedVersionNumber,
-            visible: crmVisibleVersionNumbers,
+        const qid = crmSharedQuoteId ?? seed;
+        const newestDiscountVer = await latestQuoteDiscountVersionNumber(pool, qid);
+        crmVisibleVersionNumbers = parseCrmVisibleVersionNumbers(
+          mergeCrmVisibleVersionNumbers(
+            crmVisibleVersionNumbers,
+            crmSharedVersionNumber,
+            sharedVersionNumber,
+            newestDiscountVer,
+          ),
+        );
+        if (versions.length > 0) {
+          const visibleSet = new Set(crmVisibleVersionNumbers);
+          versions = versions.filter((v) => {
+            const ver = Number(v.versionNumber);
+            const onSharedQuote = crmSharedQuoteId != null && Number(v.quoteId) === crmSharedQuoteId;
+            const crmSaved = onSharedQuote && String(v.sourceModule || "").toLowerCase() === "crm";
+            if (crmSaved) return true;
+            if (visibleSet.size > 0 && visibleSet.has(ver)) return true;
+            return false;
           });
+          versions.sort(
+            (a, b) => Number(a.versionNumber ?? 0) - Number(b.versionNumber ?? 0),
+          );
         } else {
           versions = [];
         }
@@ -3406,15 +3423,15 @@ function formatProlancePName(
         sharedVersionNumber ?? 0,
         newestDiscountVer ?? 0,
       );
+      const crmPinned =
+        crmSharedVersionNumber != null && crmSharedVersionNumber > 0 ? crmSharedVersionNumber : null;
       res.json({
         leadId,
         versions: presentVersions(versions),
         sharedVersionNumber,
-        crmSharedVersionNumber:
-          crmActiveVersionNumber > 0 ? crmActiveVersionNumber : crmSharedVersionNumber,
+        crmSharedVersionNumber: crmPinned,
         crmActiveVersionNumber: crmActiveVersionNumber > 0 ? crmActiveVersionNumber : null,
-        crmSharedVersionPinned:
-          crmSharedVersionNumber != null && crmSharedVersionNumber > 0 ? crmSharedVersionNumber : null,
+        crmSharedVersionPinned: crmPinned,
         crmSharedQuoteId,
         crmVisibleVersionNumbers,
         isPre10,

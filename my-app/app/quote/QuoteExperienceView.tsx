@@ -76,6 +76,7 @@ type Props = {
   ) => void | Promise<QuoteDiscountSaveResult | void> | QuoteDiscountSaveResult;
   sharedVersionNumber?: number | null;
   crmSharedVersionNumber?: number | null;
+  crmDiscountActiveVersion?: number | null;
   viewingVersionNumber?: number | null;
   shareVersionSaving?: boolean;
   shareVersionError?: string | null;
@@ -234,6 +235,7 @@ export function QuoteExperienceView(props: Props) {
     onSaveDiscount,
     sharedVersionNumber = null,
     crmSharedVersionNumber = null,
+    crmDiscountActiveVersion = null,
     viewingVersionNumber = null,
     shareVersionSaving = false,
     shareVersionError = null,
@@ -739,7 +741,10 @@ export function QuoteExperienceView(props: Props) {
             <div className="grid gap-4 sm:grid-cols-2">
               {quoteVersions.map((v, idx) => {
                 const versionNumber = v.versionNumber && v.versionNumber > 0 ? v.versionNumber : idx + 1;
-                const isCurrent = idx === currentVersionIndex;
+                const isCurrent =
+                  crmDiscountActiveVersion != null && crmDiscountActiveVersion > 0
+                    ? Number(versionNumber) === Number(crmDiscountActiveVersion)
+                    : idx === currentVersionIndex;
                 const isSharedWithCustomer =
                   sharedVersionNumber != null && Number(sharedVersionNumber) === Number(versionNumber);
                 const isSelectedForCrm =
