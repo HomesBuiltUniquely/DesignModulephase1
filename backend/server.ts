@@ -70,6 +70,8 @@ import {
   startActiveCrmMeetingForLead,
   startCrmMeeting,
   endCrmMeeting,
+  abandonCrmMeeting,
+  isCrmDrrMeeting,
   completePre10CrmMeetingAfterQuoteShare,
   applyCrmMeetingFeedback,
   kolkataParts,
@@ -8534,6 +8536,21 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
               : undefined,
         meetingStatus: isRescheduleMeeting ? "RESCHEDULED" : payload.meetingStatus || prev.meetingStatus || null,
         action: isRescheduleMeeting ? "RESCHEDULED" : payload.action || prev.action || null,
+        ...(pickTrimmedString(
+          (payload as any)?.meetingLabel,
+          (payload as any)?.meeting_label,
+          (payload as any)?.designMilestone,
+          (payload as any)?.milestoneSubStage,
+        )
+          ? {
+              meetingLabel: pickTrimmedString(
+                (payload as any)?.meetingLabel,
+                (payload as any)?.meeting_label,
+                (payload as any)?.designMilestone,
+                (payload as any)?.milestoneSubStage,
+              ),
+            }
+          : {}),
       };
       await pool.query(
         `UPDATE leads
@@ -8565,13 +8582,15 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
           typeof appointmentSlot === "string" || appointmentSlot != null
             ? String(appointmentSlot).trim()
             : "";
+        const allowDrrRevisitAfterSuccess =
+          alreadySuccessful && isRescheduleMeeting && Boolean(appointmentDate) && Boolean(normalizedIncomingSlot);
         // Hub bug: null/empty slot on upsert must not touch schedule (esp. successful meetings).
         const shouldSyncMeeting =
           Boolean(appointmentDate) &&
-          !alreadySuccessful &&
+          (!alreadySuccessful || allowDrrRevisitAfterSuccess) &&
           (Boolean(normalizedIncomingSlot) || isRescheduleMeeting);
 
-        if (alreadySuccessful) {
+        if (alreadySuccessful && !allowDrrRevisitAfterSuccess) {
           console.info("[external-upsert] skip meeting sync — CRM meeting already successful", {
             leadId: existingLeadId,
             meetingId: activeMtg?.id ?? null,
@@ -8585,12 +8604,19 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
             keptTime: activeMtg?.meetingTime ?? null,
           });
         } else if (shouldSyncMeeting) {
+          const intakeMeetingLabel = pickTrimmedString(
+            (payload as any)?.meetingLabel,
+            (payload as any)?.meeting_label,
+            (payload as any)?.designMilestone,
+            (payload as any)?.milestoneSubStage,
+          );
           recordedMeeting = await recordCrmMeeting(pool, {
             leadId: existingLeadId,
             meetingDate: appointmentDate,
             // Pass null when empty so recordCrmMeeting keeps the previous time.
             meetingTime: normalizedIncomingSlot || null,
             meetingType: intakeMeetingType,
+            meetingLabel: intakeMeetingLabel,
             meetingMode: /virtual/i.test(crmText) ? "online" : /showroom|site/i.test(crmText) ? "offline" : null,
             designerId: assignedDesignerId,
             actor: { name: "CRM" },
@@ -23461,6 +23487,119 @@ app.post("/api/meetings/:id/end", async (req: Request, res: Response) => {
     if (err instanceof MeetingActionError) return res.status(err.status).json({ message: err.message });
     console.error("end meeting error", err);
     return res.status(500).json({ message: "Failed to end meeting" });
+  }
+});
+
+/**
+ * DRR-only outcome from Design Meeting Management.
+ * successful → local completed + Hub MEETING_SUCCESSFUL (CRM Progress / Meeting Successful (DRR) filter)
+ * never_happened → local meeting_never_happened + Hub MEETING_ABANDONED (CRM Progress Meeting Never Happened)
+ * Does not change Pre 10% End Meeting / milestone flow.
+ */
+app.post("/api/meetings/:id/drr-outcome", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+    const meetingId = Number(req.params.id);
+    if (!Number.isFinite(meetingId)) return res.status(400).json({ message: "Invalid meeting id" });
+
+    const outcomeRaw = String(
+      (req.body as { outcome?: unknown; meetingProgress?: unknown } | null)?.outcome ??
+        (req.body as { meetingProgress?: unknown } | null)?.meetingProgress ??
+        "",
+    )
+      .trim()
+      .toLowerCase()
+      .replace(/[\s-]+/g, "_");
+    const successful =
+      outcomeRaw === "successful" ||
+      outcomeRaw === "meeting_successful" ||
+      outcomeRaw === "completed";
+    const neverHappened =
+      outcomeRaw === "never_happened" ||
+      outcomeRaw === "meeting_never_happened" ||
+      outcomeRaw === "abandoned" ||
+      outcomeRaw === "meeting_abandoned";
+    if (!successful && !neverHappened) {
+      return res.status(400).json({
+        message: "outcome must be successful or never_happened",
+      });
+    }
+
+    const isDrr = await isCrmDrrMeeting(pool, meetingId);
+    if (!isDrr) {
+      return res.status(400).json({
+        message: "DRR outcome is only for Design Refinement Round meetings",
+      });
+    }
+
+    const actor = { id: actingUser.id, name: actingUser.name };
+    const meeting = successful
+      ? await endCrmMeeting(pool, meetingId, actor)
+      : await abandonCrmMeeting(pool, meetingId, actor);
+
+    let crmAppointmentId =
+      meeting?.crmAppointmentId != null && Number(meeting.crmAppointmentId) > 0
+        ? Number(meeting.crmAppointmentId)
+        : null;
+    if (crmAppointmentId == null && meeting?.leadId) {
+      try {
+        const [leadRows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [
+          meeting.leadId,
+        ]);
+        const payloadRaw = (leadRows as { payload?: string | null }[])[0]?.payload;
+        const payload = payloadRaw ? (JSON.parse(payloadRaw) as Record<string, unknown>) : {};
+        const fromPayload = Number(
+          (payload as { crmAppointmentId?: unknown; appointmentId?: unknown }).crmAppointmentId ??
+            (payload as { appointmentId?: unknown }).appointmentId ??
+            (payload as { crmSchedule?: { appointmentId?: unknown } }).crmSchedule?.appointmentId,
+        );
+        if (Number.isFinite(fromPayload) && fromPayload > 0) crmAppointmentId = fromPayload;
+      } catch {
+        // keep null
+      }
+    }
+
+    let crmSynced = false;
+    let crmSyncError: string | null = null;
+    if (crmAppointmentId != null) {
+      try {
+        await callErpApi(`/v1/Appointment/${crmAppointmentId}/meeting-outcome`, {
+          method: "PUT",
+          body: JSON.stringify({
+            meetingProgress: successful ? "MEETING_SUCCESSFUL" : "MEETING_ABANDONED",
+          }),
+          headers: { "X-Activity-Performed-By": "Design Module Auto" },
+        });
+        crmSynced = true;
+      } catch (err) {
+        crmSyncError = err instanceof Error ? err.message : String(err);
+        console.error("[meetings/drr-outcome] Hub sync failed", {
+          meetingId,
+          crmAppointmentId,
+          error: crmSyncError,
+        });
+      }
+    } else {
+      crmSyncError = "No crmAppointmentId on this meeting — outcome saved in Design only";
+    }
+
+    const progressLabel = successful ? "Meeting Successful" : "Meeting never happened";
+    return res.status(crmSynced || crmAppointmentId == null ? 200 : 502).json({
+      meeting,
+      outcome: successful ? "successful" : "never_happened",
+      progressLabel,
+      crmSynced,
+      crmAppointmentId,
+      crmSyncError: crmSynced ? null : crmSyncError,
+      message: crmSynced
+        ? undefined
+        : crmSyncError || "Saved in Design, but CRM progress was not updated",
+    });
+  } catch (err) {
+    if (err instanceof MeetingActionError) return res.status(err.status).json({ message: err.message });
+    console.error("drr outcome error", err);
+    return res.status(500).json({ message: "Failed to save DRR meeting outcome" });
   }
 });
 

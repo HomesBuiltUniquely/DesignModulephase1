@@ -99,6 +99,8 @@ type ScheduledMeeting = {
   feedbackDesignerAt?: string | null;
   feedbackDesignerBy?: string | null;
   crmAppointmentId?: number | null;
+  /** True when this CRM row is a Design Refinement Round (DRR) revisit. */
+  crmDrrRevisit?: boolean | null;
   personalKey?: string | null;
   personalKind?: 'block' | 'full_day' | null;
   personalReason?: string | null;
@@ -111,7 +113,16 @@ type ClientMeetingType = 'pre_10' | 'dqc1_first_cut' | 'dqc2_material_selection'
 type TypeFilter = 'all' | ClientMeetingType;
 type Venue = 'Showroom visit' | 'Virtual meeting' | 'Site visit';
 type ViewStatus = 'scheduled' | 'rescheduled' | 'in_progress' | 'completed' | 'cancelled' | 'abandoned';
-type StatusKey = 'scheduled' | 'rescheduled' | 'in_progress' | 'completed' | 'cancelled' | 'abandoned';
+/** Filter-only: CRM DRR revisit scheduled / successful after Pre 10%. Does not change row status badges. */
+type StatusKey =
+  | 'scheduled'
+  | 'scheduled_drr'
+  | 'rescheduled'
+  | 'in_progress'
+  | 'completed'
+  | 'completed_drr'
+  | 'cancelled'
+  | 'abandoned';
 type DatePreset = 'all' | 'month' | '3m' | '6m' | '1y' | 'prev' | 'custom';
 type PersonalKindFilter = 'all' | 'block' | 'full_day';
 
@@ -483,6 +494,54 @@ function mapStatus(meeting: ScheduledMeeting): ViewStatus {
   if (progress === 'in_progress') return 'in_progress';
   if (wasRescheduled) return 'rescheduled';
   return 'scheduled';
+}
+
+function isDesignRefinementText(value?: string | null): boolean {
+  const raw = (value || '').trim().toLowerCase();
+  if (!raw) return false;
+  return (
+    raw.includes('design refinement') ||
+    raw.includes('refinement round') ||
+    /\bdrr\b/.test(raw)
+  );
+}
+
+/** CRM Design Refinement Round visit only — not other post–Pre 10% design meetings. */
+function isDrrCrmMeeting(meeting: ViewMeeting): boolean {
+  if (meeting.personal) return false;
+  if (meeting.raw.crmDrrRevisit === true) return true;
+  return (
+    isDesignRefinementText(meeting.raw.meetingType) ||
+    isDesignRefinementText(meeting.raw.projectStage)
+  );
+}
+
+/**
+ * Open DRR visit for the Meeting scheduled (DRR) filter.
+ * Includes in_progress / rescheduled because Design may flip progress on the meeting day.
+ */
+function isScheduledDrrMeeting(meeting: ViewMeeting): boolean {
+  if (!isDrrCrmMeeting(meeting)) return false;
+  return (
+    meeting.status === 'scheduled' ||
+    meeting.status === 'in_progress' ||
+    meeting.status === 'rescheduled'
+  );
+}
+
+/** Successful DRR visit for the Meeting Successful (DRR) filter only. */
+function isSuccessfulDrrMeeting(meeting: ViewMeeting): boolean {
+  return isDrrCrmMeeting(meeting) && meeting.status === 'completed';
+}
+
+/** Open DRR visit that can take Meeting successful / Meeting never happened. */
+function canShowDrrOutcomeActions(meeting: ViewMeeting | null): boolean {
+  if (!meeting || !isDrrCrmMeeting(meeting)) return false;
+  return (
+    meeting.status === 'scheduled' ||
+    meeting.status === 'in_progress' ||
+    meeting.status === 'rescheduled'
+  );
 }
 
 /** Maps a scheduled-meetings API row onto the page's view model. */
@@ -962,6 +1021,7 @@ export default function MeetingManagementView() {
   const [panelLeadLoading, setPanelLeadLoading] = useState(false);
   const [startMeetingBusy, setStartMeetingBusy] = useState(false);
   const [endMeetingBusy, setEndMeetingBusy] = useState(false);
+  const [drrOutcomeBusy, setDrrOutcomeBusy] = useState<'successful' | 'never_happened' | null>(null);
   const [pre10ActionError, setPre10ActionError] = useState<string | null>(null);
   const [meetingWizOpen, setMeetingWizOpen] = useState(false);
   const [meetingWizLead, setMeetingWizLead] = useState<LeadshipTypes | null>(null);
@@ -1304,9 +1364,11 @@ export default function MeetingManagementView() {
   }, [mapped]);
   const statusChoices: { id: StatusKey; label: string }[] = [
     { id: 'scheduled', label: 'Scheduled' },
+    { id: 'scheduled_drr', label: 'Meeting scheduled (DRR)' },
     { id: 'rescheduled', label: 'Meeting Rescheduled' },
     { id: 'in_progress', label: 'In progress' },
     { id: 'completed', label: 'Meeting Successful' },
+    { id: 'completed_drr', label: 'Meeting Successful (DRR)' },
     { id: 'cancelled', label: 'Cancelled' },
     { id: 'abandoned', label: 'Meeting never happened' },
   ];
@@ -1382,7 +1444,11 @@ export default function MeetingManagementView() {
 
   const matchesStatus = useCallback((meeting: ViewMeeting) => {
     if (statusFilters.length === 0) return true;
-    return statusFilters.includes(meeting.status);
+    return statusFilters.some((want) => {
+      if (want === 'scheduled_drr') return isScheduledDrrMeeting(meeting);
+      if (want === 'completed_drr') return isSuccessfulDrrMeeting(meeting);
+      return meeting.status === want;
+    });
   }, [statusFilters]);
 
   const filtered = useMemo(() => {
@@ -1634,11 +1700,14 @@ export default function MeetingManagementView() {
   const liveChips = liveExpanded ? inProgress : inProgress.slice(0, 4);
   const liveHidden = Math.max(0, inProgress.length - 4);
 
+  const selectedIsDrr = selected ? isDrrCrmMeeting(selected) : false;
   const showPre10Start =
     !!selected &&
+    !selectedIsDrr &&
     !panelLeadLoading &&
     canShowStartMeetingForBoardMeeting(selected.raw, panelLead, panelHistory, today);
-  const showPre10End = selected ? canShowEndMeetingForBoardMeeting(selected.raw) : false;
+  const showPre10End =
+    !!selected && !selectedIsDrr && canShowEndMeetingForBoardMeeting(selected.raw);
   /** Feedback composer unlocks at meeting start (e.g. 5 PM today) and stays until one-time submit. */
   const feedbackAlreadySubmitted = !!(selected?.raw.feedbackDesigner || '').trim();
   const feedbackMeetingReached = (() => {
@@ -1652,6 +1721,7 @@ export default function MeetingManagementView() {
   const showDesignerFeedbackPanel =
     showCrmFeedback &&
     !!selected &&
+    !selectedIsDrr &&
     selected.typeKey === 'pre_10' &&
     !!selected.id &&
     (feedbackAlreadySubmitted || feedbackMeetingReached);
@@ -1809,6 +1879,74 @@ export default function MeetingManagementView() {
       setEndMeetingBusy(false);
     }
   };
+
+  const submitDrrOutcome = async (outcome: 'successful' | 'never_happened') => {
+    if (!selected || !sessionId || drrOutcomeBusy) return;
+    if (!canShowDrrOutcomeActions(selected)) return;
+    const meetingId = selected.id ?? selected.raw.id;
+    if (meetingId == null) {
+      setPre10ActionError('This meeting has no id to update.');
+      return;
+    }
+    const confirmText =
+      outcome === 'successful'
+        ? 'Mark this Design Refinement Round visit as Meeting successful?'
+        : 'Mark this Design Refinement Round visit as Meeting never happened?';
+    if (!window.confirm(confirmText)) return;
+
+    setPre10ActionError(null);
+    setDrrOutcomeBusy(outcome);
+    try {
+      const res = await fetch(`${apiBase}/api/meetings/${meetingId}/drr-outcome`, {
+        method: 'POST',
+        headers: {
+          ...buildAuthHeaders(sessionId),
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify({ outcome }),
+      });
+      const data = await res.json().catch(() => ({}));
+      const savedLocally = data?.meeting != null || res.ok;
+      if (savedLocally) {
+        await loadMeetings();
+        setSelected((prev) =>
+          prev && prev.key === selected.key
+            ? {
+                ...prev,
+                status: outcome === 'successful' ? 'completed' : 'abandoned',
+                raw: {
+                  ...prev.raw,
+                  progress: outcome === 'successful' ? 'completed' : 'meeting_never_happened',
+                  progressLabel:
+                    outcome === 'successful' ? 'Meeting Successful' : 'Meeting never happened',
+                },
+              }
+            : prev,
+        );
+      }
+      if (!res.ok) {
+        throw new Error(
+          data?.message ||
+            (data?.crmSynced === false
+              ? `Saved here, but CRM progress was not updated${data?.crmSyncError ? `: ${data.crmSyncError}` : '.'}`
+              : 'Could not save DRR meeting outcome.'),
+        );
+      }
+      if (data?.crmSynced === false) {
+        setPre10ActionError(
+          data?.message ||
+            `Saved here, but CRM progress was not updated${data?.crmSyncError ? `: ${data.crmSyncError}` : '.'}`,
+        );
+      }
+    } catch (err) {
+      setPre10ActionError(err instanceof Error ? err.message : 'Could not save DRR meeting outcome.');
+    } finally {
+      setDrrOutcomeBusy(null);
+    }
+  };
+
+  const showDrrOutcome = selected ? canShowDrrOutcomeActions(selected) : false;
 
   return (
     <div className={styles.root}>
@@ -2466,6 +2604,109 @@ export default function MeetingManagementView() {
                 <p className={styles.crmHint}>
                   Personal time is booked by the designer. Change or cancel it from Personal Appointments.
                 </p>
+              </div>
+            ) : showDrrOutcome ? (
+              <div className={`${styles.foot} ${styles.pre10Foot}`}>
+                <div className={styles.pre10ActionCard} data-state="live">
+                  <div className={styles.pre10ActionShine} aria-hidden="true" />
+                  <div className={styles.pre10ActionTop}>
+                    <span className={styles.pre10Badge}>
+                      <span className={styles.pre10BadgeDot} aria-hidden="true" />
+                      Design Refinement Round
+                    </span>
+                    {selected.day === today ? (
+                      <span className={styles.pre10TodayChip}>Today</span>
+                    ) : null}
+                  </div>
+                  <div className={styles.pre10ActionBody}>
+                    <p className={styles.pre10ActionTitle}>How did this DRR visit go?</p>
+                    <p className={styles.pre10ActionSub}>
+                      Mark Meeting successful or Meeting never happened. This updates CRM progress for this DRR visit only.
+                    </p>
+                  </div>
+                  <div className={`${styles.pre10ActionRow} ${styles.pre10ActionRowSplit}`}>
+                    <button
+                      type="button"
+                      className={`${styles.actBtn} ${styles.actEnd}`}
+                      disabled={drrOutcomeBusy != null}
+                      onClick={() => void submitDrrOutcome('successful')}
+                    >
+                      {drrOutcomeBusy === 'successful' ? 'Saving…' : 'Meeting successful'}
+                    </button>
+                    <button
+                      type="button"
+                      className={`${styles.actBtn} ${styles.actCancel}`}
+                      disabled={drrOutcomeBusy != null}
+                      onClick={() => void submitDrrOutcome('never_happened')}
+                    >
+                      {drrOutcomeBusy === 'never_happened' ? 'Saving…' : 'Meeting never happened'}
+                    </button>
+                  </div>
+                  {showCrmFeedback ? (
+                    <div className={styles.crmFeedback} style={{ marginTop: 12 }}>
+                      <div className={styles.crmFeedbackTop}>
+                        <span className={styles.crmFeedbackTitle}>Feedback</span>
+                        <span className={styles.crmFeedbackBadge}>
+                          {feedbackAlreadySubmitted ? 'One-time done' : 'One-time'}
+                        </span>
+                      </div>
+                      {feedbackAlreadySubmitted ? (
+                        <>
+                          <p className={styles.crmFeedbackOnceNote}>Your one-time feedback is done</p>
+                          <p className={styles.crmFeedbackBody}>{(selected.raw.feedbackDesigner || '').trim()}</p>
+                        </>
+                      ) : (
+                        <label className={styles.crmFeedbackComposer} htmlFor={`drr-feedback-${selected.key}`}>
+                          <span className={styles.crmFeedbackComposerLabel}>Designer feedback</span>
+                          <textarea
+                            id={`drr-feedback-${selected.key}`}
+                            className={styles.crmFeedbackTextarea}
+                            rows={2}
+                            maxLength={50}
+                            placeholder="Short note (max 50)…"
+                            value={designerFeedbackDraft}
+                            disabled={designerFeedbackBusy}
+                            onChange={(e) => {
+                              setDesignerFeedbackDraft(e.target.value.slice(0, 50));
+                              setDesignerFeedbackError(null);
+                              setDesignerFeedbackOk(null);
+                            }}
+                          />
+                          <div className={styles.crmFeedbackComposerFoot}>
+                            <span
+                              className={styles.crmFeedbackCount}
+                              data-ready={designerFeedbackDraft.trim().length > 0 ? '1' : '0'}
+                            >
+                              {designerFeedbackDraft.trim().length}/50
+                            </span>
+                            <button
+                              type="button"
+                              className={styles.crmFeedbackSubmit}
+                              disabled={
+                                designerFeedbackBusy ||
+                                !designerFeedbackDraft.trim() ||
+                                designerFeedbackDraft.trim().length > 50
+                              }
+                              onClick={() => void submitDesignerFeedback()}
+                            >
+                              <span className={styles.crmFeedbackSubmitShine} aria-hidden="true" />
+                              <span className={styles.crmFeedbackSubmitLabel}>
+                                {designerFeedbackBusy ? '…' : 'Submit'}
+                              </span>
+                            </button>
+                          </div>
+                        </label>
+                      )}
+                      {designerFeedbackError ? (
+                        <p className={styles.crmFeedbackError}>{designerFeedbackError}</p>
+                      ) : null}
+                      {designerFeedbackOk ? (
+                        <p className={styles.crmFeedbackSuccess}>{designerFeedbackOk}</p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {pre10ActionError ? <p className={styles.pre10ActionError}>{pre10ActionError}</p> : null}
+                </div>
               </div>
             ) : selected.typeKey === 'pre_10' && (selected.status === 'scheduled' || selected.status === 'rescheduled' || selected.status === 'in_progress' || selected.status === 'completed' || selected.status === 'abandoned') ? (
               <div className={`${styles.foot} ${styles.pre10Foot}`}>
