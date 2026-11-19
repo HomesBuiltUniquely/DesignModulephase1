@@ -3166,14 +3166,16 @@ app.get("/api/service/whoami", async (req: Request, res: Response) => {
 });
 
 function quoteVersionUniquenessKey(item: {
+  id?: number;
   quoteId: number;
   changeSummary?: string;
   versionNumber?: number;
 }): string {
+  if (item.id != null && Number(item.id) > 0) return `id:${item.id}`;
+  if (item.versionNumber && item.versionNumber > 0) return `${item.quoteId}:v${item.versionNumber}`;
   const summary = String(item.changeSummary || "").trim();
   if (/^quote generated$/i.test(summary)) return `${item.quoteId}|generated`;
   if (summary && !/^no changes$/i.test(summary)) return `${item.quoteId}|${summary.toLowerCase()}`;
-  if (item.versionNumber && item.versionNumber > 0) return `${item.quoteId}:v${item.versionNumber}`;
   return `${item.quoteId}:base`;
 }
 
@@ -3248,7 +3250,38 @@ async function loadProlanceQuoteVersionsForLead(leadId: number): Promise<
     versionNumber: r.versionNumber ? Number(r.versionNumber) : undefined,
     internalNote: r.internalNote != null && String(r.internalNote).trim() ? String(r.internalNote) : undefined,
   }));
-  // Current lead quote id is persisted as a real version row on first snapshot — do not invent extras.
+  const quoteIdsWithRows = new Set(list.map((r) => r.quoteId));
+  try {
+    const [snapRows] = await pool.query(
+      `SELECT quote_id AS quoteId, MIN(created_at) AS createdAt
+       FROM lead_prolance_quote_snapshots WHERE lead_id = ?
+       GROUP BY quote_id ORDER BY MIN(created_at) ASC`,
+      [leadId],
+    );
+    for (const snap of snapRows as { quoteId?: unknown; createdAt?: unknown }[]) {
+      const qid = Number(snap.quoteId);
+      if (!Number.isFinite(qid) || qid < 1 || quoteIdsWithRows.has(qid)) continue;
+      quoteIdsWithRows.add(qid);
+      list.push({
+        id: undefined,
+        quoteId: qid,
+        createdAt: toIso(snap.createdAt),
+        createdBy: undefined,
+        createdByRole: undefined,
+        sourceModule: "Design Module",
+        changeSummary: "Quote generated",
+        versionNumber: undefined,
+        internalNote: undefined,
+      });
+    }
+    list.sort(
+      (a, b) =>
+        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime() ||
+        Number(a.id ?? 0) - Number(b.id ?? 0),
+    );
+  } catch {
+    /* optional */
+  }
   return dedupeProlanceQuoteVersionRows(list);
 }
 

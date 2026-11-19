@@ -3209,18 +3209,52 @@ function formatProlancePName(
       versionNumber: r.versionNumber ? Number(r.versionNumber) : undefined,
       internalNote: r.internalNote != null && String(r.internalNote).trim() ? String(r.internalNote) : undefined,
     }));
+    const quoteIdsWithRows = new Set(raw.map((r) => r.quoteId));
+    try {
+    const [snapRows] = await pool.query(
+      `SELECT quote_id AS quoteId, MIN(created_at) AS createdAt
+       FROM lead_prolance_quote_snapshots WHERE lead_id = ?
+       GROUP BY quote_id ORDER BY MIN(created_at) ASC`,
+      [leadId],
+    );
+    for (const snap of snapRows as { quoteId?: unknown; createdAt?: unknown }[]) {
+      const qid = Number(snap.quoteId);
+      if (!Number.isFinite(qid) || qid < 1 || quoteIdsWithRows.has(qid)) continue;
+      quoteIdsWithRows.add(qid);
+      raw.push({
+        id: undefined,
+        quoteId: qid,
+        createdAt: toIso(snap.createdAt),
+        createdBy: undefined,
+        sourceModule: "Design Module",
+        changeSummary: "Quote generated",
+        versionNumber: undefined,
+        internalNote: undefined,
+      });
+    }
+    raw.sort(
+      (a, b) =>
+        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime() ||
+        Number(a.id ?? 0) - Number(b.id ?? 0),
+    );
+    } catch {
+      /* optional */
+    }
     const seen = new Set<string>();
     const list: typeof raw = [];
     for (const item of raw) {
       const summary = String(item.changeSummary || "").trim();
       if (/^no changes$/i.test(summary)) continue;
-      const key = /^quote generated$/i.test(summary)
-        ? `${item.quoteId}|generated`
-        : summary
-          ? `${item.quoteId}|${summary.toLowerCase()}`
+      const key =
+        item.id != null && Number(item.id) > 0
+          ? `id:${item.id}`
           : item.versionNumber && item.versionNumber > 0
             ? `${item.quoteId}:v${item.versionNumber}`
-            : `${item.quoteId}:base`;
+            : /^quote generated$/i.test(summary)
+              ? `${item.quoteId}|generated`
+              : summary
+                ? `${item.quoteId}|${summary.toLowerCase()}`
+                : `${item.quoteId}:base`;
       if (seen.has(key)) continue;
       seen.add(key);
       list.push(item);
@@ -3379,30 +3413,23 @@ function formatProlancePName(
       if (forCrm) {
         const qid = crmSharedQuoteId ?? seed;
         const newestDiscountVer = await latestQuoteDiscountVersionNumber(pool, qid);
+        const allVerNums = versions
+          .map((v) => Number(v.versionNumber))
+          .filter((n) => Number.isFinite(n) && n > 0);
         crmVisibleVersionNumbers = parseCrmVisibleVersionNumbers(
           mergeCrmVisibleVersionNumbers(
             crmVisibleVersionNumbers,
             crmSharedVersionNumber,
             sharedVersionNumber,
             newestDiscountVer,
+            ...allVerNums,
           ),
         );
-        if (versions.length > 0) {
-          const visibleSet = new Set(crmVisibleVersionNumbers);
-          versions = versions.filter((v) => {
-            const ver = Number(v.versionNumber);
-            const onSharedQuote = crmSharedQuoteId != null && Number(v.quoteId) === crmSharedQuoteId;
-            const crmSaved = onSharedQuote && String(v.sourceModule || "").toLowerCase() === "crm";
-            if (crmSaved) return true;
-            if (visibleSet.size > 0 && visibleSet.has(ver)) return true;
-            return false;
-          });
-          versions.sort(
-            (a, b) => Number(a.versionNumber ?? 0) - Number(b.versionNumber ?? 0),
-          );
-        } else {
-          versions = [];
-        }
+        versions.sort(
+          (a, b) =>
+            Number(a.versionNumber ?? 0) - Number(b.versionNumber ?? 0) ||
+            new Date(String(a.createdAt)).getTime() - new Date(String(b.createdAt)).getTime(),
+        );
       }
       if (versions.length === 0) {
         res.json({

@@ -424,47 +424,12 @@ function parseQuoteVersionRow(row: unknown, fallbackQuoteId?: string | null): Qu
   };
 }
 
-function versionsForCrmAudience(
-  versions: QuoteVersionRow[],
-  crmSharedVersionNumber: number | null | undefined,
-  visibleVersionNumbers?: number[] | null,
-): QuoteVersionRow[] {
+/** CRM list is already scoped on the server; only stabilize sort (do not re-filter). */
+function versionsForCrmAudience(versions: QuoteVersionRow[]): QuoteVersionRow[] {
   if (versions.length <= 1) return versions;
-  const crmRows = versions.filter((v) => String(v.sourceModule || '').toLowerCase() === 'crm');
-  const allowed = new Set(
-    (visibleVersionNumbers ?? []).filter((n) => Number.isFinite(n) && n > 0).map((n) => Number(n)),
+  return [...versions].sort(
+    (a, b) => Number(a.versionNumber ?? 0) - Number(b.versionNumber ?? 0),
   );
-  if (crmSharedVersionNumber != null && crmSharedVersionNumber > 0) {
-    allowed.add(Number(crmSharedVersionNumber));
-  }
-  if (crmRows.length > 0) {
-    for (const v of crmRows) {
-      const n = Number(v.versionNumber);
-      if (Number.isFinite(n) && n > 0) allowed.add(n);
-    }
-  }
-  if (allowed.size > 0) {
-    const matched = versions.filter(
-      (v) =>
-        allowed.has(Number(v.versionNumber)) ||
-        String(v.sourceModule || '').toLowerCase() === 'crm',
-    );
-    if (matched.length > 0) {
-      return [...matched].sort((a, b) => Number(a.versionNumber ?? 0) - Number(b.versionNumber ?? 0));
-    }
-  }
-  const crmCreated = versions.filter((v) => String(v.sourceModule || '').toLowerCase() === 'crm');
-  if (crmCreated.length > 0) {
-    const keep = new Set(crmCreated.map((v) => Number(v.versionNumber)));
-    if (crmSharedVersionNumber != null && crmSharedVersionNumber > 0) {
-      keep.add(Number(crmSharedVersionNumber));
-    }
-    const withBase = versions.filter((v) => keep.has(Number(v.versionNumber)));
-    return withBase.length > 0 ? withBase : crmCreated;
-  }
-  return crmSharedVersionNumber != null && crmSharedVersionNumber > 0
-    ? versions.filter((v) => Number(v.versionNumber) === Number(crmSharedVersionNumber))
-    : [versions[versions.length - 1]];
 }
 
 export type QuoteExperienceProps = {
@@ -900,9 +865,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
             : [];
           setCrmVisibleVersionNumbers(visibleNums);
           setIsPre10Lead(body.isPre10 === true);
-          setQuoteVersions(
-            crmAudience ? versionsForCrmAudience(versions, crmPinned, visibleNums) : versions,
-          );
+          setQuoteVersions(crmAudience ? versionsForCrmAudience(versions) : versions);
         }
       } catch (e) {
         if (!cancelled) {
@@ -1224,7 +1187,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           nextVisible.push(crmSharedVersionNumber);
         }
         setCrmVisibleVersionNumbers(nextVisible);
-        appliedVersions = crmAudience ? versionsForCrmAudience(parsed, crmVer, nextVisible) : parsed;
+        appliedVersions = crmAudience ? versionsForCrmAudience(parsed) : parsed;
         setQuoteVersions(appliedVersions);
         if (
           crmVer != null &&
@@ -1279,7 +1242,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
               if (fetched.length > 0) {
                 setQuoteVersions(
                   crmAudience
-                    ? versionsForCrmAudience(fetched, crmSharedVersionNumber, crmVisibleVersionNumbers)
+                    ? versionsForCrmAudience(fetched)
                     : fetched,
                 );
               }
@@ -1326,7 +1289,8 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       };
       if (sessionId) {
         headers['Authorization'] = `Bearer ${sessionId}`;
-      } else if (viaCrmDiscountEdit && !selectingForCrm) {
+      }
+      if (viaCrmDiscountEdit) {
         headers['X-Crm-Role'] = effectiveCrmRole;
         headers['X-Crm-User'] = effectiveCrmUser;
       }
@@ -1339,8 +1303,8 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
         ...(selectingForCrm && leadIdNum != null && leadIdNum > 0
           ? { designLeadIdHint: leadIdNum, hubLeadId: leadIdNum }
           : {}),
-        ...(!selectingForCrm && (isInternalMode || viaCrmDiscountEdit) ? { sourceModule: 'CRM' } : {}),
-        ...(!selectingForCrm && viaCrmDiscountEdit
+        ...((selectingForCrm || isInternalMode || viaCrmDiscountEdit) ? { sourceModule: 'CRM' } : {}),
+        ...(viaCrmDiscountEdit
           ? { crmRole: effectiveCrmRole, crmUser: effectiveCrmUser }
           : {}),
       });
@@ -1485,11 +1449,11 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           : undefined
       }
       onSelectVersionForCrm={
-        isPre10Lead &&
-        !crmAudience &&
-        Boolean(sessionId) &&
         resolvedLeadId != null &&
-        resolvedLeadId > 0
+        resolvedLeadId > 0 &&
+        ((isPre10Lead && !crmAudience && Boolean(sessionId)) ||
+          (crmAudience && viaCrmDiscountEdit) ||
+          (crmAudience && Boolean(sessionId) && canEditDiscountByCrmRole))
           ? (versionNumber, quoteId) => handleShareQuoteVersion(versionNumber, quoteId, 'crm')
           : undefined
       }
