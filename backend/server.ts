@@ -18261,6 +18261,22 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
       return res.json(enriched);
     }
 
+    // Scope in SQL for common roles so we do not enrich all ~1200 leads then discard them.
+    // Admin / TDM / DGM still get the full list.
+    let queueWhereSql = "";
+    const queueWhereParams: number[] = [];
+    if (user?.id && role === "designer") {
+      queueWhereSql = " WHERE l.assigned_designer_id = ? ";
+      queueWhereParams.push(Number(user.id));
+    } else if (user?.id && role === "design_manager") {
+      queueWhereSql =
+        " WHERE l.assigned_designer_id IN (SELECT id FROM users WHERE design_manager_id = ?) ";
+      queueWhereParams.push(Number(user.id));
+    } else if (user?.id && role === "project_manager") {
+      queueWhereSql = " WHERE l.assigned_project_manager_id = ? ";
+      queueWhereParams.push(Number(user.id));
+    }
+
     const [rows] = await pool.query(
       `SELECT l.id, l.pid, l.project_name as projectName, l.project_stage as projectStage,
               l.contact_no as contactNo, l.client_email as clientEmail,
@@ -18318,7 +18334,9 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
        FROM leads l
        LEFT JOIN users u ON u.id = l.assigned_designer_id
        LEFT JOIN users pm ON pm.id = l.assigned_project_manager_id
+       ${queueWhereSql}
        ORDER BY l.id ASC`,
+      queueWhereParams,
     );
     const payloadByLeadId = new Map<number, unknown>();
     const baseList = (rows as any[])
@@ -18433,9 +18451,18 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
     }
 
     // Enrich with current milestone (from task completions) for Design Phase dashboard
-    const [completionRows] = await pool.query(
-      `SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName, completed_at as completedAt FROM lead_task_completions`,
-    );
+    const completionLeadIds = (baseList as { id: number }[])
+      .map((l) => Number(l.id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    const [completionRows] =
+      completionLeadIds.length > 0
+        ? await pool.query(
+            `SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName, completed_at as completedAt
+             FROM lead_task_completions
+             WHERE lead_id IN (${completionLeadIds.map(() => "?").join(",")})`,
+            completionLeadIds,
+          )
+        : [[]];
     const compList = completionRows as {
       leadId: number;
       milestoneIndex: number;
@@ -18500,35 +18527,9 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
       };
     });
 
-    // Visibility rules for designers / design managers
-    if (user && role === "designer") {
-      const filtered = enrichedList.filter(
-        (l: any) =>
-          l.assigned_designer_id && l.assigned_designer_id === user.id,
-      );
-      return res.json(filtered);
-    }
-
-    if (user && role === "design_manager") {
-      const [dmRows] = await pool.query(
-        `SELECT l.id
-         FROM leads l
-         INNER JOIN users d ON d.id = l.assigned_designer_id
-         WHERE d.design_manager_id = ?`,
-        [user.id],
-      );
-      const allowedIds = new Set((dmRows as { id: number }[]).map((r) => r.id));
-      const filtered = enrichedList.filter((l: any) =>
-        allowedIds.has(l.id),
-      );
-      return res.json(filtered);
-    }
-
-    if (user && role === "project_manager") {
-      const filtered = enrichedList.filter(
-        (l: any) => l.assigned_project_manager_id && l.assigned_project_manager_id === user.id,
-      );
-      return res.json(filtered);
+    // Designer / DM / PM were already scoped in SQL above.
+    if (user && (role === "designer" || role === "design_manager" || role === "project_manager")) {
+      return res.json(enrichedList);
     }
 
     if (user && role === "senior_project_manager") {
@@ -20803,21 +20804,32 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       }
     }
 
+    if (viaCrmInternal && createdVersionNumber != null) {
+      try {
+        const hubMetaAfter = await loadHubDiscountMetaForQuote(pool, quoteId, {
+          applySharedVersion: false,
+          forceSharedVersion: createdVersionNumber,
+        });
+        if (hubMetaAfter && Object.keys(hubMetaAfter).length > 0) {
+          nextPayload = applyHubDiscountMetaToPayload(nextPayload, hubMetaAfter);
+          const payableAfter = extractTotalPayableAmount(nextPayload);
+          if (payableAfter != null) {
+            nextPayload = applyHubDiscountMetaToPayload(
+              { ...nextPayload, totalPayableAmount: payableAfter, finalTotalPrice: payableAfter },
+              hubMetaAfter,
+            );
+          }
+          await pool.query(`UPDATE lead_prolance_quote_snapshots SET payload_json = ? WHERE quote_id = ?`, [
+            JSON.stringify(nextPayload),
+            quoteId,
+          ]);
+        }
+      } catch (recomputeErr) {
+        console.error("CRM quote snapshot recompute after discount save failed", recomputeErr);
+      }
+    }
 
     const updatedVersions = await loadProlanceQuoteVersionsForLead(effectiveLeadId);
-
-    let crmSharedVersionNumber: number | null = null;
-    try {
-      const [shareMetaRows] = await pool.query(
-        `SELECT crm_shared_version_number AS crmShared
-         FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
-        [quoteId],
-      );
-      const n = Number((shareMetaRows as { crmShared?: unknown }[])[0]?.crmShared);
-      if (Number.isFinite(n) && n > 0) crmSharedVersionNumber = n;
-    } catch {
-      /* optional */
-    }
 
     return res.json({
       ok: true,
@@ -20825,8 +20837,6 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       quoteId,
       updated: ins.affectedRows > 0,
       alreadyExists: isDuplicateVersion,
-      versionNumber: createdVersionNumber ?? crmSharedVersionNumber,
-      crmSharedVersionNumber,
       discount: discountMeta,
       payload: nextPayload,
       versions: updatedVersions,

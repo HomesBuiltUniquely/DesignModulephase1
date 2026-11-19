@@ -763,7 +763,6 @@ export function QuoteExperienceView(props: Props) {
                   internalVersionSuffix.startsWith('?') ? internalVersionSuffix.slice(1) : internalVersionSuffix,
                 );
                 hrefQs.set('version', String(versionNumber));
-                hrefQs.set('view', '1');
                 const href = `/quote/${encodeURIComponent(String(v.quoteId))}?${hrefQs.toString()}`;
                 const isShared = isSharedWithCustomer || isSelectedForCrm;
                 return (

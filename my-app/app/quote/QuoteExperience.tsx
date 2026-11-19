@@ -504,14 +504,6 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
   const viewingVersionParam = Number(searchParams.get('version'));
   const viewingVersionNumber =
     Number.isFinite(viewingVersionParam) && viewingVersionParam > 0 ? viewingVersionParam : null;
-  const isPreviewingQuoteVersion = searchParams.get('view') === '1';
-  const quoteLoadVersionNumber =
-    crmAudience &&
-    !isPreviewingQuoteVersion &&
-    crmSharedVersionNumber != null &&
-    crmSharedVersionNumber > 0
-      ? crmSharedVersionNumber
-      : viewingVersionNumber;
 
   const normalizeQuoteRole = (raw: unknown): string =>
     String(raw || '')
@@ -558,9 +550,9 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
         }
         const cacheBust = `t=${Date.now()}`;
         const audienceQs = crmAudience
-          ? `audience=crm&internal=1${quoteLoadVersionNumber != null ? `&version=${quoteLoadVersionNumber}` : ''}`
+          ? `audience=crm&internal=1${viewingVersionNumber != null ? `&version=${viewingVersionNumber}` : ''}`
           : isInternalMode
-            ? `internal=1${isPreviewingQuoteVersion && viewingVersionNumber != null ? `&version=${viewingVersionNumber}` : quoteLoadVersionNumber != null ? `&version=${quoteLoadVersionNumber}` : ''}`
+            ? `internal=1${viewingVersionNumber != null ? `&version=${viewingVersionNumber}` : ''}`
             : 'audience=customer';
         const parseBody = async (response: Response): Promise<unknown> => {
           const txt = await response.text();
@@ -613,13 +605,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                   pct &&
                   typeof pct === 'object' &&
                   Object.values(pct as Record<string, unknown>).some((v) => Number(v) > 0);
-                const explicitClear = payloadHasExplicitHubDiscountMeta(discount);
-                if (
-                  (Number.isFinite(amt) && amt > 0) ||
-                  (Number.isFinite(add) && add > 0) ||
-                  hasPct ||
-                  explicitClear
-                ) {
+                if ((Number.isFinite(amt) && amt > 0) || (Number.isFinite(add) && add > 0) || hasPct) {
                   nextPayload = applyDiscountMetaToLocalPayload(nextPayload, discount);
                 }
               }
@@ -670,15 +656,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     return () => {
       cancelled = true;
     };
-  }, [
-    quoteIdProp,
-    preloadedPayload,
-    isInternalMode,
-    crmAudience,
-    viewingVersionNumber,
-    quoteLoadVersionNumber,
-    isPreviewingQuoteVersion,
-  ]);
+  }, [quoteIdProp, preloadedPayload, isInternalMode, crmAudience, viewingVersionNumber]);
 
   const fallbackNormId = useMemo(() => {
     const t = quoteIdProp.trim();
@@ -873,26 +851,6 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       cancelled = true;
     };
   }, [versionFetchId, isInternalMode, crmAudience, sessionId]);
-
-  useEffect(() => {
-    if (!crmAudience || !isInternalMode) return;
-    if (isPreviewingQuoteVersion) return;
-    if (crmSharedVersionNumber == null || crmSharedVersionNumber < 1) return;
-    if (viewingVersionNumber != null && viewingVersionNumber >= crmSharedVersionNumber) return;
-    const q = new URLSearchParams(searchParams.toString());
-    q.set('version', String(crmSharedVersionNumber));
-    q.delete('view');
-    router.replace(`${pathname}?${q.toString()}`, { scroll: false });
-  }, [
-    crmAudience,
-    isInternalMode,
-    isPreviewingQuoteVersion,
-    crmSharedVersionNumber,
-    viewingVersionNumber,
-    pathname,
-    router,
-    searchParams,
-  ]);
 
   useEffect(() => {
     if (!isInternalMode || crmAudience) return;
@@ -1156,19 +1114,12 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       if (bodyObj && Array.isArray(bodyObj.versions)) {
         const parsed = parseVersionsArray(bodyObj.versions);
         let crmVer = crmSharedVersionNumber;
-        const savedVerRaw = bodyObj.versionNumber ?? bodyObj.crmSharedVersionNumber;
-        const savedVer = Number(savedVerRaw);
-        if (Number.isFinite(savedVer) && savedVer > 0) {
-          crmVer = savedVer;
-          setCrmSharedVersionNumber(savedVer);
-        } else if (crmAudience && parsed.length > 0) {
-          const maxVer = parsed.reduce((m, row) => {
-            const v = Number(row.versionNumber);
-            return Number.isFinite(v) && v > m ? v : m;
-          }, 0);
-          if (maxVer > 0) {
-            crmVer = maxVer;
-            setCrmSharedVersionNumber(maxVer);
+        if (crmAudience && parsed.length > 0) {
+          const newest = parsed[parsed.length - 1];
+          const n = Number(newest.versionNumber);
+          if (Number.isFinite(n) && n > 0) {
+            crmVer = n;
+            setCrmSharedVersionNumber(n);
           }
         }
         const nextVisible = [...crmVisibleVersionNumbers];
@@ -1179,30 +1130,10 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
         setCrmVisibleVersionNumbers(nextVisible);
         appliedVersions = crmAudience ? versionsForCrmAudience(parsed, crmVer, nextVisible) : parsed;
         setQuoteVersions(appliedVersions);
-        if (
-          crmVer != null &&
-          crmVer > 0 &&
-          (crmAudience || viewingVersionNumber != null) &&
-          typeof window !== 'undefined'
-        ) {
+        if (crmAudience && crmVer != null && crmVer > 0 && typeof window !== 'undefined') {
           const q = new URLSearchParams(searchParams.toString());
           q.set('version', String(crmVer));
-          q.delete('view');
-          window.location.assign(`${pathname}?${q.toString()}`);
-          return { alreadyExists: Boolean(bodyObj?.alreadyExists), message: bodyObj?.message ? String(bodyObj.message) : undefined };
-        }
-      } else if (bodyObj && typeof window !== 'undefined') {
-        const savedVer = Number(bodyObj.versionNumber ?? bodyObj.crmSharedVersionNumber);
-        if (
-          Number.isFinite(savedVer) &&
-          savedVer > 0 &&
-          (crmAudience || viewingVersionNumber != null)
-        ) {
-          const q = new URLSearchParams(searchParams.toString());
-          q.set('version', String(savedVer));
-          q.delete('view');
-          window.location.assign(`${pathname}?${q.toString()}`);
-          return { alreadyExists: Boolean(bodyObj?.alreadyExists), message: bodyObj?.message ? String(bodyObj.message) : undefined };
+          router.replace(`${pathname}?${q.toString()}`, { scroll: false });
         }
       }
 
