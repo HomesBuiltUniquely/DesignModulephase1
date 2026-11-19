@@ -20724,7 +20724,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       );
       void evaluateLeadQuotationRevisionXp(pool, effectiveLeadId);
 
-      if (viaCrmInternal) {
+      if (viaCrmInternal || fromCrmModule) {
         try {
           const [shareRows] = await pool.query(
             `SELECT crm_shared_version_number AS latest, crm_visible_version_numbers AS visible
@@ -20747,6 +20747,12 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
                  customer_shared_version_number = ?, crm_visible_version_numbers = ?
              WHERE lead_id = ?`,
             [nextVersionNumber, quoteId, nextVersionNumber, visibleJson, effectiveLeadId],
+          );
+          await pool.query(
+            `UPDATE lead_prolance_quote_snapshots
+             SET crm_shared_version_number = ?, crm_shared_quote_id = ?
+             WHERE quote_id = ?`,
+            [nextVersionNumber, quoteId, quoteId],
           );
         } catch (crmShareErr) {
           console.error("crm-share stamp after CRM discount save failed", crmShareErr);

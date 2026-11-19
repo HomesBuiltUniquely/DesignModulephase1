@@ -1383,6 +1383,74 @@ function metaFromDiscountRow(ds: Record<string, unknown>): Record<string, unknow
   };
 }
 
+export async function latestQuoteDiscountVersionNumber(
+  pool: Pool,
+  quoteId: number,
+): Promise<number | undefined> {
+  if (!Number.isFinite(quoteId) || quoteId < 1) return undefined;
+  try {
+    const [rows] = await pool.query(
+      `SELECT MAX(version_number) AS maxVer FROM lead_prolance_quote_versions WHERE quote_id = ?`,
+      [quoteId],
+    );
+    const v = Number((rows as { maxVer?: unknown }[])[0]?.maxVer);
+    return Number.isFinite(v) && v > 0 ? Math.trunc(v) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function loadCustomerSharedVersionForQuote(
+  pool: Pool,
+  quoteId: number,
+): Promise<number | undefined> {
+  try {
+    const [rows] = await pool.query(
+      `SELECT customer_shared_version_number AS v FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
+      [quoteId],
+    );
+    const v = Number((rows as { v?: unknown }[])[0]?.v);
+    return Number.isFinite(v) && v > 0 ? Math.trunc(v) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function resolveEffectiveCrmQuoteVersion(
+  pool: Pool,
+  quoteId: number,
+  requested?: number,
+): Promise<number | undefined> {
+  const [shareRows] = await pool.query(
+    `SELECT crm_shared_version_number AS crmV, crm_visible_version_numbers AS visible,
+            customer_shared_version_number AS customerV
+     FROM lead_prolance_quote_snapshots WHERE quote_id = ? LIMIT 1`,
+    [quoteId],
+  );
+  const share = (shareRows as {
+    crmV?: unknown;
+    visible?: unknown;
+    customerV?: unknown;
+  }[])[0];
+  let crmV = share?.crmV != null && Number(share.crmV) > 0 ? Math.trunc(Number(share.crmV)) : 0;
+  const customerV =
+    share?.customerV != null && Number(share.customerV) > 0 ? Math.trunc(Number(share.customerV)) : 0;
+  let visible = parseCrmVisibleVersionNumbers(share?.visible);
+  if (visible.length === 0 && crmV > 0) visible = [crmV];
+
+  if (Number.isFinite(requested) && requested != null && requested > 0) {
+    const req = Math.trunc(requested);
+    if (visible.includes(req)) return req;
+    const newest = await latestQuoteDiscountVersionNumber(pool, quoteId);
+    if (newest != null && req === newest) return req;
+    if (customerV > 0 && req === customerV) return req;
+  }
+
+  const newestDiscount = (await latestQuoteDiscountVersionNumber(pool, quoteId)) ?? 0;
+  const effective = Math.max(crmV, customerV, newestDiscount);
+  return effective > 0 ? effective : crmV > 0 ? crmV : customerV > 0 ? customerV : undefined;
+}
+
 export async function loadHubDiscountMetaForQuote(
   pool: Pool,
   quoteId: number,
@@ -2507,11 +2575,12 @@ export function registerProlanceRoutes(
     quoteId: number,
     requested: number,
   ): Promise<number | undefined> => {
-    const meta = await loadCrmShareMetaForQuote(quoteId);
-    if (Number.isFinite(requested) && requested > 0 && meta.visible.includes(requested)) {
-      return requested;
-    }
-    return meta.latest;
+    const resolved = await resolveEffectiveCrmQuoteVersion(
+      pool,
+      quoteId,
+      Number.isFinite(requested) && requested > 0 ? requested : undefined,
+    );
+    return resolved;
   };
 
   /** Pre-10 customer links must open the version selected for CRM, not a later quote id. */
@@ -3232,11 +3301,22 @@ function formatProlancePName(
         });
         return;
       }
+      const activeQuoteId = crmSharedQuoteId ?? seed;
+      const newestDiscountVer = await latestQuoteDiscountVersionNumber(pool, activeQuoteId);
+      const crmActiveVersionNumber = Math.max(
+        crmSharedVersionNumber ?? 0,
+        sharedVersionNumber ?? 0,
+        newestDiscountVer ?? 0,
+      );
       res.json({
         leadId,
         versions: presentVersions(versions),
         sharedVersionNumber,
-        crmSharedVersionNumber,
+        crmSharedVersionNumber:
+          crmActiveVersionNumber > 0 ? crmActiveVersionNumber : crmSharedVersionNumber,
+        crmActiveVersionNumber: crmActiveVersionNumber > 0 ? crmActiveVersionNumber : null,
+        crmSharedVersionPinned:
+          crmSharedVersionNumber != null && crmSharedVersionNumber > 0 ? crmSharedVersionNumber : null,
         crmSharedQuoteId,
         crmVisibleVersionNumbers,
         isPre10,

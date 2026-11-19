@@ -504,6 +504,28 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
   const viewingVersionParam = Number(searchParams.get('version'));
   const viewingVersionNumber =
     Number.isFinite(viewingVersionParam) && viewingVersionParam > 0 ? viewingVersionParam : null;
+  const isPreviewingQuoteVersion = searchParams.get('view') === '1';
+  const maxQuoteVersionNumber = useMemo(() => {
+    const t = quoteIdProp.trim();
+    return quoteVersions.reduce((m, v) => {
+      if (t && String(v.quoteId) !== t) return m;
+      const n = Number(v.versionNumber);
+      return Number.isFinite(n) && n > m ? n : m;
+    }, 0);
+  }, [quoteVersions, quoteIdProp]);
+  const crmActiveVersionNumber = useMemo(() => {
+    if (!crmAudience) return null;
+    const n = Math.max(
+      crmSharedVersionNumber ?? 0,
+      sharedVersionNumber ?? 0,
+      maxQuoteVersionNumber ?? 0,
+    );
+    return n > 0 ? n : null;
+  }, [crmAudience, crmSharedVersionNumber, sharedVersionNumber, maxQuoteVersionNumber]);
+  /** Never pin stale crm_shared on load — only explicit ?version= or backend default (no param). */
+  const quoteLoadVersionNumber = isPreviewingQuoteVersion
+    ? viewingVersionNumber
+    : viewingVersionNumber;
 
   const normalizeQuoteRole = (raw: unknown): string =>
     String(raw || '')
@@ -827,8 +849,15 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
         if (!cancelled) {
           const shared = asNum(body.sharedVersionNumber);
           setSharedVersionNumber(shared != null && shared > 0 ? shared : null);
+          const crmActive = asNum(body.crmActiveVersionNumber);
           const crmShared = asNum(body.crmSharedVersionNumber);
-          setCrmSharedVersionNumber(crmShared != null && crmShared > 0 ? crmShared : null);
+          const crmVer =
+            crmActive != null && crmActive > 0
+              ? crmActive
+              : crmShared != null && crmShared > 0
+                ? crmShared
+                : null;
+          setCrmSharedVersionNumber(crmVer);
           const visibleNums = Array.isArray(body.crmVisibleVersionNumbers)
             ? body.crmVisibleVersionNumbers.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n > 0)
             : [];
@@ -851,6 +880,27 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       cancelled = true;
     };
   }, [versionFetchId, isInternalMode, crmAudience, sessionId]);
+
+  useEffect(() => {
+    if (!crmAudience || !isInternalMode) return;
+    if (isPreviewingQuoteVersion) return;
+    if (crmActiveVersionNumber == null || crmActiveVersionNumber < 1) return;
+    if (viewingVersionNumber != null && viewingVersionNumber >= crmActiveVersionNumber) return;
+    if (viewingVersionNumber == null) return;
+    const q = new URLSearchParams(searchParams.toString());
+    q.set('version', String(crmActiveVersionNumber));
+    q.delete('view');
+    router.replace(`${pathname}?${q.toString()}`, { scroll: false });
+  }, [
+    crmAudience,
+    isInternalMode,
+    isPreviewingQuoteVersion,
+    crmActiveVersionNumber,
+    viewingVersionNumber,
+    pathname,
+    router,
+    searchParams,
+  ]);
 
   useEffect(() => {
     if (!isInternalMode || crmAudience) return;
