@@ -55,11 +55,15 @@ type Props = {
   onUploadSuccess?: () => void;
 };
 
-type DqcQuoteSource = 'customer_shared' | 'locked_dqc1' | 'locked_dqc2' | 'none' | null;
+type DqcQuoteSource = 'customer_shared' | 'crm_shared' | 'locked_dqc1' | 'locked_dqc2' | 'none' | null;
+
+function isLiveDqcQuoteSource(source: DqcQuoteSource): source is 'customer_shared' | 'crm_shared' {
+  return source === 'customer_shared' || source === 'crm_shared';
+}
 
 /**
- * DQC Submission popup: Final Design PDFs + customer-shared quotation link.
- * Live popup never uses Pre-10 CRM share; submit freezes the link per DQC round.
+ * DQC Submission popup: Final Design PDFs + shared quotation link.
+ * Live popup prefers Share to customer, then CRM selection; submit freezes the link per DQC round.
  */
 export default function PopupDqcSubmission({
   leadId,
@@ -120,6 +124,7 @@ export default function PopupDqcSubmission({
             : null;
         const source =
           data.source === 'customer_shared' ||
+          data.source === 'crm_shared' ||
           data.source === 'locked_dqc1' ||
           data.source === 'locked_dqc2' ||
           data.source === 'none'
@@ -127,7 +132,7 @@ export default function PopupDqcSubmission({
             : null;
         setQuoteSource(source);
         setQuoteVersionNumber(version);
-        if (url && qid && Number.isFinite(qid) && qid > 0 && source === 'customer_shared') {
+        if (url && qid && Number.isFinite(qid) && qid > 0 && isLiveDqcQuoteSource(source)) {
           setQuotationLink(url);
           setQuoteId(qid);
           setQuoteError(null);
@@ -136,7 +141,7 @@ export default function PopupDqcSubmission({
           setQuoteId(null);
           setQuoteError(
             data.message ||
-              'Share a quotation to the customer first — open the quote revision history and use Share this to customer.',
+              'Share a quotation first — open the quote revision history and use Share this to customer, or select for CRM.',
           );
         }
       })
@@ -166,7 +171,7 @@ export default function PopupDqcSubmission({
 
   const handleSubmit = async () => {
     if (!leadId || !sessionId || drawingFiles.length === 0) return;
-    if (!quoteId || !quotationLink || quoteSource !== 'customer_shared') return;
+    if (!quoteId || !quotationLink || !isLiveDqcQuoteSource(quoteSource)) return;
     setSubmitError(null);
     setSubmitting(true);
     try {
@@ -283,8 +288,8 @@ export default function PopupDqcSubmission({
     }
   };
 
-  const hasCustomerQuote = quoteId != null && Boolean(quotationLink) && quoteSource === 'customer_shared';
-  const canSubmit = drawingFiles.length > 0 && hasCustomerQuote;
+  const hasSharedQuote = quoteId != null && Boolean(quotationLink) && isLiveDqcQuoteSource(quoteSource);
+  const canSubmit = drawingFiles.length > 0 && hasSharedQuote;
 
   return (
     <>
@@ -305,7 +310,7 @@ export default function PopupDqcSubmission({
         </button>
       </div>
       <p className="text-sm text-gray-600 px-6 pb-4">
-        Submit finalized design files with the customer-shared quotation. DQC will review the drawings against that quote and resolve (approve or request changes).
+        Submit finalized design files with the shared quotation. DQC will review the drawings against that quote and resolve (approve or request changes).
       </p>
 
       <div className="px-6 space-y-6 pb-4">
@@ -355,15 +360,19 @@ export default function PopupDqcSubmission({
         <div>
           <div className="flex justify-between items-center mb-2">
             <span className="font-bold text-sm uppercase text-gray-800">Final Quotation</span>
-            <span className="text-xs text-gray-500">Customer-shared quote</span>
+            <span className="text-xs text-gray-500">
+              {quoteSource === 'crm_shared' ? 'CRM-selected quote' : 'Shared quote'}
+            </span>
           </div>
           <div className="rounded-lg border border-gray-200 bg-gray-50/80 p-4">
             {quoteLoading ? (
               <p className="text-sm text-gray-500">Loading quotation link…</p>
-            ) : hasCustomerQuote ? (
+            ) : hasSharedQuote ? (
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
-                  <p className="text-sm font-semibold text-[#32261C]">Customer-shared quotation</p>
+                  <p className="text-sm font-semibold text-[#32261C]">
+                    {quoteSource === 'crm_shared' ? 'CRM-selected quotation' : 'Customer-shared quotation'}
+                  </p>
                   <p className="text-xs text-gray-500 mt-0.5">
                     {[
                       quoteVersionNumber != null ? `Version ${quoteVersionNumber}` : null,
@@ -385,7 +394,7 @@ export default function PopupDqcSubmission({
             ) : (
               <p className="text-sm text-amber-800">
                 {quoteError ||
-                  'Share a quotation to the customer first — open the quote revision history and use Share this to customer.'}
+                  'Share a quotation first — open the quote revision history and use Share this to customer, or select for CRM.'}
               </p>
             )}
           </div>
@@ -402,7 +411,7 @@ export default function PopupDqcSubmission({
           <div>
             <p className="font-semibold text-[#00B0ED] text-sm">Files and quotation go to DQC</p>
             <p className="text-sm text-[#00B0ED] mt-0.5">
-              Drawing files are uploaded and the customer-shared quotation is locked for this DQC round. Later quote updates will not change a previous round&apos;s link.
+              Drawing files are uploaded and the shared quotation is locked for this DQC round. Later quote updates will not change a previous round&apos;s link.
             </p>
           </div>
         </div>

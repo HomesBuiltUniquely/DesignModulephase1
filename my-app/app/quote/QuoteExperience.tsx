@@ -18,6 +18,7 @@ import type { QuoteRoom } from '@/app/quote/quoteTypes';
 import { extractLineItemPrice, extractUnitDisplayPrice, mergeQuoteLineItemArrays } from '@/app/quote/quoteLineItems';
 import { applyDiscountMetaToLocalPayload } from '@/app/quote/applyQuoteDiscountLocally';
 import {
+  discountMetaFromLatestVersionHint,
   discountMetaFromVersionHints,
   payloadHasExplicitHubDiscountMeta,
   payloadHasHubDiscountFields,
@@ -423,34 +424,12 @@ function parseQuoteVersionRow(row: unknown, fallbackQuoteId?: string | null): Qu
   };
 }
 
-function versionsForCrmAudience(
-  versions: QuoteVersionRow[],
-  crmSharedVersionNumber: number | null | undefined,
-  visibleVersionNumbers?: number[] | null,
-): QuoteVersionRow[] {
+/** CRM list is already scoped on the server; only stabilize sort (do not re-filter). */
+function versionsForCrmAudience(versions: QuoteVersionRow[]): QuoteVersionRow[] {
   if (versions.length <= 1) return versions;
-  const allowed = new Set(
-    (visibleVersionNumbers ?? []).filter((n) => Number.isFinite(n) && n > 0).map((n) => Number(n)),
+  return [...versions].sort(
+    (a, b) => Number(a.versionNumber ?? 0) - Number(b.versionNumber ?? 0),
   );
-  if (crmSharedVersionNumber != null && crmSharedVersionNumber > 0) {
-    allowed.add(Number(crmSharedVersionNumber));
-  }
-  if (allowed.size > 0) {
-    const matched = versions.filter((v) => allowed.has(Number(v.versionNumber)));
-    if (matched.length > 0) return matched;
-  }
-  const crmCreated = versions.filter((v) => String(v.sourceModule || '').toLowerCase() === 'crm');
-  if (crmCreated.length > 0) {
-    const keep = new Set(crmCreated.map((v) => Number(v.versionNumber)));
-    if (crmSharedVersionNumber != null && crmSharedVersionNumber > 0) {
-      keep.add(Number(crmSharedVersionNumber));
-    }
-    const withBase = versions.filter((v) => keep.has(Number(v.versionNumber)));
-    return withBase.length > 0 ? withBase : crmCreated;
-  }
-  return crmSharedVersionNumber != null && crmSharedVersionNumber > 0
-    ? versions.filter((v) => Number(v.versionNumber) === Number(crmSharedVersionNumber))
-    : [versions[versions.length - 1]];
 }
 
 export type QuoteExperienceProps = {
@@ -493,17 +472,53 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
   const [resolvedLeadId, setResolvedLeadId] = useState<number | null>(leadIdNum);
   const [sharedVersionNumber, setSharedVersionNumber] = useState<number | null>(null);
   const [crmSharedVersionNumber, setCrmSharedVersionNumber] = useState<number | null>(null);
+  const [crmDiscountActiveVersion, setCrmDiscountActiveVersion] = useState<number | null>(null);
   const [crmVisibleVersionNumbers, setCrmVisibleVersionNumbers] = useState<number[]>([]);
   const [isPre10Lead, setIsPre10Lead] = useState(false);
   const [shareVersionSaving, setShareVersionSaving] = useState(false);
   const [shareVersionError, setShareVersionError] = useState<string | null>(null);
+  /** CRM embed (crmUser / audience=crm) — controls Share-to-CRM visibility like before leadId was included here. */
   const crmAudience =
     searchParams.get('audience') === 'crm' ||
     (isInternalMode &&
       Boolean(searchParams.get('crmRole') || searchParams.get('userRole') || searchParams.get('crmUser')));
+  /** CRM quote API (discount + revision list) — still uses audience=crm when internal has ?leadId=. */
+  const useCrmQuoteApi =
+    crmAudience || (isInternalMode && leadIdNum != null && leadIdNum > 0);
   const viewingVersionParam = Number(searchParams.get('version'));
   const viewingVersionNumber =
     Number.isFinite(viewingVersionParam) && viewingVersionParam > 0 ? viewingVersionParam : null;
+  const isPreviewingQuoteVersion = searchParams.get('view') === '1';
+  const maxQuoteVersionNumber = useMemo(() => {
+    const t = quoteIdProp.trim();
+    return quoteVersions.reduce((m, v) => {
+      if (t && String(v.quoteId) !== t) return m;
+      const n = Number(v.versionNumber);
+      return Number.isFinite(n) && n > m ? n : m;
+    }, 0);
+  }, [quoteVersions, quoteIdProp]);
+  const crmActiveVersionNumber = useMemo(() => {
+    if (!crmAudience) return null;
+    if (crmDiscountActiveVersion != null && crmDiscountActiveVersion > 0) {
+      return crmDiscountActiveVersion;
+    }
+    const n = Math.max(
+      crmSharedVersionNumber ?? 0,
+      sharedVersionNumber ?? 0,
+      maxQuoteVersionNumber ?? 0,
+    );
+    return n > 0 ? n : null;
+  }, [
+    crmAudience,
+    crmDiscountActiveVersion,
+    crmSharedVersionNumber,
+    sharedVersionNumber,
+    maxQuoteVersionNumber,
+  ]);
+  /** Never pin stale crm_shared on load — only explicit ?version= or backend default (no param). */
+  const quoteLoadVersionNumber = isPreviewingQuoteVersion
+    ? viewingVersionNumber
+    : viewingVersionNumber;
 
   const normalizeQuoteRole = (raw: unknown): string =>
     String(raw || '')
@@ -525,6 +540,15 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     quoteRoleEarly === 'super_admin' ||
     quoteRoleEarly === 'superadmin' ||
     (isInternalMode && isCrmSalesQuoteRole);
+  /** Matches backend crm-share allowlist — designers / design leadership only (not CRM sales). */
+  const canShareQuoteVersionToCrm =
+    quoteRoleEarly === 'designer' ||
+    quoteRoleEarly === 'design_manager' ||
+    quoteRoleEarly === 'territorial_design_manager' ||
+    quoteRoleEarly === 'deputy_general_manager' ||
+    quoteRoleEarly === 'admin' ||
+    quoteRoleEarly === 'super_admin' ||
+    quoteRoleEarly === 'superadmin';
   const canEditDiscountByRole = canEditDiscountByDesignRole || (isInternalMode && isCrmSalesQuoteRole);
 
   useEffect(() => {
@@ -549,10 +573,15 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           setError(null);
         }
         const cacheBust = `t=${Date.now()}`;
-        const audienceQs = crmAudience
-          ? `audience=crm&internal=1${viewingVersionNumber != null ? `&version=${viewingVersionNumber}` : ''}`
+        const leadIdQs = searchParams.get('leadId')?.trim()
+          ? `&leadId=${encodeURIComponent(searchParams.get('leadId')!.trim())}`
+          : '';
+        const versionQs =
+          viewingVersionNumber != null ? `&version=${viewingVersionNumber}` : '';
+        const audienceQs = useCrmQuoteApi
+          ? `audience=crm&internal=1${leadIdQs}${versionQs}`
           : isInternalMode
-            ? `internal=1${viewingVersionNumber != null ? `&version=${viewingVersionNumber}` : ''}`
+            ? `internal=1${leadIdQs}${isPreviewingQuoteVersion ? versionQs : viewingVersionNumber != null ? versionQs : ''}`
             : 'audience=customer';
         const parseBody = async (response: Response): Promise<unknown> => {
           const txt = await response.text();
@@ -605,7 +634,13 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                   pct &&
                   typeof pct === 'object' &&
                   Object.values(pct as Record<string, unknown>).some((v) => Number(v) > 0);
-                if ((Number.isFinite(amt) && amt > 0) || (Number.isFinite(add) && add > 0) || hasPct) {
+                const explicitClear = payloadHasExplicitHubDiscountMeta(discount);
+                if (
+                  (Number.isFinite(amt) && amt > 0) ||
+                  (Number.isFinite(add) && add > 0) ||
+                  hasPct ||
+                  explicitClear
+                ) {
                   nextPayload = applyDiscountMetaToLocalPayload(nextPayload, discount);
                 }
               }
@@ -636,7 +671,9 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
                     updatedValues: o.updatedValues ?? o.updated_values,
                   };
                 });
-                const fromVersions = discountMetaFromVersionHints(hints, q);
+                const fromVersions = useCrmQuoteApi
+                  ? discountMetaFromLatestVersionHint(hints, q)
+                  : discountMetaFromVersionHints(hints, q);
                 if (fromVersions) {
                   nextPayload = applyDiscountMetaToLocalPayload(nextPayload, fromVersions);
                 }
@@ -656,7 +693,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     return () => {
       cancelled = true;
     };
-  }, [quoteIdProp, preloadedPayload, isInternalMode, crmAudience, viewingVersionNumber]);
+  }, [quoteIdProp, preloadedPayload, isInternalMode, useCrmQuoteApi, viewingVersionNumber, searchParams, isPreviewingQuoteVersion]);
 
   const fallbackNormId = useMemo(() => {
     const t = quoteIdProp.trim();
@@ -785,14 +822,14 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       setQuoteVersionsLoading(true);
       setQuoteVersionsError(null);
       try {
-        const audienceQs = crmAudience
+        const audienceQs = useCrmQuoteApi
           ? 'audience=crm'
           : isInternalMode
             ? 'internal=1'
             : 'audience=customer';
         // Designers always load the full revision list (internal=1). CRM audience stays filtered.
         const versionHeaders: HeadersInit = {};
-        if (sessionId && (isInternalMode || crmAudience)) {
+        if (sessionId && (isInternalMode || useCrmQuoteApi)) {
           versionHeaders.Authorization = `Bearer ${sessionId}`;
         }
         const res = await fetch(
@@ -804,6 +841,8 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           versions?: unknown;
           message?: unknown;
           sharedVersionNumber?: unknown;
+          crmActiveVersionNumber?: unknown;
+          crmSharedVersionPinned?: unknown;
           crmSharedVersionNumber?: unknown;
           crmVisibleVersionNumbers?: unknown;
           isPre10?: unknown;
@@ -827,16 +866,17 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
         if (!cancelled) {
           const shared = asNum(body.sharedVersionNumber);
           setSharedVersionNumber(shared != null && shared > 0 ? shared : null);
-          const crmShared = asNum(body.crmSharedVersionNumber);
-          setCrmSharedVersionNumber(crmShared != null && crmShared > 0 ? crmShared : null);
+          const crmActive = asNum(body.crmActiveVersionNumber);
+          const crmPinned =
+            asNum(body.crmSharedVersionPinned) ?? asNum(body.crmSharedVersionNumber);
+          setCrmSharedVersionNumber(crmPinned != null && crmPinned > 0 ? crmPinned : null);
+          setCrmDiscountActiveVersion(crmActive != null && crmActive > 0 ? crmActive : null);
           const visibleNums = Array.isArray(body.crmVisibleVersionNumbers)
             ? body.crmVisibleVersionNumbers.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n > 0)
             : [];
           setCrmVisibleVersionNumbers(visibleNums);
           setIsPre10Lead(body.isPre10 === true);
-          setQuoteVersions(
-            crmAudience ? versionsForCrmAudience(versions, crmShared, visibleNums) : versions,
-          );
+          setQuoteVersions(useCrmQuoteApi ? versionsForCrmAudience(versions) : versions);
         }
       } catch (e) {
         if (!cancelled) {
@@ -850,7 +890,28 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
     return () => {
       cancelled = true;
     };
-  }, [versionFetchId, isInternalMode, crmAudience, sessionId]);
+  }, [versionFetchId, isInternalMode, useCrmQuoteApi, sessionId]);
+
+  useEffect(() => {
+    if (!crmAudience || !isInternalMode) return;
+    if (isPreviewingQuoteVersion) return;
+    if (crmActiveVersionNumber == null || crmActiveVersionNumber < 1) return;
+    if (viewingVersionNumber != null && viewingVersionNumber >= crmActiveVersionNumber) return;
+    if (viewingVersionNumber == null) return;
+    const q = new URLSearchParams(searchParams.toString());
+    q.set('version', String(crmActiveVersionNumber));
+    q.delete('view');
+    router.replace(`${pathname}?${q.toString()}`, { scroll: false });
+  }, [
+    crmAudience,
+    isInternalMode,
+    isPreviewingQuoteVersion,
+    crmActiveVersionNumber,
+    viewingVersionNumber,
+    pathname,
+    router,
+    searchParams,
+  ]);
 
   useEffect(() => {
     if (!isInternalMode || crmAudience) return;
@@ -1114,12 +1175,21 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       if (bodyObj && Array.isArray(bodyObj.versions)) {
         const parsed = parseVersionsArray(bodyObj.versions);
         let crmVer = crmSharedVersionNumber;
-        if (crmAudience && parsed.length > 0) {
-          const newest = parsed[parsed.length - 1];
-          const n = Number(newest.versionNumber);
-          if (Number.isFinite(n) && n > 0) {
-            crmVer = n;
-            setCrmSharedVersionNumber(n);
+        const savedVerRaw = bodyObj.versionNumber ?? bodyObj.crmSharedVersionNumber;
+        const savedVer = Number(savedVerRaw);
+        if (Number.isFinite(savedVer) && savedVer > 0) {
+          crmVer = savedVer;
+          setCrmSharedVersionNumber(savedVer);
+          setCrmDiscountActiveVersion(savedVer);
+        } else if (crmAudience && parsed.length > 0) {
+          const maxVer = parsed.reduce((m, row) => {
+            const v = Number(row.versionNumber);
+            return Number.isFinite(v) && v > m ? v : m;
+          }, 0);
+          if (maxVer > 0) {
+            crmVer = maxVer;
+            setCrmSharedVersionNumber(maxVer);
+            setCrmDiscountActiveVersion(maxVer);
           }
         }
         const nextVisible = [...crmVisibleVersionNumbers];
@@ -1128,12 +1198,36 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
           nextVisible.push(crmSharedVersionNumber);
         }
         setCrmVisibleVersionNumbers(nextVisible);
-        appliedVersions = crmAudience ? versionsForCrmAudience(parsed, crmVer, nextVisible) : parsed;
+        appliedVersions = useCrmQuoteApi ? versionsForCrmAudience(parsed) : parsed;
         setQuoteVersions(appliedVersions);
-        if (crmAudience && crmVer != null && crmVer > 0 && typeof window !== 'undefined') {
+        if (
+          crmVer != null &&
+          crmVer > 0 &&
+          (useCrmQuoteApi || viewingVersionNumber != null) &&
+          typeof window !== 'undefined'
+        ) {
           const q = new URLSearchParams(searchParams.toString());
           q.set('version', String(crmVer));
-          router.replace(`${pathname}?${q.toString()}`, { scroll: false });
+          if (!q.get('audience') && useCrmQuoteApi) q.set('audience', 'crm');
+          q.delete('view');
+          window.location.assign(`${pathname}?${q.toString()}`);
+          return {
+            alreadyExists: Boolean(bodyObj?.alreadyExists),
+            message: bodyObj?.message ? String(bodyObj.message) : undefined,
+          };
+        }
+      } else if (bodyObj && typeof window !== 'undefined') {
+        const savedVer = Number(bodyObj.versionNumber ?? bodyObj.crmSharedVersionNumber);
+        if (Number.isFinite(savedVer) && savedVer > 0 && (useCrmQuoteApi || viewingVersionNumber != null)) {
+          const q = new URLSearchParams(searchParams.toString());
+          q.set('version', String(savedVer));
+          if (!q.get('audience') && useCrmQuoteApi) q.set('audience', 'crm');
+          q.delete('view');
+          window.location.assign(`${pathname}?${q.toString()}`);
+          return {
+            alreadyExists: Boolean(bodyObj?.alreadyExists),
+            message: bodyObj?.message ? String(bodyObj.message) : undefined,
+          };
         }
       }
 
@@ -1142,9 +1236,9 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
         (async () => {
           try {
             setQuoteVersionsLoading(true);
-            const audienceQs = crmAudience ? 'audience=crm' : isInternalMode ? 'internal=1' : 'audience=customer';
+            const audienceQs = useCrmQuoteApi ? 'audience=crm' : isInternalMode ? 'internal=1' : 'audience=customer';
             const versionHeaders: HeadersInit = {};
-            if (sessionId && (isInternalMode || crmAudience)) {
+            if (sessionId && (isInternalMode || useCrmQuoteApi)) {
               versionHeaders.Authorization = `Bearer ${sessionId}`;
             }
             const vRes = await fetch(
@@ -1158,9 +1252,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
               const fetched = parseVersionsArray(vBody.versions);
               if (fetched.length > 0) {
                 setQuoteVersions(
-                  crmAudience
-                    ? versionsForCrmAudience(fetched, crmSharedVersionNumber, crmVisibleVersionNumbers)
-                    : fetched,
+                  useCrmQuoteApi ? versionsForCrmAudience(fetched) : fetched,
                 );
               }
             }
@@ -1206,7 +1298,8 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       };
       if (sessionId) {
         headers['Authorization'] = `Bearer ${sessionId}`;
-      } else if (viaCrmDiscountEdit && !selectingForCrm) {
+      }
+      if (viaCrmDiscountEdit) {
         headers['X-Crm-Role'] = effectiveCrmRole;
         headers['X-Crm-User'] = effectiveCrmUser;
       }
@@ -1349,6 +1442,7 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
       onSaveDiscount={discountEditable ? handleSaveDiscount : undefined}
       sharedVersionNumber={sharedVersionNumber}
       crmSharedVersionNumber={crmSharedVersionNumber}
+      crmDiscountActiveVersion={crmActiveVersionNumber}
       viewingVersionNumber={viewingVersionNumber}
       shareVersionSaving={shareVersionSaving}
       shareVersionError={shareVersionError}
@@ -1368,7 +1462,8 @@ export function QuoteExperience({ quoteId: quoteIdProp, preloadedPayload }: Quot
         !crmAudience &&
         Boolean(sessionId) &&
         resolvedLeadId != null &&
-        resolvedLeadId > 0
+        resolvedLeadId > 0 &&
+        canShareQuoteVersionToCrm
           ? (versionNumber, quoteId) => handleShareQuoteVersion(versionNumber, quoteId, 'crm')
           : undefined
       }

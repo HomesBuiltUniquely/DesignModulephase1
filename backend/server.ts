@@ -70,6 +70,8 @@ import {
   startActiveCrmMeetingForLead,
   startCrmMeeting,
   endCrmMeeting,
+  abandonCrmMeeting,
+  isCrmDrrMeeting,
   completePre10CrmMeetingAfterQuoteShare,
   applyCrmMeetingFeedback,
   kolkataParts,
@@ -3189,14 +3191,16 @@ app.get("/api/service/whoami", async (req: Request, res: Response) => {
 });
 
 function quoteVersionUniquenessKey(item: {
+  id?: number;
   quoteId: number;
   changeSummary?: string;
   versionNumber?: number;
 }): string {
+  if (item.id != null && Number(item.id) > 0) return `id:${item.id}`;
+  if (item.versionNumber && item.versionNumber > 0) return `${item.quoteId}:v${item.versionNumber}`;
   const summary = String(item.changeSummary || "").trim();
   if (/^quote generated$/i.test(summary)) return `${item.quoteId}|generated`;
   if (summary && !/^no changes$/i.test(summary)) return `${item.quoteId}|${summary.toLowerCase()}`;
-  if (item.versionNumber && item.versionNumber > 0) return `${item.quoteId}:v${item.versionNumber}`;
   return `${item.quoteId}:base`;
 }
 
@@ -3271,7 +3275,38 @@ async function loadProlanceQuoteVersionsForLead(leadId: number): Promise<
     versionNumber: r.versionNumber ? Number(r.versionNumber) : undefined,
     internalNote: r.internalNote != null && String(r.internalNote).trim() ? String(r.internalNote) : undefined,
   }));
-  // Current lead quote id is persisted as a real version row on first snapshot — do not invent extras.
+  const quoteIdsWithRows = new Set(list.map((r) => r.quoteId));
+  try {
+    const [snapRows] = await pool.query(
+      `SELECT quote_id AS quoteId, MIN(created_at) AS createdAt
+       FROM lead_prolance_quote_snapshots WHERE lead_id = ?
+       GROUP BY quote_id ORDER BY MIN(created_at) ASC`,
+      [leadId],
+    );
+    for (const snap of snapRows as { quoteId?: unknown; createdAt?: unknown }[]) {
+      const qid = Number(snap.quoteId);
+      if (!Number.isFinite(qid) || qid < 1 || quoteIdsWithRows.has(qid)) continue;
+      quoteIdsWithRows.add(qid);
+      list.push({
+        id: undefined,
+        quoteId: qid,
+        createdAt: toIso(snap.createdAt),
+        createdBy: undefined,
+        createdByRole: undefined,
+        sourceModule: "Design Module",
+        changeSummary: "Quote generated",
+        versionNumber: undefined,
+        internalNote: undefined,
+      });
+    }
+    list.sort(
+      (a, b) =>
+        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime() ||
+        Number(a.id ?? 0) - Number(b.id ?? 0),
+    );
+  } catch {
+    /* optional */
+  }
   return dedupeProlanceQuoteVersionRows(list);
 }
 
@@ -8758,6 +8793,21 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
               : undefined,
         meetingStatus: isRescheduleMeeting ? "RESCHEDULED" : payload.meetingStatus || prev.meetingStatus || null,
         action: isRescheduleMeeting ? "RESCHEDULED" : payload.action || prev.action || null,
+        ...(pickTrimmedString(
+          (payload as any)?.meetingLabel,
+          (payload as any)?.meeting_label,
+          (payload as any)?.designMilestone,
+          (payload as any)?.milestoneSubStage,
+        )
+          ? {
+              meetingLabel: pickTrimmedString(
+                (payload as any)?.meetingLabel,
+                (payload as any)?.meeting_label,
+                (payload as any)?.designMilestone,
+                (payload as any)?.milestoneSubStage,
+              ),
+            }
+          : {}),
       };
       await pool.query(
         `UPDATE leads
@@ -8789,13 +8839,15 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
           typeof appointmentSlot === "string" || appointmentSlot != null
             ? String(appointmentSlot).trim()
             : "";
+        const allowDrrRevisitAfterSuccess =
+          alreadySuccessful && isRescheduleMeeting && Boolean(appointmentDate) && Boolean(normalizedIncomingSlot);
         // Hub bug: null/empty slot on upsert must not touch schedule (esp. successful meetings).
         const shouldSyncMeeting =
           Boolean(appointmentDate) &&
-          !alreadySuccessful &&
+          (!alreadySuccessful || allowDrrRevisitAfterSuccess) &&
           (Boolean(normalizedIncomingSlot) || isRescheduleMeeting);
 
-        if (alreadySuccessful) {
+        if (alreadySuccessful && !allowDrrRevisitAfterSuccess) {
           console.info("[external-upsert] skip meeting sync — CRM meeting already successful", {
             leadId: existingLeadId,
             meetingId: activeMtg?.id ?? null,
@@ -8809,12 +8861,19 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
             keptTime: activeMtg?.meetingTime ?? null,
           });
         } else if (shouldSyncMeeting) {
+          const intakeMeetingLabel = pickTrimmedString(
+            (payload as any)?.meetingLabel,
+            (payload as any)?.meeting_label,
+            (payload as any)?.designMilestone,
+            (payload as any)?.milestoneSubStage,
+          );
           recordedMeeting = await recordCrmMeeting(pool, {
             leadId: existingLeadId,
             meetingDate: appointmentDate,
             // Pass null when empty so recordCrmMeeting keeps the previous time.
             meetingTime: normalizedIncomingSlot || null,
             meetingType: intakeMeetingType,
+            meetingLabel: intakeMeetingLabel,
             meetingMode: /virtual/i.test(crmText) ? "online" : /showroom|site/i.test(crmText) ? "offline" : null,
             designerId: assignedDesignerId,
             actor: { name: "CRM" },
@@ -9182,16 +9241,22 @@ async function loadCrmShareForLead(leadId: number): Promise<CrmShareSelection | 
 async function loadCustomerSharedQuoteForLead(leadId: number): Promise<CrmShareSelection | null> {
   try {
     const [rows] = await pool.query(
-      `SELECT customer_shared_version_number AS versionNumber
-       FROM lead_prolance_quote_snapshots
-       WHERE lead_id = ?
-         AND customer_shared_version_number IS NOT NULL
-         AND customer_shared_version_number > 0
-       ORDER BY id DESC
+      `SELECT s.customer_shared_version_number AS versionNumber, s.quote_id AS quoteId
+       FROM lead_prolance_quote_snapshots s
+       WHERE s.customer_shared_version_number IS NOT NULL
+         AND s.customer_shared_version_number > 0
+         AND (
+           s.lead_id = ?
+           OR s.quote_id IN (
+             SELECT v.quote_id FROM lead_prolance_quote_versions v WHERE v.lead_id = ?
+           )
+         )
+       ORDER BY (s.lead_id = ?) DESC, s.id DESC
        LIMIT 1`,
-      [leadId],
+      [leadId, leadId, leadId],
     );
-    const versionNumber = asPositiveInt((rows as { versionNumber?: unknown }[])[0]?.versionNumber);
+    const row = (rows as { versionNumber?: unknown; quoteId?: unknown }[])[0];
+    const versionNumber = asPositiveInt(row?.versionNumber);
     if (versionNumber == null) return null;
     const [verRows] = await pool.query(
       `SELECT quote_id AS quoteId
@@ -9202,6 +9267,9 @@ async function loadCustomerSharedQuoteForLead(leadId: number): Promise<CrmShareS
       [leadId, versionNumber],
     );
     let quoteId = asPositiveInt((verRows as { quoteId?: unknown }[])[0]?.quoteId);
+    if (quoteId == null) {
+      quoteId = asPositiveInt(row?.quoteId);
+    }
     if (quoteId == null) {
       const versions = await loadProlanceQuoteVersionsForLead(leadId);
       const matched =
@@ -9220,7 +9288,7 @@ async function loadSelectedQuoteForLead(leadId: number): Promise<CrmShareSelecti
   return (await loadCrmShareForLead(leadId)) || (await loadCustomerSharedQuoteForLead(leadId));
 }
 
-/** DQC popup / reviewer: customer-shared (live) or per-round lock (never CRM-first). */
+/** DQC popup / reviewer: customer-shared then CRM (live), or per-round lock. */
 async function resolveDqcQuoteForLead(
   leadId: number,
   round: DqcQuoteRound,
@@ -9229,26 +9297,28 @@ async function resolveDqcQuoteForLead(
   return resolveDqcQuoteLinkForLead(pool, leadId, round, mode, {
     frontendBase: frontendBase(),
     loadCustomerShared: loadCustomerSharedQuoteForLead,
+    loadCrmShared: loadCrmShareForLead,
   });
 }
 
-/** Canonical customer-shared link for a DQC submit (rejects CRM-only / missing customer share). */
+/** Canonical quote for a DQC submit: customer share first, then CRM selection. */
 async function resolveCanonicalCustomerQuoteForDqcSubmit(leadId: number): Promise<{
   quoteId: number;
   versionNumber: number | null;
   quotationLink: string;
 } | null> {
-  const customer = await loadCustomerSharedQuoteForLead(leadId);
-  if (!customer) return null;
+  const selected =
+    (await loadCustomerSharedQuoteForLead(leadId)) || (await loadCrmShareForLead(leadId));
+  if (!selected) return null;
   return {
-    quoteId: customer.quoteId,
-    versionNumber: customer.versionNumber > 0 ? customer.versionNumber : null,
-    quotationLink: buildCustomerQuoteUrl(frontendBase(), customer.quoteId, customer.versionNumber),
+    quoteId: selected.quoteId,
+    versionNumber: selected.versionNumber > 0 ? selected.versionNumber : null,
+    quotationLink: buildCustomerQuoteUrl(frontendBase(), selected.quoteId, selected.versionNumber),
   };
 }
 
 /**
- * For link-only DQC submits: require current customer share and persist that canonical URL.
+ * For link-only DQC submits: require customer share or CRM selection and persist that URL.
  * If quotation files are uploaded, keep client quote meta as optional annotation.
  */
 async function resolveQuoteMetaForDqcSubmit(
@@ -9283,7 +9353,7 @@ async function resolveQuoteMetaForDqcSubmit(
     return {
       ok: false,
       message:
-        "Share a quotation to the customer first (quote revision history → Share this to customer), then retry DQC submission.",
+        "Share a quotation first (quote revision → Share this to customer, or select for CRM), then retry DQC submission.",
     };
   }
   return { ok: true, meta: canonical };
@@ -18534,6 +18604,22 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
       return res.json(enriched);
     }
 
+    // Scope in SQL for common roles so we do not enrich all ~1200 leads then discard them.
+    // Admin / TDM / DGM still get the full list.
+    let queueWhereSql = "";
+    const queueWhereParams: number[] = [];
+    if (user?.id && role === "designer") {
+      queueWhereSql = " WHERE l.assigned_designer_id = ? ";
+      queueWhereParams.push(Number(user.id));
+    } else if (user?.id && role === "design_manager") {
+      queueWhereSql =
+        " WHERE l.assigned_designer_id IN (SELECT id FROM users WHERE design_manager_id = ?) ";
+      queueWhereParams.push(Number(user.id));
+    } else if (user?.id && role === "project_manager") {
+      queueWhereSql = " WHERE l.assigned_project_manager_id = ? ";
+      queueWhereParams.push(Number(user.id));
+    }
+
     const [rows] = await pool.query(
       `SELECT l.id, l.pid, l.project_name as projectName, l.project_stage as projectStage,
               l.contact_no as contactNo, l.client_email as clientEmail,
@@ -18593,7 +18679,9 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
        LEFT JOIN users u ON u.id = l.assigned_designer_id
        LEFT JOIN users dm ON dm.id = u.design_manager_id
        LEFT JOIN users pm ON pm.id = l.assigned_project_manager_id
+       ${queueWhereSql}
        ORDER BY l.id ASC`,
+      queueWhereParams,
     );
     const payloadByLeadId = new Map<number, unknown>();
     const baseList = (rows as any[])
@@ -18715,9 +18803,18 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
     }
 
     // Enrich with current milestone (from task completions) for Design Phase dashboard
-    const [completionRows] = await pool.query(
-      `SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName, completed_at as completedAt FROM lead_task_completions`,
-    );
+    const completionLeadIds = (baseList as { id: number }[])
+      .map((l) => Number(l.id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    const [completionRows] =
+      completionLeadIds.length > 0
+        ? await pool.query(
+            `SELECT lead_id as leadId, milestone_index as milestoneIndex, task_name as taskName, completed_at as completedAt
+             FROM lead_task_completions
+             WHERE lead_id IN (${completionLeadIds.map(() => "?").join(",")})`,
+            completionLeadIds,
+          )
+        : [[]];
     const compList = completionRows as {
       leadId: number;
       milestoneIndex: number;
@@ -18787,35 +18884,9 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
       enrichedList = enrichedList.filter((l: any) => l.projectBranch === reqQueueBranch);
     }
 
-    // Visibility rules for designers / design managers
-    if (user && role === "designer") {
-      const filtered = enrichedList.filter(
-        (l: any) =>
-          l.assigned_designer_id && l.assigned_designer_id === user.id,
-      );
-      return res.json(filtered);
-    }
-
-    if (user && role === "design_manager") {
-      const [dmRows] = await pool.query(
-        `SELECT l.id
-         FROM leads l
-         INNER JOIN users d ON d.id = l.assigned_designer_id
-         WHERE d.design_manager_id = ?`,
-        [user.id],
-      );
-      const allowedIds = new Set((dmRows as { id: number }[]).map((r) => r.id));
-      const filtered = enrichedList.filter((l: any) =>
-        allowedIds.has(l.id),
-      );
-      return res.json(filtered);
-    }
-
-    if (user && role === "project_manager") {
-      const filtered = enrichedList.filter(
-        (l: any) => l.assigned_project_manager_id && l.assigned_project_manager_id === user.id,
-      );
-      return res.json(filtered);
+    // Designer / DM / PM were already scoped in SQL above.
+    if (user && (role === "designer" || role === "design_manager" || role === "project_manager")) {
+      return res.json(enrichedList);
     }
 
     if (user && role === "senior_project_manager") {
@@ -20382,7 +20453,7 @@ app.patch("/api/leads/:id/prolance-ids", async (req: Request, res: Response) => 
   }
 });
 
-/** DQC1/DQC2 quotation: live = customer-shared only; locked = per-round frozen link. */
+/** DQC1/DQC2 quotation: live = customer-shared then CRM; locked = per-round frozen link. */
 app.get("/api/leads/:id/dqc-quote-link", async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
@@ -20409,7 +20480,7 @@ app.get("/api/leads/:id/dqc-quote-link", async (req: Request, res: Response) => 
         mode,
         message:
           mode === "live"
-            ? "Share a quotation to the customer first (quote revision → Share this to customer)."
+            ? "Share a quotation first (quote revision → Share this to customer, or select for CRM)."
             : `No locked ${round.toUpperCase()} quotation yet.`,
       });
     }
@@ -21040,7 +21111,7 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
       );
       void evaluateLeadQuotationRevisionXp(pool, effectiveLeadId);
 
-      if (viaCrmInternal) {
+      if (viaCrmInternal || fromCrmModule) {
         try {
           const [shareRows] = await pool.query(
             `SELECT crm_shared_version_number AS latest, crm_visible_version_numbers AS visible
@@ -21063,6 +21134,12 @@ app.patch("/api/leads/:id/quotes/:quoteId/discount", async (req: Request, res: R
                  customer_shared_version_number = ?, crm_visible_version_numbers = ?
              WHERE lead_id = ?`,
             [nextVersionNumber, quoteId, nextVersionNumber, visibleJson, effectiveLeadId],
+          );
+          await pool.query(
+            `UPDATE lead_prolance_quote_snapshots
+             SET crm_shared_version_number = ?, crm_shared_quote_id = ?
+             WHERE quote_id = ?`,
+            [nextVersionNumber, quoteId, quoteId],
           );
         } catch (crmShareErr) {
           console.error("crm-share stamp after CRM discount save failed", crmShareErr);
@@ -23823,6 +23900,119 @@ app.post("/api/meetings/:id/end", async (req: Request, res: Response) => {
     if (err instanceof MeetingActionError) return res.status(err.status).json({ message: err.message });
     console.error("end meeting error", err);
     return res.status(500).json({ message: "Failed to end meeting" });
+  }
+});
+
+/**
+ * DRR-only outcome from Design Meeting Management.
+ * successful → local completed + Hub MEETING_SUCCESSFUL (CRM Progress / Meeting Successful (DRR) filter)
+ * never_happened → local meeting_never_happened + Hub MEETING_ABANDONED (CRM Progress Meeting Never Happened)
+ * Does not change Pre 10% End Meeting / milestone flow.
+ */
+app.post("/api/meetings/:id/drr-outcome", async (req: Request, res: Response) => {
+  try {
+    const actingUser = await getUserFromSession(req);
+    if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
+    const meetingId = Number(req.params.id);
+    if (!Number.isFinite(meetingId)) return res.status(400).json({ message: "Invalid meeting id" });
+
+    const outcomeRaw = String(
+      (req.body as { outcome?: unknown; meetingProgress?: unknown } | null)?.outcome ??
+        (req.body as { meetingProgress?: unknown } | null)?.meetingProgress ??
+        "",
+    )
+      .trim()
+      .toLowerCase()
+      .replace(/[\s-]+/g, "_");
+    const successful =
+      outcomeRaw === "successful" ||
+      outcomeRaw === "meeting_successful" ||
+      outcomeRaw === "completed";
+    const neverHappened =
+      outcomeRaw === "never_happened" ||
+      outcomeRaw === "meeting_never_happened" ||
+      outcomeRaw === "abandoned" ||
+      outcomeRaw === "meeting_abandoned";
+    if (!successful && !neverHappened) {
+      return res.status(400).json({
+        message: "outcome must be successful or never_happened",
+      });
+    }
+
+    const isDrr = await isCrmDrrMeeting(pool, meetingId);
+    if (!isDrr) {
+      return res.status(400).json({
+        message: "DRR outcome is only for Design Refinement Round meetings",
+      });
+    }
+
+    const actor = { id: actingUser.id, name: actingUser.name };
+    const meeting = successful
+      ? await endCrmMeeting(pool, meetingId, actor)
+      : await abandonCrmMeeting(pool, meetingId, actor);
+
+    let crmAppointmentId =
+      meeting?.crmAppointmentId != null && Number(meeting.crmAppointmentId) > 0
+        ? Number(meeting.crmAppointmentId)
+        : null;
+    if (crmAppointmentId == null && meeting?.leadId) {
+      try {
+        const [leadRows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [
+          meeting.leadId,
+        ]);
+        const payloadRaw = (leadRows as { payload?: string | null }[])[0]?.payload;
+        const payload = payloadRaw ? (JSON.parse(payloadRaw) as Record<string, unknown>) : {};
+        const fromPayload = Number(
+          (payload as { crmAppointmentId?: unknown; appointmentId?: unknown }).crmAppointmentId ??
+            (payload as { appointmentId?: unknown }).appointmentId ??
+            (payload as { crmSchedule?: { appointmentId?: unknown } }).crmSchedule?.appointmentId,
+        );
+        if (Number.isFinite(fromPayload) && fromPayload > 0) crmAppointmentId = fromPayload;
+      } catch {
+        // keep null
+      }
+    }
+
+    let crmSynced = false;
+    let crmSyncError: string | null = null;
+    if (crmAppointmentId != null) {
+      try {
+        await callErpApi(`/v1/Appointment/${crmAppointmentId}/meeting-outcome`, {
+          method: "PUT",
+          body: JSON.stringify({
+            meetingProgress: successful ? "MEETING_SUCCESSFUL" : "MEETING_ABANDONED",
+          }),
+          headers: { "X-Activity-Performed-By": "Design Module Auto" },
+        });
+        crmSynced = true;
+      } catch (err) {
+        crmSyncError = err instanceof Error ? err.message : String(err);
+        console.error("[meetings/drr-outcome] Hub sync failed", {
+          meetingId,
+          crmAppointmentId,
+          error: crmSyncError,
+        });
+      }
+    } else {
+      crmSyncError = "No crmAppointmentId on this meeting — outcome saved in Design only";
+    }
+
+    const progressLabel = successful ? "Meeting Successful" : "Meeting never happened";
+    return res.status(crmSynced || crmAppointmentId == null ? 200 : 502).json({
+      meeting,
+      outcome: successful ? "successful" : "never_happened",
+      progressLabel,
+      crmSynced,
+      crmAppointmentId,
+      crmSyncError: crmSynced ? null : crmSyncError,
+      message: crmSynced
+        ? undefined
+        : crmSyncError || "Saved in Design, but CRM progress was not updated",
+    });
+  } catch (err) {
+    if (err instanceof MeetingActionError) return res.status(err.status).json({ message: err.message });
+    console.error("drr outcome error", err);
+    return res.status(500).json({ message: "Failed to save DRR meeting outcome" });
   }
 });
 

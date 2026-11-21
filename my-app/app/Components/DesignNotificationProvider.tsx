@@ -104,7 +104,7 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
   const [isInboxOpen, setIsInboxOpen] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
 
-  const wsRef = useRef<WebSocket | null>(null);
+  const inboxStreamAbortRef = useRef<AbortController | null>(null);
   const isMutedRef = useRef(isMuted);
   const prevUnreadRef = useRef(0);
   const inboxCountsReadyRef = useRef(false);
@@ -340,124 +340,92 @@ export function DesignNotificationProvider({ children }: { children: ReactNode }
   useEffect(() => {
     if (!sessionId || !user) return;
 
-    let socket: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let reconnectAttempt = 0;
     let active = true;
+    const abort = new AbortController();
+    inboxStreamAbortRef.current = abort;
 
-    const scheduleReconnect = (fatal = false) => {
+    const scheduleReconnect = () => {
       wsLiveRef.current = false;
-      if (!active || fatal) return;
+      if (!active) return;
       if (reconnectAttempt >= 2) return;
       const delay = Math.min(1000 * 2 ** reconnectAttempt, 8000);
       reconnectAttempt += 1;
-      reconnectTimer = setTimeout(connect, delay);
+      reconnectTimer = setTimeout(() => {
+        void connect();
+      }, delay);
     };
 
-    const connect = () => {
-      if (!active) return;
-
-      fetch(`${apiBase}/v1/design/inbox/ws-ticket`, {
-        method: 'POST',
-        headers: {
-          ...buildAuthHeaders(sessionId),
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ user_id: user.id }),
-        credentials: 'include',
-      })
-        .then(async (r) => {
-          if (!r.ok) {
-            // 401/403 = session or notify-service auth; inbox still polls. Do not throw
-            // (Next.js overlays console errors and this is expected when notify is down).
-            if (r.status === 401 || r.status === 403) {
-              console.warn('[notification] WebSocket ticket unavailable', r.status);
-              return null;
-            }
-            console.warn('[notification] ws-ticket HTTP', r.status);
-            scheduleReconnect();
-            return null;
-          }
-          return r.json().catch(() => null);
-        })
-        .then((res) => {
-          if (!res?.ticket) {
-            if (active && res != null) scheduleReconnect();
-            return;
-          }
-          if (!active) return;
-
-          const ticket = String(res.ticket);
-          let wsUrl = '';
-          try {
-            const apiUrl = new URL(apiBase.includes('://') ? apiBase : `https://${apiBase}`);
-            const wsProto = apiUrl.protocol === 'https:' ? 'wss:' : 'ws:';
-            wsUrl = `${wsProto}//${apiUrl.host}/v1/design/inbox/ws?ticket=${encodeURIComponent(ticket)}`;
-          } catch {
-            const rawWsUrl =
-              typeof res.ws_url === 'string' && res.ws_url
-                ? res.ws_url
-                : `ws://localhost:8080/v1/design/inbox/ws?ticket=${encodeURIComponent(ticket)}`;
-            wsUrl =
-              window.location.protocol === 'https:' && rawWsUrl.startsWith('ws://')
-                ? `wss://${rawWsUrl.slice('ws://'.length)}`
-                : rawWsUrl;
-          }
-
-          try {
-            socket = new WebSocket(wsUrl);
-          } catch (err) {
-            console.warn('[notification] WebSocket setup failed:', err);
-            scheduleReconnect(true);
-            return;
-          }
-          wsRef.current = socket;
-
-          socket.onopen = () => {
+    const handleInboxEvent = (raw: string) => {
+      try {
+        const data = JSON.parse(raw);
+        if (!data || data.type === 'inbox_stream_open') {
+          if (data?.type === 'inbox_stream_open') {
             wsLiveRef.current = true;
             reconnectAttempt = 0;
             void refreshInbox({ allowChime: false });
-          };
-
-          socket.onmessage = (event) => {
-            try {
-              const data = JSON.parse(event.data);
-              if (!data || data.type !== 'inbox_updated') return;
-
-              const allowChime = isNewInboxEvent(data);
-              void refreshInbox({ allowChime });
-            } catch (e) {
-              console.error('Error parsing WebSocket message:', e);
-            }
-          };
-
-          socket.onerror = () => {
-            if (reconnectAttempt === 0) {
-              console.warn('[notification] WebSocket error — inbox will keep polling');
-            }
-          };
-
-          socket.onclose = (event) => {
-            const refused = event.code === 1006;
-            scheduleReconnect(refused && reconnectAttempt >= 1);
-          };
-        })
-        .catch((err) => {
-          console.warn('[notification] WebSocket setup failed:', err);
-          const message = err instanceof Error ? err.message : String(err);
-          const mixedContent = /insecure WebSocket|mixed content|must be available over WSS/i.test(message);
-          scheduleReconnect(mixedContent);
-        });
+          }
+          return;
+        }
+        if (data.type !== 'inbox_updated') return;
+        void refreshInbox({ allowChime: isNewInboxEvent(data) });
+      } catch {
+        /* ignore non-json keepalive */
+      }
     };
 
-    connect();
+    const connect = async () => {
+      if (!active) return;
+      try {
+        const res = await fetch(`${apiBase}/v1/design/inbox/stream`, {
+          headers: buildAuthHeaders(sessionId),
+          credentials: 'include',
+          signal: abort.signal,
+        });
+        if (!res.ok || !res.body) {
+          if (res.status !== 401 && res.status !== 403 && reconnectAttempt === 0) {
+            console.warn('[notification] inbox stream unavailable', res.status, '— inbox will keep polling');
+          }
+          scheduleReconnect();
+          return;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (active) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const frames = buffer.split('\n\n');
+          buffer = frames.pop() || '';
+          for (const frame of frames) {
+            const dataLine = frame
+              .split('\n')
+              .filter((line) => line.startsWith('data:'))
+              .map((line) => line.slice(5).trim())
+              .join('');
+            if (dataLine) handleInboxEvent(dataLine);
+          }
+        }
+        scheduleReconnect();
+      } catch (err) {
+        if ((err as { name?: string })?.name === 'AbortError') return;
+        if (reconnectAttempt === 0) {
+          console.warn('[notification] inbox stream failed — inbox will keep polling');
+        }
+        scheduleReconnect();
+      }
+    };
+
+    void connect();
 
     return () => {
       active = false;
       wsLiveRef.current = false;
       if (reconnectTimer) clearTimeout(reconnectTimer);
-      if (socket) socket.close();
-      wsRef.current = null;
+      abort.abort();
+      inboxStreamAbortRef.current = null;
     };
   }, [sessionId, user, apiBase, refreshInbox]);
 

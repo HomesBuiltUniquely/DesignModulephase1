@@ -1272,6 +1272,16 @@ export function registerIncentivesRoutes(
     return s.slice(0, 3);
   }
 
+  async function designManagerIdsForTdm(tdmId: number): Promise<number[]> {
+    const [rows] = await pool.query(
+      `SELECT id FROM users WHERE role = 'design_manager' AND territorial_design_manager_id = ?`,
+      [tdmId],
+    );
+    return (rows as { id: number }[])
+      .map((row) => Number(row.id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+  }
+
   async function resolveActiveTeams(): Promise<
     Array<{
       code: string;
@@ -1522,18 +1532,27 @@ export function registerIncentivesRoutes(
       }> = [];
 
       if (targetTeam.managerId === -1) {
-        // All Branches: query all designers across the system with their manager info
-        const [rows] = await pool.query(
-          `SELECT u.id, u.name, u.role, u.sub_role AS subRole,
-                  COALESCE(NULLIF(TRIM(u.branch), ''), NULLIF(TRIM(dm.branch), ''), 'GEN') AS branch,
-                  u.design_manager_id AS managerId,
-                  COALESCE(dm.name, 'Unassigned') AS managerName
-           FROM users u
-           LEFT JOIN users dm ON dm.id = u.design_manager_id
-           WHERE u.role = 'designer'
-           ORDER BY u.name ASC`
-        );
-        designerRows = rows as typeof designerRows;
+        // All Branches. A TDM's total is the design managers who report to them, so unassigned
+        // designers stay on the Unassigned filter and are not added to this fortnight target.
+        const tdmManagerIds = role === "territorial_design_manager" ? await designManagerIdsForTdm(user.id) : [];
+        const scopeToTdm = role === "territorial_design_manager";
+        if (scopeToTdm && tdmManagerIds.length === 0) {
+          designerRows = [];
+        } else {
+          const [rows] = await pool.query(
+            `SELECT u.id, u.name, u.role, u.sub_role AS subRole,
+                    COALESCE(NULLIF(TRIM(u.branch), ''), NULLIF(TRIM(dm.branch), ''), 'GEN') AS branch,
+                    u.design_manager_id AS managerId,
+                    COALESCE(dm.name, 'Unassigned') AS managerName
+             FROM users u
+             LEFT JOIN users dm ON dm.id = u.design_manager_id
+             WHERE u.role = 'designer'
+               ${scopeToTdm ? "AND u.design_manager_id IN (?)" : ""}
+             ORDER BY u.name ASC`,
+            scopeToTdm ? [tdmManagerIds] : [],
+          );
+          designerRows = rows as typeof designerRows;
+        }
       } else if (targetTeam.managerId === 0) {
         // Unassigned
         const [rows] = await pool.query(
@@ -1996,9 +2015,9 @@ export function registerIncentivesRoutes(
         const parsedMonth = Number(req.query.monthIndex);
         if (Number.isFinite(parsedMonth) && parsedMonth >= 0) monthIndex = parsedMonth;
       }
+      const allowedIds = new Set(await designManagerIdsForTdm(user.id));
       const teams = await resolveActiveTeams();
-      const branchManagers = teams.filter((team) => isBranchTargetCode(team.code));
-      const managers = branchManagers.length > 0 ? branchManagers : teams;
+      const managers = teams.filter((team) => allowedIds.has(team.managerId));
       const rows = await Promise.all(
         managers.map(async (manager) => {
           const totals = await sumManagerTeamWeighted(manager.managerId, period, cycleIndex, monthIndex);

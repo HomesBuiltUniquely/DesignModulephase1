@@ -119,6 +119,21 @@ export function payloadHasExplicitHubDiscountMeta(
   return false;
 }
 
+/** Latest revision only — avoids older CRM pins resurrecting stale % on refresh. */
+export function discountMetaFromLatestVersionHint(
+  versions: HubDiscountVersionHint[],
+  quoteId?: string | number | null,
+): Record<string, unknown> | null {
+  const wanted = quoteId != null && String(quoteId).trim() ? Number(quoteId) : null;
+  const rows =
+    wanted != null && Number.isFinite(wanted) && wanted > 0
+      ? versions.filter((row) => row.quoteId == null || Number(row.quoteId) === wanted)
+      : versions;
+  const walk = rows.length > 0 ? rows : versions;
+  if (walk.length === 0) return null;
+  return discountMetaFromVersionHints([walk[walk.length - 1]], quoteId);
+}
+
 /** Fold every revision into one Hub discount (later rows win, missing fields keep earlier values). */
 export function discountMetaFromVersionHints(
   versions: HubDiscountVersionHint[],

@@ -2240,7 +2240,11 @@ export default function Dashboard() {
                                         {bulkAssignMessage}
                                     </p>
                                 )}
-                                {renderContent()}
+                                {!queueFetched ? (
+                                    <p className="xl:text-sm xl:text-gray-500 xl:p-4">Loading leads…</p>
+                                ) : (
+                                    renderContent()
+                                )}
                             </div>
                         ) : (
                             <>
@@ -2261,7 +2265,11 @@ export default function Dashboard() {
                                         </>
                                     )}
                     </div>
-                                {renderContent()}
+                                {!queueFetched ? (
+                                    <p className="xl:text-sm xl:text-gray-500 xl:p-4">Loading leads…</p>
+                                ) : (
+                                    renderContent()
+                                )}
                             </>
                         )}
                         <input

@@ -1,11 +1,11 @@
 /**
  * Per-round DQC quotation locks (DQC1 / DQC2).
- * Live popup uses customer-shared quote only; after submit the lock is frozen per round.
+ * Live popup prefers customer-shared quote, then CRM-selected; after submit the lock is frozen per round.
  */
 import type { Pool, PoolConnection, RowDataPacket } from "mysql2/promise";
 
 export type DqcQuoteRound = "dqc1" | "dqc2";
-export type DqcQuoteSource = "customer_shared" | "locked_dqc1" | "locked_dqc2" | "none";
+export type DqcQuoteSource = "customer_shared" | "crm_shared" | "locked_dqc1" | "locked_dqc2" | "none";
 
 export type DqcQuoteLockRow = {
   leadId: number;
@@ -200,14 +200,17 @@ export async function loadDqcQuoteFromHistory(
   return null;
 }
 
-export type CustomerShareLoader = (leadId: number) => Promise<{
+export type QuoteShareLoader = (leadId: number) => Promise<{
   quoteId: number;
   versionNumber: number;
 } | null>;
 
+/** @deprecated use QuoteShareLoader */
+export type CustomerShareLoader = QuoteShareLoader;
+
 /**
- * live  → customer-shared quote only (never CRM).
- * locked → table lock, then history for that round only (never CRM / latest).
+ * live  → customer-shared first, then CRM-selected (Pre-10).
+ * locked → table lock, then history for that round only (never live CRM / latest).
  */
 export async function resolveDqcQuoteLinkForLead(
   pool: Pool,
@@ -216,7 +219,8 @@ export async function resolveDqcQuoteLinkForLead(
   mode: "live" | "locked",
   opts: {
     frontendBase: string;
-    loadCustomerShared: CustomerShareLoader;
+    loadCustomerShared: QuoteShareLoader;
+    loadCrmShared?: QuoteShareLoader;
   },
 ): Promise<DqcQuoteResolveResult> {
   if (mode === "locked") {
@@ -232,14 +236,29 @@ export async function resolveDqcQuoteLinkForLead(
     return loadDqcQuoteFromHistory(pool, leadId, round);
   }
 
-  // live
+  // live — prefer Share to customer; fall back to CRM selection so DQC is not blocked
+  // when designers only completed Pre-10 CRM share.
   const customer = await opts.loadCustomerShared(leadId);
-  if (!customer) return null;
-  const url = buildCustomerQuoteUrl(opts.frontendBase, customer.quoteId, customer.versionNumber);
-  return {
-    quoteId: customer.quoteId,
-    versionNumber: customer.versionNumber > 0 ? customer.versionNumber : null,
-    customerQuoteUrl: url,
-    source: "customer_shared",
-  };
+  if (customer) {
+    const url = buildCustomerQuoteUrl(opts.frontendBase, customer.quoteId, customer.versionNumber);
+    return {
+      quoteId: customer.quoteId,
+      versionNumber: customer.versionNumber > 0 ? customer.versionNumber : null,
+      customerQuoteUrl: url,
+      source: "customer_shared",
+    };
+  }
+  if (opts.loadCrmShared) {
+    const crm = await opts.loadCrmShared(leadId);
+    if (crm) {
+      const url = buildCustomerQuoteUrl(opts.frontendBase, crm.quoteId, crm.versionNumber);
+      return {
+        quoteId: crm.quoteId,
+        versionNumber: crm.versionNumber > 0 ? crm.versionNumber : null,
+        customerQuoteUrl: url,
+        source: "crm_shared",
+      };
+    }
+  }
+  return null;
 }

@@ -662,6 +662,79 @@ export function registerInboxRoutes(app: Application, authResolver?: InboxAuthRe
     }
   });
 
+  /**
+   * Live inbox over plain HTTP. Nginx on api.hubinterior.com does not upgrade
+   * /v1/design/inbox/ws (browser sees handshake 404). This route opens that
+   * socket on the server and streams events to the browser as SSE.
+   */
+  app.get("/v1/design/inbox/stream", async (req: Request, res: Response) => {
+    try {
+      const userId = await resolveInboxUserId(req, res);
+      if (!userId) return;
+
+      const ticketResp = await fetch(`${notifyApiBase()}/v1/design/inbox/ws-ticket`, {
+        method: "POST",
+        headers: notifyApiHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ user_id: userId }),
+      });
+      const ticketJson = (await ticketResp.json().catch(() => ({}))) as { ticket?: string };
+      if (!ticketResp.ok || !ticketJson.ticket) {
+        return res.status(ticketResp.ok ? 502 : ticketResp.status).json({
+          error: "Inbox live updates unavailable",
+        });
+      }
+
+      res.status(200);
+      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      if (typeof res.flushHeaders === "function") res.flushHeaders();
+
+      const target = `${notifyUpstreamWebSocketBase()}/v1/design/inbox/ws?ticket=${encodeURIComponent(ticketJson.ticket)}`;
+      const upstream = new WebSocket(target);
+      let closed = false;
+      const writeEvent = (payload: string) => {
+        if (closed || res.writableEnded) return;
+        res.write(`data: ${payload.replace(/\r?\n/g, " ")}\n\n`);
+      };
+      const heartbeat = setInterval(() => {
+        if (!closed && !res.writableEnded) res.write(": ping\n\n");
+      }, 20000);
+      const cleanup = () => {
+        if (closed) return;
+        closed = true;
+        clearInterval(heartbeat);
+        try {
+          if (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING) {
+            upstream.close();
+          }
+        } catch {
+          /* ignore */
+        }
+        if (!res.writableEnded) res.end();
+      };
+
+      upstream.on("open", () => {
+        writeEvent(JSON.stringify({ type: "inbox_stream_open" }));
+      });
+      upstream.on("message", (data) => {
+        const text = typeof data === "string" ? data : Buffer.from(data as Buffer).toString("utf8");
+        writeEvent(text);
+      });
+      upstream.on("error", (err) => {
+        console.warn("[notify] inbox stream upstream error", (err as Error)?.message || err);
+        cleanup();
+      });
+      upstream.on("close", cleanup);
+      req.on("close", cleanup);
+    } catch (err: any) {
+      console.error("[notify] inbox stream error", err);
+      if (!res.headersSent) return res.status(500).json({ error: err.message });
+      res.end();
+    }
+  });
+
   app.post("/v1/design/inbox/ws-ticket", async (req: Request, res: Response) => {
     try {
       const userId = await resolveInboxUserId(req, res);
