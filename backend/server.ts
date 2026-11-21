@@ -3945,6 +3945,9 @@ function mergePayloadAfterHubAppointmentCancelled(
 
 async function findDesignLeadIdByCrmLeadId(crmLeadId: number): Promise<number | null> {
   if (!Number.isFinite(crmLeadId) || crmLeadId <= 0) return null;
+  const key = String(crmLeadId);
+  // Prefer payload CRM id link (Hub lead DB id), then Design pid / external ref
+  // (display Lead 100217 may be Design pid when Hub only sends that id).
   const [byCrmRows] = await pool.query(
     `SELECT id FROM leads
      WHERE payload IS NOT NULL AND JSON_VALID(payload) = 1
@@ -3955,10 +3958,26 @@ async function findDesignLeadIdByCrmLeadId(crmLeadId: number): Promise<number | 
        )
      ORDER BY id DESC
      LIMIT 1`,
-    [String(crmLeadId), String(crmLeadId), String(crmLeadId)],
+    [key, key, key],
   );
-  const row = (byCrmRows as { id?: number }[])[0];
-  return row?.id != null && Number(row.id) > 0 ? Number(row.id) : null;
+  const byCrm = (byCrmRows as { id?: number }[])[0];
+  if (byCrm?.id != null && Number(byCrm.id) > 0) return Number(byCrm.id);
+
+  const [byPidRows] = await pool.query(
+    `SELECT id FROM leads
+     WHERE pid = ?
+        OR (
+          payload IS NOT NULL AND JSON_VALID(payload) = 1 AND (
+            JSON_UNQUOTE(JSON_EXTRACT(payload, '$.externalReferenceId')) = ?
+            OR JSON_UNQUOTE(JSON_EXTRACT(payload, '$.fetchedData.externalReferenceId')) = ?
+          )
+        )
+     ORDER BY id DESC
+     LIMIT 1`,
+    [key, key, key],
+  );
+  const byPid = (byPidRows as { id?: number }[])[0];
+  return byPid?.id != null && Number(byPid.id) > 0 ? Number(byPid.id) : null;
 }
 
 async function clearDesignLeadScheduleForCrmLeadId(
@@ -4734,9 +4753,57 @@ async function countUnreadPersonalAppointmentAlerts(
   return { unread: count > 0, count };
 }
 
+/** Short TTL + in-flight dedupe — CRM available-designers hits every designer; avoids N× ERP round-trips. */
+const ERP_DESIGNER_APPT_CACHE_TTL_MS = Math.max(
+  5_000,
+  Number(process.env.ERP_DESIGNER_APPT_CACHE_TTL_MS || 20_000) || 20_000,
+);
+type ErpDesignerApptCacheEntry = {
+  at: number;
+  data: unknown[];
+  inflight: Promise<unknown[]> | null;
+};
+const erpDesignerApptCache = new Map<string, ErpDesignerApptCacheEntry>();
+
+function invalidateDesignerErpAppointmentCache(designerName?: string | null) {
+  if (!designerName || !String(designerName).trim()) {
+    erpDesignerApptCache.clear();
+    return;
+  }
+  erpDesignerApptCache.delete(String(designerName).trim().toLowerCase());
+}
+
 async function fetchDesignerErpAppointments(designerName: string): Promise<unknown[]> {
-  const data = await callErpApi(`/v1/Appointment/designer/${encodeURIComponent(designerName)}`);
-  return Array.isArray(data) ? data : [];
+  const trimmed = designerName.trim();
+  const key = trimmed.toLowerCase();
+  if (!key) return [];
+
+  const now = Date.now();
+  const hit = erpDesignerApptCache.get(key);
+  if (hit?.inflight) return hit.inflight;
+  if (hit && now - hit.at < ERP_DESIGNER_APPT_CACHE_TTL_MS) return hit.data;
+
+  const inflight = (async () => {
+    const data = await callErpApi(`/v1/Appointment/designer/${encodeURIComponent(trimmed)}`);
+    const list = Array.isArray(data) ? data : [];
+    erpDesignerApptCache.set(key, { at: Date.now(), data: list, inflight: null });
+    return list;
+  })().catch((err) => {
+    const cur = erpDesignerApptCache.get(key);
+    if (cur) {
+      erpDesignerApptCache.set(key, { at: cur.at, data: cur.data, inflight: null });
+    } else {
+      erpDesignerApptCache.delete(key);
+    }
+    throw err;
+  });
+
+  erpDesignerApptCache.set(key, {
+    at: hit?.at ?? 0,
+    data: hit?.data ?? [],
+    inflight,
+  });
+  return inflight;
 }
 
 async function getActiveFullDayBlock(
@@ -4753,6 +4820,173 @@ async function getActiveFullDayBlock(
     [designerName.trim(), formatBlockDateForDb(blockDate)],
   );
   return (rows as FullDayRequestRow[])[0] ?? null;
+}
+
+/** One query for the day — used by CRM available-designers (avoids N leave lookups). */
+async function getFullDayLeaveReasonsByDesigner(dateIso: string): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  const [rows] = await pool.query(
+    `SELECT designer_name, status
+       FROM designer_full_day_requests
+      WHERE block_date = ?
+        AND status IN ('pending', 'approved')
+      ORDER BY id DESC`,
+    [formatBlockDateForDb(dateIso)],
+  );
+  for (const row of rows as { designer_name?: string; status?: string }[]) {
+    const key = String(row.designer_name || "")
+      .trim()
+      .toLowerCase();
+    if (!key || map.has(key)) continue;
+    const status = String(row.status || "").toLowerCase();
+    map.set(
+      key,
+      status === "pending"
+        ? `Full-day leave pending on ${dateIso}`
+        : `Full-day leave approved on ${dateIso}`,
+    );
+  }
+  return map;
+}
+
+/**
+ * One-shot Design-side busy map for a calendar day (lead_meetings + legacy payload).
+ * Replaces per-designer leadScheduleBusyBlocksForDesigner in CRM list endpoints.
+ */
+async function leadScheduleBusyBlocksByDesignerForDate(
+  dateIso: string,
+): Promise<Map<string, HubBusyBlock[]>> {
+  const byDesigner = new Map<string, HubBusyBlock[]>();
+  const push = (designerName: string, block: HubBusyBlock) => {
+    const key = designerName.trim().toLowerCase();
+    if (!key) return;
+    const list = byDesigner.get(key);
+    if (list) list.push(block);
+    else byDesigner.set(key, [block]);
+  };
+
+  try {
+    const [meetingRows] = await pool.query(
+      `SELECT
+          m.lead_id AS leadId,
+          m.id AS meetingId,
+          m.meeting_time AS meetingTime,
+          m.source,
+          COALESCE(du.name, '') AS meetingDesignerName,
+          COALESCE(au.name, '') AS assignedDesignerName,
+          JSON_UNQUOTE(JSON_EXTRACT(
+            CASE WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}' ELSE l.payload END,
+            '$.crmSchedule.slot'
+          )) AS crmSlot,
+          JSON_UNQUOTE(JSON_EXTRACT(
+            CASE WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}' ELSE l.payload END,
+            '$.scheduledMeetingSlot'
+          )) AS schedSlot,
+          JSON_UNQUOTE(JSON_EXTRACT(
+            CASE WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}' ELSE l.payload END,
+            '$.designScheduledMeeting.time'
+          )) AS designTime,
+          JSON_UNQUOTE(JSON_EXTRACT(
+            CASE WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}' ELSE l.payload END,
+            '$.formData.appointment_slot'
+          )) AS formSlot
+        FROM lead_meetings m
+        LEFT JOIN users du ON du.id = m.designer_id
+        LEFT JOIN leads l ON l.id = m.lead_id
+        LEFT JOIN users au ON au.id = l.assigned_designer_id
+       WHERE m.meeting_date = ?
+         AND (m.meeting_status IS NULL OR LOWER(m.meeting_status) <> 'cancelled')
+         AND LOWER(COALESCE(m.progress, '')) NOT IN ('completed', 'meeting_never_happened', 'meeting_abandoned')`,
+      [dateIso],
+    );
+    for (const row of meetingRows as Record<string, unknown>[]) {
+      const slot =
+        cleanScheduledMeetingText(row.meetingTime) ||
+        cleanScheduledMeetingText(row.crmSlot) ||
+        cleanScheduledMeetingText(row.schedSlot) ||
+        cleanScheduledMeetingText(row.designTime) ||
+        cleanScheduledMeetingText(row.formSlot);
+      const source = String(row.source || "").toLowerCase() === "crm" ? "CRM meeting" : "Design meeting";
+      const block = meetingSlotToBusyBlock(slot);
+      if (!block) continue;
+      const leadId = Number(row.leadId);
+      const busyBlock: HubBusyBlock = {
+        ...block,
+        label: slot ? `${source} ${slot}` : source,
+        leadId: Number.isFinite(leadId) && leadId > 0 ? leadId : undefined,
+      };
+      const meetingDesigner = String(row.meetingDesignerName || "").trim();
+      const assignedDesigner = String(row.assignedDesignerName || "").trim();
+      if (meetingDesigner) push(meetingDesigner, busyBlock);
+      if (assignedDesigner && assignedDesigner.toLowerCase() !== meetingDesigner.toLowerCase()) {
+        push(assignedDesigner, busyBlock);
+      }
+    }
+  } catch (err) {
+    console.error("[leadScheduleBusyBlocksByDesignerForDate] lead_meetings failed", dateIso, err);
+  }
+
+  try {
+    const likeDate = `${dateIso}%`;
+    const [rows] = await pool.query(
+      `SELECT
+         l.id AS leadId,
+         COALESCE(u.name, '') AS assignedDesignerName,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.connection.designerName')) AS connectionDesigner,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.designer_name')) AS formDesigner,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.scheduledMeetingDate')) AS schedDate,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.scheduledMeetingSlot')) AS schedSlot,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.date')) AS designDate,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.time')) AS designTime,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.crmSchedule.date')) AS crmDate,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.crmSchedule.slot')) AS crmSlot
+       FROM leads l
+       LEFT JOIN users u ON u.id = l.assigned_designer_id
+       WHERE JSON_VALID(l.payload) = 1
+         AND (
+           JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.scheduledMeetingDate')) LIKE ?
+           OR JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.date')) LIKE ?
+           OR JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.crmSchedule.date')) LIKE ?
+         )`,
+      [likeDate, likeDate, likeDate],
+    );
+    for (const row of rows as Record<string, unknown>[]) {
+      const designDate = meetingDateFromRaw(row.schedDate) || meetingDateFromRaw(row.designDate);
+      const crmDate = meetingDateFromRaw(row.crmDate);
+      const meetingDate = designDate || crmDate;
+      if (meetingDate !== dateIso) continue;
+      const designTime =
+        cleanScheduledMeetingText(row.schedSlot) || cleanScheduledMeetingText(row.designTime);
+      const crmTime =
+        crmDate === meetingDate
+          ? cleanScheduledMeetingText(row.crmSlot) || meetingTimeEmbeddedInDate(row.crmDate)
+          : null;
+      const block = meetingSlotToBusyBlock(designTime || crmTime);
+      if (!block) continue;
+      const leadId = Number(row.leadId);
+      const busyBlock: HubBusyBlock = {
+        ...block,
+        label: "Design meeting (payload)",
+        leadId: Number.isFinite(leadId) && leadId > 0 ? leadId : undefined,
+      };
+      const names = [
+        String(row.assignedDesignerName || "").trim(),
+        String(row.connectionDesigner || "").trim(),
+        String(row.formDesigner || "").trim(),
+      ];
+      const seen = new Set<string>();
+      for (const name of names) {
+        const key = name.toLowerCase();
+        if (!name || seen.has(key)) continue;
+        seen.add(key);
+        push(name, busyBlock);
+      }
+    }
+  } catch (err) {
+    console.error("[leadScheduleBusyBlocksByDesignerForDate] payload failed", dateIso, err);
+  }
+
+  return byDesigner;
 }
 
 async function countClientMeetingsOnDate(designerName: string, dateIso: string): Promise<number> {
@@ -23466,10 +23700,17 @@ app.get("/api/appointment/designer/:designerName", async (req: Request, res: Res
 });
 
 /**
- * Hub ERP → Design: clear lead JSON schedule when appointment is cancelled (API delete).
+ * Hub ERP → Design: clear lead JSON schedule + cancel CRM lead_meetings when appointment is cancelled.
  * POST /api/appointment/hub-appointment-cancelled
- * Body: { crmLeadId | leadId, erpAppointmentId? }
+ * Body: {
+ *   crmLeadId | leadId,
+ *   erpAppointmentId?,
+ *   meetingStatus? | action? | status?  (CANCELLED / cancelled)
+ * }
  * Auth: HUB_SYNC_API_KEY / EXTERNAL_LEAD_INGEST_API_KEY (same as CRM sales proxies).
+ *
+ * Must flip lead_meetings.meeting_status = 'cancelled' (same as external-upsert CANCELLED),
+ * otherwise Meeting Management stays on "Meeting Scheduled" after CRM cancel.
  */
 app.post("/api/appointment/hub-appointment-cancelled", async (req: Request, res: Response) => {
   try {
@@ -23492,16 +23733,60 @@ app.post("/api/appointment/hub-appointment-cancelled", async (req: Request, res:
       return res.status(400).json({ message: "crmLeadId (or leadId) is required" });
     }
 
+    // Endpoint is cancel-specific; still honor Hub meetingStatus/action/status when present.
+    const cancelSignal = String(
+      body.meetingStatus ?? body.action ?? body.status ?? body.meeting_status ?? "CANCELLED",
+    ).trim();
+    const isCancel = /cancel/i.test(cancelSignal) || cancelSignal === "";
+    if (!isCancel) {
+      return res.status(400).json({
+        message: "Expected meetingStatus/action/status indicating cancelled",
+        received: cancelSignal,
+      });
+    }
+
+    const cancelReason =
+      String(body.cancelReason || body.cancel_reason || body.reason || "").trim() ||
+      "Meeting Cancelled from CRM";
+
     const result = await clearDesignLeadScheduleForCrmLeadId(crmLeadId);
+    let cancelledMeetings = 0;
+    if (result.designLeadId != null) {
+      try {
+        cancelledMeetings = await cancelCrmMeetingsForLead(pool, result.designLeadId, {
+          reason: cancelReason,
+          actor: { name: "CRM" },
+          from: "hub_appointment_cancelled",
+        });
+      } catch (cancelErr) {
+        console.error("[hub-appointment-cancelled] cancel CRM meeting failed", cancelErr);
+      }
+    }
+
+    console.info("[hub-appointment-cancelled]", {
+      crmLeadId,
+      designLeadId: result.designLeadId,
+      scheduleCleared: result.updated,
+      cancelledMeetings,
+      meetingStatus: "CANCELLED",
+    });
+
     return res.json({
       ok: true,
       crmLeadId,
       erpAppointmentId: body.erpAppointmentId ?? body.appointmentId ?? null,
       designLeadId: result.designLeadId,
       scheduleCleared: result.updated,
-      message: result.updated
-        ? "Design lead meeting schedule cleared"
-        : "No linked Design lead found (nothing to clear)",
+      cancelledMeetings,
+      meetingStatus: "CANCELLED",
+      message:
+        result.designLeadId == null
+          ? "No linked Design lead found (nothing to clear)"
+          : cancelledMeetings > 0
+            ? "Design lead schedule cleared and CRM meeting(s) cancelled"
+            : result.updated
+              ? "Design lead meeting schedule cleared (no open CRM meetings to cancel)"
+              : "Design lead found but schedule unchanged; no open CRM meetings to cancel",
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -23521,10 +23806,12 @@ app.post("/api/appointment/hub-appointment-cancelled", async (req: Request, res:
  * Auth: Design Module session, or EXTERNAL_LEAD_INGEST_API_KEY / HUB_SYNC_API_KEY (CRM sales).
  * Accuracy: calendar day from `date` (required); times parsed as local wall-clock (no TZ drift).
  * Conflicts: Hub ERP `appointment` rows for that designer (+ full-day leave). Not Google Calendar.
+ *
+ * Fast path: CRM API-key skips session; leave + Design meetings batched once per day;
+ * ERP designer calendars fetched with higher concurrency + short TTL cache.
  */
 app.get("/api/appointment/available-designers", async (req: Request, res: Response) => {
   try {
-    const actingUser = await getUserFromSession(req);
     const expectedKey =
       (process.env.EXTERNAL_LEAD_INGEST_API_KEY || "").trim() ||
       (process.env.HUB_SYNC_API_KEY || "").trim();
@@ -23535,10 +23822,13 @@ app.get("/api/appointment/available-designers", async (req: Request, res: Respon
     ).trim();
     const apiKeyOk = Boolean(expectedKey && providedKey && providedKey === expectedKey);
 
-    if (!actingUser && !apiKeyOk) {
-      return res.status(401).json({ message: "Unauthorized" });
-    }
-    if (actingUser) {
+    // CRM sales uses API key — skip session DB lookup for lower latency.
+    let actingUser: Awaited<ReturnType<typeof getUserFromSession>> | null = null;
+    if (!apiKeyOk) {
+      actingUser = await getUserFromSession(req);
+      if (!actingUser) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
       const role = (actingUser.role || "").toLowerCase();
       const allowedRoles = [
         "admin",
@@ -23634,15 +23924,19 @@ app.get("/api/appointment/available-designers", async (req: Request, res: Respon
       String(req.query.includeUnavailable || "").trim().toLowerCase() === "true" ||
       String(req.query.includeUnavailable || "").trim() === "1";
 
-    const [designerRows] = await pool.query(
-      `SELECT id, name, email
-       FROM users
-       WHERE role = 'designer'
-         AND name IS NOT NULL
-         AND TRIM(name) <> ''
-       ORDER BY name ASC`,
-    );
-    const designers = designerRows as { id: number; name: string; email: string | null }[];
+    const [designerRows, leaveByDesigner, leadBusyByDesigner] = await Promise.all([
+      pool.query(
+        `SELECT id, name, email
+         FROM users
+         WHERE role = 'designer'
+           AND name IS NOT NULL
+           AND TRIM(name) <> ''
+         ORDER BY name ASC`,
+      ),
+      getFullDayLeaveReasonsByDesigner(dateIso),
+      leadScheduleBusyBlocksByDesignerForDate(dateIso),
+    ]);
+    const designers = designerRows[0] as { id: number; name: string; email: string | null }[];
 
     type DesignerAvailability = {
       id: number;
@@ -23655,21 +23949,50 @@ app.get("/api/appointment/available-designers", async (req: Request, res: Respon
       warning?: string;
     };
 
-    const results = await mapPoolLimit(designers, 5, async (d): Promise<DesignerAvailability> => {
+    const ERP_CONCURRENCY = Math.max(
+      4,
+      Number(process.env.AVAILABLE_DESIGNERS_ERP_CONCURRENCY || 12) || 12,
+    );
+    const ERP_TIMEOUT_MS = Math.max(
+      2_000,
+      Number(process.env.AVAILABLE_DESIGNERS_ERP_TIMEOUT_MS || 4_500) || 4_500,
+    );
+
+    const results = await mapPoolLimit(designers, ERP_CONCURRENCY, async (d): Promise<DesignerAvailability> => {
       const email = String(d.email || "").trim();
       const base = { id: Number(d.id), name: d.name, email };
+      const designerKey = String(d.name || "")
+        .trim()
+        .toLowerCase();
 
       try {
-        const { leaveReason, busy, erpFailed } = await getDesignerBusyBlocksForDate(d.name, dateIso);
+        const leaveReason = leaveByDesigner.get(designerKey) || null;
         if (leaveReason) {
           return {
             ...base,
             available: false,
             conflictCount: 1,
             conflictReason: leaveReason,
-            erpCalendarOk: !erpFailed,
+            erpCalendarOk: true,
           };
         }
+
+        const busy: HubBusyBlock[] = [...(leadBusyByDesigner.get(designerKey) || [])];
+        let erpFailed = false;
+        try {
+          const appointments = await withTimeout(
+            fetchDesignerErpAppointments(d.name),
+            ERP_TIMEOUT_MS,
+          );
+          for (const row of appointments) {
+            const block = erpAppointmentToBusyBlock(row, dateIso);
+            if (block) busy.push(block);
+          }
+        } catch (err) {
+          erpFailed = true;
+          console.error("[available-designers] ERP calendar failed", d.name, err);
+        }
+
         const conflicts = findOverlappingBusyBlocks(busy, startMin, endMin);
         if (conflicts.length > 0) {
           const first = conflicts[0];
@@ -23735,10 +24058,10 @@ app.get("/api/appointment/available-designers", async (req: Request, res: Respon
 /**
  * P1 — Sales day overview: each designer + free 90-min starts / busy blocks.
  * GET /api/appointment/availability-by-date?date=YYYY-MM-DD&durationMinutes=90
+ * Uses same batched leave/Design-meeting + cached ERP path as available-designers.
  */
 app.get("/api/appointment/availability-by-date", async (req: Request, res: Response) => {
   try {
-    const actingUser = await getUserFromSession(req);
     const expectedKey =
       (process.env.EXTERNAL_LEAD_INGEST_API_KEY || "").trim() ||
       (process.env.HUB_SYNC_API_KEY || "").trim();
@@ -23748,8 +24071,11 @@ app.get("/api/appointment/availability-by-date", async (req: Request, res: Respo
         String(req.headers.authorization || "").replace(/^Bearer\s+/i, ""),
     ).trim();
     const apiKeyOk = Boolean(expectedKey && providedKey && providedKey === expectedKey);
-    if (!actingUser && !apiKeyOk) {
-      return res.status(401).json({ message: "Unauthorized" });
+    if (!apiKeyOk) {
+      const actingUser = await getUserFromSession(req);
+      if (!actingUser) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
     }
 
     const dateIso = normalizeBlockDateIso(req.query.date);
@@ -23762,21 +24088,40 @@ app.get("/api/appointment/availability-by-date", async (req: Request, res: Respo
         ? Math.round(durationRaw)
         : HUB_DEFAULT_MEETING_DURATION_MIN;
 
-    const [designerRows] = await pool.query(
-      `SELECT id, name, email
-       FROM users
-       WHERE role = 'designer'
-         AND name IS NOT NULL
-         AND TRIM(name) <> ''
-       ORDER BY name ASC`,
-    );
-    const designers = designerRows as { id: number; name: string; email: string | null }[];
+    const [designerRows, leaveByDesigner, leadBusyByDesigner] = await Promise.all([
+      pool.query(
+        `SELECT id, name, email
+         FROM users
+         WHERE role = 'designer'
+           AND name IS NOT NULL
+           AND TRIM(name) <> ''
+         ORDER BY name ASC`,
+      ),
+      getFullDayLeaveReasonsByDesigner(dateIso),
+      leadScheduleBusyBlocksByDesignerForDate(dateIso),
+    ]);
+    const designers = designerRows[0] as { id: number; name: string; email: string | null }[];
 
-    const rows = await mapPoolLimit(designers, 5, async (d) => {
+    const ERP_CONCURRENCY = Math.max(
+      4,
+      Number(process.env.AVAILABLE_DESIGNERS_ERP_CONCURRENCY || 12) || 12,
+    );
+    const ERP_TIMEOUT_MS = Math.max(
+      2_000,
+      Number(process.env.AVAILABLE_DESIGNERS_ERP_TIMEOUT_MS || 4_500) || 4_500,
+    );
+
+    const rows = await mapPoolLimit(designers, ERP_CONCURRENCY, async (d) => {
       const email = String(d.email || "").trim();
+      const designerKey = String(d.name || "")
+        .trim()
+        .toLowerCase();
       try {
-        const { leaveReason, busy, erpFailed } = await getDesignerBusyBlocksForDate(d.name, dateIso);
+        const leaveReason = leaveByDesigner.get(designerKey) || null;
         if (leaveReason) {
+          const busy: HubBusyBlock[] = [
+            { startMin: HUB_DAY_START_MIN, endMin: HUB_DAY_END_MIN, label: "Full-day leave" },
+          ];
           return {
             id: Number(d.id),
             name: d.name,
@@ -23792,6 +24137,23 @@ app.get("/api/appointment/availability-by-date", async (req: Request, res: Respo
             })),
           };
         }
+
+        const busy: HubBusyBlock[] = [...(leadBusyByDesigner.get(designerKey) || [])];
+        let erpFailed = false;
+        try {
+          const appointments = await withTimeout(
+            fetchDesignerErpAppointments(d.name),
+            ERP_TIMEOUT_MS,
+          );
+          for (const row of appointments) {
+            const block = erpAppointmentToBusyBlock(row, dateIso);
+            if (block) busy.push(block);
+          }
+        } catch (err) {
+          erpFailed = true;
+          console.error("[availability-by-date] ERP failed", d.name, err);
+        }
+
         const freeMins = listHubFreeStartMinutes(busy, durationMin);
         return {
           id: Number(d.id),
@@ -24211,6 +24573,7 @@ app.post("/api/appointment", async (req: Request, res: Response) => {
         ...(bodyEnd ? { endTime: bodyEnd } : {}),
       }),
     });
+    invalidateDesignerErpAppointmentCache(String(designerName || ""));
     return res.status(201).json(data);
   } catch (err: any) {
     console.error("appointment create proxy error", err);
@@ -24582,6 +24945,7 @@ app.post("/api/appointment/personal/:erpId/cancel", async (req: Request, res: Re
     const designerUserId = (userRows as { id: number }[])[0]?.id ?? actingUser.id;
 
     await callErpApi(`/v1/Appointment/${erpId}`, { method: "DELETE" });
+    invalidateDesignerErpAppointmentCache(designerName);
 
     await pool.query(
       `INSERT INTO personal_block_cancellations
