@@ -8,7 +8,11 @@
     "build": "tsc",
     "start:prod": "node dist/server.js",
     "backfill:dqc-quote-locks": "node scripts/backfill-dqc-quote-locks.cjs",
-    "backfill:dqc-quote-locks:apply": "node scripts/backfill-dqc-quote-locks.cjs --apply"
+    "backfill:dqc-quote-locks:apply": "node scripts/backfill-dqc-quote-locks.cjs --apply",
+    "test:dqc-upload": "node scripts/dqcSubmissionUpload.test.mjs",
+    "verify:dqc-contract": "node scripts/verify-dqc-submission-contract.mjs",
+    "backfill:project-members": "node scripts/backfill-project-members.cjs",
+    "backfill:project-members:apply": "node scripts/backfill-project-members.cjs --apply"
   },
   "keywords": [],
   "author": "",
