@@ -92,6 +92,22 @@ import {
   buildCustomerQuoteUrl,
   type DqcQuoteRound,
 } from "./dqcQuoteLinks";
+import {
+  ensureLeadProjectMembersTable,
+  getProjectMembersForLead,
+  ensureProjectMembersHydrated,
+  syncPhaseEntry,
+  syncMmtManager,
+  syncMmtExecutive,
+  syncDqcManager,
+  syncDqe,
+  syncFinance,
+  syncProjectManager,
+  syncDesignerChange,
+  addManualMember,
+  removeManualMember,
+  formatRoleLabel,
+} from "./leadProjectMembers";
 
 /**
  * Load backend/.env before dotenv. Supports `export KEY=value` and quoted values.
@@ -2142,6 +2158,7 @@ async function initDb() {
     await ensureLeadMeetingsTable(pool);
     await ensureLeadHoldPeriodsTable(pool);
     await ensureLeadDqcSubmissionQuotesTable(pool);
+    await ensureLeadProjectMembersTable(pool);
 
     try {
       const [seenCol] = await conn.query(
@@ -3121,8 +3138,14 @@ async function getLeadAccessRowForUser(
       [leadId, user.id],
     );
     if ((assignRows as any[]).length === 0) {
-      res.status(404).json({ message: "Lead not found" });
-      return { ok: false };
+      const [d2Rows] = await pool.query(
+        "SELECT 1 FROM lead_d2_assignments WHERE lead_id = ? AND assigned_to_user_id = ?",
+        [leadId, user.id],
+      );
+      if ((d2Rows as any[]).length === 0) {
+        res.status(404).json({ message: "Lead not found" });
+        return { ok: false };
+      }
     }
   }
 
@@ -3981,6 +4004,9 @@ function mergePayloadAfterHubAppointmentCancelled(
 
 async function findDesignLeadIdByCrmLeadId(crmLeadId: number): Promise<number | null> {
   if (!Number.isFinite(crmLeadId) || crmLeadId <= 0) return null;
+  const key = String(crmLeadId);
+  // Prefer payload CRM id link (Hub lead DB id), then Design pid / external ref
+  // (display Lead 100217 may be Design pid when Hub only sends that id).
   const [byCrmRows] = await pool.query(
     `SELECT id FROM leads
      WHERE payload IS NOT NULL AND JSON_VALID(payload) = 1
@@ -3991,10 +4017,26 @@ async function findDesignLeadIdByCrmLeadId(crmLeadId: number): Promise<number | 
        )
      ORDER BY id DESC
      LIMIT 1`,
-    [String(crmLeadId), String(crmLeadId), String(crmLeadId)],
+    [key, key, key],
   );
-  const row = (byCrmRows as { id?: number }[])[0];
-  return row?.id != null && Number(row.id) > 0 ? Number(row.id) : null;
+  const byCrm = (byCrmRows as { id?: number }[])[0];
+  if (byCrm?.id != null && Number(byCrm.id) > 0) return Number(byCrm.id);
+
+  const [byPidRows] = await pool.query(
+    `SELECT id FROM leads
+     WHERE pid = ?
+        OR (
+          payload IS NOT NULL AND JSON_VALID(payload) = 1 AND (
+            JSON_UNQUOTE(JSON_EXTRACT(payload, '$.externalReferenceId')) = ?
+            OR JSON_UNQUOTE(JSON_EXTRACT(payload, '$.fetchedData.externalReferenceId')) = ?
+          )
+        )
+     ORDER BY id DESC
+     LIMIT 1`,
+    [key, key, key],
+  );
+  const byPid = (byPidRows as { id?: number }[])[0];
+  return byPid?.id != null && Number(byPid.id) > 0 ? Number(byPid.id) : null;
 }
 
 async function clearDesignLeadScheduleForCrmLeadId(
@@ -4770,9 +4812,57 @@ async function countUnreadPersonalAppointmentAlerts(
   return { unread: count > 0, count };
 }
 
+/** Short TTL + in-flight dedupe — CRM available-designers hits every designer; avoids N× ERP round-trips. */
+const ERP_DESIGNER_APPT_CACHE_TTL_MS = Math.max(
+  5_000,
+  Number(process.env.ERP_DESIGNER_APPT_CACHE_TTL_MS || 20_000) || 20_000,
+);
+type ErpDesignerApptCacheEntry = {
+  at: number;
+  data: unknown[];
+  inflight: Promise<unknown[]> | null;
+};
+const erpDesignerApptCache = new Map<string, ErpDesignerApptCacheEntry>();
+
+function invalidateDesignerErpAppointmentCache(designerName?: string | null) {
+  if (!designerName || !String(designerName).trim()) {
+    erpDesignerApptCache.clear();
+    return;
+  }
+  erpDesignerApptCache.delete(String(designerName).trim().toLowerCase());
+}
+
 async function fetchDesignerErpAppointments(designerName: string): Promise<unknown[]> {
-  const data = await callErpApi(`/v1/Appointment/designer/${encodeURIComponent(designerName)}`);
-  return Array.isArray(data) ? data : [];
+  const trimmed = designerName.trim();
+  const key = trimmed.toLowerCase();
+  if (!key) return [];
+
+  const now = Date.now();
+  const hit = erpDesignerApptCache.get(key);
+  if (hit?.inflight) return hit.inflight;
+  if (hit && now - hit.at < ERP_DESIGNER_APPT_CACHE_TTL_MS) return hit.data;
+
+  const inflight = (async () => {
+    const data = await callErpApi(`/v1/Appointment/designer/${encodeURIComponent(trimmed)}`);
+    const list = Array.isArray(data) ? data : [];
+    erpDesignerApptCache.set(key, { at: Date.now(), data: list, inflight: null });
+    return list;
+  })().catch((err) => {
+    const cur = erpDesignerApptCache.get(key);
+    if (cur) {
+      erpDesignerApptCache.set(key, { at: cur.at, data: cur.data, inflight: null });
+    } else {
+      erpDesignerApptCache.delete(key);
+    }
+    throw err;
+  });
+
+  erpDesignerApptCache.set(key, {
+    at: hit?.at ?? 0,
+    data: hit?.data ?? [],
+    inflight,
+  });
+  return inflight;
 }
 
 async function getActiveFullDayBlock(
@@ -4789,6 +4879,173 @@ async function getActiveFullDayBlock(
     [designerName.trim(), formatBlockDateForDb(blockDate)],
   );
   return (rows as FullDayRequestRow[])[0] ?? null;
+}
+
+/** One query for the day — used by CRM available-designers (avoids N leave lookups). */
+async function getFullDayLeaveReasonsByDesigner(dateIso: string): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  const [rows] = await pool.query(
+    `SELECT designer_name, status
+       FROM designer_full_day_requests
+      WHERE block_date = ?
+        AND status IN ('pending', 'approved')
+      ORDER BY id DESC`,
+    [formatBlockDateForDb(dateIso)],
+  );
+  for (const row of rows as { designer_name?: string; status?: string }[]) {
+    const key = String(row.designer_name || "")
+      .trim()
+      .toLowerCase();
+    if (!key || map.has(key)) continue;
+    const status = String(row.status || "").toLowerCase();
+    map.set(
+      key,
+      status === "pending"
+        ? `Full-day leave pending on ${dateIso}`
+        : `Full-day leave approved on ${dateIso}`,
+    );
+  }
+  return map;
+}
+
+/**
+ * One-shot Design-side busy map for a calendar day (lead_meetings + legacy payload).
+ * Replaces per-designer leadScheduleBusyBlocksForDesigner in CRM list endpoints.
+ */
+async function leadScheduleBusyBlocksByDesignerForDate(
+  dateIso: string,
+): Promise<Map<string, HubBusyBlock[]>> {
+  const byDesigner = new Map<string, HubBusyBlock[]>();
+  const push = (designerName: string, block: HubBusyBlock) => {
+    const key = designerName.trim().toLowerCase();
+    if (!key) return;
+    const list = byDesigner.get(key);
+    if (list) list.push(block);
+    else byDesigner.set(key, [block]);
+  };
+
+  try {
+    const [meetingRows] = await pool.query(
+      `SELECT
+          m.lead_id AS leadId,
+          m.id AS meetingId,
+          m.meeting_time AS meetingTime,
+          m.source,
+          COALESCE(du.name, '') AS meetingDesignerName,
+          COALESCE(au.name, '') AS assignedDesignerName,
+          JSON_UNQUOTE(JSON_EXTRACT(
+            CASE WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}' ELSE l.payload END,
+            '$.crmSchedule.slot'
+          )) AS crmSlot,
+          JSON_UNQUOTE(JSON_EXTRACT(
+            CASE WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}' ELSE l.payload END,
+            '$.scheduledMeetingSlot'
+          )) AS schedSlot,
+          JSON_UNQUOTE(JSON_EXTRACT(
+            CASE WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}' ELSE l.payload END,
+            '$.designScheduledMeeting.time'
+          )) AS designTime,
+          JSON_UNQUOTE(JSON_EXTRACT(
+            CASE WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}' ELSE l.payload END,
+            '$.formData.appointment_slot'
+          )) AS formSlot
+        FROM lead_meetings m
+        LEFT JOIN users du ON du.id = m.designer_id
+        LEFT JOIN leads l ON l.id = m.lead_id
+        LEFT JOIN users au ON au.id = l.assigned_designer_id
+       WHERE m.meeting_date = ?
+         AND (m.meeting_status IS NULL OR LOWER(m.meeting_status) <> 'cancelled')
+         AND LOWER(COALESCE(m.progress, '')) NOT IN ('completed', 'meeting_never_happened', 'meeting_abandoned')`,
+      [dateIso],
+    );
+    for (const row of meetingRows as Record<string, unknown>[]) {
+      const slot =
+        cleanScheduledMeetingText(row.meetingTime) ||
+        cleanScheduledMeetingText(row.crmSlot) ||
+        cleanScheduledMeetingText(row.schedSlot) ||
+        cleanScheduledMeetingText(row.designTime) ||
+        cleanScheduledMeetingText(row.formSlot);
+      const source = String(row.source || "").toLowerCase() === "crm" ? "CRM meeting" : "Design meeting";
+      const block = meetingSlotToBusyBlock(slot);
+      if (!block) continue;
+      const leadId = Number(row.leadId);
+      const busyBlock: HubBusyBlock = {
+        ...block,
+        label: slot ? `${source} ${slot}` : source,
+        leadId: Number.isFinite(leadId) && leadId > 0 ? leadId : undefined,
+      };
+      const meetingDesigner = String(row.meetingDesignerName || "").trim();
+      const assignedDesigner = String(row.assignedDesignerName || "").trim();
+      if (meetingDesigner) push(meetingDesigner, busyBlock);
+      if (assignedDesigner && assignedDesigner.toLowerCase() !== meetingDesigner.toLowerCase()) {
+        push(assignedDesigner, busyBlock);
+      }
+    }
+  } catch (err) {
+    console.error("[leadScheduleBusyBlocksByDesignerForDate] lead_meetings failed", dateIso, err);
+  }
+
+  try {
+    const likeDate = `${dateIso}%`;
+    const [rows] = await pool.query(
+      `SELECT
+         l.id AS leadId,
+         COALESCE(u.name, '') AS assignedDesignerName,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.connection.designerName')) AS connectionDesigner,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.formData.designer_name')) AS formDesigner,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.scheduledMeetingDate')) AS schedDate,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.scheduledMeetingSlot')) AS schedSlot,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.date')) AS designDate,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.time')) AS designTime,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.crmSchedule.date')) AS crmDate,
+         JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.crmSchedule.slot')) AS crmSlot
+       FROM leads l
+       LEFT JOIN users u ON u.id = l.assigned_designer_id
+       WHERE JSON_VALID(l.payload) = 1
+         AND (
+           JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.scheduledMeetingDate')) LIKE ?
+           OR JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.designScheduledMeeting.date')) LIKE ?
+           OR JSON_UNQUOTE(JSON_EXTRACT(l.payload, '$.crmSchedule.date')) LIKE ?
+         )`,
+      [likeDate, likeDate, likeDate],
+    );
+    for (const row of rows as Record<string, unknown>[]) {
+      const designDate = meetingDateFromRaw(row.schedDate) || meetingDateFromRaw(row.designDate);
+      const crmDate = meetingDateFromRaw(row.crmDate);
+      const meetingDate = designDate || crmDate;
+      if (meetingDate !== dateIso) continue;
+      const designTime =
+        cleanScheduledMeetingText(row.schedSlot) || cleanScheduledMeetingText(row.designTime);
+      const crmTime =
+        crmDate === meetingDate
+          ? cleanScheduledMeetingText(row.crmSlot) || meetingTimeEmbeddedInDate(row.crmDate)
+          : null;
+      const block = meetingSlotToBusyBlock(designTime || crmTime);
+      if (!block) continue;
+      const leadId = Number(row.leadId);
+      const busyBlock: HubBusyBlock = {
+        ...block,
+        label: "Design meeting (payload)",
+        leadId: Number.isFinite(leadId) && leadId > 0 ? leadId : undefined,
+      };
+      const names = [
+        String(row.assignedDesignerName || "").trim(),
+        String(row.connectionDesigner || "").trim(),
+        String(row.formDesigner || "").trim(),
+      ];
+      const seen = new Set<string>();
+      for (const name of names) {
+        const key = name.toLowerCase();
+        if (!name || seen.has(key)) continue;
+        seen.add(key);
+        push(name, busyBlock);
+      }
+    }
+  } catch (err) {
+    console.error("[leadScheduleBusyBlocksByDesignerForDate] payload failed", dateIso, err);
+  }
+
+  return byDesigner;
 }
 
 async function countClientMeetingsOnDate(designerName: string, dateIso: string): Promise<number> {
@@ -10997,6 +11254,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
         `DELETE FROM lead_task_completions WHERE lead_id = ? AND milestone_index = 2`,
         [id],
       );
+      void syncFinance(pool, id);
     }
 
     // Fire-and-forget: trigger milestone-specific customer emails where defined
@@ -13361,6 +13619,7 @@ app.post("/api/leads/:id/approve-sales-closure", async (req: Request, res: Respo
       `UPDATE leads SET project_stage = '10-20%', payload = ?, update_at = ? WHERE id = ?`,
       [JSON.stringify(payloadObj), new Date(), leadId]
     );
+    void syncPhaseEntry(pool, leadId);
 
     // Non-fatal hook to award Designer XP for New Sale
     try {
@@ -13933,6 +14192,7 @@ app.post("/api/leads/:id/approve-10p-payment", async (req: Request, res: Respons
         `UPDATE leads SET project_stage = '10-20%', payload = ?, update_at = ? WHERE id = ?`,
         [JSON.stringify(payload), now, leadId],
       );
+      void syncPhaseEntry(pool, leadId);
       await addLeadHistoryEvent(leadId, {
         id: `crm-booking-finance-${Date.now()}`,
         type: "note",
@@ -17426,6 +17686,12 @@ app.post("/api/leads/:id/dqc-review", async (req: Request, res: Response) => {
        VALUES (?, ?, ?, ?, ?)`,
       [leadId, verdict, JSON.stringify(remarks), new Date(), user.id],
     );
+    if (role === "dqe") {
+      void syncDqe(pool, leadId, user.id);
+    }
+    if ((verdict === "approved" || verdict === "approved_with_changes") && !isDqc2) {
+      void syncFinance(pool, leadId);
+    }
 
 
     // Send internal rejection / changes feedback email to assigned designer
@@ -17650,6 +17916,8 @@ app.post("/api/leads/:id/d1-request", async (req: Request, res: Response) => {
        VALUES (?, NULL, ?, ?, ?, 'awaiting_manager', ?)`,
       [leadId, managerId, measurementDate || null, measurementTime || null, new Date()],
     );
+    void syncPhaseEntry(pool, leadId);
+    void syncMmtManager(pool, leadId, managerId);
 
     let payload: any = {};
     try {
@@ -17858,6 +18126,7 @@ app.post("/api/leads/:id/assign-d1-executive", async (req: Request, res: Respons
        WHERE id = ?`,
       [executiveId, assignment.id],
     );
+    void syncMmtExecutive(pool, leadId, executiveId);
 
     console.log("[D1-MMT] Executive assigned", {
       leadId,
@@ -18197,6 +18466,12 @@ async function maybeNotifyMilestoneCompleted(
     const allComps = allCompRows as { milestoneIndex: number; taskName: string }[];
     if (!isMilestoneFullyComplete(allComps, milestoneIndex)) return;
 
+    if (milestoneIndex === 0) {
+      void syncDqcManager(pool, leadId);
+    } else if (milestoneIndex === 1) {
+      void syncFinance(pool, leadId);
+    }
+
     const [nRows] = await pool.query(
       `SELECT l.pid, l.project_name as projectName, l.assigned_designer_id as designerId,
               u.name as designerName
@@ -18245,6 +18520,15 @@ function getCurrentMilestoneProgress(
 
 // Dashboard: list leads; role-specific filters (MMT → D1 assignments, SPM → D2 masking raised, PM → assigned leads)
 // Query param type=d2: return leads that have D2 masking assignment (for D2 uploads page); mmt_executive sees only their D2 assignments
+function toBranchCode(raw?: string | null): string {
+  const s = String(raw || "").trim().toUpperCase();
+  if (!s) return "";
+  if (s.includes("HBR")) return "HBR";
+  if (s.includes("JPN") || s.includes("JP NAGAR")) return "JPN";
+  if (s.includes("SJR") || s.includes("SARJAPUR")) return "SJR";
+  return s.slice(0, 3);
+}
+
 app.get("/api/leads/queue", async (req: Request, res: Response) => {
   const now = new Date();
   const queueType = (req.query.type as string) || "d1";
@@ -18360,6 +18644,7 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
                   '$.designerName'
                 ))), '')
               ) as designerName,
+              COALESCE(NULLIF(TRIM(u.branch), ''), NULLIF(TRIM(dm.branch), '')) AS designerBranchRaw,
               pm.name as projectManagerName,
               JSON_UNQUOTE(
                 JSON_EXTRACT(
@@ -18393,6 +18678,7 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
               l.payload AS leadPayloadRaw
        FROM leads l
        LEFT JOIN users u ON u.id = l.assigned_designer_id
+       LEFT JOIN users dm ON dm.id = u.design_manager_id
        LEFT JOIN users pm ON pm.id = l.assigned_project_manager_id
        ${queueWhereSql}
        ORDER BY l.id ASC`,
@@ -18403,11 +18689,18 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
       .map((r) => {
         payloadByLeadId.set(r.id, r.leadPayloadRaw);
         const intake = extractLeadIntakeViewFromPayload(r.leadPayloadRaw);
-        const { leadPayloadRaw: _omitPayload, ...rest } = r;
+        const { leadPayloadRaw: _omitPayload, designerBranchRaw, ...rest } = r;
+        const desBranch = toBranchCode(designerBranchRaw) || null;
+        const fallbackBranch = toBranchCode(r.experienceCenter) || null;
+        const projectBranch = (r.assigned_designer_id ? desBranch : (desBranch || fallbackBranch)) || null;
         return {
           ...rest,
           isOnHold: !!r.isOnHold,
           designerName: r.designerName ?? null,
+          designerBranch: desBranch,
+          fallbackBranch,
+          projectBranch,
+          branch: projectBranch,
           projectManagerName: r.projectManagerName ?? null,
           experienceCenter: r.experienceCenter ?? null,
           appointmentDate: intake.appointmentDate,
@@ -18553,7 +18846,7 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
       pool,
       baseList.map((l: { id: number }) => l.id),
     );
-    const enrichedList = baseList.map((l: any) => {
+    let enrichedList = baseList.map((l: any) => {
       let comps = completionsByLead.get(l.id) ?? [];
       // Auto-complete KT TRANSFER for existing projects that have already started on other milestones.
       if (comps.length > 0 && !comps.some((r) => r.milestoneIndex === 7)) {
@@ -18586,6 +18879,11 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
         taskCompletions: comps,
       };
     });
+
+    const reqQueueBranch = (req.query.branch as string | undefined)?.trim()?.toUpperCase();
+    if (reqQueueBranch && reqQueueBranch !== "ALL" && ["HBR", "SJR", "JPN"].includes(reqQueueBranch)) {
+      enrichedList = enrichedList.filter((l: any) => l.projectBranch === reqQueueBranch);
+    }
 
     // Designer / DM / PM were already scoped in SQL above.
     if (user && (role === "designer" || role === "design_manager" || role === "project_manager")) {
@@ -18881,6 +19179,7 @@ app.get("/api/designers", async (req: Request, res: Response) => {
                         u.email,
                         u.role,
                         u.sub_role AS subRole,
+                        COALESCE(NULLIF(TRIM(u.branch), ''), NULLIF(TRIM(m.branch), '')) as branchRaw,
                         COALESCE(m.name, '') as leadName
                  FROM users u
                  LEFT JOIN users m ON u.design_manager_id = m.id
@@ -18894,7 +19193,14 @@ app.get("/api/designers", async (req: Request, res: Response) => {
 
     console.log("[GET /api/designers] running query...");
     const [rows] = await pool.query(query, params);
-    const list = rows as any[];
+    let list = (rows as any[]).map((r) => ({
+      ...r,
+      branch: toBranchCode(r.branchRaw) || null,
+    }));
+    const reqDesBranch = (req.query.branch as string | undefined)?.trim()?.toUpperCase();
+    if (reqDesBranch && reqDesBranch !== "ALL" && ["HBR", "SJR", "JPN"].includes(reqDesBranch)) {
+      list = list.filter((d) => d.branch === reqDesBranch);
+    }
     console.log(`[GET /api/designers] found ${list.length} designers`);
 
     // Always return { designers: [...] } so CRM and legacy callers both work
@@ -18918,26 +19224,45 @@ app.get("/api/designers/assignable", async (req: Request, res: Response) => {
 
     if (role === "design_manager") {
       const [rows] = await pool.query(
-        `SELECT id, name, role, sub_role AS subRole
-         FROM users
-         WHERE role = 'design_manager' AND id = ?
-         UNION
-         SELECT id, name, role, sub_role AS subRole
-         FROM users
-         WHERE role = 'designer' AND design_manager_id = ?
-         ORDER BY name ASC`,
+        `SELECT u.id, u.name, u.role, u.sub_role AS subRole,
+                COALESCE(NULLIF(TRIM(u.branch), ''), NULLIF(TRIM(dm.branch), '')) as branchRaw
+         FROM users u
+         LEFT JOIN users dm ON dm.id = u.design_manager_id
+         WHERE (u.role = 'design_manager' AND u.id = ?)
+            OR (u.role = 'designer' AND u.design_manager_id = ?)
+         ORDER BY u.name ASC`,
         [user.id, user.id],
       );
-      return res.json(rows);
+      const list = (rows as any[]).map((r) => ({
+        id: r.id,
+        name: r.name,
+        role: r.role,
+        subRole: r.subRole,
+        branch: toBranchCode(r.branchRaw) || null,
+      }));
+      return res.json(list);
     }
 
     const [rows] = await pool.query(
-      `SELECT id, name, role, sub_role AS subRole
-       FROM users
-       WHERE role IN ('designer', 'design_manager')
-       ORDER BY name ASC`,
+      `SELECT u.id, u.name, u.role, u.sub_role AS subRole,
+              COALESCE(NULLIF(TRIM(u.branch), ''), NULLIF(TRIM(dm.branch), '')) as branchRaw
+       FROM users u
+       LEFT JOIN users dm ON dm.id = u.design_manager_id
+       WHERE u.role IN ('designer', 'design_manager')
+       ORDER BY u.name ASC`,
     );
-    return res.json(rows);
+    let list = (rows as any[]).map((r) => ({
+      id: r.id,
+      name: r.name,
+      role: r.role,
+      subRole: r.subRole,
+      branch: toBranchCode(r.branchRaw) || null,
+    }));
+    const reqAssignBranch = (req.query.branch as string | undefined)?.trim()?.toUpperCase();
+    if (reqAssignBranch && reqAssignBranch !== "ALL" && ["HBR", "SJR", "JPN"].includes(reqAssignBranch)) {
+      list = list.filter((d) => d.branch === reqAssignBranch);
+    }
+    return res.json(list);
   } catch (err) {
     console.error("designers/assignable error", err);
     return res.status(500).json({ message: "Failed to load assignable designers" });
@@ -19007,6 +19332,7 @@ app.post("/api/leads/:id/assign-designer", async (req: Request, res: Response) =
       new Date(),
       leadId,
     ]);
+    void syncDesignerChange(pool, leadId, designerId);
 
     // Notify: 12 — Designer reassigned
     try {
@@ -19094,6 +19420,7 @@ app.post("/api/leads/assign-designer/bulk", async (req: Request, res: Response) 
         new Date(),
         leadId,
       ]);
+      void syncDesignerChange(pool, leadId, designerId);
       updatedLeadIds.push(leadId);
     }
 
@@ -19137,6 +19464,7 @@ app.patch("/api/leads/:id/assign-project-manager", async (req: Request, res: Res
       "UPDATE leads SET assigned_project_manager_id = ?, update_at = ? WHERE id = ?",
       [pmId, new Date(), id],
     );
+    void syncProjectManager(pool, id, pmId);
     await pool.query(
       "UPDATE lead_d2_assignments SET status = 'pm_assigned' WHERE lead_id = ?",
       [id],
@@ -21622,6 +21950,103 @@ app.patch("/api/leads/:id/client-emails", async (req: Request, res: Response) =>
 });
 
 // Involved users for a lead (D1/D2 assignees + uploaders); used for header avatars (profile images)
+
+// Project members endpoints (GET, POST manual member, DELETE manual member)
+app.get("/api/leads/:id/project-members", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const access = await getLeadAccessRowForUser(res, user, leadId);
+    if (!access.ok) return;
+    await ensureProjectMembersHydrated(pool, leadId);
+    const members = await getProjectMembersForLead(pool, leadId, API_BASE);
+    return res.json(members);
+  } catch (err) {
+    console.error("project-members GET error", err);
+    return res.status(500).json({ message: "Failed to load project members" });
+  }
+});
+
+app.post("/api/leads/:id/project-members", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const access = await getLeadAccessRowForUser(res, user, leadId);
+    if (!access.ok) return;
+
+    const targetUserId = Number(req.body?.userId);
+    const role = (req.body?.role || "manual").trim() || "manual";
+    if (!targetUserId) return res.status(400).json({ message: "userId is required" });
+
+    const [uRows] = await pool.query("SELECT id FROM users WHERE id = ? LIMIT 1", [targetUserId]);
+    if ((uRows as any[]).length === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    await ensureProjectMembersHydrated(pool, leadId);
+    await addManualMember(pool, leadId, targetUserId, role);
+    const updated = await getProjectMembersForLead(pool, leadId, API_BASE);
+    return res.json({ ok: true, members: updated });
+  } catch (err) {
+    console.error("project-members POST error", err);
+    return res.status(500).json({ message: "Failed to add project member" });
+  }
+});
+
+app.delete("/api/leads/:id/project-members/:userId", async (req: Request, res: Response) => {
+  const leadId = Number(req.params.id);
+  const targetUserId = Number(req.params.userId);
+  if (Number.isNaN(leadId) || Number.isNaN(targetUserId)) {
+    return res.status(400).json({ message: "Invalid id or userId" });
+  }
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const access = await getLeadAccessRowForUser(res, user, leadId);
+    if (!access.ok) return;
+
+    await removeManualMember(pool, leadId, targetUserId);
+    const updated = await getProjectMembersForLead(pool, leadId, API_BASE);
+    return res.json({ ok: true, members: updated });
+  } catch (err) {
+    console.error("project-members DELETE error", err);
+    return res.status(500).json({ message: "Failed to remove project member" });
+  }
+});
+
+// List assignable team members for "+" button modal
+app.get("/api/users/assignable-team", async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    const [rows] = await pool.query(
+      "SELECT id, name, email, role, profileImage FROM users ORDER BY name ASC"
+    );
+    const list = (rows as any[]).map((u) => {
+      let profileImage = u.profileImage || null;
+      if (profileImage && profileImage.startsWith("/") && !profileImage.startsWith("http")) {
+        profileImage = `${API_BASE}${profileImage}`;
+      }
+      return {
+        id: u.id,
+        name: u.name || "",
+        email: u.email || "",
+        role: formatRoleLabel(u.role || ""),
+        rawRole: u.role || "",
+        profileImage,
+      };
+    });
+    return res.json(list);
+  } catch (err) {
+    console.error("assignable-team error", err);
+    return res.status(500).json({ message: "Failed to load team users" });
+  }
+});
+
 app.get("/api/leads/:id/involved-users", async (req: Request, res: Response) => {
   const leadId = Number(req.params.id);
   if (Number.isNaN(leadId)) return res.status(400).json({ message: "Invalid id" });
@@ -21629,65 +22054,53 @@ app.get("/api/leads/:id/involved-users", async (req: Request, res: Response) => 
     const user = await getUserFromSession(req);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
 
-    const [leadRows] = await pool.query("SELECT id FROM leads WHERE id = ?", [leadId]);
-    if ((leadRows as any[]).length === 0) return res.status(404).json({ message: "Lead not found" });
+    const access = await getLeadAccessRowForUser(res, user, leadId);
+    if (!access.ok) return;
 
-    if ((user?.role ?? "").toLowerCase() === "mmt_executive") {
-      const [assignRows] = await pool.query(
-        "SELECT 1 FROM lead_d1_assignments WHERE lead_id = ? AND assigned_to_user_id = ?",
-        [leadId, user.id],
-      );
-      if ((assignRows as any[]).length === 0) {
-        const [d2Rows] = await pool.query(
-          "SELECT 1 FROM lead_d2_assignments WHERE lead_id = ? AND assigned_to_user_id = ?",
-          [leadId, user.id],
-        );
-        if ((d2Rows as any[]).length === 0) return res.status(404).json({ message: "Lead not found" });
-      }
+    // Source of truth: lead_project_members (hydrate empty historical leads once on read).
+    await ensureProjectMembersHydrated(pool, leadId);
+    const storedMembers = await getProjectMembersForLead(pool, leadId, API_BASE);
+    if (storedMembers.length > 0) {
+      return res.json(storedMembers);
     }
 
+    // Pre-10 / not yet hydrated: show only this lead's assigned designer & PM (never all role holders).
+    const [coreRows] = await pool.query(
+      `SELECT assigned_designer_id AS designerId, assigned_project_manager_id AS pmId
+       FROM leads WHERE id = ? LIMIT 1`,
+      [leadId],
+    );
+    const core = (coreRows as { designerId?: number | null; pmId?: number | null }[])[0];
     const userIds = new Set<number>();
-    const [d1] = await pool.query(
-      "SELECT assigned_to_user_id FROM lead_d1_assignments WHERE lead_id = ?",
-      [leadId],
-    );
-    (d1 as { assigned_to_user_id: number }[]).forEach((r) =>
-      userIds.add(r.assigned_to_user_id),
-    );
-    const [d2] = await pool.query(
-      "SELECT assigned_to_user_id FROM lead_d2_assignments WHERE lead_id = ?",
-      [leadId],
-    );
-    (d2 as { assigned_to_user_id: number }[]).forEach((r) =>
-      userIds.add(r.assigned_to_user_id),
-    );
-    const [up] = await pool.query(
-      "SELECT uploader_id FROM lead_uploads WHERE lead_id = ? AND uploader_id IS NOT NULL",
-      [leadId],
-    );
-    (up as { uploader_id: number | null }[]).forEach((r) => {
-      if (r.uploader_id) userIds.add(r.uploader_id);
-    });
-
-    // Also include core project team roles so DQC manager, DQE, TDM, and design managers appear
-    const [coreTeamRows] = await pool.query(
-      "SELECT id FROM users WHERE role IN ('dqc_manager', 'dqe', 'territorial_design_manager', 'design_manager')",
-    );
-    (coreTeamRows as { id: number }[]).forEach((u) => userIds.add(u.id));
-
+    if (core?.designerId) userIds.add(Number(core.designerId));
+    if (core?.pmId) userIds.add(Number(core.pmId));
     if (userIds.size === 0) return res.json([]);
 
     const placeholders = Array.from(userIds).map(() => "?").join(",");
     const [userRows] = await pool.query(
-      `SELECT id, name, profileImage FROM users WHERE id IN (${placeholders}) ORDER BY name ASC`,
+      `SELECT id, name, email, profileImage, role FROM users WHERE id IN (${placeholders}) ORDER BY name ASC`,
       Array.from(userIds),
     );
-    const list = (userRows as { id: number; name: string | null; profileImage: string | null }[]).map((u) => {
+    const list = (userRows as {
+      id: number;
+      name: string | null;
+      email: string | null;
+      profileImage: string | null;
+      role: string | null;
+    }[]).map((u) => {
       let profileImage = u.profileImage || null;
       if (profileImage && profileImage.startsWith("/") && !profileImage.startsWith("http")) {
         profileImage = `${API_BASE}${profileImage}`;
       }
-      return { id: u.id, name: u.name || "", profileImage };
+      const roleKey = String(u.role || "").toLowerCase();
+      return {
+        id: u.id,
+        name: u.name || "",
+        email: u.email || null,
+        profileImage,
+        projectRole: formatRoleLabel(roleKey || "manual"),
+        isManual: false,
+      };
     });
     return res.json(list);
   } catch (err) {
@@ -23658,10 +24071,17 @@ app.get("/api/appointment/designer/:designerName", async (req: Request, res: Res
 });
 
 /**
- * Hub ERP → Design: clear lead JSON schedule when appointment is cancelled (API delete).
+ * Hub ERP → Design: clear lead JSON schedule + cancel CRM lead_meetings when appointment is cancelled.
  * POST /api/appointment/hub-appointment-cancelled
- * Body: { crmLeadId | leadId, erpAppointmentId? }
+ * Body: {
+ *   crmLeadId | leadId,
+ *   erpAppointmentId?,
+ *   meetingStatus? | action? | status?  (CANCELLED / cancelled)
+ * }
  * Auth: HUB_SYNC_API_KEY / EXTERNAL_LEAD_INGEST_API_KEY (same as CRM sales proxies).
+ *
+ * Must flip lead_meetings.meeting_status = 'cancelled' (same as external-upsert CANCELLED),
+ * otherwise Meeting Management stays on "Meeting Scheduled" after CRM cancel.
  */
 app.post("/api/appointment/hub-appointment-cancelled", async (req: Request, res: Response) => {
   try {
@@ -23684,16 +24104,60 @@ app.post("/api/appointment/hub-appointment-cancelled", async (req: Request, res:
       return res.status(400).json({ message: "crmLeadId (or leadId) is required" });
     }
 
+    // Endpoint is cancel-specific; still honor Hub meetingStatus/action/status when present.
+    const cancelSignal = String(
+      body.meetingStatus ?? body.action ?? body.status ?? body.meeting_status ?? "CANCELLED",
+    ).trim();
+    const isCancel = /cancel/i.test(cancelSignal) || cancelSignal === "";
+    if (!isCancel) {
+      return res.status(400).json({
+        message: "Expected meetingStatus/action/status indicating cancelled",
+        received: cancelSignal,
+      });
+    }
+
+    const cancelReason =
+      String(body.cancelReason || body.cancel_reason || body.reason || "").trim() ||
+      "Meeting Cancelled from CRM";
+
     const result = await clearDesignLeadScheduleForCrmLeadId(crmLeadId);
+    let cancelledMeetings = 0;
+    if (result.designLeadId != null) {
+      try {
+        cancelledMeetings = await cancelCrmMeetingsForLead(pool, result.designLeadId, {
+          reason: cancelReason,
+          actor: { name: "CRM" },
+          from: "hub_appointment_cancelled",
+        });
+      } catch (cancelErr) {
+        console.error("[hub-appointment-cancelled] cancel CRM meeting failed", cancelErr);
+      }
+    }
+
+    console.info("[hub-appointment-cancelled]", {
+      crmLeadId,
+      designLeadId: result.designLeadId,
+      scheduleCleared: result.updated,
+      cancelledMeetings,
+      meetingStatus: "CANCELLED",
+    });
+
     return res.json({
       ok: true,
       crmLeadId,
       erpAppointmentId: body.erpAppointmentId ?? body.appointmentId ?? null,
       designLeadId: result.designLeadId,
       scheduleCleared: result.updated,
-      message: result.updated
-        ? "Design lead meeting schedule cleared"
-        : "No linked Design lead found (nothing to clear)",
+      cancelledMeetings,
+      meetingStatus: "CANCELLED",
+      message:
+        result.designLeadId == null
+          ? "No linked Design lead found (nothing to clear)"
+          : cancelledMeetings > 0
+            ? "Design lead schedule cleared and CRM meeting(s) cancelled"
+            : result.updated
+              ? "Design lead meeting schedule cleared (no open CRM meetings to cancel)"
+              : "Design lead found but schedule unchanged; no open CRM meetings to cancel",
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -23713,10 +24177,12 @@ app.post("/api/appointment/hub-appointment-cancelled", async (req: Request, res:
  * Auth: Design Module session, or EXTERNAL_LEAD_INGEST_API_KEY / HUB_SYNC_API_KEY (CRM sales).
  * Accuracy: calendar day from `date` (required); times parsed as local wall-clock (no TZ drift).
  * Conflicts: Hub ERP `appointment` rows for that designer (+ full-day leave). Not Google Calendar.
+ *
+ * Fast path: CRM API-key skips session; leave + Design meetings batched once per day;
+ * ERP designer calendars fetched with higher concurrency + short TTL cache.
  */
 app.get("/api/appointment/available-designers", async (req: Request, res: Response) => {
   try {
-    const actingUser = await getUserFromSession(req);
     const expectedKey =
       (process.env.EXTERNAL_LEAD_INGEST_API_KEY || "").trim() ||
       (process.env.HUB_SYNC_API_KEY || "").trim();
@@ -23727,10 +24193,13 @@ app.get("/api/appointment/available-designers", async (req: Request, res: Respon
     ).trim();
     const apiKeyOk = Boolean(expectedKey && providedKey && providedKey === expectedKey);
 
-    if (!actingUser && !apiKeyOk) {
-      return res.status(401).json({ message: "Unauthorized" });
-    }
-    if (actingUser) {
+    // CRM sales uses API key — skip session DB lookup for lower latency.
+    let actingUser: Awaited<ReturnType<typeof getUserFromSession>> | null = null;
+    if (!apiKeyOk) {
+      actingUser = await getUserFromSession(req);
+      if (!actingUser) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
       const role = (actingUser.role || "").toLowerCase();
       const allowedRoles = [
         "admin",
@@ -23826,15 +24295,19 @@ app.get("/api/appointment/available-designers", async (req: Request, res: Respon
       String(req.query.includeUnavailable || "").trim().toLowerCase() === "true" ||
       String(req.query.includeUnavailable || "").trim() === "1";
 
-    const [designerRows] = await pool.query(
-      `SELECT id, name, email
-       FROM users
-       WHERE role = 'designer'
-         AND name IS NOT NULL
-         AND TRIM(name) <> ''
-       ORDER BY name ASC`,
-    );
-    const designers = designerRows as { id: number; name: string; email: string | null }[];
+    const [designerRows, leaveByDesigner, leadBusyByDesigner] = await Promise.all([
+      pool.query(
+        `SELECT id, name, email
+         FROM users
+         WHERE role = 'designer'
+           AND name IS NOT NULL
+           AND TRIM(name) <> ''
+         ORDER BY name ASC`,
+      ),
+      getFullDayLeaveReasonsByDesigner(dateIso),
+      leadScheduleBusyBlocksByDesignerForDate(dateIso),
+    ]);
+    const designers = designerRows[0] as { id: number; name: string; email: string | null }[];
 
     type DesignerAvailability = {
       id: number;
@@ -23847,21 +24320,50 @@ app.get("/api/appointment/available-designers", async (req: Request, res: Respon
       warning?: string;
     };
 
-    const results = await mapPoolLimit(designers, 5, async (d): Promise<DesignerAvailability> => {
+    const ERP_CONCURRENCY = Math.max(
+      4,
+      Number(process.env.AVAILABLE_DESIGNERS_ERP_CONCURRENCY || 12) || 12,
+    );
+    const ERP_TIMEOUT_MS = Math.max(
+      2_000,
+      Number(process.env.AVAILABLE_DESIGNERS_ERP_TIMEOUT_MS || 4_500) || 4_500,
+    );
+
+    const results = await mapPoolLimit(designers, ERP_CONCURRENCY, async (d): Promise<DesignerAvailability> => {
       const email = String(d.email || "").trim();
       const base = { id: Number(d.id), name: d.name, email };
+      const designerKey = String(d.name || "")
+        .trim()
+        .toLowerCase();
 
       try {
-        const { leaveReason, busy, erpFailed } = await getDesignerBusyBlocksForDate(d.name, dateIso);
+        const leaveReason = leaveByDesigner.get(designerKey) || null;
         if (leaveReason) {
           return {
             ...base,
             available: false,
             conflictCount: 1,
             conflictReason: leaveReason,
-            erpCalendarOk: !erpFailed,
+            erpCalendarOk: true,
           };
         }
+
+        const busy: HubBusyBlock[] = [...(leadBusyByDesigner.get(designerKey) || [])];
+        let erpFailed = false;
+        try {
+          const appointments = await withTimeout(
+            fetchDesignerErpAppointments(d.name),
+            ERP_TIMEOUT_MS,
+          );
+          for (const row of appointments) {
+            const block = erpAppointmentToBusyBlock(row, dateIso);
+            if (block) busy.push(block);
+          }
+        } catch (err) {
+          erpFailed = true;
+          console.error("[available-designers] ERP calendar failed", d.name, err);
+        }
+
         const conflicts = findOverlappingBusyBlocks(busy, startMin, endMin);
         if (conflicts.length > 0) {
           const first = conflicts[0];
@@ -23927,10 +24429,10 @@ app.get("/api/appointment/available-designers", async (req: Request, res: Respon
 /**
  * P1 — Sales day overview: each designer + free 90-min starts / busy blocks.
  * GET /api/appointment/availability-by-date?date=YYYY-MM-DD&durationMinutes=90
+ * Uses same batched leave/Design-meeting + cached ERP path as available-designers.
  */
 app.get("/api/appointment/availability-by-date", async (req: Request, res: Response) => {
   try {
-    const actingUser = await getUserFromSession(req);
     const expectedKey =
       (process.env.EXTERNAL_LEAD_INGEST_API_KEY || "").trim() ||
       (process.env.HUB_SYNC_API_KEY || "").trim();
@@ -23940,8 +24442,11 @@ app.get("/api/appointment/availability-by-date", async (req: Request, res: Respo
         String(req.headers.authorization || "").replace(/^Bearer\s+/i, ""),
     ).trim();
     const apiKeyOk = Boolean(expectedKey && providedKey && providedKey === expectedKey);
-    if (!actingUser && !apiKeyOk) {
-      return res.status(401).json({ message: "Unauthorized" });
+    if (!apiKeyOk) {
+      const actingUser = await getUserFromSession(req);
+      if (!actingUser) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
     }
 
     const dateIso = normalizeBlockDateIso(req.query.date);
@@ -23954,21 +24459,40 @@ app.get("/api/appointment/availability-by-date", async (req: Request, res: Respo
         ? Math.round(durationRaw)
         : HUB_DEFAULT_MEETING_DURATION_MIN;
 
-    const [designerRows] = await pool.query(
-      `SELECT id, name, email
-       FROM users
-       WHERE role = 'designer'
-         AND name IS NOT NULL
-         AND TRIM(name) <> ''
-       ORDER BY name ASC`,
-    );
-    const designers = designerRows as { id: number; name: string; email: string | null }[];
+    const [designerRows, leaveByDesigner, leadBusyByDesigner] = await Promise.all([
+      pool.query(
+        `SELECT id, name, email
+         FROM users
+         WHERE role = 'designer'
+           AND name IS NOT NULL
+           AND TRIM(name) <> ''
+         ORDER BY name ASC`,
+      ),
+      getFullDayLeaveReasonsByDesigner(dateIso),
+      leadScheduleBusyBlocksByDesignerForDate(dateIso),
+    ]);
+    const designers = designerRows[0] as { id: number; name: string; email: string | null }[];
 
-    const rows = await mapPoolLimit(designers, 5, async (d) => {
+    const ERP_CONCURRENCY = Math.max(
+      4,
+      Number(process.env.AVAILABLE_DESIGNERS_ERP_CONCURRENCY || 12) || 12,
+    );
+    const ERP_TIMEOUT_MS = Math.max(
+      2_000,
+      Number(process.env.AVAILABLE_DESIGNERS_ERP_TIMEOUT_MS || 4_500) || 4_500,
+    );
+
+    const rows = await mapPoolLimit(designers, ERP_CONCURRENCY, async (d) => {
       const email = String(d.email || "").trim();
+      const designerKey = String(d.name || "")
+        .trim()
+        .toLowerCase();
       try {
-        const { leaveReason, busy, erpFailed } = await getDesignerBusyBlocksForDate(d.name, dateIso);
+        const leaveReason = leaveByDesigner.get(designerKey) || null;
         if (leaveReason) {
+          const busy: HubBusyBlock[] = [
+            { startMin: HUB_DAY_START_MIN, endMin: HUB_DAY_END_MIN, label: "Full-day leave" },
+          ];
           return {
             id: Number(d.id),
             name: d.name,
@@ -23984,6 +24508,23 @@ app.get("/api/appointment/availability-by-date", async (req: Request, res: Respo
             })),
           };
         }
+
+        const busy: HubBusyBlock[] = [...(leadBusyByDesigner.get(designerKey) || [])];
+        let erpFailed = false;
+        try {
+          const appointments = await withTimeout(
+            fetchDesignerErpAppointments(d.name),
+            ERP_TIMEOUT_MS,
+          );
+          for (const row of appointments) {
+            const block = erpAppointmentToBusyBlock(row, dateIso);
+            if (block) busy.push(block);
+          }
+        } catch (err) {
+          erpFailed = true;
+          console.error("[availability-by-date] ERP failed", d.name, err);
+        }
+
         const freeMins = listHubFreeStartMinutes(busy, durationMin);
         return {
           id: Number(d.id),
@@ -24403,6 +24944,7 @@ app.post("/api/appointment", async (req: Request, res: Response) => {
         ...(bodyEnd ? { endTime: bodyEnd } : {}),
       }),
     });
+    invalidateDesignerErpAppointmentCache(String(designerName || ""));
     return res.status(201).json(data);
   } catch (err: any) {
     console.error("appointment create proxy error", err);
@@ -24774,6 +25316,7 @@ app.post("/api/appointment/personal/:erpId/cancel", async (req: Request, res: Re
     const designerUserId = (userRows as { id: number }[])[0]?.id ?? actingUser.id;
 
     await callErpApi(`/v1/Appointment/${erpId}`, { method: "DELETE" });
+    invalidateDesignerErpAppointmentCache(designerName);
 
     await pool.query(
       `INSERT INTO personal_block_cancellations

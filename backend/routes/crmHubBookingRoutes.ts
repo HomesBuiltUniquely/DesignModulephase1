@@ -562,10 +562,10 @@ async function resolveDesignLeadIdForHubSync(pool: Pool, body: HubLeadBody): Pro
     const [byCrm] = await queryWithRetry(
       pool,
       `SELECT id FROM leads
-       WHERE JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.crmLeadType')) = ?
+       WHERE LOWER(TRIM(JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.crmLeadType')))) = ?
          AND CAST(JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.crmLeadId')) AS UNSIGNED) = ?
        ORDER BY id DESC LIMIT 1`,
-      [leadType, leadIdNum],
+      [leadType.toLowerCase(), leadIdNum],
     );
     const row = (byCrm as { id: number }[])[0];
     if (row?.id) return row.id;
@@ -632,9 +632,12 @@ async function resolveDesignerId(pool: Pool, designerName: string): Promise<numb
 }
 
 /**
- * When CRM intake + upsert both created rows for the same AL-/GL- id,
+ * When CRM intake + upsert both created rows for the same AL-/GL-/ML- id,
  * keep the canonical Design lead and mark the extras Cancelled so Dashboard
  * Active view shows one row.
+ *
+ * Never cancel a row that still has an open CRM meeting — that hid Savita-style
+ * leads from Pre 10% while Meeting Management still showed the booking.
  */
 async function cancelDuplicateCrmLeads(
   pool: Pool,
@@ -647,7 +650,18 @@ async function cancelDuplicateCrmLeads(
   },
 ): Promise<void> {
   const ident = String(args.leadIdentifier || "").trim();
-  if (!ident || !Number.isFinite(args.keepLeadId)) return;
+  const leadType = String(args.leadType || "").trim().toLowerCase();
+  if (!ident || !Number.isFinite(args.keepLeadId) || args.keepLeadId < 1) return;
+  if (!leadType || !Number.isFinite(args.leadIdNum) || args.leadIdNum < 1) {
+    // Require type+id so mlead#1567 never collides with glead#1567 (shared numeric ids).
+    console.warn("[crm-hub] duplicate cleanup skipped — missing leadType/leadId", {
+      keepLeadId: args.keepLeadId,
+      leadIdentifier: ident,
+      leadType,
+      leadIdNum: args.leadIdNum,
+    });
+    return;
+  }
   try {
     const [rows] = await queryWithRetry(
       pool,
@@ -659,15 +673,22 @@ async function cancelDuplicateCrmLeads(
            OR JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.externalReferenceId')) = ?
            OR JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.fetchedData.externalReferenceId')) = ?
            OR (
-             JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.crmLeadType')) = ?
+             LOWER(TRIM(JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.crmLeadType')))) = ?
              AND CAST(JSON_UNQUOTE(JSON_EXTRACT(${SAFE_PAYLOAD_JSON}, '$.crmLeadId')) AS UNSIGNED) = ?
            )
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM lead_meetings m
+            WHERE m.lead_id = leads.id
+              AND m.source = 'crm'
+              AND m.meeting_status <> 'cancelled'
+              AND m.progress <> 'completed'
          )`,
-      [args.keepLeadId, ident, ident, ident, args.leadType, args.leadIdNum],
+      [args.keepLeadId, ident, ident, ident, leadType, args.leadIdNum],
     );
     const dupIds = (rows as { id: number }[])
       .map((r) => Number(r.id))
-      .filter((id) => Number.isFinite(id) && id > 0);
+      .filter((id) => Number.isFinite(id) && id > 0 && id !== args.keepLeadId);
     for (const dupId of dupIds) {
       await pool.query(
         `UPDATE leads
@@ -679,6 +700,8 @@ async function cancelDuplicateCrmLeads(
         keepLeadId: args.keepLeadId,
         cancelledLeadId: dupId,
         leadIdentifier: ident,
+        leadType,
+        leadIdNum: args.leadIdNum,
       });
     }
   } catch (err) {
@@ -906,9 +929,16 @@ async function upsertCrmDesignLead(
       },
       ...floorPersist,
     };
+    // Hub re-sync of an active booking must revive a wrongly Cancelled canonical lead
+    // (duplicate cleanup used to hide Pre 10% while Meeting Management still showed the slot).
     await pool.query(
       `UPDATE leads SET project_name = ?, contact_no = COALESCE(?, contact_no), client_email = COALESCE(?, client_email),
-       payload = ?, assigned_designer_id = COALESCE(?, assigned_designer_id), update_at = ?
+       payload = ?, assigned_designer_id = COALESCE(?, assigned_designer_id),
+       project_stage = CASE
+         WHEN LOWER(TRIM(COALESCE(project_stage, ''))) = 'cancelled' THEN 'Pre 10%'
+         ELSE project_stage
+       END,
+       update_at = ?
        WHERE id = ?`,
       [projectName, contactNo, clientEmail, JSON.stringify(merged), assignedDesignerId, now, existingId],
     );
