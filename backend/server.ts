@@ -44,6 +44,7 @@ import {
   awardUpsellXp,
   evaluateLeadQuotationRevisionXp,
 } from "./routes/designerXpRoutes";
+import { registerHallwayFeedRoutes } from "./routes/hallwayFeedRoutes";
 import * as notify from "./routes/designNotifications";
 import { buildTimelineAnchorsFromPayloadAndD1, fetchLeadTimelineAnchors, stampEntered1020At } from "./leadTimelineAnchors";
 import {
@@ -22594,6 +22595,7 @@ registerQuoteCustomerViewRoutes(app, pool, {
 });
 registerIncentivesRoutes(app, { pool, getUserFromSession });
 registerDesignerXpRoutes(app, { pool, getUserFromSession });
+registerHallwayFeedRoutes(app, { pool, getUserFromSession });
 registerDesignPaymentRoutes(app, {
   pool,
   getUserFromSession,
