@@ -25317,7 +25317,6 @@ app.post("/api/appointment/personal/:erpId/cancel", async (req: Request, res: Re
 
     await callErpApi(`/v1/Appointment/${erpId}`, { method: "DELETE" });
     invalidateDesignerErpAppointmentCache(designerName);
-
     await pool.query(
       `INSERT INTO personal_block_cancellations
        (erp_appointment_id, designer_id, designer_name, start_time, end_time, description, cancelled_by_id)
