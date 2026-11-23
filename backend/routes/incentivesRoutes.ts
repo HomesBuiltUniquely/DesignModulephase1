@@ -1736,8 +1736,19 @@ export function registerIncentivesRoutes(
           }));
       }
 
-      // Compute summary metrics across all returned rows
-      const totalTarget = computedRows.reduce((s, r) => s + r.totalTarget, 0);
+      // Compute summary metrics across all returned rows.
+      // Branch minimum (₹1.5 crore, or a higher saved target) floors the combined target.
+      const branchFloors = await loadBranchMinimums();
+      let totalTarget = targetWithBranchFloors(
+        computedRows.map((row) => ({ branch: row.branch, target: row.totalTarget })),
+        branchFloors,
+      );
+      if (targetTeam.managerId > 0 && isBranchTargetCode(targetTeam.code)) {
+        totalTarget = Math.max(
+          totalTarget,
+          branchFloors.get(targetTeam.code) ?? INITIAL_BRANCH_MINIMUM_INR,
+        );
+      }
       const revenueAchieved = computedRows.reduce((s, r) => s + r.revenueAchieved, 0);
       const incentiveEarned = computedRows.reduce((s, r) => s + r.incentiveEarned, 0);
       const onSpotBonus = computedRows.reduce((s, r) => s + r.onSpotBonus, 0);
@@ -1888,6 +1899,41 @@ export function registerIncentivesRoutes(
     return { totalTarget: fortnight.totalTarget, weighted: fortnight.revenueAchieved };
   }
 
+  async function loadBranchMinimums(): Promise<Map<string, number>> {
+    await ensureBranchTargetTable();
+    const [rows] = await pool.query(
+      `SELECT branch_code AS branchCode, minimum_target_inr AS minimumTarget
+       FROM branch_design_manager_targets`,
+    );
+    const floors = new Map<string, number>();
+    for (const code of BRANCH_TARGET_CODES) floors.set(code, INITIAL_BRANCH_MINIMUM_INR);
+    for (const row of rows as { branchCode?: string; minimumTarget?: number | string }[]) {
+      const code = String(row.branchCode || "").trim().toUpperCase();
+      const value = Number(row.minimumTarget);
+      if (!isBranchTargetCode(code) || !Number.isFinite(value)) continue;
+      floors.set(code, Math.max(INITIAL_BRANCH_MINIMUM_INR, value));
+    }
+    return floors;
+  }
+
+  /** Designer targets can sit below the branch minimum. The combined target cannot. */
+  function targetWithBranchFloors(
+    parts: Array<{ branch: string; target: number }>,
+    floors: Map<string, number>,
+  ): number {
+    const byBranch = new Map<string, number>();
+    for (const part of parts) {
+      const code = toBranchCode(part.branch) || String(part.branch || "").trim().toUpperCase() || "GEN";
+      byBranch.set(code, (byBranch.get(code) || 0) + part.target);
+    }
+    let total = 0;
+    for (const [code, sum] of byBranch) {
+      const floor = floors.get(code);
+      total += floor != null ? Math.max(sum, floor) : sum;
+    }
+    return total;
+  }
+
   async function sumBranchAchievement(managerId: number, cycleIndex: number): Promise<number> {
     const totals = await sumDesignerFortnightTotals([managerId], cycleIndex);
     return totals.revenueAchieved;
@@ -2035,7 +2081,11 @@ export function registerIncentivesRoutes(
           };
         }),
       );
-      const totalTarget = rows.reduce((sum, row) => sum + row.totalTarget, 0);
+      const branchFloors = await loadBranchMinimums();
+      const totalTarget = targetWithBranchFloors(
+        rows.map((row) => ({ branch: row.branch, target: row.totalTarget })),
+        branchFloors,
+      );
       const revenueAchieved = rows.reduce((sum, row) => sum + row.weighted, 0);
       return res.json({
         totalTarget,
