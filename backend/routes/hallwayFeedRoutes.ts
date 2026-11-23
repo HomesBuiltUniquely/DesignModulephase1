@@ -5,6 +5,7 @@
 import type { Express, Request, Response } from "express";
 import type { Pool } from "mysql2/promise";
 import { listLeadMeetings, kolkataParts } from "../leadMeetings";
+import { buildDesignerMeetingOutcomeGroups, buildManagerMeetingOutcomeRollup, resolveTeamDesignerIds } from "../lib/meetingOutcomeActions";
 
 type SessionUser = { id: number; email: string; name: string; role: string };
 
@@ -312,7 +313,7 @@ export function registerHallwayFeedRoutes(app: Express, deps: HallwayFeedDeps): 
         title: string;
         count: number;
         urgent?: boolean;
-        items: { id: string; name: string; detail?: string; done: boolean; linkUrl?: string }[];
+        items: { id: string; name: string; detail?: string; done: boolean; linkUrl?: string; statusLabel?: string; dueDateLabel?: string }[]; uncounted?: boolean; isWatchlist?: boolean;
       }[] = [];
 
       const pushGroup = (
@@ -597,21 +598,18 @@ function formatTaskDue(dueAt: Date, now: Date = new Date()) {
           });
         }
 
-        // Meetings needing outcome / status update
-        const [pendingMeetings] = await pool.query(
-          `SELECT m.id, m.lead_id AS leadId, l.project_name AS projectName,
-                  CONCAT('Meeting outcome pending · ', DATE_FORMAT(m.meeting_date, '%d %b')) AS detail
-             FROM lead_meetings m
-             JOIN leads l ON l.id = m.lead_id
-            WHERE m.meeting_status <> 'cancelled'
-              AND m.progress <> 'completed'
-              AND DATE(m.meeting_date) <= CURDATE()
-              AND (m.designer_id = ? OR l.assigned_designer_id = ?)
-            ORDER BY m.meeting_date ASC
-            LIMIT 30`,
-          [user.id, user.id],
-        );
-        pushGroup("meeting-outcomes", "Meeting Outcome Needed", pendingMeetings as Record<string, unknown>[], true);
+        const outcomeGroups = await buildDesignerMeetingOutcomeGroups(pool, "", user.id, now);
+        for (const og of outcomeGroups) {
+          groups.push({
+            id: og.id,
+            title: og.title,
+            count: og.count,
+            urgent: og.urgent,
+            uncounted: og.uncounted,
+            isWatchlist: og.isWatchlist,
+            items: og.items,
+          });
+        }
       }
 
       // 2. Manager and Admin Scopes: Exception-only & Rollup
@@ -642,6 +640,28 @@ function formatTaskDue(dueAt: Date, now: Date = new Date()) {
           designerIds = Array.isArray(dRows) ? (dRows as any[]).map((r) => Number(r.id)).filter((id) => id > 0) : [];
         }
 
+        if (designerIds.length > 0 && user.id) {
+          const rollup = await buildManagerMeetingOutcomeRollup(
+            pool,
+            "",
+            designerIds,
+            role === "admin" || role === "deputy_general_manager"
+              ? { groupId: "meeting-outcomes-hub-watchlist", titlePrefix: "Hub meetings missing outcome" }
+              : { groupId: "meeting-outcomes-team-watchlist", titlePrefix: "Team meetings missing outcome" },
+            now,
+          );
+          if (rollup) {
+            groups.push({
+              id: rollup.id,
+              title: rollup.title,
+              count: rollup.count,
+              urgent: rollup.urgent,
+              uncounted: rollup.uncounted,
+              isWatchlist: rollup.isWatchlist,
+              items: rollup.items,
+            });
+          }
+        }
         const minOverdue = role === "admin" || role === "deputy_general_manager" ? 5 : 2;
         if (designerIds.length > 0) {
           // Holds ending soon
