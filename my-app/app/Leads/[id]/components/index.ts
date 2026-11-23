@@ -1,4 +1,5 @@
 export { default as LeadDetailHeader } from './LeadDetailHeader';
+export { default as AddMemberModal } from './AddMemberModal';
 export { default as ClientEmailsSection } from './ClientEmailsSection';
 export { default as MilestonesCard } from './MilestonesCard';
 export { default as HistoryCard } from './HistoryCard';

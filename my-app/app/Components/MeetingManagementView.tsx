@@ -471,8 +471,10 @@ function meetingKindLabel(meeting: ScheduledMeeting): string {
   }
   const type = clientMeetingType(meeting);
   if (type) return TYPE_LABEL[type];
-  const raw = (meeting.meetingType || '').trim();
-  return raw ? raw.replace(/[_-]+/g, ' ') : '—';
+  const raw = (meeting.meetingType || '').trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
+  // Legacy junk label — never surface "design meeting" on the board.
+  if (!raw || raw === 'design meeting' || raw === 'designmeeting') return '—';
+  return (meeting.meetingType || '').trim().replace(/[_-]+/g, ' ') || '—';
 }
 
 function mapChannel(meeting: ScheduledMeeting): { venue: Venue; mode: MeetingMode } {
@@ -485,7 +487,15 @@ function mapChannel(meeting: ScheduledMeeting): { venue: Venue; mode: MeetingMod
 function mapStatus(meeting: ScheduledMeeting): ViewStatus {
   const meetingStatus = (meeting.meetingStatus || '').toLowerCase();
   const progress = (meeting.progress || '').toLowerCase();
-  if (meetingStatus === 'cancelled' || progress === 'cancelled') return 'cancelled';
+  const progressLabel = String(meeting.progressLabel || '').toLowerCase();
+  // Cancelled: trust meetingStatus / label even when progress enum stays "scheduled".
+  if (
+    meetingStatus === 'cancelled' ||
+    progress === 'cancelled' ||
+    progressLabel.includes('cancel')
+  ) {
+    return 'cancelled';
+  }
   if (progress === 'completed') return 'completed';
   if (progress === 'meeting_never_happened' || progress === 'meeting_abandoned') return 'abandoned';
   // Rescheduled is its own filter — not merged with abandoned / never happened.
@@ -656,26 +666,46 @@ function uniqueNames(values: string[]): string[] {
   return Array.from(seen.values()).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 }
 
-/** Prefer the live visit when the same Pre 10% lead has duplicate rows for one day. */
+/**
+ * Prefer the real Pre 10% visit when the same lead has duplicate rows for one day.
+ * Completed must beat stuck In progress — otherwise an orphan "design meeting" row
+ * hides the successful CRM meeting after End Meeting / wizard complete.
+ */
 const PRE10_STATUS_RANK: Record<ViewStatus, number> = {
+  completed: 6,
   in_progress: 5,
   rescheduled: 4,
   scheduled: 4,
-  completed: 3,
   abandoned: 2,
   cancelled: 1,
 };
 
+function isOrphanDesignMeetingLabel(meeting: ViewMeeting): boolean {
+  // CRM Pre 10% is never junk — even if meetingType was mislabeled.
+  if ((meeting.raw.source || '').toLowerCase() === 'crm') return false;
+  if (meeting.typeKey === 'pre_10' || meeting.typeKey === 'dqc1_first_cut' || meeting.typeKey === 'dqc2_material_selection' || meeting.typeKey === 'design_signoff') {
+    return false;
+  }
+  const type = (meeting.raw.meetingType || '').trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
+  if (type === 'design meeting' || type === 'designmeeting') return true;
+  // Untyped design_module rows with no real milestone also hide Successful Pre 10% visits.
+  if ((meeting.raw.source || '').toLowerCase() === 'design_module' && !meeting.typeKey) return true;
+  return false;
+}
+
 function isPre10Meeting(meeting: ViewMeeting): boolean {
   if (meeting.personal) return false;
+  // Junk backfill rows — never treat as Pre 10% (that made "design meeting" reappear on Pre 10% leads).
+  if (isOrphanDesignMeetingLabel(meeting)) return false;
   if (meeting.typeKey === 'pre_10') return true;
   if ((meeting.raw.source || '').toLowerCase() === 'crm') return true;
-  // Legacy CRM/import rows sometimes stored type as "design meeting" instead of pre_10.
-  const type = (meeting.raw.meetingType || '').trim().toLowerCase().replace(/[_-]+/g, ' ');
-  return type === 'design meeting';
+  return false;
 }
 
 function preferPre10Meeting(a: ViewMeeting, b: ViewMeeting): ViewMeeting {
+  const aCrm = (a.raw.source || '').toLowerCase() === 'crm' || a.typeKey === 'pre_10' ? 1 : 0;
+  const bCrm = (b.raw.source || '').toLowerCase() === 'crm' || b.typeKey === 'pre_10' ? 1 : 0;
+  if (aCrm !== bCrm) return aCrm > bCrm ? a : b;
   const rankDiff = PRE10_STATUS_RANK[a.status] - PRE10_STATUS_RANK[b.status];
   if (rankDiff !== 0) return rankDiff > 0 ? a : b;
   const aTimed = a.minutes != null ? 1 : 0;
@@ -689,13 +719,14 @@ function preferPre10Meeting(a: ViewMeeting, b: ViewMeeting): ViewMeeting {
 
 /**
  * Same lead can get more than one Pre 10% row for the same day (CRM sync / reschedule leftovers).
- * Keep one row per lead+day for the board and totals. Other meeting types are unchanged.
+ * Keep one row per lead+day for the board and totals. Drop orphan "design meeting" junk entirely.
  */
 function dedupePre10Meetings(rows: ViewMeeting[]): ViewMeeting[] {
+  const withoutOrphans = rows.filter((meeting) => !isOrphanDesignMeetingLabel(meeting));
   const bestByLeadDay = new Map<string, ViewMeeting>();
   const dropKeys = new Set<string>();
 
-  for (const meeting of rows) {
+  for (const meeting of withoutOrphans) {
     if (!isPre10Meeting(meeting) || meeting.leadId <= 0) continue;
     const groupKey = `${meeting.leadId}|${meeting.day}`;
     const current = bestByLeadDay.get(groupKey);
@@ -709,8 +740,8 @@ function dedupePre10Meetings(rows: ViewMeeting[]): ViewMeeting[] {
     dropKeys.add(dropped.key);
   }
 
-  if (dropKeys.size === 0) return rows;
-  return rows.filter((meeting) => !dropKeys.has(meeting.key));
+  if (dropKeys.size === 0) return withoutOrphans;
+  return withoutOrphans.filter((meeting) => !dropKeys.has(meeting.key));
 }
 
 function sameName(a: string, b: string): boolean {
@@ -887,16 +918,31 @@ function Avatar({ name }: { name: string }) {
 }
 
 function StatusPill({ status, meeting }: { status: ViewStatus; meeting?: ViewMeeting }) {
-  let label = (meeting?.raw.progressLabel || '').trim() || STATUS_LABEL[status];
-  let pillStatus: string = status;
+  const rawLabel = (meeting?.raw.progressLabel || '').trim();
+  const rawMeetingStatus = (meeting?.raw.meetingStatus || '').toLowerCase();
+  // Backend may keep progress=scheduled while meetingStatus/progressLabel say cancelled.
+  const treatCancelled =
+    status === 'cancelled' ||
+    rawMeetingStatus === 'cancelled' ||
+    rawLabel.toLowerCase().includes('cancel');
+  let label = rawLabel || STATUS_LABEL[status];
+  let pillStatus: string = treatCancelled ? 'cancelled' : status;
   // Prefer backend progressLabel for all client meetings (design Material selection + Pre 10%).
   if (meeting && !meeting.personal) {
-    if (status === 'completed') {
-      label = (meeting.raw.progressLabel || '').trim() || 'Meeting Successful';
-      pillStatus = 'completed';
-    } else if (status === 'cancelled') {
-      label = (meeting.raw.progressLabel || '').trim() || 'Meeting Cancelled';
+    const openDrr =
+      isDrrCrmMeeting(meeting) &&
+      !treatCancelled &&
+      status !== 'completed' &&
+      status !== 'abandoned';
+    if (openDrr) {
+      label = 'Scheduled(DRR)';
+      pillStatus = status;
+    } else if (treatCancelled) {
+      label = rawLabel || 'Meeting Cancelled';
       pillStatus = 'cancelled';
+    } else if (status === 'completed') {
+      label = rawLabel || 'Meeting Successful';
+      pillStatus = 'completed';
     } else if (status === 'abandoned') {
       label = (meeting.raw.progressLabel || '').trim() || 'Meeting never happened';
       pillStatus = 'abandoned';
@@ -1364,7 +1410,7 @@ export default function MeetingManagementView() {
   }, [mapped]);
   const statusChoices: { id: StatusKey; label: string }[] = [
     { id: 'scheduled', label: 'Scheduled' },
-    { id: 'scheduled_drr', label: 'Meeting scheduled (DRR)' },
+    { id: 'scheduled_drr', label: 'Scheduled(DRR)' },
     { id: 'rescheduled', label: 'Meeting Rescheduled' },
     { id: 'in_progress', label: 'In progress' },
     { id: 'completed', label: 'Meeting Successful' },
@@ -1883,6 +1929,10 @@ export default function MeetingManagementView() {
   const submitDrrOutcome = async (outcome: 'successful' | 'never_happened') => {
     if (!selected || !sessionId || drrOutcomeBusy) return;
     if (!canShowDrrOutcomeActions(selected)) return;
+    if (!feedbackAlreadySubmitted) {
+      setPre10ActionError('Submit designer feedback first, then choose the visit outcome.');
+      return;
+    }
     const meetingId = selected.id ?? selected.raw.id;
     if (meetingId == null) {
       setPre10ActionError('This meeting has no id to update.');
@@ -1947,6 +1997,7 @@ export default function MeetingManagementView() {
   };
 
   const showDrrOutcome = selected ? canShowDrrOutcomeActions(selected) : false;
+  const drrOutcomeUnlocked = feedbackAlreadySubmitted;
 
   return (
     <div className={styles.root}>
@@ -2621,14 +2672,76 @@ export default function MeetingManagementView() {
                   <div className={styles.pre10ActionBody}>
                     <p className={styles.pre10ActionTitle}>How did this DRR visit go?</p>
                     <p className={styles.pre10ActionSub}>
-                      Mark Meeting successful or Meeting never happened. This updates CRM progress for this DRR visit only.
+                      Add designer feedback first (required). Then mark Meeting successful or Meeting never happened for this DRR visit only.
                     </p>
+                  </div>
+                  <div className={styles.crmFeedback} style={{ marginBottom: 12 }}>
+                    <div className={styles.crmFeedbackTop}>
+                      <span className={styles.crmFeedbackTitle}>Feedback</span>
+                      <span className={styles.crmFeedbackBadge}>
+                        {feedbackAlreadySubmitted ? 'One-time done' : 'Required'}
+                      </span>
+                    </div>
+                    {feedbackAlreadySubmitted ? (
+                      <>
+                        <p className={styles.crmFeedbackOnceNote}>Your one-time feedback is done</p>
+                        <p className={styles.crmFeedbackBody}>{(selected.raw.feedbackDesigner || '').trim()}</p>
+                      </>
+                    ) : (
+                      <label className={styles.crmFeedbackComposer} htmlFor={`drr-feedback-${selected.key}`}>
+                        <span className={styles.crmFeedbackComposerLabel}>Designer feedback</span>
+                        <textarea
+                          id={`drr-feedback-${selected.key}`}
+                          className={styles.crmFeedbackTextarea}
+                          rows={2}
+                          maxLength={50}
+                          placeholder="Short note (max 50)…"
+                          value={designerFeedbackDraft}
+                          disabled={designerFeedbackBusy}
+                          onChange={(e) => {
+                            setDesignerFeedbackDraft(e.target.value.slice(0, 50));
+                            setDesignerFeedbackError(null);
+                            setDesignerFeedbackOk(null);
+                            setPre10ActionError(null);
+                          }}
+                        />
+                        <div className={styles.crmFeedbackComposerFoot}>
+                          <span
+                            className={styles.crmFeedbackCount}
+                            data-ready={designerFeedbackDraft.trim().length > 0 ? '1' : '0'}
+                          >
+                            {designerFeedbackDraft.trim().length}/50
+                          </span>
+                          <button
+                            type="button"
+                            className={styles.crmFeedbackSubmit}
+                            disabled={
+                              designerFeedbackBusy ||
+                              !designerFeedbackDraft.trim() ||
+                              designerFeedbackDraft.trim().length > 50
+                            }
+                            onClick={() => void submitDesignerFeedback()}
+                          >
+                            <span className={styles.crmFeedbackSubmitShine} aria-hidden="true" />
+                            <span className={styles.crmFeedbackSubmitLabel}>
+                              {designerFeedbackBusy ? '…' : 'Submit'}
+                            </span>
+                          </button>
+                        </div>
+                      </label>
+                    )}
+                    {designerFeedbackError ? (
+                      <p className={styles.crmFeedbackError}>{designerFeedbackError}</p>
+                    ) : null}
+                    {designerFeedbackOk ? (
+                      <p className={styles.crmFeedbackSuccess}>{designerFeedbackOk}</p>
+                    ) : null}
                   </div>
                   <div className={`${styles.pre10ActionRow} ${styles.pre10ActionRowSplit}`}>
                     <button
                       type="button"
                       className={`${styles.actBtn} ${styles.actEnd}`}
-                      disabled={drrOutcomeBusy != null}
+                      disabled={drrOutcomeBusy != null || !drrOutcomeUnlocked}
                       onClick={() => void submitDrrOutcome('successful')}
                     >
                       {drrOutcomeBusy === 'successful' ? 'Saving…' : 'Meeting successful'}
@@ -2636,74 +2749,16 @@ export default function MeetingManagementView() {
                     <button
                       type="button"
                       className={`${styles.actBtn} ${styles.actCancel}`}
-                      disabled={drrOutcomeBusy != null}
+                      disabled={drrOutcomeBusy != null || !drrOutcomeUnlocked}
                       onClick={() => void submitDrrOutcome('never_happened')}
                     >
                       {drrOutcomeBusy === 'never_happened' ? 'Saving…' : 'Meeting never happened'}
                     </button>
                   </div>
-                  {showCrmFeedback ? (
-                    <div className={styles.crmFeedback} style={{ marginTop: 12 }}>
-                      <div className={styles.crmFeedbackTop}>
-                        <span className={styles.crmFeedbackTitle}>Feedback</span>
-                        <span className={styles.crmFeedbackBadge}>
-                          {feedbackAlreadySubmitted ? 'One-time done' : 'One-time'}
-                        </span>
-                      </div>
-                      {feedbackAlreadySubmitted ? (
-                        <>
-                          <p className={styles.crmFeedbackOnceNote}>Your one-time feedback is done</p>
-                          <p className={styles.crmFeedbackBody}>{(selected.raw.feedbackDesigner || '').trim()}</p>
-                        </>
-                      ) : (
-                        <label className={styles.crmFeedbackComposer} htmlFor={`drr-feedback-${selected.key}`}>
-                          <span className={styles.crmFeedbackComposerLabel}>Designer feedback</span>
-                          <textarea
-                            id={`drr-feedback-${selected.key}`}
-                            className={styles.crmFeedbackTextarea}
-                            rows={2}
-                            maxLength={50}
-                            placeholder="Short note (max 50)…"
-                            value={designerFeedbackDraft}
-                            disabled={designerFeedbackBusy}
-                            onChange={(e) => {
-                              setDesignerFeedbackDraft(e.target.value.slice(0, 50));
-                              setDesignerFeedbackError(null);
-                              setDesignerFeedbackOk(null);
-                            }}
-                          />
-                          <div className={styles.crmFeedbackComposerFoot}>
-                            <span
-                              className={styles.crmFeedbackCount}
-                              data-ready={designerFeedbackDraft.trim().length > 0 ? '1' : '0'}
-                            >
-                              {designerFeedbackDraft.trim().length}/50
-                            </span>
-                            <button
-                              type="button"
-                              className={styles.crmFeedbackSubmit}
-                              disabled={
-                                designerFeedbackBusy ||
-                                !designerFeedbackDraft.trim() ||
-                                designerFeedbackDraft.trim().length > 50
-                              }
-                              onClick={() => void submitDesignerFeedback()}
-                            >
-                              <span className={styles.crmFeedbackSubmitShine} aria-hidden="true" />
-                              <span className={styles.crmFeedbackSubmitLabel}>
-                                {designerFeedbackBusy ? '…' : 'Submit'}
-                              </span>
-                            </button>
-                          </div>
-                        </label>
-                      )}
-                      {designerFeedbackError ? (
-                        <p className={styles.crmFeedbackError}>{designerFeedbackError}</p>
-                      ) : null}
-                      {designerFeedbackOk ? (
-                        <p className={styles.crmFeedbackSuccess}>{designerFeedbackOk}</p>
-                      ) : null}
-                    </div>
+                  {!drrOutcomeUnlocked ? (
+                    <p className={styles.pre10ActionSub} style={{ marginTop: 8 }}>
+                      Submit feedback above to enable the outcome buttons.
+                    </p>
                   ) : null}
                   {pre10ActionError ? <p className={styles.pre10ActionError}>{pre10ActionError}</p> : null}
                 </div>
