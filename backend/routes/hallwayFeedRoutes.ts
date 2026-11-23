@@ -641,6 +641,7 @@ function formatTaskDue(dueAt: Date, now: Date = new Date()) {
         }
 
         if (designerIds.length > 0 && user.id) {
+          const now = new Date();
           const rollup = await buildManagerMeetingOutcomeRollup(
             pool,
             "",

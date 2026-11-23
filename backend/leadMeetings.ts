@@ -37,6 +37,10 @@ export function isCrmDrrLabelText(value?: string | null | undefined): boolean {
 
 const CRM_DRR_PAYLOAD = `IF(JSON_VALID(l.payload), l.payload, '{}')`;
 
+/**
+ * Full DRR detection (payload JSON + prior completed CRM meeting).
+ * Use only for single-meeting checks — too expensive for the board SELECT.
+ */
 const CRM_DRR_REVISIT_SQL = `(
   COALESCE(m.is_drr_revisit, 0) = 1
   OR LOWER(TRIM(IFNULL(m.meeting_type, ''))) IN ('drr', 'design_refinement')
@@ -69,6 +73,18 @@ const CRM_DRR_REVISIT_SQL = `(
           AND prior.id < m.id
     )
   )
+)`;
+
+/**
+ * Board-fast DRR flag — column + meeting_type only.
+ * Background reconcileCrmDrrScheduledMeetings keeps is_drr_revisit stamped;
+ * JSON/EXISTS per row was timing out Meeting Management (10–25s).
+ */
+const CRM_DRR_REVISIT_BOARD_SQL = `(
+  COALESCE(m.is_drr_revisit, 0) = 1
+  OR LOWER(TRIM(IFNULL(m.meeting_type, ''))) IN ('drr', 'design_refinement')
+  OR LOWER(IFNULL(m.meeting_type, '')) LIKE '%design%refinement%'
+  OR LOWER(IFNULL(m.meeting_type, '')) LIKE '%refinement%round%'
 )`;
 
 export class MeetingActionError extends Error {
@@ -407,9 +423,22 @@ export function ensureLeadMeetingsTable(pool: Pool): Promise<void> {
           created_at DATETIME NOT NULL,
           updated_at DATETIME NOT NULL,
           INDEX idx_lead_meetings_lead (lead_id),
+          INDEX idx_lead_meetings_date (meeting_date),
           INDEX idx_lead_meetings_open (meeting_status, progress, meeting_date)
         )
       `);
+      try {
+        const [dateIdx] = await pool.query(
+          `SELECT 1 FROM information_schema.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND INDEX_NAME = 'idx_lead_meetings_date'
+            LIMIT 1`,
+        );
+        if ((dateIdx as unknown[]).length === 0) {
+          await pool.query("CREATE INDEX idx_lead_meetings_date ON lead_meetings (meeting_date)");
+        }
+      } catch (dateIdxErr) {
+        console.error("[lead-meetings] idx_lead_meetings_date ensure failed", dateIdxErr);
+      }
       const [branchCol] = await pool.query(
         `SELECT 1 FROM information_schema.COLUMNS
           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'branch'`,
@@ -1721,19 +1750,24 @@ function preferAmount(current: number | null | undefined, next: number | null | 
  * Covers: latest snapshot, CRM-shared snapshot, prolance quote snapshot,
  * any snapshot with an amount, lead.payload quotation fields.
  * Chunked so every board lead is covered (no silent 500-cap miss).
+ *
+ * `mode: "board"` skips the heaviest payload fallbacks so `/api/meetings/scheduled`
+ * stays under the frontend timeout; CRM-shared alone counts as quoteSent.
  */
 async function quoteShareByLead(
   pool: Pool,
   leadIds: number[],
+  opts?: { mode?: "full" | "board" },
 ): Promise<Map<number, { quoteSent: boolean; quoteFinalAmount: number | null; hasQuote: boolean }>> {
   const out = new Map<number, { quoteSent: boolean; quoteFinalAmount: number | null; hasQuote: boolean }>();
   const ids = [...new Set(leadIds.filter((id) => Number.isInteger(id) && id > 0))];
   if (ids.length === 0) return out;
 
-  const CHUNK = 400;
+  const mode = opts?.mode === "board" ? "board" : "full";
+  const CHUNK = mode === "board" ? 500 : 400;
   for (let offset = 0; offset < ids.length; offset += CHUNK) {
     const chunk = ids.slice(offset, offset + CHUNK);
-    const chunkResult = await quoteShareByLeadChunk(pool, chunk);
+    const chunkResult = await quoteShareByLeadChunk(pool, chunk, mode);
     for (const [id, value] of chunkResult) out.set(id, value);
   }
   return out;
@@ -1742,10 +1776,12 @@ async function quoteShareByLead(
 async function quoteShareByLeadChunk(
   pool: Pool,
   ids: number[],
+  mode: "full" | "board" = "full",
 ): Promise<Map<number, { quoteSent: boolean; quoteFinalAmount: number | null; hasQuote: boolean }>> {
   const out = new Map<number, { quoteSent: boolean; quoteFinalAmount: number | null; hasQuote: boolean }>();
   if (ids.length === 0) return out;
   const placeholders = ids.map(() => "?").join(",");
+  const boardFast = mode === "board";
 
   const amountByLead = new Map<number, number | null>();
   const hasSnapshotByLead = new Map<number, boolean>();
@@ -1794,122 +1830,124 @@ async function quoteShareByLeadChunk(
     if (Number(row.hasSnap) === 1) hasSnapshotByLead.set(id, true);
   }
 
-  // Latest snapshot amount.
-  const [latestRows] = await pool.query(
-    `SELECT s.lead_id AS leadId, s.payload_json AS payloadJson
-       FROM lead_prolance_quote_snapshots s
-       INNER JOIN (
-         SELECT lead_id, MAX(id) AS maxId
-           FROM lead_prolance_quote_snapshots
-          WHERE lead_id IN (${placeholders})
-          GROUP BY lead_id
-       ) latest ON latest.maxId = s.id`,
-    ids,
-  );
-  for (const row of latestRows as Record<string, unknown>[]) {
-    const id = Number(row.leadId);
-    if (!Number.isFinite(id) || id < 1) continue;
-    hasSnapshotByLead.set(id, true);
-    amountByLead.set(id, preferAmount(amountByLead.get(id), quoteAmountFromPayloadRaw(row.payloadJson)));
-  }
-
-  // CRM-shared snapshot amount (may differ from latest).
-  const sharedPairs = [...sharedByLead.entries()].filter(([, v]) => v.sharedQuoteId > 0);
-  if (sharedPairs.length > 0) {
-    const sharedQuoteIds = [...new Set(sharedPairs.map(([, v]) => v.sharedQuoteId))];
-    const sharedPlaceholders = sharedQuoteIds.map(() => "?").join(",");
-    try {
-      const [sharedSnapRows] = await pool.query(
-        `SELECT lead_id AS leadId, quote_id AS quoteId, payload_json AS payloadJson
-           FROM lead_prolance_quote_snapshots
-          WHERE quote_id IN (${sharedPlaceholders})`,
-        sharedQuoteIds,
-      );
-      for (const row of sharedSnapRows as Record<string, unknown>[]) {
-        const id = Number(row.leadId);
-        if (!Number.isFinite(id) || id < 1) continue;
-        hasSnapshotByLead.set(id, true);
-        amountByLead.set(id, preferAmount(amountByLead.get(id), quoteAmountFromPayloadRaw(row.payloadJson)));
-      }
-    } catch (err) {
-      console.error("quote amount shared snapshot failed", err);
+  if (!boardFast) {
+    // Latest snapshot amount.
+    const [latestRows] = await pool.query(
+      `SELECT s.lead_id AS leadId, s.payload_json AS payloadJson
+         FROM lead_prolance_quote_snapshots s
+         INNER JOIN (
+           SELECT lead_id, MAX(id) AS maxId
+             FROM lead_prolance_quote_snapshots
+            WHERE lead_id IN (${placeholders})
+            GROUP BY lead_id
+         ) latest ON latest.maxId = s.id`,
+      ids,
+    );
+    for (const row of latestRows as Record<string, unknown>[]) {
+      const id = Number(row.leadId);
+      if (!Number.isFinite(id) || id < 1) continue;
+      hasSnapshotByLead.set(id, true);
+      amountByLead.set(id, preferAmount(amountByLead.get(id), quoteAmountFromPayloadRaw(row.payloadJson)));
     }
-  }
 
-  // Snapshot by leads.prolance_quote_id when amount still missing.
-  const missingAfterLatest = ids.filter((id) => !(amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0));
-  const prolancePairs = missingAfterLatest
-    .map((id) => ({ id, quoteId: leadQuoteId.get(id) || 0 }))
-    .filter((row) => row.quoteId > 0);
-  if (prolancePairs.length > 0) {
-    const quoteIds = [...new Set(prolancePairs.map((row) => row.quoteId))];
-    const qPlaceholders = quoteIds.map(() => "?").join(",");
-    try {
-      const [prolanceSnapRows] = await pool.query(
-        `SELECT lead_id AS leadId, quote_id AS quoteId, payload_json AS payloadJson
-           FROM lead_prolance_quote_snapshots
-          WHERE quote_id IN (${qPlaceholders})`,
-        quoteIds,
-      );
-      const byQuoteId = new Map<number, unknown>();
-      for (const row of prolanceSnapRows as Record<string, unknown>[]) {
-        byQuoteId.set(Number(row.quoteId), row.payloadJson);
-        const leadId = Number(row.leadId);
-        if (Number.isFinite(leadId) && leadId > 0) hasSnapshotByLead.set(leadId, true);
+    // CRM-shared snapshot amount (may differ from latest).
+    const sharedPairs = [...sharedByLead.entries()].filter(([, v]) => v.sharedQuoteId > 0);
+    if (sharedPairs.length > 0) {
+      const sharedQuoteIds = [...new Set(sharedPairs.map(([, v]) => v.sharedQuoteId))];
+      const sharedPlaceholders = sharedQuoteIds.map(() => "?").join(",");
+      try {
+        const [sharedSnapRows] = await pool.query(
+          `SELECT lead_id AS leadId, quote_id AS quoteId, payload_json AS payloadJson
+             FROM lead_prolance_quote_snapshots
+            WHERE quote_id IN (${sharedPlaceholders})`,
+          sharedQuoteIds,
+        );
+        for (const row of sharedSnapRows as Record<string, unknown>[]) {
+          const id = Number(row.leadId);
+          if (!Number.isFinite(id) || id < 1) continue;
+          hasSnapshotByLead.set(id, true);
+          amountByLead.set(id, preferAmount(amountByLead.get(id), quoteAmountFromPayloadRaw(row.payloadJson)));
+        }
+      } catch (err) {
+        console.error("quote amount shared snapshot failed", err);
       }
-      for (const pair of prolancePairs) {
-        const amount = quoteAmountFromPayloadRaw(byQuoteId.get(pair.quoteId));
-        amountByLead.set(pair.id, preferAmount(amountByLead.get(pair.id), amount));
-        if (byQuoteId.has(pair.quoteId)) hasSnapshotByLead.set(pair.id, true);
-      }
-    } catch (err) {
-      console.error("quote amount prolance snapshot failed", err);
     }
-  }
 
-  // Any other snapshot for leads still missing amount (older versions may hold totals).
-  const stillMissing = ids.filter((id) => !(amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0));
-  if (stillMissing.length > 0) {
-    const missPlaceholders = stillMissing.map(() => "?").join(",");
-    try {
-      const [anySnapRows] = await pool.query(
-        `SELECT lead_id AS leadId, payload_json AS payloadJson
-           FROM lead_prolance_quote_snapshots
-          WHERE lead_id IN (${missPlaceholders})
-          ORDER BY id DESC`,
-        stillMissing,
-      );
-      for (const row of anySnapRows as Record<string, unknown>[]) {
-        const id = Number(row.leadId);
-        if (!Number.isFinite(id) || id < 1) continue;
-        hasSnapshotByLead.set(id, true);
-        if (amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0) continue;
-        const amount = quoteAmountFromPayloadRaw(row.payloadJson);
-        if (amount != null) amountByLead.set(id, amount);
+    // Snapshot by leads.prolance_quote_id when amount still missing.
+    const missingAfterLatest = ids.filter((id) => !(amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0));
+    const prolancePairs = missingAfterLatest
+      .map((id) => ({ id, quoteId: leadQuoteId.get(id) || 0 }))
+      .filter((row) => row.quoteId > 0);
+    if (prolancePairs.length > 0) {
+      const quoteIds = [...new Set(prolancePairs.map((row) => row.quoteId))];
+      const qPlaceholders = quoteIds.map(() => "?").join(",");
+      try {
+        const [prolanceSnapRows] = await pool.query(
+          `SELECT lead_id AS leadId, quote_id AS quoteId, payload_json AS payloadJson
+             FROM lead_prolance_quote_snapshots
+            WHERE quote_id IN (${qPlaceholders})`,
+          quoteIds,
+        );
+        const byQuoteId = new Map<number, unknown>();
+        for (const row of prolanceSnapRows as Record<string, unknown>[]) {
+          byQuoteId.set(Number(row.quoteId), row.payloadJson);
+          const leadId = Number(row.leadId);
+          if (Number.isFinite(leadId) && leadId > 0) hasSnapshotByLead.set(leadId, true);
+        }
+        for (const pair of prolancePairs) {
+          const amount = quoteAmountFromPayloadRaw(byQuoteId.get(pair.quoteId));
+          amountByLead.set(pair.id, preferAmount(amountByLead.get(pair.id), amount));
+          if (byQuoteId.has(pair.quoteId)) hasSnapshotByLead.set(pair.id, true);
+        }
+      } catch (err) {
+        console.error("quote amount prolance snapshot failed", err);
       }
-    } catch (err) {
-      console.error("quote amount any-snapshot failed", err);
     }
-  }
 
-  // Lead.payload fallback — only remaining misses.
-  const missingAmountIds = ids.filter((id) => !(amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0));
-  if (missingAmountIds.length > 0) {
-    const missingPlaceholders = missingAmountIds.map(() => "?").join(",");
-    try {
-      const [fallbackRows] = await pool.query(
-        `SELECT id AS leadId, payload
-           FROM leads
-          WHERE id IN (${missingPlaceholders})`,
-        missingAmountIds,
-      );
-      for (const row of fallbackRows as Record<string, unknown>[]) {
-        const id = Number(row.leadId);
-        const amount = quoteAmountFromPayloadRaw(row.payload);
-        if (amount != null) amountByLead.set(id, amount);
+    // Any other snapshot for leads still missing amount (older versions may hold totals).
+    const stillMissing = ids.filter((id) => !(amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0));
+    if (stillMissing.length > 0) {
+      const missPlaceholders = stillMissing.map(() => "?").join(",");
+      try {
+        const [anySnapRows] = await pool.query(
+          `SELECT lead_id AS leadId, payload_json AS payloadJson
+             FROM lead_prolance_quote_snapshots
+            WHERE lead_id IN (${missPlaceholders})
+            ORDER BY id DESC`,
+          stillMissing,
+        );
+        for (const row of anySnapRows as Record<string, unknown>[]) {
+          const id = Number(row.leadId);
+          if (!Number.isFinite(id) || id < 1) continue;
+          hasSnapshotByLead.set(id, true);
+          if (amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0) continue;
+          const amount = quoteAmountFromPayloadRaw(row.payloadJson);
+          if (amount != null) amountByLead.set(id, amount);
+        }
+      } catch (err) {
+        console.error("quote amount any-snapshot failed", err);
       }
-    } catch (err) {
-      console.error("quote amount lead fallback failed", err);
+    }
+
+    // Lead.payload fallback — only remaining misses.
+    const missingAmountIds = ids.filter((id) => !(amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0));
+    if (missingAmountIds.length > 0) {
+      const missingPlaceholders = missingAmountIds.map(() => "?").join(",");
+      try {
+        const [fallbackRows] = await pool.query(
+          `SELECT id AS leadId, payload
+             FROM leads
+            WHERE id IN (${missingPlaceholders})`,
+          missingAmountIds,
+        );
+        for (const row of fallbackRows as Record<string, unknown>[]) {
+          const id = Number(row.leadId);
+          const amount = quoteAmountFromPayloadRaw(row.payload);
+          if (amount != null) amountByLead.set(id, amount);
+        }
+      } catch (err) {
+        console.error("quote amount lead fallback failed", err);
+      }
     }
   }
 
@@ -1922,7 +1960,10 @@ async function quoteShareByLeadChunk(
       hasSnapshotByLead.get(id) === true ||
       amount != null;
     out.set(id, {
-      quoteSent: hasQuoteCode && amount != null && share?.shared === true,
+      // Board: CRM-shared means quote was sent even if amount parse is slow/missing.
+      quoteSent: boardFast
+        ? share?.shared === true
+        : hasQuoteCode && amount != null && share?.shared === true,
       quoteFinalAmount: amount,
       hasQuote: hasQuoteCode,
     });
@@ -2276,12 +2317,27 @@ const SALES_EXECUTIVE_FROM_PAYLOAD_SQL = `COALESCE(
   ${leadPayloadJsonText("$.sales_person")}
 )`;
 
-async function salesExecutiveByLeadChunk(pool: Pool, ids: number[]): Promise<Map<number, string>> {
+/** Fewer JSON paths for the meeting board — full COALESCE was scanning huge payloads per lead. */
+const SALES_EXECUTIVE_BOARD_SQL = `COALESCE(
+  ${leadPayloadJsonText("$.formData.salesExecutive")},
+  ${leadPayloadJsonText("$.formData.sales_executive")},
+  ${leadPayloadJsonText("$.formData.sales_person")},
+  ${leadPayloadJsonText("$.fetchedData.salesExecutive")},
+  ${leadPayloadJsonText("$.salesExecutive")},
+  ${leadPayloadJsonText("$.sales_executive")}
+)`;
+
+async function salesExecutiveByLeadChunk(
+  pool: Pool,
+  ids: number[],
+  mode: "full" | "board" = "full",
+): Promise<Map<number, string>> {
   const out = new Map<number, string>();
   if (ids.length === 0) return out;
   const placeholders = ids.map(() => "?").join(",");
+  const salesSql = mode === "board" ? SALES_EXECUTIVE_BOARD_SQL : SALES_EXECUTIVE_FROM_PAYLOAD_SQL;
   const [leadRows] = await pool.query(
-    `SELECT id AS leadId, ${SALES_EXECUTIVE_FROM_PAYLOAD_SQL} AS salesExecutiveName
+    `SELECT id AS leadId, ${salesSql} AS salesExecutiveName
        FROM leads
       WHERE id IN (${placeholders})`,
     ids,
@@ -2295,14 +2351,19 @@ async function salesExecutiveByLeadChunk(pool: Pool, ids: number[]): Promise<Map
 }
 
 /** CRM sales executive name from lead payload (batched JSON paths — no full payload fetch per meeting). */
-async function salesExecutiveByLeadIds(pool: Pool, leadIds: number[]): Promise<Map<number, string>> {
+async function salesExecutiveByLeadIds(
+  pool: Pool,
+  leadIds: number[],
+  opts?: { mode?: "full" | "board" },
+): Promise<Map<number, string>> {
   const out = new Map<number, string>();
   const ids = [...new Set(leadIds.filter((id) => Number.isInteger(id) && id > 0))];
   if (ids.length === 0) return out;
-  const CHUNK = 200;
+  const mode = opts?.mode === "board" ? "board" : "full";
+  const CHUNK = mode === "board" ? 300 : 200;
   for (let offset = 0; offset < ids.length; offset += CHUNK) {
     const chunk = ids.slice(offset, offset + CHUNK);
-    const chunkResult = await salesExecutiveByLeadChunk(pool, chunk);
+    const chunkResult = await salesExecutiveByLeadChunk(pool, chunk, mode);
     for (const [id, value] of chunkResult) out.set(id, value);
   }
   return out;
@@ -2313,16 +2374,19 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
   const now = opts?.now || new Date();
   if (Date.now() - lastMeetingListReconcileAt >= MEETING_LIST_RECONCILE_MS) {
     lastMeetingListReconcileAt = Date.now();
-    void (async () => {
-      try {
-        await cleanupOrphanMeetingRows(pool);
-        await reconcileCompletedDesignMeetings(pool);
-        await reconcilePre10MeetingsAfterCrmQuoteShare(pool);
-        await reconcileCrmDrrScheduledMeetings(pool);
-      } catch (err) {
-        console.error("meeting list reconcile failed", err);
-      }
-    })();
+    // Delay so reconcile cannot steal pool connections from this board response.
+    setTimeout(() => {
+      void (async () => {
+        try {
+          await cleanupOrphanMeetingRows(pool);
+          await reconcileCompletedDesignMeetings(pool);
+          await reconcilePre10MeetingsAfterCrmQuoteShare(pool);
+          await reconcileCrmDrrScheduledMeetings(pool);
+        } catch (err) {
+          console.error("meeting list reconcile failed", err);
+        }
+      })();
+    }, 2500);
   }
 
   const designerIds = opts?.designerIds?.filter((id) => Number.isInteger(id) && id > 0);
@@ -2361,9 +2425,11 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
       designerIds: scoped ? designerIds : undefined,
       now,
     });
-  }, 0);
+  }, 3000);
 
-  // Board-fast select: scalar columns only (no payload JSON — huge blobs timed out hosted).
+  // Board-fast select: scalar columns only + light DRR (no per-row payload JSON / EXISTS).
+  // No hard 1500 cap — ASC LIMIT 1500 dropped all of November 2026 (0 of 3200+ rows).
+  // Date window already bounds volume; soft ceiling only as a safety valve.
   const [rows] = await pool.query(
     `SELECT m.id,
             l.id AS leadId,
@@ -2390,13 +2456,13 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
             m.crm_appointment_id AS crmAppointmentId,
             m.started_at AS startedAt,
             u.name AS assignedDesignerName,
-            CASE WHEN ${CRM_DRR_REVISIT_SQL} THEN 1 ELSE 0 END AS crmDrrRevisit
+            CASE WHEN ${CRM_DRR_REVISIT_BOARD_SQL} THEN 1 ELSE 0 END AS crmDrrRevisit
        FROM lead_meetings m
        JOIN leads l ON l.id = m.lead_id
        LEFT JOIN users u ON u.id = COALESCE(m.designer_id, l.assigned_designer_id)
       WHERE ${whereParts.join(" AND ")}
       ORDER BY m.meeting_date ASC, m.meeting_time ASC, m.id ASC
-      LIMIT 1500`,
+      LIMIT 10000`,
     queryParams,
   );
 
@@ -2432,29 +2498,34 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
     }
   }
 
+  const meetingLeadIds = [
+    ...new Set((rows as Record<string, unknown>[]).map((row) => Number(row.leadId))),
+  ].filter((id) => Number.isFinite(id) && id > 0);
+
   let shareByLead = new Map<
     number,
     { quoteSent: boolean; quoteFinalAmount: number | null; hasQuote: boolean }
   >();
-  try {
-    const leadIds = [...new Set((rows as Record<string, unknown>[]).map((row) => Number(row.leadId)))].filter(
-      (id) => Number.isFinite(id) && id > 0,
-    );
-    // Every board lead — chunked inside quoteShareByLead (no silent 500-cap miss).
-    shareByLead = await quoteShareByLead(pool, leadIds);
-  } catch (err) {
-    console.error("quote share lookup failed", err);
-  }
-
   let salesByLead = new Map<number, string>();
-  try {
-    const meetingLeadIds = [
-      ...new Set((rows as Record<string, unknown>[]).map((row) => Number(row.leadId))),
-    ].filter((id) => Number.isFinite(id) && id > 0);
-    salesByLead = await salesExecutiveByLeadIds(pool, meetingLeadIds);
-  } catch (err) {
-    console.error("sales executive lookup failed", err);
-  }
+  // Quote + sales in parallel — sequential enrichment was a major board timeout driver.
+  // Sales JSON-on-payload can spike; budget it so the board never waits on it.
+  const [shareResult, salesResult] = await Promise.all([
+    quoteShareByLead(pool, meetingLeadIds, { mode: "board" }).catch((err) => {
+      console.error("quote share lookup failed", err);
+      return shareByLead;
+    }),
+    Promise.race([
+      salesExecutiveByLeadIds(pool, meetingLeadIds, { mode: "board" }).catch((err) => {
+        console.error("sales executive lookup failed", err);
+        return new Map<number, string>();
+      }),
+      new Promise<Map<number, string>>((resolve) => {
+        setTimeout(() => resolve(new Map()), 1200);
+      }),
+    ]),
+  ]);
+  shareByLead = shareResult;
+  salesByLead = salesResult;
 
   return (rows as Record<string, unknown>[]).map((row) => {
     const share = shareByLead.get(Number(row.leadId));
