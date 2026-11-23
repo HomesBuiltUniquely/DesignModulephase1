@@ -73,6 +73,7 @@ import {
   endCrmMeeting,
   abandonCrmMeeting,
   isCrmDrrMeeting,
+  isCrmDrrLabelText,
   completePre10CrmMeetingAfterQuoteShare,
   applyCrmMeetingFeedback,
   kolkataParts,
@@ -8809,6 +8810,34 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
               ),
             }
           : {}),
+        ...(pickTrimmedString((payload as any)?.milestoneSubStage, (payload as any)?.milestone_sub_stage)
+          ? {
+              milestoneSubStage: pickTrimmedString(
+                (payload as any)?.milestoneSubStage,
+                (payload as any)?.milestone_sub_stage,
+              ),
+            }
+          : {}),
+        ...(pickTrimmedString((payload as any)?.subStage, (payload as any)?.sub_stage)
+          ? { subStage: pickTrimmedString((payload as any)?.subStage, (payload as any)?.sub_stage) }
+          : {}),
+        ...(pickTrimmedString((payload as any)?.title)
+          ? { title: pickTrimmedString((payload as any)?.title) }
+          : {}),
+        ...(isCrmDrrLabelText(
+          pickTrimmedString(
+            (payload as any)?.meetingLabel,
+            (payload as any)?.meeting_label,
+            (payload as any)?.designMilestone,
+            (payload as any)?.milestoneSubStage,
+            (payload as any)?.milestone_sub_stage,
+            (payload as any)?.subStage,
+            (payload as any)?.sub_stage,
+            (payload as any)?.title,
+          ),
+        )
+          ? { crmDrrRevisit: true }
+          : {}),
       };
       await pool.query(
         `UPDATE leads
@@ -8840,8 +8869,25 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
           typeof appointmentSlot === "string" || appointmentSlot != null
             ? String(appointmentSlot).trim()
             : "";
+        const intakeMeetingLabelEarly = pickTrimmedString(
+          (payload as any)?.meetingLabel,
+          (payload as any)?.meeting_label,
+          (payload as any)?.designMilestone,
+          (payload as any)?.milestoneSubStage,
+          (payload as any)?.milestone_sub_stage,
+          (payload as any)?.subStage,
+          (payload as any)?.sub_stage,
+          (payload as any)?.title,
+        );
+        const incomingLooksDrr =
+          isCrmDrrLabelText(intakeMeetingLabelEarly) ||
+          isCrmDrrLabelText(String((payload as any)?.meetingType || "")) ||
+          isCrmDrrLabelText(String((payload as any)?.subStage || ""));
         const allowDrrRevisitAfterSuccess =
-          alreadySuccessful && isRescheduleMeeting && Boolean(appointmentDate) && Boolean(normalizedIncomingSlot);
+          alreadySuccessful &&
+          Boolean(appointmentDate) &&
+          Boolean(normalizedIncomingSlot) &&
+          (isRescheduleMeeting || incomingLooksDrr);
         // Hub bug: null/empty slot on upsert must not touch schedule (esp. successful meetings).
         const shouldSyncMeeting =
           Boolean(appointmentDate) &&
@@ -8862,12 +8908,7 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
             keptTime: activeMtg?.meetingTime ?? null,
           });
         } else if (shouldSyncMeeting) {
-          const intakeMeetingLabel = pickTrimmedString(
-            (payload as any)?.meetingLabel,
-            (payload as any)?.meeting_label,
-            (payload as any)?.designMilestone,
-            (payload as any)?.milestoneSubStage,
-          );
+          const intakeMeetingLabel = intakeMeetingLabelEarly;
           recordedMeeting = await recordCrmMeeting(pool, {
             leadId: existingLeadId,
             meetingDate: appointmentDate,
@@ -8875,6 +8916,11 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
             meetingTime: normalizedIncomingSlot || null,
             meetingType: intakeMeetingType,
             meetingLabel: intakeMeetingLabel,
+            milestoneSubStage: pickTrimmedString(
+              (payload as any)?.milestoneSubStage,
+              (payload as any)?.milestone_sub_stage,
+            ),
+            subStage: pickTrimmedString((payload as any)?.subStage, (payload as any)?.sub_stage),
             meetingMode: /virtual/i.test(crmText) ? "online" : /showroom|site/i.test(crmText) ? "offline" : null,
             designerId: assignedDesignerId,
             actor: { name: "CRM" },

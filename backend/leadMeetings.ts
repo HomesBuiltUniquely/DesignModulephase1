@@ -22,14 +22,53 @@ export function meetingProgressLabel(
 
 export type MeetingActor = { id?: number | null; name?: string | null };
 
+/** Same rules as Meeting Management `isDesignRefinementText` — CRM label variants included. */
+export function isCrmDrrLabelText(value?: string | null | undefined): boolean {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return false;
+  return (
+    raw.includes("design refinement") ||
+    raw.includes("refinement round") ||
+    raw.includes("design-refinement") ||
+    raw.includes("refinement-round") ||
+    /\bdrr\b/.test(raw)
+  );
+}
+
+const CRM_DRR_PAYLOAD = `IF(JSON_VALID(l.payload), l.payload, '{}')`;
+
 const CRM_DRR_REVISIT_SQL = `(
-  LOWER(TRIM(IFNULL(m.meeting_type, ''))) IN ('drr', 'design_refinement')
+  COALESCE(m.is_drr_revisit, 0) = 1
+  OR LOWER(TRIM(IFNULL(m.meeting_type, ''))) IN ('drr', 'design_refinement')
   OR LOWER(IFNULL(m.meeting_type, '')) LIKE '%design%refinement%'
   OR LOWER(IFNULL(m.meeting_type, '')) LIKE '%refinement%round%'
-  OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.meetingLabel')), '')) LIKE '%design%refinement%'
-  OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.meetingLabel')), '')) LIKE '%refinement%round%'
-  OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.milestoneSubStage')), '')) LIKE '%design%refinement%'
-  OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(l.payload), l.payload, '{}'), '$.subStage')), '')) LIKE '%design%refinement%'
+  OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(${CRM_DRR_PAYLOAD}, '$.meetingLabel')), '')) LIKE '%design%refinement%'
+  OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(${CRM_DRR_PAYLOAD}, '$.meetingLabel')), '')) LIKE '%refinement%round%'
+  OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(${CRM_DRR_PAYLOAD}, '$.meetingLabel')), '')) LIKE '%refinement-meeting%'
+  OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(${CRM_DRR_PAYLOAD}, '$.designMilestone')), '')) LIKE '%refinement%'
+  OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(${CRM_DRR_PAYLOAD}, '$.title')), '')) LIKE '%refinement%'
+  OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(${CRM_DRR_PAYLOAD}, '$.milestoneSubStage')), '')) LIKE '%design%refinement%'
+  OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(${CRM_DRR_PAYLOAD}, '$.milestoneSubStage')), '')) LIKE '%refinement%round%'
+  OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(${CRM_DRR_PAYLOAD}, '$.subStage')), '')) LIKE '%design%refinement%'
+  OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(${CRM_DRR_PAYLOAD}, '$.subStage')), '')) LIKE '%refinement%round%'
+  OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(${CRM_DRR_PAYLOAD}, '$.formData.milestoneSubStage')), '')) LIKE '%refinement%'
+  OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(${CRM_DRR_PAYLOAD}, '$.formData.subStage')), '')) LIKE '%refinement%'
+  OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(${CRM_DRR_PAYLOAD}, '$.connection.milestoneSubStage')), '')) LIKE '%refinement%'
+  OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(${CRM_DRR_PAYLOAD}, '$.discovery.milestoneSubStage')), '')) LIKE '%refinement%'
+  OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(${CRM_DRR_PAYLOAD}, '$.crmDrrRevisit')), '')) IN ('true', '1')
+  OR (
+    m.source = 'crm'
+    AND m.meeting_status <> 'cancelled'
+    AND m.progress <> 'completed'
+    AND EXISTS (
+      SELECT 1 FROM lead_meetings prior
+        WHERE prior.lead_id = m.lead_id
+          AND prior.source = 'crm'
+          AND prior.progress = 'completed'
+          AND prior.meeting_status <> 'cancelled'
+          AND prior.id < m.id
+    )
+  )
 )`;
 
 export class MeetingActionError extends Error {
@@ -445,6 +484,15 @@ export function ensureLeadMeetingsTable(pool: Pool): Promise<void> {
           "ALTER TABLE lead_meetings ADD COLUMN crm_appointment_id BIGINT NULL AFTER feedback_designer_by",
         );
       }
+      const [drrRevisitCol] = await pool.query(
+        `SELECT 1 FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'is_drr_revisit'`,
+      );
+      if ((drrRevisitCol as unknown[]).length === 0) {
+        await pool.query(
+          "ALTER TABLE lead_meetings ADD COLUMN is_drr_revisit TINYINT(1) NOT NULL DEFAULT 0 AFTER crm_appointment_id",
+        );
+      }
       // Rename progress: meeting_abandoned → meeting_never_happened (DB + rows).
       try {
         const [progressCol] = await pool.query(
@@ -496,6 +544,7 @@ export function ensureLeadMeetingsTable(pool: Pool): Promise<void> {
       // Never block API requests on backfill/reconcile — that timed out hosted Meeting Management.
       void cleanupOrphanMeetingRows(pool)
         .then(() => backfillLeadMeetings(pool))
+        .then(() => reconcileCrmDrrScheduledMeetings(pool))
         .catch((err) => console.error("[lead-meetings] background backfill/cleanup failed", err));
       void reconcileCompletedDesignMeetings(pool).catch((err) =>
         console.error("[lead-meetings] background reconcile failed", err),
@@ -697,6 +746,47 @@ async function readPayload(pool: Pool, leadId: number): Promise<Record<string, u
   }
 }
 
+async function persistCrmDrrLeadMarkers(
+  pool: Pool,
+  leadId: number,
+  input: {
+    meetingLabel?: string | null;
+    milestoneSubStage?: string | null;
+    subStage?: string | null;
+    /** New CRM row after a completed Pre 10% visit when Hub omits DRR label text. */
+    forceDrr?: boolean;
+  },
+) {
+  const payload = await readPayload(pool, leadId);
+  if (!payload) return;
+  const label = String(input.meetingLabel || "").trim();
+  const milestone = String(input.milestoneSubStage || "").trim();
+  const sub = String(input.subStage || "").trim();
+  const drrText =
+    isCrmDrrLabelText(label) || isCrmDrrLabelText(milestone) || isCrmDrrLabelText(sub);
+  if (!drrText && !input.forceDrr) return;
+  if (label) payload.meetingLabel = label;
+  if (milestone) payload.milestoneSubStage = milestone;
+  if (sub) payload.subStage = sub;
+  payload.crmDrrRevisit = true;
+  await pool.query("UPDATE leads SET payload = ?, update_at = ? WHERE id = ?", [
+    JSON.stringify(payload),
+    new Date(),
+    leadId,
+  ]);
+}
+
+/** Post–Pre 10% CRM booking — new open row after a successful CRM visit. */
+async function leadHasCompletedCrmMeeting(pool: Pool, leadId: number): Promise<boolean> {
+  const [rows] = await pool.query(
+    `SELECT 1 FROM lead_meetings
+      WHERE lead_id = ? AND source = 'crm' AND progress = 'completed' AND meeting_status <> 'cancelled'
+      LIMIT 1`,
+    [leadId],
+  );
+  return (rows as unknown[]).length > 0;
+}
+
 async function writeDesignPayload(
   pool: Pool,
   leadId: number,
@@ -848,6 +938,8 @@ export async function recordCrmMeeting(
     meetingMode?: string | null;
     meetingType?: string | null;
     meetingLabel?: string | null;
+    milestoneSubStage?: string | null;
+    subStage?: string | null;
     designerId?: number | null;
     actor?: MeetingActor | null;
   },
@@ -872,6 +964,21 @@ export async function recordCrmMeeting(
   );
   const active = (rows as Record<string, unknown>[])[0] ? mapRow((rows as Record<string, unknown>[])[0]) : null;
   const now = new Date();
+  const labelDrr =
+    isCrmDrrLabelText(input.meetingLabel) ||
+    isCrmDrrLabelText(input.meetingType) ||
+    isCrmDrrLabelText(input.milestoneSubStage) ||
+    isCrmDrrLabelText(input.subStage);
+  const revisitAfterPre10 = !active && (await leadHasCompletedCrmMeeting(pool, input.leadId));
+  const drrVisit = labelDrr || revisitAfterPre10;
+  if (drrVisit) {
+    await persistCrmDrrLeadMarkers(pool, input.leadId, {
+      meetingLabel: input.meetingLabel,
+      milestoneSubStage: input.milestoneSubStage,
+      subStage: input.subStage,
+      forceDrr: revisitAfterPre10 && !labelDrr,
+    });
+  }
   if (active) {
     // Hub null/omit slot is a bug upstream — keep existing meeting_time as-is.
     const timeLabel = incomingTime ?? normalizeTimeLabel(active.meetingTime) ?? active.meetingTime;
@@ -887,10 +994,12 @@ export async function recordCrmMeeting(
     const sameDate = active.meetingDate === dateIso;
     const sameTime = normalizeTimeLabel(active.meetingTime) === normalizeTimeLabel(timeLabel);
     if (sameDate && sameTime) {
-      if (active.meetingType !== meetingType || (active.meetingMode || null) !== (nextMode || null)) {
+      if (active.meetingType !== meetingType || (active.meetingMode || null) !== (nextMode || null) || drrVisit) {
         await pool.query(
-          `UPDATE lead_meetings SET meeting_type = ?, meeting_mode = ?, updated_at = ? WHERE id = ?`,
-          [meetingType, nextMode, now, active.id],
+          `UPDATE lead_meetings
+              SET meeting_type = ?, meeting_mode = ?, is_drr_revisit = CASE WHEN ? THEN 1 ELSE is_drr_revisit END, updated_at = ?
+            WHERE id = ?`,
+          [meetingType, nextMode, drrVisit ? 1 : 0, now, active.id],
         );
         return loadMeeting(pool, active.id);
       }
@@ -905,9 +1014,10 @@ export async function recordCrmMeeting(
       `UPDATE lead_meetings
           SET meeting_date = ?, meeting_time = COALESCE(?, meeting_time), meeting_mode = ?, meeting_type = ?, meeting_status = 'rescheduled',
               reschedule_count = reschedule_count + 1,
-              progress = ?, started_at = NULL, ended_at = NULL, updated_at = ?
+              progress = ?, started_at = NULL, ended_at = NULL,
+              is_drr_revisit = CASE WHEN ? THEN 1 ELSE is_drr_revisit END, updated_at = ?
         WHERE id = ?`,
-      [dateIso, timeLabel, mode || active.meetingMode, meetingType, progress, now, active.id],
+      [dateIso, timeLabel, mode || active.meetingMode, meetingType, progress, drrVisit ? 1 : 0, now, active.id],
     );
     await writeHistory(pool, input.leadId, input.actor, "Meeting rescheduled", `CRM meeting moved to ${dateIso} ${timeLabel || ""}.`.trim(), {
       action: "rescheduled",
@@ -945,9 +1055,22 @@ export async function recordCrmMeeting(
   const branch = await leadBranch(pool, input.leadId);
   const [result] = await pool.query(
     `INSERT INTO lead_meetings
-      (lead_id, meeting_date, meeting_time, meeting_type, meeting_mode, meeting_status, progress, designer_id, source, branch, started_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'scheduled', ?, ?, 'crm', ?, ?, ?, ?)`,
-    [input.leadId, dateIso, timeLabel, meetingType, mode, progress, input.designerId ?? null, branch, progress === "in_progress" ? now : null, now, now],
+      (lead_id, meeting_date, meeting_time, meeting_type, meeting_mode, meeting_status, progress, designer_id, source, branch, is_drr_revisit, started_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'scheduled', ?, ?, 'crm', ?, ?, ?, ?, ?)`,
+    [
+      input.leadId,
+      dateIso,
+      timeLabel,
+      meetingType,
+      mode,
+      progress,
+      input.designerId ?? null,
+      branch,
+      drrVisit ? 1 : 0,
+      progress === "in_progress" ? now : null,
+      now,
+      now,
+    ],
   );
   const id = Number((result as ResultSetHeader).insertId);
   await writeHistory(pool, input.leadId, input.actor, "Meeting scheduled", `CRM meeting scheduled for ${dateIso} ${timeLabel || ""}.`.trim(), {
@@ -1825,6 +1948,51 @@ function payloadText(payload: Record<string, unknown> | null, ...paths: string[]
   return "";
 }
 
+function leadPayloadIndicatesDrr(payload: Record<string, unknown> | null): boolean {
+  if (!payload) return false;
+  if (payload.crmDrrRevisit === true || payload.crmDrrRevisit === 1) return true;
+  const texts = [
+    payloadText(payload, "meetingLabel"),
+    payloadText(payload, "milestoneSubStage"),
+    payloadText(payload, "subStage"),
+    payloadText(payload, "title"),
+    payloadText(payload, "designMilestone"),
+    payloadText(payload, "formData.milestoneSubStage"),
+    payloadText(payload, "formData.subStage"),
+    payloadText(payload, "formData.sub_stage"),
+    payloadText(payload, "connection.milestoneSubStage"),
+    payloadText(payload, "discovery.milestoneSubStage"),
+    payloadText(payload, "action"),
+    payloadText(payload, "meetingStatus"),
+  ];
+  return texts.some((text) => isCrmDrrLabelText(text));
+}
+
+function extractCrmAppointmentFromLeadPayload(payload: Record<string, unknown> | null): {
+  meetingDate: string | null;
+  meetingTime: string | null;
+  meetingLabel: string | null;
+  milestoneSubStage: string | null;
+  subStage: string | null;
+} {
+  if (!payload) {
+    return { meetingDate: null, meetingTime: null, meetingLabel: null, milestoneSubStage: null, subStage: null };
+  }
+  const meetingDate = normalizeDateIso(
+    payloadText(payload, "crmSchedule.date", "formData.appointment_date", "formData.appointmentDate", "appointmentDate"),
+  );
+  const meetingTime = normalizeTimeLabel(
+    payloadText(payload, "crmSchedule.slot", "formData.appointment_slot", "formData.appointmentSlot", "appointment_slot"),
+  );
+  return {
+    meetingDate,
+    meetingTime,
+    meetingLabel: payloadText(payload, "meetingLabel", "formData.meetingLabel", "designMilestone") || null,
+    milestoneSubStage: payloadText(payload, "milestoneSubStage", "formData.milestoneSubStage") || null,
+    subStage: payloadText(payload, "subStage", "formData.subStage", "formData.sub_stage") || null,
+  };
+}
+
 function parseLeadPayload(raw: unknown): Record<string, unknown> | null {
   if (raw == null || raw === "") return null;
   if (typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
@@ -1895,6 +2063,77 @@ export async function completePre10CrmMeetingAfterQuoteShare(
 }
 
 /** Backfill: Pre 10% CRM meetings become Successful once a quote version is shared to CRM. */
+/**
+ * After successful Pre 10%, CRM often keeps the same crmSchedule in payload without a new external-intake.
+ * Create the missing open CRM row so Meeting Management can show Scheduled (DRR).
+ */
+async function reconcileCrmDrrScheduledMeetings(pool: Pool) {
+  const { fromIso, toIso } = meetingBoardDateWindow();
+  const [rows] = await pool.query(
+    `SELECT l.id AS leadId, l.assigned_designer_id AS designerId, l.project_stage AS projectStage, l.payload
+       FROM leads l
+      WHERE l.payload IS NOT NULL
+        AND (
+          l.payload LIKE '%refinement%'
+          OR l.payload LIKE '%crmDrrRevisit%'
+          OR (
+            l.project_stage IS NOT NULL
+            AND TRIM(l.project_stage) <> ''
+            AND TRIM(l.project_stage) <> 'Pre 10%'
+          )
+          OR EXISTS (
+            SELECT 1 FROM lead_prolance_quote_snapshots q
+              WHERE q.lead_id = l.id
+                AND q.crm_shared_quote_id IS NOT NULL
+                AND q.crm_shared_quote_id > 0
+          )
+        )
+        AND EXISTS (
+          SELECT 1 FROM lead_meetings done
+            WHERE done.lead_id = l.id
+              AND done.source = 'crm'
+              AND done.progress = 'completed'
+              AND done.meeting_status <> 'cancelled'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM lead_meetings openm
+            WHERE openm.lead_id = l.id
+              AND openm.source = 'crm'
+              AND openm.meeting_status <> 'cancelled'
+              AND openm.progress NOT IN ('completed', 'meeting_never_happened')
+        )
+      ORDER BY l.update_at DESC
+      LIMIT 120`,
+  );
+  for (const row of rows as {
+    leadId?: number;
+    designerId?: number | null;
+    projectStage?: string | null;
+    payload?: string | null;
+  }[]) {
+    const leadId = Number(row.leadId);
+    if (!Number.isFinite(leadId) || leadId < 1) continue;
+    const payload = parseLeadPayload(row.payload);
+    const appt = extractCrmAppointmentFromLeadPayload(payload);
+    if (!appt.meetingDate || !appt.meetingTime) continue;
+    if (appt.meetingDate < fromIso || appt.meetingDate > toIso) continue;
+    try {
+      await recordCrmMeeting(pool, {
+        leadId,
+        meetingDate: appt.meetingDate,
+        meetingTime: appt.meetingTime,
+        meetingLabel: appt.meetingLabel,
+        milestoneSubStage: appt.milestoneSubStage,
+        subStage: appt.subStage,
+        designerId: row.designerId ?? null,
+        actor: { name: "reconcile-drr" },
+      });
+    } catch (err) {
+      console.error("[reconcile-drr] failed", { leadId, err });
+    }
+  }
+}
+
 async function reconcilePre10MeetingsAfterCrmQuoteShare(pool: Pool) {
   await pool.query(
     `UPDATE lead_meetings m
@@ -2079,6 +2318,7 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
         await cleanupOrphanMeetingRows(pool);
         await reconcileCompletedDesignMeetings(pool);
         await reconcilePre10MeetingsAfterCrmQuoteShare(pool);
+        await reconcileCrmDrrScheduledMeetings(pool);
       } catch (err) {
         console.error("meeting list reconcile failed", err);
       }
@@ -2413,21 +2653,20 @@ async function backfillLeadMeetings(pool: Pool) {
           });
         }
       }
-      const crm = (payload.crmSchedule || {}) as Record<string, unknown>;
-      const crmDate = normalizeDateIso(crm.date);
-      if (crmDate) {
-        const crmTime = normalizeTimeLabel(crm.slot) || embeddedClockLabel(crm.date);
-        // Same rule as recordCrmMeeting: date without slot must not create "Time not set".
-        if (!crmTime) continue;
+      const appt = extractCrmAppointmentFromLeadPayload(payload);
+      if (appt.meetingDate && appt.meetingTime) {
         const crmLabel = cleanText(payload.meetingType);
+        const completedPre10 = await leadHasCompletedCrmMeeting(pool, lead.id);
+        const drrVisit = leadPayloadIndicatesDrr(payload) || completedPre10;
         await insertBackfill(pool, {
           leadId: lead.id,
-          meetingDate: crmDate,
-          meetingTime: crmTime,
+          meetingDate: appt.meetingDate,
+          meetingTime: appt.meetingTime,
           meetingType: "pre_10",
           meetingMode: crmChannel(crmLabel),
           designerId: lead.designerId ?? null,
           source: "crm",
+          isDrrRevisit: drrVisit && completedPre10,
         });
       }
     }
@@ -2446,16 +2685,33 @@ async function insertBackfill(
     meetingMode: string | null;
     designerId: number | null;
     source: MeetingSource;
+    isDrrRevisit?: boolean;
   },
 ) {
   if (!input.meetingTime) return;
   if (input.source === "design_module" && !designMeetingFromLabel(input.meetingType)) return;
   const [existing] = await pool.query(
-    `SELECT id FROM lead_meetings
-      WHERE lead_id = ? AND source = ? AND meeting_type = ? AND meeting_date = ? LIMIT 1`,
+    `SELECT id, progress FROM lead_meetings
+      WHERE lead_id = ? AND source = ? AND meeting_type = ? AND meeting_date = ?
+      ORDER BY id DESC LIMIT 1`,
     [input.leadId, input.source, input.meetingType, input.meetingDate],
   );
-  if ((existing as unknown[]).length > 0) return;
+  const prior = (existing as { id?: number; progress?: string }[])[0];
+  if (prior?.id) {
+    const priorProgress = String(prior.progress || "").toLowerCase();
+    const allowSecondRow =
+      input.isDrrRevisit && priorProgress === "completed" && input.source === "crm";
+    if (!allowSecondRow) return;
+    const [openSameDay] = await pool.query(
+      `SELECT id FROM lead_meetings
+        WHERE lead_id = ? AND source = 'crm' AND meeting_date = ?
+          AND meeting_status <> 'cancelled'
+          AND progress NOT IN ('completed', 'meeting_never_happened')
+        LIMIT 1`,
+      [input.leadId, input.meetingDate],
+    );
+    if ((openSameDay as unknown[]).length > 0) return;
+  }
   const now = new Date();
   const progress = nextMeetingProgress(
     {
@@ -2471,8 +2727,8 @@ async function insertBackfill(
   const branch = await leadBranch(pool, input.leadId);
   await pool.query(
     `INSERT INTO lead_meetings
-      (lead_id, meeting_date, meeting_time, meeting_type, meeting_mode, meeting_status, progress, designer_id, source, branch, started_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'scheduled', ?, ?, ?, ?, NULL, ?, ?)`,
+      (lead_id, meeting_date, meeting_time, meeting_type, meeting_mode, meeting_status, progress, designer_id, source, branch, is_drr_revisit, started_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'scheduled', ?, ?, ?, ?, ?, NULL, ?, ?)`,
     [
       input.leadId,
       input.meetingDate,
@@ -2483,6 +2739,7 @@ async function insertBackfill(
       input.designerId,
       input.source,
       branch,
+      input.isDrrRevisit ? 1 : 0,
       now,
       now,
     ],

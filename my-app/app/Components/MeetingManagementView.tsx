@@ -929,7 +929,15 @@ function StatusPill({ status, meeting }: { status: ViewStatus; meeting?: ViewMee
   let pillStatus: string = treatCancelled ? 'cancelled' : status;
   // Prefer backend progressLabel for all client meetings (design Material selection + Pre 10%).
   if (meeting && !meeting.personal) {
-    if (treatCancelled) {
+    const openDrr =
+      isDrrCrmMeeting(meeting) &&
+      !treatCancelled &&
+      status !== 'completed' &&
+      status !== 'abandoned';
+    if (openDrr) {
+      label = 'Scheduled(DRR)';
+      pillStatus = status;
+    } else if (treatCancelled) {
       label = rawLabel || 'Meeting Cancelled';
       pillStatus = 'cancelled';
     } else if (status === 'completed') {
@@ -1402,7 +1410,7 @@ export default function MeetingManagementView() {
   }, [mapped]);
   const statusChoices: { id: StatusKey; label: string }[] = [
     { id: 'scheduled', label: 'Scheduled' },
-    { id: 'scheduled_drr', label: 'Meeting scheduled (DRR)' },
+    { id: 'scheduled_drr', label: 'Scheduled(DRR)' },
     { id: 'rescheduled', label: 'Meeting Rescheduled' },
     { id: 'in_progress', label: 'In progress' },
     { id: 'completed', label: 'Meeting Successful' },
@@ -1921,6 +1929,10 @@ export default function MeetingManagementView() {
   const submitDrrOutcome = async (outcome: 'successful' | 'never_happened') => {
     if (!selected || !sessionId || drrOutcomeBusy) return;
     if (!canShowDrrOutcomeActions(selected)) return;
+    if (!feedbackAlreadySubmitted) {
+      setPre10ActionError('Submit designer feedback first, then choose the visit outcome.');
+      return;
+    }
     const meetingId = selected.id ?? selected.raw.id;
     if (meetingId == null) {
       setPre10ActionError('This meeting has no id to update.');
@@ -1985,6 +1997,7 @@ export default function MeetingManagementView() {
   };
 
   const showDrrOutcome = selected ? canShowDrrOutcomeActions(selected) : false;
+  const drrOutcomeUnlocked = feedbackAlreadySubmitted;
 
   return (
     <div className={styles.root}>
@@ -2659,14 +2672,76 @@ export default function MeetingManagementView() {
                   <div className={styles.pre10ActionBody}>
                     <p className={styles.pre10ActionTitle}>How did this DRR visit go?</p>
                     <p className={styles.pre10ActionSub}>
-                      Mark Meeting successful or Meeting never happened. This updates CRM progress for this DRR visit only.
+                      Add designer feedback first (required). Then mark Meeting successful or Meeting never happened for this DRR visit only.
                     </p>
+                  </div>
+                  <div className={styles.crmFeedback} style={{ marginBottom: 12 }}>
+                    <div className={styles.crmFeedbackTop}>
+                      <span className={styles.crmFeedbackTitle}>Feedback</span>
+                      <span className={styles.crmFeedbackBadge}>
+                        {feedbackAlreadySubmitted ? 'One-time done' : 'Required'}
+                      </span>
+                    </div>
+                    {feedbackAlreadySubmitted ? (
+                      <>
+                        <p className={styles.crmFeedbackOnceNote}>Your one-time feedback is done</p>
+                        <p className={styles.crmFeedbackBody}>{(selected.raw.feedbackDesigner || '').trim()}</p>
+                      </>
+                    ) : (
+                      <label className={styles.crmFeedbackComposer} htmlFor={`drr-feedback-${selected.key}`}>
+                        <span className={styles.crmFeedbackComposerLabel}>Designer feedback</span>
+                        <textarea
+                          id={`drr-feedback-${selected.key}`}
+                          className={styles.crmFeedbackTextarea}
+                          rows={2}
+                          maxLength={50}
+                          placeholder="Short note (max 50)…"
+                          value={designerFeedbackDraft}
+                          disabled={designerFeedbackBusy}
+                          onChange={(e) => {
+                            setDesignerFeedbackDraft(e.target.value.slice(0, 50));
+                            setDesignerFeedbackError(null);
+                            setDesignerFeedbackOk(null);
+                            setPre10ActionError(null);
+                          }}
+                        />
+                        <div className={styles.crmFeedbackComposerFoot}>
+                          <span
+                            className={styles.crmFeedbackCount}
+                            data-ready={designerFeedbackDraft.trim().length > 0 ? '1' : '0'}
+                          >
+                            {designerFeedbackDraft.trim().length}/50
+                          </span>
+                          <button
+                            type="button"
+                            className={styles.crmFeedbackSubmit}
+                            disabled={
+                              designerFeedbackBusy ||
+                              !designerFeedbackDraft.trim() ||
+                              designerFeedbackDraft.trim().length > 50
+                            }
+                            onClick={() => void submitDesignerFeedback()}
+                          >
+                            <span className={styles.crmFeedbackSubmitShine} aria-hidden="true" />
+                            <span className={styles.crmFeedbackSubmitLabel}>
+                              {designerFeedbackBusy ? '…' : 'Submit'}
+                            </span>
+                          </button>
+                        </div>
+                      </label>
+                    )}
+                    {designerFeedbackError ? (
+                      <p className={styles.crmFeedbackError}>{designerFeedbackError}</p>
+                    ) : null}
+                    {designerFeedbackOk ? (
+                      <p className={styles.crmFeedbackSuccess}>{designerFeedbackOk}</p>
+                    ) : null}
                   </div>
                   <div className={`${styles.pre10ActionRow} ${styles.pre10ActionRowSplit}`}>
                     <button
                       type="button"
                       className={`${styles.actBtn} ${styles.actEnd}`}
-                      disabled={drrOutcomeBusy != null}
+                      disabled={drrOutcomeBusy != null || !drrOutcomeUnlocked}
                       onClick={() => void submitDrrOutcome('successful')}
                     >
                       {drrOutcomeBusy === 'successful' ? 'Saving…' : 'Meeting successful'}
@@ -2674,74 +2749,16 @@ export default function MeetingManagementView() {
                     <button
                       type="button"
                       className={`${styles.actBtn} ${styles.actCancel}`}
-                      disabled={drrOutcomeBusy != null}
+                      disabled={drrOutcomeBusy != null || !drrOutcomeUnlocked}
                       onClick={() => void submitDrrOutcome('never_happened')}
                     >
                       {drrOutcomeBusy === 'never_happened' ? 'Saving…' : 'Meeting never happened'}
                     </button>
                   </div>
-                  {showCrmFeedback ? (
-                    <div className={styles.crmFeedback} style={{ marginTop: 12 }}>
-                      <div className={styles.crmFeedbackTop}>
-                        <span className={styles.crmFeedbackTitle}>Feedback</span>
-                        <span className={styles.crmFeedbackBadge}>
-                          {feedbackAlreadySubmitted ? 'One-time done' : 'One-time'}
-                        </span>
-                      </div>
-                      {feedbackAlreadySubmitted ? (
-                        <>
-                          <p className={styles.crmFeedbackOnceNote}>Your one-time feedback is done</p>
-                          <p className={styles.crmFeedbackBody}>{(selected.raw.feedbackDesigner || '').trim()}</p>
-                        </>
-                      ) : (
-                        <label className={styles.crmFeedbackComposer} htmlFor={`drr-feedback-${selected.key}`}>
-                          <span className={styles.crmFeedbackComposerLabel}>Designer feedback</span>
-                          <textarea
-                            id={`drr-feedback-${selected.key}`}
-                            className={styles.crmFeedbackTextarea}
-                            rows={2}
-                            maxLength={50}
-                            placeholder="Short note (max 50)…"
-                            value={designerFeedbackDraft}
-                            disabled={designerFeedbackBusy}
-                            onChange={(e) => {
-                              setDesignerFeedbackDraft(e.target.value.slice(0, 50));
-                              setDesignerFeedbackError(null);
-                              setDesignerFeedbackOk(null);
-                            }}
-                          />
-                          <div className={styles.crmFeedbackComposerFoot}>
-                            <span
-                              className={styles.crmFeedbackCount}
-                              data-ready={designerFeedbackDraft.trim().length > 0 ? '1' : '0'}
-                            >
-                              {designerFeedbackDraft.trim().length}/50
-                            </span>
-                            <button
-                              type="button"
-                              className={styles.crmFeedbackSubmit}
-                              disabled={
-                                designerFeedbackBusy ||
-                                !designerFeedbackDraft.trim() ||
-                                designerFeedbackDraft.trim().length > 50
-                              }
-                              onClick={() => void submitDesignerFeedback()}
-                            >
-                              <span className={styles.crmFeedbackSubmitShine} aria-hidden="true" />
-                              <span className={styles.crmFeedbackSubmitLabel}>
-                                {designerFeedbackBusy ? '…' : 'Submit'}
-                              </span>
-                            </button>
-                          </div>
-                        </label>
-                      )}
-                      {designerFeedbackError ? (
-                        <p className={styles.crmFeedbackError}>{designerFeedbackError}</p>
-                      ) : null}
-                      {designerFeedbackOk ? (
-                        <p className={styles.crmFeedbackSuccess}>{designerFeedbackOk}</p>
-                      ) : null}
-                    </div>
+                  {!drrOutcomeUnlocked ? (
+                    <p className={styles.pre10ActionSub} style={{ marginTop: 8 }}>
+                      Submit feedback above to enable the outcome buttons.
+                    </p>
                   ) : null}
                   {pre10ActionError ? <p className={styles.pre10ActionError}>{pre10ActionError}</p> : null}
                 </div>
