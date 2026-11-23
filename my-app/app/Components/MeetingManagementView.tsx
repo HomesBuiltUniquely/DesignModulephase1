@@ -1106,7 +1106,7 @@ export default function MeetingManagementView() {
     try {
       let data: Record<string, unknown>;
       try {
-        data = await fetchBoard(12000);
+        data = await fetchBoard(20000);
       } catch (firstErr) {
         const aborted = firstErr instanceof DOMException && firstErr.name === 'AbortError';
         const networkFail =
@@ -1114,7 +1114,7 @@ export default function MeetingManagementView() {
           (firstErr instanceof Error && /failed to fetch|networkerror|load failed/i.test(firstErr.message));
         if (!aborted && !networkFail) throw firstErr;
         // One automatic retry — hosted can be cold on the first hit after deploy.
-        data = await fetchBoard(15000);
+        data = await fetchBoard(30000);
       }
       setMeetings(Array.isArray(data?.meetings) ? (data.meetings as ScheduledMeeting[]) : []);
       setPersonalWarning(
