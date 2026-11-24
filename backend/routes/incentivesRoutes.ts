@@ -986,8 +986,15 @@ function computeDesignerFortnightMetrics(
 
 export const BRANCH_TARGET_CODES = ["HBR", "SJR", "JPN"] as const;
 export type BranchTargetCode = (typeof BRANCH_TARGET_CODES)[number];
-/** ₹1.5 crore. The per-branch floor starts here and never decreases. */
+/** ₹1.5 crore monthly. The per-branch floor starts here and never decreases. */
 export const INITIAL_BRANCH_MINIMUM_INR = 15_000_000;
+
+/** Branch targets are stored as monthly floors; fortnight combined target uses half. */
+export function branchMinimumForPeriod(monthlyMinimumInr: number, period: 15 | 30): number {
+  const base = Number.isFinite(monthlyMinimumInr) ? monthlyMinimumInr : INITIAL_BRANCH_MINIMUM_INR;
+  if (period === 30) return base;
+  return base / 2;
+}
 
 export function isBranchTargetCode(code: string): code is BranchTargetCode {
   return (BRANCH_TARGET_CODES as readonly string[]).includes(code);
@@ -1742,12 +1749,11 @@ export function registerIncentivesRoutes(
       let totalTarget = targetWithBranchFloors(
         computedRows.map((row) => ({ branch: row.branch, target: row.totalTarget })),
         branchFloors,
+        period,
       );
       if (targetTeam.managerId > 0 && isBranchTargetCode(targetTeam.code)) {
-        totalTarget = Math.max(
-          totalTarget,
-          branchFloors.get(targetTeam.code) ?? INITIAL_BRANCH_MINIMUM_INR,
-        );
+        const monthlyFloor = branchFloors.get(targetTeam.code) ?? INITIAL_BRANCH_MINIMUM_INR;
+        totalTarget = Math.max(totalTarget, branchMinimumForPeriod(monthlyFloor, period));
       }
       const revenueAchieved = computedRows.reduce((s, r) => s + r.revenueAchieved, 0);
       const incentiveEarned = computedRows.reduce((s, r) => s + r.incentiveEarned, 0);
@@ -1920,6 +1926,7 @@ export function registerIncentivesRoutes(
   function targetWithBranchFloors(
     parts: Array<{ branch: string; target: number }>,
     floors: Map<string, number>,
+    period: 15 | 30,
   ): number {
     const byBranch = new Map<string, number>();
     for (const part of parts) {
@@ -1928,7 +1935,9 @@ export function registerIncentivesRoutes(
     }
     let total = 0;
     for (const [code, sum] of byBranch) {
-      const floor = floors.get(code);
+      const monthlyFloor = floors.get(code);
+      const floor =
+        monthlyFloor != null ? branchMinimumForPeriod(monthlyFloor, period) : undefined;
       total += floor != null ? Math.max(sum, floor) : sum;
     }
     return total;
@@ -2085,6 +2094,7 @@ export function registerIncentivesRoutes(
       const totalTarget = targetWithBranchFloors(
         rows.map((row) => ({ branch: row.branch, target: row.totalTarget })),
         branchFloors,
+        period,
       );
       const revenueAchieved = rows.reduce((sum, row) => sum + row.weighted, 0);
       return res.json({
