@@ -9012,11 +9012,27 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
 
     try {
       const crmText = String(intakeMeetingType || "");
+      const createdMeetingLabel = pickTrimmedString(
+        (payload as any)?.meetingLabel,
+        (payload as any)?.meeting_label,
+        (payload as any)?.designMilestone,
+        (payload as any)?.milestoneSubStage,
+        (payload as any)?.milestone_sub_stage,
+        (payload as any)?.subStage,
+        (payload as any)?.sub_stage,
+        (payload as any)?.title,
+      );
       await recordCrmMeeting(pool, {
         leadId: newLeadId,
         meetingDate: appointmentDate,
         meetingTime: appointmentSlot,
         meetingType: intakeMeetingType,
+        meetingLabel: createdMeetingLabel,
+        milestoneSubStage: pickTrimmedString(
+          (payload as any)?.milestoneSubStage,
+          (payload as any)?.milestone_sub_stage,
+        ),
+        subStage: pickTrimmedString((payload as any)?.subStage, (payload as any)?.sub_stage),
         meetingMode: /virtual/i.test(crmText) ? "online" : /showroom|site/i.test(crmText) ? "offline" : null,
         designerId: assignedDesignerId,
         actor: { name: "CRM" },

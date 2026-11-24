@@ -38,7 +38,8 @@ export function isCrmDrrLabelText(value?: string | null | undefined): boolean {
 const CRM_DRR_PAYLOAD = `IF(JSON_VALID(l.payload), l.payload, '{}')`;
 
 /**
- * Full DRR detection (payload JSON + prior completed CRM meeting).
+ * Full DRR detection — explicit Design Refinement Round labels / is_drr_revisit only.
+ * Never treat “second CRM meeting after Pre 10% success” as DRR.
  * Use only for single-meeting checks — too expensive for the board SELECT.
  */
 const CRM_DRR_REVISIT_SQL = `(
@@ -60,19 +61,6 @@ const CRM_DRR_REVISIT_SQL = `(
   OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(${CRM_DRR_PAYLOAD}, '$.connection.milestoneSubStage')), '')) LIKE '%refinement%'
   OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(${CRM_DRR_PAYLOAD}, '$.discovery.milestoneSubStage')), '')) LIKE '%refinement%'
   OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(${CRM_DRR_PAYLOAD}, '$.crmDrrRevisit')), '')) IN ('true', '1')
-  OR (
-    m.source = 'crm'
-    AND m.meeting_status <> 'cancelled'
-    AND m.progress <> 'completed'
-    AND EXISTS (
-      SELECT 1 FROM lead_meetings prior
-        WHERE prior.lead_id = m.lead_id
-          AND prior.source = 'crm'
-          AND prior.progress = 'completed'
-          AND prior.meeting_status <> 'cancelled'
-          AND prior.id < m.id
-    )
-  )
 )`;
 
 /**
@@ -782,8 +770,6 @@ async function persistCrmDrrLeadMarkers(
     meetingLabel?: string | null;
     milestoneSubStage?: string | null;
     subStage?: string | null;
-    /** New CRM row after a completed Pre 10% visit when Hub omits DRR label text. */
-    forceDrr?: boolean;
   },
 ) {
   const payload = await readPayload(pool, leadId);
@@ -793,7 +779,7 @@ async function persistCrmDrrLeadMarkers(
   const sub = String(input.subStage || "").trim();
   const drrText =
     isCrmDrrLabelText(label) || isCrmDrrLabelText(milestone) || isCrmDrrLabelText(sub);
-  if (!drrText && !input.forceDrr) return;
+  if (!drrText) return;
   if (label) payload.meetingLabel = label;
   if (milestone) payload.milestoneSubStage = milestone;
   if (sub) payload.subStage = sub;
@@ -803,17 +789,6 @@ async function persistCrmDrrLeadMarkers(
     new Date(),
     leadId,
   ]);
-}
-
-/** Post–Pre 10% CRM booking — new open row after a successful CRM visit. */
-async function leadHasCompletedCrmMeeting(pool: Pool, leadId: number): Promise<boolean> {
-  const [rows] = await pool.query(
-    `SELECT 1 FROM lead_meetings
-      WHERE lead_id = ? AND source = 'crm' AND progress = 'completed' AND meeting_status <> 'cancelled'
-      LIMIT 1`,
-    [leadId],
-  );
-  return (rows as unknown[]).length > 0;
 }
 
 async function writeDesignPayload(
@@ -993,19 +968,17 @@ export async function recordCrmMeeting(
   );
   const active = (rows as Record<string, unknown>[])[0] ? mapRow((rows as Record<string, unknown>[])[0]) : null;
   const now = new Date();
-  const labelDrr =
+  // DRR only when CRM/Hub sends Design Refinement Round label/substage — never “2nd meeting”.
+  const drrVisit =
     isCrmDrrLabelText(input.meetingLabel) ||
     isCrmDrrLabelText(input.meetingType) ||
     isCrmDrrLabelText(input.milestoneSubStage) ||
     isCrmDrrLabelText(input.subStage);
-  const revisitAfterPre10 = !active && (await leadHasCompletedCrmMeeting(pool, input.leadId));
-  const drrVisit = labelDrr || revisitAfterPre10;
   if (drrVisit) {
     await persistCrmDrrLeadMarkers(pool, input.leadId, {
       meetingLabel: input.meetingLabel,
       milestoneSubStage: input.milestoneSubStage,
       subStage: input.subStage,
-      forceDrr: revisitAfterPre10 && !labelDrr,
     });
   }
   if (active) {
@@ -2066,6 +2039,7 @@ export async function completePre10CrmMeetingAfterQuoteShare(
         AND source = 'crm'
         AND meeting_status <> 'cancelled'
         AND progress <> 'completed'
+        AND COALESCE(is_drr_revisit, 0) = 0
         AND (
           meeting_type = 'pre_10'
           OR meeting_type = 'pre10'
@@ -2176,6 +2150,8 @@ async function reconcileCrmDrrScheduledMeetings(pool: Pool) {
 }
 
 async function reconcilePre10MeetingsAfterCrmQuoteShare(pool: Pool) {
+  // Quote share closes the Pre 10% visit only. A DRR revisit is stored as pre_10
+  // with is_drr_revisit = 1 and must stay Scheduled (DRR).
   await pool.query(
     `UPDATE lead_meetings m
        JOIN (
@@ -2192,11 +2168,38 @@ async function reconcilePre10MeetingsAfterCrmQuoteShare(pool: Pool) {
       WHERE m.source = 'crm'
         AND m.meeting_status <> 'cancelled'
         AND m.progress <> 'completed'
+        AND COALESCE(m.is_drr_revisit, 0) = 0
         AND (
           m.meeting_type = 'pre_10'
           OR m.meeting_type = 'pre10'
           OR m.meeting_type IS NULL
           OR TRIM(m.meeting_type) = ''
+        )`,
+  );
+
+  await reopenDrrMeetingsClosedByQuoteShare(pool);
+}
+
+/** DRR visits quote-share had marked successful. An explicit Meeting successful stays completed. */
+async function reopenDrrMeetingsClosedByQuoteShare(pool: Pool) {
+  await pool.query(
+    `UPDATE lead_meetings m
+        SET m.progress = 'scheduled',
+            m.ended_at = NULL,
+            m.updated_at = NOW()
+      WHERE m.source = 'crm'
+        AND m.meeting_status <> 'cancelled'
+        AND m.progress = 'completed'
+        AND (
+          COALESCE(m.is_drr_revisit, 0) = 1
+          OR LOWER(IFNULL(m.meeting_type, '')) LIKE '%design%refinement%'
+          OR LOWER(IFNULL(m.meeting_type, '')) LIKE '%refinement%round%'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM lead_history h2
+           WHERE h2.lead_id = m.lead_id
+             AND h2.event LIKE '%CRM meeting ended%'
+             AND h2.event LIKE CONCAT('%"meetingId":', m.id, '%')
         )`,
   );
 }
@@ -2374,6 +2377,11 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
   const now = opts?.now || new Date();
   if (Date.now() - lastMeetingListReconcileAt >= MEETING_LIST_RECONCILE_MS) {
     lastMeetingListReconcileAt = Date.now();
+    try {
+      await reopenDrrMeetingsClosedByQuoteShare(pool);
+    } catch (err) {
+      console.error("[lead-meetings] DRR reopen failed", err);
+    }
     // Delay so reconcile cannot steal pool connections from this board response.
     setTimeout(() => {
       void (async () => {
@@ -2727,8 +2735,7 @@ async function backfillLeadMeetings(pool: Pool) {
       const appt = extractCrmAppointmentFromLeadPayload(payload);
       if (appt.meetingDate && appt.meetingTime) {
         const crmLabel = cleanText(payload.meetingType);
-        const completedPre10 = await leadHasCompletedCrmMeeting(pool, lead.id);
-        const drrVisit = leadPayloadIndicatesDrr(payload) || completedPre10;
+        const drrVisit = leadPayloadIndicatesDrr(payload);
         await insertBackfill(pool, {
           leadId: lead.id,
           meetingDate: appt.meetingDate,
@@ -2737,7 +2744,7 @@ async function backfillLeadMeetings(pool: Pool) {
           meetingMode: crmChannel(crmLabel),
           designerId: lead.designerId ?? null,
           source: "crm",
-          isDrrRevisit: drrVisit && completedPre10,
+          isDrrRevisit: drrVisit,
         });
       }
     }

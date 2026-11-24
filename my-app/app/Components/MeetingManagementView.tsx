@@ -469,6 +469,8 @@ function meetingKindLabel(meeting: ScheduledMeeting): string {
     if (meeting.personalApproval === 'cancelled') return 'Leave cancelled';
     return 'Full-day leave';
   }
+  // DRR stays labeled Pre 10% in the MEETING column (same as other CRM visits).
+  // DRR is tracked only via crmDrrRevisit / filters — not this badge.
   const type = clientMeetingType(meeting);
   if (type) return TYPE_LABEL[type];
   const raw = (meeting.meetingType || '').trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
@@ -935,13 +937,16 @@ function StatusPill({ status, meeting }: { status: ViewStatus; meeting?: ViewMee
       status !== 'completed' &&
       status !== 'abandoned';
     if (openDrr) {
-      label = 'Scheduled(DRR)';
+      label = 'Scheduled (DRR)';
       pillStatus = status;
     } else if (treatCancelled) {
       label = rawLabel || 'Meeting Cancelled';
       pillStatus = 'cancelled';
     } else if (status === 'completed') {
-      label = rawLabel || 'Meeting Successful';
+      label =
+        isDrrCrmMeeting(meeting)
+          ? 'Meeting Successful (DRR)'
+          : rawLabel || 'Meeting Successful';
       pillStatus = 'completed';
     } else if (status === 'abandoned') {
       label = (meeting.raw.progressLabel || '').trim() || 'Meeting never happened';
@@ -1410,7 +1415,7 @@ export default function MeetingManagementView() {
   }, [mapped]);
   const statusChoices: { id: StatusKey; label: string }[] = [
     { id: 'scheduled', label: 'Scheduled' },
-    { id: 'scheduled_drr', label: 'Scheduled(DRR)' },
+    { id: 'scheduled_drr', label: 'Scheduled (DRR)' },
     { id: 'rescheduled', label: 'Meeting Rescheduled' },
     { id: 'in_progress', label: 'In progress' },
     { id: 'completed', label: 'Meeting Successful' },
@@ -1493,6 +1498,7 @@ export default function MeetingManagementView() {
     return statusFilters.some((want) => {
       if (want === 'scheduled_drr') return isScheduledDrrMeeting(meeting);
       if (want === 'completed_drr') return isSuccessfulDrrMeeting(meeting);
+      if ((want === 'scheduled' || want === 'rescheduled') && isDrrCrmMeeting(meeting)) return false;
       return meeting.status === want;
     });
   }, [statusFilters]);
