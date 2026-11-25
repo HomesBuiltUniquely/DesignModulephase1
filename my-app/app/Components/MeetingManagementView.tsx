@@ -90,6 +90,7 @@ type ScheduledMeeting = {
   cancelFiles?: { id: number; name: string; mimeType?: string | null }[] | null;
   reason?: string | null;
   endedAt?: string | null;
+  startedAt?: string | null;
   quoteSent?: boolean;
   /** True when a quote code/snapshot exists even if amount parse failed. */
   hasQuote?: boolean;
@@ -657,13 +658,28 @@ function personLabel(name: string): string {
   return text;
 }
 
+/** Collapse CRM spelling noise so "Somashekar_V" and "Somashekar V" filter as one person. */
+function normalizePersonKey(name: string): string {
+  return name
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[_.]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function uniqueNames(values: string[]): string[] {
   const seen = new Map<string, string>();
   for (const value of values) {
-    const text = value.trim();
+    const text = value.replace(/[_]+/g, ' ').replace(/\s+/g, ' ').trim();
     if (!text || text.toLowerCase() === 'unassigned') continue;
-    const key = text.toLocaleLowerCase();
-    if (!seen.has(key)) seen.set(key, text);
+    const key = normalizePersonKey(text);
+    if (!key) continue;
+    const current = seen.get(key);
+    // Prefer the longer/cleaner display label when variants collide.
+    if (!current || text.length > current.length || (!current.includes(' ') && text.includes(' '))) {
+      seen.set(key, text);
+    }
   }
   return Array.from(seen.values()).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 }
@@ -710,6 +726,11 @@ function preferPre10Meeting(a: ViewMeeting, b: ViewMeeting): ViewMeeting {
   if (aCrm !== bCrm) return aCrm > bCrm ? a : b;
   const rankDiff = PRE10_STATUS_RANK[a.status] - PRE10_STATUS_RANK[b.status];
   if (rankDiff !== 0) return rankDiff > 0 ? a : b;
+  // Prefer the visit that was actually started (real Successful) over a leftover date row.
+  const aStarted = a.raw.startedAt ? 1 : 0;
+  const bStarted = b.raw.startedAt ? 1 : 0;
+  if (aStarted !== bStarted) return aStarted > bStarted ? a : b;
+  if (a.day !== b.day) return a.day >= b.day ? a : b;
   const aTimed = a.minutes != null ? 1 : 0;
   const bTimed = b.minutes != null ? 1 : 0;
   if (aTimed !== bTimed) return aTimed > bTimed ? a : b;
@@ -720,25 +741,32 @@ function preferPre10Meeting(a: ViewMeeting, b: ViewMeeting): ViewMeeting {
 }
 
 /**
- * Same lead can get more than one Pre 10% row for the same day (CRM sync / reschedule leftovers).
- * Keep one row per lead+day for the board and totals. Drop orphan "design meeting" junk entirely.
+ * Same lead can get more than one Pre 10% row (CRM sync / reschedule leftovers).
+ * Non-DRR: keep one row per lead (not per day) so two "Meeting Successful" dates cannot show.
+ * DRR: keep one row per lead+day. Drop orphan "design meeting" junk entirely.
  */
 function dedupePre10Meetings(rows: ViewMeeting[]): ViewMeeting[] {
   const withoutOrphans = rows.filter((meeting) => !isOrphanDesignMeetingLabel(meeting));
-  const bestByLeadDay = new Map<string, ViewMeeting>();
+  const bestByGroup = new Map<string, ViewMeeting>();
   const dropKeys = new Set<string>();
 
   for (const meeting of withoutOrphans) {
     if (!isPre10Meeting(meeting) || meeting.leadId <= 0) continue;
-    const groupKey = `${meeting.leadId}|${meeting.day}`;
-    const current = bestByLeadDay.get(groupKey);
+    // Cancelled junk with a false DRR flag must not keep a second board row.
+    const isLiveDrr =
+      isDrrCrmMeeting(meeting) &&
+      String(meeting.raw.meetingStatus || '').toLowerCase() !== 'cancelled';
+    const groupKey = isLiveDrr
+      ? `drr|${meeting.leadId}|${meeting.day}`
+      : `pre10|${meeting.leadId}`;
+    const current = bestByGroup.get(groupKey);
     if (!current) {
-      bestByLeadDay.set(groupKey, meeting);
+      bestByGroup.set(groupKey, meeting);
       continue;
     }
     const preferred = preferPre10Meeting(current, meeting);
     const dropped = preferred.key === current.key ? meeting : current;
-    bestByLeadDay.set(groupKey, preferred);
+    bestByGroup.set(groupKey, preferred);
     dropKeys.add(dropped.key);
   }
 
@@ -747,7 +775,10 @@ function dedupePre10Meetings(rows: ViewMeeting[]): ViewMeeting[] {
 }
 
 function sameName(a: string, b: string): boolean {
-  return a.trim().toLocaleLowerCase() === b.trim().toLocaleLowerCase();
+  // Friday-accurate: exact person match after normalizing CRM spelling noise (_ vs space).
+  const left = normalizePersonKey(a);
+  const right = normalizePersonKey(b);
+  return Boolean(left && right && left === right);
 }
 
 function branchOf(raw: string | null | undefined): { key: string; label: string } {
@@ -758,7 +789,7 @@ function branchOf(raw: string | null | undefined): { key: string; label: string 
   }
   const generic = !text || text.toLowerCase() === 'experience center' || text.toLowerCase() === 'experience centre';
   if (generic) return { key: '', label: '' };
-  return { key: text.toLocaleLowerCase(), label: text };
+  return { key: text.toLocaleUpperCase(), label: text };
 }
 
 function compareMeetings(a: ViewMeeting, b: ViewMeeting, dir: 1 | -1): number {
@@ -1059,6 +1090,8 @@ export default function MeetingManagementView() {
   const filterRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const followLiveMonth = useRef(true);
+  const loadSeqRef = useRef(0);
+  const loadAbortRef = useRef<AbortController | null>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const [today, setToday] = useState(kolkataTodayIso);
   const todayMonth = today.slice(0, 7);
@@ -1084,16 +1117,29 @@ export default function MeetingManagementView() {
   const [designerFeedbackError, setDesignerFeedbackError] = useState<string | null>(null);
   const [designerFeedbackOk, setDesignerFeedbackOk] = useState<string | null>(null);
 
-  const loadMeetings = useCallback(async () => {
+  const loadMeetings = useCallback(async (opts?: { bustCache?: boolean }) => {
     if (!sessionId) return;
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
+    const seq = ++loadSeqRef.current;
     setLoading(true);
     setError(null);
 
+    const range = dateBounds(datePreset, customFrom, customTo, kolkataTodayIso(), viewMonth);
+    const bustCache = opts?.bustCache === true;
+
     const fetchBoard = async (timeoutMs: number) => {
-      const controller = new AbortController();
       const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
       try {
-        const res = await fetch(`${apiBase}/api/meetings/scheduled`, {
+        const params = new URLSearchParams();
+        if (range) {
+          params.set('from', range.from);
+          params.set('to', range.to);
+        }
+        if (bustCache) params.set('refresh', '1');
+        const qs = params.toString();
+        const res = await fetch(`${apiBase}/api/meetings/scheduled${qs ? `?${qs}` : ''}`, {
           headers: buildAuthHeaders(sessionId),
           credentials: 'include',
           signal: controller.signal,
@@ -1111,17 +1157,19 @@ export default function MeetingManagementView() {
     try {
       let data: Record<string, unknown>;
       try {
-        // Board API is budgeted server-side to finish well under this.
-        data = await fetchBoard(15000);
+        // Board API is hard-budgeted server-side. Keep client abort above that with headroom.
+        data = await fetchBoard(25000);
       } catch (firstErr) {
+        if (seq !== loadSeqRef.current) return;
         const aborted = firstErr instanceof DOMException && firstErr.name === 'AbortError';
         const networkFail =
           firstErr instanceof TypeError ||
           (firstErr instanceof Error && /failed to fetch|networkerror|load failed/i.test(firstErr.message));
         if (!aborted && !networkFail) throw firstErr;
-        // One automatic retry — hosted can be cold on the first hit after deploy.
-        data = await fetchBoard(20000);
+        // One automatic retry — hosted/DB can be cold on the first hit after deploy.
+        data = await fetchBoard(25000);
       }
+      if (seq !== loadSeqRef.current) return;
       setMeetings(Array.isArray(data?.meetings) ? (data.meetings as ScheduledMeeting[]) : []);
       setPersonalWarning(
         typeof data?.personalWarning === 'string' && String(data.personalWarning).trim()
@@ -1129,10 +1177,13 @@ export default function MeetingManagementView() {
           : null,
       );
     } catch (err) {
+      if (seq !== loadSeqRef.current) return;
       const aborted = err instanceof DOMException && err.name === 'AbortError';
       const networkFail =
         err instanceof TypeError ||
         (err instanceof Error && /failed to fetch|networkerror|load failed/i.test(err.message));
+      // Ignore aborts from a newer loadMeetings call (date/filter change).
+      if (aborted && seq !== loadSeqRef.current) return;
       setPersonalWarning(null);
       setError(
         aborted
@@ -1145,9 +1196,9 @@ export default function MeetingManagementView() {
       );
       if (!aborted && !networkFail) setMeetings([]);
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
-  }, [apiBase, sessionId]);
+  }, [apiBase, sessionId, datePreset, customFrom, customTo, viewMonth]);
 
   useEffect(() => {
     void loadMeetings();
@@ -1290,7 +1341,7 @@ export default function MeetingManagementView() {
       if (!res.ok) throw new Error(data?.message || 'Could not update the meeting');
       setActionMeeting(null);
       setActionKind(null);
-      await loadMeetings();
+      await loadMeetings({ bustCache: true });
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Could not update the meeting');
     } finally {
@@ -1456,7 +1507,10 @@ export default function MeetingManagementView() {
     if (typeFilter !== 'all' && meeting.typeKey !== typeFilter) return false;
     if (designerFilter && !sameName(meeting.designer, designerFilter)) return false;
     if (salesFilter && !sameName(meeting.sales, salesFilter)) return false;
-    if (branchFilter && meeting.branchKey !== branchFilter) return false;
+    if (branchFilter) {
+      const meetingBranch = meeting.branchKey || resolveBranchCode(meeting.branchLabel) || '';
+      if (meetingBranch !== branchFilter) return false;
+    }
     if (range && (meeting.day < range.from || meeting.day > range.to)) return false;
     if (!q) return true;
     const haystack = [meeting.customer, meeting.phone || '', meeting.designer, meeting.sales, meeting.branchLabel, meeting.branchKey, String(meeting.leadId)]
@@ -1503,7 +1557,7 @@ export default function MeetingManagementView() {
     return statusFilters.some((want) => {
       if (want === 'scheduled_drr') return isScheduledDrrMeeting(meeting);
       if (want === 'completed_drr') return isSuccessfulDrrMeeting(meeting);
-      if ((want === 'scheduled' || want === 'rescheduled') && isDrrCrmMeeting(meeting)) return false;
+      // Friday: Scheduled / Rescheduled include DRR rows (DRR-only filters still available).
       return meeting.status === want;
     });
   }, [statusFilters]);
@@ -1863,7 +1917,7 @@ export default function MeetingManagementView() {
       }).catch(() => undefined);
       setMeetingWizLead(lead);
       setMeetingWizOpen(true);
-      await loadMeetings();
+      await loadMeetings({ bustCache: true });
       setSelected((prev) =>
         prev && prev.key === selected.key
           ? {
@@ -1902,7 +1956,7 @@ export default function MeetingManagementView() {
       const data = await res.json().catch(() => ({}));
       const endedLocally = data?.meeting != null || data?.crmMilestoneUpdated === true || res.ok;
       if (endedLocally) {
-        await loadMeetings();
+        await loadMeetings({ bustCache: true });
         setSelected((prev) =>
           prev && prev.key === selected.key
             ? {
@@ -1985,7 +2039,7 @@ export default function MeetingManagementView() {
       const data = await res.json().catch(() => ({}));
       const savedLocally = data?.meeting != null || data?.ok === true || res.ok;
       if (savedLocally) {
-        await loadMeetings();
+        await loadMeetings({ bustCache: true });
         setSelected((prev) =>
           prev && prev.key === selected.key
             ? {
@@ -2311,12 +2365,23 @@ export default function MeetingManagementView() {
               className={styles.iconBtn}
               data-loading={loading}
               aria-label="Refresh meetings"
-              onClick={() => void loadMeetings()}
+              onClick={() => void loadMeetings({ bustCache: true })}
             >
               <RefreshIcon />
                               </button>
-            <span className={styles.count} title={loading ? 'Loading meetings' : `${filtered.length.toLocaleString('en-IN')} of ${mapped.length.toLocaleString('en-IN')} meetings`}>
-              {loading ? '…' : filtered.length.toLocaleString('en-IN')}
+            <span
+              className={styles.count}
+              title={
+                loading
+                  ? 'Loading meetings'
+                  : `${filtered.length.toLocaleString('en-IN')} shown of ${mapped.length.toLocaleString('en-IN')} loaded`
+              }
+            >
+              {loading
+                ? '…'
+                : filtered.length === mapped.length
+                  ? filtered.length.toLocaleString('en-IN')
+                  : `${filtered.length.toLocaleString('en-IN')} / ${mapped.length.toLocaleString('en-IN')}`}
             </span>
             {filtersActive ? (
               <button type="button" className={styles.textBtn} onClick={clearAll}>Clear all</button>
@@ -2915,7 +2980,7 @@ export default function MeetingManagementView() {
           setMeetingWizOpen(false);
           if (meetingWizLead) setPanelLead(meetingWizLead);
           setMeetingWizLead(null);
-          void loadMeetings();
+          void loadMeetings({ bustCache: true });
           // Refresh history so “wizard completed” edge case matches the dashboard.
           if (selected?.leadId && sessionId && selected.typeKey === 'pre_10' && !selected.personal) {
             const leadId = selected.leadId;

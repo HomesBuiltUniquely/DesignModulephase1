@@ -47,7 +47,7 @@ export default function CustomSelect({
   const [open, setOpen] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState<number>(-1);
   const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({
-    position: "absolute",
+    position: "fixed",
     opacity: 0,
     pointerEvents: "none",
   });
@@ -71,18 +71,30 @@ export default function CustomSelect({
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, []);
 
-  // Compute and update dropdown position
+  // Viewport-fixed portal position — absolute+scrollY placed the menu off-screen inside Meeting Management.
   useEffect(() => {
     if (!open) return;
     const updatePosition = () => {
       if (containerRef.current) {
         const rect = containerRef.current.getBoundingClientRect();
+        const width = Math.max(rect.width, 160);
+        const gap = 4;
+        const spaceBelow = window.innerHeight - rect.bottom - gap;
+        const spaceAbove = rect.top - gap;
+        const preferUp = spaceBelow < 240 && spaceAbove > spaceBelow;
+        const top = preferUp
+          ? Math.max(8, rect.top - Math.min(240, spaceAbove) - gap)
+          : rect.bottom + gap;
+        let left = rect.left;
+        if (left + width > window.innerWidth - 8) left = Math.max(8, window.innerWidth - width - 8);
+        if (left < 8) left = 8;
         setDropdownStyle({
-          position: "absolute",
-          top: rect.bottom + window.scrollY + 4,
-          left: rect.left + window.scrollX,
-          width: rect.width,
+          position: "fixed",
+          top,
+          left,
+          width,
           minWidth: 160,
+          maxHeight: preferUp ? Math.min(240, spaceAbove) : Math.min(240, Math.max(120, spaceBelow)),
           opacity: 1,
           pointerEvents: "auto",
         });
