@@ -76,7 +76,11 @@ import {
   isCrmDrrLabelText,
   completePre10CrmMeetingAfterQuoteShare,
   applyCrmMeetingFeedback,
+  stampCrmAppointmentId,
+  recordLeadMeetingHistory,
+  registerCrmAutoNeverHappenedHandler,
   kolkataParts,
+  type MeetingRow,
 } from "./leadMeetings";
 import {
   extractFloorPlansFromLeadPayload,
@@ -6033,6 +6037,124 @@ function resolveCrmLeadPutPaths(leadType: string | null | undefined, crmLeadId: 
 }
 
 /** Same auth style as quote-link / Hub proofs — API key + optional static bearer. No ERP username/password. */
+/**
+ * CRM appointment outcome API (exact Hub contract).
+ * PUT /v1/Appointment/{crmAppointmentId}/meeting-outcome
+ * Body: { meetingProgress: "MEETING_SUCCESSFUL" | "MEETING_ABANDONED" }
+ * CRM writes activity history as "Design Module Auto". Idempotent same outcome; flip → 409.
+ */
+async function pushCrmAppointmentMeetingOutcome(
+  crmAppointmentId: number,
+  meetingProgress: "MEETING_SUCCESSFUL" | "MEETING_ABANDONED",
+): Promise<{ ok: boolean; base?: string; error?: string; status?: number }> {
+  if (!Number.isFinite(crmAppointmentId) || crmAppointmentId < 1) {
+    return { ok: false, error: "Invalid crmAppointmentId" };
+  }
+  const headers = crmSyncAuthHeaders();
+  headers["X-Activity-Performed-By"] = "Design Module Auto";
+  headers["Content-Type"] = "application/json";
+  const outcomeBody = JSON.stringify({ meetingProgress });
+  const bases = Array.from(
+    new Set(
+      [
+        "https://hows.hubinterior.com",
+        String(ERP_BASE_URL || "").replace(/\/$/, ""),
+        String(resolvedErpBaseUrl || "").replace(/\/$/, ""),
+        "https://api.hubinterior.com",
+      ].filter(Boolean),
+    ),
+  );
+  const paths = [
+    `/v1/Appointment/${crmAppointmentId}/meeting-outcome`,
+    `/api/v1/Appointment/${crmAppointmentId}/meeting-outcome`,
+  ];
+  let lastError: string | undefined;
+  let lastStatus: number | undefined;
+
+  for (const base of bases) {
+    for (const pathName of paths) {
+      try {
+        const crmRes = await fetch(`${base}${pathName}`, {
+          method: "PUT",
+          headers,
+          body: outcomeBody,
+        });
+        const text = await crmRes.text().catch(() => "");
+        if (crmRes.ok) {
+          return { ok: true, base: `${base}${pathName}` };
+        }
+        lastStatus = crmRes.status;
+        lastError = `${crmRes.status} ${text.slice(0, 180)}`;
+        // Same outcome again is OK on CRM; flip Successful ↔ Never Happened is 409.
+        if (crmRes.status === 409) {
+          return { ok: false, error: lastError, status: 409, base: `${base}${pathName}` };
+        }
+        if (crmRes.status !== 404) {
+          console.warn("[crm-meeting-outcome] PUT failed", {
+            url: `${base}${pathName}`,
+            status: crmRes.status,
+            body: text.slice(0, 180),
+          });
+        }
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+      }
+    }
+  }
+
+  try {
+    await callErpApi(`/v1/Appointment/${crmAppointmentId}/meeting-outcome`, {
+      method: "PUT",
+      body: outcomeBody,
+      headers: { "X-Activity-Performed-By": "Design Module Auto" },
+    });
+    return { ok: true, base: "callErpApi" };
+  } catch (err) {
+    const erpErr = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      error: lastError ? `${lastError} | ERP: ${erpErr}` : erpErr,
+      status: lastStatus,
+    };
+  }
+}
+
+async function resolveCrmAppointmentIdForMeeting(meeting: {
+  id: number;
+  leadId: number;
+  crmAppointmentId?: number | null;
+}): Promise<number | null> {
+  let crmAppointmentId =
+    meeting.crmAppointmentId != null && Number(meeting.crmAppointmentId) > 0
+      ? Number(meeting.crmAppointmentId)
+      : null;
+  if (crmAppointmentId == null && meeting.leadId) {
+    try {
+      const [leadRows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [
+        meeting.leadId,
+      ]);
+      const payloadRaw = (leadRows as { payload?: string | null }[])[0]?.payload;
+      const payload = payloadRaw ? (JSON.parse(payloadRaw) as Record<string, unknown>) : {};
+      const fromPayload = Number(
+        (payload as { crmAppointmentId?: unknown; appointmentId?: unknown }).crmAppointmentId ??
+          (payload as { appointmentId?: unknown }).appointmentId ??
+          (payload as { crmSchedule?: { appointmentId?: unknown } }).crmSchedule?.appointmentId,
+      );
+      if (Number.isFinite(fromPayload) && fromPayload > 0) crmAppointmentId = fromPayload;
+    } catch {
+      // keep null
+    }
+  }
+  if (crmAppointmentId != null) {
+    try {
+      await stampCrmAppointmentId(pool, meeting.id, crmAppointmentId);
+    } catch {
+      /* ignore */
+    }
+  }
+  return crmAppointmentId;
+}
+
 function crmSyncAuthHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -23972,13 +24094,16 @@ app.post("/api/meetings/:id/end", async (req: Request, res: Response) => {
  * successful → local completed + Hub MEETING_SUCCESSFUL (CRM Progress / Meeting Successful (DRR) filter)
  * never_happened → local meeting_never_happened + Hub MEETING_ABANDONED (CRM Progress Meeting Never Happened)
  * Does not change Pre 10% End Meeting / milestone flow.
+ * Local Design save always wins; CRM sync failures are reported but do not roll back / crash the UI.
  */
 app.post("/api/meetings/:id/drr-outcome", async (req: Request, res: Response) => {
   try {
     const actingUser = await getUserFromSession(req);
     if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
     const meetingId = Number(req.params.id);
-    if (!Number.isFinite(meetingId)) return res.status(400).json({ message: "Invalid meeting id" });
+    if (!Number.isFinite(meetingId) || meetingId < 1) {
+      return res.status(400).json({ message: "Invalid meeting id" });
+    }
 
     const outcomeRaw = String(
       (req.body as { outcome?: unknown; meetingProgress?: unknown } | null)?.outcome ??
@@ -24003,7 +24128,42 @@ app.post("/api/meetings/:id/drr-outcome", async (req: Request, res: Response) =>
       });
     }
 
-    const isDrr = await isCrmDrrMeeting(pool, meetingId);
+    let isDrr = false;
+    try {
+      isDrr = await isCrmDrrMeeting(pool, meetingId);
+    } catch (drrCheckErr) {
+      console.error("[meetings/drr-outcome] isCrmDrrMeeting failed", {
+        meetingId,
+        error: drrCheckErr instanceof Error ? drrCheckErr.message : String(drrCheckErr),
+      });
+      // Fallback when full JSON SQL check fails (hosted edge): column + payload markers.
+      try {
+        const row = await loadMeeting(pool, meetingId);
+        isDrr = row?.isDrrRevisit === true;
+        if (!isDrr && row?.leadId) {
+          const [leadRows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [
+            row.leadId,
+          ]);
+          const payloadRaw = (leadRows as { payload?: string | null }[])[0]?.payload;
+          const payload = payloadRaw ? (JSON.parse(payloadRaw) as Record<string, unknown>) : {};
+          isDrr =
+            payload.crmDrrRevisit === true ||
+            payload.crmDrrRevisit === 1 ||
+            payload.crmDrrRevisit === "1" ||
+            isCrmDrrLabelText(String(payload.meetingLabel || "")) ||
+            isCrmDrrLabelText(String(payload.milestoneSubStage || "")) ||
+            isCrmDrrLabelText(String(payload.subStage || "")) ||
+            isCrmDrrLabelText(String(row.meetingType || ""));
+        }
+        if (!isDrr) {
+          return res.status(400).json({
+            message: "DRR outcome is only for Design Refinement Round meetings",
+          });
+        }
+      } catch {
+        return res.status(500).json({ message: "Failed to verify DRR meeting" });
+      }
+    }
     if (!isDrr) {
       return res.status(400).json({
         message: "DRR outcome is only for Design Refinement Round meetings",
@@ -24012,45 +24172,41 @@ app.post("/api/meetings/:id/drr-outcome", async (req: Request, res: Response) =>
 
     const actor = { id: actingUser.id, name: actingUser.name };
     const meeting = successful
-      ? await endCrmMeeting(pool, meetingId, actor)
-      : await abandonCrmMeeting(pool, meetingId, actor);
+      ? await endCrmMeeting(pool, meetingId, actor, { isDrr: true })
+      : await abandonCrmMeeting(pool, meetingId, actor, { isDrr: true });
 
-    let crmAppointmentId =
-      meeting?.crmAppointmentId != null && Number(meeting.crmAppointmentId) > 0
-        ? Number(meeting.crmAppointmentId)
-        : null;
-    if (crmAppointmentId == null && meeting?.leadId) {
-      try {
-        const [leadRows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [
-          meeting.leadId,
-        ]);
-        const payloadRaw = (leadRows as { payload?: string | null }[])[0]?.payload;
-        const payload = payloadRaw ? (JSON.parse(payloadRaw) as Record<string, unknown>) : {};
-        const fromPayload = Number(
-          (payload as { crmAppointmentId?: unknown; appointmentId?: unknown }).crmAppointmentId ??
-            (payload as { appointmentId?: unknown }).appointmentId ??
-            (payload as { crmSchedule?: { appointmentId?: unknown } }).crmSchedule?.appointmentId,
-        );
-        if (Number.isFinite(fromPayload) && fromPayload > 0) crmAppointmentId = fromPayload;
-      } catch {
-        // keep null
-      }
+    if (!meeting) {
+      return res.status(404).json({ message: "Meeting not found after outcome save" });
     }
+
+    const crmAppointmentId = await resolveCrmAppointmentIdForMeeting(meeting);
+    const meetingProgress = successful ? "MEETING_SUCCESSFUL" : "MEETING_ABANDONED";
+    const progressLabel = successful ? "Meeting Successful (DRR)" : "Meeting never happened (DRR)";
 
     let crmSynced = false;
     let crmSyncError: string | null = null;
+    let crmSyncBase: string | null = null;
+
     if (crmAppointmentId != null) {
-      try {
-        await callErpApi(`/v1/Appointment/${crmAppointmentId}/meeting-outcome`, {
-          method: "PUT",
-          body: JSON.stringify({
-            meetingProgress: successful ? "MEETING_SUCCESSFUL" : "MEETING_ABANDONED",
-          }),
-          headers: { "X-Activity-Performed-By": "Design Module Auto" },
+      const sync = await pushCrmAppointmentMeetingOutcome(crmAppointmentId, meetingProgress);
+      crmSynced = sync.ok;
+      crmSyncBase = sync.base || null;
+      if (sync.ok) {
+        console.info(
+          `[meetings/drr-outcome] CRM PUT OK ${crmSyncBase} meeting=${meetingId} outcome=${meetingProgress}`,
+        );
+      } else if (sync.status === 409) {
+        // Flip blocked on CRM — Design already saved; surface clearly.
+        crmSyncError =
+          sync.error ||
+          "CRM rejected outcome flip (Successful ↔ Never Happened is blocked). Same outcome retries are OK.";
+        console.warn("[meetings/drr-outcome] CRM outcome flip blocked (409)", {
+          meetingId,
+          crmAppointmentId,
+          meetingProgress,
         });
-        crmSynced = true;
-      } catch (err) {
-        crmSyncError = err instanceof Error ? err.message : String(err);
+      } else {
+        crmSyncError = sync.error || "CRM meeting-outcome sync failed";
         console.error("[meetings/drr-outcome] Hub sync failed", {
           meetingId,
           crmAppointmentId,
@@ -24061,9 +24217,39 @@ app.post("/api/meetings/:id/drr-outcome", async (req: Request, res: Response) =>
       crmSyncError = "No crmAppointmentId on this meeting — outcome saved in Design only";
     }
 
-    const progressLabel = successful ? "Meeting Successful" : "Meeting never happened";
-    return res.status(crmSynced || crmAppointmentId == null ? 200 : 502).json({
-      meeting,
+    // Always write Design activity history for CRM sync result (success or fail).
+    try {
+      await recordLeadMeetingHistory(
+        pool,
+        meeting.leadId,
+        actor,
+        crmSynced ? "CRM progress synced (DRR)" : "CRM progress sync pending (DRR)",
+        crmSynced
+          ? `CRM appointment ${crmAppointmentId} updated to ${progressLabel}.`
+          : `Saved in Design as ${progressLabel}. CRM not updated${crmSyncError ? `: ${crmSyncError}` : "."}`,
+        {
+          action: "drr_crm_sync",
+          meetingId: meeting.id,
+          crmAppointmentId,
+          crmSynced,
+          crmSyncBase,
+          crmSyncError: crmSynced ? null : crmSyncError,
+          meetingProgress,
+          outcome: successful ? "successful" : "never_happened",
+          isDrr: true,
+        },
+      );
+    } catch (histErr) {
+      console.warn("[meetings/drr-outcome] activity history write failed", histErr);
+    }
+
+    // Local save succeeded — always 200 so hosted UI does not treat CRM miss as a hard crash.
+    return res.status(200).json({
+      ok: true,
+      meeting: {
+        ...meeting,
+        crmAppointmentId: crmAppointmentId ?? meeting.crmAppointmentId ?? null,
+      },
       outcome: successful ? "successful" : "never_happened",
       progressLabel,
       crmSynced,
@@ -25887,6 +26073,71 @@ process.on("uncaughtException", (err) => {
 });
 process.on("unhandledRejection", (reason, promise) => {
   console.error("Unhandled rejection at", promise, "reason:", reason);
+});
+
+/**
+ * After slot end + 4h with no outcome, Design marks Meeting never happened locally
+ * and must also call CRM meeting-outcome (CRM does not auto-abandon).
+ */
+registerCrmAutoNeverHappenedHandler(async (meeting: MeetingRow) => {
+  try {
+    const crmAppointmentId = await resolveCrmAppointmentIdForMeeting(meeting);
+    if (crmAppointmentId == null) {
+      console.warn("[crm-auto-never-happened] No crmAppointmentId — Design only", {
+        meetingId: meeting.id,
+        leadId: meeting.leadId,
+      });
+      await recordLeadMeetingHistory(
+        pool,
+        meeting.leadId,
+        { name: "System" },
+        "CRM progress sync pending",
+        "Auto Meeting never happened saved in Design. No crmAppointmentId — CRM not updated.",
+        {
+          action: "crm_auto_never_happened",
+          meetingId: meeting.id,
+          crmSynced: false,
+          meetingProgress: "MEETING_ABANDONED",
+        },
+      );
+      return;
+    }
+    const sync = await pushCrmAppointmentMeetingOutcome(crmAppointmentId, "MEETING_ABANDONED");
+    await recordLeadMeetingHistory(
+      pool,
+      meeting.leadId,
+      { name: "System" },
+      sync.ok ? "CRM progress synced" : "CRM progress sync pending",
+      sync.ok
+        ? `Auto Meeting never happened synced to CRM appointment ${crmAppointmentId}.`
+        : `Auto Meeting never happened saved in Design. CRM not updated${sync.error ? `: ${sync.error}` : "."}`,
+      {
+        action: "crm_auto_never_happened",
+        meetingId: meeting.id,
+        crmAppointmentId,
+        crmSynced: sync.ok,
+        crmSyncError: sync.ok ? null : sync.error || null,
+        meetingProgress: "MEETING_ABANDONED",
+        isDrr: meeting.isDrrRevisit === true,
+      },
+    );
+    if (sync.ok) {
+      console.info("[crm-auto-never-happened] CRM PUT OK", {
+        meetingId: meeting.id,
+        crmAppointmentId,
+        base: sync.base,
+      });
+    } else {
+      console.warn("[crm-auto-never-happened] CRM sync failed", {
+        meetingId: meeting.id,
+        crmAppointmentId,
+        error: sync.error,
+        status: sync.status,
+      });
+    }
+  } catch (err) {
+    console.error("[crm-auto-never-happened] handler error", err);
+  }
 });
 
 const server = app.listen(PORT, () => {

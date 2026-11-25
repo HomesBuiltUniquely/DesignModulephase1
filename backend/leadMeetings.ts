@@ -135,6 +135,8 @@ export type MeetingRow = {
   feedbackDesignerAt?: Date | string | null;
   feedbackDesignerBy?: string | null;
   crmAppointmentId?: number | null;
+  /** True when this CRM row is a Design Refinement Round revisit. */
+  isDrrRevisit?: boolean;
   startedAt: Date | string | null;
   endedAt: Date | string | null;
 };
@@ -599,6 +601,19 @@ async function writeHistory(
   ]);
 }
 
+/** Public activity-history write for meeting flows (DRR CRM sync notes, etc.). */
+export async function recordLeadMeetingHistory(
+  pool: Pool,
+  leadId: number,
+  actor: MeetingActor | null | undefined,
+  taskName: string,
+  description: string,
+  meta: Record<string, unknown> = {},
+) {
+  if (!Number.isFinite(leadId) || leadId < 1) return;
+  await writeHistory(pool, leadId, actor, taskName, description, meta);
+}
+
 function mapRow(row: Record<string, unknown>): MeetingRow {
   return {
     id: Number(row.id),
@@ -622,6 +637,9 @@ function mapRow(row: Record<string, unknown>): MeetingRow {
     feedbackDesignerAt: (row.feedbackDesignerAt as Date | string | null) ?? null,
     feedbackDesignerBy: row.feedbackDesignerBy == null ? null : String(row.feedbackDesignerBy),
     crmAppointmentId: row.crmAppointmentId == null ? null : Number(row.crmAppointmentId),
+    isDrrRevisit:
+      row.isDrrRevisit === true ||
+      Number(row.isDrrRevisit) === 1,
     startedAt: (row.startedAt as Date | string | null) ?? null,
     endedAt: (row.endedAt as Date | string | null) ?? null,
   };
@@ -645,6 +663,7 @@ const MEETING_SELECT = `
          m.feedback_designer_at AS feedbackDesignerAt,
          m.feedback_designer_by AS feedbackDesignerBy,
          m.crm_appointment_id AS crmAppointmentId,
+         COALESCE(m.is_drr_revisit, 0) AS isDrrRevisit,
          m.started_at AS startedAt,
          m.ended_at AS endedAt
     FROM lead_meetings m
@@ -692,7 +711,22 @@ async function refreshStoredProgress(pool: Pool, row: MeetingRow, now: Date, wri
       meetingTime: row.meetingTime,
     });
   }
-  return { ...row, progress: next };
+  const updatedRow: MeetingRow = { ...row, progress: next };
+  // CRM does not auto-abandon — Design must call outcome API after local end+4h never-happened.
+  if (
+    next === "meeting_never_happened" &&
+    row.source === "crm" &&
+    row.progress !== "meeting_never_happened" &&
+    crmAutoNeverHappenedHandler
+  ) {
+    void Promise.resolve(crmAutoNeverHappenedHandler(updatedRow)).catch((err) => {
+      console.error("[lead-meetings] CRM auto never-happened sync failed", {
+        meetingId: row.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }
+  return updatedRow;
 }
 
 async function activeDesignRow(pool: Pool, leadId: number, meetingType: string): Promise<MeetingRow | null> {
@@ -1469,30 +1503,68 @@ export async function startCrmMeeting(
   return loadMeeting(pool, row.id);
 }
 
-export async function endCrmMeeting(pool: Pool, meetingId: number, actor?: MeetingActor | null) {
+/** Fired when Design auto-marks a CRM visit Meeting never happened (slot end + 4h). */
+export type CrmAutoNeverHappenedHandler = (meeting: MeetingRow) => void | Promise<void>;
+
+let crmAutoNeverHappenedHandler: CrmAutoNeverHappenedHandler | null = null;
+
+/** Register CRM sync for auto never-happened (server wires outcome API). */
+export function registerCrmAutoNeverHappenedHandler(handler: CrmAutoNeverHappenedHandler | null) {
+  crmAutoNeverHappenedHandler = handler;
+}
+
+export async function endCrmMeeting(
+  pool: Pool,
+  meetingId: number,
+  actor?: MeetingActor | null,
+  opts?: { isDrr?: boolean },
+) {
   await ensureLeadMeetingsTable(pool);
   const row = await loadMeeting(pool, meetingId);
   if (!row) throw new MeetingActionError(404, "Meeting not found");
   if (row.source !== "crm") throw new MeetingActionError(400, "End is for CRM meetings");
   if (row.meetingStatus === "cancelled") throw new MeetingActionError(409, "This meeting is cancelled");
+  // CRM blocks Successful ↔ Never Happened flips (409). Keep Design aligned.
+  if (row.progress === "meeting_never_happened") {
+    throw new MeetingActionError(
+      409,
+      "Cannot mark Meeting successful — already Meeting never happened",
+    );
+  }
   if (row.progress === "completed") return row;
   const now = new Date();
   await pool.query(
     `UPDATE lead_meetings SET progress = 'completed', ended_at = ?, updated_at = ? WHERE id = ?`,
     [now, now, row.id],
   );
-  await writeHistory(pool, row.leadId, actor, "Meeting Successful", "CRM meeting ended.", {
-    action: "completed",
-    meetingId: row.id,
-    source: "crm",
-    meetingDate: row.meetingDate,
-    meetingTime: row.meetingTime,
-  });
+  const isDrr = opts?.isDrr === true || row.isDrrRevisit === true;
+  await writeHistory(
+    pool,
+    row.leadId,
+    actor,
+    isDrr ? "Meeting Successful (DRR)" : "Meeting Successful",
+    isDrr
+      ? "Design Refinement Round visit marked Meeting Successful."
+      : "CRM meeting ended.",
+    {
+      action: "completed",
+      meetingId: row.id,
+      source: "crm",
+      isDrr,
+      meetingDate: row.meetingDate,
+      meetingTime: row.meetingTime,
+    },
+  );
   return loadMeeting(pool, row.id);
 }
 
 /** Mark CRM visit as Meeting never happened (Design DRR outcome). */
-export async function abandonCrmMeeting(pool: Pool, meetingId: number, actor?: MeetingActor | null) {
+export async function abandonCrmMeeting(
+  pool: Pool,
+  meetingId: number,
+  actor?: MeetingActor | null,
+  opts?: { isDrr?: boolean },
+) {
   await ensureLeadMeetingsTable(pool);
   const row = await loadMeeting(pool, meetingId);
   if (!row) throw new MeetingActionError(404, "Meeting not found");
@@ -1507,14 +1579,42 @@ export async function abandonCrmMeeting(pool: Pool, meetingId: number, actor?: M
     `UPDATE lead_meetings SET progress = 'meeting_never_happened', ended_at = ?, updated_at = ? WHERE id = ?`,
     [now, now, row.id],
   );
-  await writeHistory(pool, row.leadId, actor, "Meeting never happened", "CRM meeting marked never happened.", {
-    action: "meeting_never_happened",
-    meetingId: row.id,
-    source: "crm",
-    meetingDate: row.meetingDate,
-    meetingTime: row.meetingTime,
-  });
+  const isDrr = opts?.isDrr === true || row.isDrrRevisit === true;
+  await writeHistory(
+    pool,
+    row.leadId,
+    actor,
+    isDrr ? "Meeting never happened (DRR)" : "Meeting never happened",
+    isDrr
+      ? "Design Refinement Round visit marked Meeting never happened."
+      : "CRM meeting marked never happened.",
+    {
+      action: "meeting_never_happened",
+      meetingId: row.id,
+      source: "crm",
+      isDrr,
+      meetingDate: row.meetingDate,
+      meetingTime: row.meetingTime,
+    },
+  );
   return loadMeeting(pool, row.id);
+}
+
+/** Persist CRM appointment id on a meeting row when resolved later (feedback / DRR outcome). */
+export async function stampCrmAppointmentId(
+  pool: Pool,
+  meetingId: number,
+  crmAppointmentId: number,
+): Promise<void> {
+  if (!Number.isFinite(meetingId) || meetingId < 1) return;
+  if (!Number.isFinite(crmAppointmentId) || crmAppointmentId < 1) return;
+  await ensureLeadMeetingsTable(pool);
+  await pool.query(
+    `UPDATE lead_meetings
+        SET crm_appointment_id = COALESCE(crm_appointment_id, ?), updated_at = ?
+      WHERE id = ?`,
+    [crmAppointmentId, new Date(), meetingId],
+  );
 }
 
 /** True when this CRM row is a Design Refinement Round (DRR) revisit. */
