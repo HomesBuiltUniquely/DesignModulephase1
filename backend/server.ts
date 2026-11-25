@@ -18787,25 +18787,78 @@ function toBranchCode(raw?: string | null): string {
   return s.slice(0, 3);
 }
 
+/** One full admin scan at a time. Overlapping scans hold every DB connection and the API stops answering. */
+const FULL_LEAD_QUEUE_CACHE_MS = 20_000;
+let fullLeadQueueCache: { at: number; list: any[] } | null = null;
+let fullLeadQueueSlot: {
+  promise: Promise<any[]>;
+  resolve: (list: any[]) => void;
+  reject: (err: unknown) => void;
+} | null = null;
+let lastQueueHoldSweepAt = 0;
+
+async function sweepDueQueueHolds(now: Date): Promise<void> {
+  const t = Date.now();
+  if (t - lastQueueHoldSweepAt < 30_000) return;
+  lastQueueHoldSweepAt = t;
+  try {
+    await endDueHolds(pool, now);
+    await pool.query(
+      "UPDATE leads SET is_on_hold = 0, resume_at = NULL, hold_note = NULL, hold_files = NULL, update_at = ? WHERE is_on_hold = 1 AND resume_at IS NOT NULL AND resume_at <= ?",
+      [now, now],
+    );
+  } catch (holdErr) {
+    console.warn("leads/queue hold resume update skipped", holdErr);
+  }
+}
+
+async function finalizeLeadQueueList(
+  enrichedList: any[],
+  req: Request,
+  user: { id?: number } | null,
+  role: string,
+): Promise<any[]> {
+  let list = enrichedList;
+  const reqQueueBranch = (req.query.branch as string | undefined)?.trim()?.toUpperCase();
+  if (reqQueueBranch && reqQueueBranch !== "ALL" && ["HBR", "SJR", "JPN"].includes(reqQueueBranch)) {
+    list = list.filter((l: any) => l.projectBranch === reqQueueBranch);
+  }
+  if (user && (role === "designer" || role === "design_manager" || role === "project_manager")) {
+    return list;
+  }
+  if (user && role === "senior_project_manager") {
+    const [d2Rows] = await pool.query("SELECT DISTINCT lead_id as leadId FROM lead_d2_assignments");
+    const d2Ids = new Set((d2Rows as { leadId: number }[]).map((r) => r.leadId));
+    return list.filter((l: any) => d2Ids.has(l.id));
+  }
+  if (user && role === "operation_manager") {
+    const [opsRows] = await pool.query(
+      `SELECT l.id
+       FROM leads l
+       WHERE EXISTS (SELECT 1 FROM lead_d1_assignments a WHERE a.lead_id = l.id)
+          OR EXISTS (SELECT 1 FROM lead_d2_assignments d WHERE d.lead_id = l.id)
+          OR EXISTS (
+            SELECT 1 FROM lead_task_completions c
+            WHERE c.lead_id = l.id AND c.milestone_index IN (0, 1, 2, 3, 4, 5, 6, 7)
+          )`,
+    );
+    const opsIds = new Set((opsRows as { id: number }[]).map((r) => r.id));
+    return list.filter((l: any) => opsIds.has(l.id));
+  }
+  return list;
+}
+
 app.get("/api/leads/queue", async (req: Request, res: Response) => {
   const now = new Date();
   const queueType = (req.query.type as string) || "d1";
   // Large JSON — ask nginx not to buffer (avoids ERR_CONTENT_LENGTH_MISMATCH on proxy_temp)
   res.setHeader("X-Accel-Buffering", "no");
+  let ownsFullLeadQueueBuild = false;
   try {
-    try {
-      await endDueHolds(pool, now);
-      await pool.query(
-        "UPDATE leads SET is_on_hold = 0, resume_at = NULL, hold_note = NULL, hold_files = NULL, update_at = ? WHERE is_on_hold = 1 AND resume_at IS NOT NULL AND resume_at <= ?",
-        [now, now],
-      );
-    } catch (holdErr) {
-      console.warn("leads/queue hold resume update skipped", holdErr);
-    }
-
     const user = await getUserFromSession(req);
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
     const role = (user?.role ?? "").toLowerCase();
-    const isMmt = role === "mmt_manager" || role === "mmt_executive";
+    await sweepDueQueueHolds(now);
 
     if (queueType === "d2") {
       const canD2Queue =
@@ -18877,6 +18930,26 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
     } else if (user?.id && role === "project_manager") {
       queueWhereSql = " WHERE l.assigned_project_manager_id = ? ";
       queueWhereParams.push(Number(user.id));
+    }
+
+    const isFullScan = queueWhereSql === "";
+    if (isFullScan) {
+      if (fullLeadQueueCache && Date.now() - fullLeadQueueCache.at < FULL_LEAD_QUEUE_CACHE_MS) {
+        return res.json(await finalizeLeadQueueList(fullLeadQueueCache.list, req, user, role));
+      }
+      if (fullLeadQueueSlot) {
+        const shared = await fullLeadQueueSlot.promise;
+        return res.json(await finalizeLeadQueueList(shared, req, user, role));
+      }
+      let resolveBuild: (list: any[]) => void = () => {};
+      let rejectBuild: (err: unknown) => void = () => {};
+      const promise = new Promise<any[]>((resolve, reject) => {
+        resolveBuild = resolve;
+        rejectBuild = reject;
+      });
+      void promise.catch(() => {});
+      fullLeadQueueSlot = { promise, resolve: resolveBuild, reject: rejectBuild };
+      ownsFullLeadQueueBuild = true;
     }
 
     const [rows] = await pool.query(
@@ -19138,44 +19211,22 @@ app.get("/api/leads/queue", async (req: Request, res: Response) => {
       };
     });
 
-    const reqQueueBranch = (req.query.branch as string | undefined)?.trim()?.toUpperCase();
-    if (reqQueueBranch && reqQueueBranch !== "ALL" && ["HBR", "SJR", "JPN"].includes(reqQueueBranch)) {
-      enrichedList = enrichedList.filter((l: any) => l.projectBranch === reqQueueBranch);
+    if (isFullScan) {
+      fullLeadQueueCache = { at: Date.now(), list: enrichedList };
+      const slot = fullLeadQueueSlot;
+      fullLeadQueueSlot = null;
+      ownsFullLeadQueueBuild = false;
+      slot?.resolve(enrichedList);
     }
 
-    // Designer / DM / PM were already scoped in SQL above.
-    if (user && (role === "designer" || role === "design_manager" || role === "project_manager")) {
-      return res.json(enrichedList);
-    }
-
-    if (user && role === "senior_project_manager") {
-      const [d2Rows] = await pool.query(
-        "SELECT DISTINCT lead_id as leadId FROM lead_d2_assignments",
-      );
-      const d2Ids = new Set((d2Rows as { leadId: number }[]).map((r) => r.leadId));
-      const filtered = enrichedList.filter((l: any) => d2Ids.has(l.id));
-      return res.json(filtered);
-    }
-
-    if (user && role === "operation_manager") {
-      const [opsRows] = await pool.query(
-        `SELECT l.id
-         FROM leads l
-         WHERE EXISTS (SELECT 1 FROM lead_d1_assignments a WHERE a.lead_id = l.id)
-            OR EXISTS (SELECT 1 FROM lead_d2_assignments d WHERE d.lead_id = l.id)
-            OR EXISTS (
-              SELECT 1 FROM lead_task_completions c
-              WHERE c.lead_id = l.id AND c.milestone_index IN (0, 1, 2, 3, 4, 5, 6, 7)
-            )`,
-      );
-      const opsIds = new Set((opsRows as { id: number }[]).map((r) => r.id));
-      const filtered = enrichedList.filter((l: any) => opsIds.has(l.id));
-      return res.json(filtered);
-    }
-
-    // Admins, TDMs, and others keep full list
-    res.json(enrichedList);
+    return res.json(await finalizeLeadQueueList(enrichedList, req, user, role));
   } catch (err) {
+    if (ownsFullLeadQueueBuild) {
+      const slot = fullLeadQueueSlot;
+      fullLeadQueueSlot = null;
+      ownsFullLeadQueueBuild = false;
+      slot?.reject(err);
+    }
     console.error("leads/queue error", err);
     const code =
       err && typeof err === "object" && "code" in err
