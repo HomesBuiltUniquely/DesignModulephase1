@@ -3731,7 +3731,14 @@ function erpAppointmentToBusyBlock(raw: unknown, dateIso: string): HubBusyBlock 
     (desc.toUpperCase().startsWith(FULL_DAY_LEAVE_DESC_PREFIX)
       ? "Full-day leave"
       : desc.replace(/\s+/g, " ").slice(0, 48) || "Existing meeting");
-  return { startMin, endMin, label };
+  const leadRaw = o.leadId ?? o.lead_id;
+  const leadIdNum = leadRaw != null ? Number(leadRaw) : NaN;
+  return {
+    startMin,
+    endMin,
+    label,
+    ...(Number.isFinite(leadIdNum) && leadIdNum > 0 ? { leadId: leadIdNum } : {}),
+  };
 }
 
 /**
@@ -3766,12 +3773,17 @@ async function getDesignerBusyBlocksForDate(
 
   const busy: HubBusyBlock[] = [];
   let erpFailed = false;
+  const designerKey = designerName.trim().toLowerCase();
+  const freedByDesigner = await terminalFreedBlocksByDesignerForDate(dateIso);
+  const freed = freedByDesigner.get(designerKey) || [];
   try {
     const appointments = await fetchDesignerErpAppointments(designerName);
+    const erpBusy: HubBusyBlock[] = [];
     for (const row of appointments) {
       const block = erpAppointmentToBusyBlock(row, dateIso);
-      if (block) busy.push(block);
+      if (block) erpBusy.push(block);
     }
+    busy.push(...filterErpBusyAgainstTerminalFreed(erpBusy, freed));
   } catch (err) {
     erpFailed = true;
     console.error("[getDesignerBusyBlocksForDate] ERP appointments failed", designerName, err);
@@ -3871,6 +3883,9 @@ async function leadScheduleBusyBlocksForDesigner(
   }
 
   // Legacy payload fields (older schedule paths).
+  // Skip when lead_meetings already owns this day for the lead (active or terminal) —
+  // otherwise completed meetings keep blocking via stale designScheduledMeeting / crmSchedule.
+  const payloadSkipLeadIds = await leadIdsWithLeadMeetingsOnDate(dateIso);
   try {
     const likeDate = `${dateIso}%`;
     const [rows] = await pool.query(
@@ -3898,6 +3913,8 @@ async function leadScheduleBusyBlocksForDesigner(
       [name, name, name, likeDate, likeDate, likeDate],
     );
     for (const row of rows as Record<string, unknown>[]) {
+      const leadId = Number(row.leadId);
+      if (Number.isFinite(leadId) && leadId > 0 && payloadSkipLeadIds.has(leadId)) continue;
       const designDate = meetingDateFromRaw(row.schedDate) || meetingDateFromRaw(row.designDate);
       const crmDate = meetingDateFromRaw(row.crmDate);
       const meetingDate = designDate || crmDate;
@@ -3910,7 +3927,6 @@ async function leadScheduleBusyBlocksForDesigner(
           : null;
       const block = meetingSlotToBusyBlock(designTime || crmTime);
       if (block) {
-        const leadId = Number(row.leadId);
         blocks.push({
           ...block,
           label: "Design meeting (payload)",
@@ -4916,7 +4932,38 @@ async function getFullDayLeaveReasonsByDesigner(dateIso: string): Promise<Map<st
  * One-shot Design-side busy map for a calendar day (lead_meetings + legacy payload).
  * Replaces per-designer leadScheduleBusyBlocksForDesigner in CRM list endpoints.
  */
-async function leadScheduleBusyBlocksByDesignerForDate(
+/**
+ * Leads that already have a non-cancelled lead_meetings row on this calendar day.
+ * Once lead_meetings owns the day, stale payload schedules must not keep the designer busy
+ * (e.g. completed 6:00 PM Vinayak still had designScheduledMeeting=18:00 and blocked 6:30).
+ */
+async function leadIdsWithLeadMeetingsOnDate(dateIso: string): Promise<Set<number>> {
+  const owned = new Set<number>();
+  try {
+    const [rows] = await pool.query(
+      `SELECT DISTINCT m.lead_id AS leadId
+         FROM lead_meetings m
+        WHERE m.meeting_date = ?
+          AND (m.meeting_status IS NULL OR LOWER(m.meeting_status) <> 'cancelled')
+          AND m.lead_id IS NOT NULL`,
+      [dateIso],
+    );
+    for (const row of rows as { leadId?: number }[]) {
+      const id = Number(row.leadId);
+      if (Number.isFinite(id) && id > 0) owned.add(id);
+    }
+  } catch (err) {
+    console.error("[leadIdsWithLeadMeetingsOnDate] failed", dateIso, err);
+  }
+  return owned;
+}
+
+/**
+ * Design lead_meetings is source of truth for Pre 10% outcomes.
+ * Completed / never-happened / abandoned must FREE that designer slot even when ERP
+ * still has a live calendar row (e.g. Vinayak completed 6:00 PM was blocking 6:30).
+ */
+async function terminalFreedBlocksByDesignerForDate(
   dateIso: string,
 ): Promise<Map<string, HubBusyBlock[]>> {
   const byDesigner = new Map<string, HubBusyBlock[]>();
@@ -4927,6 +4974,112 @@ async function leadScheduleBusyBlocksByDesignerForDate(
     if (list) list.push(block);
     else byDesigner.set(key, [block]);
   };
+
+  try {
+    const [rows] = await pool.query(
+      `SELECT
+          m.lead_id AS leadId,
+          m.meeting_time AS meetingTime,
+          m.progress,
+          COALESCE(du.name, '') AS meetingDesignerName,
+          COALESCE(au.name, '') AS assignedDesignerName,
+          JSON_UNQUOTE(JSON_EXTRACT(
+            CASE WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}' ELSE l.payload END,
+            '$.crmSchedule.slot'
+          )) AS crmSlot,
+          JSON_UNQUOTE(JSON_EXTRACT(
+            CASE WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}' ELSE l.payload END,
+            '$.scheduledMeetingSlot'
+          )) AS schedSlot,
+          JSON_UNQUOTE(JSON_EXTRACT(
+            CASE WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}' ELSE l.payload END,
+            '$.designScheduledMeeting.time'
+          )) AS designTime,
+          JSON_UNQUOTE(JSON_EXTRACT(
+            CASE WHEN l.payload IS NULL OR TRIM(l.payload) = '' OR JSON_VALID(l.payload) = 0 THEN '{}' ELSE l.payload END,
+            '$.formData.appointment_slot'
+          )) AS formSlot
+        FROM lead_meetings m
+        LEFT JOIN users du ON du.id = m.designer_id
+        LEFT JOIN leads l ON l.id = m.lead_id
+        LEFT JOIN users au ON au.id = l.assigned_designer_id
+       WHERE m.meeting_date = ?
+         AND (m.meeting_status IS NULL OR LOWER(m.meeting_status) <> 'cancelled')
+         AND LOWER(COALESCE(m.progress, '')) IN ('completed', 'meeting_never_happened', 'meeting_abandoned')`,
+      [dateIso],
+    );
+
+    for (const row of rows as Record<string, unknown>[]) {
+      const slot =
+        cleanScheduledMeetingText(row.meetingTime) ||
+        cleanScheduledMeetingText(row.crmSlot) ||
+        cleanScheduledMeetingText(row.schedSlot) ||
+        cleanScheduledMeetingText(row.designTime) ||
+        cleanScheduledMeetingText(row.formSlot);
+      const block = meetingSlotToBusyBlock(slot);
+      if (!block) continue;
+      const leadId = Number(row.leadId);
+      const freed: HubBusyBlock = {
+        ...block,
+        label: `Freed (${String(row.progress || "terminal")})`,
+        leadId: Number.isFinite(leadId) && leadId > 0 ? leadId : undefined,
+      };
+      const meetingDesigner = String(row.meetingDesignerName || "").trim();
+      const assignedDesigner = String(row.assignedDesignerName || "").trim();
+      if (meetingDesigner) push(meetingDesigner, freed);
+      if (assignedDesigner && assignedDesigner.toLowerCase() !== meetingDesigner.toLowerCase()) {
+        push(assignedDesigner, freed);
+      }
+    }
+  } catch (err) {
+    console.error("[terminalFreedBlocksByDesignerForDate] failed", dateIso, err);
+  }
+  return byDesigner;
+}
+
+/** Drop ERP busy rows that Design already closed (completed / never happened / abandoned). */
+function filterErpBusyAgainstTerminalFreed(
+  erpBusy: HubBusyBlock[],
+  freed: HubBusyBlock[] | undefined,
+): HubBusyBlock[] {
+  if (!freed?.length || !erpBusy.length) return erpBusy;
+  return erpBusy.filter((block) => {
+    for (const f of freed) {
+      if (
+        block.leadId != null &&
+        f.leadId != null &&
+        block.leadId === f.leadId
+      ) {
+        return false;
+      }
+      if (rangesOverlapMin(block.startMin, block.endMin, f.startMin, f.endMin)) {
+        return false;
+      }
+    }
+    return true;
+  });
+}
+
+async function leadScheduleBusyBlocksByDesignerForDate(
+  dateIso: string,
+  opts?: { excludeLeadId?: number },
+): Promise<Map<string, HubBusyBlock[]>> {
+  const byDesigner = new Map<string, HubBusyBlock[]>();
+  const excludeLeadId =
+    opts?.excludeLeadId != null && Number.isFinite(opts.excludeLeadId) && opts.excludeLeadId > 0
+      ? Number(opts.excludeLeadId)
+      : null;
+  const push = (designerName: string, block: HubBusyBlock) => {
+    if (excludeLeadId != null && block.leadId === excludeLeadId) return;
+    const key = designerName.trim().toLowerCase();
+    if (!key) return;
+    const list = byDesigner.get(key);
+    if (list) list.push(block);
+    else byDesigner.set(key, [block]);
+  };
+
+  // lead_meetings is authoritative for these leads on this day (active OR terminal).
+  const payloadSkipLeadIds = await leadIdsWithLeadMeetingsOnDate(dateIso);
 
   try {
     const [meetingRows] = await pool.query(
@@ -5014,6 +5167,9 @@ async function leadScheduleBusyBlocksByDesignerForDate(
       [likeDate, likeDate, likeDate],
     );
     for (const row of rows as Record<string, unknown>[]) {
+      const leadId = Number(row.leadId);
+      // Prefer lead_meetings over stale payload (completed / never-happened must free the slot).
+      if (Number.isFinite(leadId) && leadId > 0 && payloadSkipLeadIds.has(leadId)) continue;
       const designDate = meetingDateFromRaw(row.schedDate) || meetingDateFromRaw(row.designDate);
       const crmDate = meetingDateFromRaw(row.crmDate);
       const meetingDate = designDate || crmDate;
@@ -5026,7 +5182,6 @@ async function leadScheduleBusyBlocksByDesignerForDate(
           : null;
       const block = meetingSlotToBusyBlock(designTime || crmTime);
       if (!block) continue;
-      const leadId = Number(row.leadId);
       const busyBlock: HubBusyBlock = {
         ...block,
         label: "Design meeting (payload)",
@@ -24487,6 +24642,7 @@ app.post("/api/appointment/hub-appointment-cancelled", async (req: Request, res:
  * Auth: Design Module session, or EXTERNAL_LEAD_INGEST_API_KEY / HUB_SYNC_API_KEY (CRM sales).
  * Accuracy: calendar day from `date` (required); times parsed as local wall-clock (no TZ drift).
  * Conflicts: Hub ERP `appointment` rows for that designer (+ full-day leave). Not Google Calendar.
+ * Optional: `excludeLeadId` — ignore that lead’s Design busy blocks when rebooking the same CRM lead.
  *
  * Fast path: CRM API-key skips session; leave + Design meetings batched once per day;
  * ERP designer calendars fetched with higher concurrency + short TTL cache.
@@ -24530,6 +24686,11 @@ app.get("/api/appointment/available-designers", async (req: Request, res: Respon
         message: "date is required as YYYY-MM-DD",
       });
     }
+
+    const excludeLeadRaw = req.query.excludeLeadId ?? req.query.exclude_lead_id;
+    const excludeLeadParsed = excludeLeadRaw != null ? Number(excludeLeadRaw) : NaN;
+    const excludeLeadId =
+      Number.isFinite(excludeLeadParsed) && excludeLeadParsed > 0 ? excludeLeadParsed : undefined;
 
     const startRaw = String(req.query.startTime || "").trim();
     const endRaw = String(req.query.endTime || "").trim();
@@ -24605,7 +24766,7 @@ app.get("/api/appointment/available-designers", async (req: Request, res: Respon
       String(req.query.includeUnavailable || "").trim().toLowerCase() === "true" ||
       String(req.query.includeUnavailable || "").trim() === "1";
 
-    const [designerRows, leaveByDesigner, leadBusyByDesigner] = await Promise.all([
+    const [designerRows, leaveByDesigner, leadBusyByDesigner, freedByDesigner] = await Promise.all([
       pool.query(
         `SELECT id, name, email
          FROM users
@@ -24615,7 +24776,8 @@ app.get("/api/appointment/available-designers", async (req: Request, res: Respon
          ORDER BY name ASC`,
       ),
       getFullDayLeaveReasonsByDesigner(dateIso),
-      leadScheduleBusyBlocksByDesignerForDate(dateIso),
+      leadScheduleBusyBlocksByDesignerForDate(dateIso, { excludeLeadId }),
+      terminalFreedBlocksByDesignerForDate(dateIso),
     ]);
     const designers = designerRows[0] as { id: number; name: string; email: string | null }[];
 
@@ -24665,10 +24827,14 @@ app.get("/api/appointment/available-designers", async (req: Request, res: Respon
             fetchDesignerErpAppointments(d.name),
             ERP_TIMEOUT_MS,
           );
+          const erpBusy: HubBusyBlock[] = [];
           for (const row of appointments) {
             const block = erpAppointmentToBusyBlock(row, dateIso);
-            if (block) busy.push(block);
+            if (block) erpBusy.push(block);
           }
+          busy.push(
+            ...filterErpBusyAgainstTerminalFreed(erpBusy, freedByDesigner.get(designerKey)),
+          );
         } catch (err) {
           erpFailed = true;
           console.error("[available-designers] ERP calendar failed", d.name, err);
@@ -24769,7 +24935,7 @@ app.get("/api/appointment/availability-by-date", async (req: Request, res: Respo
         ? Math.round(durationRaw)
         : HUB_DEFAULT_MEETING_DURATION_MIN;
 
-    const [designerRows, leaveByDesigner, leadBusyByDesigner] = await Promise.all([
+    const [designerRows, leaveByDesigner, leadBusyByDesigner, freedByDesigner] = await Promise.all([
       pool.query(
         `SELECT id, name, email
          FROM users
@@ -24780,6 +24946,7 @@ app.get("/api/appointment/availability-by-date", async (req: Request, res: Respo
       ),
       getFullDayLeaveReasonsByDesigner(dateIso),
       leadScheduleBusyBlocksByDesignerForDate(dateIso),
+      terminalFreedBlocksByDesignerForDate(dateIso),
     ]);
     const designers = designerRows[0] as { id: number; name: string; email: string | null }[];
 
@@ -24826,10 +24993,14 @@ app.get("/api/appointment/availability-by-date", async (req: Request, res: Respo
             fetchDesignerErpAppointments(d.name),
             ERP_TIMEOUT_MS,
           );
+          const erpBusy: HubBusyBlock[] = [];
           for (const row of appointments) {
             const block = erpAppointmentToBusyBlock(row, dateIso);
-            if (block) busy.push(block);
+            if (block) erpBusy.push(block);
           }
+          busy.push(
+            ...filterErpBusyAgainstTerminalFreed(erpBusy, freedByDesigner.get(designerKey)),
+          );
         } catch (err) {
           erpFailed = true;
           console.error("[availability-by-date] ERP failed", d.name, err);
