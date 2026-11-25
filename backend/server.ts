@@ -74,7 +74,6 @@ import {
   abandonCrmMeeting,
   isCrmDrrMeeting,
   isCrmDrrLabelText,
-  completePre10CrmMeetingAfterQuoteShare,
   applyCrmMeetingFeedback,
   stampCrmAppointmentId,
   recordLeadMeetingHistory,
@@ -21888,25 +21887,7 @@ const handleCrmShareQuoteVersion = async (req: Request, res: Response) => {
       console.error("[crm-quote-share] Failed to resolve CRM lead for quoteLink push", pushLookupErr);
     }
 
-    // Pre 10% only: any Share to CRM version → mark CRM meeting Successful.
-    let pre10MeetingCompleted = 0;
-    try {
-      const actor = { id: user.id, name: user.name };
-      const leadIds = Array.from(
-        new Set([leadId, designLeadIdForMeeting].filter((id) => Number.isFinite(id) && id > 0)),
-      );
-      for (const id of leadIds) {
-        pre10MeetingCompleted += await completePre10CrmMeetingAfterQuoteShare(pool, id, actor);
-      }
-    } catch (meetingCompleteErr) {
-      console.error("[crm-quote-share] Pre 10% meeting auto-complete failed (non-fatal)", {
-        leadId,
-        designLeadIdForMeeting,
-        quoteId: persistQuoteId,
-        error: meetingCompleteErr,
-      });
-    }
-
+    // Meeting Successful is Start → End only (not auto on quote share).
     return res.json({
       ok: true,
       leadId,
@@ -21917,7 +21898,7 @@ const handleCrmShareQuoteVersion = async (req: Request, res: Response) => {
       customerQuoteUrl,
       internalQuoteUrl,
       crmPush,
-      pre10MeetingCompleted,
+      pre10MeetingCompleted: 0,
       discount: hubMeta,
       payload: nextPayload,
     });
@@ -23391,49 +23372,55 @@ app.get("/api/meetings/scheduled", async (req: Request, res: Response) => {
     const scope = await meetingViewerScope(actingUser);
     if (!scope) return res.status(403).json({ message: "Not allowed to open meeting management" });
 
-    // Client meetings first — personal ERP must never block the board (hosted timed out at 8s).
+    // Client meetings first — personal ERP must never block the board (hosted timed out).
     const meetings = await listLeadMeetings(pool, scope.all ? undefined : { designerIds: scope.userIds });
+    const clientMs = Date.now() - startedAt;
 
     let personal: Record<string, unknown>[] = [];
     let personalWarning: string | null = null;
-    const PERSONAL_BOARD_BUDGET_MS = 800;
-    try {
-      const personalResult = await Promise.race([
-        listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds)
-          .then((board) => ({ ok: true as const, board }))
-          .catch((personalErr) => {
-            console.error("[meeting-board] personal appointments failed", personalErr);
-            return {
-              ok: false as const,
-              warning: "Personal appointments could not be loaded. Client meetings are still shown.",
-            };
+    // If client list already used most of the budget, skip personal and return immediately.
+    const PERSONAL_BOARD_BUDGET_MS = clientMs > 4500 ? 0 : clientMs > 2500 ? 300 : 600;
+    if (PERSONAL_BOARD_BUDGET_MS <= 0) {
+      personalWarning = "Personal appointments skipped to keep Meeting Management fast. Refresh to retry.";
+      void listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds).catch(() => undefined);
+    } else {
+      try {
+        const personalResult = await Promise.race([
+          listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds)
+            .then((board) => ({ ok: true as const, board }))
+            .catch((personalErr) => {
+              console.error("[meeting-board] personal appointments failed", personalErr);
+              return {
+                ok: false as const,
+                warning: "Personal appointments could not be loaded. Client meetings are still shown.",
+              };
+            }),
+          new Promise<{ ok: false; warning: string }>((resolve) => {
+            setTimeout(
+              () =>
+                resolve({
+                  ok: false,
+                  warning: "Personal appointments are still loading. Client meetings are shown now.",
+                }),
+              PERSONAL_BOARD_BUDGET_MS,
+            );
           }),
-        new Promise<{ ok: false; warning: string }>((resolve) => {
-          setTimeout(
-            () =>
-              resolve({
-                ok: false,
-                warning: "Personal appointments are still loading. Client meetings are shown now.",
-              }),
-            PERSONAL_BOARD_BUDGET_MS,
-          );
-        }),
-      ]);
-      if (personalResult.ok) {
-        personal = personalResult.board.meetings;
-        personalWarning = personalResult.board.warning;
-      } else {
-        personalWarning = personalResult.warning;
-        // Warm cache in background for the next refresh.
-        void listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds).catch(() => undefined);
+        ]);
+        if (personalResult.ok) {
+          personal = personalResult.board.meetings;
+          personalWarning = personalResult.board.warning;
+        } else {
+          personalWarning = personalResult.warning;
+          void listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds).catch(() => undefined);
+        }
+      } catch (personalErr) {
+        console.error("[meeting-board] personal appointments failed", personalErr);
+        personalWarning = "Personal appointments could not be loaded. Client meetings are still shown.";
       }
-    } catch (personalErr) {
-      console.error("[meeting-board] personal appointments failed", personalErr);
-      personalWarning = "Personal appointments could not be loaded. Client meetings are still shown.";
     }
 
     console.log(
-      `[meeting-board] scheduled list ready in ${Date.now() - startedAt}ms (client=${meetings.length}, personal=${personal.length})`,
+      `[meeting-board] scheduled list ready in ${Date.now() - startedAt}ms (client=${meetings.length}, personal=${personal.length}, clientMs=${clientMs})`,
     );
     return res.json({ meetings: [...meetings, ...personal], personalWarning });
   } catch (err) {

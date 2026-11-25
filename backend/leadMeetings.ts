@@ -429,6 +429,21 @@ export function ensureLeadMeetingsTable(pool: Pool): Promise<void> {
       } catch (dateIdxErr) {
         console.error("[lead-meetings] idx_lead_meetings_date ensure failed", dateIdxErr);
       }
+      // Board + DRR reopen helpers — non-blocking if index create races.
+      try {
+        const [drrIdx] = await pool.query(
+          `SELECT 1 FROM information_schema.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND INDEX_NAME = 'idx_lead_meetings_drr_done'
+            LIMIT 1`,
+        );
+        if ((drrIdx as unknown[]).length === 0) {
+          await pool.query(
+            "CREATE INDEX idx_lead_meetings_drr_done ON lead_meetings (source, is_drr_revisit, progress, meeting_date)",
+          );
+        }
+      } catch (drrIdxErr) {
+        console.error("[lead-meetings] idx_lead_meetings_drr_done ensure failed", drrIdxErr);
+      }
       const [branchCol] = await pool.query(
         `SELECT 1 FROM information_schema.COLUMNS
           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'branch'`,
@@ -549,25 +564,34 @@ export function ensureLeadMeetingsTable(pool: Pool): Promise<void> {
       } catch (progressRenameErr) {
         console.error("[lead-meetings] progress rename meeting_never_happened failed", progressRenameErr);
       }
-      await pool.query(
-        `UPDATE lead_meetings
-            SET meeting_mode = CASE
-                  WHEN LOWER(meeting_type) LIKE '%virtual%' OR LOWER(meeting_type) LIKE '%online%' THEN 'online'
-                  WHEN LOWER(meeting_type) LIKE '%site%' THEN 'site'
-                  WHEN LOWER(meeting_type) LIKE '%showroom%' THEN 'offline'
-                  ELSE meeting_mode
-                END,
-                meeting_type = 'pre_10'
-          WHERE source = 'crm' AND meeting_type <> 'pre_10'`,
-      );
-      // Never block API requests on backfill/reconcile — that timed out hosted Meeting Management.
-      void cleanupOrphanMeetingRows(pool)
-        .then(() => backfillLeadMeetings(pool))
-        .then(() => reconcileCrmDrrScheduledMeetings(pool))
-        .catch((err) => console.error("[lead-meetings] background backfill/cleanup failed", err));
-      void reconcileCompletedDesignMeetings(pool).catch((err) =>
-        console.error("[lead-meetings] background reconcile failed", err),
-      );
+      // Heavy CRM type normalize + backfill must NOT block the first board request (hosted timeout).
+      void (async () => {
+        try {
+          await pool.query(
+            `UPDATE lead_meetings
+                SET meeting_mode = CASE
+                      WHEN LOWER(meeting_type) LIKE '%virtual%' OR LOWER(meeting_type) LIKE '%online%' THEN 'online'
+                      WHEN LOWER(meeting_type) LIKE '%site%' THEN 'site'
+                      WHEN LOWER(meeting_type) LIKE '%showroom%' THEN 'offline'
+                      ELSE meeting_mode
+                    END,
+                    meeting_type = 'pre_10'
+              WHERE source = 'crm' AND meeting_type <> 'pre_10'`,
+          );
+        } catch (normErr) {
+          console.error("[lead-meetings] crm meeting_type normalize failed", normErr);
+        }
+        try {
+          await cleanupOrphanMeetingRows(pool);
+          await backfillLeadMeetings(pool);
+          await reconcileCrmDrrScheduledMeetings(pool);
+        } catch (err) {
+          console.error("[lead-meetings] background backfill/cleanup failed", err);
+        }
+        void reconcileCompletedDesignMeetings(pool).catch((err) =>
+          console.error("[lead-meetings] background reconcile failed", err),
+        );
+      })();
     })().catch((err) => {
       tableReady = null;
       throw err;
@@ -2122,63 +2146,6 @@ function parseLeadPayload(raw: unknown): Record<string, unknown> | null {
 }
 
 /**
- * Pre 10% only: if any quote version was Shared to CRM, mark open CRM meetings Successful.
- * Covers share-time push and board reload for older shares.
- */
-export async function completePre10CrmMeetingAfterQuoteShare(
-  pool: Pool,
-  leadId: number,
-  actor?: MeetingActor | null,
-): Promise<number> {
-  if (!Number.isInteger(leadId) || leadId < 1) return 0;
-  await ensureLeadMeetingsTable(pool);
-  const now = new Date();
-  const [openRows] = await pool.query(
-    `SELECT id FROM lead_meetings
-      WHERE lead_id = ?
-        AND source = 'crm'
-        AND meeting_status <> 'cancelled'
-        AND progress <> 'completed'
-        AND COALESCE(is_drr_revisit, 0) = 0
-        AND (
-          meeting_type = 'pre_10'
-          OR meeting_type = 'pre10'
-          OR meeting_type IS NULL
-          OR TRIM(meeting_type) = ''
-        )`,
-    [leadId],
-  );
-  const ids = (openRows as { id?: unknown }[])
-    .map((row) => Number(row.id))
-    .filter((id) => Number.isFinite(id) && id > 0);
-  if (ids.length === 0) return 0;
-
-  await pool.query(
-    `UPDATE lead_meetings
-        SET progress = 'completed',
-            ended_at = COALESCE(ended_at, ?),
-            updated_at = ?
-      WHERE id IN (${ids.map(() => "?").join(",")})`,
-    [now, now, ...ids],
-  );
-  await writeHistory(
-    pool,
-    leadId,
-    actor,
-    "Meeting Successful",
-    "Pre 10% meeting marked Meeting Successful after quote Shared to CRM.",
-    {
-      action: "completed",
-      source: "crm",
-      reason: "crm_quote_share",
-      meetingIds: ids,
-    },
-  );
-  return ids.length;
-}
-
-/** Backfill: Pre 10% CRM meetings become Successful once a quote version is shared to CRM. */
-/**
  * After successful Pre 10%, CRM often keeps the same crmSchedule in payload without a new external-intake.
  * Create the missing open CRM row so Meeting Management can show Scheduled (DRR).
  */
@@ -2247,61 +2214,6 @@ async function reconcileCrmDrrScheduledMeetings(pool: Pool) {
       console.error("[reconcile-drr] failed", { leadId, err });
     }
   }
-}
-
-async function reconcilePre10MeetingsAfterCrmQuoteShare(pool: Pool) {
-  // Quote share closes the Pre 10% visit only. A DRR revisit is stored as pre_10
-  // with is_drr_revisit = 1 and must stay Scheduled (DRR).
-  await pool.query(
-    `UPDATE lead_meetings m
-       JOIN (
-         SELECT DISTINCT lead_id AS leadId
-           FROM lead_prolance_quote_snapshots
-          WHERE crm_shared_quote_id IS NOT NULL
-            AND crm_shared_quote_id > 0
-            AND crm_shared_version_number IS NOT NULL
-            AND crm_shared_version_number >= 1
-       ) s ON s.leadId = m.lead_id
-        SET m.progress = 'completed',
-            m.ended_at = COALESCE(m.ended_at, NOW()),
-            m.updated_at = NOW()
-      WHERE m.source = 'crm'
-        AND m.meeting_status <> 'cancelled'
-        AND m.progress <> 'completed'
-        AND COALESCE(m.is_drr_revisit, 0) = 0
-        AND (
-          m.meeting_type = 'pre_10'
-          OR m.meeting_type = 'pre10'
-          OR m.meeting_type IS NULL
-          OR TRIM(m.meeting_type) = ''
-        )`,
-  );
-
-  await reopenDrrMeetingsClosedByQuoteShare(pool);
-}
-
-/** DRR visits quote-share had marked successful. An explicit Meeting successful stays completed. */
-async function reopenDrrMeetingsClosedByQuoteShare(pool: Pool) {
-  await pool.query(
-    `UPDATE lead_meetings m
-        SET m.progress = 'scheduled',
-            m.ended_at = NULL,
-            m.updated_at = NOW()
-      WHERE m.source = 'crm'
-        AND m.meeting_status <> 'cancelled'
-        AND m.progress = 'completed'
-        AND (
-          COALESCE(m.is_drr_revisit, 0) = 1
-          OR LOWER(IFNULL(m.meeting_type, '')) LIKE '%design%refinement%'
-          OR LOWER(IFNULL(m.meeting_type, '')) LIKE '%refinement%round%'
-        )
-        AND NOT EXISTS (
-          SELECT 1 FROM lead_history h2
-           WHERE h2.lead_id = m.lead_id
-             AND h2.event LIKE '%CRM meeting ended%'
-             AND h2.event LIKE CONCAT('%"meetingId":', m.id, '%')
-        )`,
-  );
 }
 
 /** Design meetings whose MOM / meeting-completed milestone is already done are successful, not abandoned. */
@@ -2473,22 +2385,19 @@ async function salesExecutiveByLeadIds(
 }
 
 export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now?: Date; designerIds?: number[] }) {
+  const listStartedAt = Date.now();
   await ensureLeadMeetingsTable(pool);
   const now = opts?.now || new Date();
+  // All reconcile / reopen is background-only — never await on the board response path.
   if (Date.now() - lastMeetingListReconcileAt >= MEETING_LIST_RECONCILE_MS) {
     lastMeetingListReconcileAt = Date.now();
-    try {
-      await reopenDrrMeetingsClosedByQuoteShare(pool);
-    } catch (err) {
-      console.error("[lead-meetings] DRR reopen failed", err);
-    }
-    // Delay so reconcile cannot steal pool connections from this board response.
     setTimeout(() => {
       void (async () => {
         try {
+          // Quote-share no longer auto-closes meetings (Successful = Start → End only),
+          // so skip Pre 10% quote-share reconcile + DRR reopen history checks.
           await cleanupOrphanMeetingRows(pool);
           await reconcileCompletedDesignMeetings(pool);
-          await reconcilePre10MeetingsAfterCrmQuoteShare(pool);
           await reconcileCrmDrrScheduledMeetings(pool);
         } catch (err) {
           console.error("meeting list reconcile failed", err);
@@ -2533,10 +2442,9 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
       designerIds: scoped ? designerIds : undefined,
       now,
     });
-  }, 3000);
+  }, 4000);
 
   // Board-fast select: scalar columns only + light DRR (no per-row payload JSON / EXISTS).
-  // No hard 1500 cap — ASC LIMIT 1500 dropped all of November 2026 (0 of 3200+ rows).
   // Date window already bounds volume; soft ceiling only as a safety valve.
   const [rows] = await pool.query(
     `SELECT m.id,
@@ -2570,7 +2478,7 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
        LEFT JOIN users u ON u.id = COALESCE(m.designer_id, l.assigned_designer_id)
       WHERE ${whereParts.join(" AND ")}
       ORDER BY m.meeting_date ASC, m.meeting_time ASC, m.id ASC
-      LIMIT 10000`,
+      LIMIT 8000`,
     queryParams,
   );
 
@@ -2582,7 +2490,7 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
         .map((row) => Number(row.leadId))
         .filter((id) => Number.isFinite(id) && id > 0),
     ),
-  ].slice(0, 80);
+  ].slice(0, 40);
   const slotByLead = new Map<number, string>();
   if (missingTimeLeadIds.length > 0) {
     try {
@@ -2615,25 +2523,46 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
     { quoteSent: boolean; quoteFinalAmount: number | null; hasQuote: boolean }
   >();
   let salesByLead = new Map<number, string>();
-  // Quote + sales in parallel — sequential enrichment was a major board timeout driver.
-  // Sales JSON-on-payload can spike; budget it so the board never waits on it.
-  const [shareResult, salesResult] = await Promise.all([
-    quoteShareByLead(pool, meetingLeadIds, { mode: "board" }).catch((err) => {
+
+  // Keep enrichment under a hard budget so hosted nginx/proxy never 502s the board.
+  const ENRICH_BUDGET_MS = 2500;
+  const enrichDeadline = listStartedAt + ENRICH_BUDGET_MS;
+  const enrichMsLeft = () => Math.max(0, enrichDeadline - Date.now());
+
+  // Quote flags first (needed for quotes-sent cards). Cap unique leads to keep IN() cheap.
+  const quoteLeadIds = meetingLeadIds.slice(0, 2500);
+  if (enrichMsLeft() > 200) {
+    try {
+      shareByLead = await Promise.race([
+        quoteShareByLead(pool, quoteLeadIds, { mode: "board" }),
+        new Promise<typeof shareByLead>((resolve) => {
+          setTimeout(() => resolve(shareByLead), Math.min(1800, enrichMsLeft()));
+        }),
+      ]);
+    } catch (err) {
       console.error("quote share lookup failed", err);
-      return shareByLead;
-    }),
-    Promise.race([
-      salesExecutiveByLeadIds(pool, meetingLeadIds, { mode: "board" }).catch((err) => {
+    }
+  }
+
+  // Sales JSON scan is optional for first paint — never let it sink the board.
+  const salesLeadIds = meetingLeadIds.slice(0, 800);
+  if (salesLeadIds.length > 0 && enrichMsLeft() > 150) {
+    salesByLead = await Promise.race([
+      salesExecutiveByLeadIds(pool, salesLeadIds, { mode: "board" }).catch((err) => {
         console.error("sales executive lookup failed", err);
         return new Map<number, string>();
       }),
       new Promise<Map<number, string>>((resolve) => {
-        setTimeout(() => resolve(new Map()), 1200);
+        setTimeout(() => resolve(new Map()), Math.min(400, enrichMsLeft()));
       }),
-    ]),
-  ]);
-  shareByLead = shareResult;
-  salesByLead = salesResult;
+    ]);
+  }
+
+  if (Date.now() - listStartedAt > 4000) {
+    console.warn(
+      `[lead-meetings] board list slow ${Date.now() - listStartedAt}ms rows=${(rows as unknown[]).length} leads=${meetingLeadIds.length}`,
+    );
+  }
 
   return (rows as Record<string, unknown>[]).map((row) => {
     const share = shareByLead.get(Number(row.leadId));
