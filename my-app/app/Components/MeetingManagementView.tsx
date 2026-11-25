@@ -2259,10 +2259,7 @@ export default function MeetingManagementView() {
                 data-index={0}
                 aria-pressed={statusFilters.length === 0}
                 tabIndex={statusOpen ? 0 : -1}
-                onClick={() => {
-                  setStatusFilters([]);
-                  window.setTimeout(() => setStatusOpen(false), 260);
-                }}
+                onClick={() => setStatusFilters([])}
               >
                 All
               </button>
@@ -2275,10 +2272,7 @@ export default function MeetingManagementView() {
                   data-index={index + 1}
                   aria-pressed={statusFilters.includes(status.id)}
                   tabIndex={statusOpen ? 0 : -1}
-                  onClick={() => {
-                    toggleStatus(status.id);
-                    window.setTimeout(() => setStatusOpen(false), 260);
-                  }}
+                  onClick={() => toggleStatus(status.id)}
                 >
                   {status.label}
                 </button>
@@ -2305,10 +2299,7 @@ export default function MeetingManagementView() {
                   data-index={index}
                   aria-pressed={typeFilter === type.id}
                   tabIndex={typeOpen || typeFilter === type.id ? 0 : -1}
-                  onClick={() => {
-                    setTypeFilter(type.id);
-                    window.setTimeout(() => setTypeOpen(false), 260);
-                  }}
+                  onClick={() => setTypeFilter(type.id)}
                 >
                   {type.label}
                 </button>
