@@ -37,6 +37,11 @@ export function isCrmDrrLabelText(value?: string | null | undefined): boolean {
 
 const CRM_DRR_PAYLOAD = `IF(JSON_VALID(l.payload), l.payload, '{}')`;
 
+/**
+ * Full DRR detection — explicit Design Refinement Round labels / is_drr_revisit only.
+ * Never treat “second CRM meeting after Pre 10% success” as DRR.
+ * Use only for single-meeting checks — too expensive for the board SELECT.
+ */
 const CRM_DRR_REVISIT_SQL = `(
   COALESCE(m.is_drr_revisit, 0) = 1
   OR LOWER(TRIM(IFNULL(m.meeting_type, ''))) IN ('drr', 'design_refinement')
@@ -56,19 +61,18 @@ const CRM_DRR_REVISIT_SQL = `(
   OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(${CRM_DRR_PAYLOAD}, '$.connection.milestoneSubStage')), '')) LIKE '%refinement%'
   OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(${CRM_DRR_PAYLOAD}, '$.discovery.milestoneSubStage')), '')) LIKE '%refinement%'
   OR LOWER(IFNULL(JSON_UNQUOTE(JSON_EXTRACT(${CRM_DRR_PAYLOAD}, '$.crmDrrRevisit')), '')) IN ('true', '1')
-  OR (
-    m.source = 'crm'
-    AND m.meeting_status <> 'cancelled'
-    AND m.progress <> 'completed'
-    AND EXISTS (
-      SELECT 1 FROM lead_meetings prior
-        WHERE prior.lead_id = m.lead_id
-          AND prior.source = 'crm'
-          AND prior.progress = 'completed'
-          AND prior.meeting_status <> 'cancelled'
-          AND prior.id < m.id
-    )
-  )
+)`;
+
+/**
+ * Board-fast DRR flag — column + meeting_type only.
+ * Background reconcileCrmDrrScheduledMeetings keeps is_drr_revisit stamped;
+ * JSON/EXISTS per row was timing out Meeting Management (10–25s).
+ */
+const CRM_DRR_REVISIT_BOARD_SQL = `(
+  COALESCE(m.is_drr_revisit, 0) = 1
+  OR LOWER(TRIM(IFNULL(m.meeting_type, ''))) IN ('drr', 'design_refinement')
+  OR LOWER(IFNULL(m.meeting_type, '')) LIKE '%design%refinement%'
+  OR LOWER(IFNULL(m.meeting_type, '')) LIKE '%refinement%round%'
 )`;
 
 export class MeetingActionError extends Error {
@@ -131,6 +135,8 @@ export type MeetingRow = {
   feedbackDesignerAt?: Date | string | null;
   feedbackDesignerBy?: string | null;
   crmAppointmentId?: number | null;
+  /** True when this CRM row is a Design Refinement Round revisit. */
+  isDrrRevisit?: boolean;
   startedAt: Date | string | null;
   endedAt: Date | string | null;
 };
@@ -407,9 +413,22 @@ export function ensureLeadMeetingsTable(pool: Pool): Promise<void> {
           created_at DATETIME NOT NULL,
           updated_at DATETIME NOT NULL,
           INDEX idx_lead_meetings_lead (lead_id),
+          INDEX idx_lead_meetings_date (meeting_date),
           INDEX idx_lead_meetings_open (meeting_status, progress, meeting_date)
         )
       `);
+      try {
+        const [dateIdx] = await pool.query(
+          `SELECT 1 FROM information_schema.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND INDEX_NAME = 'idx_lead_meetings_date'
+            LIMIT 1`,
+        );
+        if ((dateIdx as unknown[]).length === 0) {
+          await pool.query("CREATE INDEX idx_lead_meetings_date ON lead_meetings (meeting_date)");
+        }
+      } catch (dateIdxErr) {
+        console.error("[lead-meetings] idx_lead_meetings_date ensure failed", dateIdxErr);
+      }
       const [branchCol] = await pool.query(
         `SELECT 1 FROM information_schema.COLUMNS
           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'branch'`,
@@ -582,6 +601,19 @@ async function writeHistory(
   ]);
 }
 
+/** Public activity-history write for meeting flows (DRR CRM sync notes, etc.). */
+export async function recordLeadMeetingHistory(
+  pool: Pool,
+  leadId: number,
+  actor: MeetingActor | null | undefined,
+  taskName: string,
+  description: string,
+  meta: Record<string, unknown> = {},
+) {
+  if (!Number.isFinite(leadId) || leadId < 1) return;
+  await writeHistory(pool, leadId, actor, taskName, description, meta);
+}
+
 function mapRow(row: Record<string, unknown>): MeetingRow {
   return {
     id: Number(row.id),
@@ -605,6 +637,9 @@ function mapRow(row: Record<string, unknown>): MeetingRow {
     feedbackDesignerAt: (row.feedbackDesignerAt as Date | string | null) ?? null,
     feedbackDesignerBy: row.feedbackDesignerBy == null ? null : String(row.feedbackDesignerBy),
     crmAppointmentId: row.crmAppointmentId == null ? null : Number(row.crmAppointmentId),
+    isDrrRevisit:
+      row.isDrrRevisit === true ||
+      Number(row.isDrrRevisit) === 1,
     startedAt: (row.startedAt as Date | string | null) ?? null,
     endedAt: (row.endedAt as Date | string | null) ?? null,
   };
@@ -628,6 +663,7 @@ const MEETING_SELECT = `
          m.feedback_designer_at AS feedbackDesignerAt,
          m.feedback_designer_by AS feedbackDesignerBy,
          m.crm_appointment_id AS crmAppointmentId,
+         COALESCE(m.is_drr_revisit, 0) AS isDrrRevisit,
          m.started_at AS startedAt,
          m.ended_at AS endedAt
     FROM lead_meetings m
@@ -675,7 +711,22 @@ async function refreshStoredProgress(pool: Pool, row: MeetingRow, now: Date, wri
       meetingTime: row.meetingTime,
     });
   }
-  return { ...row, progress: next };
+  const updatedRow: MeetingRow = { ...row, progress: next };
+  // CRM does not auto-abandon — Design must call outcome API after local end+4h never-happened.
+  if (
+    next === "meeting_never_happened" &&
+    row.source === "crm" &&
+    row.progress !== "meeting_never_happened" &&
+    crmAutoNeverHappenedHandler
+  ) {
+    void Promise.resolve(crmAutoNeverHappenedHandler(updatedRow)).catch((err) => {
+      console.error("[lead-meetings] CRM auto never-happened sync failed", {
+        meetingId: row.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }
+  return updatedRow;
 }
 
 async function activeDesignRow(pool: Pool, leadId: number, meetingType: string): Promise<MeetingRow | null> {
@@ -753,8 +804,6 @@ async function persistCrmDrrLeadMarkers(
     meetingLabel?: string | null;
     milestoneSubStage?: string | null;
     subStage?: string | null;
-    /** New CRM row after a completed Pre 10% visit when Hub omits DRR label text. */
-    forceDrr?: boolean;
   },
 ) {
   const payload = await readPayload(pool, leadId);
@@ -764,7 +813,7 @@ async function persistCrmDrrLeadMarkers(
   const sub = String(input.subStage || "").trim();
   const drrText =
     isCrmDrrLabelText(label) || isCrmDrrLabelText(milestone) || isCrmDrrLabelText(sub);
-  if (!drrText && !input.forceDrr) return;
+  if (!drrText) return;
   if (label) payload.meetingLabel = label;
   if (milestone) payload.milestoneSubStage = milestone;
   if (sub) payload.subStage = sub;
@@ -774,17 +823,6 @@ async function persistCrmDrrLeadMarkers(
     new Date(),
     leadId,
   ]);
-}
-
-/** Post–Pre 10% CRM booking — new open row after a successful CRM visit. */
-async function leadHasCompletedCrmMeeting(pool: Pool, leadId: number): Promise<boolean> {
-  const [rows] = await pool.query(
-    `SELECT 1 FROM lead_meetings
-      WHERE lead_id = ? AND source = 'crm' AND progress = 'completed' AND meeting_status <> 'cancelled'
-      LIMIT 1`,
-    [leadId],
-  );
-  return (rows as unknown[]).length > 0;
 }
 
 async function writeDesignPayload(
@@ -964,19 +1002,17 @@ export async function recordCrmMeeting(
   );
   const active = (rows as Record<string, unknown>[])[0] ? mapRow((rows as Record<string, unknown>[])[0]) : null;
   const now = new Date();
-  const labelDrr =
+  // DRR only when CRM/Hub sends Design Refinement Round label/substage — never “2nd meeting”.
+  const drrVisit =
     isCrmDrrLabelText(input.meetingLabel) ||
     isCrmDrrLabelText(input.meetingType) ||
     isCrmDrrLabelText(input.milestoneSubStage) ||
     isCrmDrrLabelText(input.subStage);
-  const revisitAfterPre10 = !active && (await leadHasCompletedCrmMeeting(pool, input.leadId));
-  const drrVisit = labelDrr || revisitAfterPre10;
   if (drrVisit) {
     await persistCrmDrrLeadMarkers(pool, input.leadId, {
       meetingLabel: input.meetingLabel,
       milestoneSubStage: input.milestoneSubStage,
       subStage: input.subStage,
-      forceDrr: revisitAfterPre10 && !labelDrr,
     });
   }
   if (active) {
@@ -1467,30 +1503,68 @@ export async function startCrmMeeting(
   return loadMeeting(pool, row.id);
 }
 
-export async function endCrmMeeting(pool: Pool, meetingId: number, actor?: MeetingActor | null) {
+/** Fired when Design auto-marks a CRM visit Meeting never happened (slot end + 4h). */
+export type CrmAutoNeverHappenedHandler = (meeting: MeetingRow) => void | Promise<void>;
+
+let crmAutoNeverHappenedHandler: CrmAutoNeverHappenedHandler | null = null;
+
+/** Register CRM sync for auto never-happened (server wires outcome API). */
+export function registerCrmAutoNeverHappenedHandler(handler: CrmAutoNeverHappenedHandler | null) {
+  crmAutoNeverHappenedHandler = handler;
+}
+
+export async function endCrmMeeting(
+  pool: Pool,
+  meetingId: number,
+  actor?: MeetingActor | null,
+  opts?: { isDrr?: boolean },
+) {
   await ensureLeadMeetingsTable(pool);
   const row = await loadMeeting(pool, meetingId);
   if (!row) throw new MeetingActionError(404, "Meeting not found");
   if (row.source !== "crm") throw new MeetingActionError(400, "End is for CRM meetings");
   if (row.meetingStatus === "cancelled") throw new MeetingActionError(409, "This meeting is cancelled");
+  // CRM blocks Successful ↔ Never Happened flips (409). Keep Design aligned.
+  if (row.progress === "meeting_never_happened") {
+    throw new MeetingActionError(
+      409,
+      "Cannot mark Meeting successful — already Meeting never happened",
+    );
+  }
   if (row.progress === "completed") return row;
   const now = new Date();
   await pool.query(
     `UPDATE lead_meetings SET progress = 'completed', ended_at = ?, updated_at = ? WHERE id = ?`,
     [now, now, row.id],
   );
-  await writeHistory(pool, row.leadId, actor, "Meeting Successful", "CRM meeting ended.", {
-    action: "completed",
-    meetingId: row.id,
-    source: "crm",
-    meetingDate: row.meetingDate,
-    meetingTime: row.meetingTime,
-  });
+  const isDrr = opts?.isDrr === true || row.isDrrRevisit === true;
+  await writeHistory(
+    pool,
+    row.leadId,
+    actor,
+    isDrr ? "Meeting Successful (DRR)" : "Meeting Successful",
+    isDrr
+      ? "Design Refinement Round visit marked Meeting Successful."
+      : "CRM meeting ended.",
+    {
+      action: "completed",
+      meetingId: row.id,
+      source: "crm",
+      isDrr,
+      meetingDate: row.meetingDate,
+      meetingTime: row.meetingTime,
+    },
+  );
   return loadMeeting(pool, row.id);
 }
 
 /** Mark CRM visit as Meeting never happened (Design DRR outcome). */
-export async function abandonCrmMeeting(pool: Pool, meetingId: number, actor?: MeetingActor | null) {
+export async function abandonCrmMeeting(
+  pool: Pool,
+  meetingId: number,
+  actor?: MeetingActor | null,
+  opts?: { isDrr?: boolean },
+) {
   await ensureLeadMeetingsTable(pool);
   const row = await loadMeeting(pool, meetingId);
   if (!row) throw new MeetingActionError(404, "Meeting not found");
@@ -1505,14 +1579,42 @@ export async function abandonCrmMeeting(pool: Pool, meetingId: number, actor?: M
     `UPDATE lead_meetings SET progress = 'meeting_never_happened', ended_at = ?, updated_at = ? WHERE id = ?`,
     [now, now, row.id],
   );
-  await writeHistory(pool, row.leadId, actor, "Meeting never happened", "CRM meeting marked never happened.", {
-    action: "meeting_never_happened",
-    meetingId: row.id,
-    source: "crm",
-    meetingDate: row.meetingDate,
-    meetingTime: row.meetingTime,
-  });
+  const isDrr = opts?.isDrr === true || row.isDrrRevisit === true;
+  await writeHistory(
+    pool,
+    row.leadId,
+    actor,
+    isDrr ? "Meeting never happened (DRR)" : "Meeting never happened",
+    isDrr
+      ? "Design Refinement Round visit marked Meeting never happened."
+      : "CRM meeting marked never happened.",
+    {
+      action: "meeting_never_happened",
+      meetingId: row.id,
+      source: "crm",
+      isDrr,
+      meetingDate: row.meetingDate,
+      meetingTime: row.meetingTime,
+    },
+  );
   return loadMeeting(pool, row.id);
+}
+
+/** Persist CRM appointment id on a meeting row when resolved later (feedback / DRR outcome). */
+export async function stampCrmAppointmentId(
+  pool: Pool,
+  meetingId: number,
+  crmAppointmentId: number,
+): Promise<void> {
+  if (!Number.isFinite(meetingId) || meetingId < 1) return;
+  if (!Number.isFinite(crmAppointmentId) || crmAppointmentId < 1) return;
+  await ensureLeadMeetingsTable(pool);
+  await pool.query(
+    `UPDATE lead_meetings
+        SET crm_appointment_id = COALESCE(crm_appointment_id, ?), updated_at = ?
+      WHERE id = ?`,
+    [crmAppointmentId, new Date(), meetingId],
+  );
 }
 
 /** True when this CRM row is a Design Refinement Round (DRR) revisit. */
@@ -1721,19 +1823,24 @@ function preferAmount(current: number | null | undefined, next: number | null | 
  * Covers: latest snapshot, CRM-shared snapshot, prolance quote snapshot,
  * any snapshot with an amount, lead.payload quotation fields.
  * Chunked so every board lead is covered (no silent 500-cap miss).
+ *
+ * `mode: "board"` skips the heaviest payload fallbacks so `/api/meetings/scheduled`
+ * stays under the frontend timeout; CRM-shared alone counts as quoteSent.
  */
 async function quoteShareByLead(
   pool: Pool,
   leadIds: number[],
+  opts?: { mode?: "full" | "board" },
 ): Promise<Map<number, { quoteSent: boolean; quoteFinalAmount: number | null; hasQuote: boolean }>> {
   const out = new Map<number, { quoteSent: boolean; quoteFinalAmount: number | null; hasQuote: boolean }>();
   const ids = [...new Set(leadIds.filter((id) => Number.isInteger(id) && id > 0))];
   if (ids.length === 0) return out;
 
-  const CHUNK = 400;
+  const mode = opts?.mode === "board" ? "board" : "full";
+  const CHUNK = mode === "board" ? 500 : 400;
   for (let offset = 0; offset < ids.length; offset += CHUNK) {
     const chunk = ids.slice(offset, offset + CHUNK);
-    const chunkResult = await quoteShareByLeadChunk(pool, chunk);
+    const chunkResult = await quoteShareByLeadChunk(pool, chunk, mode);
     for (const [id, value] of chunkResult) out.set(id, value);
   }
   return out;
@@ -1742,10 +1849,12 @@ async function quoteShareByLead(
 async function quoteShareByLeadChunk(
   pool: Pool,
   ids: number[],
+  mode: "full" | "board" = "full",
 ): Promise<Map<number, { quoteSent: boolean; quoteFinalAmount: number | null; hasQuote: boolean }>> {
   const out = new Map<number, { quoteSent: boolean; quoteFinalAmount: number | null; hasQuote: boolean }>();
   if (ids.length === 0) return out;
   const placeholders = ids.map(() => "?").join(",");
+  const boardFast = mode === "board";
 
   const amountByLead = new Map<number, number | null>();
   const hasSnapshotByLead = new Map<number, boolean>();
@@ -1794,122 +1903,124 @@ async function quoteShareByLeadChunk(
     if (Number(row.hasSnap) === 1) hasSnapshotByLead.set(id, true);
   }
 
-  // Latest snapshot amount.
-  const [latestRows] = await pool.query(
-    `SELECT s.lead_id AS leadId, s.payload_json AS payloadJson
-       FROM lead_prolance_quote_snapshots s
-       INNER JOIN (
-         SELECT lead_id, MAX(id) AS maxId
-           FROM lead_prolance_quote_snapshots
-          WHERE lead_id IN (${placeholders})
-          GROUP BY lead_id
-       ) latest ON latest.maxId = s.id`,
-    ids,
-  );
-  for (const row of latestRows as Record<string, unknown>[]) {
-    const id = Number(row.leadId);
-    if (!Number.isFinite(id) || id < 1) continue;
-    hasSnapshotByLead.set(id, true);
-    amountByLead.set(id, preferAmount(amountByLead.get(id), quoteAmountFromPayloadRaw(row.payloadJson)));
-  }
-
-  // CRM-shared snapshot amount (may differ from latest).
-  const sharedPairs = [...sharedByLead.entries()].filter(([, v]) => v.sharedQuoteId > 0);
-  if (sharedPairs.length > 0) {
-    const sharedQuoteIds = [...new Set(sharedPairs.map(([, v]) => v.sharedQuoteId))];
-    const sharedPlaceholders = sharedQuoteIds.map(() => "?").join(",");
-    try {
-      const [sharedSnapRows] = await pool.query(
-        `SELECT lead_id AS leadId, quote_id AS quoteId, payload_json AS payloadJson
-           FROM lead_prolance_quote_snapshots
-          WHERE quote_id IN (${sharedPlaceholders})`,
-        sharedQuoteIds,
-      );
-      for (const row of sharedSnapRows as Record<string, unknown>[]) {
-        const id = Number(row.leadId);
-        if (!Number.isFinite(id) || id < 1) continue;
-        hasSnapshotByLead.set(id, true);
-        amountByLead.set(id, preferAmount(amountByLead.get(id), quoteAmountFromPayloadRaw(row.payloadJson)));
-      }
-    } catch (err) {
-      console.error("quote amount shared snapshot failed", err);
+  if (!boardFast) {
+    // Latest snapshot amount.
+    const [latestRows] = await pool.query(
+      `SELECT s.lead_id AS leadId, s.payload_json AS payloadJson
+         FROM lead_prolance_quote_snapshots s
+         INNER JOIN (
+           SELECT lead_id, MAX(id) AS maxId
+             FROM lead_prolance_quote_snapshots
+            WHERE lead_id IN (${placeholders})
+            GROUP BY lead_id
+         ) latest ON latest.maxId = s.id`,
+      ids,
+    );
+    for (const row of latestRows as Record<string, unknown>[]) {
+      const id = Number(row.leadId);
+      if (!Number.isFinite(id) || id < 1) continue;
+      hasSnapshotByLead.set(id, true);
+      amountByLead.set(id, preferAmount(amountByLead.get(id), quoteAmountFromPayloadRaw(row.payloadJson)));
     }
-  }
 
-  // Snapshot by leads.prolance_quote_id when amount still missing.
-  const missingAfterLatest = ids.filter((id) => !(amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0));
-  const prolancePairs = missingAfterLatest
-    .map((id) => ({ id, quoteId: leadQuoteId.get(id) || 0 }))
-    .filter((row) => row.quoteId > 0);
-  if (prolancePairs.length > 0) {
-    const quoteIds = [...new Set(prolancePairs.map((row) => row.quoteId))];
-    const qPlaceholders = quoteIds.map(() => "?").join(",");
-    try {
-      const [prolanceSnapRows] = await pool.query(
-        `SELECT lead_id AS leadId, quote_id AS quoteId, payload_json AS payloadJson
-           FROM lead_prolance_quote_snapshots
-          WHERE quote_id IN (${qPlaceholders})`,
-        quoteIds,
-      );
-      const byQuoteId = new Map<number, unknown>();
-      for (const row of prolanceSnapRows as Record<string, unknown>[]) {
-        byQuoteId.set(Number(row.quoteId), row.payloadJson);
-        const leadId = Number(row.leadId);
-        if (Number.isFinite(leadId) && leadId > 0) hasSnapshotByLead.set(leadId, true);
+    // CRM-shared snapshot amount (may differ from latest).
+    const sharedPairs = [...sharedByLead.entries()].filter(([, v]) => v.sharedQuoteId > 0);
+    if (sharedPairs.length > 0) {
+      const sharedQuoteIds = [...new Set(sharedPairs.map(([, v]) => v.sharedQuoteId))];
+      const sharedPlaceholders = sharedQuoteIds.map(() => "?").join(",");
+      try {
+        const [sharedSnapRows] = await pool.query(
+          `SELECT lead_id AS leadId, quote_id AS quoteId, payload_json AS payloadJson
+             FROM lead_prolance_quote_snapshots
+            WHERE quote_id IN (${sharedPlaceholders})`,
+          sharedQuoteIds,
+        );
+        for (const row of sharedSnapRows as Record<string, unknown>[]) {
+          const id = Number(row.leadId);
+          if (!Number.isFinite(id) || id < 1) continue;
+          hasSnapshotByLead.set(id, true);
+          amountByLead.set(id, preferAmount(amountByLead.get(id), quoteAmountFromPayloadRaw(row.payloadJson)));
+        }
+      } catch (err) {
+        console.error("quote amount shared snapshot failed", err);
       }
-      for (const pair of prolancePairs) {
-        const amount = quoteAmountFromPayloadRaw(byQuoteId.get(pair.quoteId));
-        amountByLead.set(pair.id, preferAmount(amountByLead.get(pair.id), amount));
-        if (byQuoteId.has(pair.quoteId)) hasSnapshotByLead.set(pair.id, true);
-      }
-    } catch (err) {
-      console.error("quote amount prolance snapshot failed", err);
     }
-  }
 
-  // Any other snapshot for leads still missing amount (older versions may hold totals).
-  const stillMissing = ids.filter((id) => !(amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0));
-  if (stillMissing.length > 0) {
-    const missPlaceholders = stillMissing.map(() => "?").join(",");
-    try {
-      const [anySnapRows] = await pool.query(
-        `SELECT lead_id AS leadId, payload_json AS payloadJson
-           FROM lead_prolance_quote_snapshots
-          WHERE lead_id IN (${missPlaceholders})
-          ORDER BY id DESC`,
-        stillMissing,
-      );
-      for (const row of anySnapRows as Record<string, unknown>[]) {
-        const id = Number(row.leadId);
-        if (!Number.isFinite(id) || id < 1) continue;
-        hasSnapshotByLead.set(id, true);
-        if (amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0) continue;
-        const amount = quoteAmountFromPayloadRaw(row.payloadJson);
-        if (amount != null) amountByLead.set(id, amount);
+    // Snapshot by leads.prolance_quote_id when amount still missing.
+    const missingAfterLatest = ids.filter((id) => !(amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0));
+    const prolancePairs = missingAfterLatest
+      .map((id) => ({ id, quoteId: leadQuoteId.get(id) || 0 }))
+      .filter((row) => row.quoteId > 0);
+    if (prolancePairs.length > 0) {
+      const quoteIds = [...new Set(prolancePairs.map((row) => row.quoteId))];
+      const qPlaceholders = quoteIds.map(() => "?").join(",");
+      try {
+        const [prolanceSnapRows] = await pool.query(
+          `SELECT lead_id AS leadId, quote_id AS quoteId, payload_json AS payloadJson
+             FROM lead_prolance_quote_snapshots
+            WHERE quote_id IN (${qPlaceholders})`,
+          quoteIds,
+        );
+        const byQuoteId = new Map<number, unknown>();
+        for (const row of prolanceSnapRows as Record<string, unknown>[]) {
+          byQuoteId.set(Number(row.quoteId), row.payloadJson);
+          const leadId = Number(row.leadId);
+          if (Number.isFinite(leadId) && leadId > 0) hasSnapshotByLead.set(leadId, true);
+        }
+        for (const pair of prolancePairs) {
+          const amount = quoteAmountFromPayloadRaw(byQuoteId.get(pair.quoteId));
+          amountByLead.set(pair.id, preferAmount(amountByLead.get(pair.id), amount));
+          if (byQuoteId.has(pair.quoteId)) hasSnapshotByLead.set(pair.id, true);
+        }
+      } catch (err) {
+        console.error("quote amount prolance snapshot failed", err);
       }
-    } catch (err) {
-      console.error("quote amount any-snapshot failed", err);
     }
-  }
 
-  // Lead.payload fallback — only remaining misses.
-  const missingAmountIds = ids.filter((id) => !(amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0));
-  if (missingAmountIds.length > 0) {
-    const missingPlaceholders = missingAmountIds.map(() => "?").join(",");
-    try {
-      const [fallbackRows] = await pool.query(
-        `SELECT id AS leadId, payload
-           FROM leads
-          WHERE id IN (${missingPlaceholders})`,
-        missingAmountIds,
-      );
-      for (const row of fallbackRows as Record<string, unknown>[]) {
-        const id = Number(row.leadId);
-        const amount = quoteAmountFromPayloadRaw(row.payload);
-        if (amount != null) amountByLead.set(id, amount);
+    // Any other snapshot for leads still missing amount (older versions may hold totals).
+    const stillMissing = ids.filter((id) => !(amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0));
+    if (stillMissing.length > 0) {
+      const missPlaceholders = stillMissing.map(() => "?").join(",");
+      try {
+        const [anySnapRows] = await pool.query(
+          `SELECT lead_id AS leadId, payload_json AS payloadJson
+             FROM lead_prolance_quote_snapshots
+            WHERE lead_id IN (${missPlaceholders})
+            ORDER BY id DESC`,
+          stillMissing,
+        );
+        for (const row of anySnapRows as Record<string, unknown>[]) {
+          const id = Number(row.leadId);
+          if (!Number.isFinite(id) || id < 1) continue;
+          hasSnapshotByLead.set(id, true);
+          if (amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0) continue;
+          const amount = quoteAmountFromPayloadRaw(row.payloadJson);
+          if (amount != null) amountByLead.set(id, amount);
+        }
+      } catch (err) {
+        console.error("quote amount any-snapshot failed", err);
       }
-    } catch (err) {
-      console.error("quote amount lead fallback failed", err);
+    }
+
+    // Lead.payload fallback — only remaining misses.
+    const missingAmountIds = ids.filter((id) => !(amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0));
+    if (missingAmountIds.length > 0) {
+      const missingPlaceholders = missingAmountIds.map(() => "?").join(",");
+      try {
+        const [fallbackRows] = await pool.query(
+          `SELECT id AS leadId, payload
+             FROM leads
+            WHERE id IN (${missingPlaceholders})`,
+          missingAmountIds,
+        );
+        for (const row of fallbackRows as Record<string, unknown>[]) {
+          const id = Number(row.leadId);
+          const amount = quoteAmountFromPayloadRaw(row.payload);
+          if (amount != null) amountByLead.set(id, amount);
+        }
+      } catch (err) {
+        console.error("quote amount lead fallback failed", err);
+      }
     }
   }
 
@@ -1922,7 +2033,10 @@ async function quoteShareByLeadChunk(
       hasSnapshotByLead.get(id) === true ||
       amount != null;
     out.set(id, {
-      quoteSent: hasQuoteCode && amount != null && share?.shared === true,
+      // Board: CRM-shared means quote was sent even if amount parse is slow/missing.
+      quoteSent: boardFast
+        ? share?.shared === true
+        : hasQuoteCode && amount != null && share?.shared === true,
       quoteFinalAmount: amount,
       hasQuote: hasQuoteCode,
     });
@@ -2025,6 +2139,7 @@ export async function completePre10CrmMeetingAfterQuoteShare(
         AND source = 'crm'
         AND meeting_status <> 'cancelled'
         AND progress <> 'completed'
+        AND COALESCE(is_drr_revisit, 0) = 0
         AND (
           meeting_type = 'pre_10'
           OR meeting_type = 'pre10'
@@ -2135,6 +2250,8 @@ async function reconcileCrmDrrScheduledMeetings(pool: Pool) {
 }
 
 async function reconcilePre10MeetingsAfterCrmQuoteShare(pool: Pool) {
+  // Quote share closes the Pre 10% visit only. A DRR revisit is stored as pre_10
+  // with is_drr_revisit = 1 and must stay Scheduled (DRR).
   await pool.query(
     `UPDATE lead_meetings m
        JOIN (
@@ -2151,11 +2268,38 @@ async function reconcilePre10MeetingsAfterCrmQuoteShare(pool: Pool) {
       WHERE m.source = 'crm'
         AND m.meeting_status <> 'cancelled'
         AND m.progress <> 'completed'
+        AND COALESCE(m.is_drr_revisit, 0) = 0
         AND (
           m.meeting_type = 'pre_10'
           OR m.meeting_type = 'pre10'
           OR m.meeting_type IS NULL
           OR TRIM(m.meeting_type) = ''
+        )`,
+  );
+
+  await reopenDrrMeetingsClosedByQuoteShare(pool);
+}
+
+/** DRR visits quote-share had marked successful. An explicit Meeting successful stays completed. */
+async function reopenDrrMeetingsClosedByQuoteShare(pool: Pool) {
+  await pool.query(
+    `UPDATE lead_meetings m
+        SET m.progress = 'scheduled',
+            m.ended_at = NULL,
+            m.updated_at = NOW()
+      WHERE m.source = 'crm'
+        AND m.meeting_status <> 'cancelled'
+        AND m.progress = 'completed'
+        AND (
+          COALESCE(m.is_drr_revisit, 0) = 1
+          OR LOWER(IFNULL(m.meeting_type, '')) LIKE '%design%refinement%'
+          OR LOWER(IFNULL(m.meeting_type, '')) LIKE '%refinement%round%'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM lead_history h2
+           WHERE h2.lead_id = m.lead_id
+             AND h2.event LIKE '%CRM meeting ended%'
+             AND h2.event LIKE CONCAT('%"meetingId":', m.id, '%')
         )`,
   );
 }
@@ -2276,12 +2420,27 @@ const SALES_EXECUTIVE_FROM_PAYLOAD_SQL = `COALESCE(
   ${leadPayloadJsonText("$.sales_person")}
 )`;
 
-async function salesExecutiveByLeadChunk(pool: Pool, ids: number[]): Promise<Map<number, string>> {
+/** Fewer JSON paths for the meeting board — full COALESCE was scanning huge payloads per lead. */
+const SALES_EXECUTIVE_BOARD_SQL = `COALESCE(
+  ${leadPayloadJsonText("$.formData.salesExecutive")},
+  ${leadPayloadJsonText("$.formData.sales_executive")},
+  ${leadPayloadJsonText("$.formData.sales_person")},
+  ${leadPayloadJsonText("$.fetchedData.salesExecutive")},
+  ${leadPayloadJsonText("$.salesExecutive")},
+  ${leadPayloadJsonText("$.sales_executive")}
+)`;
+
+async function salesExecutiveByLeadChunk(
+  pool: Pool,
+  ids: number[],
+  mode: "full" | "board" = "full",
+): Promise<Map<number, string>> {
   const out = new Map<number, string>();
   if (ids.length === 0) return out;
   const placeholders = ids.map(() => "?").join(",");
+  const salesSql = mode === "board" ? SALES_EXECUTIVE_BOARD_SQL : SALES_EXECUTIVE_FROM_PAYLOAD_SQL;
   const [leadRows] = await pool.query(
-    `SELECT id AS leadId, ${SALES_EXECUTIVE_FROM_PAYLOAD_SQL} AS salesExecutiveName
+    `SELECT id AS leadId, ${salesSql} AS salesExecutiveName
        FROM leads
       WHERE id IN (${placeholders})`,
     ids,
@@ -2295,14 +2454,19 @@ async function salesExecutiveByLeadChunk(pool: Pool, ids: number[]): Promise<Map
 }
 
 /** CRM sales executive name from lead payload (batched JSON paths — no full payload fetch per meeting). */
-async function salesExecutiveByLeadIds(pool: Pool, leadIds: number[]): Promise<Map<number, string>> {
+async function salesExecutiveByLeadIds(
+  pool: Pool,
+  leadIds: number[],
+  opts?: { mode?: "full" | "board" },
+): Promise<Map<number, string>> {
   const out = new Map<number, string>();
   const ids = [...new Set(leadIds.filter((id) => Number.isInteger(id) && id > 0))];
   if (ids.length === 0) return out;
-  const CHUNK = 200;
+  const mode = opts?.mode === "board" ? "board" : "full";
+  const CHUNK = mode === "board" ? 300 : 200;
   for (let offset = 0; offset < ids.length; offset += CHUNK) {
     const chunk = ids.slice(offset, offset + CHUNK);
-    const chunkResult = await salesExecutiveByLeadChunk(pool, chunk);
+    const chunkResult = await salesExecutiveByLeadChunk(pool, chunk, mode);
     for (const [id, value] of chunkResult) out.set(id, value);
   }
   return out;
@@ -2313,16 +2477,24 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
   const now = opts?.now || new Date();
   if (Date.now() - lastMeetingListReconcileAt >= MEETING_LIST_RECONCILE_MS) {
     lastMeetingListReconcileAt = Date.now();
-    void (async () => {
-      try {
-        await cleanupOrphanMeetingRows(pool);
-        await reconcileCompletedDesignMeetings(pool);
-        await reconcilePre10MeetingsAfterCrmQuoteShare(pool);
-        await reconcileCrmDrrScheduledMeetings(pool);
-      } catch (err) {
-        console.error("meeting list reconcile failed", err);
-      }
-    })();
+    try {
+      await reopenDrrMeetingsClosedByQuoteShare(pool);
+    } catch (err) {
+      console.error("[lead-meetings] DRR reopen failed", err);
+    }
+    // Delay so reconcile cannot steal pool connections from this board response.
+    setTimeout(() => {
+      void (async () => {
+        try {
+          await cleanupOrphanMeetingRows(pool);
+          await reconcileCompletedDesignMeetings(pool);
+          await reconcilePre10MeetingsAfterCrmQuoteShare(pool);
+          await reconcileCrmDrrScheduledMeetings(pool);
+        } catch (err) {
+          console.error("meeting list reconcile failed", err);
+        }
+      })();
+    }, 2500);
   }
 
   const designerIds = opts?.designerIds?.filter((id) => Number.isInteger(id) && id > 0);
@@ -2361,9 +2533,11 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
       designerIds: scoped ? designerIds : undefined,
       now,
     });
-  }, 0);
+  }, 3000);
 
-  // Board-fast select: scalar columns only (no payload JSON — huge blobs timed out hosted).
+  // Board-fast select: scalar columns only + light DRR (no per-row payload JSON / EXISTS).
+  // No hard 1500 cap — ASC LIMIT 1500 dropped all of November 2026 (0 of 3200+ rows).
+  // Date window already bounds volume; soft ceiling only as a safety valve.
   const [rows] = await pool.query(
     `SELECT m.id,
             l.id AS leadId,
@@ -2390,13 +2564,13 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
             m.crm_appointment_id AS crmAppointmentId,
             m.started_at AS startedAt,
             u.name AS assignedDesignerName,
-            CASE WHEN ${CRM_DRR_REVISIT_SQL} THEN 1 ELSE 0 END AS crmDrrRevisit
+            CASE WHEN ${CRM_DRR_REVISIT_BOARD_SQL} THEN 1 ELSE 0 END AS crmDrrRevisit
        FROM lead_meetings m
        JOIN leads l ON l.id = m.lead_id
        LEFT JOIN users u ON u.id = COALESCE(m.designer_id, l.assigned_designer_id)
       WHERE ${whereParts.join(" AND ")}
       ORDER BY m.meeting_date ASC, m.meeting_time ASC, m.id ASC
-      LIMIT 1500`,
+      LIMIT 10000`,
     queryParams,
   );
 
@@ -2432,29 +2606,34 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
     }
   }
 
+  const meetingLeadIds = [
+    ...new Set((rows as Record<string, unknown>[]).map((row) => Number(row.leadId))),
+  ].filter((id) => Number.isFinite(id) && id > 0);
+
   let shareByLead = new Map<
     number,
     { quoteSent: boolean; quoteFinalAmount: number | null; hasQuote: boolean }
   >();
-  try {
-    const leadIds = [...new Set((rows as Record<string, unknown>[]).map((row) => Number(row.leadId)))].filter(
-      (id) => Number.isFinite(id) && id > 0,
-    );
-    // Every board lead — chunked inside quoteShareByLead (no silent 500-cap miss).
-    shareByLead = await quoteShareByLead(pool, leadIds);
-  } catch (err) {
-    console.error("quote share lookup failed", err);
-  }
-
   let salesByLead = new Map<number, string>();
-  try {
-    const meetingLeadIds = [
-      ...new Set((rows as Record<string, unknown>[]).map((row) => Number(row.leadId))),
-    ].filter((id) => Number.isFinite(id) && id > 0);
-    salesByLead = await salesExecutiveByLeadIds(pool, meetingLeadIds);
-  } catch (err) {
-    console.error("sales executive lookup failed", err);
-  }
+  // Quote + sales in parallel — sequential enrichment was a major board timeout driver.
+  // Sales JSON-on-payload can spike; budget it so the board never waits on it.
+  const [shareResult, salesResult] = await Promise.all([
+    quoteShareByLead(pool, meetingLeadIds, { mode: "board" }).catch((err) => {
+      console.error("quote share lookup failed", err);
+      return shareByLead;
+    }),
+    Promise.race([
+      salesExecutiveByLeadIds(pool, meetingLeadIds, { mode: "board" }).catch((err) => {
+        console.error("sales executive lookup failed", err);
+        return new Map<number, string>();
+      }),
+      new Promise<Map<number, string>>((resolve) => {
+        setTimeout(() => resolve(new Map()), 1200);
+      }),
+    ]),
+  ]);
+  shareByLead = shareResult;
+  salesByLead = salesResult;
 
   return (rows as Record<string, unknown>[]).map((row) => {
     const share = shareByLead.get(Number(row.leadId));
@@ -2656,8 +2835,7 @@ async function backfillLeadMeetings(pool: Pool) {
       const appt = extractCrmAppointmentFromLeadPayload(payload);
       if (appt.meetingDate && appt.meetingTime) {
         const crmLabel = cleanText(payload.meetingType);
-        const completedPre10 = await leadHasCompletedCrmMeeting(pool, lead.id);
-        const drrVisit = leadPayloadIndicatesDrr(payload) || completedPre10;
+        const drrVisit = leadPayloadIndicatesDrr(payload);
         await insertBackfill(pool, {
           leadId: lead.id,
           meetingDate: appt.meetingDate,
@@ -2666,7 +2844,7 @@ async function backfillLeadMeetings(pool: Pool) {
           meetingMode: crmChannel(crmLabel),
           designerId: lead.designerId ?? null,
           source: "crm",
-          isDrrRevisit: drrVisit && completedPre10,
+          isDrrRevisit: drrVisit,
         });
       }
     }

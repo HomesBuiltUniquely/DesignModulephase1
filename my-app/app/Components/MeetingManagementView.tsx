@@ -469,6 +469,8 @@ function meetingKindLabel(meeting: ScheduledMeeting): string {
     if (meeting.personalApproval === 'cancelled') return 'Leave cancelled';
     return 'Full-day leave';
   }
+  // DRR stays labeled Pre 10% in the MEETING column (same as other CRM visits).
+  // DRR is tracked only via crmDrrRevisit / filters — not this badge.
   const type = clientMeetingType(meeting);
   if (type) return TYPE_LABEL[type];
   const raw = (meeting.meetingType || '').trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
@@ -935,13 +937,16 @@ function StatusPill({ status, meeting }: { status: ViewStatus; meeting?: ViewMee
       status !== 'completed' &&
       status !== 'abandoned';
     if (openDrr) {
-      label = 'Scheduled(DRR)';
+      label = 'Scheduled (DRR)';
       pillStatus = status;
     } else if (treatCancelled) {
       label = rawLabel || 'Meeting Cancelled';
       pillStatus = 'cancelled';
     } else if (status === 'completed') {
-      label = rawLabel || 'Meeting Successful';
+      label =
+        isDrrCrmMeeting(meeting)
+          ? 'Meeting Successful (DRR)'
+          : rawLabel || 'Meeting Successful';
       pillStatus = 'completed';
     } else if (status === 'abandoned') {
       label = (meeting.raw.progressLabel || '').trim() || 'Meeting never happened';
@@ -1106,7 +1111,7 @@ export default function MeetingManagementView() {
     try {
       let data: Record<string, unknown>;
       try {
-        data = await fetchBoard(12000);
+        data = await fetchBoard(20000);
       } catch (firstErr) {
         const aborted = firstErr instanceof DOMException && firstErr.name === 'AbortError';
         const networkFail =
@@ -1114,7 +1119,7 @@ export default function MeetingManagementView() {
           (firstErr instanceof Error && /failed to fetch|networkerror|load failed/i.test(firstErr.message));
         if (!aborted && !networkFail) throw firstErr;
         // One automatic retry — hosted can be cold on the first hit after deploy.
-        data = await fetchBoard(15000);
+        data = await fetchBoard(30000);
       }
       setMeetings(Array.isArray(data?.meetings) ? (data.meetings as ScheduledMeeting[]) : []);
       setPersonalWarning(
@@ -1313,19 +1318,21 @@ export default function MeetingManagementView() {
     setDesignerFeedbackOk(null);
   }, [selected?.key, selected?.raw.feedbackDesigner]);
 
-  const submitDesignerFeedback = async () => {
-    if (!sessionId || !selected?.id) return;
+  const submitDesignerFeedback = async (opts?: { silentOk?: boolean }): Promise<boolean> => {
+    if (!sessionId || !selected?.id) return false;
     const text = designerFeedbackDraft.trim();
     if (!text) {
       setDesignerFeedbackError('Write a short note');
       setDesignerFeedbackOk(null);
-      return;
+      return false;
     }
     if (text.length > 50) {
       setDesignerFeedbackError('Keep feedback under 50 characters');
       setDesignerFeedbackOk(null);
-      return;
+      return false;
     }
+    // Already saved — treat as success (e.g. DRR outcome auto-submit path).
+    if ((selected.raw.feedbackDesigner || '').trim()) return true;
     setDesignerFeedbackBusy(true);
     setDesignerFeedbackError(null);
     setDesignerFeedbackOk(null);
@@ -1357,7 +1364,7 @@ export default function MeetingManagementView() {
           );
           setDesignerFeedbackError(null);
           setDesignerFeedbackOk(null);
-          return;
+          return true;
         }
         throw new Error(data?.message || 'Could not save feedback');
       }
@@ -1377,9 +1384,11 @@ export default function MeetingManagementView() {
             : meeting,
         ),
       );
-      setDesignerFeedbackOk(null);
+      if (!opts?.silentOk) setDesignerFeedbackOk(null);
+      return true;
     } catch (err) {
       setDesignerFeedbackError(err instanceof Error ? err.message : 'Could not save feedback');
+      return false;
     } finally {
       setDesignerFeedbackBusy(false);
     }
@@ -1410,7 +1419,7 @@ export default function MeetingManagementView() {
   }, [mapped]);
   const statusChoices: { id: StatusKey; label: string }[] = [
     { id: 'scheduled', label: 'Scheduled' },
-    { id: 'scheduled_drr', label: 'Scheduled(DRR)' },
+    { id: 'scheduled_drr', label: 'Scheduled (DRR)' },
     { id: 'rescheduled', label: 'Meeting Rescheduled' },
     { id: 'in_progress', label: 'In progress' },
     { id: 'completed', label: 'Meeting Successful' },
@@ -1493,6 +1502,7 @@ export default function MeetingManagementView() {
     return statusFilters.some((want) => {
       if (want === 'scheduled_drr') return isScheduledDrrMeeting(meeting);
       if (want === 'completed_drr') return isSuccessfulDrrMeeting(meeting);
+      if ((want === 'scheduled' || want === 'rescheduled') && isDrrCrmMeeting(meeting)) return false;
       return meeting.status === want;
     });
   }, [statusFilters]);
@@ -1927,10 +1937,16 @@ export default function MeetingManagementView() {
   };
 
   const submitDrrOutcome = async (outcome: 'successful' | 'never_happened') => {
-    if (!selected || !sessionId || drrOutcomeBusy) return;
+    if (!selected || !sessionId || drrOutcomeBusy || designerFeedbackBusy) return;
     if (!canShowDrrOutcomeActions(selected)) return;
-    if (!feedbackAlreadySubmitted) {
-      setPre10ActionError('Submit designer feedback first, then choose the visit outcome.');
+    const draft = designerFeedbackDraft.trim();
+    const alreadyHasFeedback = !!(selected.raw.feedbackDesigner || '').trim();
+    if (!alreadyHasFeedback && !draft) {
+      setPre10ActionError('Enter designer feedback, then choose Meeting successful or Meeting never happened.');
+      return;
+    }
+    if (!alreadyHasFeedback && draft.length > 50) {
+      setPre10ActionError('Keep feedback under 50 characters.');
       return;
     }
     const meetingId = selected.id ?? selected.raw.id;
@@ -1940,13 +1956,22 @@ export default function MeetingManagementView() {
     }
     const confirmText =
       outcome === 'successful'
-        ? 'Mark this Design Refinement Round visit as Meeting successful?'
-        : 'Mark this Design Refinement Round visit as Meeting never happened?';
+        ? 'Save feedback and mark this Design Refinement Round as Meeting successful?'
+        : 'Save feedback and mark this Design Refinement Round as Meeting never happened?';
     if (!window.confirm(confirmText)) return;
 
     setPre10ActionError(null);
     setDrrOutcomeBusy(outcome);
     try {
+      // Feedback auto-submits with the outcome — no separate Submit while buttons are available.
+      if (!alreadyHasFeedback) {
+        const feedbackOk = await submitDesignerFeedback({ silentOk: true });
+        if (!feedbackOk) {
+          setPre10ActionError('Could not save feedback — outcome was not applied.');
+          return;
+        }
+      }
+
       const res = await fetch(`${apiBase}/api/meetings/${meetingId}/drr-outcome`, {
         method: 'POST',
         headers: {
@@ -1957,7 +1982,7 @@ export default function MeetingManagementView() {
         body: JSON.stringify({ outcome }),
       });
       const data = await res.json().catch(() => ({}));
-      const savedLocally = data?.meeting != null || res.ok;
+      const savedLocally = data?.meeting != null || data?.ok === true || res.ok;
       if (savedLocally) {
         await loadMeetings();
         setSelected((prev) =>
@@ -1967,28 +1992,28 @@ export default function MeetingManagementView() {
                 status: outcome === 'successful' ? 'completed' : 'abandoned',
                 raw: {
                   ...prev.raw,
+                  feedbackDesigner: draft || prev.raw.feedbackDesigner,
                   progress: outcome === 'successful' ? 'completed' : 'meeting_never_happened',
                   progressLabel:
-                    outcome === 'successful' ? 'Meeting Successful' : 'Meeting never happened',
+                    outcome === 'successful'
+                      ? 'Meeting Successful (DRR)'
+                      : 'Meeting never happened',
                 },
               }
             : prev,
         );
+        // Design saved — CRM miss is a warning, not a hard failure (hosted often hits this).
+        if (data?.crmSynced === false) {
+          setPre10ActionError(
+            data?.message ||
+              `Saved here, but CRM progress was not updated${data?.crmSyncError ? `: ${data.crmSyncError}` : '.'}`,
+          );
+        } else {
+          setPre10ActionError(null);
+        }
+        return;
       }
-      if (!res.ok) {
-        throw new Error(
-          data?.message ||
-            (data?.crmSynced === false
-              ? `Saved here, but CRM progress was not updated${data?.crmSyncError ? `: ${data.crmSyncError}` : '.'}`
-              : 'Could not save DRR meeting outcome.'),
-        );
-      }
-      if (data?.crmSynced === false) {
-        setPre10ActionError(
-          data?.message ||
-            `Saved here, but CRM progress was not updated${data?.crmSyncError ? `: ${data.crmSyncError}` : '.'}`,
-        );
-      }
+      throw new Error(data?.message || 'Could not save DRR meeting outcome.');
     } catch (err) {
       setPre10ActionError(err instanceof Error ? err.message : 'Could not save DRR meeting outcome.');
     } finally {
@@ -1997,7 +2022,22 @@ export default function MeetingManagementView() {
   };
 
   const showDrrOutcome = selected ? canShowDrrOutcomeActions(selected) : false;
-  const drrOutcomeUnlocked = feedbackAlreadySubmitted;
+  /** DRR panel stays after outcome so feedback can still be viewed/submitted; outcome buttons hide. */
+  const showDrrPanel =
+    !!selected &&
+    selectedIsDrr &&
+    selected.status !== 'cancelled' &&
+    (showDrrOutcome ||
+      selected.status === 'completed' ||
+      selected.status === 'abandoned');
+  /** While outcome buttons exist: feedback submits with the choice. After options gone (e.g. 4h): show Submit. */
+  const showDrrFeedbackSubmit = !showDrrOutcome && !feedbackAlreadySubmitted;
+  const drrOutcomeUnlocked =
+    feedbackAlreadySubmitted || designerFeedbackDraft.trim().length > 0;
+  const drrOutcomeSettled =
+    !!selected &&
+    selectedIsDrr &&
+    (selected.status === 'completed' || selected.status === 'abandoned');
 
   return (
     <div className={styles.root}>
@@ -2656,9 +2696,12 @@ export default function MeetingManagementView() {
                   Personal time is booked by the designer. Change or cancel it from Personal Appointments.
                 </p>
               </div>
-            ) : showDrrOutcome ? (
+            ) : showDrrPanel ? (
               <div className={`${styles.foot} ${styles.pre10Foot}`}>
-                <div className={styles.pre10ActionCard} data-state="live">
+                <div
+                  className={styles.pre10ActionCard}
+                  data-state={drrOutcomeSettled ? 'locked' : 'live'}
+                >
                   <div className={styles.pre10ActionShine} aria-hidden="true" />
                   <div className={styles.pre10ActionTop}>
                     <span className={styles.pre10Badge}>
@@ -2670,16 +2713,30 @@ export default function MeetingManagementView() {
                     ) : null}
                   </div>
                   <div className={styles.pre10ActionBody}>
-                    <p className={styles.pre10ActionTitle}>How did this DRR visit go?</p>
+                    <p className={styles.pre10ActionTitle}>
+                      {drrOutcomeSettled
+                        ? selected.status === 'completed'
+                          ? 'Meeting Successful (DRR)'
+                          : 'Meeting never happened'
+                        : 'How did this DRR visit go?'}
+                    </p>
                     <p className={styles.pre10ActionSub}>
-                      Add designer feedback first (required). Then mark Meeting successful or Meeting never happened for this DRR visit only.
+                      {drrOutcomeSettled
+                        ? 'Outcome is set (cannot flip Successful ↔ Never Happened). Feedback stays available.'
+                        : showDrrOutcome
+                          ? 'Enter feedback, then choose Meeting successful or Meeting never happened — feedback saves with that choice.'
+                          : 'Outcome options are no longer available. You can still submit designer feedback.'}
                     </p>
                   </div>
                   <div className={styles.crmFeedback} style={{ marginBottom: 12 }}>
                     <div className={styles.crmFeedbackTop}>
                       <span className={styles.crmFeedbackTitle}>Feedback</span>
                       <span className={styles.crmFeedbackBadge}>
-                        {feedbackAlreadySubmitted ? 'One-time done' : 'Required'}
+                        {feedbackAlreadySubmitted
+                          ? 'One-time done'
+                          : showDrrOutcome
+                            ? 'Required'
+                            : 'Optional'}
                       </span>
                     </div>
                     {feedbackAlreadySubmitted ? (
@@ -2697,7 +2754,7 @@ export default function MeetingManagementView() {
                           maxLength={50}
                           placeholder="Short note (max 50)…"
                           value={designerFeedbackDraft}
-                          disabled={designerFeedbackBusy}
+                          disabled={designerFeedbackBusy || drrOutcomeBusy != null}
                           onChange={(e) => {
                             setDesignerFeedbackDraft(e.target.value.slice(0, 50));
                             setDesignerFeedbackError(null);
@@ -2712,21 +2769,23 @@ export default function MeetingManagementView() {
                           >
                             {designerFeedbackDraft.trim().length}/50
                           </span>
-                          <button
-                            type="button"
-                            className={styles.crmFeedbackSubmit}
-                            disabled={
-                              designerFeedbackBusy ||
-                              !designerFeedbackDraft.trim() ||
-                              designerFeedbackDraft.trim().length > 50
-                            }
-                            onClick={() => void submitDesignerFeedback()}
-                          >
-                            <span className={styles.crmFeedbackSubmitShine} aria-hidden="true" />
-                            <span className={styles.crmFeedbackSubmitLabel}>
-                              {designerFeedbackBusy ? '…' : 'Submit'}
-                            </span>
-                          </button>
+                          {showDrrFeedbackSubmit ? (
+                            <button
+                              type="button"
+                              className={styles.crmFeedbackSubmit}
+                              disabled={
+                                designerFeedbackBusy ||
+                                !designerFeedbackDraft.trim() ||
+                                designerFeedbackDraft.trim().length > 50
+                              }
+                              onClick={() => void submitDesignerFeedback()}
+                            >
+                              <span className={styles.crmFeedbackSubmitShine} aria-hidden="true" />
+                              <span className={styles.crmFeedbackSubmitLabel}>
+                                {designerFeedbackBusy ? '…' : 'Submit'}
+                              </span>
+                            </button>
+                          ) : null}
                         </div>
                       </label>
                     )}
@@ -2737,28 +2796,40 @@ export default function MeetingManagementView() {
                       <p className={styles.crmFeedbackSuccess}>{designerFeedbackOk}</p>
                     ) : null}
                   </div>
-                  <div className={`${styles.pre10ActionRow} ${styles.pre10ActionRowSplit}`}>
-                    <button
-                      type="button"
-                      className={`${styles.actBtn} ${styles.actEnd}`}
-                      disabled={drrOutcomeBusy != null || !drrOutcomeUnlocked}
-                      onClick={() => void submitDrrOutcome('successful')}
-                    >
-                      {drrOutcomeBusy === 'successful' ? 'Saving…' : 'Meeting successful'}
-                    </button>
-                    <button
-                      type="button"
-                      className={`${styles.actBtn} ${styles.actCancel}`}
-                      disabled={drrOutcomeBusy != null || !drrOutcomeUnlocked}
-                      onClick={() => void submitDrrOutcome('never_happened')}
-                    >
-                      {drrOutcomeBusy === 'never_happened' ? 'Saving…' : 'Meeting never happened'}
-                    </button>
-                  </div>
-                  {!drrOutcomeUnlocked ? (
-                    <p className={styles.pre10ActionSub} style={{ marginTop: 8 }}>
-                      Submit feedback above to enable the outcome buttons.
-                    </p>
+                  {showDrrOutcome ? (
+                    <>
+                      <div className={`${styles.pre10ActionRow} ${styles.pre10ActionRowSplit}`}>
+                        <button
+                          type="button"
+                          className={`${styles.actBtn} ${styles.actEnd}`}
+                          disabled={
+                            drrOutcomeBusy != null ||
+                            designerFeedbackBusy ||
+                            !drrOutcomeUnlocked
+                          }
+                          onClick={() => void submitDrrOutcome('successful')}
+                        >
+                          {drrOutcomeBusy === 'successful' ? 'Saving…' : 'Meeting successful'}
+                        </button>
+                        <button
+                          type="button"
+                          className={`${styles.actBtn} ${styles.actCancel}`}
+                          disabled={
+                            drrOutcomeBusy != null ||
+                            designerFeedbackBusy ||
+                            !drrOutcomeUnlocked
+                          }
+                          onClick={() => void submitDrrOutcome('never_happened')}
+                        >
+                          {drrOutcomeBusy === 'never_happened' ? 'Saving…' : 'Meeting never happened'}
+                        </button>
+                      </div>
+                      {!drrOutcomeUnlocked ? (
+                        <p className={styles.pre10ActionSub} style={{ marginTop: 8 }}>
+                          Enter feedback above, then choose an outcome — feedback saves automatically.
+                        </p>
+                      ) : null}
+                    </>
                   ) : null}
                   {pre10ActionError ? <p className={styles.pre10ActionError}>{pre10ActionError}</p> : null}
                 </div>

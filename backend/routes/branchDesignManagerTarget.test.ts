@@ -7,6 +7,7 @@ import {
   INITIAL_BRANCH_MINIMUM_INR,
   applicableBranchTarget,
   authorizeBranchTargetWrite,
+  branchMinimumForPeriod,
   initialBranchFloors,
   nextStoredMinimum,
   raiseBranchFloor,
@@ -18,6 +19,17 @@ const ONE_POINT_FIVE_CRORE = INITIAL_BRANCH_MINIMUM_INR;
 const TWO_CRORE = 2 * CRORE;
 
 assert.equal(ONE_POINT_FIVE_CRORE, 1.5 * CRORE);
+
+assert.equal(
+  branchMinimumForPeriod(ONE_POINT_FIVE_CRORE, 30),
+  ONE_POINT_FIVE_CRORE,
+  "monthly period uses full branch floor",
+);
+assert.equal(
+  branchMinimumForPeriod(ONE_POINT_FIVE_CRORE, 15),
+  ONE_POINT_FIVE_CRORE / 2,
+  "fortnight period uses half the monthly branch floor",
+);
 
 assert.equal(
   applicableBranchTarget(ONE_POINT_FIVE_CRORE, ONE_POINT_FOUR_CRORE),
