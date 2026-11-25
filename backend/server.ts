@@ -23567,6 +23567,12 @@ async function listPersonalAppointmentsForMeetingBoard(limitToUserIds?: number[]
  * Admin sees every meeting. Designer, design manager, and TDM see only their team.
  * GET /api/meetings/scheduled
  */
+const MEETING_BOARD_RESPONSE_CACHE_MS = 12_000;
+const meetingBoardResponseCache = new Map<
+  string,
+  { at: number; body: { meetings: unknown[]; personalWarning: string | null } }
+>();
+
 app.get("/api/meetings/scheduled", async (req: Request, res: Response) => {
   const startedAt = Date.now();
   try {
@@ -23578,17 +23584,41 @@ app.get("/api/meetings/scheduled", async (req: Request, res: Response) => {
     const scope = await meetingViewerScope(actingUser);
     if (!scope) return res.status(403).json({ message: "Not allowed to open meeting management" });
 
+    // Optional from/to (YYYY-MM-DD) from Meeting Management date range — keeps Today/Tomorrow
+    // in the result set instead of truncating them behind an ASC soft cap.
+    const fromRaw = typeof req.query.from === "string" ? req.query.from.trim() : "";
+    const toRaw = typeof req.query.to === "string" ? req.query.to.trim() : "";
+    const fromIso = /^\d{4}-\d{2}-\d{2}$/.test(fromRaw) ? fromRaw : undefined;
+    const toIso = /^\d{4}-\d{2}-\d{2}$/.test(toRaw) ? toRaw : undefined;
+    const cacheKey = [
+      actingUser.id,
+      scope.all ? "all" : scope.userIds.slice().sort((a, b) => a - b).join(","),
+      fromIso || "-",
+      toIso || "-",
+    ].join("|");
+    const cached = meetingBoardResponseCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < MEETING_BOARD_RESPONSE_CACHE_MS) {
+      console.log(
+        `[meeting-board] scheduled list cache hit in ${Date.now() - startedAt}ms (meetings=${cached.body.meetings.length})`,
+      );
+      return res.json(cached.body);
+    }
+
     // Client meetings first — personal ERP must never block the board (hosted timed out).
-    const meetings = await listLeadMeetings(pool, scope.all ? undefined : { designerIds: scope.userIds });
+    const meetings = await listLeadMeetings(pool, {
+      ...(scope.all ? {} : { designerIds: scope.userIds }),
+      ...(fromIso ? { fromIso } : {}),
+      ...(toIso ? { toIso } : {}),
+    });
     const clientMs = Date.now() - startedAt;
 
     let personal: Record<string, unknown>[] = [];
     let personalWarning: string | null = null;
-    // If client list already used most of the budget, skip personal and return immediately.
-    const PERSONAL_BOARD_BUDGET_MS = clientMs > 4500 ? 0 : clientMs > 2500 ? 300 : 600;
+    // Personal ERP auth is often down and was burning the request after a healthy client list.
+    // Keep a tiny budget only when the client board was very fast; otherwise return immediately.
+    const PERSONAL_BOARD_BUDGET_MS = clientMs > 2000 ? 0 : clientMs > 1200 ? 200 : 400;
     if (PERSONAL_BOARD_BUDGET_MS <= 0) {
       personalWarning = "Personal appointments skipped to keep Meeting Management fast. Refresh to retry.";
-      void listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds).catch(() => undefined);
     } else {
       try {
         const personalResult = await Promise.race([
@@ -23617,7 +23647,6 @@ app.get("/api/meetings/scheduled", async (req: Request, res: Response) => {
           personalWarning = personalResult.board.warning;
         } else {
           personalWarning = personalResult.warning;
-          void listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds).catch(() => undefined);
         }
       } catch (personalErr) {
         console.error("[meeting-board] personal appointments failed", personalErr);
@@ -23625,10 +23654,16 @@ app.get("/api/meetings/scheduled", async (req: Request, res: Response) => {
       }
     }
 
+    const body = { meetings: [...meetings, ...personal], personalWarning };
+    meetingBoardResponseCache.set(cacheKey, { at: Date.now(), body });
+    if (meetingBoardResponseCache.size > 40) {
+      const oldest = [...meetingBoardResponseCache.entries()].sort((a, b) => a[1].at - b[1].at)[0]?.[0];
+      if (oldest) meetingBoardResponseCache.delete(oldest);
+    }
     console.log(
       `[meeting-board] scheduled list ready in ${Date.now() - startedAt}ms (client=${meetings.length}, personal=${personal.length}, clientMs=${clientMs})`,
     );
-    return res.json({ meetings: [...meetings, ...personal], personalWarning });
+    return res.json(body);
   } catch (err) {
     console.error("scheduled meetings list error", err);
     return res.status(500).json({ message: "Failed to load scheduled meetings" });

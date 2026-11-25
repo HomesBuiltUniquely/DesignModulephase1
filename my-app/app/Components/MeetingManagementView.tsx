@@ -657,13 +657,28 @@ function personLabel(name: string): string {
   return text;
 }
 
+/** Collapse CRM spelling noise so "Somashekar_V" and "Somashekar V" filter as one person. */
+function normalizePersonKey(name: string): string {
+  return name
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[_.]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function uniqueNames(values: string[]): string[] {
   const seen = new Map<string, string>();
   for (const value of values) {
-    const text = value.trim();
+    const text = value.replace(/[_]+/g, ' ').replace(/\s+/g, ' ').trim();
     if (!text || text.toLowerCase() === 'unassigned') continue;
-    const key = text.toLocaleLowerCase();
-    if (!seen.has(key)) seen.set(key, text);
+    const key = normalizePersonKey(text);
+    if (!key) continue;
+    const current = seen.get(key);
+    // Prefer the longer/cleaner display label when variants collide.
+    if (!current || text.length > current.length || (!current.includes(' ') && text.includes(' '))) {
+      seen.set(key, text);
+    }
   }
   return Array.from(seen.values()).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 }
@@ -747,7 +762,17 @@ function dedupePre10Meetings(rows: ViewMeeting[]): ViewMeeting[] {
 }
 
 function sameName(a: string, b: string): boolean {
-  return a.trim().toLocaleLowerCase() === b.trim().toLocaleLowerCase();
+  const left = normalizePersonKey(a);
+  const right = normalizePersonKey(b);
+  if (!left || !right) return false;
+  if (left === right) return true;
+  // Allow "Suganya" to match "Suganya A" when the filter/option is a prefix of the full name tokens.
+  const leftParts = left.split(' ');
+  const rightParts = right.split(' ');
+  if (leftParts.length <= rightParts.length) {
+    return leftParts.every((part, index) => rightParts[index] === part);
+  }
+  return rightParts.every((part, index) => leftParts[index] === part);
 }
 
 function branchOf(raw: string | null | undefined): { key: string; label: string } {
@@ -758,7 +783,7 @@ function branchOf(raw: string | null | undefined): { key: string; label: string 
   }
   const generic = !text || text.toLowerCase() === 'experience center' || text.toLowerCase() === 'experience centre';
   if (generic) return { key: '', label: '' };
-  return { key: text.toLocaleLowerCase(), label: text };
+  return { key: text.toLocaleUpperCase(), label: text };
 }
 
 function compareMeetings(a: ViewMeeting, b: ViewMeeting, dir: 1 | -1): number {
@@ -1089,11 +1114,19 @@ export default function MeetingManagementView() {
     setLoading(true);
     setError(null);
 
+    const range = dateBounds(datePreset, customFrom, customTo, kolkataTodayIso(), viewMonth);
+
     const fetchBoard = async (timeoutMs: number) => {
       const controller = new AbortController();
       const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
       try {
-        const res = await fetch(`${apiBase}/api/meetings/scheduled`, {
+        const params = new URLSearchParams();
+        if (range) {
+          params.set('from', range.from);
+          params.set('to', range.to);
+        }
+        const qs = params.toString();
+        const res = await fetch(`${apiBase}/api/meetings/scheduled${qs ? `?${qs}` : ''}`, {
           headers: buildAuthHeaders(sessionId),
           credentials: 'include',
           signal: controller.signal,
@@ -1111,16 +1144,16 @@ export default function MeetingManagementView() {
     try {
       let data: Record<string, unknown>;
       try {
-        // Board API is budgeted server-side to finish well under this.
-        data = await fetchBoard(15000);
+        // Board API is hard-budgeted server-side (~5s). Keep client abort above that with headroom.
+        data = await fetchBoard(25000);
       } catch (firstErr) {
         const aborted = firstErr instanceof DOMException && firstErr.name === 'AbortError';
         const networkFail =
           firstErr instanceof TypeError ||
           (firstErr instanceof Error && /failed to fetch|networkerror|load failed/i.test(firstErr.message));
         if (!aborted && !networkFail) throw firstErr;
-        // One automatic retry — hosted can be cold on the first hit after deploy.
-        data = await fetchBoard(20000);
+        // One automatic retry — hosted/DB can be cold on the first hit after deploy.
+        data = await fetchBoard(25000);
       }
       setMeetings(Array.isArray(data?.meetings) ? (data.meetings as ScheduledMeeting[]) : []);
       setPersonalWarning(
@@ -1147,7 +1180,7 @@ export default function MeetingManagementView() {
     } finally {
       setLoading(false);
     }
-  }, [apiBase, sessionId]);
+  }, [apiBase, sessionId, datePreset, customFrom, customTo, viewMonth]);
 
   useEffect(() => {
     void loadMeetings();
@@ -1456,7 +1489,10 @@ export default function MeetingManagementView() {
     if (typeFilter !== 'all' && meeting.typeKey !== typeFilter) return false;
     if (designerFilter && !sameName(meeting.designer, designerFilter)) return false;
     if (salesFilter && !sameName(meeting.sales, salesFilter)) return false;
-    if (branchFilter && meeting.branchKey !== branchFilter) return false;
+    if (branchFilter) {
+      const meetingBranch = meeting.branchKey || resolveBranchCode(meeting.branchLabel) || '';
+      if (meetingBranch !== branchFilter) return false;
+    }
     if (range && (meeting.day < range.from || meeting.day > range.to)) return false;
     if (!q) return true;
     const haystack = [meeting.customer, meeting.phone || '', meeting.designer, meeting.sales, meeting.branchLabel, meeting.branchKey, String(meeting.leadId)]
