@@ -1311,10 +1311,18 @@ export function registerDesignPaymentRoutes(app: Express, deps: Deps): void {
     .then(() => {
       const requested = Number(envTrim("DESIGN_PAYMENT_RECONCILE_MS") || 3_000) || 3_000;
       const ms = Math.min(5_000, Math.max(2_000, requested));
-      void reconcilePending(deps).catch((err) => console.warn("[design-payment] reconcile", err));
-      setInterval(() => {
-        void reconcilePending(deps).catch((err) => console.warn("[design-payment] reconcile", err));
-      }, ms);
+      let reconcileRunning = false;
+      const runReconcile = () => {
+        if (reconcileRunning) return;
+        reconcileRunning = true;
+        void reconcilePending(deps)
+          .catch((err) => console.warn("[design-payment] reconcile", err))
+          .finally(() => {
+            reconcileRunning = false;
+          });
+      };
+      runReconcile();
+      setInterval(runReconcile, ms);
     })
     .catch((err) => console.error("[design-payment] ensure tables failed", err));
 

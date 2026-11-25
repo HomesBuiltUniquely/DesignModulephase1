@@ -25877,6 +25877,13 @@ const server = app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
   console.log("Auth create/register routes: create-mmt-manager, register-mmt-executive, create-tdm, create-admin, create-dqc-manager, create-escalation-manager, create-project-manager, create-senior-project-manager, create-finance, register-dqe, register (TDM designer/design_manager)");
 });
+// Node 18+ default requestTimeout is 5 minutes. It destroys the socket with a
+// bare 408 (no CORS headers). Inbox streams and a slow /api/leads/queue hit
+// that limit, the browser reports a CORS failure, and the API looks dead
+// until the process is restarted.
+server.requestTimeout = 0;
+server.headersTimeout = 60_000;
+server.keepAliveTimeout = 65_000;
 notify.attachInboxWebSocketProxy(server);
 
 server.on("error", (err) => {

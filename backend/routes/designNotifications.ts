@@ -676,6 +676,7 @@ export function registerInboxRoutes(app: Application, authResolver?: InboxAuthRe
         method: "POST",
         headers: notifyApiHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ user_id: userId }),
+        signal: AbortSignal.timeout(8_000),
       });
       const ticketJson = (await ticketResp.json().catch(() => ({}))) as { ticket?: string };
       if (!ticketResp.ok || !ticketJson.ticket) {
@@ -728,6 +729,7 @@ export function registerInboxRoutes(app: Application, authResolver?: InboxAuthRe
       });
       upstream.on("close", cleanup);
       req.on("close", cleanup);
+      res.on("error", cleanup);
     } catch (err: any) {
       console.error("[notify] inbox stream error", err);
       if (!res.headersSent) return res.status(500).json({ error: err.message });
