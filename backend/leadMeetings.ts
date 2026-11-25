@@ -1535,6 +1535,28 @@ export async function endCrmMeeting(
     [now, now, row.id],
   );
   const isDrr = opts?.isDrr === true || row.isDrrRevisit === true;
+  // One Successful Pre 10% per lead — cancel leftover bookings from earlier dates/backfill.
+  if (!isDrr) {
+    await pool.query(
+      `UPDATE lead_meetings
+          SET meeting_status = 'cancelled',
+              progress = 'meeting_never_happened',
+              cancel_reason = COALESCE(
+                NULLIF(TRIM(cancel_reason), ''),
+                'Superseded by Meeting Successful'
+              ),
+              updated_at = ?
+        WHERE lead_id = ?
+          AND source = 'crm'
+          AND id <> ?
+          AND COALESCE(is_drr_revisit, 0) = 0
+          AND (
+            progress = 'completed'
+            OR meeting_status <> 'cancelled'
+          )`,
+      [now, row.leadId, row.id],
+    );
+  }
   await writeHistory(
     pool,
     row.leadId,
@@ -1902,80 +1924,81 @@ async function quoteShareByLeadChunk(
     if (Number(row.hasSnap) === 1) hasSnapshotByLead.set(id, true);
   }
 
+  // Latest snapshot amount — needed on the board so Quote column matches Friday (not "amount pending").
+  const [latestRows] = await pool.query(
+    `SELECT s.lead_id AS leadId, s.payload_json AS payloadJson
+       FROM lead_prolance_quote_snapshots s
+       INNER JOIN (
+         SELECT lead_id, MAX(id) AS maxId
+           FROM lead_prolance_quote_snapshots
+          WHERE lead_id IN (${placeholders})
+          GROUP BY lead_id
+       ) latest ON latest.maxId = s.id`,
+    ids,
+  );
+  for (const row of latestRows as Record<string, unknown>[]) {
+    const id = Number(row.leadId);
+    if (!Number.isFinite(id) || id < 1) continue;
+    hasSnapshotByLead.set(id, true);
+    amountByLead.set(id, preferAmount(amountByLead.get(id), quoteAmountFromPayloadRaw(row.payloadJson)));
+  }
+
+  // CRM-shared snapshot amount (may differ from latest).
+  const sharedPairs = [...sharedByLead.entries()].filter(([, v]) => v.sharedQuoteId > 0);
+  if (sharedPairs.length > 0) {
+    const sharedQuoteIds = [...new Set(sharedPairs.map(([, v]) => v.sharedQuoteId))];
+    const sharedPlaceholders = sharedQuoteIds.map(() => "?").join(",");
+    try {
+      const [sharedSnapRows] = await pool.query(
+        `SELECT lead_id AS leadId, quote_id AS quoteId, payload_json AS payloadJson
+           FROM lead_prolance_quote_snapshots
+          WHERE quote_id IN (${sharedPlaceholders})`,
+        sharedQuoteIds,
+      );
+      for (const row of sharedSnapRows as Record<string, unknown>[]) {
+        const id = Number(row.leadId);
+        if (!Number.isFinite(id) || id < 1) continue;
+        hasSnapshotByLead.set(id, true);
+        amountByLead.set(id, preferAmount(amountByLead.get(id), quoteAmountFromPayloadRaw(row.payloadJson)));
+      }
+    } catch (err) {
+      console.error("quote amount shared snapshot failed", err);
+    }
+  }
+
+  // Snapshot by leads.prolance_quote_id when amount still missing.
+  const missingAfterLatest = ids.filter((id) => !(amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0));
+  const prolancePairs = missingAfterLatest
+    .map((id) => ({ id, quoteId: leadQuoteId.get(id) || 0 }))
+    .filter((row) => row.quoteId > 0);
+  if (prolancePairs.length > 0) {
+    const quoteIds = [...new Set(prolancePairs.map((row) => row.quoteId))];
+    const qPlaceholders = quoteIds.map(() => "?").join(",");
+    try {
+      const [prolanceSnapRows] = await pool.query(
+        `SELECT lead_id AS leadId, quote_id AS quoteId, payload_json AS payloadJson
+           FROM lead_prolance_quote_snapshots
+          WHERE quote_id IN (${qPlaceholders})`,
+        quoteIds,
+      );
+      const byQuoteId = new Map<number, unknown>();
+      for (const row of prolanceSnapRows as Record<string, unknown>[]) {
+        byQuoteId.set(Number(row.quoteId), row.payloadJson);
+        const leadId = Number(row.leadId);
+        if (Number.isFinite(leadId) && leadId > 0) hasSnapshotByLead.set(leadId, true);
+      }
+      for (const pair of prolancePairs) {
+        const amount = quoteAmountFromPayloadRaw(byQuoteId.get(pair.quoteId));
+        amountByLead.set(pair.id, preferAmount(amountByLead.get(pair.id), amount));
+        if (byQuoteId.has(pair.quoteId)) hasSnapshotByLead.set(pair.id, true);
+      }
+    } catch (err) {
+      console.error("quote amount prolance snapshot failed", err);
+    }
+  }
+
+  // Heavy fallbacks only for full mode — board stays under the request budget.
   if (!boardFast) {
-    // Latest snapshot amount.
-    const [latestRows] = await pool.query(
-      `SELECT s.lead_id AS leadId, s.payload_json AS payloadJson
-         FROM lead_prolance_quote_snapshots s
-         INNER JOIN (
-           SELECT lead_id, MAX(id) AS maxId
-             FROM lead_prolance_quote_snapshots
-            WHERE lead_id IN (${placeholders})
-            GROUP BY lead_id
-         ) latest ON latest.maxId = s.id`,
-      ids,
-    );
-    for (const row of latestRows as Record<string, unknown>[]) {
-      const id = Number(row.leadId);
-      if (!Number.isFinite(id) || id < 1) continue;
-      hasSnapshotByLead.set(id, true);
-      amountByLead.set(id, preferAmount(amountByLead.get(id), quoteAmountFromPayloadRaw(row.payloadJson)));
-    }
-
-    // CRM-shared snapshot amount (may differ from latest).
-    const sharedPairs = [...sharedByLead.entries()].filter(([, v]) => v.sharedQuoteId > 0);
-    if (sharedPairs.length > 0) {
-      const sharedQuoteIds = [...new Set(sharedPairs.map(([, v]) => v.sharedQuoteId))];
-      const sharedPlaceholders = sharedQuoteIds.map(() => "?").join(",");
-      try {
-        const [sharedSnapRows] = await pool.query(
-          `SELECT lead_id AS leadId, quote_id AS quoteId, payload_json AS payloadJson
-             FROM lead_prolance_quote_snapshots
-            WHERE quote_id IN (${sharedPlaceholders})`,
-          sharedQuoteIds,
-        );
-        for (const row of sharedSnapRows as Record<string, unknown>[]) {
-          const id = Number(row.leadId);
-          if (!Number.isFinite(id) || id < 1) continue;
-          hasSnapshotByLead.set(id, true);
-          amountByLead.set(id, preferAmount(amountByLead.get(id), quoteAmountFromPayloadRaw(row.payloadJson)));
-        }
-      } catch (err) {
-        console.error("quote amount shared snapshot failed", err);
-      }
-    }
-
-    // Snapshot by leads.prolance_quote_id when amount still missing.
-    const missingAfterLatest = ids.filter((id) => !(amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0));
-    const prolancePairs = missingAfterLatest
-      .map((id) => ({ id, quoteId: leadQuoteId.get(id) || 0 }))
-      .filter((row) => row.quoteId > 0);
-    if (prolancePairs.length > 0) {
-      const quoteIds = [...new Set(prolancePairs.map((row) => row.quoteId))];
-      const qPlaceholders = quoteIds.map(() => "?").join(",");
-      try {
-        const [prolanceSnapRows] = await pool.query(
-          `SELECT lead_id AS leadId, quote_id AS quoteId, payload_json AS payloadJson
-             FROM lead_prolance_quote_snapshots
-            WHERE quote_id IN (${qPlaceholders})`,
-          quoteIds,
-        );
-        const byQuoteId = new Map<number, unknown>();
-        for (const row of prolanceSnapRows as Record<string, unknown>[]) {
-          byQuoteId.set(Number(row.quoteId), row.payloadJson);
-          const leadId = Number(row.leadId);
-          if (Number.isFinite(leadId) && leadId > 0) hasSnapshotByLead.set(leadId, true);
-        }
-        for (const pair of prolancePairs) {
-          const amount = quoteAmountFromPayloadRaw(byQuoteId.get(pair.quoteId));
-          amountByLead.set(pair.id, preferAmount(amountByLead.get(pair.id), amount));
-          if (byQuoteId.has(pair.quoteId)) hasSnapshotByLead.set(pair.id, true);
-        }
-      } catch (err) {
-        console.error("quote amount prolance snapshot failed", err);
-      }
-    }
-
     // Any other snapshot for leads still missing amount (older versions may hold totals).
     const stillMissing = ids.filter((id) => !(amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0));
     if (stillMissing.length > 0) {
@@ -2032,10 +2055,9 @@ async function quoteShareByLeadChunk(
       hasSnapshotByLead.get(id) === true ||
       amount != null;
     out.set(id, {
-      // Board: CRM-shared means quote was sent even if amount parse is slow/missing.
-      quoteSent: boardFast
-        ? share?.shared === true
-        : hasQuoteCode && amount != null && share?.shared === true,
+      // Friday rule: shared + amount. If amount is still parsing, still mark sent when CRM-shared.
+      quoteSent:
+        share?.shared === true && (amount != null || boardFast),
       quoteFinalAmount: amount,
       hasQuote: hasQuoteCode,
     });
@@ -2307,17 +2329,8 @@ const SALES_EXECUTIVE_FROM_PAYLOAD_SQL = `COALESCE(
   ${leadPayloadJsonText("$.sales_person")}
 )`;
 
-/** Fewer JSON paths for the meeting board — full COALESCE was scanning huge payloads per lead. */
-const SALES_EXECUTIVE_BOARD_SQL = `COALESCE(
-  ${leadPayloadJsonText("$.formData.salesExecutive")},
-  ${leadPayloadJsonText("$.formData.sales_executive")},
-  ${leadPayloadJsonText("$.formData.sales_person")},
-  ${leadPayloadJsonText("$.fetchedData.salesExecutive")},
-  ${leadPayloadJsonText("$.rawPayload.salesExecutive")},
-  ${leadPayloadJsonText("$.rawPayload.sales_executive")},
-  ${leadPayloadJsonText("$.salesExecutive")},
-  ${leadPayloadJsonText("$.sales_executive")}
-)`;
+/** Board uses the same full sales COALESCE as Friday — truncated paths left Sales blank for many leads. */
+const SALES_EXECUTIVE_BOARD_SQL = SALES_EXECUTIVE_FROM_PAYLOAD_SQL;
 
 async function salesExecutiveByLeadChunk(
   pool: Pool,
@@ -2346,9 +2359,9 @@ async function salesExecutiveByLeadChunk(
 async function salesExecutiveByLeadIds(
   pool: Pool,
   leadIds: number[],
-  opts?: { mode?: "full" | "board"; shouldContinue?: () => boolean },
+  opts?: { mode?: "full" | "board"; shouldContinue?: () => boolean; into?: Map<number, string> },
 ): Promise<Map<number, string>> {
-  const out = new Map<number, string>();
+  const out = opts?.into || new Map<number, string>();
   const ids = [...new Set(leadIds.filter((id) => Number.isInteger(id) && id > 0))];
   if (ids.length === 0) return out;
   const mode = opts?.mode === "board" ? "board" : "full";
@@ -2449,9 +2462,42 @@ export async function listLeadMeetings(
   // Board-fast select: scalar columns only + light DRR (no per-row payload JSON / EXISTS).
   // ASC LIMIT used to drop Today/Tomorrow when older rows filled the cap — split so
   // upcoming (today+) is always fetched first, then fill remaining slots with recent past.
-  // 2500 is enough for the paginated UI; 8000+ rows serialized past the browser's 15s abort.
-  const BOARD_ROW_SOFT_CAP = 2500;
-  const boardSelect = `SELECT m.id,
+  //
+  // Important: a low global soft-cap (2500/4000) made the UI show ~75 for a designer/month
+  // while 150+ older meetings in the same month never left MySQL. Client date ranges
+  // (This month / custom) must return the full window; only the open-ended default board
+  // keeps a safety valve.
+  const clientRange = isIsoDay(opts?.fromIso) && isIsoDay(opts?.toIso);
+  const BOARD_ROW_SOFT_CAP = clientRange || scoped || opts?.leadId
+    ? 25000
+    : 8000;
+  // Non-DRR Pre 10%: one row per lead (hides reschedule leftovers like Amrutha Nov 4 + Nov 22).
+  // DRR: one row per lead+day. Never partition by id — false is_drr_revisit on backfill
+  // dups used to keep thousands of rows.
+  const boardPre10Partition = `CASE
+            WHEN board.source = 'crm'
+              OR LOWER(REPLACE(IFNULL(board.meetingType, ''), '-', '_')) IN ('pre_10', 'pre10')
+            THEN CASE
+              WHEN COALESCE(board.crmDrrRevisit, 0) = 1
+                AND LOWER(IFNULL(board.meetingStatus, '')) <> 'cancelled'
+              THEN CONCAT('drr:', board.meetingDate)
+              ELSE 'pre10'
+            END
+            ELSE CONCAT('#', board.id)
+          END`;
+  const boardPre10Order = `CASE board.progress
+              WHEN 'completed' THEN 6
+              WHEN 'in_progress' THEN 5
+              WHEN 'scheduled' THEN 4
+              WHEN 'meeting_never_happened' THEN 2
+              ELSE 1
+            END DESC,
+            CASE WHEN LOWER(IFNULL(board.meetingStatus, '')) = 'cancelled' THEN 0 ELSE 1 END DESC,
+            CASE WHEN board.startedAt IS NULL THEN 0 ELSE 1 END DESC,
+            board.meetingDate DESC,
+            CASE WHEN board.meetingTime IS NULL OR TRIM(board.meetingTime) = '' THEN 0 ELSE 1 END DESC,
+            board.id DESC`;
+  const boardSelectInner = `SELECT m.id,
             l.id AS leadId,
             l.pid AS projectId,
             l.project_name AS projectName,
@@ -2481,13 +2527,31 @@ export async function listLeadMeetings(
        JOIN leads l ON l.id = m.lead_id
        LEFT JOIN users u ON u.id = COALESCE(m.designer_id, l.assigned_designer_id)
       WHERE ${whereParts.join(" AND ")}`;
+  const boardSelectDeduped = (extraAnd: string, orderBy: string, limit: number) => `
+SELECT ranked.*
+  FROM (
+    SELECT board.*,
+           ROW_NUMBER() OVER (
+             PARTITION BY board.leadId, ${boardPre10Partition}
+             ORDER BY ${boardPre10Order}
+           ) AS _boardRn
+      FROM (
+        ${boardSelectInner}
+        ${extraAnd}
+      ) board
+  ) ranked
+ WHERE ranked._boardRn = 1
+ ORDER BY ${orderBy}
+ LIMIT ${limit}`;
 
   let rows: Record<string, unknown>[] = [];
   if (opts?.leadId) {
     const [leadRows] = await pool.query(
-      `${boardSelect}
-      ORDER BY m.meeting_date ASC, m.meeting_time ASC, m.id ASC
-      LIMIT ${BOARD_ROW_SOFT_CAP}`,
+      boardSelectDeduped(
+        "",
+        "ranked.meetingDate ASC, ranked.meetingTime ASC, ranked.id ASC",
+        BOARD_ROW_SOFT_CAP,
+      ),
       queryParams,
     );
     rows = leadRows as Record<string, unknown>[];
@@ -2496,10 +2560,11 @@ export async function listLeadMeetings(
     let upcoming: Record<string, unknown>[] = [];
     if (upcomingFrom <= toIso) {
       const [upcomingRows] = await pool.query(
-        `${boardSelect}
-           AND m.meeting_date >= ?
-         ORDER BY m.meeting_date ASC, m.meeting_time ASC, m.id ASC
-         LIMIT ${BOARD_ROW_SOFT_CAP}`,
+        boardSelectDeduped(
+          "AND m.meeting_date >= ?",
+          "ranked.meetingDate ASC, ranked.meetingTime ASC, ranked.id ASC",
+          BOARD_ROW_SOFT_CAP,
+        ),
         [...queryParams, upcomingFrom],
       );
       upcoming = upcomingRows as Record<string, unknown>[];
@@ -2512,16 +2577,22 @@ export async function listLeadMeetings(
       const pastEnd = pastTo < toIso ? pastTo : toIso;
       if (fromIso <= pastEnd) {
         const [pastRows] = await pool.query(
-          `${boardSelect}
-             AND m.meeting_date <= ?
-           ORDER BY m.meeting_date DESC, m.meeting_time DESC, m.id DESC
-           LIMIT ${pastCap}`,
+          boardSelectDeduped(
+            "AND m.meeting_date <= ?",
+            "ranked.meetingDate DESC, ranked.meetingTime DESC, ranked.id DESC",
+            pastCap,
+          ),
           [...queryParams, pastEnd],
         );
         past = pastRows as Record<string, unknown>[];
       }
     }
     rows = [...upcoming, ...past];
+    if (rows.length >= BOARD_ROW_SOFT_CAP) {
+      console.warn(
+        `[lead-meetings] board hit soft cap ${BOARD_ROW_SOFT_CAP} for ${fromIso}..${toIso} scoped=${scoped}`,
+      );
+    }
   }
 
   // Recover slot only for rows missing meeting_time (small set), not for the whole board.
@@ -2532,7 +2603,7 @@ export async function listLeadMeetings(
         .map((row) => Number(row.leadId))
         .filter((id) => Number.isFinite(id) && id > 0),
     ),
-  ].slice(0, 40);
+  ].slice(0, 80);
   const slotByLead = new Map<number, string>();
   if (missingTimeLeadIds.length > 0) {
     try {
@@ -2567,35 +2638,43 @@ export async function listLeadMeetings(
   >();
   let salesByLead = new Map<number, string>();
 
-  // Hard ceiling so hosted/nginx + browser abort (15s) never trip. Prefer a partial
-  // board with empty Sales/Quotes over a timeout that shows nothing.
-  const BOARD_HARD_MS = 4500;
-  const ENRICH_BUDGET_MS = 1200;
+  // Hard ceiling keeps the browser abort away, but enrichment must still match Friday quality
+  // (Sales names + quote amounts). Prefer partial filled maps over blank columns.
+  const BOARD_HARD_MS = 7000;
+  const ENRICH_BUDGET_MS = 3500;
   const enrichStartedAt = Date.now();
   const enrichDeadline = Math.min(listStartedAt + BOARD_HARD_MS, enrichStartedAt + ENRICH_BUDGET_MS);
   const enrichMsLeft = () => Math.max(0, enrichDeadline - Date.now());
   let enrichCancelled = false;
   const shouldContinueEnrich = () => !enrichCancelled && enrichMsLeft() > 40;
 
-  // Prefer leads that appear first on the board (today/tomorrow + recent past).
-  const quoteLeadIds = meetingLeadIds.slice(0, 1500);
-  const salesLeadIds = meetingLeadIds.slice(0, 1500);
+  // Enrich every lead on the board (unique set is far smaller than row count).
+  const quoteLeadIds = meetingLeadIds;
+  const salesLeadIds = meetingLeadIds;
 
   if (enrichMsLeft() > 80 && (quoteLeadIds.length > 0 || salesLeadIds.length > 0)) {
-    const quoteBudget = Math.max(200, Math.min(1000, enrichMsLeft()));
-    const salesBudget = Math.max(200, Math.min(1000, enrichMsLeft()));
+    const quoteBudget = Math.max(400, Math.min(3000, enrichMsLeft()));
+    const salesBudget = Math.max(400, Math.min(3000, enrichMsLeft()));
+    // Shared maps so a budget timeout keeps partial results instead of wiping Sales/Quotes.
+    const shareAcc = shareByLead;
+    const salesAcc = salesByLead;
     try {
-      const [shareResult, salesResult] = await Promise.all([
+      await Promise.all([
         Promise.race([
           quoteShareByLead(pool, quoteLeadIds, {
             mode: "board",
             shouldContinue: shouldContinueEnrich,
-          }).catch((err) => {
-            console.error("quote share lookup failed", err);
-            return shareByLead;
-          }),
-          new Promise<typeof shareByLead>((resolve) => {
-            setTimeout(() => resolve(shareByLead), quoteBudget);
+          })
+            .then((result) => {
+              for (const [id, value] of result) shareAcc.set(id, value);
+              return shareAcc;
+            })
+            .catch((err) => {
+              console.error("quote share lookup failed", err);
+              return shareAcc;
+            }),
+          new Promise<typeof shareAcc>((resolve) => {
+            setTimeout(() => resolve(shareAcc), quoteBudget);
           }),
         ]),
         salesLeadIds.length > 0
@@ -2603,18 +2682,19 @@ export async function listLeadMeetings(
               salesExecutiveByLeadIds(pool, salesLeadIds, {
                 mode: "board",
                 shouldContinue: shouldContinueEnrich,
+                into: salesAcc,
               }).catch((err) => {
                 console.error("sales executive lookup failed", err);
-                return new Map<number, string>();
+                return salesAcc;
               }),
               new Promise<Map<number, string>>((resolve) => {
-                setTimeout(() => resolve(new Map()), salesBudget);
+                setTimeout(() => resolve(salesAcc), salesBudget);
               }),
             ])
-          : Promise.resolve(new Map<number, string>()),
+          : Promise.resolve(salesAcc),
       ]);
-      shareByLead = shareResult;
-      salesByLead = salesResult;
+      shareByLead = shareAcc;
+      salesByLead = salesAcc;
     } finally {
       enrichCancelled = true;
     }
@@ -2707,6 +2787,7 @@ export async function listLeadMeetings(
     cancelFiles: parseCancelFiles(row.cancelFiles),
     reason: cleanText(row.cancelReason),
     endedAt: meetingEndedIso(row.endedAt),
+    startedAt: meetingEndedIso(row.startedAt),
     quoteSent: share?.quoteSent === true,
     hasQuote: share?.hasQuote === true || quoteAmount != null,
     quoteFinalAmount: quoteAmount,
@@ -2795,6 +2876,77 @@ async function cleanupOrphanMeetingRows(pool: Pool) {
         AND meeting_date < CURDATE()`,
     [now],
   );
+  // Collapse CRM/Pre10 storms (same lead+day inserted dozens of times by backfill races).
+  // Keep the strongest progress row; cancel the rest so they stop filling board scans.
+  await pool.query(
+    `UPDATE lead_meetings m
+        JOIN (
+          SELECT id,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY lead_id, meeting_date
+                   ORDER BY
+                     CASE progress
+                       WHEN 'completed' THEN 6
+                       WHEN 'in_progress' THEN 5
+                       WHEN 'scheduled' THEN 4
+                       WHEN 'meeting_never_happened' THEN 2
+                       ELSE 1
+                     END DESC,
+                     CASE WHEN meeting_status = 'cancelled' THEN 0 ELSE 1 END DESC,
+                     CASE WHEN meeting_time IS NULL OR TRIM(meeting_time) = '' THEN 0 ELSE 1 END DESC,
+                     id DESC
+                 ) AS rn
+            FROM lead_meetings
+           WHERE meeting_date >= DATE_SUB(CURDATE(), INTERVAL 120 DAY)
+             AND (
+               source = 'crm'
+               OR LOWER(REPLACE(IFNULL(meeting_type, ''), '-', '_')) IN ('pre_10', 'pre10')
+             )
+        ) d ON d.id = m.id AND d.rn > 1
+        SET m.meeting_status = 'cancelled',
+            m.progress = 'meeting_never_happened',
+            m.cancel_reason = COALESCE(
+              NULLIF(TRIM(m.cancel_reason), ''),
+              'Duplicate Pre 10% row (same lead+day)'
+            ),
+            m.updated_at = ?
+      WHERE m.progress <> 'completed'
+        AND (
+          m.meeting_status <> 'cancelled'
+          OR m.progress <> 'meeting_never_happened'
+          OR IFNULL(m.cancel_reason, '') <> 'Duplicate Pre 10% row (same lead+day)'
+        )`,
+    [now],
+  );
+  // One Successful Pre 10% per lead (non-DRR). Older date leftovers (reschedule/backfill)
+  // must not stay Meeting Successful beside the real visit.
+  await pool.query(
+    `UPDATE lead_meetings m
+        JOIN (
+          SELECT id,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY lead_id
+                   ORDER BY
+                     CASE WHEN started_at IS NULL THEN 0 ELSE 1 END DESC,
+                     ended_at DESC,
+                     meeting_date DESC,
+                     id DESC
+                 ) AS rn
+            FROM lead_meetings
+           WHERE source = 'crm'
+             AND progress = 'completed'
+             AND COALESCE(is_drr_revisit, 0) = 0
+             AND meeting_date >= DATE_SUB(CURDATE(), INTERVAL 180 DAY)
+        ) d ON d.id = m.id AND d.rn > 1
+        SET m.meeting_status = 'cancelled',
+            m.progress = 'meeting_never_happened',
+            m.cancel_reason = COALESCE(
+              NULLIF(TRIM(m.cancel_reason), ''),
+              'Superseded by Meeting Successful'
+            ),
+            m.updated_at = ?`,
+    [now],
+  );
 }
 
 async function backfillLeadMeetings(pool: Pool) {
@@ -2868,11 +3020,25 @@ async function insertBackfill(
 ) {
   if (!input.meetingTime) return;
   if (input.source === "design_module" && !designMeetingFromLabel(input.meetingType)) return;
+  // CRM/Pre10: any same lead+day row blocks another insert (stops backfill dup storms).
+  // Exact type match still applies for design milestones.
   const [existing] = await pool.query(
-    `SELECT id, progress FROM lead_meetings
-      WHERE lead_id = ? AND source = ? AND meeting_type = ? AND meeting_date = ?
-      ORDER BY id DESC LIMIT 1`,
-    [input.leadId, input.source, input.meetingType, input.meetingDate],
+    input.source === "crm" ||
+      ["pre_10", "pre10"].includes(String(input.meetingType || "").toLowerCase().replace(/-/g, "_"))
+      ? `SELECT id, progress FROM lead_meetings
+          WHERE lead_id = ? AND meeting_date = ?
+            AND (
+              source = 'crm'
+              OR LOWER(REPLACE(IFNULL(meeting_type, ''), '-', '_')) IN ('pre_10', 'pre10')
+            )
+          ORDER BY id DESC LIMIT 1`
+      : `SELECT id, progress FROM lead_meetings
+          WHERE lead_id = ? AND source = ? AND meeting_type = ? AND meeting_date = ?
+          ORDER BY id DESC LIMIT 1`,
+    input.source === "crm" ||
+      ["pre_10", "pre10"].includes(String(input.meetingType || "").toLowerCase().replace(/-/g, "_"))
+      ? [input.leadId, input.meetingDate]
+      : [input.leadId, input.source, input.meetingType, input.meetingDate],
   );
   const prior = (existing as { id?: number; progress?: string }[])[0];
   if (prior?.id) {

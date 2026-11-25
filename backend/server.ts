@@ -23567,11 +23567,15 @@ async function listPersonalAppointmentsForMeetingBoard(limitToUserIds?: number[]
  * Admin sees every meeting. Designer, design manager, and TDM see only their team.
  * GET /api/meetings/scheduled
  */
-const MEETING_BOARD_RESPONSE_CACHE_MS = 12_000;
+const MEETING_BOARD_RESPONSE_CACHE_MS = 4_000;
 const meetingBoardResponseCache = new Map<
   string,
   { at: number; body: { meetings: unknown[]; personalWarning: string | null } }
 >();
+
+function clearMeetingBoardResponseCache() {
+  meetingBoardResponseCache.clear();
+}
 
 app.get("/api/meetings/scheduled", async (req: Request, res: Response) => {
   const startedAt = Date.now();
@@ -23590,13 +23594,19 @@ app.get("/api/meetings/scheduled", async (req: Request, res: Response) => {
     const toRaw = typeof req.query.to === "string" ? req.query.to.trim() : "";
     const fromIso = /^\d{4}-\d{2}-\d{2}$/.test(fromRaw) ? fromRaw : undefined;
     const toIso = /^\d{4}-\d{2}-\d{2}$/.test(toRaw) ? toRaw : undefined;
+    const forceRefresh =
+      req.query.refresh === "1" ||
+      req.query.refresh === "true" ||
+      req.query.fresh === "1" ||
+      req.query.fresh === "true";
     const cacheKey = [
       actingUser.id,
       scope.all ? "all" : scope.userIds.slice().sort((a, b) => a - b).join(","),
       fromIso || "-",
       toIso || "-",
     ].join("|");
-    const cached = meetingBoardResponseCache.get(cacheKey);
+    if (forceRefresh) meetingBoardResponseCache.delete(cacheKey);
+    const cached = forceRefresh ? undefined : meetingBoardResponseCache.get(cacheKey);
     if (cached && Date.now() - cached.at < MEETING_BOARD_RESPONSE_CACHE_MS) {
       console.log(
         `[meeting-board] scheduled list cache hit in ${Date.now() - startedAt}ms (meetings=${cached.body.meetings.length})`,
@@ -23614,44 +23624,41 @@ app.get("/api/meetings/scheduled", async (req: Request, res: Response) => {
 
     let personal: Record<string, unknown>[] = [];
     let personalWarning: string | null = null;
-    // Personal ERP auth is often down and was burning the request after a healthy client list.
-    // Keep a tiny budget only when the client board was very fast; otherwise return immediately.
-    const PERSONAL_BOARD_BUDGET_MS = clientMs > 2000 ? 0 : clientMs > 1200 ? 200 : 400;
-    if (PERSONAL_BOARD_BUDGET_MS <= 0) {
-      personalWarning = "Personal appointments skipped to keep Meeting Management fast. Refresh to retry.";
-    } else {
-      try {
-        const personalResult = await Promise.race([
-          listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds)
-            .then((board) => ({ ok: true as const, board }))
-            .catch((personalErr) => {
-              console.error("[meeting-board] personal appointments failed", personalErr);
-              return {
-                ok: false as const,
-                warning: "Personal appointments could not be loaded. Client meetings are still shown.",
-              };
-            }),
-          new Promise<{ ok: false; warning: string }>((resolve) => {
-            setTimeout(
-              () =>
-                resolve({
-                  ok: false,
-                  warning: "Personal appointments are still loading. Client meetings are shown now.",
-                }),
-              PERSONAL_BOARD_BUDGET_MS,
-            );
+    // Friday behavior: always try personal, never block the board. Warm cache in background on miss.
+    const PERSONAL_BOARD_BUDGET_MS = clientMs > 5000 ? 200 : 800;
+    try {
+      const personalResult = await Promise.race([
+        listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds)
+          .then((board) => ({ ok: true as const, board }))
+          .catch((personalErr) => {
+            console.error("[meeting-board] personal appointments failed", personalErr);
+            return {
+              ok: false as const,
+              warning: "Personal appointments could not be loaded. Client meetings are still shown.",
+            };
           }),
-        ]);
-        if (personalResult.ok) {
-          personal = personalResult.board.meetings;
-          personalWarning = personalResult.board.warning;
-        } else {
-          personalWarning = personalResult.warning;
-        }
-      } catch (personalErr) {
-        console.error("[meeting-board] personal appointments failed", personalErr);
-        personalWarning = "Personal appointments could not be loaded. Client meetings are still shown.";
+        new Promise<{ ok: false; warning: string }>((resolve) => {
+          setTimeout(
+            () =>
+              resolve({
+                ok: false,
+                warning: "Personal appointments are still loading. Client meetings are shown now.",
+              }),
+            PERSONAL_BOARD_BUDGET_MS,
+          );
+        }),
+      ]);
+      if (personalResult.ok) {
+        personal = personalResult.board.meetings;
+        personalWarning = personalResult.board.warning;
+      } else {
+        personalWarning = personalResult.warning;
+        void listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds).catch(() => undefined);
       }
+    } catch (personalErr) {
+      console.error("[meeting-board] personal appointments failed", personalErr);
+      personalWarning = "Personal appointments could not be loaded. Client meetings are still shown.";
+      void listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds).catch(() => undefined);
     }
 
     const body = { meetings: [...meetings, ...personal], personalWarning };
@@ -23961,6 +23968,7 @@ app.post("/api/meetings/:id/reschedule", async (req: Request, res: Response) => 
       });
     }
 
+    clearMeetingBoardResponseCache();
     return res.json({ meeting });
   } catch (err) {
     if (err instanceof MeetingActionError) return res.status(err.status).json({ message: err.message });
@@ -24027,6 +24035,7 @@ app.post("/api/meetings/:id/cancel", acceptStatusNoteFiles, async (req: Request,
       console.error("[cancel-meeting] mail send failed (non-fatal)", mailErr);
     });
 
+    clearMeetingBoardResponseCache();
     return res.json(result);
   } catch (err) {
     if (err instanceof MeetingActionError) {
@@ -24049,6 +24058,7 @@ app.post("/api/meetings/:id/start", async (req: Request, res: Response) => {
     const meetingId = Number(req.params.id);
     if (!Number.isFinite(meetingId)) return res.status(400).json({ message: "Invalid meeting id" });
     const meeting = await startCrmMeeting(pool, meetingId, { id: actingUser.id, name: actingUser.name });
+    clearMeetingBoardResponseCache();
     return res.json({ meeting });
   } catch (err) {
     if (err instanceof MeetingActionError) return res.status(err.status).json({ message: err.message });
@@ -24361,6 +24371,7 @@ app.post("/api/meetings/:id/end", async (req: Request, res: Response) => {
     } catch (persistErr) {
       console.error("[meetings/end] persist meetingWizLastCompleted failed", persistErr);
     }
+    clearMeetingBoardResponseCache();
     try {
       const crm = await notifyCrmMeetingSuccessfulForDesignLead(Number(meeting?.leadId));
       return res.json({
@@ -24547,6 +24558,7 @@ app.post("/api/meetings/:id/drr-outcome", async (req: Request, res: Response) =>
     }
 
     // Local save succeeded — always 200 so hosted UI does not treat CRM miss as a hard crash.
+    clearMeetingBoardResponseCache();
     return res.status(200).json({
       ok: true,
       meeting: {
