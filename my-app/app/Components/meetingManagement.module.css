@@ -386,6 +386,68 @@
 
 .statusSeg[data-open='true'] button[data-index='5'] { transition-delay: 140ms; }
 
+/* Status filter: avoid flex order fighting, width ghosts, and select bounce */
+.statusSeg.typeSeg {
+  will-change: auto;
+}
+
+.statusSeg.typeSeg:not([data-open='true']):hover {
+  transform: none;
+}
+
+.statusSeg button[data-on='true'] {
+  order: 0;
+  animation: none;
+}
+
+.statusSeg:not([data-open='true']) > button[data-open-only='true'] {
+  display: none;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  opacity: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  pointer-events: none;
+  transform: none;
+  filter: none;
+  transition: none;
+}
+
+.statusSeg[data-open='true'] > button[data-closed-only='true'] {
+  display: none;
+  transition: none;
+}
+
+.statusSeg > button[data-closed-only='true'] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 0;
+  max-width: 14rem;
+  opacity: 1;
+  padding: 6px 12px;
+  pointer-events: auto;
+  transform: none;
+  filter: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 0.18s ease, background 0.18s ease;
+}
+
+.statusSeg[data-open='true'] > button[data-open-only='true'] {
+  display: inline-flex;
+  align-items: center;
+}
+
+.statusSeg[data-open='true'] button[data-on='true'] {
+  animation: none;
+}
+
 .viewToggle {
   position: relative;
   display: grid;
