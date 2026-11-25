@@ -6369,6 +6369,53 @@ async function notifyCrmMeetingSuccessfulForDesignLead(leadId: number): Promise<
  * Prefer CRM Next callback (no Design ERP login). Fallback: direct Hub PUT via ERP_*.
  * `quoteLink` must be the public customer URL (never `internal=1`).
  */
+async function notifyHubQuoteSharedFromDesign(opts: {
+  crmLeadId: number;
+  leadType?: string | null;
+  quoteId: number | string;
+  quoteLink: string;
+  quoteVersionNumber?: number | null;
+}): Promise<void> {
+  const crmLeadId = Number(opts.crmLeadId);
+  if (!Number.isFinite(crmLeadId) || crmLeadId <= 0) return;
+  const quoteId = String(opts.quoteId).trim();
+  const quoteLink = String(opts.quoteLink || "").trim();
+  const leadType = (opts.leadType && String(opts.leadType).trim()) || "";
+  if (!quoteId || !quoteLink || !leadType) return;
+
+  const body = JSON.stringify({
+    leadType,
+    leadId: String(crmLeadId),
+    quoteId,
+    quoteLink,
+    customerQuoteUrl: quoteLink,
+    quoteVersionNumber:
+      opts.quoteVersionNumber != null && Number(opts.quoteVersionNumber) > 0
+        ? Number(opts.quoteVersionNumber)
+        : undefined,
+    generatedAt: new Date().toISOString(),
+    generatedBy: "Design Module",
+  });
+
+  try {
+    await callErpApi("/v1/quote/shared-from-design", {
+      method: "POST",
+      body,
+      headers: { "X-Activity-Performed-By": "Design Quote Share" },
+    });
+    console.info("[crm-quote-share] Hub quote_sent_info updated via shared-from-design", {
+      crmLeadId,
+      quoteId,
+      quoteVersionNumber: opts.quoteVersionNumber,
+    });
+  } catch (err) {
+    console.warn(
+      "[crm-quote-share] Hub shared-from-design failed (non-fatal)",
+      (err as Error)?.message || err,
+    );
+  }
+}
+
 async function notifyCrmQuoteLinkShared(opts: {
   crmLeadId: number;
   leadType?: string | null;
@@ -6376,6 +6423,7 @@ async function notifyCrmQuoteLinkShared(opts: {
   quoteLink: string;
   customerQuoteUrl: string;
   internalQuoteUrl?: string | null;
+  quoteVersionNumber?: number | null;
 }): Promise<void> {
   const crmLeadId = Number(opts.crmLeadId);
   if (!Number.isFinite(crmLeadId) || crmLeadId <= 0) return;
@@ -6432,6 +6480,10 @@ async function notifyCrmQuoteLinkShared(opts: {
   };
   const internalQuoteUrl = String(opts.internalQuoteUrl || "").trim();
   if (internalQuoteUrl) payload.internalQuoteUrl = internalQuoteUrl;
+  if (opts.quoteVersionNumber != null && Number(opts.quoteVersionNumber) > 0) {
+    payload.crmSharedVersionNumber = Number(opts.quoteVersionNumber);
+    payload.quoteVersionNumber = Number(opts.quoteVersionNumber);
+  }
 
   // 1) CRM FE callback — uses CRM_DEV_BEARER_TOKEN; Design needs no ERP_USERNAME/PASSWORD.
   const crmBases = Array.from(
@@ -6470,6 +6522,17 @@ async function notifyCrmQuoteLinkShared(opts: {
           `[crm-quote-share] Pushed quoteLink via CRM callback ${base} for lead ${crmLeadId}`,
           { quoteId: opts.quoteId, quoteLink },
         );
+        try {
+          await notifyHubQuoteSharedFromDesign({
+            crmLeadId,
+            leadType: resolvedLeadType,
+            quoteId: opts.quoteId,
+            quoteLink,
+            quoteVersionNumber: opts.quoteVersionNumber,
+          });
+        } catch {
+          /* logged inside */
+        }
         return;
       }
       console.warn(`[crm-quote-share] CRM callback ${base} → ${res.status}`, text.slice(0, 200));
@@ -6498,6 +6561,17 @@ async function notifyCrmQuoteLinkShared(opts: {
         `[crm-quote-share] Pushed customer quoteLink to CRM lead ${crmLeadId} via ${endpoint}`,
         { quoteId: opts.quoteId, quoteLink },
       );
+      try {
+        await notifyHubQuoteSharedFromDesign({
+          crmLeadId,
+          leadType: resolvedLeadType,
+          quoteId: opts.quoteId,
+          quoteLink,
+          quoteVersionNumber: opts.quoteVersionNumber,
+        });
+      } catch {
+        /* logged inside */
+      }
       return;
     } catch (err: unknown) {
       lastError = err;
@@ -21778,6 +21852,7 @@ const handleCrmShareQuoteVersion = async (req: Request, res: Response) => {
             quoteLink: customerQuoteUrl,
             customerQuoteUrl,
             internalQuoteUrl: crmQuoteInternalUrl(designLeadIdUsed, persistQuoteId),
+            quoteVersionNumber: persistVersion,
           });
           crmPush = { ok: true, crmLeadId };
         } catch (err) {
