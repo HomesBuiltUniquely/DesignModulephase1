@@ -976,6 +976,8 @@ export async function recordCrmMeeting(
     milestoneSubStage?: string | null;
     subStage?: string | null;
     designerId?: number | null;
+    /** Hub/CRM Appointment.id — required later for meeting-outcome sync. */
+    crmAppointmentId?: number | null;
     actor?: MeetingActor | null;
   },
 ) {
@@ -984,6 +986,10 @@ export async function recordCrmMeeting(
   await ensureLeadMeetingsTable(pool);
   const incomingTime = normalizeTimeLabel(input.meetingTime);
   const mode = crmChannel(input.meetingType) || crmChannel(input.meetingMode);
+  const crmAppointmentId =
+    input.crmAppointmentId != null && Number.isFinite(Number(input.crmAppointmentId)) && Number(input.crmAppointmentId) > 0
+      ? Number(input.crmAppointmentId)
+      : null;
 
   // Successful CRM meetings stay frozen (never rewritten below).
   // A later CRM booking with a real date+slot (DRR revisit) creates a NEW open row instead.
@@ -1027,18 +1033,33 @@ export async function recordCrmMeeting(
     const sameDate = active.meetingDate === dateIso;
     const sameTime = normalizeTimeLabel(active.meetingTime) === normalizeTimeLabel(timeLabel);
     if (sameDate && sameTime) {
-      if (active.meetingType !== meetingType || (active.meetingMode || null) !== (nextMode || null) || drrVisit) {
+      if (
+        active.meetingType !== meetingType ||
+        (active.meetingMode || null) !== (nextMode || null) ||
+        drrVisit ||
+        (crmAppointmentId != null && active.crmAppointmentId !== crmAppointmentId)
+      ) {
         await pool.query(
           `UPDATE lead_meetings
-              SET meeting_type = ?, meeting_mode = ?, is_drr_revisit = CASE WHEN ? THEN 1 ELSE is_drr_revisit END, updated_at = ?
+              SET meeting_type = ?, meeting_mode = ?,
+                  crm_appointment_id = CASE WHEN ? IS NOT NULL THEN ? ELSE crm_appointment_id END,
+                  is_drr_revisit = CASE WHEN ? THEN 1 ELSE is_drr_revisit END, updated_at = ?
             WHERE id = ?`,
-          [meetingType, nextMode, drrVisit ? 1 : 0, now, active.id],
+          [meetingType, nextMode, crmAppointmentId, crmAppointmentId, drrVisit ? 1 : 0, now, active.id],
+        );
+        return loadMeeting(pool, active.id);
+      }
+      if (crmAppointmentId != null && active.crmAppointmentId !== crmAppointmentId) {
+        await pool.query(
+          `UPDATE lead_meetings SET crm_appointment_id = ?, updated_at = ? WHERE id = ?`,
+          [crmAppointmentId, now, active.id],
         );
         return loadMeeting(pool, active.id);
       }
       return active;
     }
     // Date/time truly changed → reschedule. COALESCE so null never wipes time in SQL.
+    // New Hub appointment id (DRR / rebook) replaces the previous one so outcome sync hits the live CRM row.
     const progress = nextMeetingProgress(
       { ...active, meetingDate: dateIso, meetingTime: timeLabel, meetingStatus: "rescheduled", progress: "scheduled", startedAt: null },
       now,
@@ -1048,9 +1069,21 @@ export async function recordCrmMeeting(
           SET meeting_date = ?, meeting_time = COALESCE(?, meeting_time), meeting_mode = ?, meeting_type = ?, meeting_status = 'rescheduled',
               reschedule_count = reschedule_count + 1,
               progress = ?, started_at = NULL, ended_at = NULL,
+              crm_appointment_id = CASE WHEN ? IS NOT NULL THEN ? ELSE crm_appointment_id END,
               is_drr_revisit = CASE WHEN ? THEN 1 ELSE is_drr_revisit END, updated_at = ?
         WHERE id = ?`,
-      [dateIso, timeLabel, mode || active.meetingMode, meetingType, progress, drrVisit ? 1 : 0, now, active.id],
+      [
+        dateIso,
+        timeLabel,
+        mode || active.meetingMode,
+        meetingType,
+        progress,
+        crmAppointmentId,
+        crmAppointmentId,
+        drrVisit ? 1 : 0,
+        now,
+        active.id,
+      ],
     );
     await writeHistory(pool, input.leadId, input.actor, "Meeting rescheduled", `CRM meeting moved to ${dateIso} ${timeLabel || ""}.`.trim(), {
       action: "rescheduled",
@@ -1060,6 +1093,7 @@ export async function recordCrmMeeting(
       fromTime: active.meetingTime,
       meetingDate: dateIso,
       meetingTime: timeLabel,
+      crmAppointmentId,
     });
     return loadMeeting(pool, active.id);
   }
@@ -1088,8 +1122,8 @@ export async function recordCrmMeeting(
   const branch = await leadBranch(pool, input.leadId);
   const [result] = await pool.query(
     `INSERT INTO lead_meetings
-      (lead_id, meeting_date, meeting_time, meeting_type, meeting_mode, meeting_status, progress, designer_id, source, branch, is_drr_revisit, started_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'scheduled', ?, ?, 'crm', ?, ?, ?, ?, ?)`,
+      (lead_id, meeting_date, meeting_time, meeting_type, meeting_mode, meeting_status, progress, designer_id, source, branch, is_drr_revisit, crm_appointment_id, started_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'scheduled', ?, ?, 'crm', ?, ?, ?, ?, ?, ?)`,
     [
       input.leadId,
       dateIso,
@@ -1100,6 +1134,7 @@ export async function recordCrmMeeting(
       input.designerId ?? null,
       branch,
       drrVisit ? 1 : 0,
+      crmAppointmentId,
       progress === "in_progress" ? now : null,
       now,
       now,
@@ -1112,6 +1147,7 @@ export async function recordCrmMeeting(
     source: "crm",
     meetingDate: dateIso,
     meetingTime: timeLabel,
+    crmAppointmentId,
   });
   return loadMeeting(pool, id);
 }
@@ -2103,15 +2139,43 @@ function leadPayloadIndicatesDrr(payload: Record<string, unknown> | null): boole
   return texts.some((text) => isCrmDrrLabelText(text));
 }
 
+function extractCrmAppointmentIdFromLeadPayload(payload: Record<string, unknown> | null): number | null {
+  if (!payload) return null;
+  const candidates = [
+    payload.crmAppointmentId,
+    payload.appointmentId,
+    payload.appointment_id,
+    (payload.crmSchedule as Record<string, unknown> | undefined)?.appointmentId,
+    (payload.crmSchedule as Record<string, unknown> | undefined)?.crmAppointmentId,
+    (payload.rawPayload as Record<string, unknown> | undefined)?.appointmentId,
+    (payload.rawPayload as Record<string, unknown> | undefined)?.crmAppointmentId,
+    (payload.rawPayload as Record<string, unknown> | undefined)?.appointment_id,
+    (payload.rawPayload as Record<string, unknown> | undefined)?.id,
+  ];
+  for (const value of candidates) {
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+}
+
 function extractCrmAppointmentFromLeadPayload(payload: Record<string, unknown> | null): {
   meetingDate: string | null;
   meetingTime: string | null;
   meetingLabel: string | null;
   milestoneSubStage: string | null;
   subStage: string | null;
+  crmAppointmentId: number | null;
 } {
   if (!payload) {
-    return { meetingDate: null, meetingTime: null, meetingLabel: null, milestoneSubStage: null, subStage: null };
+    return {
+      meetingDate: null,
+      meetingTime: null,
+      meetingLabel: null,
+      milestoneSubStage: null,
+      subStage: null,
+      crmAppointmentId: null,
+    };
   }
   const meetingDate = normalizeDateIso(
     payloadText(payload, "crmSchedule.date", "formData.appointment_date", "formData.appointmentDate", "appointmentDate"),
@@ -2125,6 +2189,7 @@ function extractCrmAppointmentFromLeadPayload(payload: Record<string, unknown> |
     meetingLabel: payloadText(payload, "meetingLabel", "formData.meetingLabel", "designMilestone") || null,
     milestoneSubStage: payloadText(payload, "milestoneSubStage", "formData.milestoneSubStage") || null,
     subStage: payloadText(payload, "subStage", "formData.subStage", "formData.sub_stage") || null,
+    crmAppointmentId: extractCrmAppointmentIdFromLeadPayload(payload),
   };
 }
 
@@ -2204,6 +2269,7 @@ async function reconcileCrmDrrScheduledMeetings(pool: Pool) {
         meetingLabel: appt.meetingLabel,
         milestoneSubStage: appt.milestoneSubStage,
         subStage: appt.subStage,
+        crmAppointmentId: appt.crmAppointmentId,
         designerId: row.designerId ?? null,
         actor: { name: "reconcile-drr" },
       });
@@ -2471,9 +2537,11 @@ export async function listLeadMeetings(
   const BOARD_ROW_SOFT_CAP = clientRange || scoped || opts?.leadId
     ? 25000
     : 8000;
-  // Non-DRR Pre 10%: one row per lead (hides reschedule leftovers like Amrutha Nov 4 + Nov 22).
-  // DRR: one row per lead+day. Never partition by id — false is_drr_revisit on backfill
-  // dups used to keep thousands of rows.
+  // Date-range safe dedupe:
+  // - same-day CRM/Pre10 junk → 1 row
+  // - multiple Successful (non-DRR) across days → 1 row (Amrutha Nov 4 + Nov 22)
+  // - other days in the selected range still show (scheduled / never happened / etc.)
+  // Never partition by raw id for DRR — false is_drr_revisit on backfill dups inflated the board.
   const boardPre10Partition = `CASE
             WHEN board.source = 'crm'
               OR LOWER(REPLACE(IFNULL(board.meetingType, ''), '-', '_')) IN ('pre_10', 'pre10')
@@ -2481,7 +2549,9 @@ export async function listLeadMeetings(
               WHEN COALESCE(board.crmDrrRevisit, 0) = 1
                 AND LOWER(IFNULL(board.meetingStatus, '')) <> 'cancelled'
               THEN CONCAT('drr:', board.meetingDate)
-              ELSE 'pre10'
+              WHEN board.progress = 'completed'
+              THEN 'pre10_done'
+              ELSE CONCAT('pre10:', board.meetingDate)
             END
             ELSE CONCAT('#', board.id)
           END`;
