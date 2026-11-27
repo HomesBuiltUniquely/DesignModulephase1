@@ -45,6 +45,7 @@
 .pageHead {
   position: relative;
   z-index: 6;
+  isolation: isolate;
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
@@ -54,7 +55,9 @@
 
 .headActions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
 }
 
@@ -389,10 +392,6 @@
 /* Status filter: avoid flex order fighting, width ghosts, and select bounce */
 .statusSeg.typeSeg {
   will-change: auto;
-}
-
-.statusSeg.typeSeg:not([data-open='true']):hover {
-  transform: none;
 }
 
 .statusSeg button[data-on='true'] {
@@ -1047,6 +1046,22 @@
 .dateMenu {
   width: 216px;
   padding: 6px;
+}
+
+.choiceMenu {
+  width: min(320px, calc(100vw - 24px));
+  max-height: min(400px, 70vh);
+  overflow-y: auto;
+  z-index: 40;
+  box-shadow: 0 12px 28px rgba(42, 33, 28, 0.1);
+}
+
+
+.choiceMenu .popOption {
+  height: auto;
+  min-height: 32px;
+  white-space: normal;
+  line-height: 1.35;
 }
 
 .dateMenu .popOption {
