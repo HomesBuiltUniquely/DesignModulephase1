@@ -281,7 +281,10 @@ function dateBounds(
   today: string,
   monthKey: string,
 ): { from: string; to: string } | null {
-  if (preset === 'all') return null;
+  // Always return concrete from/to so the API fetches that window (not the default 60-day board).
+  if (preset === 'all') {
+    return { from: addMonthsIso(today, -36), to: addDaysIso(today, 45) };
+  }
   if (preset === 'month') return monthBounds(monthKey) || monthBounds(today.slice(0, 7));
   if (preset === '3m') return { from: addMonthsIso(today, -3), to: today };
   if (preset === '6m') return { from: addMonthsIso(today, -6), to: today };
@@ -741,9 +744,11 @@ function preferPre10Meeting(a: ViewMeeting, b: ViewMeeting): ViewMeeting {
 }
 
 /**
- * Same lead can get more than one Pre 10% row (CRM sync / reschedule leftovers).
- * Non-DRR: keep one row per lead (not per day) so two "Meeting Successful" dates cannot show.
- * DRR: keep one row per lead+day. Drop orphan "design meeting" junk entirely.
+ * Pre 10% board dedupe (date-range safe):
+ * - same lead+day → one row (CRM/backfill junk)
+ * - multiple Successful (non-DRR) across days → one row (reschedule leftovers)
+ * - other days in the selected range stay visible
+ * DRR: one row per lead+day. Drop orphan "design meeting" junk entirely.
  */
 function dedupePre10Meetings(rows: ViewMeeting[]): ViewMeeting[] {
   const withoutOrphans = rows.filter((meeting) => !isOrphanDesignMeetingLabel(meeting));
@@ -752,13 +757,14 @@ function dedupePre10Meetings(rows: ViewMeeting[]): ViewMeeting[] {
 
   for (const meeting of withoutOrphans) {
     if (!isPre10Meeting(meeting) || meeting.leadId <= 0) continue;
-    // Cancelled junk with a false DRR flag must not keep a second board row.
     const isLiveDrr =
       isDrrCrmMeeting(meeting) &&
       String(meeting.raw.meetingStatus || '').toLowerCase() !== 'cancelled';
     const groupKey = isLiveDrr
       ? `drr|${meeting.leadId}|${meeting.day}`
-      : `pre10|${meeting.leadId}`;
+      : meeting.status === 'completed'
+        ? `pre10_done|${meeting.leadId}`
+        : `pre10|${meeting.leadId}|${meeting.day}`;
     const current = bestByGroup.get(groupKey);
     if (!current) {
       bestByGroup.set(groupKey, meeting);
@@ -1748,13 +1754,17 @@ export default function MeetingManagementView() {
       setCustomTo(draftFrom <= draftTo ? draftTo : draftFrom);
       followLiveMonth.current = false;
     } else if (draftPreset === 'month') {
-      const key = draftMonthKey === todayMonth ? todayMonth : viewMonth;
+      // Use the month chosen in the popover (draftMonthKey), not the previous viewMonth.
+      const key = (draftMonthKey && monthBounds(draftMonthKey) ? draftMonthKey : null)
+        || todayMonth;
       followLiveMonth.current = key === todayMonth;
       setViewMonth(key);
       setCustomFrom('');
       setCustomTo('');
     } else {
       followLiveMonth.current = false;
+      setCustomFrom('');
+      setCustomTo('');
     }
     setDatePreset(draftPreset);
     setDateError(null);
@@ -1829,10 +1839,12 @@ export default function MeetingManagementView() {
     if (startMins == null) return true;
     return nowMinutes >= startMins;
   })();
+  // Never-happened already has its own feedback note — do not show Designer feedback too.
   const showDesignerFeedbackPanel =
     showCrmFeedback &&
     !!selected &&
     !selectedIsDrr &&
+    selected.status !== 'abandoned' &&
     selected.typeKey === 'pre_10' &&
     !!selected.id &&
     (feedbackAlreadySubmitted || feedbackMeetingReached);
@@ -1979,10 +1991,13 @@ export default function MeetingManagementView() {
               : 'Could not end this meeting.'),
         );
       }
-      if (data?.crmMilestoneUpdated === false) {
+      // Appointment outcome may sync while CRM lead Meeting Successful is allowlist-skipped — not a hard fail.
+      if (data?.crmMilestoneUpdated === false && data?.crmAppointmentOutcomeSynced !== true) {
         setPre10ActionError(
           data?.message || 'Meeting ended here, but CRM milestone was not updated to Meeting Successful.',
         );
+      } else {
+        setPre10ActionError(null);
       }
     } catch (err) {
       setPre10ActionError(err instanceof Error ? err.message : 'Could not end meeting.');
