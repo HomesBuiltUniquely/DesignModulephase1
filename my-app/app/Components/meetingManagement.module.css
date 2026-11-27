@@ -45,6 +45,7 @@
 .pageHead {
   position: relative;
   z-index: 6;
+  isolation: isolate;
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
@@ -54,7 +55,9 @@
 
 .headActions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
 }
 
@@ -385,6 +388,64 @@
 }
 
 .statusSeg[data-open='true'] button[data-index='5'] { transition-delay: 140ms; }
+
+/* Status filter: avoid flex order fighting, width ghosts, and select bounce */
+.statusSeg.typeSeg {
+  will-change: auto;
+}
+
+.statusSeg button[data-on='true'] {
+  order: 0;
+  animation: none;
+}
+
+.statusSeg:not([data-open='true']) > button[data-open-only='true'] {
+  display: none;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  opacity: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  pointer-events: none;
+  transform: none;
+  filter: none;
+  transition: none;
+}
+
+.statusSeg[data-open='true'] > button[data-closed-only='true'] {
+  display: none;
+  transition: none;
+}
+
+.statusSeg > button[data-closed-only='true'] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 0;
+  max-width: 14rem;
+  opacity: 1;
+  padding: 6px 12px;
+  pointer-events: auto;
+  transform: none;
+  filter: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 0.18s ease, background 0.18s ease;
+}
+
+.statusSeg[data-open='true'] > button[data-open-only='true'] {
+  display: inline-flex;
+  align-items: center;
+}
+
+.statusSeg[data-open='true'] button[data-on='true'] {
+  animation: none;
+}
 
 .viewToggle {
   position: relative;
@@ -985,6 +1046,22 @@
 .dateMenu {
   width: 216px;
   padding: 6px;
+}
+
+.choiceMenu {
+  width: min(320px, calc(100vw - 24px));
+  max-height: min(400px, 70vh);
+  overflow-y: auto;
+  z-index: 40;
+  box-shadow: 0 12px 28px rgba(42, 33, 28, 0.1);
+}
+
+
+.choiceMenu .popOption {
+  height: auto;
+  min-height: 32px;
+  white-space: normal;
+  line-height: 1.35;
 }
 
 .dateMenu .popOption {

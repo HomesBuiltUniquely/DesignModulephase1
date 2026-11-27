@@ -90,6 +90,7 @@ type ScheduledMeeting = {
   cancelFiles?: { id: number; name: string; mimeType?: string | null }[] | null;
   reason?: string | null;
   endedAt?: string | null;
+  startedAt?: string | null;
   quoteSent?: boolean;
   /** True when a quote code/snapshot exists even if amount parse failed. */
   hasQuote?: boolean;
@@ -280,7 +281,10 @@ function dateBounds(
   today: string,
   monthKey: string,
 ): { from: string; to: string } | null {
-  if (preset === 'all') return null;
+  // Always return concrete from/to so the API fetches that window (not the default 60-day board).
+  if (preset === 'all') {
+    return { from: addMonthsIso(today, -36), to: addDaysIso(today, 45) };
+  }
   if (preset === 'month') return monthBounds(monthKey) || monthBounds(today.slice(0, 7));
   if (preset === '3m') return { from: addMonthsIso(today, -3), to: today };
   if (preset === '6m') return { from: addMonthsIso(today, -6), to: today };
@@ -528,17 +532,14 @@ function isDrrCrmMeeting(meeting: ViewMeeting): boolean {
   );
 }
 
-/**
- * Open DRR visit for the Meeting scheduled (DRR) filter.
- * Includes in_progress / rescheduled because Design may flip progress on the meeting day.
- */
-function isScheduledDrrMeeting(meeting: ViewMeeting): boolean {
-  if (!isDrrCrmMeeting(meeting)) return false;
-  return (
-    meeting.status === 'scheduled' ||
-    meeting.status === 'in_progress' ||
-    meeting.status === 'rescheduled'
-  );
+/** DRR row with status Scheduled (DRR) — not in progress / rescheduled DRR. */
+function isScheduledDrrStatusMeeting(meeting: ViewMeeting): boolean {
+  return isDrrCrmMeeting(meeting) && meeting.status === 'scheduled';
+}
+
+/** Design / CRM row with status Meeting Scheduled — excludes DRR. */
+function isPlainScheduledMeeting(meeting: ViewMeeting): boolean {
+  return meeting.status === 'scheduled' && !isDrrCrmMeeting(meeting);
 }
 
 /** Successful DRR visit for the Meeting Successful (DRR) filter only. */
@@ -657,13 +658,28 @@ function personLabel(name: string): string {
   return text;
 }
 
+/** Collapse CRM spelling noise so "Somashekar_V" and "Somashekar V" filter as one person. */
+function normalizePersonKey(name: string): string {
+  return name
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[_.]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function uniqueNames(values: string[]): string[] {
   const seen = new Map<string, string>();
   for (const value of values) {
-    const text = value.trim();
+    const text = value.replace(/[_]+/g, ' ').replace(/\s+/g, ' ').trim();
     if (!text || text.toLowerCase() === 'unassigned') continue;
-    const key = text.toLocaleLowerCase();
-    if (!seen.has(key)) seen.set(key, text);
+    const key = normalizePersonKey(text);
+    if (!key) continue;
+    const current = seen.get(key);
+    // Prefer the longer/cleaner display label when variants collide.
+    if (!current || text.length > current.length || (!current.includes(' ') && text.includes(' '))) {
+      seen.set(key, text);
+    }
   }
   return Array.from(seen.values()).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 }
@@ -710,6 +726,11 @@ function preferPre10Meeting(a: ViewMeeting, b: ViewMeeting): ViewMeeting {
   if (aCrm !== bCrm) return aCrm > bCrm ? a : b;
   const rankDiff = PRE10_STATUS_RANK[a.status] - PRE10_STATUS_RANK[b.status];
   if (rankDiff !== 0) return rankDiff > 0 ? a : b;
+  // Prefer the visit that was actually started (real Successful) over a leftover date row.
+  const aStarted = a.raw.startedAt ? 1 : 0;
+  const bStarted = b.raw.startedAt ? 1 : 0;
+  if (aStarted !== bStarted) return aStarted > bStarted ? a : b;
+  if (a.day !== b.day) return a.day >= b.day ? a : b;
   const aTimed = a.minutes != null ? 1 : 0;
   const bTimed = b.minutes != null ? 1 : 0;
   if (aTimed !== bTimed) return aTimed > bTimed ? a : b;
@@ -720,25 +741,35 @@ function preferPre10Meeting(a: ViewMeeting, b: ViewMeeting): ViewMeeting {
 }
 
 /**
- * Same lead can get more than one Pre 10% row for the same day (CRM sync / reschedule leftovers).
- * Keep one row per lead+day for the board and totals. Drop orphan "design meeting" junk entirely.
+ * Pre 10% board dedupe (date-range safe):
+ * - same lead+day → one row (CRM/backfill junk)
+ * - multiple Successful (non-DRR) across days → one row (reschedule leftovers)
+ * - other days in the selected range stay visible
+ * DRR: one row per lead+day. Drop orphan "design meeting" junk entirely.
  */
 function dedupePre10Meetings(rows: ViewMeeting[]): ViewMeeting[] {
   const withoutOrphans = rows.filter((meeting) => !isOrphanDesignMeetingLabel(meeting));
-  const bestByLeadDay = new Map<string, ViewMeeting>();
+  const bestByGroup = new Map<string, ViewMeeting>();
   const dropKeys = new Set<string>();
 
   for (const meeting of withoutOrphans) {
     if (!isPre10Meeting(meeting) || meeting.leadId <= 0) continue;
-    const groupKey = `${meeting.leadId}|${meeting.day}`;
-    const current = bestByLeadDay.get(groupKey);
+    const isLiveDrr =
+      isDrrCrmMeeting(meeting) &&
+      String(meeting.raw.meetingStatus || '').toLowerCase() !== 'cancelled';
+    const groupKey = isLiveDrr
+      ? `drr|${meeting.leadId}|${meeting.day}`
+      : meeting.status === 'completed'
+        ? `pre10_done|${meeting.leadId}`
+        : `pre10|${meeting.leadId}|${meeting.day}`;
+    const current = bestByGroup.get(groupKey);
     if (!current) {
-      bestByLeadDay.set(groupKey, meeting);
+      bestByGroup.set(groupKey, meeting);
       continue;
     }
     const preferred = preferPre10Meeting(current, meeting);
     const dropped = preferred.key === current.key ? meeting : current;
-    bestByLeadDay.set(groupKey, preferred);
+    bestByGroup.set(groupKey, preferred);
     dropKeys.add(dropped.key);
   }
 
@@ -747,7 +778,10 @@ function dedupePre10Meetings(rows: ViewMeeting[]): ViewMeeting[] {
 }
 
 function sameName(a: string, b: string): boolean {
-  return a.trim().toLocaleLowerCase() === b.trim().toLocaleLowerCase();
+  // Friday-accurate: exact person match after normalizing CRM spelling noise (_ vs space).
+  const left = normalizePersonKey(a);
+  const right = normalizePersonKey(b);
+  return Boolean(left && right && left === right);
 }
 
 function branchOf(raw: string | null | undefined): { key: string; label: string } {
@@ -758,7 +792,7 @@ function branchOf(raw: string | null | undefined): { key: string; label: string 
   }
   const generic = !text || text.toLowerCase() === 'experience center' || text.toLowerCase() === 'experience centre';
   if (generic) return { key: '', label: '' };
-  return { key: text.toLocaleLowerCase(), label: text };
+  return { key: text.toLocaleUpperCase(), label: text };
 }
 
 function compareMeetings(a: ViewMeeting, b: ViewMeeting, dir: 1 | -1): number {
@@ -937,8 +971,17 @@ function StatusPill({ status, meeting }: { status: ViewStatus; meeting?: ViewMee
       status !== 'completed' &&
       status !== 'abandoned';
     if (openDrr) {
-      label = 'Scheduled (DRR)';
-      pillStatus = status;
+      if (status === 'in_progress') {
+        label = (meeting.raw.progressLabel || '').trim() || 'In progress (DRR)';
+        pillStatus = 'in_progress';
+      } else if (status === 'rescheduled') {
+        const count = Math.max(1, meeting.rescheduleCount || 1);
+        label = `Meeting Rescheduled ${count} (DRR)`;
+        pillStatus = 'rescheduled';
+      } else {
+        label = 'Scheduled (DRR)';
+        pillStatus = status;
+      }
     } else if (treatCancelled) {
       label = rawLabel || 'Meeting Cancelled';
       pillStatus = 'cancelled';
@@ -951,6 +994,10 @@ function StatusPill({ status, meeting }: { status: ViewStatus; meeting?: ViewMee
     } else if (status === 'abandoned') {
       label = (meeting.raw.progressLabel || '').trim() || 'Meeting never happened';
       pillStatus = 'abandoned';
+    } else if (status === 'in_progress') {
+      // Current progress wins — don't label as rescheduled just because rescheduleCount > 0.
+      label = (meeting.raw.progressLabel || '').trim() || 'In progress';
+      pillStatus = 'in_progress';
     } else if (
       status === 'rescheduled' ||
       meeting.raw.meetingStatus === 'rescheduled' ||
@@ -962,9 +1009,6 @@ function StatusPill({ status, meeting }: { status: ViewStatus; meeting?: ViewMee
     } else if (status === 'scheduled') {
       label = (meeting.raw.progressLabel || '').trim() || 'Meeting Scheduled';
       pillStatus = 'scheduled';
-    } else if (status === 'in_progress') {
-      label = (meeting.raw.progressLabel || '').trim() || 'In progress';
-      pillStatus = 'in_progress';
     }
   }
   return (
@@ -1057,8 +1101,12 @@ export default function MeetingManagementView() {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const dateRef = useRef<HTMLDivElement>(null);
   const filterRef = useRef<HTMLDivElement>(null);
+  const statusRef = useRef<HTMLDivElement>(null);
+  const typeRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const followLiveMonth = useRef(true);
+  const loadSeqRef = useRef(0);
+  const loadAbortRef = useRef<AbortController | null>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const [today, setToday] = useState(kolkataTodayIso);
   const todayMonth = today.slice(0, 7);
@@ -1084,16 +1132,29 @@ export default function MeetingManagementView() {
   const [designerFeedbackError, setDesignerFeedbackError] = useState<string | null>(null);
   const [designerFeedbackOk, setDesignerFeedbackOk] = useState<string | null>(null);
 
-  const loadMeetings = useCallback(async () => {
+  const loadMeetings = useCallback(async (opts?: { bustCache?: boolean }) => {
     if (!sessionId) return;
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
+    const seq = ++loadSeqRef.current;
     setLoading(true);
     setError(null);
 
+    const range = dateBounds(datePreset, customFrom, customTo, kolkataTodayIso(), viewMonth);
+    const bustCache = opts?.bustCache === true;
+
     const fetchBoard = async (timeoutMs: number) => {
-      const controller = new AbortController();
       const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
       try {
-        const res = await fetch(`${apiBase}/api/meetings/scheduled`, {
+        const params = new URLSearchParams();
+        if (range) {
+          params.set('from', range.from);
+          params.set('to', range.to);
+        }
+        if (bustCache) params.set('refresh', '1');
+        const qs = params.toString();
+        const res = await fetch(`${apiBase}/api/meetings/scheduled${qs ? `?${qs}` : ''}`, {
           headers: buildAuthHeaders(sessionId),
           credentials: 'include',
           signal: controller.signal,
@@ -1111,17 +1172,19 @@ export default function MeetingManagementView() {
     try {
       let data: Record<string, unknown>;
       try {
-        // Board API is budgeted server-side to finish well under this.
-        data = await fetchBoard(15000);
+        // Board API is hard-budgeted server-side. Keep client abort above that with headroom.
+        data = await fetchBoard(25000);
       } catch (firstErr) {
+        if (seq !== loadSeqRef.current) return;
         const aborted = firstErr instanceof DOMException && firstErr.name === 'AbortError';
         const networkFail =
           firstErr instanceof TypeError ||
           (firstErr instanceof Error && /failed to fetch|networkerror|load failed/i.test(firstErr.message));
         if (!aborted && !networkFail) throw firstErr;
-        // One automatic retry — hosted can be cold on the first hit after deploy.
-        data = await fetchBoard(20000);
+        // One automatic retry — hosted/DB can be cold on the first hit after deploy.
+        data = await fetchBoard(25000);
       }
+      if (seq !== loadSeqRef.current) return;
       setMeetings(Array.isArray(data?.meetings) ? (data.meetings as ScheduledMeeting[]) : []);
       setPersonalWarning(
         typeof data?.personalWarning === 'string' && String(data.personalWarning).trim()
@@ -1129,10 +1192,13 @@ export default function MeetingManagementView() {
           : null,
       );
     } catch (err) {
+      if (seq !== loadSeqRef.current) return;
       const aborted = err instanceof DOMException && err.name === 'AbortError';
       const networkFail =
         err instanceof TypeError ||
         (err instanceof Error && /failed to fetch|networkerror|load failed/i.test(err.message));
+      // Ignore aborts from a newer loadMeetings call (date/filter change).
+      if (aborted && seq !== loadSeqRef.current) return;
       setPersonalWarning(null);
       setError(
         aborted
@@ -1145,9 +1211,9 @@ export default function MeetingManagementView() {
       );
       if (!aborted && !networkFail) setMeetings([]);
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
-  }, [apiBase, sessionId]);
+  }, [apiBase, sessionId, datePreset, customFrom, customTo, viewMonth]);
 
   useEffect(() => {
     void loadMeetings();
@@ -1290,7 +1356,7 @@ export default function MeetingManagementView() {
       if (!res.ok) throw new Error(data?.message || 'Could not update the meeting');
       setActionMeeting(null);
       setActionKind(null);
-      await loadMeetings();
+      await loadMeetings({ bustCache: true });
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Could not update the meeting');
     } finally {
@@ -1434,6 +1500,7 @@ export default function MeetingManagementView() {
       : statusFilters.length === 1
         ? statusChoices.find((item) => item.id === statusFilters[0])?.label || 'Status'
         : `${statusFilters.length} selected`;
+  const typeClosedLabel = TYPE_FILTERS.find((item) => item.id === typeFilter)?.label ?? 'All';
 
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -1456,7 +1523,10 @@ export default function MeetingManagementView() {
     if (typeFilter !== 'all' && meeting.typeKey !== typeFilter) return false;
     if (designerFilter && !sameName(meeting.designer, designerFilter)) return false;
     if (salesFilter && !sameName(meeting.sales, salesFilter)) return false;
-    if (branchFilter && meeting.branchKey !== branchFilter) return false;
+    if (branchFilter) {
+      const meetingBranch = meeting.branchKey || resolveBranchCode(meeting.branchLabel) || '';
+      if (meetingBranch !== branchFilter) return false;
+    }
     if (range && (meeting.day < range.from || meeting.day > range.to)) return false;
     if (!q) return true;
     const haystack = [meeting.customer, meeting.phone || '', meeting.designer, meeting.sales, meeting.branchLabel, meeting.branchKey, String(meeting.leadId)]
@@ -1501,9 +1571,15 @@ export default function MeetingManagementView() {
   const matchesStatus = useCallback((meeting: ViewMeeting) => {
     if (statusFilters.length === 0) return true;
     return statusFilters.some((want) => {
-      if (want === 'scheduled_drr') return isScheduledDrrMeeting(meeting);
+      if (want === 'scheduled_drr') return isScheduledDrrStatusMeeting(meeting);
       if (want === 'completed_drr') return isSuccessfulDrrMeeting(meeting);
-      if ((want === 'scheduled' || want === 'rescheduled') && isDrrCrmMeeting(meeting)) return false;
+      if (want === 'scheduled') return isPlainScheduledMeeting(meeting);
+      if (want === 'completed') {
+        return meeting.status === 'completed' && !isSuccessfulDrrMeeting(meeting);
+      }
+      if (want === 'rescheduled') {
+        return meeting.status === 'rescheduled' && !isDrrCrmMeeting(meeting);
+      }
       return meeting.status === want;
     });
   }, [statusFilters]);
@@ -1553,16 +1629,18 @@ export default function MeetingManagementView() {
   }, [query, typeFilter, designerFilter, salesFilter, branchFilter, statusFilters, quoteOnly, quoteDelayedOnly, personalKind, datePreset, customFrom, customTo, viewMonth]);
 
   useEffect(() => {
-    if (!dateOpen && !filterOpen) return;
-    const onDown = (event: MouseEvent) => {
+    if (!dateOpen && !filterOpen && !statusOpen && !typeOpen) return;
+    const onDismiss = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
       if (target.closest('.custom-select-dropdown')) return;
       if (dateOpen && dateRef.current && !dateRef.current.contains(target)) setDateOpen(false);
       if (filterOpen && filterRef.current && !filterRef.current.contains(target)) setFilterOpen(false);
+      if (statusOpen && statusRef.current && !statusRef.current.contains(target)) setStatusOpen(false);
+      if (typeOpen && typeRef.current && !typeRef.current.contains(target)) setTypeOpen(false);
     };
-    document.addEventListener('mousedown', onDown);
-    return () => document.removeEventListener('mousedown', onDown);
-  }, [dateOpen, filterOpen]);
+    document.addEventListener('click', onDismiss);
+    return () => document.removeEventListener('click', onDismiss);
+  }, [dateOpen, filterOpen, statusOpen, typeOpen]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -1584,11 +1662,19 @@ export default function MeetingManagementView() {
         setDateOpen(false);
         return;
       }
+      if (statusOpen) {
+        setStatusOpen(false);
+        return;
+      }
+      if (typeOpen) {
+        setTypeOpen(false);
+        return;
+      }
       if (selected && panelPhase !== 'out') closePanel();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [actionMeeting, actionStep, dateOpen, filterOpen, selected, panelPhase, savingAction]);
+  }, [actionMeeting, actionStep, dateOpen, filterOpen, statusOpen, typeOpen, selected, panelPhase, savingAction]);
 
   useEffect(() => {
     if (!selected) return;
@@ -1659,10 +1745,21 @@ export default function MeetingManagementView() {
     setView(next);
   };
 
-  const toggleStatus = (status: StatusKey) => {
+  /** One status at a time — matches header dropdown; click again to clear. */
+  const pickStatusFilter = (status: StatusKey) => {
     setStatusFilters((current) => (
-      current.includes(status) ? current.filter((item) => item !== status) : [...current, status]
+      current.length === 1 && current[0] === status ? [] : [status]
     ));
+  };
+
+  const applyStatusFilter = (status: StatusKey | 'all') => {
+    setStatusFilters(status === 'all' ? [] : [status]);
+    setStatusOpen(false);
+  };
+
+  const applyTypeFilter = (next: TypeFilter) => {
+    setTypeFilter(next);
+    setTypeOpen(false);
   };
 
   const toggleQuotes = () => {
@@ -1694,13 +1791,17 @@ export default function MeetingManagementView() {
       setCustomTo(draftFrom <= draftTo ? draftTo : draftFrom);
       followLiveMonth.current = false;
     } else if (draftPreset === 'month') {
-      const key = draftMonthKey === todayMonth ? todayMonth : viewMonth;
+      // Use the month chosen in the popover (draftMonthKey), not the previous viewMonth.
+      const key = (draftMonthKey && monthBounds(draftMonthKey) ? draftMonthKey : null)
+        || todayMonth;
       followLiveMonth.current = key === todayMonth;
       setViewMonth(key);
       setCustomFrom('');
       setCustomTo('');
     } else {
       followLiveMonth.current = false;
+      setCustomFrom('');
+      setCustomTo('');
     }
     setDatePreset(draftPreset);
     setDateError(null);
@@ -1775,10 +1876,12 @@ export default function MeetingManagementView() {
     if (startMins == null) return true;
     return nowMinutes >= startMins;
   })();
+  // Never-happened already has its own feedback note — do not show Designer feedback too.
   const showDesignerFeedbackPanel =
     showCrmFeedback &&
     !!selected &&
     !selectedIsDrr &&
+    selected.status !== 'abandoned' &&
     selected.typeKey === 'pre_10' &&
     !!selected.id &&
     (feedbackAlreadySubmitted || feedbackMeetingReached);
@@ -1863,7 +1966,7 @@ export default function MeetingManagementView() {
       }).catch(() => undefined);
       setMeetingWizLead(lead);
       setMeetingWizOpen(true);
-      await loadMeetings();
+      await loadMeetings({ bustCache: true });
       setSelected((prev) =>
         prev && prev.key === selected.key
           ? {
@@ -1902,7 +2005,7 @@ export default function MeetingManagementView() {
       const data = await res.json().catch(() => ({}));
       const endedLocally = data?.meeting != null || data?.crmMilestoneUpdated === true || res.ok;
       if (endedLocally) {
-        await loadMeetings();
+        await loadMeetings({ bustCache: true });
         setSelected((prev) =>
           prev && prev.key === selected.key
             ? {
@@ -1925,10 +2028,13 @@ export default function MeetingManagementView() {
               : 'Could not end this meeting.'),
         );
       }
-      if (data?.crmMilestoneUpdated === false) {
+      // Appointment outcome may sync while CRM lead Meeting Successful is allowlist-skipped — not a hard fail.
+      if (data?.crmMilestoneUpdated === false && data?.crmAppointmentOutcomeSynced !== true) {
         setPre10ActionError(
           data?.message || 'Meeting ended here, but CRM milestone was not updated to Meeting Successful.',
         );
+      } else {
+        setPre10ActionError(null);
       }
     } catch (err) {
       setPre10ActionError(err instanceof Error ? err.message : 'Could not end meeting.');
@@ -1985,7 +2091,7 @@ export default function MeetingManagementView() {
       const data = await res.json().catch(() => ({}));
       const savedLocally = data?.meeting != null || data?.ok === true || res.ok;
       if (savedLocally) {
-        await loadMeetings();
+        await loadMeetings({ bustCache: true });
         setSelected((prev) =>
           prev && prev.key === selected.key
             ? {
@@ -2051,6 +2157,115 @@ export default function MeetingManagementView() {
             <p className={styles.subtitle}>India time · design and CRM meetings</p>
           </div>
         <div className={styles.headActions}>
+          <div className={styles.dateWrap} ref={statusRef}>
+            <button
+              type="button"
+              className={styles.rangeBtn}
+              data-on={statusFilters.length > 0}
+              data-open={statusOpen}
+              aria-expanded={statusOpen}
+              aria-haspopup="listbox"
+              onClick={() => {
+                setStatusOpen((was) => {
+                  const next = !was;
+                  if (next) {
+                    setTypeOpen(false);
+                    setFilterOpen(false);
+                    setDateOpen(false);
+                  }
+                  return next;
+                });
+              }}
+            >
+              {statusClosedLabel}
+              <svg className={styles.rangeCaret} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" width="14" height="14" fill="currentColor" aria-hidden>
+                <path fillRule="evenodd" d="M5.22 7.22a.75.75 0 0 1 1.06 0L10 10.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 8.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+              </svg>
+            </button>
+            {statusOpen ? (
+              <div
+                className={`${styles.popover} ${styles.popoverEnd} ${styles.dateMenu} ${styles.choiceMenu}`}
+                role="listbox"
+                aria-label="Meeting status"
+                onMouseDown={(event) => event.preventDefault()}
+              >
+                <button
+                  type="button"
+                  className={styles.popOption}
+                  role="option"
+                  aria-selected={statusFilters.length === 0}
+                  data-on={statusFilters.length === 0}
+                  onClick={() => applyStatusFilter('all')}
+                >
+                  <i className={styles.popMark} aria-hidden="true" />
+                  All statuses
+                </button>
+                {statusChoices.map((status) => (
+                  <button
+                    key={status.id}
+                    type="button"
+                    className={styles.popOption}
+                    role="option"
+                    aria-selected={statusFilters.length === 1 && statusFilters[0] === status.id}
+                    data-on={statusFilters.length === 1 && statusFilters[0] === status.id}
+                    onClick={() => applyStatusFilter(status.id)}
+                  >
+                    <i className={styles.popMark} aria-hidden="true" />
+                    {status.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          <div className={styles.dateWrap} ref={typeRef}>
+            <button
+              type="button"
+              className={styles.rangeBtn}
+              data-on={typeFilter !== 'all'}
+              data-open={typeOpen}
+              aria-expanded={typeOpen}
+              aria-haspopup="listbox"
+              onClick={() => {
+                setTypeOpen((was) => {
+                  const next = !was;
+                  if (next) {
+                    setStatusOpen(false);
+                    setFilterOpen(false);
+                    setDateOpen(false);
+                  }
+                  return next;
+                });
+              }}
+            >
+              {typeClosedLabel}
+              <svg className={styles.rangeCaret} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" width="14" height="14" fill="currentColor" aria-hidden>
+                <path fillRule="evenodd" d="M5.22 7.22a.75.75 0 0 1 1.06 0L10 10.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 8.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+              </svg>
+            </button>
+            {typeOpen ? (
+              <div
+                className={`${styles.popover} ${styles.popoverEnd} ${styles.dateMenu} ${styles.choiceMenu}`}
+                role="listbox"
+                aria-label="Meeting type"
+                onMouseDown={(event) => event.preventDefault()}
+              >
+                {TYPE_FILTERS.map((type) => (
+                  <button
+                    key={type.id}
+                    type="button"
+                    className={styles.popOption}
+                    role="option"
+                    aria-selected={typeFilter === type.id}
+                    data-on={typeFilter === type.id}
+                    onClick={() => applyTypeFilter(type.id)}
+                  >
+                    <i className={styles.popMark} aria-hidden="true" />
+                    {type.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
           <div className={styles.dateWrap} ref={filterRef}>
               <button
                 type="button"
@@ -2157,17 +2372,17 @@ export default function MeetingManagementView() {
       </header>
 
       <section className={styles.stats} aria-label="Meeting totals">
-        <button type="button" className={styles.stat} data-static="false" data-on={statusFilters.includes('scheduled')} aria-pressed={statusFilters.includes('scheduled')} onClick={() => toggleStatus('scheduled')}>
+        <button type="button" className={styles.stat} data-static="false" data-on={statusFilters.length === 1 && statusFilters[0] === 'scheduled'} aria-pressed={statusFilters.length === 1 && statusFilters[0] === 'scheduled'} onClick={() => pickStatusFilter('scheduled')}>
           <span className={styles.statLabel}>Scheduled</span>
           <span className={styles.statValue}>{loading ? '—' : stats.scheduled}</span>
           <span className={styles.statSub}>{loading ? '' : `${stats.scheduledToday} today`}</span>
         </button>
-        <button type="button" className={styles.stat} data-static="false" data-on={statusFilters.includes('completed')} aria-pressed={statusFilters.includes('completed')} onClick={() => toggleStatus('completed')}>
+        <button type="button" className={styles.stat} data-static="false" data-on={statusFilters.length === 1 && statusFilters[0] === 'completed'} aria-pressed={statusFilters.length === 1 && statusFilters[0] === 'completed'} onClick={() => pickStatusFilter('completed')}>
           <span className={styles.statLabel}>Meeting Successful</span>
           <span className={styles.statValue}>{loading ? '—' : stats.successful}</span>
           <span className={styles.statSub}>{'\u00a0'}</span>
         </button>
-        <button type="button" className={styles.stat} data-static="false" data-on={statusFilters.includes('cancelled')} aria-pressed={statusFilters.includes('cancelled')} onClick={() => toggleStatus('cancelled')}>
+        <button type="button" className={styles.stat} data-static="false" data-on={statusFilters.length === 1 && statusFilters[0] === 'cancelled'} aria-pressed={statusFilters.length === 1 && statusFilters[0] === 'cancelled'} onClick={() => pickStatusFilter('cancelled')}>
           <span className={styles.statLabel}>Cancelled</span>
           <span className={styles.statValue}>{loading ? '—' : stats.cancelled}</span>
           <span className={styles.statSub}>{loading ? '' : `${stats.pct}% of meetings`}</span>
@@ -2229,103 +2444,28 @@ export default function MeetingManagementView() {
                 placeholder="Customer, lead ID, designer, sales"
               />
             </label>
-            <div
-              className={`${styles.seg} ${styles.typeSeg} ${styles.statusSeg}`}
-              data-open={statusOpen}
-              role="group"
-              aria-label="Meeting status"
-              onMouseEnter={() => setStatusOpen(true)}
-              onMouseLeave={() => setStatusOpen(false)}
-              onFocus={() => setStatusOpen(true)}
-              onBlur={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setStatusOpen(false);
-              }}
-            >
-              <button
-                type="button"
-                className={styles.statusClosed}
-                data-on="true"
-                data-closed-only="true"
-                tabIndex={statusOpen ? -1 : 0}
-                aria-label={`Status filter: ${statusClosedLabel}`}
-                onClick={() => setStatusOpen(true)}
-              >
-                {statusClosedLabel}
-              </button>
-              <button
-                type="button"
-                data-on={statusFilters.length === 0}
-                data-open-only="true"
-                data-index={0}
-                aria-pressed={statusFilters.length === 0}
-                tabIndex={statusOpen ? 0 : -1}
-                onClick={() => {
-                  setStatusFilters([]);
-                  window.setTimeout(() => setStatusOpen(false), 260);
-                }}
-              >
-                All
-              </button>
-              {statusChoices.map((status, index) => (
-                <button
-                  key={status.id}
-                  type="button"
-                  data-on={statusFilters.includes(status.id)}
-                  data-open-only="true"
-                  data-index={index + 1}
-                  aria-pressed={statusFilters.includes(status.id)}
-                  tabIndex={statusOpen ? 0 : -1}
-                  onClick={() => {
-                    toggleStatus(status.id);
-                    window.setTimeout(() => setStatusOpen(false), 260);
-                  }}
-                >
-                  {status.label}
-                </button>
-              ))}
-              <span className={styles.typeCaret} aria-hidden="true">▾</span>
-            </div>
-            <div
-              className={`${styles.seg} ${styles.typeSeg}`}
-              data-open={typeOpen}
-              role="group"
-              aria-label="Meeting type"
-              onMouseEnter={() => setTypeOpen(true)}
-              onMouseLeave={() => setTypeOpen(false)}
-              onFocus={() => setTypeOpen(true)}
-              onBlur={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setTypeOpen(false);
-              }}
-            >
-              {TYPE_FILTERS.map((type, index) => (
-                <button
-                  key={type.id}
-                  type="button"
-                  data-on={typeFilter === type.id}
-                  data-index={index}
-                  aria-pressed={typeFilter === type.id}
-                  tabIndex={typeOpen || typeFilter === type.id ? 0 : -1}
-                  onClick={() => {
-                    setTypeFilter(type.id);
-                    window.setTimeout(() => setTypeOpen(false), 260);
-                  }}
-                >
-                  {type.label}
-                </button>
-              ))}
-              <span className={styles.typeCaret} aria-hidden="true">▾</span>
-            </div>
                               <button
                                 type="button"
               className={styles.iconBtn}
               data-loading={loading}
               aria-label="Refresh meetings"
-              onClick={() => void loadMeetings()}
+              onClick={() => void loadMeetings({ bustCache: true })}
             >
               <RefreshIcon />
                               </button>
-            <span className={styles.count} title={loading ? 'Loading meetings' : `${filtered.length.toLocaleString('en-IN')} of ${mapped.length.toLocaleString('en-IN')} meetings`}>
-              {loading ? '…' : filtered.length.toLocaleString('en-IN')}
+            <span
+              className={styles.count}
+              title={
+                loading
+                  ? 'Loading meetings'
+                  : `${filtered.length.toLocaleString('en-IN')} shown of ${mapped.length.toLocaleString('en-IN')} loaded`
+              }
+            >
+              {loading
+                ? '…'
+                : filtered.length === mapped.length
+                  ? filtered.length.toLocaleString('en-IN')
+                  : `${filtered.length.toLocaleString('en-IN')} / ${mapped.length.toLocaleString('en-IN')}`}
             </span>
             {filtersActive ? (
               <button type="button" className={styles.textBtn} onClick={clearAll}>Clear all</button>
@@ -2924,7 +3064,7 @@ export default function MeetingManagementView() {
           setMeetingWizOpen(false);
           if (meetingWizLead) setPanelLead(meetingWizLead);
           setMeetingWizLead(null);
-          void loadMeetings();
+          void loadMeetings({ bustCache: true });
           // Refresh history so “wizard completed” edge case matches the dashboard.
           if (selected?.leadId && sessionId && selected.typeKey === 'pre_10' && !selected.personal) {
             const leadId = selected.leadId;

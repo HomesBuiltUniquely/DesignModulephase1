@@ -64,6 +64,7 @@ import {
   listLeadMeetings,
   markDesignMeetingCompleted,
   designMeetingFromBookingTask,
+  designMeetingFromCompletion,
   recordCrmMeeting,
   recordDesignMeetingFromSchedule,
   loadMeeting,
@@ -6266,16 +6267,45 @@ function resolveCrmLeadPutPaths(leadType: string | null | undefined, crmLeadId: 
 }
 
 /** Same auth style as quote-link / Hub proofs — API key + optional static bearer. No ERP username/password. */
+type CrmMeetingOutcomeSyncResult = {
+  ok: boolean;
+  base?: string;
+  error?: string;
+  status?: number;
+  /** Optional CRM response flag (legacy/informational). Design does not gate lead PUT on this. */
+  applyCrmMeetingSuccessfulMilestone?: boolean;
+};
+
+function parseApplyCrmMeetingSuccessfulMilestone(text: string): boolean | undefined {
+  if (!text || !text.trim()) return undefined;
+  try {
+    const body = JSON.parse(text) as Record<string, unknown>;
+    const raw =
+      body.applyCrmMeetingSuccessfulMilestone ??
+      body.apply_crm_meeting_successful_milestone ??
+      (body.data && typeof body.data === "object"
+        ? (body.data as Record<string, unknown>).applyCrmMeetingSuccessfulMilestone
+        : undefined);
+    if (raw === true || raw === 1 || raw === "true" || raw === "1") return true;
+    if (raw === false || raw === 0 || raw === "false" || raw === "0") return false;
+  } catch {
+    /* non-JSON body */
+  }
+  return undefined;
+}
+
 /**
  * CRM appointment outcome API (exact Hub contract).
  * PUT /v1/Appointment/{crmAppointmentId}/meeting-outcome
  * Body: { meetingProgress: "MEETING_SUCCESSFUL" | "MEETING_ABANDONED" }
  * CRM writes activity history as "Design Module Auto". Idempotent same outcome; flip → 409.
+ * Response may include applyCrmMeetingSuccessfulMilestone (optional). Design hard-rules:
+ * Pre-10/DRR may PUT lead Meeting Successful; First Cut/Material/Sign-off never do.
  */
 async function pushCrmAppointmentMeetingOutcome(
   crmAppointmentId: number,
   meetingProgress: "MEETING_SUCCESSFUL" | "MEETING_ABANDONED",
-): Promise<{ ok: boolean; base?: string; error?: string; status?: number }> {
+): Promise<CrmMeetingOutcomeSyncResult> {
   if (!Number.isFinite(crmAppointmentId) || crmAppointmentId < 1) {
     return { ok: false, error: "Invalid crmAppointmentId" };
   }
@@ -6310,13 +6340,23 @@ async function pushCrmAppointmentMeetingOutcome(
         });
         const text = await crmRes.text().catch(() => "");
         if (crmRes.ok) {
-          return { ok: true, base: `${base}${pathName}` };
+          return {
+            ok: true,
+            base: `${base}${pathName}`,
+            applyCrmMeetingSuccessfulMilestone: parseApplyCrmMeetingSuccessfulMilestone(text),
+          };
         }
         lastStatus = crmRes.status;
         lastError = `${crmRes.status} ${text.slice(0, 180)}`;
         // Same outcome again is OK on CRM; flip Successful ↔ Never Happened is 409.
         if (crmRes.status === 409) {
-          return { ok: false, error: lastError, status: 409, base: `${base}${pathName}` };
+          return {
+            ok: false,
+            error: lastError,
+            status: 409,
+            base: `${base}${pathName}`,
+            applyCrmMeetingSuccessfulMilestone: parseApplyCrmMeetingSuccessfulMilestone(text),
+          };
         }
         if (crmRes.status !== 404) {
           console.warn("[crm-meeting-outcome] PUT failed", {
@@ -6332,12 +6372,16 @@ async function pushCrmAppointmentMeetingOutcome(
   }
 
   try {
-    await callErpApi(`/v1/Appointment/${crmAppointmentId}/meeting-outcome`, {
+    const erpData = await callErpApi(`/v1/Appointment/${crmAppointmentId}/meeting-outcome`, {
       method: "PUT",
       body: outcomeBody,
       headers: { "X-Activity-Performed-By": "Design Module Auto" },
     });
-    return { ok: true, base: "callErpApi" };
+    const applyFlag =
+      erpData && typeof erpData === "object"
+        ? parseApplyCrmMeetingSuccessfulMilestone(JSON.stringify(erpData))
+        : undefined;
+    return { ok: true, base: "callErpApi", applyCrmMeetingSuccessfulMilestone: applyFlag };
   } catch (err) {
     const erpErr = err instanceof Error ? err.message : String(err);
     return {
@@ -6348,32 +6392,194 @@ async function pushCrmAppointmentMeetingOutcome(
   }
 }
 
+function erpStartTimeMatchesMeeting(
+  startTimeRaw: unknown,
+  meetingDate: string | null | undefined,
+  meetingTime: string | null | undefined,
+): boolean {
+  const start = String(startTimeRaw || "").trim();
+  if (!start || !meetingDate) return false;
+  const dateHit =
+    start.includes(meetingDate) ||
+    start.startsWith(meetingDate) ||
+    (start.includes("T") && start.slice(0, 10) === meetingDate);
+  if (!dateHit) return false;
+  const slot = String(meetingTime || "").trim();
+  if (!slot) return true;
+  // "6:30 PM – 8:00 PM" / "18:30" / "6:30 PM"
+  const startPart = slot.split(/[–—-]|\buntil\b|\bto\b/i)[0]?.trim() || slot;
+  const ampm = startPart.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+  let hhmm = "";
+  if (ampm) {
+    let h = Number(ampm[1]);
+    const m = ampm[2];
+    const ap = ampm[3].toUpperCase();
+    if (ap === "PM" && h < 12) h += 12;
+    if (ap === "AM" && h === 12) h = 0;
+    hhmm = `${String(h).padStart(2, "0")}:${m}`;
+  } else {
+    const m24 = startPart.match(/(\d{1,2}):(\d{2})/);
+    if (m24) hhmm = `${String(Number(m24[1])).padStart(2, "0")}:${m24[2]}`;
+  }
+  if (!hhmm) return true;
+  // ERP startTime is usually ISO with timezone; compare local clock HH:MM loosely.
+  return start.includes(`T${hhmm}`) || start.includes(` ${hhmm}`) || start.includes(`T${hhmm}:`);
+}
+
 async function resolveCrmAppointmentIdForMeeting(meeting: {
   id: number;
   leadId: number;
   crmAppointmentId?: number | null;
+  meetingDate?: string | null;
+  meetingTime?: string | null;
+  designerName?: string | null;
 }): Promise<number | null> {
   let crmAppointmentId =
     meeting.crmAppointmentId != null && Number(meeting.crmAppointmentId) > 0
       ? Number(meeting.crmAppointmentId)
       : null;
-  if (crmAppointmentId == null && meeting.leadId) {
+
+  let payload: Record<string, unknown> = {};
+  let crmLeadId: number | null = null;
+  let designerName = String(meeting.designerName || "").trim();
+  let meetingDate = meeting.meetingDate || null;
+  let meetingTime = meeting.meetingTime || null;
+
+  if (meeting.leadId) {
     try {
-      const [leadRows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [
-        meeting.leadId,
-      ]);
-      const payloadRaw = (leadRows as { payload?: string | null }[])[0]?.payload;
-      const payload = payloadRaw ? (JSON.parse(payloadRaw) as Record<string, unknown>) : {};
-      const fromPayload = Number(
-        (payload as { crmAppointmentId?: unknown; appointmentId?: unknown }).crmAppointmentId ??
-          (payload as { appointmentId?: unknown }).appointmentId ??
-          (payload as { crmSchedule?: { appointmentId?: unknown } }).crmSchedule?.appointmentId,
+      const [leadRows] = await pool.query(
+        `SELECT l.payload, u.name AS designerName
+           FROM leads l
+           LEFT JOIN users u ON u.id = l.assigned_designer_id
+          WHERE l.id = ?
+          LIMIT 1`,
+        [meeting.leadId],
       );
-      if (Number.isFinite(fromPayload) && fromPayload > 0) crmAppointmentId = fromPayload;
+      const leadRow = (leadRows as { payload?: string | null; designerName?: string | null }[])[0];
+      const payloadRaw = leadRow?.payload;
+      payload = payloadRaw ? (JSON.parse(payloadRaw) as Record<string, unknown>) : {};
+      if (!designerName) designerName = String(leadRow?.designerName || "").trim();
+      const n = Number(
+        payload.crmLeadId ?? payload.leadId ?? payload.crm_lead_id ??
+          (payload.rawPayload as Record<string, unknown> | undefined)?.crmLeadId ??
+          (payload.rawPayload as Record<string, unknown> | undefined)?.leadId,
+      );
+      if (Number.isFinite(n) && n > 0) crmLeadId = n;
+    } catch {
+      payload = {};
+    }
+  }
+
+  // Fill date/time/designer from the meeting row when caller only passed ids.
+  if ((!meetingDate || !meetingTime || !designerName) && meeting.id) {
+    try {
+      const row = await loadMeeting(pool, meeting.id);
+      if (row) {
+        meetingDate = meetingDate || row.meetingDate || null;
+        meetingTime = meetingTime || row.meetingTime || null;
+        if (!designerName) designerName = String(row.designerName || "").trim();
+        if (row.crmAppointmentId != null && Number(row.crmAppointmentId) > 0) {
+          crmAppointmentId = Number(row.crmAppointmentId);
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (crmAppointmentId == null && Object.keys(payload).length > 0) {
+    try {
+      const raw =
+        payload.rawPayload && typeof payload.rawPayload === "object"
+          ? (payload.rawPayload as Record<string, unknown>)
+          : payload.rawHubPayload && typeof payload.rawHubPayload === "object"
+            ? (payload.rawHubPayload as Record<string, unknown>)
+            : {};
+      const schedule =
+        payload.crmSchedule && typeof payload.crmSchedule === "object"
+          ? (payload.crmSchedule as Record<string, unknown>)
+          : {};
+      const rawSchedule =
+        raw.schedule && typeof raw.schedule === "object"
+          ? (raw.schedule as Record<string, unknown>)
+          : {};
+      const rawAppointment =
+        raw.appointment && typeof raw.appointment === "object"
+          ? (raw.appointment as Record<string, unknown>)
+          : {};
+      const candidates = [
+        payload.crmAppointmentId,
+        payload.appointmentId,
+        payload.appointment_id,
+        schedule.appointmentId,
+        schedule.crmAppointmentId,
+        raw.crmAppointmentId,
+        raw.appointmentId,
+        raw.appointment_id,
+        rawSchedule.appointmentId,
+        rawAppointment.id,
+        rawAppointment.appointmentId,
+      ];
+      for (const value of candidates) {
+        const fromPayload = Number(value);
+        if (Number.isFinite(fromPayload) && fromPayload > 0) {
+          crmAppointmentId = fromPayload;
+          break;
+        }
+      }
     } catch {
       // keep null
     }
   }
+
+  // Hub external-upsert often omits appointmentId — resolve from ERP designer calendar.
+  if (crmAppointmentId == null && designerName && meetingDate) {
+    try {
+      const list = await fetchDesignerErpAppointments(designerName);
+      const matches = list.filter((raw) => {
+        if (!raw || typeof raw !== "object") return false;
+        const o = raw as Record<string, unknown>;
+        if (isCancelledErpAppointment(raw)) return false;
+        const erpLead = Number(o.leadId ?? o.lead_id ?? o.crmLeadId ?? o.crm_lead_id);
+        if (crmLeadId != null && Number.isFinite(erpLead) && erpLead > 0 && erpLead !== crmLeadId) {
+          return false;
+        }
+        return erpStartTimeMatchesMeeting(o.startTime ?? o.start, meetingDate, meetingTime);
+      });
+      // Prefer exact lead match when several slots share the day.
+      const preferred =
+        matches.find((raw) => {
+          const o = raw as Record<string, unknown>;
+          const erpLead = Number(o.leadId ?? o.lead_id ?? o.crmLeadId ?? o.crm_lead_id);
+          return crmLeadId != null && erpLead === crmLeadId;
+        }) || matches[0];
+      if (preferred && typeof preferred === "object") {
+        const id = Number(
+          (preferred as Record<string, unknown>).id ??
+            (preferred as Record<string, unknown>).appointmentId,
+        );
+        if (Number.isFinite(id) && id > 0) {
+          crmAppointmentId = id;
+          console.info("[resolveCrmAppointmentId] matched ERP appointment", {
+            meetingId: meeting.id,
+            leadId: meeting.leadId,
+            crmLeadId,
+            designerName,
+            meetingDate,
+            meetingTime,
+            crmAppointmentId,
+          });
+        }
+      }
+    } catch (err) {
+      console.warn("[resolveCrmAppointmentId] ERP designer lookup failed", {
+        meetingId: meeting.id,
+        designerName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   if (crmAppointmentId != null) {
     try {
       await stampCrmAppointmentId(pool, meeting.id, crmAppointmentId);
@@ -8796,6 +9002,52 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
     return Number.isFinite(n) && n > 0 ? n : null;
   })();
 
+  // Hub Appointment.id — required for Successful / Never Happened outcome sync back to CRM.
+  // CRM now sends: appointmentId / crmAppointmentId / appointment_id / schedule.appointmentId / crmSchedule.appointmentId
+  const crmAppointmentIdNum = (() => {
+    const nestedSchedule =
+      payload.schedule && typeof payload.schedule === "object"
+        ? (payload.schedule as Record<string, unknown>)
+        : {};
+    const nestedCrmSchedule =
+      payload.crmSchedule && typeof payload.crmSchedule === "object"
+        ? (payload.crmSchedule as Record<string, unknown>)
+        : {};
+    const nestedAppt =
+      payload.appointment && typeof payload.appointment === "object"
+        ? (payload.appointment as Record<string, unknown>)
+        : {};
+    const n = Number(
+      payload.crmAppointmentId ??
+        payload.appointmentId ??
+        payload.appointment_id ??
+        payload.erpAppointmentId ??
+        formData.crmAppointmentId ??
+        formData.appointmentId ??
+        formData.appointment_id ??
+        fetched.crmAppointmentId ??
+        fetched.appointmentId ??
+        nestedCrmSchedule.appointmentId ??
+        nestedCrmSchedule.crmAppointmentId ??
+        nestedSchedule.appointmentId ??
+        nestedSchedule.crmAppointmentId ??
+        nestedAppt.id ??
+        nestedAppt.appointmentId ??
+        // Some Hub payloads put the appointment id only as top-level `id` when action is schedule/reschedule.
+        (payload.id != null &&
+        (payload.appointmentDate ||
+          payload.appointment_date ||
+          payload.appointmentSlot ||
+          payload.appointment_slot ||
+          /appointment|schedule|reschedul|drr|meeting/i.test(
+            String(payload.meetingStatus || payload.action || payload.subStage || ""),
+          ))
+          ? payload.id
+          : null),
+    );
+    return Number.isFinite(n) && n > 0 ? n : null;
+  })();
+
   const appointmentDateRaw =
     payload.appointmentDate ??
     payload.appointment_date ??
@@ -8976,6 +9228,7 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
       slot: appointmentSlot,
       timezone: scheduleTimezone,
       slotDetails,
+      ...(crmAppointmentIdNum != null ? { appointmentId: crmAppointmentIdNum } : {}),
     };
 
     const intakeCustomerName =
@@ -9035,6 +9288,9 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
       receivedAt: now.toISOString(),
       ...(crmLeadType ? { crmLeadType } : {}),
       ...(crmLeadIdNum != null ? { crmLeadId: crmLeadIdNum } : {}),
+      ...(crmAppointmentIdNum != null
+        ? { crmAppointmentId: crmAppointmentIdNum, appointmentId: crmAppointmentIdNum }
+        : {}),
       crmSchedule,
       formData: {
         customer_name: intakeCustomerName,
@@ -9348,8 +9604,22 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
             subStage: pickTrimmedString((payload as any)?.subStage, (payload as any)?.sub_stage),
             meetingMode: /virtual/i.test(crmText) ? "online" : /showroom|site/i.test(crmText) ? "offline" : null,
             designerId: assignedDesignerId,
+            crmAppointmentId: crmAppointmentIdNum,
             actor: { name: "CRM" },
           });
+          // Hub often omits appointmentId on upsert — resolve from ERP calendar so DRR outcome can sync.
+          if (recordedMeeting?.id && !(recordedMeeting.crmAppointmentId || crmAppointmentIdNum)) {
+            void resolveCrmAppointmentIdForMeeting({
+              id: recordedMeeting.id,
+              leadId: existingLeadId,
+              crmAppointmentId: null,
+              meetingDate: recordedMeeting.meetingDate,
+              meetingTime: recordedMeeting.meetingTime,
+              designerName: designerName,
+            }).catch((err) => {
+              console.warn("[external-upsert] crmAppointmentId resolve failed", err);
+            });
+          }
 
           const slotChanged =
             Boolean(activeMtg) &&
@@ -9400,7 +9670,9 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
           slot: appointmentSlot,
           timezone: scheduleTimezone,
           ...(slotDetails != null ? { slotDetails } : {}),
+          ...(crmAppointmentIdNum != null ? { appointmentId: crmAppointmentIdNum } : {}),
         },
+        crmAppointmentId: crmAppointmentIdNum,
         message: didReschedule
           ? "Meeting rescheduled via external upsert"
           : "Lead updated via external intake",
@@ -9447,7 +9719,7 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
         (payload as any)?.sub_stage,
         (payload as any)?.title,
       );
-      await recordCrmMeeting(pool, {
+      const createdMeeting = await recordCrmMeeting(pool, {
         leadId: newLeadId,
         meetingDate: appointmentDate,
         meetingTime: appointmentSlot,
@@ -9460,8 +9732,21 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
         subStage: pickTrimmedString((payload as any)?.subStage, (payload as any)?.sub_stage),
         meetingMode: /virtual/i.test(crmText) ? "online" : /showroom|site/i.test(crmText) ? "offline" : null,
         designerId: assignedDesignerId,
+        crmAppointmentId: crmAppointmentIdNum,
         actor: { name: "CRM" },
       });
+      if (createdMeeting?.id && !(createdMeeting.crmAppointmentId || crmAppointmentIdNum)) {
+        void resolveCrmAppointmentIdForMeeting({
+          id: createdMeeting.id,
+          leadId: newLeadId,
+          crmAppointmentId: null,
+          meetingDate: createdMeeting.meetingDate,
+          meetingTime: createdMeeting.meetingTime,
+          designerName: designerName,
+        }).catch((err) => {
+          console.warn("[external-intake] crmAppointmentId resolve failed", err);
+        });
+      }
     } catch (meetingErr) {
       console.error("[external-intake] crm meeting sync failed", meetingErr);
     }
@@ -9492,7 +9777,9 @@ const handleExternalLeadUpsert = async (req: Request, res: Response) => {
         slot: appointmentSlot,
         timezone: scheduleTimezone,
         ...(slotDetails != null ? { slotDetails } : {}),
+        ...(crmAppointmentIdNum != null ? { appointmentId: crmAppointmentIdNum } : {}),
       },
+      crmAppointmentId: crmAppointmentIdNum,
       message: "Lead received via external intake",
     });
   } catch (err) {
@@ -11685,6 +11972,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
       console.error("[designer-xp] Hook error in complete-task (non-fatal):", xpErr);
     }
 
+    let completedDesignMeeting: Awaited<ReturnType<typeof markDesignMeetingCompleted>> = null;
     try {
       const meetingDate = meta?.meetingDate ?? meta?.signoffDate ?? null;
       const meetingTime = meta?.meetingTime ?? meta?.signoffTime ?? null;
@@ -11698,7 +11986,7 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
           actor: { id: actingUser.id, name: actingUser.name },
         });
       }
-      await markDesignMeetingCompleted(pool, {
+      completedDesignMeeting = await markDesignMeetingCompleted(pool, {
         leadId: id,
         milestoneIndex,
         taskName: tNormComplete,
@@ -11708,28 +11996,45 @@ app.post("/api/leads/:id/complete-task", async (req: Request, res: Response) => 
       console.error("[complete-task] persist scheduled meeting failed (non-fatal)", persistErr);
     }
 
-    if (milestoneIndex === 1 && tNormComplete === "meeting completed") {
+    // First Cut / Material / Sign-off: Design MM + appointment meeting-outcome only.
+    // Never PUT CRM lead → Meeting Successful (that reopened Closed leads e.g. 8073621971).
+    // Pre-10 / DRR handle lead Meeting Successful on their own paths. CRM also blocks Closed reopen.
+    const completedDesignDef = designMeetingFromCompletion(milestoneIndex, tNormComplete);
+    if (completedDesignDef && completedDesignMeeting?.id) {
       try {
-        const [leadRows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [id]);
-        const leadRow = (leadRows as { payload?: string | null }[])[0];
-        if (leadRow && leadRow.payload) {
-          const payload = JSON.parse(leadRow.payload);
-          const crmLeadIdNum = Number(payload.crmLeadId);
-          const crmLeadType =
-            (typeof payload.crmLeadType === "string" && payload.crmLeadType.trim()) ||
-            (typeof payload.leadType === "string" && payload.leadType.trim()) ||
-            (typeof payload.crm_lead_type === "string" && payload.crm_lead_type.trim()) ||
-            null;
-          if (Number.isFinite(crmLeadIdNum) && crmLeadIdNum > 0) {
-            await notifyCrmMeetingCompleted(crmLeadIdNum, crmLeadType);
+        const crmAppointmentId = await resolveCrmAppointmentIdForMeeting({
+          id: completedDesignMeeting.id,
+          leadId: id,
+          crmAppointmentId: completedDesignMeeting.crmAppointmentId ?? null,
+          meetingDate: completedDesignMeeting.meetingDate,
+          meetingTime: completedDesignMeeting.meetingTime,
+          designerName: completedDesignMeeting.designerName,
+        });
+        if (crmAppointmentId != null) {
+          const sync = await pushCrmAppointmentMeetingOutcome(crmAppointmentId, "MEETING_SUCCESSFUL");
+          if (!sync.ok) {
+            console.warn("[complete-task] design meeting-outcome sync failed", {
+              leadId: id,
+              meetingType: completedDesignDef.meetingType,
+              crmAppointmentId,
+              error: sync.error,
+            });
           } else {
-            console.warn("[complete-task] skip CRM Meeting Successful — no crmLeadId", { leadId: id });
+            console.info("[complete-task] design meeting-outcome OK — CRM lead Meeting Successful not called", {
+              leadId: id,
+              meetingType: completedDesignDef.meetingType,
+              crmAppointmentId,
+            });
           }
+        } else {
+          console.info("[complete-task] design meeting Successful in Design only — no crmAppointmentId", {
+            leadId: id,
+            meetingType: completedDesignDef.meetingType,
+            meetingId: completedDesignMeeting.id,
+          });
         }
       } catch (err) {
-        console.error("[complete-task] failed to notify CRM of Meeting Successful", err);
-        // Surface after local task save so ops can see CRM sync failed.
-        throw err;
+        console.error("[complete-task] design meeting CRM appointment outcome failed (non-fatal)", err);
       }
     }
 
@@ -23642,6 +23947,16 @@ async function listPersonalAppointmentsForMeetingBoard(limitToUserIds?: number[]
  * Admin sees every meeting. Designer, design manager, and TDM see only their team.
  * GET /api/meetings/scheduled
  */
+const MEETING_BOARD_RESPONSE_CACHE_MS = 4_000;
+const meetingBoardResponseCache = new Map<
+  string,
+  { at: number; body: { meetings: unknown[]; personalWarning: string | null } }
+>();
+
+function clearMeetingBoardResponseCache() {
+  meetingBoardResponseCache.clear();
+}
+
 app.get("/api/meetings/scheduled", async (req: Request, res: Response) => {
   const startedAt = Date.now();
   try {
@@ -23653,57 +23968,89 @@ app.get("/api/meetings/scheduled", async (req: Request, res: Response) => {
     const scope = await meetingViewerScope(actingUser);
     if (!scope) return res.status(403).json({ message: "Not allowed to open meeting management" });
 
+    // Optional from/to (YYYY-MM-DD) from Meeting Management date range — keeps Today/Tomorrow
+    // in the result set instead of truncating them behind an ASC soft cap.
+    const fromRaw = typeof req.query.from === "string" ? req.query.from.trim() : "";
+    const toRaw = typeof req.query.to === "string" ? req.query.to.trim() : "";
+    const fromIso = /^\d{4}-\d{2}-\d{2}$/.test(fromRaw) ? fromRaw : undefined;
+    const toIso = /^\d{4}-\d{2}-\d{2}$/.test(toRaw) ? toRaw : undefined;
+    const forceRefresh =
+      req.query.refresh === "1" ||
+      req.query.refresh === "true" ||
+      req.query.fresh === "1" ||
+      req.query.fresh === "true";
+    const cacheKey = [
+      actingUser.id,
+      scope.all ? "all" : scope.userIds.slice().sort((a, b) => a - b).join(","),
+      fromIso || "-",
+      toIso || "-",
+    ].join("|");
+    if (forceRefresh) meetingBoardResponseCache.delete(cacheKey);
+    const cached = forceRefresh ? undefined : meetingBoardResponseCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < MEETING_BOARD_RESPONSE_CACHE_MS) {
+      console.log(
+        `[meeting-board] scheduled list cache hit in ${Date.now() - startedAt}ms (meetings=${cached.body.meetings.length})`,
+      );
+      return res.json(cached.body);
+    }
+
     // Client meetings first — personal ERP must never block the board (hosted timed out).
-    const meetings = await listLeadMeetings(pool, scope.all ? undefined : { designerIds: scope.userIds });
+    const meetings = await listLeadMeetings(pool, {
+      ...(scope.all ? {} : { designerIds: scope.userIds }),
+      ...(fromIso ? { fromIso } : {}),
+      ...(toIso ? { toIso } : {}),
+    });
     const clientMs = Date.now() - startedAt;
 
     let personal: Record<string, unknown>[] = [];
     let personalWarning: string | null = null;
-    // If client list already used most of the budget, skip personal and return immediately.
-    const PERSONAL_BOARD_BUDGET_MS = clientMs > 4500 ? 0 : clientMs > 2500 ? 300 : 600;
-    if (PERSONAL_BOARD_BUDGET_MS <= 0) {
-      personalWarning = "Personal appointments skipped to keep Meeting Management fast. Refresh to retry.";
-      void listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds).catch(() => undefined);
-    } else {
-      try {
-        const personalResult = await Promise.race([
-          listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds)
-            .then((board) => ({ ok: true as const, board }))
-            .catch((personalErr) => {
-              console.error("[meeting-board] personal appointments failed", personalErr);
-              return {
-                ok: false as const,
-                warning: "Personal appointments could not be loaded. Client meetings are still shown.",
-              };
-            }),
-          new Promise<{ ok: false; warning: string }>((resolve) => {
-            setTimeout(
-              () =>
-                resolve({
-                  ok: false,
-                  warning: "Personal appointments are still loading. Client meetings are shown now.",
-                }),
-              PERSONAL_BOARD_BUDGET_MS,
-            );
+    // Friday behavior: always try personal, never block the board. Warm cache in background on miss.
+    const PERSONAL_BOARD_BUDGET_MS = clientMs > 5000 ? 200 : 800;
+    try {
+      const personalResult = await Promise.race([
+        listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds)
+          .then((board) => ({ ok: true as const, board }))
+          .catch((personalErr) => {
+            console.error("[meeting-board] personal appointments failed", personalErr);
+            return {
+              ok: false as const,
+              warning: "Personal appointments could not be loaded. Client meetings are still shown.",
+            };
           }),
-        ]);
-        if (personalResult.ok) {
-          personal = personalResult.board.meetings;
-          personalWarning = personalResult.board.warning;
-        } else {
-          personalWarning = personalResult.warning;
-          void listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds).catch(() => undefined);
-        }
-      } catch (personalErr) {
-        console.error("[meeting-board] personal appointments failed", personalErr);
-        personalWarning = "Personal appointments could not be loaded. Client meetings are still shown.";
+        new Promise<{ ok: false; warning: string }>((resolve) => {
+          setTimeout(
+            () =>
+              resolve({
+                ok: false,
+                warning: "Personal appointments are still loading. Client meetings are shown now.",
+              }),
+            PERSONAL_BOARD_BUDGET_MS,
+          );
+        }),
+      ]);
+      if (personalResult.ok) {
+        personal = personalResult.board.meetings;
+        personalWarning = personalResult.board.warning;
+      } else {
+        personalWarning = personalResult.warning;
+        void listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds).catch(() => undefined);
       }
+    } catch (personalErr) {
+      console.error("[meeting-board] personal appointments failed", personalErr);
+      personalWarning = "Personal appointments could not be loaded. Client meetings are still shown.";
+      void listPersonalAppointmentsForMeetingBoard(scope.all ? undefined : scope.userIds).catch(() => undefined);
     }
 
+    const body = { meetings: [...meetings, ...personal], personalWarning };
+    meetingBoardResponseCache.set(cacheKey, { at: Date.now(), body });
+    if (meetingBoardResponseCache.size > 40) {
+      const oldest = [...meetingBoardResponseCache.entries()].sort((a, b) => a[1].at - b[1].at)[0]?.[0];
+      if (oldest) meetingBoardResponseCache.delete(oldest);
+    }
     console.log(
       `[meeting-board] scheduled list ready in ${Date.now() - startedAt}ms (client=${meetings.length}, personal=${personal.length}, clientMs=${clientMs})`,
     );
-    return res.json({ meetings: [...meetings, ...personal], personalWarning });
+    return res.json(body);
   } catch (err) {
     console.error("scheduled meetings list error", err);
     return res.status(500).json({ message: "Failed to load scheduled meetings" });
@@ -24001,6 +24348,7 @@ app.post("/api/meetings/:id/reschedule", async (req: Request, res: Response) => 
       });
     }
 
+    clearMeetingBoardResponseCache();
     return res.json({ meeting });
   } catch (err) {
     if (err instanceof MeetingActionError) return res.status(err.status).json({ message: err.message });
@@ -24067,6 +24415,7 @@ app.post("/api/meetings/:id/cancel", acceptStatusNoteFiles, async (req: Request,
       console.error("[cancel-meeting] mail send failed (non-fatal)", mailErr);
     });
 
+    clearMeetingBoardResponseCache();
     return res.json(result);
   } catch (err) {
     if (err instanceof MeetingActionError) {
@@ -24089,6 +24438,7 @@ app.post("/api/meetings/:id/start", async (req: Request, res: Response) => {
     const meetingId = Number(req.params.id);
     if (!Number.isFinite(meetingId)) return res.status(400).json({ message: "Invalid meeting id" });
     const meeting = await startCrmMeeting(pool, meetingId, { id: actingUser.id, name: actingUser.name });
+    clearMeetingBoardResponseCache();
     return res.json({ meeting });
   } catch (err) {
     if (err instanceof MeetingActionError) return res.status(err.status).json({ message: err.message });
@@ -24295,30 +24645,12 @@ app.post("/api/meetings/:id/feedback-designer", async (req: Request, res: Respon
       actor: { id: actingUser.id, name: actingUser.name },
     });
 
-    // Resolve CRM appointment id for Hub PUT (may have been filled by applyCrmMeetingFeedback).
-    let crmAppointmentId =
-      meeting?.crmAppointmentId != null && Number(meeting.crmAppointmentId) > 0
-        ? Number(meeting.crmAppointmentId)
-        : row.crmAppointmentId != null && Number(row.crmAppointmentId) > 0
-          ? Number(row.crmAppointmentId)
-          : null;
-
-    // Fallback: try payload crm appointment id on the Design lead.
-    if (crmAppointmentId == null) {
-      try {
-        const [leadRows] = await pool.query("SELECT payload FROM leads WHERE id = ? LIMIT 1", [row.leadId]);
-        const payloadRaw = (leadRows as { payload?: string | null }[])[0]?.payload;
-        const payload = payloadRaw ? (JSON.parse(payloadRaw) as Record<string, unknown>) : {};
-        const fromPayload = Number(
-          (payload as { crmAppointmentId?: unknown; appointmentId?: unknown }).crmAppointmentId ??
-            (payload as { appointmentId?: unknown }).appointmentId ??
-            (payload as { crmSchedule?: { appointmentId?: unknown } }).crmSchedule?.appointmentId,
-        );
-        if (Number.isFinite(fromPayload) && fromPayload > 0) crmAppointmentId = fromPayload;
-      } catch {
-        /* ignore */
-      }
-    }
+    // Resolve CRM appointment id for Hub PUT (column + lead payload / rawPayload).
+    const crmAppointmentId = await resolveCrmAppointmentIdForMeeting({
+      id: meetingId,
+      leadId: row.leadId,
+      crmAppointmentId: meeting?.crmAppointmentId ?? row.crmAppointmentId ?? null,
+    });
 
     let crmSynced = false;
     let crmSyncError: string | null = null;
@@ -24389,7 +24721,9 @@ app.post("/api/meetings/:id/end", async (req: Request, res: Response) => {
     if (!actingUser) return res.status(401).json({ message: "Unauthorized" });
     const meetingId = Number(req.params.id);
     if (!Number.isFinite(meetingId)) return res.status(400).json({ message: "Invalid meeting id" });
-    // Local board → Meeting Successful first, then CRM milestone MUST follow.
+    // Pre-10 End Meeting: Design MM → appointment meeting-outcome → CRM lead Meeting Successful.
+    // First Cut / Material / Sign-off must NOT use this lead PUT (they use complete-task outcome-only).
+    // CRM safety net blocks Closed/Decision reopen; Design still never double-fires from FC/MS/SO.
     const meeting = await endCrmMeeting(pool, meetingId, { id: actingUser.id, name: actingUser.name });
     // Hide Pre 10% dashboard Start Meeting (same flag Meeting Wizard uses).
     try {
@@ -24401,12 +24735,48 @@ app.post("/api/meetings/:id/end", async (req: Request, res: Response) => {
     } catch (persistErr) {
       console.error("[meetings/end] persist meetingWizLastCompleted failed", persistErr);
     }
+    clearMeetingBoardResponseCache();
+
+    const crmAppointmentId = meeting
+      ? await resolveCrmAppointmentIdForMeeting({
+          id: meeting.id,
+          leadId: meeting.leadId,
+          crmAppointmentId: meeting.crmAppointmentId ?? null,
+          meetingDate: meeting.meetingDate,
+          meetingTime: meeting.meetingTime,
+          designerName: meeting.designerName,
+        })
+      : null;
+
+    let outcomeSynced = false;
+    if (crmAppointmentId != null) {
+      const outcomeSync = await pushCrmAppointmentMeetingOutcome(crmAppointmentId, "MEETING_SUCCESSFUL");
+      outcomeSynced = outcomeSync.ok;
+      if (!outcomeSync.ok) {
+        console.warn("[meetings/end] meeting-outcome sync failed", {
+          meetingId,
+          crmAppointmentId,
+          error: outcomeSync.error,
+        });
+      }
+    } else {
+      console.warn("[meetings/end] No crmAppointmentId for meeting-outcome", {
+        meetingId,
+        leadId: meeting?.leadId,
+      });
+    }
+
     try {
       const crm = await notifyCrmMeetingSuccessfulForDesignLead(Number(meeting?.leadId));
       return res.json({
-        meeting,
+        meeting: {
+          ...meeting,
+          crmAppointmentId: crmAppointmentId ?? meeting?.crmAppointmentId ?? null,
+        },
         crmMilestoneUpdated: true,
+        crmAppointmentOutcomeSynced: outcomeSynced,
         crmLeadId: crm.crmLeadId,
+        crmAppointmentId,
         progressLabel: "Meeting Successful",
       });
     } catch (crmErr) {
@@ -24416,8 +24786,13 @@ app.post("/api/meetings/:id/end", async (req: Request, res: Response) => {
         error: crmErr,
       });
       return res.status(502).json({
-        meeting,
+        meeting: {
+          ...meeting,
+          crmAppointmentId: crmAppointmentId ?? meeting?.crmAppointmentId ?? null,
+        },
         crmMilestoneUpdated: false,
+        crmAppointmentOutcomeSynced: outcomeSynced,
+        crmAppointmentId,
         progressLabel: "Meeting Successful",
         message:
           crmErr instanceof Error
@@ -24587,6 +24962,7 @@ app.post("/api/meetings/:id/drr-outcome", async (req: Request, res: Response) =>
     }
 
     // Local save succeeded — always 200 so hosted UI does not treat CRM miss as a hard crash.
+    clearMeetingBoardResponseCache();
     return res.status(200).json({
       ok: true,
       meeting: {

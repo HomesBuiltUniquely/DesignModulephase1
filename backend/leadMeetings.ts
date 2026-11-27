@@ -392,6 +392,7 @@ let tableReady: Promise<void> | null = null;
 export function ensureLeadMeetingsTable(pool: Pool): Promise<void> {
   if (!tableReady) {
     tableReady = (async () => {
+      const ensureStartedAt = Date.now();
       await pool.query(`
         CREATE TABLE IF NOT EXISTS lead_meetings (
           id INT AUTO_INCREMENT PRIMARY KEY,
@@ -417,167 +418,139 @@ export function ensureLeadMeetingsTable(pool: Pool): Promise<void> {
           INDEX idx_lead_meetings_open (meeting_status, progress, meeting_date)
         )
       `);
-      try {
-        const [dateIdx] = await pool.query(
-          `SELECT 1 FROM information_schema.STATISTICS
-            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND INDEX_NAME = 'idx_lead_meetings_date'
-            LIMIT 1`,
-        );
-        if ((dateIdx as unknown[]).length === 0) {
-          await pool.query("CREATE INDEX idx_lead_meetings_date ON lead_meetings (meeting_date)");
-        }
-      } catch (dateIdxErr) {
-        console.error("[lead-meetings] idx_lead_meetings_date ensure failed", dateIdxErr);
-      }
-      // Board + DRR reopen helpers — non-blocking if index create races.
-      try {
-        const [drrIdx] = await pool.query(
-          `SELECT 1 FROM information_schema.STATISTICS
-            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND INDEX_NAME = 'idx_lead_meetings_drr_done'
-            LIMIT 1`,
-        );
-        if ((drrIdx as unknown[]).length === 0) {
-          await pool.query(
-            "CREATE INDEX idx_lead_meetings_drr_done ON lead_meetings (source, is_drr_revisit, progress, meeting_date)",
-          );
-        }
-      } catch (drrIdxErr) {
-        console.error("[lead-meetings] idx_lead_meetings_drr_done ensure failed", drrIdxErr);
-      }
-      const [branchCol] = await pool.query(
-        `SELECT 1 FROM information_schema.COLUMNS
-          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'branch'`,
+
+      // One SHOW COLUMNS instead of many information_schema round-trips (those were
+      // adding multi-second delay before /api/meetings/scheduled could even query).
+      const [columnRows] = await pool.query(`SHOW COLUMNS FROM lead_meetings`);
+      const columnNames = new Set(
+        (columnRows as { Field?: string }[]).map((row) => String(row.Field || "")).filter(Boolean),
       );
-      if ((branchCol as unknown[]).length === 0) {
-        await pool.query("ALTER TABLE lead_meetings ADD COLUMN branch VARCHAR(64) NULL AFTER source");
-      }
-      const [cancelReasonCol] = await pool.query(
-        `SELECT 1 FROM information_schema.COLUMNS
-          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'cancel_reason'`,
+      const progressType = String(
+        (columnRows as { Field?: string; Type?: string }[]).find((row) => row.Field === "progress")?.Type || "",
       );
-      if ((cancelReasonCol as unknown[]).length === 0) {
-        const [legacyReasonCol] = await pool.query(
-          `SELECT 1 FROM information_schema.COLUMNS
-            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'reschedule_cancel_reason'`,
-        );
-        if ((legacyReasonCol as unknown[]).length > 0) {
+
+      const addColumn = async (name: string, ddl: string) => {
+        if (columnNames.has(name)) return;
+        await pool.query(ddl);
+        columnNames.add(name);
+      };
+
+      await addColumn("branch", "ALTER TABLE lead_meetings ADD COLUMN branch VARCHAR(64) NULL AFTER source");
+      if (!columnNames.has("cancel_reason")) {
+        if (columnNames.has("reschedule_cancel_reason")) {
           await pool.query(
             "ALTER TABLE lead_meetings CHANGE COLUMN reschedule_cancel_reason cancel_reason VARCHAR(500) NULL",
           );
+          columnNames.delete("reschedule_cancel_reason");
+          columnNames.add("cancel_reason");
         } else {
-          await pool.query("ALTER TABLE lead_meetings ADD COLUMN cancel_reason VARCHAR(500) NULL AFTER branch");
-        }
-      }
-      const [cancelFilesCol] = await pool.query(
-        `SELECT 1 FROM information_schema.COLUMNS
-          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'cancel_files'`,
-      );
-      if ((cancelFilesCol as unknown[]).length === 0) {
-        await pool.query("ALTER TABLE lead_meetings ADD COLUMN cancel_files TEXT NULL AFTER cancel_reason");
-      }
-      const [rescheduleCountCol] = await pool.query(
-        `SELECT 1 FROM information_schema.COLUMNS
-          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'reschedule_count'`,
-      );
-      if ((rescheduleCountCol as unknown[]).length === 0) {
-        await pool.query("ALTER TABLE lead_meetings ADD COLUMN reschedule_count INT NOT NULL DEFAULT 0 AFTER cancel_files");
-      }
-      const [feedbackDesignerCol] = await pool.query(
-        `SELECT 1 FROM information_schema.COLUMNS
-          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'feedback_designer'`,
-      );
-      if ((feedbackDesignerCol as unknown[]).length === 0) {
-        await pool.query(
-          "ALTER TABLE lead_meetings ADD COLUMN feedback_designer TEXT NULL AFTER reschedule_count",
-        );
-      }
-      const [feedbackDesignerAtCol] = await pool.query(
-        `SELECT 1 FROM information_schema.COLUMNS
-          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'feedback_designer_at'`,
-      );
-      if ((feedbackDesignerAtCol as unknown[]).length === 0) {
-        await pool.query(
-          "ALTER TABLE lead_meetings ADD COLUMN feedback_designer_at DATETIME NULL AFTER feedback_designer",
-        );
-      }
-      const [feedbackDesignerByCol] = await pool.query(
-        `SELECT 1 FROM information_schema.COLUMNS
-          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'feedback_designer_by'`,
-      );
-      if ((feedbackDesignerByCol as unknown[]).length === 0) {
-        await pool.query(
-          "ALTER TABLE lead_meetings ADD COLUMN feedback_designer_by VARCHAR(255) NULL AFTER feedback_designer_at",
-        );
-      }
-      const [crmAppointmentIdCol] = await pool.query(
-        `SELECT 1 FROM information_schema.COLUMNS
-          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'crm_appointment_id'`,
-      );
-      if ((crmAppointmentIdCol as unknown[]).length === 0) {
-        await pool.query(
-          "ALTER TABLE lead_meetings ADD COLUMN crm_appointment_id BIGINT NULL AFTER feedback_designer_by",
-        );
-      }
-      const [drrRevisitCol] = await pool.query(
-        `SELECT 1 FROM information_schema.COLUMNS
-          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'is_drr_revisit'`,
-      );
-      if ((drrRevisitCol as unknown[]).length === 0) {
-        await pool.query(
-          "ALTER TABLE lead_meetings ADD COLUMN is_drr_revisit TINYINT(1) NOT NULL DEFAULT 0 AFTER crm_appointment_id",
-        );
-      }
-      // Rename progress: meeting_abandoned → meeting_never_happened (DB + rows).
-      try {
-        const [progressCol] = await pool.query(
-          `SELECT COLUMN_TYPE AS columnType FROM information_schema.COLUMNS
-            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lead_meetings' AND COLUMN_NAME = 'progress'
-            LIMIT 1`,
-        );
-        const columnType = String((progressCol as { columnType?: string }[])[0]?.columnType || "");
-        if (columnType.includes("meeting_abandoned")) {
-          await pool.query(
-            `ALTER TABLE lead_meetings
-             MODIFY COLUMN progress ENUM(
-               'scheduled','in_progress','meeting_abandoned','meeting_never_happened','completed'
-             ) NOT NULL DEFAULT 'scheduled'`,
-          );
-          await pool.query(
-            `UPDATE lead_meetings
-                SET progress = 'meeting_never_happened'
-              WHERE progress = 'meeting_abandoned'`,
-          );
-          await pool.query(
-            `ALTER TABLE lead_meetings
-             MODIFY COLUMN progress ENUM(
-               'scheduled','in_progress','meeting_never_happened','completed'
-             ) NOT NULL DEFAULT 'scheduled'`,
-          );
-        } else if (columnType && !columnType.includes("meeting_never_happened")) {
-          await pool.query(
-            `ALTER TABLE lead_meetings
-             MODIFY COLUMN progress ENUM(
-               'scheduled','in_progress','meeting_never_happened','completed'
-             ) NOT NULL DEFAULT 'scheduled'`,
+          await addColumn(
+            "cancel_reason",
+            "ALTER TABLE lead_meetings ADD COLUMN cancel_reason VARCHAR(500) NULL AFTER branch",
           );
         }
-      } catch (progressRenameErr) {
-        console.error("[lead-meetings] progress rename meeting_never_happened failed", progressRenameErr);
       }
-      // Heavy CRM type normalize + backfill must NOT block the first board request (hosted timeout).
+      await addColumn(
+        "cancel_files",
+        "ALTER TABLE lead_meetings ADD COLUMN cancel_files TEXT NULL AFTER cancel_reason",
+      );
+      await addColumn(
+        "reschedule_count",
+        "ALTER TABLE lead_meetings ADD COLUMN reschedule_count INT NOT NULL DEFAULT 0 AFTER cancel_files",
+      );
+      await addColumn(
+        "feedback_designer",
+        "ALTER TABLE lead_meetings ADD COLUMN feedback_designer TEXT NULL AFTER reschedule_count",
+      );
+      await addColumn(
+        "feedback_designer_at",
+        "ALTER TABLE lead_meetings ADD COLUMN feedback_designer_at DATETIME NULL AFTER feedback_designer",
+      );
+      await addColumn(
+        "feedback_designer_by",
+        "ALTER TABLE lead_meetings ADD COLUMN feedback_designer_by VARCHAR(255) NULL AFTER feedback_designer_at",
+      );
+      await addColumn(
+        "crm_appointment_id",
+        "ALTER TABLE lead_meetings ADD COLUMN crm_appointment_id BIGINT NULL AFTER feedback_designer_by",
+      );
+      await addColumn(
+        "is_drr_revisit",
+        "ALTER TABLE lead_meetings ADD COLUMN is_drr_revisit TINYINT(1) NOT NULL DEFAULT 0 AFTER crm_appointment_id",
+      );
+
+      console.log(`[lead-meetings] table ensure ready in ${Date.now() - ensureStartedAt}ms`);
+
+      // Indexes + progress enum + CRM normalize stay off the board critical path.
       void (async () => {
         try {
-          await pool.query(
-            `UPDATE lead_meetings
-                SET meeting_mode = CASE
-                      WHEN LOWER(meeting_type) LIKE '%virtual%' OR LOWER(meeting_type) LIKE '%online%' THEN 'online'
-                      WHEN LOWER(meeting_type) LIKE '%site%' THEN 'site'
-                      WHEN LOWER(meeting_type) LIKE '%showroom%' THEN 'offline'
-                      ELSE meeting_mode
-                    END,
-                    meeting_type = 'pre_10'
-              WHERE source = 'crm' AND meeting_type <> 'pre_10'`,
+          const [indexRows] = await pool.query(`SHOW INDEX FROM lead_meetings`);
+          const indexNames = new Set(
+            (indexRows as { Key_name?: string }[]).map((row) => String(row.Key_name || "")).filter(Boolean),
           );
+          if (!indexNames.has("idx_lead_meetings_date")) {
+            await pool.query("CREATE INDEX idx_lead_meetings_date ON lead_meetings (meeting_date)");
+          }
+          if (!indexNames.has("idx_lead_meetings_drr_done")) {
+            await pool.query(
+              "CREATE INDEX idx_lead_meetings_drr_done ON lead_meetings (source, is_drr_revisit, progress, meeting_date)",
+            );
+          }
+        } catch (idxErr) {
+          console.error("[lead-meetings] background index ensure failed", idxErr);
+        }
+
+        try {
+          if (progressType.includes("meeting_abandoned")) {
+            await pool.query(
+              `ALTER TABLE lead_meetings
+               MODIFY COLUMN progress ENUM(
+                 'scheduled','in_progress','meeting_abandoned','meeting_never_happened','completed'
+               ) NOT NULL DEFAULT 'scheduled'`,
+            );
+            await pool.query(
+              `UPDATE lead_meetings
+                  SET progress = 'meeting_never_happened'
+                WHERE progress = 'meeting_abandoned'`,
+            );
+            await pool.query(
+              `ALTER TABLE lead_meetings
+               MODIFY COLUMN progress ENUM(
+                 'scheduled','in_progress','meeting_never_happened','completed'
+               ) NOT NULL DEFAULT 'scheduled'`,
+            );
+          } else if (progressType && !progressType.includes("meeting_never_happened")) {
+            await pool.query(
+              `ALTER TABLE lead_meetings
+               MODIFY COLUMN progress ENUM(
+                 'scheduled','in_progress','meeting_never_happened','completed'
+               ) NOT NULL DEFAULT 'scheduled'`,
+            );
+          }
+        } catch (progressRenameErr) {
+          console.error("[lead-meetings] progress rename meeting_never_happened failed", progressRenameErr);
+        }
+
+        // Delay so first Meeting Management loads are not fighting row locks.
+        await new Promise((resolve) => setTimeout(resolve, 12_000));
+        try {
+          for (let pass = 0; pass < 40; pass += 1) {
+            const [result] = await pool.query(
+              `UPDATE lead_meetings
+                  SET meeting_mode = CASE
+                        WHEN LOWER(meeting_type) LIKE '%virtual%' OR LOWER(meeting_type) LIKE '%online%' THEN 'online'
+                        WHEN LOWER(meeting_type) LIKE '%site%' THEN 'site'
+                        WHEN LOWER(meeting_type) LIKE '%showroom%' THEN 'offline'
+                        ELSE meeting_mode
+                      END,
+                      meeting_type = 'pre_10'
+                WHERE source = 'crm' AND meeting_type <> 'pre_10'
+                LIMIT 500`,
+            );
+            const affected = Number((result as { affectedRows?: number })?.affectedRows || 0);
+            if (affected < 500) break;
+            await new Promise((resolve) => setTimeout(resolve, 250));
+          }
         } catch (normErr) {
           console.error("[lead-meetings] crm meeting_type normalize failed", normErr);
         }
@@ -1003,6 +976,8 @@ export async function recordCrmMeeting(
     milestoneSubStage?: string | null;
     subStage?: string | null;
     designerId?: number | null;
+    /** Hub/CRM Appointment.id — required later for meeting-outcome sync. */
+    crmAppointmentId?: number | null;
     actor?: MeetingActor | null;
   },
 ) {
@@ -1011,6 +986,10 @@ export async function recordCrmMeeting(
   await ensureLeadMeetingsTable(pool);
   const incomingTime = normalizeTimeLabel(input.meetingTime);
   const mode = crmChannel(input.meetingType) || crmChannel(input.meetingMode);
+  const crmAppointmentId =
+    input.crmAppointmentId != null && Number.isFinite(Number(input.crmAppointmentId)) && Number(input.crmAppointmentId) > 0
+      ? Number(input.crmAppointmentId)
+      : null;
 
   // Successful CRM meetings stay frozen (never rewritten below).
   // A later CRM booking with a real date+slot (DRR revisit) creates a NEW open row instead.
@@ -1054,18 +1033,33 @@ export async function recordCrmMeeting(
     const sameDate = active.meetingDate === dateIso;
     const sameTime = normalizeTimeLabel(active.meetingTime) === normalizeTimeLabel(timeLabel);
     if (sameDate && sameTime) {
-      if (active.meetingType !== meetingType || (active.meetingMode || null) !== (nextMode || null) || drrVisit) {
+      if (
+        active.meetingType !== meetingType ||
+        (active.meetingMode || null) !== (nextMode || null) ||
+        drrVisit ||
+        (crmAppointmentId != null && active.crmAppointmentId !== crmAppointmentId)
+      ) {
         await pool.query(
           `UPDATE lead_meetings
-              SET meeting_type = ?, meeting_mode = ?, is_drr_revisit = CASE WHEN ? THEN 1 ELSE is_drr_revisit END, updated_at = ?
+              SET meeting_type = ?, meeting_mode = ?,
+                  crm_appointment_id = CASE WHEN ? IS NOT NULL THEN ? ELSE crm_appointment_id END,
+                  is_drr_revisit = CASE WHEN ? THEN 1 ELSE is_drr_revisit END, updated_at = ?
             WHERE id = ?`,
-          [meetingType, nextMode, drrVisit ? 1 : 0, now, active.id],
+          [meetingType, nextMode, crmAppointmentId, crmAppointmentId, drrVisit ? 1 : 0, now, active.id],
+        );
+        return loadMeeting(pool, active.id);
+      }
+      if (crmAppointmentId != null && active.crmAppointmentId !== crmAppointmentId) {
+        await pool.query(
+          `UPDATE lead_meetings SET crm_appointment_id = ?, updated_at = ? WHERE id = ?`,
+          [crmAppointmentId, now, active.id],
         );
         return loadMeeting(pool, active.id);
       }
       return active;
     }
     // Date/time truly changed → reschedule. COALESCE so null never wipes time in SQL.
+    // New Hub appointment id (DRR / rebook) replaces the previous one so outcome sync hits the live CRM row.
     const progress = nextMeetingProgress(
       { ...active, meetingDate: dateIso, meetingTime: timeLabel, meetingStatus: "rescheduled", progress: "scheduled", startedAt: null },
       now,
@@ -1075,9 +1069,21 @@ export async function recordCrmMeeting(
           SET meeting_date = ?, meeting_time = COALESCE(?, meeting_time), meeting_mode = ?, meeting_type = ?, meeting_status = 'rescheduled',
               reschedule_count = reschedule_count + 1,
               progress = ?, started_at = NULL, ended_at = NULL,
+              crm_appointment_id = CASE WHEN ? IS NOT NULL THEN ? ELSE crm_appointment_id END,
               is_drr_revisit = CASE WHEN ? THEN 1 ELSE is_drr_revisit END, updated_at = ?
         WHERE id = ?`,
-      [dateIso, timeLabel, mode || active.meetingMode, meetingType, progress, drrVisit ? 1 : 0, now, active.id],
+      [
+        dateIso,
+        timeLabel,
+        mode || active.meetingMode,
+        meetingType,
+        progress,
+        crmAppointmentId,
+        crmAppointmentId,
+        drrVisit ? 1 : 0,
+        now,
+        active.id,
+      ],
     );
     await writeHistory(pool, input.leadId, input.actor, "Meeting rescheduled", `CRM meeting moved to ${dateIso} ${timeLabel || ""}.`.trim(), {
       action: "rescheduled",
@@ -1087,6 +1093,7 @@ export async function recordCrmMeeting(
       fromTime: active.meetingTime,
       meetingDate: dateIso,
       meetingTime: timeLabel,
+      crmAppointmentId,
     });
     return loadMeeting(pool, active.id);
   }
@@ -1115,8 +1122,8 @@ export async function recordCrmMeeting(
   const branch = await leadBranch(pool, input.leadId);
   const [result] = await pool.query(
     `INSERT INTO lead_meetings
-      (lead_id, meeting_date, meeting_time, meeting_type, meeting_mode, meeting_status, progress, designer_id, source, branch, is_drr_revisit, started_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'scheduled', ?, ?, 'crm', ?, ?, ?, ?, ?)`,
+      (lead_id, meeting_date, meeting_time, meeting_type, meeting_mode, meeting_status, progress, designer_id, source, branch, is_drr_revisit, crm_appointment_id, started_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'scheduled', ?, ?, 'crm', ?, ?, ?, ?, ?, ?)`,
     [
       input.leadId,
       dateIso,
@@ -1127,6 +1134,7 @@ export async function recordCrmMeeting(
       input.designerId ?? null,
       branch,
       drrVisit ? 1 : 0,
+      crmAppointmentId,
       progress === "in_progress" ? now : null,
       now,
       now,
@@ -1139,6 +1147,7 @@ export async function recordCrmMeeting(
     source: "crm",
     meetingDate: dateIso,
     meetingTime: timeLabel,
+    crmAppointmentId,
   });
   return loadMeeting(pool, id);
 }
@@ -1562,6 +1571,28 @@ export async function endCrmMeeting(
     [now, now, row.id],
   );
   const isDrr = opts?.isDrr === true || row.isDrrRevisit === true;
+  // One Successful Pre 10% per lead — cancel leftover bookings from earlier dates/backfill.
+  if (!isDrr) {
+    await pool.query(
+      `UPDATE lead_meetings
+          SET meeting_status = 'cancelled',
+              progress = 'meeting_never_happened',
+              cancel_reason = COALESCE(
+                NULLIF(TRIM(cancel_reason), ''),
+                'Superseded by Meeting Successful'
+              ),
+              updated_at = ?
+        WHERE lead_id = ?
+          AND source = 'crm'
+          AND id <> ?
+          AND COALESCE(is_drr_revisit, 0) = 0
+          AND (
+            progress = 'completed'
+            OR meeting_status <> 'cancelled'
+          )`,
+      [now, row.leadId, row.id],
+    );
+  }
   await writeHistory(
     pool,
     row.leadId,
@@ -1854,15 +1885,17 @@ function preferAmount(current: number | null | undefined, next: number | null | 
 async function quoteShareByLead(
   pool: Pool,
   leadIds: number[],
-  opts?: { mode?: "full" | "board" },
+  opts?: { mode?: "full" | "board"; shouldContinue?: () => boolean },
 ): Promise<Map<number, { quoteSent: boolean; quoteFinalAmount: number | null; hasQuote: boolean }>> {
   const out = new Map<number, { quoteSent: boolean; quoteFinalAmount: number | null; hasQuote: boolean }>();
   const ids = [...new Set(leadIds.filter((id) => Number.isInteger(id) && id > 0))];
   if (ids.length === 0) return out;
 
   const mode = opts?.mode === "board" ? "board" : "full";
+  const shouldContinue = opts?.shouldContinue || (() => true);
   const CHUNK = mode === "board" ? 500 : 400;
   for (let offset = 0; offset < ids.length; offset += CHUNK) {
+    if (!shouldContinue()) break;
     const chunk = ids.slice(offset, offset + CHUNK);
     const chunkResult = await quoteShareByLeadChunk(pool, chunk, mode);
     for (const [id, value] of chunkResult) out.set(id, value);
@@ -1927,80 +1960,81 @@ async function quoteShareByLeadChunk(
     if (Number(row.hasSnap) === 1) hasSnapshotByLead.set(id, true);
   }
 
+  // Latest snapshot amount — needed on the board so Quote column matches Friday (not "amount pending").
+  const [latestRows] = await pool.query(
+    `SELECT s.lead_id AS leadId, s.payload_json AS payloadJson
+       FROM lead_prolance_quote_snapshots s
+       INNER JOIN (
+         SELECT lead_id, MAX(id) AS maxId
+           FROM lead_prolance_quote_snapshots
+          WHERE lead_id IN (${placeholders})
+          GROUP BY lead_id
+       ) latest ON latest.maxId = s.id`,
+    ids,
+  );
+  for (const row of latestRows as Record<string, unknown>[]) {
+    const id = Number(row.leadId);
+    if (!Number.isFinite(id) || id < 1) continue;
+    hasSnapshotByLead.set(id, true);
+    amountByLead.set(id, preferAmount(amountByLead.get(id), quoteAmountFromPayloadRaw(row.payloadJson)));
+  }
+
+  // CRM-shared snapshot amount (may differ from latest).
+  const sharedPairs = [...sharedByLead.entries()].filter(([, v]) => v.sharedQuoteId > 0);
+  if (sharedPairs.length > 0) {
+    const sharedQuoteIds = [...new Set(sharedPairs.map(([, v]) => v.sharedQuoteId))];
+    const sharedPlaceholders = sharedQuoteIds.map(() => "?").join(",");
+    try {
+      const [sharedSnapRows] = await pool.query(
+        `SELECT lead_id AS leadId, quote_id AS quoteId, payload_json AS payloadJson
+           FROM lead_prolance_quote_snapshots
+          WHERE quote_id IN (${sharedPlaceholders})`,
+        sharedQuoteIds,
+      );
+      for (const row of sharedSnapRows as Record<string, unknown>[]) {
+        const id = Number(row.leadId);
+        if (!Number.isFinite(id) || id < 1) continue;
+        hasSnapshotByLead.set(id, true);
+        amountByLead.set(id, preferAmount(amountByLead.get(id), quoteAmountFromPayloadRaw(row.payloadJson)));
+      }
+    } catch (err) {
+      console.error("quote amount shared snapshot failed", err);
+    }
+  }
+
+  // Snapshot by leads.prolance_quote_id when amount still missing.
+  const missingAfterLatest = ids.filter((id) => !(amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0));
+  const prolancePairs = missingAfterLatest
+    .map((id) => ({ id, quoteId: leadQuoteId.get(id) || 0 }))
+    .filter((row) => row.quoteId > 0);
+  if (prolancePairs.length > 0) {
+    const quoteIds = [...new Set(prolancePairs.map((row) => row.quoteId))];
+    const qPlaceholders = quoteIds.map(() => "?").join(",");
+    try {
+      const [prolanceSnapRows] = await pool.query(
+        `SELECT lead_id AS leadId, quote_id AS quoteId, payload_json AS payloadJson
+           FROM lead_prolance_quote_snapshots
+          WHERE quote_id IN (${qPlaceholders})`,
+        quoteIds,
+      );
+      const byQuoteId = new Map<number, unknown>();
+      for (const row of prolanceSnapRows as Record<string, unknown>[]) {
+        byQuoteId.set(Number(row.quoteId), row.payloadJson);
+        const leadId = Number(row.leadId);
+        if (Number.isFinite(leadId) && leadId > 0) hasSnapshotByLead.set(leadId, true);
+      }
+      for (const pair of prolancePairs) {
+        const amount = quoteAmountFromPayloadRaw(byQuoteId.get(pair.quoteId));
+        amountByLead.set(pair.id, preferAmount(amountByLead.get(pair.id), amount));
+        if (byQuoteId.has(pair.quoteId)) hasSnapshotByLead.set(pair.id, true);
+      }
+    } catch (err) {
+      console.error("quote amount prolance snapshot failed", err);
+    }
+  }
+
+  // Heavy fallbacks only for full mode — board stays under the request budget.
   if (!boardFast) {
-    // Latest snapshot amount.
-    const [latestRows] = await pool.query(
-      `SELECT s.lead_id AS leadId, s.payload_json AS payloadJson
-         FROM lead_prolance_quote_snapshots s
-         INNER JOIN (
-           SELECT lead_id, MAX(id) AS maxId
-             FROM lead_prolance_quote_snapshots
-            WHERE lead_id IN (${placeholders})
-            GROUP BY lead_id
-         ) latest ON latest.maxId = s.id`,
-      ids,
-    );
-    for (const row of latestRows as Record<string, unknown>[]) {
-      const id = Number(row.leadId);
-      if (!Number.isFinite(id) || id < 1) continue;
-      hasSnapshotByLead.set(id, true);
-      amountByLead.set(id, preferAmount(amountByLead.get(id), quoteAmountFromPayloadRaw(row.payloadJson)));
-    }
-
-    // CRM-shared snapshot amount (may differ from latest).
-    const sharedPairs = [...sharedByLead.entries()].filter(([, v]) => v.sharedQuoteId > 0);
-    if (sharedPairs.length > 0) {
-      const sharedQuoteIds = [...new Set(sharedPairs.map(([, v]) => v.sharedQuoteId))];
-      const sharedPlaceholders = sharedQuoteIds.map(() => "?").join(",");
-      try {
-        const [sharedSnapRows] = await pool.query(
-          `SELECT lead_id AS leadId, quote_id AS quoteId, payload_json AS payloadJson
-             FROM lead_prolance_quote_snapshots
-            WHERE quote_id IN (${sharedPlaceholders})`,
-          sharedQuoteIds,
-        );
-        for (const row of sharedSnapRows as Record<string, unknown>[]) {
-          const id = Number(row.leadId);
-          if (!Number.isFinite(id) || id < 1) continue;
-          hasSnapshotByLead.set(id, true);
-          amountByLead.set(id, preferAmount(amountByLead.get(id), quoteAmountFromPayloadRaw(row.payloadJson)));
-        }
-      } catch (err) {
-        console.error("quote amount shared snapshot failed", err);
-      }
-    }
-
-    // Snapshot by leads.prolance_quote_id when amount still missing.
-    const missingAfterLatest = ids.filter((id) => !(amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0));
-    const prolancePairs = missingAfterLatest
-      .map((id) => ({ id, quoteId: leadQuoteId.get(id) || 0 }))
-      .filter((row) => row.quoteId > 0);
-    if (prolancePairs.length > 0) {
-      const quoteIds = [...new Set(prolancePairs.map((row) => row.quoteId))];
-      const qPlaceholders = quoteIds.map(() => "?").join(",");
-      try {
-        const [prolanceSnapRows] = await pool.query(
-          `SELECT lead_id AS leadId, quote_id AS quoteId, payload_json AS payloadJson
-             FROM lead_prolance_quote_snapshots
-            WHERE quote_id IN (${qPlaceholders})`,
-          quoteIds,
-        );
-        const byQuoteId = new Map<number, unknown>();
-        for (const row of prolanceSnapRows as Record<string, unknown>[]) {
-          byQuoteId.set(Number(row.quoteId), row.payloadJson);
-          const leadId = Number(row.leadId);
-          if (Number.isFinite(leadId) && leadId > 0) hasSnapshotByLead.set(leadId, true);
-        }
-        for (const pair of prolancePairs) {
-          const amount = quoteAmountFromPayloadRaw(byQuoteId.get(pair.quoteId));
-          amountByLead.set(pair.id, preferAmount(amountByLead.get(pair.id), amount));
-          if (byQuoteId.has(pair.quoteId)) hasSnapshotByLead.set(pair.id, true);
-        }
-      } catch (err) {
-        console.error("quote amount prolance snapshot failed", err);
-      }
-    }
-
     // Any other snapshot for leads still missing amount (older versions may hold totals).
     const stillMissing = ids.filter((id) => !(amountByLead.get(id) != null && (amountByLead.get(id) as number) > 0));
     if (stillMissing.length > 0) {
@@ -2057,10 +2091,9 @@ async function quoteShareByLeadChunk(
       hasSnapshotByLead.get(id) === true ||
       amount != null;
     out.set(id, {
-      // Board: CRM-shared means quote was sent even if amount parse is slow/missing.
-      quoteSent: boardFast
-        ? share?.shared === true
-        : hasQuoteCode && amount != null && share?.shared === true,
+      // Friday rule: shared + amount. If amount is still parsing, still mark sent when CRM-shared.
+      quoteSent:
+        share?.shared === true && (amount != null || boardFast),
       quoteFinalAmount: amount,
       hasQuote: hasQuoteCode,
     });
@@ -2106,15 +2139,43 @@ function leadPayloadIndicatesDrr(payload: Record<string, unknown> | null): boole
   return texts.some((text) => isCrmDrrLabelText(text));
 }
 
+function extractCrmAppointmentIdFromLeadPayload(payload: Record<string, unknown> | null): number | null {
+  if (!payload) return null;
+  const candidates = [
+    payload.crmAppointmentId,
+    payload.appointmentId,
+    payload.appointment_id,
+    (payload.crmSchedule as Record<string, unknown> | undefined)?.appointmentId,
+    (payload.crmSchedule as Record<string, unknown> | undefined)?.crmAppointmentId,
+    (payload.rawPayload as Record<string, unknown> | undefined)?.appointmentId,
+    (payload.rawPayload as Record<string, unknown> | undefined)?.crmAppointmentId,
+    (payload.rawPayload as Record<string, unknown> | undefined)?.appointment_id,
+    (payload.rawPayload as Record<string, unknown> | undefined)?.id,
+  ];
+  for (const value of candidates) {
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+}
+
 function extractCrmAppointmentFromLeadPayload(payload: Record<string, unknown> | null): {
   meetingDate: string | null;
   meetingTime: string | null;
   meetingLabel: string | null;
   milestoneSubStage: string | null;
   subStage: string | null;
+  crmAppointmentId: number | null;
 } {
   if (!payload) {
-    return { meetingDate: null, meetingTime: null, meetingLabel: null, milestoneSubStage: null, subStage: null };
+    return {
+      meetingDate: null,
+      meetingTime: null,
+      meetingLabel: null,
+      milestoneSubStage: null,
+      subStage: null,
+      crmAppointmentId: null,
+    };
   }
   const meetingDate = normalizeDateIso(
     payloadText(payload, "crmSchedule.date", "formData.appointment_date", "formData.appointmentDate", "appointmentDate"),
@@ -2128,6 +2189,7 @@ function extractCrmAppointmentFromLeadPayload(payload: Record<string, unknown> |
     meetingLabel: payloadText(payload, "meetingLabel", "formData.meetingLabel", "designMilestone") || null,
     milestoneSubStage: payloadText(payload, "milestoneSubStage", "formData.milestoneSubStage") || null,
     subStage: payloadText(payload, "subStage", "formData.subStage", "formData.sub_stage") || null,
+    crmAppointmentId: extractCrmAppointmentIdFromLeadPayload(payload),
   };
 }
 
@@ -2207,6 +2269,7 @@ async function reconcileCrmDrrScheduledMeetings(pool: Pool) {
         meetingLabel: appt.meetingLabel,
         milestoneSubStage: appt.milestoneSubStage,
         subStage: appt.subStage,
+        crmAppointmentId: appt.crmAppointmentId,
         designerId: row.designerId ?? null,
         actor: { name: "reconcile-drr" },
       });
@@ -2332,15 +2395,8 @@ const SALES_EXECUTIVE_FROM_PAYLOAD_SQL = `COALESCE(
   ${leadPayloadJsonText("$.sales_person")}
 )`;
 
-/** Fewer JSON paths for the meeting board — full COALESCE was scanning huge payloads per lead. */
-const SALES_EXECUTIVE_BOARD_SQL = `COALESCE(
-  ${leadPayloadJsonText("$.formData.salesExecutive")},
-  ${leadPayloadJsonText("$.formData.sales_executive")},
-  ${leadPayloadJsonText("$.formData.sales_person")},
-  ${leadPayloadJsonText("$.fetchedData.salesExecutive")},
-  ${leadPayloadJsonText("$.salesExecutive")},
-  ${leadPayloadJsonText("$.sales_executive")}
-)`;
+/** Board uses the same full sales COALESCE as Friday — truncated paths left Sales blank for many leads. */
+const SALES_EXECUTIVE_BOARD_SQL = SALES_EXECUTIVE_FROM_PAYLOAD_SQL;
 
 async function salesExecutiveByLeadChunk(
   pool: Pool,
@@ -2369,22 +2425,39 @@ async function salesExecutiveByLeadChunk(
 async function salesExecutiveByLeadIds(
   pool: Pool,
   leadIds: number[],
-  opts?: { mode?: "full" | "board" },
+  opts?: { mode?: "full" | "board"; shouldContinue?: () => boolean; into?: Map<number, string> },
 ): Promise<Map<number, string>> {
-  const out = new Map<number, string>();
+  const out = opts?.into || new Map<number, string>();
   const ids = [...new Set(leadIds.filter((id) => Number.isInteger(id) && id > 0))];
   if (ids.length === 0) return out;
   const mode = opts?.mode === "board" ? "board" : "full";
-  const CHUNK = mode === "board" ? 300 : 200;
+  const shouldContinue = opts?.shouldContinue || (() => true);
+  const CHUNK = mode === "board" ? 800 : 200;
+  const chunks: number[][] = [];
   for (let offset = 0; offset < ids.length; offset += CHUNK) {
-    const chunk = ids.slice(offset, offset + CHUNK);
-    const chunkResult = await salesExecutiveByLeadChunk(pool, chunk, mode);
-    for (const [id, value] of chunkResult) out.set(id, value);
+    chunks.push(ids.slice(offset, offset + CHUNK));
+  }
+  // Board: 2-wide concurrency so enrichment cannot starve the shared MySQL pool.
+  const CONCURRENCY = mode === "board" ? 2 : 2;
+  for (let i = 0; i < chunks.length; i += CONCURRENCY) {
+    if (!shouldContinue()) break;
+    const batch = chunks.slice(i, i + CONCURRENCY);
+    const results = await Promise.all(batch.map((chunk) => salesExecutiveByLeadChunk(pool, chunk, mode)));
+    for (const chunkResult of results) {
+      for (const [id, value] of chunkResult) out.set(id, value);
+    }
   }
   return out;
 }
 
-export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now?: Date; designerIds?: number[] }) {
+function isIsoDay(value: unknown): value is string {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+export async function listLeadMeetings(
+  pool: Pool,
+  opts?: { leadId?: number; now?: Date; designerIds?: number[]; fromIso?: string; toIso?: string },
+) {
   const listStartedAt = Date.now();
   await ensureLeadMeetingsTable(pool);
   const now = opts?.now || new Date();
@@ -2409,7 +2482,15 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
   const designerIds = opts?.designerIds?.filter((id) => Number.isInteger(id) && id > 0);
   if (opts?.designerIds && (!designerIds || designerIds.length === 0)) return [];
   const scoped = Boolean(designerIds);
-  const { fromIso, toIso } = meetingBoardDateWindow(now);
+  const boardWindow = meetingBoardDateWindow(now);
+  let fromIso = isIsoDay(opts?.fromIso) ? opts!.fromIso! : boardWindow.fromIso;
+  let toIso = isIsoDay(opts?.toIso) ? opts!.toIso! : boardWindow.toIso;
+  if (fromIso > toIso) {
+    const swap = fromIso;
+    fromIso = toIso;
+    toIso = swap;
+  }
+  const todayIso = kolkataParts(now).date;
   const whereParts: string[] = [];
   const queryParams: unknown[] = [];
   if (opts?.leadId) {
@@ -2445,16 +2526,55 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
   }, 4000);
 
   // Board-fast select: scalar columns only + light DRR (no per-row payload JSON / EXISTS).
-  // Date window already bounds volume; soft ceiling only as a safety valve.
-  const [rows] = await pool.query(
-    `SELECT m.id,
+  // ASC LIMIT used to drop Today/Tomorrow when older rows filled the cap — split so
+  // upcoming (today+) is always fetched first, then fill remaining slots with recent past.
+  //
+  // Important: a low global soft-cap (2500/4000) made the UI show ~75 for a designer/month
+  // while 150+ older meetings in the same month never left MySQL. Client date ranges
+  // (This month / custom) must return the full window; only the open-ended default board
+  // keeps a safety valve.
+  const clientRange = isIsoDay(opts?.fromIso) && isIsoDay(opts?.toIso);
+  const BOARD_ROW_SOFT_CAP = clientRange || scoped || opts?.leadId
+    ? 25000
+    : 8000;
+  // Date-range safe dedupe:
+  // - same-day CRM/Pre10 junk → 1 row
+  // - multiple Successful (non-DRR) across days → 1 row (Amrutha Nov 4 + Nov 22)
+  // - other days in the selected range still show (scheduled / never happened / etc.)
+  // Never partition by raw id for DRR — false is_drr_revisit on backfill dups inflated the board.
+  const boardPre10Partition = `CASE
+            WHEN board.source = 'crm'
+              OR LOWER(REPLACE(IFNULL(board.meetingType, ''), '-', '_')) IN ('pre_10', 'pre10')
+            THEN CASE
+              WHEN COALESCE(board.crmDrrRevisit, 0) = 1
+                AND LOWER(IFNULL(board.meetingStatus, '')) <> 'cancelled'
+              THEN CONCAT('drr:', board.meetingDate)
+              WHEN board.progress = 'completed'
+              THEN 'pre10_done'
+              ELSE CONCAT('pre10:', board.meetingDate)
+            END
+            ELSE CONCAT('#', board.id)
+          END`;
+  const boardPre10Order = `CASE board.progress
+              WHEN 'completed' THEN 6
+              WHEN 'in_progress' THEN 5
+              WHEN 'scheduled' THEN 4
+              WHEN 'meeting_never_happened' THEN 2
+              ELSE 1
+            END DESC,
+            CASE WHEN LOWER(IFNULL(board.meetingStatus, '')) = 'cancelled' THEN 0 ELSE 1 END DESC,
+            CASE WHEN board.startedAt IS NULL THEN 0 ELSE 1 END DESC,
+            board.meetingDate DESC,
+            CASE WHEN board.meetingTime IS NULL OR TRIM(board.meetingTime) = '' THEN 0 ELSE 1 END DESC,
+            board.id DESC`;
+  const boardSelectInner = `SELECT m.id,
             l.id AS leadId,
             l.pid AS projectId,
             l.project_name AS projectName,
             l.project_stage AS projectStage,
             l.contact_no AS contactNo,
             l.is_on_hold AS isOnHold,
-            m.branch AS meetingBranch,
+            COALESCE(NULLIF(TRIM(m.branch), ''), NULLIF(TRIM(u.branch), '')) AS meetingBranch,
             DATE_FORMAT(m.meeting_date, '%Y-%m-%d') AS meetingDate,
             m.meeting_time AS meetingTime,
             m.meeting_type AS meetingType,
@@ -2476,21 +2596,84 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
        FROM lead_meetings m
        JOIN leads l ON l.id = m.lead_id
        LEFT JOIN users u ON u.id = COALESCE(m.designer_id, l.assigned_designer_id)
-      WHERE ${whereParts.join(" AND ")}
-      ORDER BY m.meeting_date ASC, m.meeting_time ASC, m.id ASC
-      LIMIT 8000`,
-    queryParams,
-  );
+      WHERE ${whereParts.join(" AND ")}`;
+  const boardSelectDeduped = (extraAnd: string, orderBy: string, limit: number) => `
+SELECT ranked.*
+  FROM (
+    SELECT board.*,
+           ROW_NUMBER() OVER (
+             PARTITION BY board.leadId, ${boardPre10Partition}
+             ORDER BY ${boardPre10Order}
+           ) AS _boardRn
+      FROM (
+        ${boardSelectInner}
+        ${extraAnd}
+      ) board
+  ) ranked
+ WHERE ranked._boardRn = 1
+ ORDER BY ${orderBy}
+ LIMIT ${limit}`;
+
+  let rows: Record<string, unknown>[] = [];
+  if (opts?.leadId) {
+    const [leadRows] = await pool.query(
+      boardSelectDeduped(
+        "",
+        "ranked.meetingDate ASC, ranked.meetingTime ASC, ranked.id ASC",
+        BOARD_ROW_SOFT_CAP,
+      ),
+      queryParams,
+    );
+    rows = leadRows as Record<string, unknown>[];
+  } else {
+    const upcomingFrom = fromIso > todayIso ? fromIso : todayIso;
+    let upcoming: Record<string, unknown>[] = [];
+    if (upcomingFrom <= toIso) {
+      const [upcomingRows] = await pool.query(
+        boardSelectDeduped(
+          "AND m.meeting_date >= ?",
+          "ranked.meetingDate ASC, ranked.meetingTime ASC, ranked.id ASC",
+          BOARD_ROW_SOFT_CAP,
+        ),
+        [...queryParams, upcomingFrom],
+      );
+      upcoming = upcomingRows as Record<string, unknown>[];
+    }
+
+    const pastCap = Math.max(0, BOARD_ROW_SOFT_CAP - upcoming.length);
+    let past: Record<string, unknown>[] = [];
+    if (pastCap > 0 && fromIso < todayIso) {
+      const pastTo = addDaysIso(todayIso, -1);
+      const pastEnd = pastTo < toIso ? pastTo : toIso;
+      if (fromIso <= pastEnd) {
+        const [pastRows] = await pool.query(
+          boardSelectDeduped(
+            "AND m.meeting_date <= ?",
+            "ranked.meetingDate DESC, ranked.meetingTime DESC, ranked.id DESC",
+            pastCap,
+          ),
+          [...queryParams, pastEnd],
+        );
+        past = pastRows as Record<string, unknown>[];
+      }
+    }
+    rows = [...upcoming, ...past];
+    if (rows.length >= BOARD_ROW_SOFT_CAP) {
+      console.warn(
+        `[lead-meetings] board hit soft cap ${BOARD_ROW_SOFT_CAP} for ${fromIso}..${toIso} scoped=${scoped}`,
+      );
+    }
+  }
 
   // Recover slot only for rows missing meeting_time (small set), not for the whole board.
   const missingTimeLeadIds = [
     ...new Set(
-      (rows as Record<string, unknown>[])
+      rows
         .filter((row) => !normalizeTimeLabel(row.meetingTime) && !cleanText(row.meetingTime))
         .map((row) => Number(row.leadId))
         .filter((id) => Number.isFinite(id) && id > 0),
     ),
-  ].slice(0, 40);
+  ].slice(0, 80);
   const slotByLead = new Map<number, string>();
   if (missingTimeLeadIds.length > 0) {
     try {
@@ -2514,8 +2697,9 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
     }
   }
 
+  const selectMs = Date.now() - listStartedAt;
   const meetingLeadIds = [
-    ...new Set((rows as Record<string, unknown>[]).map((row) => Number(row.leadId))),
+    ...new Set(rows.map((row) => Number(row.leadId))),
   ].filter((id) => Number.isFinite(id) && id > 0);
 
   let shareByLead = new Map<
@@ -2524,47 +2708,80 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
   >();
   let salesByLead = new Map<number, string>();
 
-  // Keep enrichment under a hard budget so hosted nginx/proxy never 502s the board.
-  const ENRICH_BUDGET_MS = 2500;
-  const enrichDeadline = listStartedAt + ENRICH_BUDGET_MS;
+  // Hard ceiling keeps the browser abort away, but enrichment must still match Friday quality
+  // (Sales names + quote amounts). Prefer partial filled maps over blank columns.
+  const BOARD_HARD_MS = 7000;
+  const ENRICH_BUDGET_MS = 3500;
+  const enrichStartedAt = Date.now();
+  const enrichDeadline = Math.min(listStartedAt + BOARD_HARD_MS, enrichStartedAt + ENRICH_BUDGET_MS);
   const enrichMsLeft = () => Math.max(0, enrichDeadline - Date.now());
+  let enrichCancelled = false;
+  const shouldContinueEnrich = () => !enrichCancelled && enrichMsLeft() > 40;
 
-  // Quote flags first (needed for quotes-sent cards). Cap unique leads to keep IN() cheap.
-  const quoteLeadIds = meetingLeadIds.slice(0, 2500);
-  if (enrichMsLeft() > 200) {
+  // Enrich every lead on the board (unique set is far smaller than row count).
+  const quoteLeadIds = meetingLeadIds;
+  const salesLeadIds = meetingLeadIds;
+
+  if (enrichMsLeft() > 80 && (quoteLeadIds.length > 0 || salesLeadIds.length > 0)) {
+    const quoteBudget = Math.max(400, Math.min(3000, enrichMsLeft()));
+    const salesBudget = Math.max(400, Math.min(3000, enrichMsLeft()));
+    // Shared maps so a budget timeout keeps partial results instead of wiping Sales/Quotes.
+    const shareAcc = shareByLead;
+    const salesAcc = salesByLead;
     try {
-      shareByLead = await Promise.race([
-        quoteShareByLead(pool, quoteLeadIds, { mode: "board" }),
-        new Promise<typeof shareByLead>((resolve) => {
-          setTimeout(() => resolve(shareByLead), Math.min(1800, enrichMsLeft()));
-        }),
+      await Promise.all([
+        Promise.race([
+          quoteShareByLead(pool, quoteLeadIds, {
+            mode: "board",
+            shouldContinue: shouldContinueEnrich,
+          })
+            .then((result) => {
+              for (const [id, value] of result) shareAcc.set(id, value);
+              return shareAcc;
+            })
+            .catch((err) => {
+              console.error("quote share lookup failed", err);
+              return shareAcc;
+            }),
+          new Promise<typeof shareAcc>((resolve) => {
+            setTimeout(() => resolve(shareAcc), quoteBudget);
+          }),
+        ]),
+        salesLeadIds.length > 0
+          ? Promise.race([
+              salesExecutiveByLeadIds(pool, salesLeadIds, {
+                mode: "board",
+                shouldContinue: shouldContinueEnrich,
+                into: salesAcc,
+              }).catch((err) => {
+                console.error("sales executive lookup failed", err);
+                return salesAcc;
+              }),
+              new Promise<Map<number, string>>((resolve) => {
+                setTimeout(() => resolve(salesAcc), salesBudget);
+              }),
+            ])
+          : Promise.resolve(salesAcc),
       ]);
-    } catch (err) {
-      console.error("quote share lookup failed", err);
+      shareByLead = shareAcc;
+      salesByLead = salesAcc;
+    } finally {
+      enrichCancelled = true;
     }
   }
 
-  // Sales JSON scan is optional for first paint — never let it sink the board.
-  const salesLeadIds = meetingLeadIds.slice(0, 800);
-  if (salesLeadIds.length > 0 && enrichMsLeft() > 150) {
-    salesByLead = await Promise.race([
-      salesExecutiveByLeadIds(pool, salesLeadIds, { mode: "board" }).catch((err) => {
-        console.error("sales executive lookup failed", err);
-        return new Map<number, string>();
-      }),
-      new Promise<Map<number, string>>((resolve) => {
-        setTimeout(() => resolve(new Map()), Math.min(400, enrichMsLeft()));
-      }),
-    ]);
-  }
-
-  if (Date.now() - listStartedAt > 4000) {
+  const totalMs = Date.now() - listStartedAt;
+  if (totalMs > 2500) {
     console.warn(
-      `[lead-meetings] board list slow ${Date.now() - listStartedAt}ms rows=${(rows as unknown[]).length} leads=${meetingLeadIds.length}`,
+      `[lead-meetings] board list slow ${totalMs}ms select=${selectMs}ms enrich=${Date.now() - enrichStartedAt}ms rows=${rows.length} leads=${meetingLeadIds.length} sales=${salesByLead.size} quotes=${shareByLead.size}`,
+    );
+  } else {
+    console.log(
+      `[lead-meetings] board list ${totalMs}ms select=${selectMs}ms rows=${rows.length} leads=${meetingLeadIds.length}`,
     );
   }
 
-  return (rows as Record<string, unknown>[]).map((row) => {
+  return rows.map((row) => {
     const share = shareByLead.get(Number(row.leadId));
     const leadIdNum = Number(row.leadId);
     const storedProgress = (() => {
@@ -2610,10 +2827,14 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
     isOnHold: row.isOnHold === 1 || row.isOnHold === true || row.isOnHold === "1",
     customerName: projectName || "Customer",
     phone: cleanText(row.contactNo),
-    salesName: salesByLead.get(leadIdNum) || "",
+    salesName: (() => {
+      const raw = salesByLead.get(leadIdNum) || "";
+      // Normalize CRM variants like "Somashekar_V" so filters/options match one person.
+      return raw.replace(/[_]+/g, " ").replace(/\s+/g, " ").trim();
+    })(),
     quotationTotal: quoteAmount || "",
     budget: "",
-    branchName: cleanText(row.meetingBranch),
+    branchName: storedBranch(row.meetingBranch) || cleanText(row.meetingBranch),
     designerName: cleanText(row.assignedDesignerName) || "Unassigned",
     meetingDate: String(row.meetingDate || "").slice(0, 10),
     meetingTime: resolvedTime,
@@ -2636,6 +2857,7 @@ export async function listLeadMeetings(pool: Pool, opts?: { leadId?: number; now
     cancelFiles: parseCancelFiles(row.cancelFiles),
     reason: cleanText(row.cancelReason),
     endedAt: meetingEndedIso(row.endedAt),
+    startedAt: meetingEndedIso(row.startedAt),
     quoteSent: share?.quoteSent === true,
     hasQuote: share?.hasQuote === true || quoteAmount != null,
     quoteFinalAmount: quoteAmount,
@@ -2724,6 +2946,77 @@ async function cleanupOrphanMeetingRows(pool: Pool) {
         AND meeting_date < CURDATE()`,
     [now],
   );
+  // Collapse CRM/Pre10 storms (same lead+day inserted dozens of times by backfill races).
+  // Keep the strongest progress row; cancel the rest so they stop filling board scans.
+  await pool.query(
+    `UPDATE lead_meetings m
+        JOIN (
+          SELECT id,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY lead_id, meeting_date
+                   ORDER BY
+                     CASE progress
+                       WHEN 'completed' THEN 6
+                       WHEN 'in_progress' THEN 5
+                       WHEN 'scheduled' THEN 4
+                       WHEN 'meeting_never_happened' THEN 2
+                       ELSE 1
+                     END DESC,
+                     CASE WHEN meeting_status = 'cancelled' THEN 0 ELSE 1 END DESC,
+                     CASE WHEN meeting_time IS NULL OR TRIM(meeting_time) = '' THEN 0 ELSE 1 END DESC,
+                     id DESC
+                 ) AS rn
+            FROM lead_meetings
+           WHERE meeting_date >= DATE_SUB(CURDATE(), INTERVAL 120 DAY)
+             AND (
+               source = 'crm'
+               OR LOWER(REPLACE(IFNULL(meeting_type, ''), '-', '_')) IN ('pre_10', 'pre10')
+             )
+        ) d ON d.id = m.id AND d.rn > 1
+        SET m.meeting_status = 'cancelled',
+            m.progress = 'meeting_never_happened',
+            m.cancel_reason = COALESCE(
+              NULLIF(TRIM(m.cancel_reason), ''),
+              'Duplicate Pre 10% row (same lead+day)'
+            ),
+            m.updated_at = ?
+      WHERE m.progress <> 'completed'
+        AND (
+          m.meeting_status <> 'cancelled'
+          OR m.progress <> 'meeting_never_happened'
+          OR IFNULL(m.cancel_reason, '') <> 'Duplicate Pre 10% row (same lead+day)'
+        )`,
+    [now],
+  );
+  // One Successful Pre 10% per lead (non-DRR). Older date leftovers (reschedule/backfill)
+  // must not stay Meeting Successful beside the real visit.
+  await pool.query(
+    `UPDATE lead_meetings m
+        JOIN (
+          SELECT id,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY lead_id
+                   ORDER BY
+                     CASE WHEN started_at IS NULL THEN 0 ELSE 1 END DESC,
+                     ended_at DESC,
+                     meeting_date DESC,
+                     id DESC
+                 ) AS rn
+            FROM lead_meetings
+           WHERE source = 'crm'
+             AND progress = 'completed'
+             AND COALESCE(is_drr_revisit, 0) = 0
+             AND meeting_date >= DATE_SUB(CURDATE(), INTERVAL 180 DAY)
+        ) d ON d.id = m.id AND d.rn > 1
+        SET m.meeting_status = 'cancelled',
+            m.progress = 'meeting_never_happened',
+            m.cancel_reason = COALESCE(
+              NULLIF(TRIM(m.cancel_reason), ''),
+              'Superseded by Meeting Successful'
+            ),
+            m.updated_at = ?`,
+    [now],
+  );
 }
 
 async function backfillLeadMeetings(pool: Pool) {
@@ -2797,11 +3090,25 @@ async function insertBackfill(
 ) {
   if (!input.meetingTime) return;
   if (input.source === "design_module" && !designMeetingFromLabel(input.meetingType)) return;
+  // CRM/Pre10: any same lead+day row blocks another insert (stops backfill dup storms).
+  // Exact type match still applies for design milestones.
   const [existing] = await pool.query(
-    `SELECT id, progress FROM lead_meetings
-      WHERE lead_id = ? AND source = ? AND meeting_type = ? AND meeting_date = ?
-      ORDER BY id DESC LIMIT 1`,
-    [input.leadId, input.source, input.meetingType, input.meetingDate],
+    input.source === "crm" ||
+      ["pre_10", "pre10"].includes(String(input.meetingType || "").toLowerCase().replace(/-/g, "_"))
+      ? `SELECT id, progress FROM lead_meetings
+          WHERE lead_id = ? AND meeting_date = ?
+            AND (
+              source = 'crm'
+              OR LOWER(REPLACE(IFNULL(meeting_type, ''), '-', '_')) IN ('pre_10', 'pre10')
+            )
+          ORDER BY id DESC LIMIT 1`
+      : `SELECT id, progress FROM lead_meetings
+          WHERE lead_id = ? AND source = ? AND meeting_type = ? AND meeting_date = ?
+          ORDER BY id DESC LIMIT 1`,
+    input.source === "crm" ||
+      ["pre_10", "pre10"].includes(String(input.meetingType || "").toLowerCase().replace(/-/g, "_"))
+      ? [input.leadId, input.meetingDate]
+      : [input.leadId, input.source, input.meetingType, input.meetingDate],
   );
   const prior = (existing as { id?: number; progress?: string }[])[0];
   if (prior?.id) {
