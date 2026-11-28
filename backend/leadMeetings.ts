@@ -2542,12 +2542,13 @@ export async function listLeadMeetings(
   // - multiple Successful (non-DRR) across days → 1 row (Amrutha Nov 4 + Nov 22)
   // - other days in the selected range still show (scheduled / never happened / etc.)
   // Never partition by raw id for DRR — false is_drr_revisit on backfill dups inflated the board.
+  // DRR (live or cancelled leftovers) share one partition per lead+day so duplicates collapse.
+  // Successful Pre-10 stays separate (pre10_done) and must not hide a same-day DRR.
   const boardPre10Partition = `CASE
             WHEN board.source = 'crm'
               OR LOWER(REPLACE(IFNULL(board.meetingType, ''), '-', '_')) IN ('pre_10', 'pre10')
             THEN CASE
               WHEN COALESCE(board.crmDrrRevisit, 0) = 1
-                AND LOWER(IFNULL(board.meetingStatus, '')) <> 'cancelled'
               THEN CONCAT('drr:', board.meetingDate)
               WHEN board.progress = 'completed'
               THEN 'pre10_done'
@@ -2947,13 +2948,14 @@ async function cleanupOrphanMeetingRows(pool: Pool) {
     [now],
   );
   // Collapse CRM/Pre10 storms (same lead+day inserted dozens of times by backfill races).
-  // Keep the strongest progress row; cancel the rest so they stop filling board scans.
+  // IMPORTANT: partition Pre-10 vs DRR separately — a Successful Pre-10 must NOT cancel
+  // a same-day Design Refinement Round (that caused duplicate DRR recreate loops).
   await pool.query(
     `UPDATE lead_meetings m
         JOIN (
           SELECT id,
                  ROW_NUMBER() OVER (
-                   PARTITION BY lead_id, meeting_date
+                   PARTITION BY lead_id, meeting_date, CASE WHEN COALESCE(is_drr_revisit, 0) = 1 THEN 'drr' ELSE 'pre10' END
                    ORDER BY
                      CASE progress
                        WHEN 'completed' THEN 6
@@ -2977,14 +2979,20 @@ async function cleanupOrphanMeetingRows(pool: Pool) {
             m.progress = 'meeting_never_happened',
             m.cancel_reason = COALESCE(
               NULLIF(TRIM(m.cancel_reason), ''),
-              'Duplicate Pre 10% row (same lead+day)'
+              CASE
+                WHEN COALESCE(m.is_drr_revisit, 0) = 1 THEN 'Duplicate DRR row (same lead+day)'
+                ELSE 'Duplicate Pre 10% row (same lead+day)'
+              END
             ),
             m.updated_at = ?
       WHERE m.progress <> 'completed'
         AND (
           m.meeting_status <> 'cancelled'
           OR m.progress <> 'meeting_never_happened'
-          OR IFNULL(m.cancel_reason, '') <> 'Duplicate Pre 10% row (same lead+day)'
+          OR IFNULL(m.cancel_reason, '') NOT IN (
+            'Duplicate Pre 10% row (same lead+day)',
+            'Duplicate DRR row (same lead+day)'
+          )
         )`,
     [now],
   );

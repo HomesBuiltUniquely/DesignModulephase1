@@ -745,7 +745,8 @@ function preferPre10Meeting(a: ViewMeeting, b: ViewMeeting): ViewMeeting {
  * - same lead+day → one row (CRM/backfill junk)
  * - multiple Successful (non-DRR) across days → one row (reschedule leftovers)
  * - other days in the selected range stay visible
- * DRR: one row per lead+day. Drop orphan "design meeting" junk entirely.
+ * DRR: one row per lead+day (includes cancelled leftovers so they don't look like extra Pre 10%).
+ * Drop orphan "design meeting" junk entirely.
  */
 function dedupePre10Meetings(rows: ViewMeeting[]): ViewMeeting[] {
   const withoutOrphans = rows.filter((meeting) => !isOrphanDesignMeetingLabel(meeting));
@@ -754,10 +755,8 @@ function dedupePre10Meetings(rows: ViewMeeting[]): ViewMeeting[] {
 
   for (const meeting of withoutOrphans) {
     if (!isPre10Meeting(meeting) || meeting.leadId <= 0) continue;
-    const isLiveDrr =
-      isDrrCrmMeeting(meeting) &&
-      String(meeting.raw.meetingStatus || '').toLowerCase() !== 'cancelled';
-    const groupKey = isLiveDrr
+    // All DRR rows (live or cancelled) share one bucket — cancelled dups must not show as Pre 10%.
+    const groupKey = isDrrCrmMeeting(meeting)
       ? `drr|${meeting.leadId}|${meeting.day}`
       : meeting.status === 'completed'
         ? `pre10_done|${meeting.leadId}`
