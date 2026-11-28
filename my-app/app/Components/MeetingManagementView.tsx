@@ -532,17 +532,14 @@ function isDrrCrmMeeting(meeting: ViewMeeting): boolean {
   );
 }
 
-/**
- * Open DRR visit for the Meeting scheduled (DRR) filter.
- * Includes in_progress / rescheduled because Design may flip progress on the meeting day.
- */
-function isScheduledDrrMeeting(meeting: ViewMeeting): boolean {
-  if (!isDrrCrmMeeting(meeting)) return false;
-  return (
-    meeting.status === 'scheduled' ||
-    meeting.status === 'in_progress' ||
-    meeting.status === 'rescheduled'
-  );
+/** DRR row with status Scheduled (DRR) — not in progress / rescheduled DRR. */
+function isScheduledDrrStatusMeeting(meeting: ViewMeeting): boolean {
+  return isDrrCrmMeeting(meeting) && meeting.status === 'scheduled';
+}
+
+/** Design / CRM row with status Meeting Scheduled — excludes DRR. */
+function isPlainScheduledMeeting(meeting: ViewMeeting): boolean {
+  return meeting.status === 'scheduled' && !isDrrCrmMeeting(meeting);
 }
 
 /** Successful DRR visit for the Meeting Successful (DRR) filter only. */
@@ -973,8 +970,17 @@ function StatusPill({ status, meeting }: { status: ViewStatus; meeting?: ViewMee
       status !== 'completed' &&
       status !== 'abandoned';
     if (openDrr) {
-      label = 'Scheduled (DRR)';
-      pillStatus = status;
+      if (status === 'in_progress') {
+        label = (meeting.raw.progressLabel || '').trim() || 'In progress (DRR)';
+        pillStatus = 'in_progress';
+      } else if (status === 'rescheduled') {
+        const count = Math.max(1, meeting.rescheduleCount || 1);
+        label = `Meeting Rescheduled ${count} (DRR)`;
+        pillStatus = 'rescheduled';
+      } else {
+        label = 'Scheduled (DRR)';
+        pillStatus = status;
+      }
     } else if (treatCancelled) {
       label = rawLabel || 'Meeting Cancelled';
       pillStatus = 'cancelled';
@@ -987,6 +993,10 @@ function StatusPill({ status, meeting }: { status: ViewStatus; meeting?: ViewMee
     } else if (status === 'abandoned') {
       label = (meeting.raw.progressLabel || '').trim() || 'Meeting never happened';
       pillStatus = 'abandoned';
+    } else if (status === 'in_progress') {
+      // Current progress wins — don't label as rescheduled just because rescheduleCount > 0.
+      label = (meeting.raw.progressLabel || '').trim() || 'In progress';
+      pillStatus = 'in_progress';
     } else if (
       status === 'rescheduled' ||
       meeting.raw.meetingStatus === 'rescheduled' ||
@@ -998,9 +1008,6 @@ function StatusPill({ status, meeting }: { status: ViewStatus; meeting?: ViewMee
     } else if (status === 'scheduled') {
       label = (meeting.raw.progressLabel || '').trim() || 'Meeting Scheduled';
       pillStatus = 'scheduled';
-    } else if (status === 'in_progress') {
-      label = (meeting.raw.progressLabel || '').trim() || 'In progress';
-      pillStatus = 'in_progress';
     }
   }
   return (
@@ -1093,6 +1100,8 @@ export default function MeetingManagementView() {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const dateRef = useRef<HTMLDivElement>(null);
   const filterRef = useRef<HTMLDivElement>(null);
+  const statusRef = useRef<HTMLDivElement>(null);
+  const typeRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const followLiveMonth = useRef(true);
   const loadSeqRef = useRef(0);
@@ -1490,6 +1499,7 @@ export default function MeetingManagementView() {
       : statusFilters.length === 1
         ? statusChoices.find((item) => item.id === statusFilters[0])?.label || 'Status'
         : `${statusFilters.length} selected`;
+  const typeClosedLabel = TYPE_FILTERS.find((item) => item.id === typeFilter)?.label ?? 'All';
 
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -1560,9 +1570,15 @@ export default function MeetingManagementView() {
   const matchesStatus = useCallback((meeting: ViewMeeting) => {
     if (statusFilters.length === 0) return true;
     return statusFilters.some((want) => {
-      if (want === 'scheduled_drr') return isScheduledDrrMeeting(meeting);
+      if (want === 'scheduled_drr') return isScheduledDrrStatusMeeting(meeting);
       if (want === 'completed_drr') return isSuccessfulDrrMeeting(meeting);
-      // Friday: Scheduled / Rescheduled include DRR rows (DRR-only filters still available).
+      if (want === 'scheduled') return isPlainScheduledMeeting(meeting);
+      if (want === 'completed') {
+        return meeting.status === 'completed' && !isSuccessfulDrrMeeting(meeting);
+      }
+      if (want === 'rescheduled') {
+        return meeting.status === 'rescheduled' && !isDrrCrmMeeting(meeting);
+      }
       return meeting.status === want;
     });
   }, [statusFilters]);
@@ -1612,16 +1628,18 @@ export default function MeetingManagementView() {
   }, [query, typeFilter, designerFilter, salesFilter, branchFilter, statusFilters, quoteOnly, quoteDelayedOnly, personalKind, datePreset, customFrom, customTo, viewMonth]);
 
   useEffect(() => {
-    if (!dateOpen && !filterOpen) return;
-    const onDown = (event: MouseEvent) => {
+    if (!dateOpen && !filterOpen && !statusOpen && !typeOpen) return;
+    const onDismiss = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
       if (target.closest('.custom-select-dropdown')) return;
       if (dateOpen && dateRef.current && !dateRef.current.contains(target)) setDateOpen(false);
       if (filterOpen && filterRef.current && !filterRef.current.contains(target)) setFilterOpen(false);
+      if (statusOpen && statusRef.current && !statusRef.current.contains(target)) setStatusOpen(false);
+      if (typeOpen && typeRef.current && !typeRef.current.contains(target)) setTypeOpen(false);
     };
-    document.addEventListener('mousedown', onDown);
-    return () => document.removeEventListener('mousedown', onDown);
-  }, [dateOpen, filterOpen]);
+    document.addEventListener('click', onDismiss);
+    return () => document.removeEventListener('click', onDismiss);
+  }, [dateOpen, filterOpen, statusOpen, typeOpen]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -1643,11 +1661,19 @@ export default function MeetingManagementView() {
         setDateOpen(false);
         return;
       }
+      if (statusOpen) {
+        setStatusOpen(false);
+        return;
+      }
+      if (typeOpen) {
+        setTypeOpen(false);
+        return;
+      }
       if (selected && panelPhase !== 'out') closePanel();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [actionMeeting, actionStep, dateOpen, filterOpen, selected, panelPhase, savingAction]);
+  }, [actionMeeting, actionStep, dateOpen, filterOpen, statusOpen, typeOpen, selected, panelPhase, savingAction]);
 
   useEffect(() => {
     if (!selected) return;
@@ -1718,10 +1744,21 @@ export default function MeetingManagementView() {
     setView(next);
   };
 
-  const toggleStatus = (status: StatusKey) => {
+  /** One status at a time — matches header dropdown; click again to clear. */
+  const pickStatusFilter = (status: StatusKey) => {
     setStatusFilters((current) => (
-      current.includes(status) ? current.filter((item) => item !== status) : [...current, status]
+      current.length === 1 && current[0] === status ? [] : [status]
     ));
+  };
+
+  const applyStatusFilter = (status: StatusKey | 'all') => {
+    setStatusFilters(status === 'all' ? [] : [status]);
+    setStatusOpen(false);
+  };
+
+  const applyTypeFilter = (next: TypeFilter) => {
+    setTypeFilter(next);
+    setTypeOpen(false);
   };
 
   const toggleQuotes = () => {
@@ -2119,6 +2156,115 @@ export default function MeetingManagementView() {
             <p className={styles.subtitle}>India time · design and CRM meetings</p>
           </div>
         <div className={styles.headActions}>
+          <div className={styles.dateWrap} ref={statusRef}>
+            <button
+              type="button"
+              className={styles.rangeBtn}
+              data-on={statusFilters.length > 0}
+              data-open={statusOpen}
+              aria-expanded={statusOpen}
+              aria-haspopup="listbox"
+              onClick={() => {
+                setStatusOpen((was) => {
+                  const next = !was;
+                  if (next) {
+                    setTypeOpen(false);
+                    setFilterOpen(false);
+                    setDateOpen(false);
+                  }
+                  return next;
+                });
+              }}
+            >
+              {statusClosedLabel}
+              <svg className={styles.rangeCaret} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" width="14" height="14" fill="currentColor" aria-hidden>
+                <path fillRule="evenodd" d="M5.22 7.22a.75.75 0 0 1 1.06 0L10 10.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 8.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+              </svg>
+            </button>
+            {statusOpen ? (
+              <div
+                className={`${styles.popover} ${styles.popoverEnd} ${styles.dateMenu} ${styles.choiceMenu}`}
+                role="listbox"
+                aria-label="Meeting status"
+                onMouseDown={(event) => event.preventDefault()}
+              >
+                <button
+                  type="button"
+                  className={styles.popOption}
+                  role="option"
+                  aria-selected={statusFilters.length === 0}
+                  data-on={statusFilters.length === 0}
+                  onClick={() => applyStatusFilter('all')}
+                >
+                  <i className={styles.popMark} aria-hidden="true" />
+                  All statuses
+                </button>
+                {statusChoices.map((status) => (
+                  <button
+                    key={status.id}
+                    type="button"
+                    className={styles.popOption}
+                    role="option"
+                    aria-selected={statusFilters.length === 1 && statusFilters[0] === status.id}
+                    data-on={statusFilters.length === 1 && statusFilters[0] === status.id}
+                    onClick={() => applyStatusFilter(status.id)}
+                  >
+                    <i className={styles.popMark} aria-hidden="true" />
+                    {status.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          <div className={styles.dateWrap} ref={typeRef}>
+            <button
+              type="button"
+              className={styles.rangeBtn}
+              data-on={typeFilter !== 'all'}
+              data-open={typeOpen}
+              aria-expanded={typeOpen}
+              aria-haspopup="listbox"
+              onClick={() => {
+                setTypeOpen((was) => {
+                  const next = !was;
+                  if (next) {
+                    setStatusOpen(false);
+                    setFilterOpen(false);
+                    setDateOpen(false);
+                  }
+                  return next;
+                });
+              }}
+            >
+              {typeClosedLabel}
+              <svg className={styles.rangeCaret} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" width="14" height="14" fill="currentColor" aria-hidden>
+                <path fillRule="evenodd" d="M5.22 7.22a.75.75 0 0 1 1.06 0L10 10.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 8.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+              </svg>
+            </button>
+            {typeOpen ? (
+              <div
+                className={`${styles.popover} ${styles.popoverEnd} ${styles.dateMenu} ${styles.choiceMenu}`}
+                role="listbox"
+                aria-label="Meeting type"
+                onMouseDown={(event) => event.preventDefault()}
+              >
+                {TYPE_FILTERS.map((type) => (
+                  <button
+                    key={type.id}
+                    type="button"
+                    className={styles.popOption}
+                    role="option"
+                    aria-selected={typeFilter === type.id}
+                    data-on={typeFilter === type.id}
+                    onClick={() => applyTypeFilter(type.id)}
+                  >
+                    <i className={styles.popMark} aria-hidden="true" />
+                    {type.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
           <div className={styles.dateWrap} ref={filterRef}>
               <button
                 type="button"
@@ -2225,17 +2371,17 @@ export default function MeetingManagementView() {
       </header>
 
       <section className={styles.stats} aria-label="Meeting totals">
-        <button type="button" className={styles.stat} data-static="false" data-on={statusFilters.includes('scheduled')} aria-pressed={statusFilters.includes('scheduled')} onClick={() => toggleStatus('scheduled')}>
+        <button type="button" className={styles.stat} data-static="false" data-on={statusFilters.length === 1 && statusFilters[0] === 'scheduled'} aria-pressed={statusFilters.length === 1 && statusFilters[0] === 'scheduled'} onClick={() => pickStatusFilter('scheduled')}>
           <span className={styles.statLabel}>Scheduled</span>
           <span className={styles.statValue}>{loading ? '—' : stats.scheduled}</span>
           <span className={styles.statSub}>{loading ? '' : `${stats.scheduledToday} today`}</span>
         </button>
-        <button type="button" className={styles.stat} data-static="false" data-on={statusFilters.includes('completed')} aria-pressed={statusFilters.includes('completed')} onClick={() => toggleStatus('completed')}>
+        <button type="button" className={styles.stat} data-static="false" data-on={statusFilters.length === 1 && statusFilters[0] === 'completed'} aria-pressed={statusFilters.length === 1 && statusFilters[0] === 'completed'} onClick={() => pickStatusFilter('completed')}>
           <span className={styles.statLabel}>Meeting Successful</span>
           <span className={styles.statValue}>{loading ? '—' : stats.successful}</span>
           <span className={styles.statSub}>{'\u00a0'}</span>
         </button>
-        <button type="button" className={styles.stat} data-static="false" data-on={statusFilters.includes('cancelled')} aria-pressed={statusFilters.includes('cancelled')} onClick={() => toggleStatus('cancelled')}>
+        <button type="button" className={styles.stat} data-static="false" data-on={statusFilters.length === 1 && statusFilters[0] === 'cancelled'} aria-pressed={statusFilters.length === 1 && statusFilters[0] === 'cancelled'} onClick={() => pickStatusFilter('cancelled')}>
           <span className={styles.statLabel}>Cancelled</span>
           <span className={styles.statValue}>{loading ? '—' : stats.cancelled}</span>
           <span className={styles.statSub}>{loading ? '' : `${stats.pct}% of meetings`}</span>
@@ -2297,83 +2443,6 @@ export default function MeetingManagementView() {
                 placeholder="Customer, lead ID, designer, sales"
               />
             </label>
-            <div
-              className={`${styles.seg} ${styles.typeSeg} ${styles.statusSeg}`}
-              data-open={statusOpen}
-              role="group"
-              aria-label="Meeting status"
-              onMouseEnter={() => setStatusOpen(true)}
-              onMouseLeave={() => setStatusOpen(false)}
-              onFocus={() => setStatusOpen(true)}
-              onBlur={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setStatusOpen(false);
-              }}
-            >
-              <button
-                type="button"
-                className={styles.statusClosed}
-                data-on="true"
-                data-closed-only="true"
-                tabIndex={statusOpen ? -1 : 0}
-                aria-label={`Status filter: ${statusClosedLabel}`}
-                onClick={() => setStatusOpen(true)}
-              >
-                {statusClosedLabel}
-              </button>
-              <button
-                type="button"
-                data-on={statusFilters.length === 0}
-                data-open-only="true"
-                data-index={0}
-                aria-pressed={statusFilters.length === 0}
-                tabIndex={statusOpen ? 0 : -1}
-                onClick={() => setStatusFilters([])}
-              >
-                All
-              </button>
-              {statusChoices.map((status, index) => (
-                <button
-                  key={status.id}
-                  type="button"
-                  data-on={statusFilters.includes(status.id)}
-                  data-open-only="true"
-                  data-index={index + 1}
-                  aria-pressed={statusFilters.includes(status.id)}
-                  tabIndex={statusOpen ? 0 : -1}
-                  onClick={() => toggleStatus(status.id)}
-                >
-                  {status.label}
-                </button>
-              ))}
-              <span className={styles.typeCaret} aria-hidden="true">▾</span>
-            </div>
-            <div
-              className={`${styles.seg} ${styles.typeSeg}`}
-              data-open={typeOpen}
-              role="group"
-              aria-label="Meeting type"
-              onMouseEnter={() => setTypeOpen(true)}
-              onMouseLeave={() => setTypeOpen(false)}
-              onFocus={() => setTypeOpen(true)}
-              onBlur={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setTypeOpen(false);
-              }}
-            >
-              {TYPE_FILTERS.map((type, index) => (
-                <button
-                  key={type.id}
-                  type="button"
-                  data-on={typeFilter === type.id}
-                  data-index={index}
-                  aria-pressed={typeFilter === type.id}
-                  tabIndex={typeOpen || typeFilter === type.id ? 0 : -1}
-                  onClick={() => setTypeFilter(type.id)}
-                >
-                  {type.label}
-                </button>
-              ))}
-              <span className={styles.typeCaret} aria-hidden="true">▾</span>
-            </div>
                               <button
                                 type="button"
               className={styles.iconBtn}

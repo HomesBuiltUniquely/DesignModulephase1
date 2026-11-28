@@ -315,6 +315,12 @@ const ERP_PASSWORD = process.env.ERP_PASSWORD || "admin123";
 let cachedErpToken: string | null = null;
 /** Host that last issued a valid ERP token (may differ from dead localhost stubs). */
 let resolvedErpBaseUrl = ERP_BASE_URL.replace(/\/$/, "");
+/** A hung ERP host must not sit until nginx returns 504 with no CORS headers. */
+const ERP_FETCH_TIMEOUT_MS = 12_000;
+
+function erpFetchInit(init: RequestInit = {}): RequestInit {
+  return { ...init, signal: AbortSignal.timeout(ERP_FETCH_TIMEOUT_MS) };
+}
 
 function normalizePaymentReceivedForCrm(input: unknown): string | null {
   const raw = String(input ?? "").trim().toUpperCase();
@@ -378,18 +384,24 @@ async function getErpToken(forceRefresh = false): Promise<string | null> {
   try {
     for (const base of bases) {
       try {
-        let res = await fetch(`${base}/api/auth/signin`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username: ERP_USERNAME, password: ERP_PASSWORD }),
-        });
-
-        if (!res.ok) {
-          res = await fetch(`${base}/api/auth/login`, {
+        let res = await fetch(
+          `${base}/api/auth/signin`,
+          erpFetchInit({
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ username: ERP_USERNAME, password: ERP_PASSWORD }),
-          });
+          }),
+        );
+
+        if (!res.ok) {
+          res = await fetch(
+            `${base}/api/auth/login`,
+            erpFetchInit({
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ username: ERP_USERNAME, password: ERP_PASSWORD }),
+            }),
+          );
         }
 
         if (res.ok) {
@@ -421,23 +433,29 @@ async function fetchFromErpWithRetry(endpoint: string) {
   let token = await getErpToken();
   if (!token) throw new Error("Could not get ERP auth token");
 
-  let res = await fetch(`${resolvedErpBaseUrl}${endpoint}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-  });
+  let res = await fetch(
+    `${resolvedErpBaseUrl}${endpoint}`,
+    erpFetchInit({
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+    }),
+  );
 
   if (res.status === 401) {
     token = await getErpToken(true);
     if (!token) throw new Error("Could not refresh ERP auth token");
 
-    res = await fetch(`${resolvedErpBaseUrl}${endpoint}`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-    });
+    res = await fetch(
+      `${resolvedErpBaseUrl}${endpoint}`,
+      erpFetchInit({
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      }),
+    );
   }
 
   if (!res.ok) throw new Error(`ERP API error: ${res.status}`);
@@ -458,13 +476,19 @@ async function callErpApi(
     ...(options.headers || {}),
   };
 
-  let res = await fetch(`${resolvedErpBaseUrl}${endpoint}`, { method, headers, body: options.body });
+  let res = await fetch(
+    `${resolvedErpBaseUrl}${endpoint}`,
+    erpFetchInit({ method, headers, body: options.body }),
+  );
 
   if (res.status === 401) {
     token = await getErpToken(true);
     if (!token) throw new Error("Could not refresh ERP auth token");
     headers.Authorization = `Bearer ${token}`;
-    res = await fetch(`${resolvedErpBaseUrl}${endpoint}`, { method, headers, body: options.body });
+    res = await fetch(
+      `${resolvedErpBaseUrl}${endpoint}`,
+      erpFetchInit({ method, headers, body: options.body }),
+    );
   }
 
   if (!res.ok) {
@@ -4798,13 +4822,31 @@ function isPersonalAppointmentsManagerRole(role: string): boolean {
   ].includes((role || "").toLowerCase());
 }
 
-async function countUnreadPersonalAppointmentAlerts(
+const PERSONAL_BADGE_CACHE_MS = 30_000;
+const PERSONAL_BADGE_ERP_DEADLINE_MS = 8_000;
+const personalBadgeCache = new Map<
+  number,
+  {
+    at: number;
+    value: { unread: boolean; count: number };
+    inflight: Promise<{ unread: boolean; count: number }> | null;
+  }
+>();
+
+function countPersonalAlertsInErpRows(appointments: unknown[], lastSeen: Date): number {
+  let count = 0;
+  for (const raw of appointments) {
+    if (!isPersonalAppointmentErpRow(raw) || isFullDayLeaveErpRow(raw)) continue;
+    const o = raw as Record<string, unknown>;
+    const created = parseErpDateTime(o.createdAt ?? o.created_at ?? o.startTime ?? o.start);
+    if (created && created > lastSeen) count++;
+  }
+  return count;
+}
+
+async function computePersonalAppointmentBadge(
   actingUser: { id: number; name: string; role: string },
 ): Promise<{ unread: boolean; count: number }> {
-  if (!isPersonalAppointmentsManagerRole(actingUser.role)) {
-    return { unread: false, count: 0 };
-  }
-
   const lastSeen = (await getPersonalAppointmentsLastSeen(actingUser.id)) ?? new Date(0);
   let count = 0;
 
@@ -4815,22 +4857,55 @@ async function countUnreadPersonalAppointmentAlerts(
   }
 
   const visible = await getPersonalAppointmentVisibleUsers(actingUser);
-  for (const member of visible) {
-    if (member.id === actingUser.id) continue;
+  const members = visible.filter((member) => member.id !== actingUser.id && member.name?.trim());
+  const finished: unknown[][] = [];
+  const scans = members.map(async (member) => {
     try {
-      const appointments = await fetchDesignerErpAppointments(member.name);
-      for (const raw of appointments) {
-        if (!isPersonalAppointmentErpRow(raw) || isFullDayLeaveErpRow(raw)) continue;
-        const o = raw as Record<string, unknown>;
-        const created = parseErpDateTime(o.createdAt ?? o.created_at ?? o.startTime ?? o.start);
-        if (created && created > lastSeen) count++;
-      }
+      finished.push(await fetchDesignerErpAppointments(member.name));
     } catch {
       // ignore per-designer ERP errors
     }
+  });
+  await Promise.race([
+    Promise.all(scans),
+    new Promise((resolve) => setTimeout(resolve, PERSONAL_BADGE_ERP_DEADLINE_MS)),
+  ]);
+  for (const appointments of finished) {
+    count += countPersonalAlertsInErpRows(appointments, lastSeen);
   }
 
   return { unread: count > 0, count };
+}
+
+async function countUnreadPersonalAppointmentAlerts(
+  actingUser: { id: number; name: string; role: string },
+): Promise<{ unread: boolean; count: number }> {
+  if (!isPersonalAppointmentsManagerRole(actingUser.role)) {
+    return { unread: false, count: 0 };
+  }
+
+  const now = Date.now();
+  const cached = personalBadgeCache.get(actingUser.id);
+  if (cached?.inflight) return cached.inflight;
+  if (cached && now - cached.at < PERSONAL_BADGE_CACHE_MS) return cached.value;
+
+  const inflight = computePersonalAppointmentBadge(actingUser)
+    .then((value) => {
+      personalBadgeCache.set(actingUser.id, { at: Date.now(), value, inflight: null });
+      return value;
+    })
+    .catch((err) => {
+      const current = personalBadgeCache.get(actingUser.id);
+      if (current) personalBadgeCache.set(actingUser.id, { ...current, inflight: null });
+      else personalBadgeCache.delete(actingUser.id);
+      throw err;
+    });
+  personalBadgeCache.set(actingUser.id, {
+    at: cached?.at ?? 0,
+    value: cached?.value ?? { unread: false, count: 0 },
+    inflight,
+  });
+  return inflight;
 }
 
 /** Short TTL + in-flight dedupe — CRM available-designers hits every designer; avoids N× ERP round-trips. */
